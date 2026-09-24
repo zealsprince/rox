@@ -1,9 +1,7 @@
-//! The theme toggle panel: a single button that flips the app between the
-//! dark and light palettes, the settings window's theme pick as a panel of
-//! its own. The glyph shows the side a click switches to, sun while dark,
-//! moon while light. Clicking always picks a concrete side, so a System
-//! pick turns into whichever side the OS wasn't showing; the pick
-//! persists to the settings file like the settings window's radio.
+//! The theme toggle panel: one button that flips between the dark and
+//! light palettes. The glyph shows the side a click switches to. A click
+//! always picks a concrete side, so a System pick becomes whichever side
+//! the OS wasn't showing.
 
 use gpui::{
     AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels,
@@ -19,12 +17,8 @@ use crate::panel::{self, Align, AppState, PanelChrome, PanelSettings, align_row,
 use crate::panel_settings;
 use crate::settings::{self, Settings, Theme};
 
-/// The theme toggle panel's per-view config: what a saved layout restores,
-/// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ThemeToggleConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
@@ -35,7 +29,6 @@ pub struct ThemeTogglePanel {
     state: AppState,
     config: ThemeToggleConfig,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
 
@@ -50,9 +43,8 @@ impl ThemeTogglePanel {
     }
 
     fn body(&self, cx: &mut Context<Self>) -> Div {
-        // The glyph shows where a click goes, following the palette in
-        // effect rather than the persisted pick, so a System pick still
-        // reads as the side it resolved to.
+        // Follows the palette in effect, so a System pick shows the side it
+        // resolved to.
         let (icon, next, tip) = match palette::mode() {
             palette::Mode::Dark => (
                 icons::SUN,
@@ -84,8 +76,7 @@ impl ThemeTogglePanel {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |_, _, _, cx| {
-                        // Through the settings pipe so every window eases over,
-                        // then into the file, the settings window's own route.
+                        // The settings pipe first so every window eases over, then the file.
                         settings::set_theme(next, cx);
                         Settings::update(move |s| s.theme = next);
                     }),
@@ -151,9 +142,6 @@ impl PanelSettings for ThemeTogglePanel {
 impl Render for ThemeTogglePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
@@ -198,7 +186,6 @@ impl Panel for ThemeTogglePanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-        // The button plus the strip's padding, raised by any user floor.
         crate::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(px(40.), rox_dock::resizable::PANEL_MIN_SIZE),
@@ -209,8 +196,6 @@ impl Panel for ThemeTogglePanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(

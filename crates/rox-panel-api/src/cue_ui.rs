@@ -1,16 +1,8 @@
-//! Session cues on a strip: the chevrons hanging off the top edge, the
-//! hit layer over them, and the menu the strip's right click opens. The
-//! counterpart to [`crate::bookmark_ui`], which draws the persisted marks
-//! along the bottom.
-//!
-//! The split down the middle of the strip is the whole visual grammar.
-//! Bottom means kept, a ribbon in the mark's own colour, written to the
-//! library and still there next month. Top means this listen only, a
-//! chevron in the theme accent, gone when rox closes. Neither needs a
-//! legend, because the two never share an edge and never share a shape.
-//!
-//! Cues carry no name and no colour of their own, so there's none of the
-//! quick-pick and rename machinery here. A cue is a position and an id.
+//! Session cues on a strip: the chevrons hanging off the top edge, the hit
+//! layer over them, and the strip's right-click menu. The counterpart to
+//! [`crate::bookmark_ui`], which draws the persisted marks along the bottom.
+//! Top means this listen only, bottom means kept, and the two never share an
+//! edge or a shape.
 
 use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Path, Pixels, Window,
@@ -28,7 +20,6 @@ use crate::openers;
 use crate::panel::{AppState, ScrubState};
 use crate::position_bound;
 
-/// One cue placed along a strip.
 #[derive(Clone, Copy)]
 pub struct CueMark {
     pub id: u64,
@@ -37,8 +28,6 @@ pub struct CueMark {
     pub position_ms: u32,
 }
 
-/// Place a track's cues along its strip. Nothing without a duration: a
-/// fraction of an unknown length points nowhere.
 pub fn marks(cues: &[Cue], duration_secs: Option<f64>) -> Vec<CueMark> {
     let Some(duration) = duration_secs.filter(|d| *d > 0.0) else {
         return Vec::new();
@@ -53,22 +42,15 @@ pub fn marks(cues: &[Cue], duration_secs: Option<f64>) -> Vec<CueMark> {
         .collect()
 }
 
-/// The chevron's footprint: its base width and height in px, and the
-/// stroke it's drawn with. Same budget as the bookmark ribbon opposite it,
-/// so a strip with both ends marked reads as one row of tabs rather than
-/// two sizes of thing.
+/// Same footprint as the bookmark ribbon opposite, so both ends of a strip read
+/// as one row of tabs.
 pub const MARK_W: f32 = 10.0;
 pub const MARK_H: f32 = 6.0;
 const MARK_STROKE: f32 = 2.5;
-/// The hit target around a chevron, wider than the drawing so a pointer
-/// finds it without aiming.
 const HIT_W: f32 = 16.0;
-/// The chevron's alpha at full weight.
 const MARK_ALPHA: u8 = 0xe6;
 
-/// Paint the cues over a strip. `weight` scales the alpha, for a strip
-/// fading its shape in or out. The chevrons hang off the top edge pointing
-/// down at the line, the mirror of where the bookmarks sit.
+/// `weight` scales the alpha, for a strip fading its shape in or out.
 pub fn paint_marks(marks: &[CueMark], weight: f32, bounds: Bounds<Pixels>, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
@@ -93,14 +75,12 @@ pub fn paint_marks(marks: &[CueMark], weight: f32, bounds: Bounds<Pixels>, windo
     let top = 1.0;
     let apex_y = top + MARK_H;
     let half = MARK_W / 2.0;
-    // The inner edge's inset along the base: the stroke measured across
-    // the slope, so the band reads the same thickness up its whole arm.
+    // Inset along the base that keeps the stroke constant across the slope.
     let inset = MARK_STROKE * (half * half + MARK_H * MARK_H).sqrt() / MARK_H;
 
     for mark in marks {
         let x = mark.fraction.clamp(0.0, 1.0) * w;
-        // A chevron band: the outer triangle with its inner triangle taken
-        // out, as four triangles round the ring.
+        // The outer triangle minus the inner one, as four triangles.
         let apex = at(x, apex_y);
         let tl = at(x - half, top);
         let tr = at(x + half, top);
@@ -117,8 +97,7 @@ pub fn paint_marks(marks: &[CueMark], weight: f32, bounds: Bounds<Pixels>, windo
     }
 }
 
-/// Jump the playing track to its next cue, or the one before the playhead.
-/// Nothing playing, a station playing, or no cue that way, does nothing.
+/// Seek the playing track to its next cue, or the one before the playhead.
 pub fn step(state: &AppState, forward: bool, cx: &mut App) {
     if !position_bound::allowed(state, cx) {
         return;
@@ -143,13 +122,8 @@ pub fn step(state: &AppState, forward: bool, cx: &mut App) {
     }
 }
 
-/// Take every session mark off the playing track in one go, the counterpart
-/// to dropping them one press at a time.
-///
-/// No position-bound gate, unlike [`step`] and the drop. Clearing doesn't
-/// need a position to point at, and a station that can't hold marks in the
-/// first place has nothing here to take, so the guard would only ever
-/// refuse a no-op.
+/// Take every session mark off the playing track. No position-bound gate:
+/// a station can't hold marks, so there's never anything to refuse.
 pub fn clear(state: &AppState, cx: &mut App) {
     let Some(now) = state.player.read(cx).now_playing() else {
         return;
@@ -158,15 +132,9 @@ pub fn clear(state: &AppState, cx: &mut App) {
     state.cues.update(cx, |cues, cx| cues.clear(&now.key, cx));
 }
 
-/// The interactive layer over a strip's cues: a hit target per chevron
-/// that seeks on a click, reports its hover, and offers the removal on a
-/// right click, plus the readout over the hovered one. Laid over the
-/// strip's own hover layer, so a pointer on a chevron reads the cue and
-/// not the time under it.
-///
-/// `hovered` is the panel's record of which cue the pointer is on, kept by
-/// the panel because it outlives one render; `on_hover` is how the layer
-/// updates it.
+/// The hit layer over a strip's cues, laid over the strip's own hover layer
+/// so a pointer on a chevron reads the cue and not the time under it.
+/// `hovered` lives on the panel because it outlives one render.
 #[allow(clippy::too_many_arguments)]
 pub fn overlay<V: 'static>(
     state: &AppState,
@@ -191,9 +159,7 @@ pub fn overlay<V: 'static>(
             .id(("cue-mark", id))
             .size_full()
             .cursor_pointer()
-            // The strip's own readout would keep tracking the pointer under
-            // the chevron; clearing it here and stopping the move leaves
-            // the cue's readout as the only one showing.
+            // Clear the strip's readout and stop the move so only the cue's shows.
             .on_mouse_move(cx.listener(move |_, _: &MouseMoveEvent, _, cx| {
                 hover_scrub.set_hover(None);
                 cx.stop_propagation();
@@ -202,8 +168,7 @@ pub fn overlay<V: 'static>(
                 on_hover(this, hovered.then_some(id), cx);
                 cx.notify();
             }))
-            // A click lands exactly on the cue, not on the pixel under the
-            // pointer, and the strip's own seek stays out of it.
+            // Seek exactly to the cue and keep the strip's own seek out of it.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, _: &MouseDownEvent, _, cx| {
@@ -211,10 +176,9 @@ pub fn overlay<V: 'static>(
                     cx.stop_propagation();
                 }),
             )
-            // The cue's own menu opens off the window-level handler the
-            // wrapper below registers, which runs ahead of this; stopping
-            // here keeps the press from the strip's insert menu, which
-            // would otherwise drop a second cue on top of this one.
+            // Stop the press so the strip's insert menu doesn't drop a second
+            // cue on this one. The cue's menu opens off a window-level handler
+            // that runs first.
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|_, _: &MouseDownEvent, _, cx| cx.stop_propagation()),
@@ -231,13 +195,9 @@ pub fn overlay<V: 'static>(
                 )
             });
 
-        // Each slot carries its own id so the context menus inside them,
-        // which all share one, get element state of their own.
-        //
-        // The top half only, matching where the chevrons hang. The
-        // bookmark ribbons keep the bottom half, so a cue and a bookmark
-        // closer together than a hit width still each have a column a
-        // pointer can land in.
+        // Each slot gets its own id so the context menus inside get their own
+        // element state. Top half only: the bookmark ribbons own the bottom,
+        // so a close cue and bookmark each keep a column a pointer can hit.
         layer = layer.child(
             div()
                 .id(("cue-slot", id))
@@ -257,9 +217,7 @@ pub fn overlay<V: 'static>(
     layer
 }
 
-/// The hovered cue's readout: its time in the seek preview's pill, under
-/// the chevron rather than over it, since the chevron is already sitting
-/// on the top edge.
+/// Sits under the chevron, since the chevron already sits on the top edge.
 fn readout(mark: &CueMark) -> Div {
     div()
         .absolute()
@@ -285,14 +243,8 @@ fn readout(mark: &CueMark) -> Div {
         )
 }
 
-/// The strip's own right click, over bare track rather than over a mark:
-/// drop a cue where the pointer is, or open the bookmark prompt at the
-/// same spot. One press, both kinds of mark, because the position under
-/// the pointer is the only thing either of them needs and asking twice
-/// for it would be silly.
-///
-/// Both rows grey out while a station plays, since neither has a position
-/// to attach to then.
+/// The strip's right click over bare track: drop a cue or open the bookmark
+/// prompt at the pointer. Both grey out while a station plays.
 pub fn insert_menu(
     menu: PopupMenu,
     state: AppState,
@@ -345,15 +297,13 @@ mod tests {
         let placed = marks(&set, Some(120.0));
         assert_eq!(placed.len(), 2);
         assert!((placed[0].fraction - 0.25).abs() < 1e-6);
-        // Past the end clamps onto the strip rather than off it.
         assert_eq!(placed[1].fraction, 1.0);
         assert!(marks(&set, None).is_empty());
         assert!(marks(&set, Some(0.0)).is_empty());
     }
 
-    /// The ids come through untouched: the hit layer and the hover record
-    /// both key off them, and a mark that renumbered itself per render
-    /// would lose its hover the moment a cue ahead of it was removed.
+    /// The hover record keys off the id, so a renumbered mark would lose its
+    /// hover when a cue ahead of it was removed.
     #[test]
     fn a_mark_keeps_its_cues_id() {
         let placed = marks(&[cue(7, 10_000)], Some(100.0));

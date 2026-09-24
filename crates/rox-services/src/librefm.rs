@@ -1,17 +1,8 @@
-//! Libre.fm scrobbling, the third destination beside Last.fm and
-//! ListenBrainz. Libre.fm speaks Last.fm's protocol at its own host, so
-//! the signed calls, the error codes and the connect dance are the ones
-//! rox-net already makes for Last.fm. What's different is that there's no
-//! api identity to register or to file sessions under, which makes this
-//! entity the shape of the ListenBrainz one rather than the scrobbler's.
-//!
-//! Like ListenBrainz, it owns no clock: it rides [`Started`] for the
-//! now-playing update and [`Crossed`] for the scrobble, so the shared
-//! threshold decides when a play counts here the same as everywhere else.
-//! The sends are fire and forget, as the Last.fm ones are: a scrobble
-//! that failed is gone, and a refused session (error 9) is dropped and
-//! put on screen rather than retried forever. Every call blocks, so they
-//! run on the background executor; failures log and never touch playback.
+//! Libre.fm scrobbling. It speaks Last.fm's protocol at its own host, with
+//! no api identity to file sessions under. Like ListenBrainz it owns no
+//! clock: it rides [`Started`] and [`Crossed`], so the shared threshold
+//! decides. Sends are fire and forget; a refused session (error 9) is
+//! dropped and shown rather than retried.
 
 use std::collections::BTreeMap;
 
@@ -23,9 +14,6 @@ use rox_net::librefm::{self, API_KEY, AUTH_URL};
 
 use crate::lastfm::{Crossed, Scrobbler, Started};
 
-/// The Libre.fm publisher, one per workspace beside its scrobbler. Holds
-/// the live config the settings window edits and persists through, so
-/// nothing reads the accounts file per frame.
 pub struct LibreFm {
     config: rox_core::settings::LibreFm,
     phase: AuthPhase,
@@ -49,7 +37,6 @@ impl LibreFm {
         }
     }
 
-    /// The live config, the settings window's read.
     pub fn config(&self) -> &rox_core::settings::LibreFm {
         &self.config
     }
@@ -58,15 +45,12 @@ impl LibreFm {
         &self.phase
     }
 
-    /// The connected account's name, for the settings readout.
     pub fn username(&self) -> &str {
         &self.config.username
     }
 
-    /// Whether a session is in hand. The key pair is the build's, so a
-    /// session is the whole connection. The scrobble switch isn't asked
-    /// here: it's the scrobbler's, and nothing rides its events while
-    /// it's off.
+    /// The scrobble switch isn't asked here: nothing rides the scrobbler's
+    /// events while it's off.
     pub fn connected(&self) -> bool {
         !self.config.session_key.is_empty()
     }
@@ -76,9 +60,6 @@ impl LibreFm {
         Settings::update(move |s| s.accounts.librefm = config);
     }
 
-    /// Start the connect flow: fetch a request token and hand the
-    /// authorize page to the browser. The token then waits in
-    /// [`AuthPhase::Waiting`] for [`Self::finish_auth`].
     pub fn begin_auth(&mut self, cx: &mut Context<Self>) {
         self.phase = AuthPhase::Requesting;
         cx.notify();
@@ -111,8 +92,6 @@ impl LibreFm {
         .detach();
     }
 
-    /// Trade the authorized token for the permanent session key, the
-    /// flow's last step once the browser side is done.
     pub fn finish_auth(&mut self, cx: &mut Context<Self>) {
         let AuthPhase::Waiting(token) = &self.phase else {
             return;
@@ -159,15 +138,10 @@ impl LibreFm {
         .detach();
     }
 
-    /// Drop the session locally. Libre.fm keeps its side until the user
-    /// revokes rox there; a fresh connect just stores a new session.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.drop_session(AuthPhase::Idle, cx);
     }
 
-    /// Libre.fm refused the session, so it's worthless: revoked on the
-    /// site, most likely. Same teardown as a disconnect, minus the user
-    /// having asked for it, so the phase records why.
     fn session_rejected(&mut self, cx: &mut Context<Self>) {
         log::warn!("librefm: the session was rejected, reconnecting is the fix");
         self.drop_session(AuthPhase::Rejected, cx);
@@ -181,7 +155,6 @@ impl LibreFm {
         cx.notify();
     }
 
-    /// A track came under watch: tell the service what's on.
     fn now_playing(&mut self, event: &Started, cx: &mut Context<Self>) {
         if !self.connected() {
             return;
@@ -199,7 +172,6 @@ impl LibreFm {
         self.submit("track.updateNowPlaying", params, cx);
     }
 
-    /// A play crossed the threshold: scrobble it.
     fn crossed(&mut self, event: &Crossed, cx: &mut Context<Self>) {
         if !self.connected() {
             return;
@@ -217,9 +189,8 @@ impl LibreFm {
         self.submit("track.scrobble", params, cx);
     }
 
-    /// One call out, nothing retried. A refused session is the one result
-    /// worth acting on: every call after it fails the same way, so the
-    /// connection is dropped where the user can see it.
+    /// Nothing is retried. A refused session drops the connection where the
+    /// user can see it, since every later call would fail the same way.
     fn submit(
         &self,
         method: &'static str,
@@ -244,10 +215,7 @@ impl LibreFm {
     }
 }
 
-/// The params the two track methods share: the session, the tags, the
-/// duration where known, and the timestamp only where the scrobble needs
-/// it. None for a track with no artist or title, which the service can't
-/// take, and an empty album is left out rather than sent blank.
+/// None for a track with no artist or title, which the service can't take.
 fn track_params(
     session_key: &str,
     artist: &str,

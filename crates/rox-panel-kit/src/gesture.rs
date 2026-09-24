@@ -1,6 +1,5 @@
-//! Gesture and scroll mechanics shared by the panels: the click-and-drag
-//! scrub strip, the flick/momentum scroller, glide-to-row animation, and the
-//! slider painting. Self-contained; consumed by panels, not the framework.
+//! Gesture and scroll mechanics shared by the panels: scrub strips, flick
+//! scrolling, glide-to-row, and slider painting.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,41 +12,33 @@ use gpui::{
 };
 use rox_design::{palette, tokens};
 
-/// The shared state of a click-and-drag strip: where it painted and
-/// whether a drag is live. Behind Arcs so the panel, its paint closures,
-/// and the window-level mouse handlers can all hold it.
+/// A click-and-drag strip's bounds and drag state, behind Arcs so paint
+/// closures and window-level handlers can hold it.
 #[derive(Clone, Default)]
 pub struct ScrubState {
     bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     dragging: Arc<AtomicBool>,
-    /// The pointer's fraction along the strip while hovering, None with the
-    /// pointer off it. Drives the seek preview label, kept apart from the
-    /// drag state so a plain hover shows the readout without seeking.
+    /// Kept apart from the drag so a plain hover shows the readout without
+    /// seeking.
     hover: Arc<Mutex<Option<f32>>>,
 }
 
 impl ScrubState {
-    /// A stable identity for this strip, shared by every clone of it:
-    /// which strip a readout edit belongs to.
+    /// Shared by every clone: which strip a readout edit belongs to.
     pub fn id(&self) -> usize {
         Arc::as_ptr(&self.bounds) as usize
     }
 
-    /// Remember where the strip was laid out, from its prepaint.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
         *self.bounds.lock().unwrap() = Some(bounds);
     }
 
-    /// The strip's painted width, None before its first layout. What a
-    /// strip that cuts its data to the bars it draws reads to know how
-    /// many that is.
     pub fn width(&self) -> Option<f32> {
         let bounds = (*self.bounds.lock().unwrap())?;
 
         Some(f32::from(bounds.size.width)).filter(|w| *w > 0.0)
     }
 
-    /// A drag started (mouse down on the strip).
     pub fn begin(&self) {
         self.dragging.store(true, Ordering::Relaxed);
     }
@@ -60,8 +51,7 @@ impl ScrubState {
         self.dragging.load(Ordering::Relaxed)
     }
 
-    /// `x` as a fraction along the strip, 0 to 1; positions off the ends
-    /// clamp, so a drag can overshoot without letting go of the value.
+    /// Clamps off the ends, so a drag can overshoot without letting go.
     pub fn fraction(&self, x: Pixels) -> Option<f32> {
         let bounds = (*self.bounds.lock().unwrap())?;
         let w = f32::from(bounds.size.width);
@@ -71,9 +61,7 @@ impl ScrubState {
         Some((f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0))
     }
 
-    /// Remember where the pointer hovers, 0 to 1, or None off the strip.
-    /// Returns whether it changed, so the caller only notifies on a real
-    /// move.
+    /// Returns whether it changed, so the caller only notifies on a real move.
     pub fn set_hover(&self, fraction: Option<f32>) -> bool {
         let mut current = self.hover.lock().unwrap();
         if *current == fraction {
@@ -83,15 +71,12 @@ impl ScrubState {
         true
     }
 
-    /// The hovered fraction, None with the pointer off the strip.
     pub fn hover(&self) -> Option<f32> {
         *self.hover.lock().unwrap()
     }
 }
 
-/// A horizontal slider's paint: a rounded track, the fraction as the
-/// accent-filled side, a round knob at the position. `dimmed` keeps the
-/// knob where it is and fades the fill, the volume strip's muted look.
+/// `dimmed` fades the fill and keeps the knob, the volume strip's muted look.
 pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window: &mut Window) {
     let track_h = tokens::SLIDER_TRACK_H;
     let knob = tokens::SLIDER_KNOB;
@@ -102,12 +87,10 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
         return;
     }
 
-    // The knob's travel is inset by its radius so it never clips the ends.
     let knob_x = knob / 2.0 + fraction.clamp(0.0, 1.0) * (w - knob);
     let track_y = bounds.origin.y + px((h - track_h) / 2.0);
-    // A core-role wash like the seek bar's unplayed side, not a surface
-    // read: the track has to stay visible when surface opacity thins the
-    // panel to nothing.
+    // A core-role wash, not a surface read, so the track stays visible when
+    // surface opacity thins the panel to nothing.
     window.paint_quad(
         fill(
             Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(track_h))),
@@ -148,32 +131,19 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
     );
 }
 
-/// How long a browse panel waits after the last interaction before it
-/// slides back to the playing track, when the resume behavior is on.
 pub const RESUME_IDLE: Duration = Duration::from_secs(12);
 
-/// The idle-resume clock a browse panel keeps so it can drift back to the
-/// playing track once the user has left it alone. Panels with the behavior
-/// off never touch it. Behind an Arc like [`FlickState`] so the wake task
-/// can read the last-interaction stamp without bouncing through the panel
-/// each tick. A single wake stays in flight at a time: a scroll fires a
-/// burst of events, but only the first arms the task, the rest just push
-/// the stamp forward and the one task re-sleeps until a full window has
-/// passed since the last of them.
+/// The idle-resume clock a browse panel keeps to drift back to the playing
+/// track. Only one wake task is ever in flight: a burst of events pushes the
+/// stamp forward and that task re-sleeps until a full idle window has passed.
 #[derive(Clone, Default)]
 pub struct ResumeIdle {
-    /// When the panel was last scrolled, dragged, or keyed. None until the
-    /// first interaction, so the resume never fires before then.
+    /// None until the first interaction, so the resume never fires before then.
     at: Arc<Mutex<Option<Instant>>>,
-    /// A wake task is already counting down; keeps a burst of interactions
-    /// from arming one apiece.
     armed: Arc<AtomicBool>,
 }
 
 impl ResumeIdle {
-    /// Note an interaction and, unless one is already counting down, arm a
-    /// wake. The wake sleeps until a full window has passed since the last
-    /// interaction, then calls `resume` once on the panel.
     pub fn touch<P: 'static>(&self, cx: &mut Context<P>, resume: fn(&mut P, &mut Context<P>)) {
         *self.at.lock().unwrap() = Some(Instant::now());
         if self.armed.swap(true, Ordering::AcqRel) {
@@ -182,9 +152,6 @@ impl ResumeIdle {
         let at = self.at.clone();
         let armed = self.armed.clone();
         cx.spawn(async move |this, cx| {
-            // Re-sleep for whatever is left of the window after the newest
-            // interaction, so a gesture mid-countdown pushes the wake out
-            // instead of stacking a second task.
             loop {
                 let Some(last) = *at.lock().unwrap() else {
                     break;
@@ -202,10 +169,8 @@ impl ResumeIdle {
     }
 }
 
-/// The shared state of a drag-to-scroll surface: press, drag past a dead
-/// zone to scroll, release to let the built-up velocity coast. Behind
-/// Arcs like [`ScrubState`], so the view, its paint closures, and the
-/// window-level handlers can all hold it.
+/// Drag past a dead zone to scroll, release to coast. Behind Arcs like
+/// [`ScrubState`].
 #[derive(Clone, Default)]
 pub struct FlickState {
     inner: Arc<Mutex<FlickInner>>,
@@ -214,32 +179,28 @@ pub struct FlickState {
 
 #[derive(Default)]
 struct FlickInner {
-    /// The pointer's recent path, (y, when) with the newest last. The
-    /// release reads its velocity off this window, so speed built up
-    /// earlier in the drag doesn't outlast a pause at the end.
+    /// (y, when), newest last. Only this window sets the release velocity, so
+    /// speed from earlier in the drag doesn't outlast a pause at the end.
     samples: VecDeque<(f32, Instant)>,
-    /// Total pointer travel this drag; past the dead zone it counts as a
-    /// scroll and the release swallows the click.
+    /// Past the dead zone the drag is a scroll and the release swallows the
+    /// click.
     travel: f32,
-    /// Coasting speed after release, px/s downward-positive.
+    /// px/s, downward-positive.
     velocity: f32,
 }
 
-/// Pointer travel below this stays a click, in px. Matches the slop a
-/// finger or a twitchy mouse needs before a press means "scroll".
+/// px of travel that still counts as a click.
 const FLICK_DEAD_ZONE: f32 = 4.0;
-/// The coast's exponential decay: velocity multiplies by this each
-/// second, so a flick settles in about a second.
+/// Velocity multiplies by this each second, so a flick settles in about a
+/// second.
 const FLICK_DECAY: f32 = 0.02;
-/// Coasting below this speed stops, px/s.
+/// px/s.
 const FLICK_REST: f32 = 12.0;
-/// How far back the release looks for its velocity, in seconds. Only
-/// motion inside this window coasts: a pause before letting go leaves
-/// the window empty, and a jittery hold nets out to nearly zero.
+/// Seconds. A pause before letting go empties the window, so the coast starts
+/// from rest.
 const FLICK_WINDOW: f32 = 0.1;
 
 impl FlickState {
-    /// A press: start tracking, stop any coast.
     pub fn begin(&self, y: Pixels) {
         let mut inner = self.inner.lock().unwrap();
         inner.samples.clear();
@@ -253,15 +214,11 @@ impl FlickState {
         self.dragging.load(Ordering::Relaxed)
     }
 
-    /// Whether the drag left the dead zone, so the release is a scroll's
-    /// end and not a click.
     pub fn scrolled(&self) -> bool {
         self.inner.lock().unwrap().travel > FLICK_DEAD_ZONE
     }
 
-    /// Track a move to `y`: the pointer's delta comes back for the host
-    /// to scroll by (zero inside the dead zone), and the sample joins
-    /// the velocity window.
+    /// The delta to scroll by, zero inside the dead zone.
     fn track(&self, y: Pixels) -> f32 {
         let mut inner = self.inner.lock().unwrap();
         let y = f32::from(y);
@@ -286,9 +243,6 @@ impl FlickState {
         }
     }
 
-    /// The release: done dragging, the coast's velocity is the net
-    /// motion across the sample window. A pause before letting go has
-    /// aged every sample out, so the coast starts from rest.
     fn end(&self) {
         self.dragging.store(false, Ordering::Relaxed);
         let mut inner = self.inner.lock().unwrap();
@@ -309,8 +263,7 @@ impl FlickState {
         inner.samples.clear();
     }
 
-    /// One coast step: the distance to scroll this frame, decayed toward
-    /// rest. None once settled (or while still dragging).
+    /// None once settled or while still dragging.
     pub fn coast(&self, dt: f32) -> Option<f32> {
         if self.is_dragging() {
             return None;
@@ -326,11 +279,8 @@ impl FlickState {
     }
 }
 
-/// Keep a live drag-scroll following the pointer along `axis`: scroll by the
-/// pointer's travel on every move, end the drag on release. Call from the
-/// surface's paint pass, the [`scrub_on_paint`] idiom: window handlers last
-/// only one frame. Applying must notify an entity so the next frame re-arms
-/// the handlers.
+/// Call from the surface's paint pass: window handlers last one frame.
+/// `apply` must notify an entity so the next frame re-arms them.
 pub fn flick_on_paint_axis(
     flick: &FlickState,
     axis: Axis,
@@ -346,8 +296,7 @@ pub fn flick_on_paint_axis(
             if !phase.bubble() || !flick.is_dragging() {
                 return;
             }
-            // A release outside the window never fires the up handler;
-            // a move without the button still held ends the drag instead.
+            // A release outside the window never fires the up handler.
             if event.pressed_button != Some(MouseButton::Left) {
                 flick.end();
                 return;
@@ -368,11 +317,9 @@ pub fn flick_on_paint_axis(
     });
 }
 
-/// Where a uniform list's offset should be to center item `ix` of
-/// `count`, for the follow-playing glide: item extent times index, pulled
-/// back by half the viewport, clamped to the scrollable range. The item
-/// extent derives from the content height (the handle's `item` size is
-/// the viewport, despite the name). None before the list's first layout.
+/// The offset that centers item `ix` of `count`. The handle's `item` size is
+/// the viewport despite the name, so the item extent comes from the content
+/// height. None before the first layout.
 pub fn glide_target(handle: &UniformListScrollHandle, ix: usize, count: usize) -> Option<Pixels> {
     if count == 0 {
         return None;
@@ -388,9 +335,8 @@ pub fn glide_target(handle: &UniformListScrollHandle, ix: usize, count: usize) -
     Some(y.clamp(px(0.), max))
 }
 
-/// One glide step toward `target`: an exponential approach, done inside
-/// a pixel. Returns whether another frame is needed; the caller requests
-/// it and re-renders.
+/// An exponential approach, done inside a pixel. Returns whether another
+/// frame is needed.
 pub fn glide_step(handle: &UniformListScrollHandle, target: Pixels, dt: f32) -> bool {
     let base = handle.0.borrow().base_handle.clone();
     let mut offset = base.offset();
@@ -408,11 +354,7 @@ pub fn glide_step(handle: &UniformListScrollHandle, target: Pixels, dt: f32) -> 
     true
 }
 
-/// [`glide_target`] for a virtual list's plain scroll handle: where the
-/// offset should be to center item `ix` of `count` along `axis`. The
-/// viewport and content extents come off the handle rather than a uniform
-/// list's item size, so it fits either scroll axis. None before the list's
-/// first layout gives it a viewport.
+/// [`glide_target`] for a plain scroll handle along either axis.
 pub fn glide_target_axis(
     handle: &ScrollHandle,
     axis: Axis,
@@ -426,18 +368,14 @@ pub fn glide_target_axis(
     if viewport <= px(0.) {
         return None;
     }
-    // max_offset is content minus viewport, so content is the two summed;
-    // the item extent is that content over the item count.
+    // max_offset is content minus viewport.
     let max = handle.max_offset().along(axis);
     let item = (max + viewport) / count as f32;
     let target = item * ix as f32 - (viewport - item) * 0.5;
     Some(target.clamp(px(0.), max))
 }
 
-/// [`glide_target_axis`] for a list whose items aren't uniform: where the
-/// offset should be to center an item spanning `origin..origin + extent`
-/// along `axis`, from the item's real position instead of an averaged
-/// stride. None before the list's first layout gives it a viewport.
+/// [`glide_target_axis`] for non-uniform items, from the item's real position.
 pub fn glide_target_at(
     handle: &ScrollHandle,
     axis: Axis,
@@ -452,9 +390,8 @@ pub fn glide_target_at(
     Some((origin - (viewport - extent) * 0.5).clamp(px(0.), max))
 }
 
-/// [`glide_step_axis`] without the easing: pin the offset to
-/// `target` in one move, true once already there. Offsets run negative as
-/// the list scrolls, so the stored position is the negated axis component.
+/// [`glide_step_axis`] without the easing. Offsets run negative as the list
+/// scrolls.
 pub fn glide_snap_axis(handle: &ScrollHandle, axis: Axis, target: Pixels) -> bool {
     let offset = handle.offset();
     if (-offset.along(axis) - target).abs() < px(1.) {
@@ -464,8 +401,6 @@ pub fn glide_snap_axis(handle: &ScrollHandle, axis: Axis, target: Pixels) -> boo
     false
 }
 
-/// [`glide_step`] on a plain scroll handle along `axis`: one eased step
-/// toward `target`, returning whether another frame is still needed.
 pub fn glide_step_axis(handle: &ScrollHandle, axis: Axis, target: Pixels, dt: f32) -> bool {
     let offset = handle.offset();
     let current = -offset.along(axis);
@@ -481,11 +416,8 @@ pub fn glide_step_axis(handle: &ScrollHandle, axis: Axis, target: Pixels, dt: f3
     true
 }
 
-/// Keep a live drag following the pointer: apply the strip fraction on
-/// every move, end the drag on release. Call from the strip's paint pass:
-/// window handlers last only one frame, the same idiom the dock's resize
-/// handles use. Applying must notify an entity so the next frame re-arms
-/// the handlers.
+/// Call from the strip's paint pass: window handlers last one frame. `apply`
+/// must notify an entity so the next frame re-arms them.
 pub fn scrub_on_paint(
     scrub: &ScrubState,
     window: &mut Window,
@@ -500,8 +432,7 @@ pub fn scrub_on_paint(
             if !phase.bubble() || !scrub.is_dragging() {
                 return;
             }
-            // A release outside the window never fires the up handler;
-            // a move without the button still held ends the drag instead.
+            // A release outside the window never fires the up handler.
             if event.pressed_button != Some(MouseButton::Left) {
                 scrub.end();
                 return;

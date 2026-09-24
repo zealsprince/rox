@@ -1,25 +1,14 @@
 //! The playlists panel (ADR 16): a tree of playlists, each expanding to its
-//! tracks. A track plays the playlist from that point on double click, drops
-//! from the right-click menu, and drags to another playlist to move there or
-//! within its own to reorder. Playlists rename and delete from their own
-//! right-click, and New Playlist is in the panel menu. Its own panel, never
-//! a mode of the library.
+//! tracks. Its own panel, never a mode of the library.
 //!
-//! A smart playlist is the same tree row over a saved query instead of a
-//! member list. It materializes on every refresh, which keeps its count and
-//! its rows honest with no cache to invalidate, and it takes no
-//! member edits at all: a drag onto one, or a Delete over its rows, is
-//! refused out loud rather than quietly dropped.
+//! A smart playlist is the same tree row over a saved query. It
+//! materializes on every refresh, so there's no cache to invalidate, and it
+//! refuses member edits out loud rather than dropping them.
 //!
-//! What that costs: rating and play edits are applied in place through the
-//! shared projection (`LibraryEvent::Rated`, `Played`) and rebuild
-//! nothing, so a smart playlist keyed on either ("never played", "four
-//! stars and up") can show a row that no longer belongs until the next
-//! refresh. Accepted for now; the alternative is re-materializing every
-//! open smart list on every star click. A bulk play-count import
-//! (`LibraryEvent::PlaysReloaded`) is the exception that does refresh: it
-//! moves too many rows to leave stale, and it arrives once rather than per
-//! click.
+//! The cost: rating and play edits patch rows in place and rebuild nothing,
+//! so a smart playlist keyed on either can show a stale row until the next
+//! refresh. Accepted; re-materializing every open smart list per star click
+//! is worse. A bulk play-count import does refresh.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -61,33 +50,20 @@ use rox_library::playlists::{PlaylistKind, PlaylistTrack};
 use rox_library::projection::{FilterSet, Filterable, Term, parse_query};
 use rox_panel_kit::config::default_true;
 
-/// The heading tiles' rounding knob ceiling, the library panel's scale.
 const ART_ROUNDING_MAX: f32 = 24.;
 
-/// The knob's stock value as serde's default, so a layout saved before the
-/// text-size slider opens at the size its headings already drew.
+/// Serde's default, so an older layout opens at the size its headings
+/// already drew.
 fn default_head_text() -> f32 {
     HEAD_TEXT_STOCK
 }
 
-/// The row height an unset config folds to. The tree opens denser than the
-/// library's own [`ROW_HEIGHT_STOCK`]: a playlist is browsed in short bursts
-/// between its tracks and the rest of the library, not read from top to
-/// bottom, so the tighter row earns back screen space a saved layout hasn't
-/// asked to keep at the library's height. [`row_font_scale`] still measures
-/// against the shared stock, not this one, so the text at this default reads
-/// the same slightly-reduced size a manual height this low would draw
-/// anywhere else.
+/// Denser than the library's [`ROW_HEIGHT_STOCK`]: a playlist is browsed
+/// in short bursts, not read top to bottom. [`row_font_scale`] still
+/// measures against the shared stock.
 const ROW_HEIGHT_DEFAULT: f32 = 24.;
 
-/// The track columns, in render order. The number and name lead, the rating
-/// and favourite controls trail, the tag columns go between. Which show is
-/// the config's call; this only fixes the order and the default set. Every
-/// key is one the shared [`track_columns::cell`] draws.
-///
-/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
-/// this rebuilds and leaks once per active locale rather than on every
-/// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
+/// Render order; the config picks which show.
 fn columns() -> Vec<Column> {
     vec![
         Column {
@@ -148,117 +124,83 @@ fn columns() -> Vec<Column> {
     ]
 }
 
-/// The playlists panel's config: the shared chrome, which playlists are
-/// expanded so a saved layout restores the open ones, the album heading
-/// mode, and which per-track columns show.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlaylistsConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub expanded: Vec<i64>,
-    /// The album heading mode over each expanded playlist, the library's
-    /// grouping brought to the tree. Off by default; a playlist stays a flat
-    /// list unless you ask for the headings.
+    /// The library's album grouping brought to the tree.
     pub headers: Headers,
-    /// The shown column keys, in no particular order (render order is the
-    /// registry's). Defaults to the registry's default-on set, so a fresh
-    /// panel and a pre-columns layout both open with the same fields.
+    /// In no particular order; render order is the registry's.
     pub columns: Vec<String>,
-    /// Whether the search box shows; the query only filters while it does.
     #[serde(default)]
     pub search: bool,
-    /// Follow the shared query, or filter by this panel's own box.
     #[serde(default)]
     pub query_source: QuerySource,
-    /// The panel's own query, kept while following the shared one.
+    /// Kept while following the shared query, for the switch back.
     #[serde(default)]
     pub query: String,
-    /// The track rows' height, px at the stock font size; the app font
-    /// scale and the panel override multiply it at render.
+    /// Px at the stock font size; the app and panel font scales multiply it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_height: Option<f32>,
-    /// One heading line's height, same scaling. Unlike the library table's,
-    /// this can only shrink a line inside the row the list already gives
-    /// it: see [`PlaylistsPanel::line_px`] for why the tree can't grow one.
+    /// Can only shrink a line inside the row the list gives it; see
+    /// [`PlaylistsPanel::line_px`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_height: Option<f32>,
-    /// Extra height grown into each row, which the row fills; breathing
-    /// room without growing the text.
+    /// Grown into each row, which the row fills.
     #[serde(default)]
     pub row_spacing: f32,
-    /// The heading lines' text size, px at the stock font size. Free of
-    /// the line height, so the cover tile grows without dragging the text.
+    /// Free of the line height, so the cover tile grows without the text.
     #[serde(default = "default_head_text")]
     pub head_text: f32,
-    /// The heading tiles' corner radius, in px.
     #[serde(default)]
     pub art_rounding: f32,
-    /// Which side of the heading block the cover tile sits on.
     #[serde(default)]
     pub art_side: ArtSide,
-    /// The cover tile's inset from the block edges, px at the stock font
-    /// size; the tile shrinks to keep the square.
+    /// Px at the stock font size; the tile shrinks to stay square.
     #[serde(default)]
     pub art_margin: f32,
-    /// Open space carved off the top of each heading block, same units;
-    /// the list shows through, so a block reads apart from the run above.
+    /// The list shows through, so a block reads apart from the run above.
     #[serde(default)]
     pub header_gap_above: f32,
-    /// The same under the block, before its own tracks.
     #[serde(default)]
     pub header_gap_below: f32,
-    /// Show the expanded headings' cover tile.
     #[serde(default = "default_true")]
     pub header_art: bool,
-    /// Draw the heading rows on the list background instead of the raised
-    /// Elevated tint. A role, not a color, so song theming moves the
-    /// headings together with the list.
+    /// A role, not a color, so song theming moves the headings with the list.
     #[serde(default)]
     pub header_flush: bool,
-    /// The compact heading's composed row, left to right; empty falls back
-    /// to the stock packing.
+    /// Empty falls back to the stock packing.
     #[serde(default)]
     pub header_compact: Vec<HeadPiece>,
-    /// The expanded block's two composed lines, the name row and the meta
-    /// row under it. The tree's heading is those two rows and no others
-    /// (see [`Row`]), so unlike the library there's no line count to set,
-    /// only what goes on each. Empty falls back to the stock line.
+    /// The name row and the meta row under it; the tree's heading has exactly
+    /// these two (see [`Row`]). Empty falls back to the stock line.
     #[serde(default)]
     pub header_name_line: Vec<HeadPiece>,
     #[serde(default)]
     pub header_meta_line: Vec<HeadPiece>,
-    /// Draw the plays column as a small count with a faint dash beside it,
-    /// the classic playlist tick, instead of the plain readout.
+    /// A small count with a faint dash, the classic playlist tick.
     #[serde(default)]
     pub compact_plays: bool,
-    /// Tint every other track row so a long list scans.
     #[serde(default = "default_true")]
     pub stripes: bool,
-    /// Draw the hairline under each row.
     #[serde(default = "default_true")]
     pub row_borders: bool,
-    /// Scroll to the playing track's row when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the tree goes untouched for a spell, scroll back to the
-    /// playing row on its own.
+    /// After the tree goes untouched for a spell.
     #[serde(default)]
     pub resume_playing: bool,
-    /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
-    /// The row at the top of the viewport, so a relaunch reopens the tree
-    /// where it was left. An index, not pixels, so it survives a height
-    /// change; it drifts if the catalog shifts under it.
+    /// An index, not pixels, so it survives a height change.
     #[serde(default)]
     pub scroll_row: usize,
 }
 
-// Hand-written over derived so the columns default to the registry set and
-// the headings default off, both for a new panel and for a saved layout from
-// before these existed (the container's serde default fills a missing field
-// from here).
+// Hand-written so the columns default to the registry set and the
+// headings to off.
 impl Default for PlaylistsConfig {
     fn default() -> Self {
         PlaylistsConfig {
@@ -294,11 +236,8 @@ impl Default for PlaylistsConfig {
     }
 }
 
-/// The saved heading composition folded to the three lines the tree draws:
-/// the compact row, and the expanded block's name and meta lines. An empty
-/// list means "never edited", which reads back as the stock arrangement, so
-/// a layout from before the editors looks unchanged. Hand-edited lists come
-/// back deduped against the piece registry.
+/// An empty list means never edited and reads as the stock arrangement.
+/// Saved lists come back deduped against the registry.
 fn fold_head_lines(config: &PlaylistsConfig) -> (Vec<HeadPiece>, Vec<HeadPiece>, Vec<HeadPiece>) {
     let fold = |saved: &[HeadPiece], stock: fn() -> Vec<HeadPiece>| {
         if saved.is_empty() {
@@ -314,52 +253,41 @@ fn fold_head_lines(config: &PlaylistsConfig) -> (Vec<HeadPiece>, Vec<HeadPiece>,
     )
 }
 
-/// A flattened tree row: a playlist header, or one of its tracks.
 enum Row {
     Head {
         id: i64,
         name: String,
         count: u64,
         expanded: bool,
-        /// The one default playlist behind the heart column: shown with a
-        /// heart, shielded from rename and delete.
+        /// The default playlist behind the heart column, shielded from rename and
+        /// delete.
         favourite: bool,
-        /// A saved query rather than a member list: drawn with the funnel,
-        /// takes no member edits, and offers Edit Query.
+        /// A saved query: takes no member edits and offers Edit Query.
         smart: bool,
     },
-    /// The name line of an album heading inside an expanded playlist,
-    /// indexing [`PlaylistsPanel::albums`]. Built only when album headings
-    /// are on, one block per run of tracks that share an album.
+    /// Indexes [`PlaylistsPanel::albums`]; one block per run of tracks sharing
+    /// an album.
     Album(u32),
-    /// The heading's second line, the stats under the name. Same index.
     AlbumMeta(u32),
     Track(TrackRow),
 }
 
-/// One track row's data, what its cells draw. Holds every column's value
-/// so the render only reads the shown ones; the favourite is looked up live
-/// off the panel's set, not stored here.
+/// The favourite is looked up live off the panel's set.
 struct TrackRow {
     playlist_id: i64,
-    /// What the selection, the drag, and the remove address this row by.
-    /// A static row holds its real member rowid; a smart one has no
-    /// member row behind it and holds [`smart_key`]'s negative stand-in.
+    /// A static row's member rowid, or [`smart_key`]'s negative stand-in for
+    /// a smart row.
     member_id: i64,
     track_id: i64,
-    /// Whether this row came out of a smart playlist's materialization, so
-    /// the edits that would need a member row can refuse instead of
-    /// silently doing nothing.
+    /// So edits that need a member row refuse instead of silently doing
+    /// nothing.
     smart: bool,
-    /// The track's 1-based spot in its playlist, its play order. Runs
-    /// unbroken through the album headings, so it counts the playlist, not
-    /// each album.
+    /// 1-based play order, unbroken through the album headings.
     pos: u32,
     title: String,
     artist: String,
     album: String,
-    /// The three sort names, off the projection by track id. All empty
-    /// for a member the library no longer holds a row for.
+    /// Empty for a member the library no longer holds.
     title_reading: String,
     artist_reading: String,
     album_reading: String,
@@ -371,12 +299,9 @@ struct TrackRow {
     path: String,
 }
 
-/// The key a smart playlist's row is selected and dragged by. Its list has
-/// no member rows, so there is no rowid to address one with; a mix of the
-/// playlist and track ids stands in, stable across refreshes the way a
-/// rowid is. Forced negative, which a real member id never is, so the two
-/// key spaces can't collide and `member < 0` reads as "this row belongs to
-/// a query, not a list".
+/// A smart row has no member rowid, so a hash of the playlist and track
+/// ids stands in, stable across refreshes. Forced negative so it can't
+/// collide with a real member id: `member < 0` means "from a query".
 fn smart_key(playlist_id: i64, track_id: i64) -> i64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in playlist_id
@@ -393,8 +318,6 @@ fn smart_key(playlist_id: i64, track_id: i64) -> i64 {
 }
 
 impl TrackRow {
-    /// Pull a member row's fields into a display row at a play-order spot,
-    /// with the total play count resolved from the catalog.
     fn new(
         playlist_id: i64,
         pos: u32,
@@ -429,7 +352,6 @@ impl TrackRow {
     }
 }
 
-/// A member row's grouping inputs, borrowed for the album run aggregate.
 fn group_track(t: &PlaylistTrack) -> GroupTrack<'_> {
     GroupTrack {
         album: &t.album,
@@ -446,18 +368,13 @@ fn group_track(t: &PlaylistTrack) -> GroupTrack<'_> {
     }
 }
 
-/// A dragged set of members, in view order, and the grabbed row's title for
-/// the preview. Dragging a row inside a multi-selection takes the whole set;
-/// outside it, just that row. Where they land is the drop target's call, so no
-/// source playlist is included.
+/// No source playlist: where the rows land is the drop target's call.
 #[derive(Clone)]
 struct TrackDrag {
     members: Arc<[i64]>,
     title: SharedString,
 }
 
-/// The label that floats under the pointer while tracks are dragged. A
-/// multi-row drag shows the grabbed title with a count of the rest.
 struct TrackDragPreview {
     title: SharedString,
     extra: usize,
@@ -487,79 +404,52 @@ impl Render for TrackDragPreview {
 pub struct PlaylistsPanel {
     state: AppState,
     config: PlaylistsConfig,
-    /// The search box, shared by every searching view; shown per config.
     search: Entity<SearchBox>,
-    /// A pending box reset from a source toggle or a shared-query change,
-    /// applied on the next render where a window exists to set the input.
+    /// Applied on the next render, where a window exists to set the input.
     resync_box: bool,
-    /// The tracks this panel is pinned to while following the selection.
     /// Runtime only: a restore re-pins from whatever is picked then.
     selection_ids: Vec<i64>,
-    /// The query and filter the tree is built for, snapshotted whenever the
-    /// query changes; a searching tree surfaces matches from every list.
+    /// Snapshotted on query change; a searching tree surfaces matches from
+    /// every list.
     applied_query: String,
     applied_filter: FilterSet,
     rows: Vec<Row>,
-    /// The album runs the heading rows index, rebuilt with `rows` each
-    /// refresh; empty when the headings are off.
+    /// Empty when the headings are off.
     albums: Vec<track_columns::AlbumGroup>,
-    /// The expanded playlist ids, mirrored into the config on every change.
     expanded: HashSet<i64>,
-    /// The favourited track ids, what each track row's heart checks against.
-    /// Reloaded on every refresh, since a favourite toggle emits the same
-    /// event a playlist edit does.
+    /// Reloaded every refresh, since a favourite toggle emits the same event
+    /// as a playlist edit.
     favourites: HashSet<i64>,
-    /// The playing track's library id, for the row highlight.
     playing: Option<i64>,
-    /// The selected members, by row id. Keyed on the member id, not the row
-    /// index, so a rescan, an expand, or a reorder rebuilds the tree without
-    /// dropping the highlight. Shift extends, cmd (ctrl elsewhere) toggles,
-    /// Ctrl+A takes the lot, the library's click rules.
+    /// By member id, so a rescan, expand, or reorder keeps the highlight.
     selected: HashSet<i64>,
-    /// Bumped whenever the selection or the row order changes, keying the
-    /// drag-set cache so a grab inside a big selection shares one Arc across
-    /// every visible selected row instead of rescanning the tree per row.
+    /// Bumped on a selection or row-order change, keying the drag-set cache
+    /// so every visible selected row shares one Arc.
     drag_gen: u64,
     drag_set: Option<(u64, Arc<[i64]>)>,
-    /// Where the next shift-click extends from: the last plain or toggle pick,
-    /// held as a member id so it persists across a rebuild too.
+    /// A member id, so it survives a rebuild.
     anchor: Option<i64>,
     menu_row: Option<usize>,
-    /// A one-line refusal under the tree: what a smart playlist wouldn't
-    /// take and why. Cleared on the next refresh, so it lasts as long as the
-    /// tree that earned it.
+    /// What a smart playlist refused and why. Cleared on the next refresh.
     refusal: Option<SharedString>,
-    /// The track rows' height and the extra each row fills, px at the
-    /// stock font size; together they make the stride the uniform list
-    /// lays every row out at.
+    /// Px at the stock font size; together they make the list's stride.
     row_height: f32,
     row_spacing: f32,
-    /// One heading line's height and the lines' text size, same units.
     head_height: f32,
     head_text: f32,
-    /// The heading tiles' corner radius, which side of the block they sit
-    /// on, and their inset inside it.
     art_rounding: f32,
     art_side: ArtSide,
     art_margin: f32,
-    /// The open space carved off the top and bottom of a heading block.
     header_gap_above: f32,
     header_gap_below: f32,
-    /// Show the expanded headings' cover tile, and draw the heading rows
-    /// on the list background instead of the raised tint.
     header_art: bool,
     header_flush: bool,
-    /// The composed pieces each heading line draws: the compact mode's one
-    /// row, and the expanded block's name and meta rows.
     header_compact: Vec<HeadPiece>,
     header_name_line: Vec<HeadPiece>,
     header_meta_line: Vec<HeadPiece>,
-    /// The plays column's compact face, the striping, and the row hairline.
     compact_plays: bool,
     stripes: bool,
     row_borders: bool,
-    /// The settings sliders' scrub strips, and the one readout being typed
-    /// into across them.
     row_scrub: ScrubState,
     row_spacing_scrub: ScrubState,
     head_scrub: ScrubState,
@@ -569,24 +459,19 @@ pub struct PlaylistsPanel {
     header_gap_above_scrub: ScrubState,
     header_gap_below_scrub: ScrubState,
     value_edit: panel::ValueEdit,
-    /// Scroll to the playing track's row on a track change, and whether to
-    /// glide there instead of jumping.
     follow_playing: bool,
     smooth_follow: bool,
-    /// The row the last follow aimed at, so a refresh that leaves the
-    /// playing track where it already was doesn't scroll there again.
+    /// So a refresh that leaves the playing track in place doesn't scroll
+    /// again.
     followed_row: Option<usize>,
-    /// Scroll back to the playing row once the tree has gone untouched a
-    /// spell, and the idle clock that decides when.
+    /// The resume switch and the idle clock that fires it.
     resume_playing: bool,
     resume_idle: ResumeIdle,
-    /// The row the follow glide is headed to, stepped each frame in
-    /// [`PlaylistsPanel::body`] and cleared on arrival, plus its last tick.
+    /// Stepped each frame in [`PlaylistsPanel::body`], cleared on arrival.
     glide_to: Option<usize>,
     glide_tick: Instant,
-    /// The saved scroll row waiting for rows to restore against. The
-    /// catalog loads after the panel builds, so the first non-empty tree
-    /// consumes this; None once applied.
+    /// The catalog loads after the panel builds, so the first non-empty tree
+    /// consumes this.
     restore_scroll: Option<usize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
@@ -607,12 +492,8 @@ impl PlaylistsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let expanded: HashSet<i64> = config.expanded.iter().copied().collect();
-        // Playlist edits and rescans both change what the tree shows. A rating
-        // click only moved one cell through the shared projection and never
-        // reorders the tree, so patch it in place instead of reloading the
-        // expanded lists. A play-count import is a reload: it moves the plays
-        // column and the membership of every smart list keyed on plays, and
-        // the refresh keeps the selection by member id.
+        // A rating click patches in place instead of reloading the expanded
+        // lists. A play-count import is a reload: it moves smart-list membership.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -633,10 +514,7 @@ impl PlaylistsPanel {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
-        // A landing cover repaints the heading tiles; nothing to recompute.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
-        // A panel restored as global opens showing the shared query; a local
-        // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
@@ -644,26 +522,19 @@ impl PlaylistsPanel {
         let search =
             cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // Follow the shared query while global: rebuild the tree and reset the
-        // box to it on the next render.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| this.on_shared_query_changed(cx),
         );
-        // Restored as selection-following, it opens on whatever is picked
-        // now, rather than blank until the next pick.
         let selection_ids = state.selection.read(cx).tracks().to_vec();
-        // Follow the app-wide selection while pinned to it.
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, event: &SelectionEvent, cx| {
                 this.on_selection_changed(event.source, cx);
             },
         );
-        // The saved heights and margins read back clamped to the bands
-        // their inputs allow, so a typed value survives the reload and a
-        // hand-edited dump can't hand the render a nonsense height. The
-        // heading line defaults to the row height, the library's rule.
+        // Clamped to the bands the inputs allow, so a hand-edited dump can't
+        // hand the render a nonsense height.
         let row_height =
             track_columns::fold_row_height(config.row_height, ROW_HEIGHT_DEFAULT, ROW_HEIGHT_MAX);
         let head_height =
@@ -737,10 +608,8 @@ impl PlaylistsPanel {
         this
     }
 
-    /// Rebuild the flattened tree from the catalog: a header per playlist, its
-    /// tracks under it when expanded. While a query is active every list opens
-    /// and only its matching tracks show, so a search surfaces hits from
-    /// collapsed lists too; a list with no match drops out entirely.
+    /// While a query is active every list opens and only matches show; a list
+    /// with no match drops out.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_query(cx);
         let terms = parse_query(&self.applied_query);
@@ -751,16 +620,11 @@ impl PlaylistsPanel {
         let mut albums = Vec::new();
         for playlist in library.playlists() {
             let expanded = self.expanded.contains(&playlist.id);
-            // A searching tree loads every list to filter it; otherwise only
-            // the expanded ones, the ones on screen.
+            // A searching tree loads every list; otherwise only the expanded ones.
             let show_tracks = expanded || searching;
             let smart = playlist.kind == PlaylistKind::Smart;
-            // A smart playlist owns no member rows, so it materializes here
-            // even when collapsed: its header count is the result's length,
-            // and there is nothing else to read it from. Collapsed, that's
-            // the ids alone; only an open list pays to resolve display rows.
-            // One projection pass per smart list per refresh, no cache to go
-            // stale.
+            // A smart playlist materializes even collapsed, since its header count is
+            // the result's length. Collapsed, that's the ids alone.
             let def = smart
                 .then(|| library.playlist_definition(playlist.id))
                 .flatten();
@@ -770,15 +634,12 @@ impl PlaylistsPanel {
                     (rows.len() as u64, rows)
                 }
                 (Some(def), false) => (library.smart_ids(def).len() as u64, Vec::new()),
-                // A smart playlist whose definition won't load holds
-                // nothing; a static one counts its members as always.
+                // A smart playlist whose definition won't load holds nothing.
                 (None, _) if smart => (0, Vec::new()),
                 (None, true) => (playlist.tracks, library.playlist_tracks(playlist.id)),
                 (None, false) => (playlist.tracks, Vec::new()),
             };
-            // The original play-order index of each track that shows; a search
-            // keeps only matches, so positions stay the playlist's, not the
-            // filtered run's.
+            // Positions stay the playlist's, not the filtered run's.
             let visible: Vec<usize> = if searching {
                 (0..all.len())
                     .filter(|&i| self.track_visible(&terms, &all[i]))
@@ -800,13 +661,10 @@ impl PlaylistsPanel {
             if !show_tracks {
                 continue;
             }
-            // Total play counts for the shown tracks, one projection pass, for
-            // the plays column.
             let ids: Vec<i64> = visible.iter().map(|&i| all[i].track_id).collect();
             let plays = library.plays_for(&ids);
             let plays_of = |t: &PlaylistTrack| plays.get(&t.track_id).copied().unwrap_or(0);
-            // The readings, one projection lookup per shown row at
-            // rebuild time rather than per paint.
+            // Readings looked up at rebuild time, not per paint.
             let sort_of = |t: &PlaylistTrack| library.sort_names_for_id(t.track_id);
             if self.config.headers == Headers::Off {
                 for &i in &visible {
@@ -821,11 +679,8 @@ impl PlaylistsPanel {
                 }
                 continue;
             }
-            // A heading block opens each run of shown tracks that share an
-            // album, in play order, with no re-sort, so a playlist's own order
-            // stays put and a mixed list just breaks more often. Consecutive
-            // empty albums merge into one Unknown run, the library's rule.
-            // Compact draws the name line alone, Expanded adds the meta line.
+            // A heading opens each run of shown tracks sharing an album, in play
+            // order with no re-sort. Empty albums merge into one Unknown run.
             let mut k = 0;
             while k < visible.len() {
                 let mut m = k + 1;
@@ -860,13 +715,10 @@ impl PlaylistsPanel {
             }
         }
         self.rows = rows;
-        // The row order drives drag order, so a rebuild invalidates the cached
-        // drag set even when the selected members are unchanged.
         self.drag_gen += 1;
         self.albums = albums;
         self.favourites = favourites;
-        // Keep only members that still exist; a removed track drops out of the
-        // selection, a moved one stays lit at its new spot.
+        // Keep only members that still exist.
         let live: HashSet<i64> = self
             .rows
             .iter()
@@ -881,28 +733,22 @@ impl PlaylistsPanel {
         }
         self.menu_row = None;
         self.refusal = None;
-        // The saved scroll restores against the first tree with rows in it:
-        // the catalog loads after the panel builds, so earlier refreshes
-        // (the empty initial load) keep it pending. Strict, so it lands
-        // even if the panel is in a background tab until then.
+        // Restore against the first tree with rows; strict so it lands even in
+        // a background tab.
         if let Some(row) = self.restore_scroll
             && !self.rows.is_empty()
         {
             self.restore_scroll = None;
             self.scroll.scroll_to_item_strict(row, ScrollStrategy::Top);
         }
-        // A rebuild that moves the playing track re-scrolls; one that
-        // leaves it exactly where it was does not, or a rating edit
-        // elsewhere would yank the tree off whatever you were looking at.
+        // Only re-scroll when the playing row moved, or a rating edit elsewhere
+        // would yank the tree.
         if self.follow_playing && self.playing_row() != self.followed_row {
             self.follow_playing(cx);
         }
         cx.notify();
     }
 
-    /// The panel's live config, for the layout dump and for duplicates: the
-    /// stored config with the knobs the render reads folded back in, since
-    /// those live on the panel once it's built.
     fn config(&self) -> PlaylistsConfig {
         PlaylistsConfig {
             row_height: Some(self.row_height),
@@ -930,25 +776,21 @@ impl PlaylistsPanel {
         }
     }
 
-    /// Put up the one-line refusal a smart playlist's edits get. Nothing
-    /// happened, and the line says which nothing it was.
+    /// Nothing happened, and the line says which nothing it was.
     fn refuse(&mut self, why: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.refusal = Some(why.into());
         cx.notify();
     }
 
-    /// Whether a playlist is a smart one, off the tree rather than the
-    /// catalog: the rows were built from the same read.
+    /// Off the tree rather than the catalog: the rows came from the same read.
     fn is_smart(&self, playlist_id: i64) -> bool {
         self.rows
             .iter()
             .any(|row| matches!(row, Row::Head { id, smart, .. } if *id == playlist_id && *smart))
     }
 
-    /// Re-read ratings for the visible track rows in place after a star click,
-    /// instead of reloading the expanded playlists. The rating moved through
-    /// the shared projection already; a track can be in more than one open
-    /// list, so every row that holds its id gets the new value, then repaints.
+    /// A track can sit in more than one open list, so every row holding its id
+    /// is patched.
     fn patch_ratings(&mut self, cx: &mut Context<Self>) {
         let ids: Vec<i64> = self
             .rows
@@ -972,21 +814,15 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
-    /// Snapshot the active query and filter, so `refresh` filters the tree
-    /// without a `cx`. The shared query while following it, the box's own
-    /// text otherwise.
     fn refresh_query(&mut self, cx: &Context<Self>) {
         self.applied_query = self.effective_query(cx);
         self.applied_filter = self.effective_filter(cx);
     }
 
-    /// Whether a playlist track passes the active query and filter.
     fn track_visible(&self, terms: &[Term], t: &PlaylistTrack) -> bool {
         t.passes(terms, &self.applied_filter, crate::settings::fold_case())
     }
 
-    /// Follow the player: resolve the playing track to its id, so every
-    /// row of that track across playlists gets the highlight.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let playing = self
             .state
@@ -1003,9 +839,7 @@ impl PlaylistsPanel {
         }
     }
 
-    /// The first row holding the playing track. A track can sit in more
-    /// than one open playlist, so the follow aims at the topmost copy
-    /// rather than trying to guess which one you meant.
+    /// The topmost copy, when a track sits in more than one open playlist.
     fn playing_row(&self) -> Option<usize> {
         let id = self.playing?;
         self.rows
@@ -1013,9 +847,8 @@ impl PlaylistsPanel {
             .position(|row| matches!(row, Row::Track(t) if t.track_id == id))
     }
 
-    /// Scroll the playing row into view: a glide when smooth is on, the
-    /// jump otherwise. Scroll only, never the selection: chasing the player
-    /// shouldn't quietly change what Delete would drop.
+    /// Scroll only, never the selection: chasing the player shouldn't change
+    /// what Delete would drop.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
         self.followed_row = self.playing_row();
         let Some(row) = self.followed_row else {
@@ -1029,30 +862,23 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
-    /// A scroll, click, or keystroke: restart the idle clock and arm a
-    /// wake, so the tree scrolls back to the playing row once you step
-    /// away. A no-op unless the resume is on, so an off panel spends
-    /// nothing per gesture.
+    /// A no-op unless the resume is on.
     fn touch_resume(&mut self, cx: &mut Context<Self>) {
         if self.resume_playing {
             self.resume_idle.touch(cx, Self::resume_to_playing);
         }
     }
 
-    /// What the idle wake does. The clock only fires once the tree has gone
-    /// untouched a full window, a gesture in between having pushed it out,
-    /// so there's no extra idle check to make here.
+    /// The clock only fires after a full untouched window, so no extra idle
+    /// check.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.resume_playing {
             self.follow_playing(cx);
         }
     }
 
-    /// The tree row at the top of the viewport, for the layout dump. Every
-    /// row is one stride tall (the list is uniform), so the offset divides
-    /// straight into an index. A restore still pending reports its target,
-    /// so a panel that never painted round-trips its position instead of
-    /// dropping to zero.
+    /// A pending restore reports its target, so a panel that never painted
+    /// keeps its position.
     fn scroll_row(&self) -> usize {
         if let Some(row) = self.restore_scroll {
             return row;
@@ -1061,10 +887,8 @@ impl PlaylistsPanel {
         if offset <= px(0.) {
             return 0;
         }
-        // A dump runs outside the panel's render, so the render-time
-        // thread-local font scale isn't in scope; read this panel's own
-        // override off its theme instead, or the offset-to-row math stops
-        // matching the rows on screen.
+        // A dump runs outside render, where the thread-local font scale isn't
+        // set; read this panel's override off its theme.
         let panel_scale = self
             .config
             .chrome
@@ -1079,23 +903,16 @@ impl PlaylistsPanel {
         (f32::from(offset) / stride) as usize
     }
 
-    /// The stride the uniform list lays every row out at: the row height
-    /// plus the spacing the row itself fills (background, hairline, and hit
-    /// area included), scaled with the app font.
     fn row_px(&self) -> Pixels {
         palette::scaled_px(self.row_height + self.row_spacing)
     }
 
-    /// The track rows' text size as a rem factor: the stock height keeps
-    /// the stock 1 rem and the text follows the height knob from there,
-    /// floored so a dense tree stays legible. The library table's rule.
+    /// Floored so a dense tree stays legible, the library table's rule.
     fn row_font_scale(&self) -> f32 {
         (self.row_height / ROW_HEIGHT_STOCK).clamp(0.8, 1.8)
     }
 
-    /// How many rows a heading block spans: the name line alone compact,
-    /// the name and meta pair expanded. Fixed by [`Row`]'s two heading
-    /// variants, unlike the library's composable line count.
+    /// Fixed by [`Row`]'s two heading variants.
     fn head_lines(&self) -> f32 {
         if self.config.headers == Headers::Expanded {
             2.
@@ -1112,16 +929,9 @@ impl PlaylistsPanel {
         palette::scaled_px(self.header_gap_below)
     }
 
-    /// One heading line's drawn height.
-    ///
-    /// A `uniform_list` lays every row out at one measured height, so the
-    /// tree can't hand a heading line a row of its own size the way the
-    /// library table's per-row height hook does. The block keeps the rows
-    /// it already had and the line is drawn as a strip inside them, which
-    /// makes this knob a shrink: it takes a line below the track height
-    /// and saturates at the room the block has, rather than growing the
-    /// block and painting out over the tracks around it. The gaps come off
-    /// the same room, so a block is always exactly its rows tall.
+    /// A `uniform_list` gives every row one height, so a heading line can't
+    /// get a row of its own size. This knob only shrinks the line inside the
+    /// block's rows, and the gaps come off the same room.
     fn line_px(&self) -> Pixels {
         let lines = self.head_lines();
         let room = f32::from(self.row_px()) * lines
@@ -1132,18 +942,14 @@ impl PlaylistsPanel {
             .max(0.))
     }
 
-    /// The edge length of an expanded heading's cover tile: the drawn
-    /// lines' full height less the tile's own margin, so the art squares
-    /// off against the text at any line height.
     fn tile_side(&self) -> Pixels {
         let side = f32::from(self.line_px()) * self.head_lines()
             - f32::from(palette::scaled_px(self.art_margin)) * 2.;
         px(side.max(0.))
     }
 
-    /// The heading knobs packaged for the shared surface. The year and
-    /// details switches stay on: the composed lines already hold those
-    /// choices.
+    /// The year and details switches stay on: the composed lines already hold
+    /// those choices.
     fn head_look(&self) -> group_head::HeadLook {
         group_head::HeadLook {
             tile_side: self.tile_side(),
@@ -1158,9 +964,6 @@ impl PlaylistsPanel {
         }
     }
 
-    /// Map the shared box's events onto the panel: a changed query rebuilds
-    /// the tree, and a focus or dismiss repaints the tab title row that holds
-    /// the box.
     fn on_search_event(
         &mut self,
         _search: &Entity<SearchBox>,
@@ -1183,29 +986,21 @@ impl PlaylistsPanel {
         }
     }
 
-    /// Show or hide the panel's own search box, rebuilding the tree. The
-    /// config is part of the layout dump, so the tab-panel repaint writes it.
     fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
         self.config.search = on;
         self.rebuild_query_view(cx);
         panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
-    /// Nudge the dock to persist the layout after a config change it never sees
-    /// on its own: a column toggle, heading flip, or expand. The panel's own
-    /// events don't get to the dock, but its host tab panel's do, so bounce a
-    /// LayoutChanged through it and the workspace's debounced save picks the
-    /// change up. A plain tab-panel repaint isn't enough; only LayoutChanged
-    /// arms the save. Without this the change only gets to disk on a clean
-    /// close, so a relaunch can lose it.
+    /// Emit LayoutChanged through the host tab panel: the panel's own events
+    /// never reach the dock, and a plain repaint doesn't arm the debounced
+    /// save. Without this an edit only lands on a clean close.
     fn request_layout_save(&self, cx: &mut Context<Self>) {
         if let Some(tabs) = self.tab_panel.as_ref().and_then(|w| w.upgrade()) {
             tabs.update(cx, |_, cx| cx.emit(PanelEvent::LayoutChanged));
         }
     }
 
-    /// Expand or collapse a playlist, mirroring the set into the config so a
-    /// layout dump keeps it.
     fn toggle(&mut self, id: i64, cx: &mut Context<Self>) {
         if !self.expanded.remove(&id) {
             self.expanded.insert(id);
@@ -1215,8 +1010,6 @@ impl PlaylistsPanel {
         self.refresh(cx);
     }
 
-    /// Start the playlist playing, from `start_track` when given (a double
-    /// click on a row), from the top otherwise (the header's Play).
     fn play(&self, playlist_id: i64, start_track: Option<i64>, cx: &mut Context<Self>) {
         let (keys, start, ids) = {
             let library = self.state.library.read(cx);
@@ -1231,20 +1024,14 @@ impl PlaylistsPanel {
         }
         self.state.player.update(cx, |player, cx| {
             player.play_at(keys, start, cx);
-            // After the play, never before: starting a session clears the
-            // scope back to the library at large. Continuation follows the
-            // playlist in its own order from here (ADR 17), and the Random
-            // button draws from it.
+            // After the play, never before: starting a session clears the scope.
+            // Continuation then follows the playlist's order (ADR 17).
             player.set_scope(continuation::Scope::View(ids.into()));
         });
     }
 
-    /// Write a playlist to a file the user picks, named after it with the
-    /// picked format's extension. GPUI's path prompt has no filter list, so
-    /// a different playlist extension typed over the suggestion wins over
-    /// the pick: a file named `.pls` should hold PLS whatever the menu said.
-    /// Only playable members go in it; a deleted track has no file to point
-    /// at.
+    /// GPUI's save prompt has no filter list, so a typed playlist extension
+    /// wins over the picked format. Only playable members go in.
     fn export(&self, playlist_id: i64, name: String, format: Format, cx: &mut Context<Self>) {
         let rows = self
             .state
@@ -1267,10 +1054,8 @@ impl PlaylistsPanel {
         .detach();
     }
 
-    /// Pick a playlist file (M3U, PLS, or XSPF) and load it as a new playlist
-    /// named after the file. The format comes off the content, not the
-    /// extension. Entries resolve to catalog tracks, relative paths against
-    /// the file's folder; paths the library never scanned are skipped.
+    /// The format comes off the content, not the extension. Relative paths
+    /// resolve against the file's folder; unscanned paths are skipped.
     fn import(&self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1310,7 +1095,6 @@ impl PlaylistsPanel {
         .detach();
     }
 
-    /// The member id at a row, if it is a track row.
     fn member_at(&self, ix: usize) -> Option<i64> {
         match self.rows.get(ix) {
             Some(Row::Track(t)) => Some(t.member_id),
@@ -1318,15 +1102,12 @@ impl PlaylistsPanel {
         }
     }
 
-    /// The row index of a member, if it is still on screen.
     fn index_of(&self, member: i64) -> Option<usize> {
         self.rows
             .iter()
             .position(|row| matches!(row, Row::Track(t) if t.member_id == member))
     }
 
-    /// The selected members in view order, so a drag or remove keeps the order
-    /// you see rather than a set's arbitrary one.
     fn selected_members(&self) -> Vec<i64> {
         self.rows
             .iter()
@@ -1337,8 +1118,6 @@ impl PlaylistsPanel {
             .collect()
     }
 
-    /// The multi-selection drag set as a shared Arc, resolved through
-    /// `selected_members` once per selection or row change and cached after.
     fn drag_members(&mut self) -> Arc<[i64]> {
         if self.drag_set.as_ref().map(|(generation, _)| *generation) != Some(self.drag_gen) {
             let members: Arc<[i64]> = self.selected_members().into();
@@ -1350,9 +1129,7 @@ impl PlaylistsPanel {
             .unwrap_or_else(|| Arc::from([]))
     }
 
-    /// Put a click on a track row: plain selects just it, shift extends from
-    /// the anchor over the tracks between, cmd (ctrl elsewhere) toggles, the
-    /// library's click rules. Publishes the selection either way.
+    /// Publishes the selection either way.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
         let Some(member) = self.member_at(ix) else {
             return;
@@ -1360,8 +1137,7 @@ impl PlaylistsPanel {
         if modifiers.shift {
             let anchor_ix = self.anchor.and_then(|a| self.index_of(a)).unwrap_or(ix);
             let (lo, hi) = (anchor_ix.min(ix), anchor_ix.max(ix));
-            // Only track rows in the span, so a header caught between two
-            // playlists is skipped rather than selected.
+            // Only track rows, so a header in the span is skipped.
             let range: Vec<_> = self.rows[lo..=hi]
                 .iter()
                 .filter_map(|row| match row {
@@ -1369,8 +1145,7 @@ impl PlaylistsPanel {
                     _ => None,
                 })
                 .collect();
-            // Ctrl+Shift stacks the range onto the selection so you can
-            // skip a run and grab a second block; plain shift replaces.
+            // Ctrl+Shift stacks the range; plain shift replaces.
             if modifiers.secondary() {
                 self.selected.extend(range);
             } else {
@@ -1393,8 +1168,6 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
-    /// Ctrl+A: take every track across every open playlist. Anchors at the
-    /// first so a follow-up shift-click narrows from the top.
     fn select_all(&mut self, cx: &mut Context<Self>) {
         let members = self
             .rows
@@ -1414,8 +1187,6 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
-    /// Resolve the selected members to track ids in view order and publish them
-    /// on the shared selection for the panels that display it.
     fn publish_selection(&self, cx: &mut Context<Self>) {
         let ids: Vec<i64> = self
             .rows
@@ -1434,14 +1205,11 @@ impl PlaylistsPanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// Drop the given members. The library edit rebuilds the tree, and the
-    /// refresh prunes them out of the selection.
     fn remove_members(&mut self, members: Vec<i64>, cx: &mut Context<Self>) {
         if members.is_empty() {
             return;
         }
-        // Smart rows hold a synthetic key, not a member rowid: there's no
-        // row to drop. Take out what's real and name what wasn't.
+        // Smart rows hold a synthetic key; drop what's real and name what wasn't.
         let (members, smart): (Vec<i64>, Vec<i64>) =
             members.into_iter().partition(|&member| member > 0);
         if !smart.is_empty() {
@@ -1455,11 +1223,8 @@ impl PlaylistsPanel {
         });
     }
 
-    /// Delete or Backspace drops the selected members. Ctrl+A takes every
-    /// visible track; Escape drops the selection.
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        // Keying the tree is browsing too, so it restarts the idle clock
-        // the same as a scroll or a click.
+        // Keying the tree counts as browsing too.
         self.touch_resume(cx);
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
@@ -1477,9 +1242,8 @@ impl PlaylistsPanel {
         }
     }
 
-    /// Escape drops the selection and the shared scope with it. The local
-    /// publish skips empty sets, so the clear goes to the selection
-    /// entity directly.
+    /// The local publish skips empty sets, so the clear goes to the selection
+    /// directly.
     fn deselect(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             return;
@@ -1494,12 +1258,8 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
-    /// The playlist and insertion point a row stands for: a header means the
-    /// end of its own list, a track means the slot just before itself. An
-    /// album heading is presentation, not a slot, so it resolves to nothing
-    /// and the caller drops the drag on the floor; the tracks around it take
-    /// it instead. Shared by both drop paths so a member move and a track
-    /// dragged in from elsewhere land in the same place.
+    /// A header means the end of its list, a track the slot before itself.
+    /// An album heading is no slot. Shared by both drop paths.
     fn drop_target(&self, target: usize) -> Option<(i64, Option<i64>)> {
         match self.rows.get(target) {
             Some(Row::Head { id, .. }) => Some((*id, None)),
@@ -1508,10 +1268,8 @@ impl PlaylistsPanel {
         }
     }
 
-    /// A dragged set dropped onto a row: onto a header, or a track, it goes in as
-    /// one block before the target (or at the end of a header's playlist),
-    /// pulling in members from other playlists on the way. Dropping onto one of
-    /// the dragged rows does nothing.
+    /// Goes in as one block before the target. Dropping onto a dragged row
+    /// does nothing.
     fn drop_on(&mut self, drag: &TrackDrag, target: usize, cx: &mut Context<Self>) {
         let Some((playlist_id, before)) = self.drop_target(target) else {
             return;
@@ -1520,14 +1278,12 @@ impl PlaylistsPanel {
         if before.is_some_and(|b| drag.members.contains(&b)) {
             return;
         }
-        // A smart playlist's contents are its query's answer, so there is
-        // nowhere for a dropped track to go. Say so rather than swallow it.
+        // A smart playlist is its query's answer; refuse rather than swallow.
         if self.is_smart(playlist_id) {
             self.refuse(rox_i18n::t!("playlists-refuse-smart-source"), cx);
             return;
         }
-        // And a row dragged out of one has no member to move, only a query
-        // it happens to match.
+        // A row dragged out of a smart list has no member to move.
         if drag.members.iter().any(|&member| member < 0) {
             self.refuse(rox_i18n::t!("playlists-refuse-drag-out"), cx);
             return;
@@ -1538,20 +1294,14 @@ impl PlaylistsPanel {
         });
     }
 
-    /// Tracks dragged in from any other panel, added as new members where they
-    /// land: before the target track, or at the end of a header's playlist.
-    /// The drag carries its library ids next to its keys, so the common case
-    /// stores rows straight through. Only a source with no ids to hand over
-    /// pays for resolving keys back to the catalog, and a key with no row
-    /// behind it (a loose file off the desktop) has nothing to add, so it
-    /// falls out of the set.
+    /// The drag carries library ids beside its keys; only an id-less source
+    /// resolves keys, and a key with no row drops out.
     fn drop_tracks(&mut self, drag: &PlayDrag, target: usize, cx: &mut Context<Self>) {
         let Some((playlist_id, before)) = self.drop_target(target) else {
             return;
         };
 
-        // Same refusal a member drag gets: a smart playlist's contents are its
-        // query's answer, so there is nowhere for a dropped track to go.
+        // The same refusal a member drag gets.
         if self.is_smart(playlist_id) {
             self.refuse(rox_i18n::t!("playlists-refuse-smart-source"), cx);
             return;
@@ -1576,15 +1326,12 @@ impl PlaylistsPanel {
         });
     }
 
-    /// The visible slice of the tree.
     fn list_rows(
         &mut self,
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
-        // The whole multi-selection drag set, resolved once per frame (and
-        // cached across frames until the selection or rows move) so a grab
-        // inside it hands every selected row one shared Arc, not a rescan each.
+        // Resolved once per frame and cached until the selection or rows move.
         let multi_drag = (self.selected.len() > 1).then(|| self.drag_members());
         range
             .filter_map(|ix| {
@@ -1645,7 +1392,6 @@ impl PlaylistsPanel {
                 d.border_b_1().border_color(palette::border())
             })
             .hover(|d| d.bg(palette::bg_control_hover()))
-            // A header is a drop target: tracks dropped on it move there.
             .drag_over::<TrackDrag>(|style, _, _, _| {
                 style.bg(palette::alpha(palette::accent(), 0x1a))
             })
@@ -1655,10 +1401,8 @@ impl PlaylistsPanel {
             .on_drop(cx.listener(move |this, drag: &TrackDrag, _, cx| {
                 this.drop_on(drag, ix, cx);
             }))
-            // Tracks from the library, the folder tree, or any other panel
-            // land here as new members; TrackDrag above stays the panel's own
-            // move of rows it already holds. gpui dispatches on_drop by
-            // payload type, so the two sit side by side on one row.
+            // New members from any other panel. gpui dispatches on_drop by payload
+            // type, so this sits beside the TrackDrag move.
             .on_drop(cx.listener(move |this, drag: &PlayDrag, _, cx| {
                 this.drop_tracks(drag, ix, cx);
             }))
@@ -1684,8 +1428,7 @@ impl PlaylistsPanel {
                     .flex_none()
                     .text_color(palette::text_muted()),
             )
-            // The favourites playlist gets a heart so it reads as the default
-            // one, not just another list named Favourites.
+            // The heart marks the default favourites list.
             .when(favourite, |d| {
                 d.child(
                     svg()
@@ -1695,8 +1438,7 @@ impl PlaylistsPanel {
                         .text_color(palette::accent()),
                 )
             })
-            // And a smart one gets the funnel, so a list you can't drag
-            // into looks different before you try.
+            // The funnel marks a list you can't drag into.
             .when(smart, |d| {
                 d.child(
                     svg()
@@ -1721,10 +1463,8 @@ impl PlaylistsPanel {
                         count as i64,
                     ))),
             )
-            // Export this playlist: the button drops a menu of the formats
-            // and the pick opens the save dialog. The popover's trigger lets
-            // the press bubble, so the wrapper swallows it, or the header
-            // would toggle open under the menu.
+            // The popover trigger lets the press bubble, so swallow it or the header
+            // toggles under the menu.
             .child(
                 div()
                     .flex_none()
@@ -1763,9 +1503,6 @@ impl PlaylistsPanel {
             )
     }
 
-    /// An album run's name line, through the shared heading surface:
-    /// Expanded opens the cover tile and draws the configured name line,
-    /// Compact packs the configured one-row composition instead.
     fn album_row(&mut self, ix: usize, g: u32, cx: &mut Context<Self>) -> Stateful<Div> {
         let headers = self.config.headers;
         let expanded = headers == Headers::Expanded;
@@ -1779,13 +1516,11 @@ impl PlaylistsPanel {
             pieces: &pieces,
             look: &look,
             row_px: self.row_px(),
-            // The block's content starts under its top gap; the rest of
-            // the row shows the list, which is what opens the gap.
+            // Content starts under the top gap; the list shows through above.
             content_top: self.gap_above_px(),
             flush: self.header_flush,
         };
-        // Compact, this row is the whole block, so it carries the hairline;
-        // expanded, the meta line under it does and the pair reads as one.
+        // Compact, this row carries the hairline; expanded, the meta line does.
         let border = self.row_borders && !expanded;
         track_columns::album_name_row(
             ix,
@@ -1798,10 +1533,8 @@ impl PlaylistsPanel {
         .when(border, |d| d.border_b_1().border_color(palette::border()))
     }
 
-    /// The run's meta line, the Expanded block's second row. Its strip
-    /// climbs back up to meet the name line: the name only drew its own
-    /// line height inside a row that may be taller, so the meta line starts
-    /// where that one ended rather than at its own row's top.
+    /// Climbs back up to meet the name line, which only drew its own line
+    /// height inside a possibly taller row.
     fn album_meta_row(&mut self, ix: usize, g: u32, cx: &mut Context<Self>) -> Stateful<Div> {
         let look = self.head_look();
         let pieces = self.header_meta_line.clone();
@@ -1829,9 +1562,7 @@ impl PlaylistsPanel {
         let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
         let playing = self.playing == Some(track_id);
         let favourite = self.favourites.contains(&track_id);
-        // Dragging a row inside a multi-selection takes the whole set in view
-        // order, the shared Arc `list_rows` resolved once; outside it, just this
-        // row.
+        // The shared Arc from `list_rows` when inside the selection.
         let members: Arc<[i64]> = match multi_drag {
             Some(set) if selected => set.clone(),
             _ => Arc::from([member_id]),
@@ -1842,15 +1573,11 @@ impl PlaylistsPanel {
         };
         let mut row = div()
             .id(("playlist-track", ix))
-            // The hover group the rating and favourite cells reveal on, the
-            // library table's route.
             .group(track_cells::ROW_GROUP)
             .w_full()
             .h(self.row_px())
-            // The cells inherit this, so the text follows the row height
-            // knob instead of floating small in a tall row.
+            // The cells inherit this, so the text follows the row height.
             .text_size(rems(self.row_font_scale()))
-            // Indented under its header, past the chevron column.
             .pl(px(28.))
             .pr(tokens::SPACE_SM)
             .flex()
@@ -1861,10 +1588,8 @@ impl PlaylistsPanel {
             .when(self.row_borders, |d| {
                 d.border_b_1().border_color(palette::border())
             })
-            // The zebra tint goes under the selection and playing washes,
-            // which paint over it, so a lit row reads the same on either
-            // stripe. Keyed on the tree row index like the library table's,
-            // so the banding runs unbroken through the headings.
+            // Under the selection and playing washes. Keyed on the tree index, so
+            // the banding runs unbroken through the headings.
             .when(self.stripes && !ix.is_multiple_of(2), |d| {
                 d.bg(palette::alpha(palette::bg_elevated(), 0x80))
             })
@@ -1894,27 +1619,20 @@ impl PlaylistsPanel {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    // Take focus so Delete on the selection gets to the panel's
-                    // key handler.
                     window.focus(&this.focus);
                     if event.click_count > 1 {
                         this.play(playlist_id, Some(track_id), cx);
                     } else if event.modifiers.shift || event.modifiers.secondary() {
-                        // Shift and cmd/ctrl resolve on press.
                         this.select(ix, event.modifiers, cx);
                     } else if !this.selected.contains(&member_id) {
-                        // A plain press on an unselected row picks it now, so a
-                        // drag from here takes it. A press on an already-lit
-                        // row keeps the set for a whole-group drag; the collapse
-                        // to this one row waits for the click.
+                        // A press on an unselected row picks it now so a drag takes it; on a lit
+                        // row the collapse waits for the click.
                         this.select(ix, event.modifiers, cx);
                     }
                 }),
             )
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                // A plain click that never became a drag collapses a
-                // multi-selection down to the row clicked. Modified and double
-                // clicks already resolved on press.
+                // A click that never became a drag collapses the selection to this row.
                 let mods = event.modifiers();
                 if event.click_count() == 1
                     && !mods.shift
@@ -1929,16 +1647,14 @@ impl PlaylistsPanel {
                 MouseButton::Right,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     this.menu_row = Some(ix);
-                    // A right click outside the set reselects just that row, so
-                    // the menu acts on what is lit.
+                    // A right click outside the set reselects just that row.
                     if !this.selected.contains(&member_id) {
                         this.select(ix, Modifiers::default(), cx);
                     }
                     cx.notify();
                 }),
             );
-        // The cells, in registry order, only the shown ones. The shared
-        // surface draws every playlist column, so there is no panel fallback.
+        // The shared surface draws every playlist column.
         let cover = track_columns::cover_thumb(
             &self.state,
             (!t.path.is_empty()).then(|| std::path::Path::new(&t.path)),
@@ -1980,16 +1696,12 @@ impl PlaylistsPanel {
         row
     }
 
-    /// Take an appearance knob's new value: repaint, and nudge the dock to
-    /// persist the layout, since none of these reach it on their own. The
-    /// tree's rows never move for a look knob, so nothing rebuilds.
+    /// No rebuild: a look knob never moves the rows.
     fn restyle(&mut self, cx: &mut Context<Self>) {
         self.request_layout_save(cx);
         cx.notify();
     }
 
-    /// The Appearance page's Rows section: the track rows' shape and the
-    /// two washes that make a long list scan.
     fn rows_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (row_height, row_spacing) = (self.row_height, self.row_spacing);
         settings_ui::section(
@@ -2069,13 +1781,8 @@ impl PlaylistsPanel {
         .into_any_element()
     }
 
-    /// The Appearance page's Headings section: how a heading block is
-    /// shaped, and what each of its lines holds.
-    ///
-    /// The composition editors are one well per line rather than the
-    /// library's add-a-line rows: the tree's heading is [`Row::Album`] and
-    /// [`Row::AlbumMeta`] and nothing else, so there's no line count to
-    /// offer, only what goes on the lines there are.
+    /// One well per line rather than the library's add-a-line rows: the
+    /// tree's heading is [`Row::Album`] and [`Row::AlbumMeta`] and nothing else.
     fn headings_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let expanded = self.config.headers == Headers::Expanded;
         let (head_height, head_text) = (self.head_height, self.head_text);
@@ -2159,8 +1866,7 @@ impl PlaylistsPanel {
                         cx,
                     ),
                 ))
-                // Compact draws one line, Expanded the name and meta pair,
-                // so only the wells the active mode actually paints show.
+                // Only the wells the active mode paints.
                 .when(!expanded, |d| {
                     d.child(panel::setting_block(
                         rox_i18n::t!("library-header-row"),
@@ -2214,9 +1920,6 @@ impl PlaylistsPanel {
         .into_any_element()
     }
 
-    /// The Appearance page's Art section: the heading tile's own knobs.
-    /// Always shown, whatever the heading mode, so flipping the mode never
-    /// sends you hunting for a row that moved.
     fn art_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (rounding, margin) = (self.art_rounding, self.art_margin);
         settings_ui::section(
@@ -2288,8 +1991,6 @@ impl PlaylistsPanel {
         .into_any_element()
     }
 
-    /// The panel menu's New Playlist entry, shared by the dropdown and the
-    /// empty state, with its smart twin beside it.
     fn new_playlist_item(&self, menu: PopupMenu) -> PopupMenu {
         let state = self.state.clone();
         let smart_state = self.state.clone();
@@ -2332,8 +2033,6 @@ impl HeadingHost for PlaylistsPanel {
         self.config.headers
     }
 
-    /// Set the album heading mode and rebuild the tree, since Off, Compact,
-    /// and Expanded push different rows.
     fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>) {
         if self.config.headers == headers {
             return;
@@ -2412,9 +2111,6 @@ impl PanelSettings for PlaylistsPanel {
         &[("View", icons::ROWS_3)]
     }
 
-    /// The panel's own View page: the column checklist and the album heading
-    /// mode, the tree's view knobs, the library's own-page route rather than
-    /// the shared Appearance page.
     fn page(
         &mut self,
         _page: &'static str,
@@ -2448,9 +2144,6 @@ impl PanelSettings for PlaylistsPanel {
             .into_any_element()
     }
 
-    /// The Behavior page: the search section (show the box, and follow the
-    /// shared query or filter by the panel's own), then whether the tree
-    /// chases the playing track.
     fn behavior(
         &mut self,
         _window: &mut Window,
@@ -2473,8 +2166,7 @@ impl PanelSettings for PlaylistsPanel {
                     rox_i18n::t!("library-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.follow_playing = on;
-                        // Catch up right away instead of waiting for the
-                        // next track change.
+                        // Catch up right away.
                         if on {
                             this.follow_playing(cx);
                         }
@@ -2498,10 +2190,7 @@ impl PanelSettings for PlaylistsPanel {
         )
     }
 
-    /// The panel's own rows on the shared Appearance page: what shapes the
-    /// track rows and the album headings over them. Stored on the config
-    /// because they shape the content rather than the panel frame; the View
-    /// page keeps what shows (columns, heading mode).
+    /// On the config because they shape the content, not the frame.
     fn appearance(
         &mut self,
         _window: &mut Window,
@@ -2509,8 +2198,7 @@ impl PanelSettings for PlaylistsPanel {
     ) -> Option<gpui::AnyElement> {
         let headings = self.config.headers != Headers::Off;
         let rows = self.rows_section(cx);
-        // The heading look only matters while headings show; the mode
-        // itself is on the View page beside the columns.
+        // The heading look only matters while headings show.
         let heading_rows = headings.then(|| self.headings_section(cx));
         let art = self.art_section(cx);
         Some(
@@ -2541,10 +2229,7 @@ impl Panel for PlaylistsPanel {
 
     rox_panel_api::opens_settings!();
 
-    /// The headers and track rows take the drop themselves, so the workspace's
-    /// own drop zones stand down over this panel. A drop that misses every row
-    /// is a no-op: there is no one playlist that empty space would mean, same
-    /// as the rest of the workspace's neutral space.
+    /// A drop that misses every row is a no-op: empty space names no playlist.
     fn accepts_drop(&self, cx: &App) -> bool {
         cx.active_drag_is::<PlayDrag>()
     }
@@ -2560,8 +2245,6 @@ impl Panel for PlaylistsPanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The search box shares the title bar row while the panel is in a
-    /// group; solo or popped out the body hosts it instead.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
@@ -2635,18 +2318,13 @@ impl Panel for PlaylistsPanel {
     ) -> PopupMenu {
         let menu = self.new_playlist_item(menu);
 
-        // Import beside the new-playlist rows as well as on the tab bar,
-        // so it's reachable from a right-click on the tree whether or not
-        // the tab bar is drawn for this placement.
+        // Also reachable here, since the tab bar isn't drawn in every placement.
         let menu = menu.item(
             PopupMenuItem::new(rox_i18n::t!("playlists-import"))
                 .icon(Icon::default().path(icons::DOWNLOAD))
                 .on_click(cx.listener(|this, _, window, cx| this.import(window, cx))),
         );
 
-        // Display section: the view knobs under their own label, ahead of
-        // the Panel section, the library's shape. The same knobs the View
-        // settings page holds, one flyout each.
         let menu = menu.separator().label(rox_i18n::t!("panel-menu-display"));
         let columns_menu = track_columns::columns_submenu(columns(), window, cx);
         let menu = menu.item(PopupMenuItem::submenu(
@@ -2658,7 +2336,6 @@ impl Panel for PlaylistsPanel {
             rox_i18n::t!("panel-headings"),
             headings,
         ));
-        // Follow the shared search query, or filter by this panel's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
@@ -2670,7 +2347,6 @@ impl Panel for PlaylistsPanel {
             cx,
         );
 
-        // Panel section: rename_item opens it with its own "Panel" label.
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
@@ -2695,9 +2371,7 @@ impl Panel for PlaylistsPanel {
         )
     }
 
-    /// The tab bar's own Import button, beside the panel menu. Import is a
-    /// panel-level action, unlike per-playlist export, so it goes here where
-    /// it reads clearly instead of buried in the dropdown.
+    /// Import is panel-level, unlike per-playlist export.
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
@@ -2721,16 +2395,12 @@ impl Render for PlaylistsPanel {
 
 impl PlaylistsPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset (a source toggle or a shared-query change)
-        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
-        // The follow glide eases toward the playing row, stepped here in
-        // render one frame at a time until it arrives, the library panel's
-        // idiom. Every row is one stride tall, so the target comes off the
-        // index times the stride rather than a per-row bounds lookup.
+        // The follow glide, stepped one frame at a time. Every row is one stride
+        // tall, so the target is the index times the stride.
         let dt = self.glide_tick.elapsed().as_secs_f32().min(0.05);
         self.glide_tick = Instant::now();
         if let Some(row) = self.glide_to {
@@ -2739,15 +2409,13 @@ impl PlaylistsPanel {
             let target =
                 panel::glide_target_at(&handle, gpui::Axis::Vertical, stride * row as f32, stride);
             match target {
-                // A rebuild can strand the target past the tree's end;
-                // drop the glide instead of animating forever.
+                // A rebuild can strand the target past the end; drop the glide.
                 _ if row >= self.rows.len() => self.glide_to = None,
                 Some(target)
                     if !panel::glide_step_axis(&handle, gpui::Axis::Vertical, target, dt) =>
                 {
                     self.glide_to = None
                 }
-                // Not laid out yet, or still moving: keep going.
                 _ => window.request_animation_frame(),
             }
         }
@@ -2758,9 +2426,7 @@ impl PlaylistsPanel {
             .bg(palette::bg_root())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)))
-            // Any scroll or press over the tree counts as browsing; the
-            // stamps only restart the idle clock, leaving the scroll and
-            // the click to the rows underneath, so nothing acts twice.
+            // Only restarts the idle clock; the rows underneath handle the event.
             .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                 this.touch_resume(cx);
             }))
@@ -2770,7 +2436,6 @@ impl PlaylistsPanel {
             );
         let searching = !self.applied_query.is_empty() || !self.applied_filter.is_empty();
         let content = if self.rows.is_empty() {
-            // A search that hit nothing reads differently from an empty tree.
             let message = if searching {
                 rox_i18n::t!("picker-no-matches")
             } else {
@@ -2788,9 +2453,7 @@ impl PlaylistsPanel {
                     .text_center()
                     .text_color(palette::text_faint())
                     .child(message)
-                    // Import is the tab bar's button, and the tab bar isn't
-                    // on screen for every placement, so an empty tree
-                    // offers it here too.
+                    // The tab bar isn't on screen in every placement.
                     .when(!searching, |empty| {
                         empty.child(crate::settings::ui::small_button(
                             rox_i18n::t!("playlists-import"),
@@ -2835,8 +2498,6 @@ impl PlaylistsPanel {
             };
             this.update(cx, |this, cx| this.row_menu(menu, window, cx))
         }))
-        // The refusal a smart playlist's edits earn, under the tree where
-        // the edit was attempted.
         .children(self.refusal.clone().map(|why| {
             div()
                 .flex_none()
@@ -2850,9 +2511,6 @@ impl PlaylistsPanel {
         }))
     }
 
-    /// The right-click menu for the row under the last press: track actions
-    /// for a track, play/rename/delete for a header, the panel menu when the
-    /// press missed the rows.
     fn row_menu(
         &mut self,
         menu: PopupMenu,
@@ -2882,8 +2540,7 @@ impl PlaylistsPanel {
                     },
                 );
                 let remove_panel = weak.clone();
-                // The right press already pulled the row into the selection, so
-                // Remove drops the whole lit set: one row or many.
+                // The right press already pulled the row into the selection.
                 let remove_count = if self.selected.contains(&member_id) && self.selected.len() > 1
                 {
                     self.selected.len()
@@ -2895,8 +2552,8 @@ impl PlaylistsPanel {
                 let menu = menu.item(
                     PopupMenuItem::new(remove_label)
                         .icon(Icon::default().path(icons::CLOSE))
-                        // A smart playlist has no member row to remove; the
-                        // row is here because the query says so.
+                        // A smart row is here because the query says so; there's no member to
+                        // remove.
                         .disabled(smart)
                         .on_click(move |_, _, cx| {
                             if let Some(this) = remove_panel.upgrade() {
@@ -2931,8 +2588,7 @@ impl PlaylistsPanel {
                             }
                         }),
                 );
-                // A smart playlist's contents are its query, so editing the
-                // query is the only way to change what it holds.
+                // Editing the query is the only way to change a smart list.
                 let query_state = self.state.clone();
                 let menu = menu.when(smart, |menu| {
                     menu.item(
@@ -2947,8 +2603,7 @@ impl PlaylistsPanel {
                             }),
                     )
                 });
-                // The favourites playlist is the one default: no rename, no
-                // delete, so the heart column and menu always have their home.
+                // The favourites playlist is the one default: no rename, no delete.
                 let rename_state = self.state.clone();
                 let menu = menu.when(!favourite, |menu| {
                     menu.item(
@@ -2982,8 +2637,7 @@ impl PlaylistsPanel {
                 });
                 self.dropdown_menu(menu.separator(), window, cx)
             }
-            // A right-click never targets a heading (they set no menu row),
-            // but keep the match total: fall back to the panel menu.
+            // Headings never set a menu row, but keep the match total.
             Some(Row::Album(_) | Row::AlbumMeta(_)) | None => self.dropdown_menu(menu, window, cx),
         }
     }
@@ -2994,11 +2648,8 @@ mod tests {
     use super::{PlaylistsConfig, fold_head_lines};
     use crate::group_head::{self, HeadPiece};
 
-    /// A layout from before the composition editors has no saved lines, so
-    /// the three read back as the stock arrangement and its headings look
-    /// unchanged. A saved line is used as-is, deduped against the registry:
-    /// a hand-edited dump naming the album twice would otherwise draw it
-    /// twice.
+    /// A saved line is deduped: a hand-edited dump naming a piece twice
+    /// would draw it twice.
     #[test]
     fn empty_lines_fall_back_to_stock_and_saved_ones_dedupe() {
         let config = PlaylistsConfig::default();
@@ -3018,9 +2669,6 @@ mod tests {
         assert!(meta == vec![HeadPiece::Album]);
     }
 
-    /// The saved composition round-trips: what comes out of a dump reads
-    /// back as the same lines, so a layout save doesn't quietly reshape the
-    /// headings on the next launch.
     #[test]
     fn composed_lines_round_trip() {
         let config: PlaylistsConfig =

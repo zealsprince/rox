@@ -1,12 +1,6 @@
-//! Bookmarks on a strip: the marks the seek strip and the waveform draw
-//! along the playing track, the hover readout and the right-click menu
-//! over each one, and the color set behind them. Shared so a mark looks
-//! and acts the same on both strips and in the bookmarks panel, and so
-//! the panels stay out of the color business entirely.
-//!
-//! These are the kept marks, and they live on the strip's bottom edge as
-//! ribbons. The top edge belongs to [`crate::cue_ui`] and this listen's
-//! throwaway cues.
+//! Bookmarks on a strip: the ribbons the seek strip and the waveform draw
+//! along the bottom edge, the hover readout and right-click menu over each,
+//! and the color set behind them. The top edge belongs to [`crate::cue_ui`].
 
 use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Path, Pixels, Rgba,
@@ -24,10 +18,8 @@ use crate::openers;
 use crate::panel::{AppState, ScrubState};
 use crate::position_bound;
 
-/// The quick picks a mark can take without opening a picker: a name key
-/// and its `#rrggbb`. Mid-saturation hues that hold up on a dark and a
-/// light surface alike; the theme accent is the ninth choice and the
-/// default, stored as no color at all so it follows the palette.
+/// Mid-saturation hues that hold up on dark and light surfaces. The accent is
+/// the default, stored as no color so it follows the palette.
 pub const QUICK_COLORS: &[(&str, &str)] = &[
     ("red", "#e5484d"),
     ("orange", "#f76b15"),
@@ -39,7 +31,6 @@ pub const QUICK_COLORS: &[(&str, &str)] = &[
     ("pink", "#e93d82"),
 ];
 
-/// A quick pick's display name.
 pub fn quick_color_label(key: &str) -> SharedString {
     match key {
         "red" => rox_i18n::t!("bookmark-color-red"),
@@ -54,15 +45,12 @@ pub fn quick_color_label(key: &str) -> SharedString {
     }
 }
 
-/// A stored color resolved for paint: the hex when it parses, the theme
-/// accent otherwise, which is also what None means.
 pub fn color_of(color: Option<&str>) -> Rgba {
     color
         .and_then(palette::parse_hex)
         .unwrap_or_else(palette::accent)
 }
 
-/// One mark placed along a strip.
 #[derive(Clone)]
 pub struct Mark {
     pub id: i64,
@@ -73,8 +61,6 @@ pub struct Mark {
     pub color: Rgba,
 }
 
-/// Place a track's bookmarks along its strip. Nothing without a duration:
-/// a fraction of an unknown length points nowhere.
 pub fn marks(bookmarks: &[Bookmark], duration_secs: Option<f64>) -> Vec<Mark> {
     let Some(duration) = duration_secs.filter(|d| *d > 0.0) else {
         return Vec::new();
@@ -91,8 +77,6 @@ pub fn marks(bookmarks: &[Bookmark], duration_secs: Option<f64>) -> Vec<Mark> {
         .collect()
 }
 
-/// What a mark is called where one line has to do: its name, or its
-/// time when it was dropped without one.
 pub fn mark_label(name: &str, position_ms: u32) -> String {
     let name = name.trim();
     if name.is_empty() {
@@ -102,39 +86,20 @@ pub fn mark_label(name: &str, position_ms: u32) -> String {
     }
 }
 
-/// The ribbon's footprint: its width and height in px. It sits on the
-/// strip's bottom edge, so it reads as a tab under the track rather than
-/// a second playhead.
-///
-/// Taller than it is wide, and narrow: the proportions of the bookmark
-/// glyph itself, roughly two by three. A wider tab reads as a flag or a
-/// block of colour, and the only thing that makes this shape legible at
-/// nine pixels is that it stands up the way the icon does.
+/// Narrow and taller than wide, the bookmark glyph's proportions. A wider tab
+/// reads as a flag.
 pub const MARK_W: f32 = 6.0;
 pub const MARK_H: f32 = 9.0;
-/// How far the notch bites up into the ribbon's bottom edge, a third of
-/// its height. That's the bite the icon takes, and it leaves the label
-/// enough body above it to still read as one.
 const NOTCH_H: f32 = 3.0;
-/// The shortest a ribbon draws at. Under this the notch closes up and the
-/// shape is a smear, so a strip with less room than this draws nothing.
+/// Under this the notch closes up and the shape smears, so the strip draws
+/// nothing.
 const MIN_MARK_H: f32 = 4.0;
-/// The hit target around a ribbon, wider than the drawing so a pointer
-/// finds it without aiming.
 const HIT_W: f32 = 16.0;
-/// The ribbon's alpha at full weight.
 const MARK_ALPHA: u8 = 0xe6;
 
-/// Paint the marks over a strip, the seek strip's and the waveform's
-/// shared look. `weight` scales the alpha, for a strip fading its shape in
-/// or out. Goes on after the played fill and before the playhead, so the
-/// head still crosses over a mark it reaches.
-///
-/// The shape is the ribbon everything else in the world uses for a
-/// bookmark: a solid tab with a notch bitten out of its bottom. It used to
-/// be a chevron, and the chevron moved to the top edge to stand for a
-/// session cue instead. One glyph per kind of mark, so which one you are
-/// looking at is never a question of which half of the strip you meant.
+/// `weight` scales the alpha, for a strip fading its shape in or out. Paint
+/// after the played fill and before the playhead, so the head crosses over a
+/// mark it reaches.
 pub fn paint_marks(marks: &[Mark], weight: f32, bounds: Bounds<Pixels>, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
@@ -156,9 +121,8 @@ pub fn paint_marks(marks: &[Mark], weight: f32, bounds: Bounds<Pixels>, window: 
     );
 
     let bottom = h - 1.0;
-    // The label held to the room under the line: a strip too short for the
-    // full height gets a shorter one, notch scaled with it, rather than
-    // losing its marks entirely.
+    // A strip too short for the full height gets a shorter ribbon, notch
+    // scaled with it.
     let mark_h = MARK_H.min(bottom);
     let notch_h = NOTCH_H * mark_h / MARK_H;
     let top = bottom - mark_h;
@@ -166,9 +130,8 @@ pub fn paint_marks(marks: &[Mark], weight: f32, bounds: Bounds<Pixels>, window: 
 
     for mark in marks {
         let x = mark.fraction.clamp(0.0, 1.0) * w;
-        // The label as a filled pentagon: the four corners of the
-        // rectangle with the notch's point pushed up between the bottom
-        // two.
+        // A pentagon: the rectangle with the notch's point pushed up between
+        // the bottom corners.
         let tl = at(x - half, top);
         let tr = at(x + half, top);
         let br = at(x + half, bottom);
@@ -183,14 +146,11 @@ pub fn paint_marks(marks: &[Mark], weight: f32, bounds: Bounds<Pixels>, window: 
     }
 }
 
-/// How far behind the playhead a mark has to be before Previous goes to
-/// it, so a second press steps back past the mark just landed on instead
-/// of pinning to it, the way Previous on a track works.
+/// So a second Previous steps past the mark just landed on, the way Previous
+/// on a track works.
 const PREV_GRACE_SECS: f64 = 1.5;
 
-/// Jump the playing track to its next bookmark, or the one before the
-/// playhead. Nothing playing, a station playing, or no mark that way, does
-/// nothing.
+/// Seek the playing track to its next bookmark, or the one before the playhead.
 pub fn step(state: &AppState, forward: bool, cx: &mut App) {
     if !position_bound::allowed(state, cx) {
         return;
@@ -209,7 +169,6 @@ pub fn step(state: &AppState, forward: bool, cx: &mut App) {
     }
 }
 
-/// The mark a step lands on, from marks in ascending order.
 fn step_target(marks: impl Iterator<Item = f64>, at: f64, forward: bool) -> Option<f64> {
     if forward {
         marks.filter(|&secs| secs > at + 0.05).reduce(f64::min)
@@ -220,15 +179,9 @@ fn step_target(marks: impl Iterator<Item = f64>, at: f64, forward: bool) -> Opti
     }
 }
 
-/// The interactive layer over a strip's marks: a hit target per ribbon
-/// that seeks on a click, reports its hover, and opens the mark's menu on
-/// a right click, plus the readout over the hovered one. Laid over the
-/// strip's own hover layer, so a pointer on a ribbon reads the mark and
-/// not the time under it.
-///
-/// `hovered` is the panel's record of which mark the pointer is on, kept by
-/// the panel because it outlives one render; `on_hover` is how the layer
-/// updates it.
+/// The hit layer over a strip's marks, laid over the strip's own hover layer
+/// so a pointer on a ribbon reads the mark and not the time under it.
+/// `hovered` lives on the panel because it outlives one render.
 #[allow(clippy::too_many_arguments)]
 pub fn overlay<V: 'static>(
     state: &AppState,
@@ -252,9 +205,7 @@ pub fn overlay<V: 'static>(
             .id(("bookmark-mark", id as u64))
             .size_full()
             .cursor_pointer()
-            // The strip's own readout would keep tracking the pointer under
-            // the ribbon; clearing it here and stopping the move leaves
-            // the mark's readout as the only one showing.
+            // Clear the strip's readout and stop the move so only the mark's shows.
             .on_mouse_move(cx.listener(move |_, _: &MouseMoveEvent, _, cx| {
                 hover_scrub.set_hover(None);
                 cx.stop_propagation();
@@ -263,8 +214,7 @@ pub fn overlay<V: 'static>(
                 on_hover(this, hovered.then_some(id), cx);
                 cx.notify();
             }))
-            // A click lands exactly on the mark, not on the pixel under the
-            // pointer, and the strip's own seek stays out of it.
+            // Seek exactly to the mark and keep the strip's own seek out of it.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, _: &MouseDownEvent, _, cx| {
@@ -272,10 +222,9 @@ pub fn overlay<V: 'static>(
                     cx.stop_propagation();
                 }),
             )
-            // The mark's own menu opens off the window-level handler the
-            // wrapper below registers, which runs ahead of this; stopping
-            // here keeps the press from the dock's body handler, which
-            // would open the panel dropdown over it.
+            // Stop the press so the dock's body handler doesn't open the panel
+            // dropdown. The mark's menu opens off a window-level handler that
+            // runs first.
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|_, _: &MouseDownEvent, _, cx| cx.stop_propagation()),
@@ -283,14 +232,9 @@ pub fn overlay<V: 'static>(
             .context_menu(move |menu, window, cx| {
                 menu_for(menu, menu_state.clone(), menu_key.clone(), id, window, cx)
             });
-        // Each slot carries its own id so the context menus inside them,
-        // which all share one, get element state of their own.
-        //
-        // The bottom half only, because the cue slots hold the top half
-        // and a full-height column would swallow them: two marks within a
-        // hit width of each other would leave whichever was hosted last
-        // as the only one a pointer could reach. The split follows where
-        // the glyphs already are.
+        // Each slot gets its own id so the context menus inside get their own
+        // element state. Bottom half only: a full-height column would swallow
+        // the cue slots in the top half.
         layer = layer.child(
             div()
                 .id(("bookmark-slot", id as u64))
@@ -309,8 +253,6 @@ pub fn overlay<V: 'static>(
     layer
 }
 
-/// The hovered mark's readout: its name over its time, or the time alone,
-/// in the seek preview's pill, centered over the ribbon.
 fn readout(mark: &Mark) -> Div {
     let time = fmt_time(mark.position_ms as f64 / 1000.0);
     let name = mark.name.trim();
@@ -348,9 +290,8 @@ fn readout(mark: &Mark) -> Div {
         )
 }
 
-/// A mark's actions: rename, color, move to the playhead, remove. The
-/// strips and the bookmarks panel share it; a caller with a play row of its
-/// own puts that ahead of this.
+/// Shared by the strips and the bookmarks panel. A caller with a play row of
+/// its own puts that ahead of this.
 pub fn menu_for(
     menu: PopupMenu,
     state: AppState,
@@ -366,15 +307,9 @@ pub fn menu_for(
             .on_click(move |_, _, cx| openers::bookmark_edit(rename_state.clone(), id, cx)),
     );
     let menu = color_submenu(menu, state.clone(), vec![id], window, cx);
-    // Move only offers itself while the mark's track is the one playing:
-    // the playhead is the target, and on any other track it points at
-    // nothing to do with this mark.
-    //
-    // A station playing is the exception. The row shows greyed whatever
-    // the mark belongs to, because a listen clock is not a position and
-    // the question "why can't I move this" deserves an answer where it
-    // was asked. Bookmarks dropped on a station before the lockout
-    // existed are exactly the ones this menu opens over.
+    // Move only offers itself while the mark's track is playing, since the
+    // playhead is the target. A station shows it greyed so the lockout
+    // explains itself.
     let move_label = rox_i18n::t!("bookmark-menu-move");
     let menu = if !position_bound::allowed(&state, cx) {
         menu.item(position_bound::locked_item(move_label, icons::LOCATE))
@@ -414,10 +349,8 @@ pub fn menu_for(
     )
 }
 
-/// The Color flyout over one or more marks: the accent, the quick picks
-/// with the first mark's current one checked, and, for a single mark, the
-/// picker for anything else. A pick lands on every id at once, which is
-/// what a multi-selection in the bookmarks panel asks for.
+/// A pick lands on every id at once. The custom picker only shows for a
+/// single mark.
 pub fn color_submenu(
     menu: PopupMenu,
     state: AppState,
@@ -463,8 +396,7 @@ fn color_menu(menu: PopupMenu, state: AppState, ids: Vec<i64>, cx: &App) -> Popu
                 .on_click(move |_, _, cx| recolor(&pick_state, Some(hex), &pick_ids, cx)),
         );
     }
-    // The picker edits one mark's row; over a set there's no one row to
-    // seed it from, so the quick picks are the whole offer.
+    // The picker edits one mark's row, so a set gets the quick picks only.
     let [id] = ids[..] else {
         return menu;
     };
@@ -500,7 +432,6 @@ mod tests {
         let placed = marks(&set, Some(120.0));
         assert_eq!(placed.len(), 2);
         assert!((placed[0].fraction - 0.25).abs() < 1e-6);
-        // Past the end clamps onto the strip rather than off it.
         assert_eq!(placed[1].fraction, 1.0);
         assert!(marks(&set, None).is_empty());
         assert!(marks(&set, Some(0.0)).is_empty());

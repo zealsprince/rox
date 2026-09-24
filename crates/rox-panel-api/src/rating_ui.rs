@@ -1,9 +1,6 @@
-//! The rating control: one clickable face over the library's 0-100
-//! value, shared by every surface that sets ratings. Five stars, or a
-//! 0-10 readout over twenty half-point steps when the app-level style
-//! says numeric; clicking the value already set clears it. What a click
-//! does with the value is the caller's business: the library writes the
-//! catalog, the tag editor arms a pending field.
+//! The rating control shared by every surface that sets ratings: five stars,
+//! or a 0-10 readout over twenty half-point steps when the rating style says
+//! numeric. Clicking the value already set clears it.
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
@@ -15,15 +12,11 @@ use rox_core::settings::{RatingStyle, rating_dots, rating_style};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 
-/// The star the pointer rests on, one pair app-wide: only one control
-/// is under the mouse at a time, and the key records which, so every
-/// other control renders untouched. Star 0 is no preview. Statics
-/// because the control is a free function rebuilt per frame with no
-/// entity to hold state.
+/// The hovered control and star, app-wide since only one control is under
+/// the mouse. Statics because the control is a per-frame free function.
 static HOVER_KEY: AtomicU64 = AtomicU64::new(0);
 static HOVER_STAR: AtomicU8 = AtomicU8::new(0);
 
-/// The previewed star for a control, 0 when the pointer is elsewhere.
 fn hover_star(key: u64) -> u8 {
     if HOVER_KEY.load(Ordering::Relaxed) == key {
         HOVER_STAR.load(Ordering::Relaxed)
@@ -32,8 +25,6 @@ fn hover_star(key: u64) -> u8 {
     }
 }
 
-/// Note the pointer over a star and repaint; a move within the same
-/// star costs nothing.
 fn set_hover(key: u64, star: u8, window: &mut Window) {
     if HOVER_KEY.load(Ordering::Relaxed) == key && HOVER_STAR.load(Ordering::Relaxed) == star {
         return;
@@ -43,8 +34,7 @@ fn set_hover(key: u64, star: u8, window: &mut Window) {
     window.refresh();
 }
 
-/// Drop the preview when the pointer leaves this control; another
-/// control's hover already replaced the key and keeps its own.
+/// Leaves the preview alone when another control's hover already took the key.
 fn clear_hover(key: u64, window: &mut Window) {
     if HOVER_KEY.load(Ordering::Relaxed) != key {
         return;
@@ -53,7 +43,6 @@ fn clear_hover(key: u64, window: &mut Window) {
     window.refresh();
 }
 
-/// The readout form: the 0-10 display number, a dash while unrated.
 pub fn fmt(value: u8) -> SharedString {
     if value == 0 {
         "-".into()
@@ -62,11 +51,8 @@ pub fn fmt(value: u8) -> SharedString {
     }
 }
 
-/// The control over `current`, calling `set` with the clicked value, or
-/// zero when the click lands on the value already set, which clears it. `key`
-/// names this control for the hover preview; callers pass something
-/// stable and unique to what they rate (the track id, an input's entity
-/// id), so hovering one control never lights another.
+/// `key` names this control for the hover preview and must be stable and
+/// unique to what it rates (the track id, an input's entity id).
 pub fn control(
     key: u64,
     current: u8,
@@ -77,16 +63,10 @@ pub fn control(
     };
     match rating_style() {
         RatingStyle::Stars => {
-            // Filled to the nearest whole star, so a finer numeric score
-            // still reads at a glance.
+            // Round to the nearest whole star.
             let shown = (current + 10) / 20;
             let dots = rating_dots();
-            // The pointer's preview: every star up to the hovered one
-            // draws hollow in the accent, over filled and dotted rows
-            // alike, so the value a click would set reads before the click.
             let hovered = hover_star(key);
-            // The id makes the row stateful, which the hover-out that
-            // clears the preview needs.
             let mut stars = div()
                 .id(("rating-stars", key as usize))
                 .flex()
@@ -122,9 +102,6 @@ pub fn control(
                         })
                         .into_any_element()
                 } else {
-                    // The unfilled slot as a quiet dot, the classic playlist
-                    // look; centered in the star's box so the row of five
-                    // keeps its width either way.
                     div()
                         .size(px(14.))
                         .flex()
@@ -144,8 +121,7 @@ pub fn control(
                         .child(face),
                 );
             }
-            // Wrapped so the stateful hover row stays inside while the
-            // callers keep styling the plain Div they always got.
+            // Wrap so callers still get a plain Div, not a Stateful one.
             div().flex().items_center().child(stars)
         }
         RatingStyle::Numeric => {

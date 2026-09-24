@@ -1,8 +1,6 @@
-//! The settings window itself moved to rox-panel-api, where it's generic
-//! over [`PanelSettings`] and references no concrete panel type. This
-//! module holds the part that can't be generic: the downcast table naming
-//! every settings-capable panel type, and the two type-erased routes in
-//! (the layout tree's gear and lock) that use it.
+//! The settings window lives in rox-panel-api, generic over [`PanelSettings`].
+//! This module holds the part that can't be generic: the downcast table naming
+//! every settings-capable panel type, used by the layout tree's gear and lock.
 
 use std::sync::Arc;
 
@@ -54,11 +52,9 @@ use rox_panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, Volu
 use rox_panels::vu::VuPanel;
 use rox_panels::waveform::WaveformPanel;
 
-/// Dispatch a type-erased panel view to its concrete settings-capable
-/// type: try each downcast until one succeeds and run the body with the
-/// typed entity bound. The type list matches the workspace's panel
-/// registry; a type missing here just no-ops on the type-erased routes
-/// (the layout tree's gear and lock).
+/// Downcast a type-erased panel to its concrete settings-capable type and run
+/// the body with it bound. A type missing from this list no-ops on the layout
+/// tree's gear and lock.
 macro_rules! with_settings_panel {
     ($view:expr, |$panel:ident| $body:expr) => {
         with_settings_panel!(
@@ -119,15 +115,10 @@ macro_rules! with_settings_panel {
     };
 }
 
-/// Open the settings window for a type-erased panel, the settings
-/// window's layout tree route in.
 pub fn open_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
     with_settings_panel!(panel, |panel| open(panel, cx));
 }
 
-/// Flip a type-erased panel's placement lock, the layout tree's lock
-/// toggle. The dock reads the flag through `Panel::locked` on its next
-/// paint, so the flip settles on its own.
 pub fn toggle_locked_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
     with_settings_panel!(panel, |panel| panel.update(cx, |panel, cx| {
         let on = !panel.chrome().locked;

@@ -1,23 +1,11 @@
-//! Source clients: the servers rox borrows a catalog from rather than
-//! scanning one off disk. A source client speaks one server's API, blocks
-//! like everything else in this crate, and hands back plain data. It never
-//! writes a file, never touches SQLite and never knows what a library row
-//! looks like; the service layer above does that mapping, the same way the
-//! enrichment providers hand back candidates and leave the writing to the
-//! writer.
+//! Source clients: servers rox borrows a catalog from rather than scanning
+//! disk. A client speaks one server's API and hands back plain data; it never
+//! writes a file or knows what a library row looks like. No trait yet: there
+//! is one implementation, and a trait invented before the second is a guess.
 //!
-//! There's no per-domain trait split here the way `providers` has one trait
-//! per enrichment domain. That split earned itself by having five services
-//! answer the same question. Sources have one implementation so far, and a
-//! trait invented ahead of its second implementor is a guess about what the
-//! second one will need. When it lands, the shape these types already have
-//! is the trait.
-//!
-//! Two modules here sit beside the source clients without being ones, and
-//! both are about radio. `radio_browser` is a directory: it answers "which
-//! stations exist", and what it finds only becomes a row when someone adds
-//! it. `stream_probe` answers the narrower question a typed URL raises,
-//! which is whether the thing on the other end is a stream at all.
+//! `radio_browser` (the station directory), `stream_probe` (is this URL a
+//! stream?) and `autoeq` (headphone EQ profiles) sit here without being
+//! source clients.
 
 use serde_json::Value;
 
@@ -26,13 +14,10 @@ pub mod radio_browser;
 pub mod stream_probe;
 pub mod subsonic;
 
-/// One track as a source describes it, before anything maps it onto a
-/// library row. Strings rather than options throughout: a server that
-/// doesn't know a track's genre just leaves the field out, and an empty
-/// string is what the library stores for that anyway.
+/// Strings rather than options: an empty string is what the library stores anyway.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceTrack {
-    /// The server's own id for the song, stored as the row's path.
+    /// Stored as the row's path.
     pub id: String,
     pub title: String,
     pub artist: String,
@@ -45,18 +30,13 @@ pub struct SourceTrack {
     pub duration_ms: u32,
     pub codec: String,
     pub bitrate_kbps: u16,
-    /// Bytes on the server, for the row's size column.
     pub size: i64,
-    /// The stream URL, credentials already in the query string minus the
-    /// token and salt, which the resolve step adds fresh.
+    /// Credentials in the query minus token and salt, which resolve adds fresh.
     pub stream_url: String,
-    /// The server's cover art id, empty when it has none.
     pub cover_id: String,
 }
 
-/// An internet radio station as a server lists it. Servers keep these as a
-/// side list, not as songs, so one lands in the radio source rather than
-/// under the server's own rows.
+/// Servers list stations apart from songs; they land in the radio source.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceStation {
     pub id: String,
@@ -65,9 +45,7 @@ pub struct SourceStation {
     pub home_page: String,
 }
 
-/// A playlist as the server holds it: a name and the song ids in it. The
-/// ids are the server's own, so turning them into rox row ids happens after
-/// the tracks are upserted and never before.
+/// Server song ids; mapping to rox row ids waits until the tracks are upserted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourcePlaylist {
     pub id: String,
@@ -75,7 +53,6 @@ pub struct SourcePlaylist {
     pub track_ids: Vec<String>,
 }
 
-/// A string field, trimmed, empty when it's missing or isn't a string.
 pub(crate) fn text(value: &Value, key: &str) -> String {
     text_of(value.get(key))
 }
@@ -88,8 +65,7 @@ pub(crate) fn text_of(value: Option<&Value>) -> String {
         .to_string()
 }
 
-/// A numeric field, 0 when it's missing. Servers send these as numbers, but
-/// a few send them as strings, so both are read.
+/// 0 when missing. A few servers send numbers as strings.
 pub(crate) fn number(value: &Value, key: &str) -> i64 {
     let Some(field) = value.get(key) else {
         return 0;

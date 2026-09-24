@@ -1,7 +1,5 @@
-//! The scrobbler and the favourites mirror live in
-//! [`rox_services::lastfm`] now. The loved-list import stays here: it's a
-//! task-window job with its own progress, not something the scrobbler
-//! drives.
+//! The Last.fm imports, loved list and play history, as task-window jobs.
+//! The scrobbler and the favourites mirror live in [`rox_services::lastfm`].
 
 pub mod import;
 pub mod plays_import;

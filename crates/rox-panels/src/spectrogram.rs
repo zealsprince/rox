@@ -1,27 +1,16 @@
-//! The spectrogram panel: the player's PCM tap as a scrolling waterfall, with
-//! frequency across one axis, time across the other, and loudness as color.
-//! The spectrum panel beside it shows one instant and the oscilloscope shows
-//! one window of samples, so both forget everything the moment the next frame
-//! lands. This one keeps the last few seconds standing, and that's the whole
-//! point of it: a melody line draws itself as a moving ridge, a snare prints
-//! as a full-height stripe, a filter sweep climbs, and a track's texture
-//! becomes a shape you can read instead of a flicker you can only feel.
+//! The spectrogram panel: the player's PCM tap as a scrolling waterfall,
+//! frequency across one axis, time along the other, loudness as color. It
+//! keeps the last few seconds standing where the spectrum and the
+//! oscilloscope forget each frame.
 //!
-//! It's also the one audio view that can't be drawn with paint primitives. A
-//! per-pixel heatmap over a 600x300 panel is tens of thousands of quads a
-//! frame, which is not a thing to ask of the UI thread. So the history lives
-//! in a ring of reduced columns, and a new column bakes it into a small
-//! [`RenderImage`] that the renderer scales to whatever size the panel
-//! happens to be. Frames between columns repaint the same texture, which
-//! uploads nothing, and once the audio stops and the last of it has scrolled
-//! off the panel parks and stops asking for frames.
+//! A per-pixel heatmap is tens of thousands of quads a frame, too many for
+//! paint primitives, so the history lives in a ring of reduced columns
+//! baked into a small [`RenderImage`] the renderer scales. Frames between
+//! columns repaint the same texture.
 //!
-//! What it deliberately doesn't do: no peak tracking, no per-column
-//! normalization, no interpolation between columns to smooth the scroll. The
-//! dB window is whatever the config says rather than whatever the loudest
-//! thing on screen is, so two tracks look different when they are different
-//! and a quiet passage reads as quiet instead of being stretched to fill the
-//! ramp.
+//! Deliberately no peak tracking, per-column normalization, or scroll
+//! interpolation: the dB window is the config's, so a quiet passage reads
+//! as quiet.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -50,71 +39,49 @@ use crate::panel_settings;
 use crate::settings::ui as settings_ui;
 use crate::spectrum::{Orientation, orientation_choices};
 
-/// The frequency resolution a stored column keeps, rows. Fixed rather than
-/// following the FFT size, so the window size and the history's memory are
-/// independent knobs: 256 rows is finer than any panel this sits in resolves
-/// vertically, and the renderer's own filtering handles the rest.
+/// Fixed rather than following the FFT size, so window size and history
+/// memory are independent. Finer than any panel resolves vertically.
 const ROWS: usize = 256;
 
-/// How many steps the colormap is sampled into for a bake. Past this the eye
-/// stops reading the difference, and the lookup is what keeps the per-pixel
-/// loop down to a copy.
+/// The lookup keeps the per-pixel loop down to a copy.
 const LUT_STEPS: usize = 256;
 
-/// The frequency bounds the sliders (and a hand-edited config) may pick
-/// between: below the bottom of hearing up to a typical Nyquist ceiling.
+/// Below the bottom of hearing up to a typical Nyquist ceiling.
 const HZ_MIN: f32 = 10.0;
 const HZ_MAX: f32 = 24_000.0;
 
-/// The smallest span the low and high bounds keep between them, so the log
-/// mapping always has room and can never invert.
 const MIN_RATIO: f32 = 2.0;
 
-/// The dB window sliders' spans, on magnitudes where a full-scale sine is
-/// 0 dB. The floor is the quiet end that maps to the colormap's dark stop,
-/// the ceiling the loud end that maps to its bright one.
+/// A full-scale sine is 0 dB.
 const FLOOR_MIN: f32 = -120.0;
 const FLOOR_MAX: f32 = -40.0;
 const CEIL_MIN: f32 = -40.0;
 const CEIL_MAX: f32 = 0.0;
 
-/// The narrowest the dB window may be squeezed to. The two sliders overlap at
-/// -40, so without this a config could collapse the window onto one value and
-/// leave every cell at the same end of the ramp.
+/// The two sliders overlap at -40, so without this the window could
+/// collapse onto one value.
 const MIN_DB_SPAN: f32 = 6.0;
 
-/// The scroll speed slider's span, columns per second: the slow end holds
-/// most of a minute on a wide panel, the fast end reads nearly as a live
-/// spectrum smeared sideways.
+/// The slow end holds most of a minute on a wide panel.
 const SPEED_MIN: f32 = 5.0;
 const SPEED_MAX: f32 = 120.0;
 
-/// The history slider's span, columns. This is the texture's long side and
-/// what bounds the panel's memory: the top end is 2 MB of cells.
+/// The texture's long side and the memory bound: the top is 2 MB of cells.
 const HISTORY_MIN: usize = 128;
 const HISTORY_MAX: usize = 2048;
 
-/// The FFT sizes the picker offers. Short windows follow a transient, long
-/// ones separate two notes down low; past 8k the window covers enough time
-/// that a column stops meaning one moment.
+/// Past 8k a column stops meaning one moment.
 const FFT_CHOICES: &[(&str, usize)] = &[("1k", 1024), ("2k", 2048), ("4k", 4096), ("8k", 8192)];
 
-/// How long the feed may sit still before it reads as stopped audio rather
-/// than the gap between pump ticks. Same as the spectrum's and the VU's, and
-/// for the same reason: the tap drains on a ~16ms timer, so frames between
-/// ticks see no new samples, and treating that as silence would print a black
-/// stripe through every column of an otherwise loud track.
+/// How long the feed may sit still before it reads as stopped rather than
+/// a gap between pump ticks. Treating the gap as silence would print a
+/// black stripe through a loud track.
 const SILENT_AFTER: f32 = 0.15;
 
-/// The panel's own size floor. The body is one canvas that draws at whatever
-/// size it gets, so a layout is free to run the waterfall as a thin strip.
 const MIN_SIDE: Pixels = px(24.);
 
-/// How the loudness maps to color. The first four are perceptual ramps that
-/// carry the same order everywhere along them, which is the whole reason a
-/// heatmap is readable at all; the last two build a ramp of the same shape out
-/// of the palette's own colors ([`heat_color`]), so the waterfall follows the
-/// theme and the cover art like every other visualizer.
+/// The first four are perceptual ramps; Theme and Cover build one of the
+/// same shape from the palette ([`heat_color`]).
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Colormap {
@@ -127,9 +94,8 @@ pub enum Colormap {
     Cover,
 }
 
-/// The colormap anchors, evenly spaced and interpolated between. A handful of
-/// stops off the real tables is indistinguishable from the full 256 entries
-/// once it's a few pixels tall, and it keeps the tables out of the binary.
+/// A handful of stops is indistinguishable from the full 256-entry tables
+/// at this size, and keeps them out of the binary.
 const MAGMA: [[u8; 3]; 5] = [
     [0, 0, 4],
     [81, 18, 124],
@@ -164,9 +130,8 @@ fn colormap_choices() -> [(SharedString, Colormap); 6] {
     ]
 }
 
-/// A clamp that swallows NaN too. `f32::clamp` passes it straight through, and
-/// one NaN out of a hand-edited layout would take a whole column with it, so
-/// every config accessor goes through here.
+/// A clamp that swallows NaN, which `f32::clamp` passes through. One NaN
+/// from a hand-edited layout would take a whole column.
 fn sane(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     if value.is_nan() {
         fallback
@@ -175,48 +140,27 @@ fn sane(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     }
 }
 
-/// The spectrogram panel's per-view config: what a saved layout restores and
-/// what the customize window edits. Missing fields take the defaults, so a
-/// layout dumped before a field existed still loads. The scroll edge reuses
-/// the spectrum's type so the visualizers use the same terms.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpectrogramConfig {
-    /// The rename, theme override, and placement locks shared by every panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// FFT window size: short windows follow transients, long ones separate
-    /// neighbouring notes down low.
     pub fft_size: usize,
-    /// Low bound of the frequency axis, Hz.
     pub lo_hz: f32,
-    /// High bound of the frequency axis, Hz. Capping below Nyquist drops the
-    /// near-silent top octaves that would sit black across the whole panel.
+    /// Hz. Capping below Nyquist drops the near-silent top octaves.
     pub hi_hz: f32,
-    /// Log frequency axis, where an octave takes the same room anywhere, or
-    /// linear, which is what a lab tool shows and what makes a harmonic stack
-    /// read as evenly spaced.
+    /// Linear is the lab-tool view, where a harmonic stack reads evenly
+    /// spaced.
     pub log_scale: bool,
-    /// The quiet end of the mapped dB window: anything at or under this takes
-    /// the colormap's dark stop.
     pub floor_db: f32,
-    /// The loud end: anything at or over this takes the bright stop.
     pub ceil_db: f32,
-    /// How fast the picture scrolls, columns per second.
     pub speed: f32,
-    /// How many columns the history keeps.
     pub history: usize,
-    /// How loudness maps to color.
     pub colormap: Colormap,
-    /// The edge new columns enter from. The frequency axis runs across the
-    /// scroll, so a sideways scroll means an upright frequency axis.
+    /// The frequency axis runs across the scroll direction.
     pub direction: Orientation,
-    /// The frequency ruler's dividers over the picture.
     pub grid: bool,
-    /// The ruler's numbers, where the panel has room for them.
     pub labels: bool,
-    /// Hold the standing picture while playback is paused instead of
-    /// scrolling silence into it.
     pub freeze: bool,
 }
 
@@ -242,18 +186,14 @@ impl Default for SpectrogramConfig {
 }
 
 impl SpectrogramConfig {
-    /// The window size, snapped to the picker's power-of-two steps. The clamp
-    /// comes first on purpose: `next_power_of_two` overflow-panics near the
-    /// top of `usize` and [`Analyzer::new`] asserts on anything outside its
-    /// range, so a hand-edited layout must not be able to reach either.
+    /// Clamp before rounding: `next_power_of_two` overflow-panics near the top
+    /// of `usize`, and the feed answers nothing for a size out of range.
     fn fft(&self) -> usize {
         self.fft_size
             .clamp(MIN_FFT_SIZE, MAX_FFT_SIZE)
             .next_power_of_two()
     }
 
-    /// The frequency axis, clamped to the slider band and the minimum span, so
-    /// a hand-edited file can't invert or collapse the mapping.
     fn range(&self) -> (f32, f32) {
         let lo = sane(self.lo_hz, HZ_MIN, HZ_MAX, 20.0);
         let hi = sane(self.hi_hz, HZ_MIN, HZ_MAX, 20_000.0)
@@ -262,9 +202,8 @@ impl SpectrogramConfig {
         (lo.min(hi / MIN_RATIO), hi)
     }
 
-    /// The mapped dB window, with the ceiling kept clear of the floor. The two
-    /// sliders meet at -40, so the ceiling reads back above whatever the floor
-    /// ended up at rather than trusting the pair.
+    /// The two sliders meet at -40, so the ceiling is held clear of whatever
+    /// the floor ended up at.
     fn db_window(&self) -> (f32, f32) {
         let floor = sane(self.floor_db, FLOOR_MIN, FLOOR_MAX, -90.0);
         let ceil = sane(self.ceil_db, CEIL_MIN, CEIL_MAX, -20.0).max(floor + MIN_DB_SPAN);
@@ -279,8 +218,6 @@ impl SpectrogramConfig {
         self.history.clamp(HISTORY_MIN, HISTORY_MAX)
     }
 
-    /// Where a frequency falls along the axis, 0 at the low bound and 1 at the
-    /// high one.
     fn axis_frac(&self, hz: f32) -> f32 {
         let (lo, hi) = self.range();
         if self.log_scale {
@@ -291,8 +228,6 @@ impl SpectrogramConfig {
     }
 }
 
-/// A slider fraction (0 to 1) as a log-spaced frequency across the band, and
-/// back. Log so an octave takes the same travel anywhere on the strip.
 fn frac_to_hz(fraction: f32) -> f32 {
     HZ_MIN * (HZ_MAX / HZ_MIN).powf(fraction.clamp(0.0, 1.0))
 }
@@ -301,8 +236,6 @@ fn hz_to_frac(hz: f32) -> f32 {
     (hz / HZ_MIN).ln() / (HZ_MAX / HZ_MIN).ln()
 }
 
-/// The frequency an axis fraction stands for, the inverse of
-/// [`SpectrogramConfig::axis_frac`].
 fn freq_at(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
     if log {
         lo * (hi / lo).powf(t)
@@ -311,10 +244,8 @@ fn freq_at(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
     }
 }
 
-/// Whole columns due since the last tick, keeping the fraction for the next
-/// one. Wall clock rather than frame count, so the picture scrolls at the
-/// configured rate on a 60 Hz and a 144 Hz display alike, and a speed slower
-/// than the refresh doesn't round down to nothing every tick.
+/// Wall clock rather than frame count, keeping the fraction, so the scroll
+/// rate holds at any refresh and a slow speed doesn't round to nothing.
 fn columns_due(accum: &mut f32, dt: f32, speed: f32) -> usize {
     *accum += dt * speed;
     if !accum.is_finite() {
@@ -326,15 +257,9 @@ fn columns_due(accum: &mut f32, dt: f32, speed: f32) -> usize {
     whole as usize
 }
 
-/// One row's magnitude out of the half-spectrum, over the bin span `b0..b1`
-/// the row covers. Two regimes, because a log axis puts a row well inside one
-/// bin down low and across dozens of them up top: under a bin wide the row
-/// interpolates between its neighbours, or the low end draws as a staircase of
-/// flat blocks; wider than a bin it takes the max, so a narrow partial
-/// survives the fold instead of being averaged into the noise around it.
-///
-/// Bin 0 is DC and never reaches a row: a DC offset in the tap would otherwise
-/// print as a solid bar along the bottom of everything.
+/// Two regimes: under a bin wide the row interpolates, or a log axis draws
+/// the low end as a staircase; wider, it takes the max so a narrow partial
+/// survives. Bin 0 (DC) never reaches a row.
 fn fold(mags: &[f32], b0: f32, b1: f32) -> f32 {
     let half = mags.len();
     if half < 2 {
@@ -358,10 +283,8 @@ fn fold(mags: &[f32], b0: f32, b1: f32) -> f32 {
     }
 }
 
-/// What the history was built for. Any change to the frequency axis or the dB
-/// window invalidates every stored column: they were reduced under the old
-/// mapping, and reinterpreting them would draw a lie rather than old data. So
-/// a mismatch clears the ring instead of keeping the picture.
+/// A mismatch clears the ring: stored columns were reduced under the old
+/// mapping and can't be reinterpreted.
 #[derive(Clone, PartialEq)]
 struct Mapping {
     rate: u32,
@@ -374,10 +297,8 @@ struct Mapping {
     history: usize,
 }
 
-/// One column of the spectrogram: the half-spectrum folded into [`ROWS`] rows,
-/// each stored as its position in the dB window rather than a raw magnitude.
-/// That's what keeps the history's size independent of the FFT size, and it
-/// means a bake is a lookup per cell rather than a log per cell.
+/// Stored as a position in the dB window, so the history's size is
+/// independent of the FFT size and a bake is a lookup per cell.
 fn reduce(mags: &[f32], map: &Mapping, out: &mut [f32]) {
     let nyquist = (map.rate.clamp(8_000, 384_000) as f32) / 2.0;
     let half = mags.len() as f32;
@@ -392,7 +313,6 @@ fn reduce(mags: &[f32], map: &Mapping, out: &mut [f32]) {
     }
 }
 
-/// A colormap's color at position `t`, as straight RGB.
 fn cell_color(map: Colormap, t: f32) -> [u8; 3] {
     match map {
         Colormap::Magma => sample_stops(&MAGMA, t),
@@ -409,61 +329,42 @@ fn cell_color(map: Colormap, t: f32) -> [u8; 3] {
     }
 }
 
-/// Where the seed color sits along the heat ramp. Past the middle so most of
-/// the travel is the climb out of the background, which is where a heatmap
-/// does its reading.
+/// Past the middle, so most of the travel is the climb out of the
+/// background.
 const HEAT_MID: f32 = 0.6;
 
-/// How far from the end of the OkLCh lightness range the ramp's loud stop
-/// lands, and the room it keeps clear of the middle stop. A palette that hands
-/// us a seed already at that end still gets a ramp that travels.
+/// A seed already at the end still gets a ramp that travels.
 const HEAT_PEAK_L: f32 = 0.96;
 const HEAT_GAP_L: f32 = 0.15;
 
-/// How much of the top color's chroma survives at the ramp's bright end. The
-/// last stop is mostly white with the hue still in it, the way every readable
-/// heat ramp ends.
+/// The bright end is mostly white with the hue still in it.
 const HEAT_TOP_C: f32 = 0.35;
 
-/// The palette-driven colormaps as a heat ramp: the panel background (`floor`)
-/// at the quiet end, `seed` through the middle, and a wash of `top`'s hue at
-/// the loud one.
-///
-/// The bar ramp in [`crate::spectrum::ramp_color`] won't do here. It runs
-/// accent to highlight because a bar's height already says how loud it is, so
-/// its quiet end is a perfectly visible color. Drop that into a heatmap, where
-/// color is the only thing carrying the level, and the whole panel paints one
-/// wash of accent.
-///
-/// The climb is in OkLCh so lightness rises the same amount everywhere along
-/// the ramp and the order stays readable, which straight RGB mixing between
-/// two palette colors can't promise: under song theming the cover's two
-/// colors are whatever the art gave us, and one is often no brighter than the
-/// other.
+/// The panel background at the quiet end, `seed` through the middle, a
+/// wash of `top`'s hue at the loud end. Not [`crate::spectrum::ramp_color`]:
+/// its quiet end is a visible color, which would wash the whole heatmap.
+/// OkLCh so lightness climbs evenly even when the cover's two colors are
+/// equally bright.
 fn heat_color(floor: Rgba, seed: Rgba, top: Rgba, t: f32) -> [u8; 3] {
     let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
     let (floor_l, _, _) = palette::rgba_to_oklch(floor);
     let (seed_l, seed_c, seed_h) = palette::rgba_to_oklch(seed);
     let (_, top_c, top_h) = palette::rgba_to_oklch(top);
-    // Which way there's room to travel. A light theme's panel already sits
-    // near the top of the lightness range, so the ramp runs the other way and
-    // the loud end is the dark one; the cells still walk away from the
-    // background, which is all the eye is reading.
+    // A light panel sits near the top of the lightness range, so the ramp
+    // runs toward dark instead.
     let peak_l = if floor_l < 0.5 {
         HEAT_PEAK_L
     } else {
         1.0 - HEAT_PEAK_L
     };
-    // The seed keeps its own lightness where there's room for it, held off
-    // both ends so neither half of the ramp can collapse.
+    // Held off both ends so neither half of the ramp collapses.
     let lo = floor_l.min(peak_l) + HEAT_GAP_L;
     let hi = (floor_l.max(peak_l) - HEAT_GAP_L).max(lo);
     let mid_l = sane(seed_l, lo, hi, lo);
     let lerp = |a: f32, b: f32, k: f32| a + (b - a) * k;
     let (l, c, h) = if t < HEAT_MID {
         let k = t / HEAT_MID;
-        // Chroma comes up with the lightness: at the floor the cell is the
-        // panel background, so it has no hue to show yet.
+        // No chroma at the floor, which is the panel background.
         (lerp(floor_l, mid_l, k), lerp(0.0, seed_c, k), seed_h)
     } else {
         let k = (t - HEAT_MID) / (1.0 - HEAT_MID);
@@ -478,15 +379,13 @@ fn heat_color(floor: Rgba, seed: Rgba, top: Rgba, t: f32) -> [u8; 3] {
     [byte(color.r), byte(color.g), byte(color.b)]
 }
 
-/// Two OkLCh hues blended the short way around the wheel. The long way would
-/// drag the ramp through half the spectrum to join two neighbouring colors.
+/// The short way round, or the ramp crosses half the spectrum.
 fn hue_lerp(from: f32, to: f32, t: f32) -> f32 {
     let tau = std::f32::consts::TAU;
     let delta = (to - from + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
     from + delta * t
 }
 
-/// A stop table sampled at `t`, the stops evenly spaced across 0 to 1.
 fn sample_stops(stops: &[[u8; 3]], t: f32) -> [u8; 3] {
     let last = stops.len() - 1;
     let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
@@ -499,10 +398,8 @@ fn sample_stops(stops: &[[u8; 3]], t: f32) -> [u8; 3] {
     [lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2])]
 }
 
-/// What the standing texture was baked with, apart from the cells themselves.
-/// The colormap and the scroll edge are obvious; the three samples catch a
-/// theme switch or a new cover under the Theme and Cover maps, which change
-/// the colors without changing anything in the config.
+/// The three samples catch a theme or cover change under the Theme and
+/// Cover maps.
 #[derive(PartialEq)]
 struct Skin {
     colormap: Colormap,
@@ -524,47 +421,33 @@ impl Skin {
     }
 }
 
-/// Per-panel waterfall state, shared with the paint closure the way the
-/// spectrum shares its bars: the entity holds the handle, the closure does the
-/// per-frame work where the bounds are known.
 struct Waterfall {
     last_written: u64,
     last_tick: Option<Instant>,
-    /// When the feed last carried new audio.
     last_fresh: Option<Instant>,
-    /// What the ring was built for; a mismatch clears it.
     mapping: Option<Mapping>,
-    /// The newest column, held between pump ticks so a frame that brought no
-    /// audio scrolls what's in hand instead of re-running the FFT.
+    /// Held between pump ticks, so a frame with no audio doesn't re-run the
+    /// FFT.
     rows: Vec<f32>,
-    /// The ring, column-major: `cells[slot * ROWS + row]`.
     cells: Vec<f32>,
-    /// Columns the ring holds, and the slot the next one goes into, which is
-    /// also where the oldest one currently sits.
+    /// `head` is the next slot, which is also the oldest column.
     history: usize,
     head: usize,
-    /// Consecutive silent columns at the head. Once it reaches the history the
-    /// whole picture is silence and there's nothing left to scroll.
+    /// Once it reaches the history the picture is all silence.
     quiet: usize,
-    /// Fractional columns carried across ticks.
     accum: f32,
-    /// The standing texture and the one it replaced, plus whether the cells
-    /// have moved since the bake.
+    /// The standing texture and the one it replaced.
     image: Option<Arc<RenderImage>>,
     retired: Option<Arc<RenderImage>>,
     skin: Option<Skin>,
     dirty: bool,
-    /// The colormap sampled into renderer-order pixels, rebuilt when the
-    /// skin changes.
+    /// BGRA, rebuilt when the skin changes.
     lut: Vec<[u8; 4]>,
-    /// The baked pixels, kept between bakes so a scroll shifts them and
-    /// recolors only the new columns.
+    /// Kept between bakes, so a scroll shifts them and recolors only the new
+    /// columns.
     raw: Vec<u8>,
-    /// Columns pushed since the last bake; `usize::MAX` means everything,
-    /// forcing a full rebuild.
+    /// `usize::MAX` forces a full rebuild.
     pending: usize,
-    /// Something still needs to move: render keeps requesting frames until
-    /// this clears.
     alive: bool,
 }
 
@@ -592,8 +475,6 @@ impl Waterfall {
         }
     }
 
-    /// Build the ring for a mapping, dropping whatever was stored under the
-    /// old one.
     fn reset(&mut self, mapping: &Mapping) {
         self.rows = vec![0.0; ROWS];
         self.cells = vec![0.0; mapping.history * ROWS];
@@ -606,11 +487,8 @@ impl Waterfall {
         self.mapping = Some(mapping.clone());
     }
 
-    /// One tick: re-analyze if the feed moved, then scroll however many
-    /// columns the wall clock is owed. No new audio holds the current column
-    /// across the gap between pump ticks; audio that's really stopped scrolls
-    /// silence in until the panel is empty, unless `hold` keeps the picture
-    /// standing (freeze on pause).
+    /// Stopped audio scrolls silence in until the panel is empty, unless
+    /// `hold` keeps the picture.
     fn step(&mut self, feed: &AudioFeed, config: &SpectrogramConfig, hold: bool) {
         let (lo, hi) = config.range();
         let (floor, ceil) = config.db_window();
@@ -639,10 +517,9 @@ impl Waterfall {
         let fresh = written != self.last_written;
         self.last_written = written;
 
-        // Frozen: hold the picture exactly where it is and stop animating. An
-        // axis edit made while frozen clears the ring above and leaves the
-        // panel empty until playback resumes, which beats redrawing the old
-        // columns under a mapping they were never reduced for.
+        // An axis edit while frozen clears the ring and leaves the panel empty
+        // until playback resumes, rather than redrawing columns under the wrong
+        // mapping.
         if hold && !fresh {
             self.alive = false;
             return;
@@ -666,10 +543,7 @@ impl Waterfall {
         self.alive = self.quiet < self.history;
     }
 
-    /// The newest window folded into the current column, off the feed's
-    /// shared spectrum. The feed has none while it fills, so a partial
-    /// buffer leaves the previous column standing rather than analyzing a
-    /// window with a stale tail on it.
+    /// The feed has no spectrum while it fills, so the previous column stands.
     fn analyze(&mut self, feed: &AudioFeed, mapping: &Mapping) {
         let Some(mags) = feed.magnitudes(mapping.fft) else {
             return;
@@ -677,15 +551,13 @@ impl Waterfall {
         reduce(&mags, mapping, &mut self.rows);
     }
 
-    /// The current column into the ring, oldest one out.
     fn push_column(&mut self) {
         if self.history == 0 || self.cells.len() < self.history * ROWS || self.rows.len() < ROWS {
             return;
         }
         let silent = self.rows.iter().all(|&v| v <= 0.0);
         if silent && self.quiet >= self.history {
-            // Already scrolled entirely to silence: pushing another empty
-            // column changes no pixel, so don't dirty the texture for it.
+            // Already all silence: another empty column changes no pixel.
             return;
         }
         let base = self.head * ROWS;
@@ -696,24 +568,15 @@ impl Waterfall {
         self.pending = self.pending.saturating_add(1);
     }
 
-    /// The ring as a texture at its own resolution, one texel per column and
-    /// per row, which the renderer then scales to the panel. Sizing it to the
-    /// panel's pixels instead would rebuild everything on every resize and
-    /// make a wide panel expensive for no more detail than this.
-    ///
-    /// The pixels persist between bakes, so the steady case (a column or two
-    /// on an unchanged skin) shifts the standing picture and recolors only
-    /// what arrived; recoloring the whole ring on every pushed column was
-    /// the panel's biggest per-frame cost. A skin or mapping change marks
-    /// everything pending and rebuilds from scratch.
+    /// One texel per column and row, scaled by the renderer; sizing to the
+    /// panel would rebuild on every resize. The steady case shifts the pixels
+    /// and recolors only what arrived; a skin or mapping change rebuilds all.
     fn bake(&mut self, config: &SpectrogramConfig) -> Option<Arc<RenderImage>> {
         let history = self.history;
         if history == 0 || self.cells.len() < history * ROWS {
             return None;
         }
-        // The colormap sampled once per skin, stored BGRA (the renderer's
-        // order, the same swizzle the backdrop's bake does) so the per-cell
-        // loop below stays a lookup and a copy.
+        // BGRA, the renderer's order, the same swizzle the backdrop's bake uses.
         if self.lut.len() != LUT_STEPS {
             self.lut = (0..LUT_STEPS)
                 .map(|i| {
@@ -723,10 +586,8 @@ impl Waterfall {
                 .collect();
         }
 
-        // The frequency axis runs across the scroll, so a sideways scroll puts
-        // time along the width and frequency up the height, and a vertical one
-        // swaps them. Low frequencies sit at the bottom of an upright axis and
-        // at the left of a flat one, the way every other scale in the app runs.
+        // Low frequencies sit at the bottom of an upright axis and at the left of
+        // a flat one.
         let flat = config.direction.horizontal();
         let (w, h) = if flat {
             (ROWS, history)
@@ -738,10 +599,8 @@ impl Waterfall {
             self.raw.resize(w * h * 4, 0);
             0..history
         } else {
-            // Scroll the standing pixels toward the old edge, which leaves
-            // the newest `pending` columns to recolor below. After the shift
-            // every kept column sits exactly where the full loop would put
-            // it, so both paths share the write-out.
+            // After the shift every kept column sits where the full loop would put
+            // it, so both paths share the write-out below.
             let k = self.pending;
             match config.direction {
                 Orientation::Right => {
@@ -762,7 +621,6 @@ impl Waterfall {
             history - k..history
         };
         for i in fresh {
-            // `i` counts up from the oldest column.
             let slot = (self.head + i) % history;
             let base = slot * ROWS;
             for row in 0..ROWS {
@@ -797,13 +655,10 @@ impl Waterfall {
             return;
         }
 
-        // Keep this. RenderImage::new mints a fresh ImageId off a global
-        // counter, and gpui's sprite atlas keys its tiles by that id and holds
-        // them until something hands them back. A column a frame without this
-        // is a new tile 40 times a second and an exhausted atlas within
-        // seconds. The drop runs one paint late rather than at the moment the
-        // texture is replaced, so the tile outlives the frame that still
-        // points at it.
+        // Keep this. RenderImage::new mints a fresh ImageId, and gpui's sprite
+        // atlas holds each tile until it's handed back: without the drop, 40 new
+        // tiles a second exhaust the atlas within seconds. It runs one paint late
+        // so the tile outlives the frame that still points at it.
         if let Some(old) = self.retired.take() {
             let _ = window.drop_image(old);
         }
@@ -830,11 +685,8 @@ impl Waterfall {
     }
 }
 
-/// The frequency ruler over the picture: the 1-2-5 ladder's labelled steps as
-/// dividers across the scroll, each tagged with its frequency where the panel
-/// has room. Text is pricier than the lines, so the tags only draw once the
-/// panel can spread them, the same rule the VU scale follows, and a tag that
-/// would land on the previous one is dropped rather than printed over it.
+/// Tags only once the panel can spread them, and one that would land on
+/// the previous tag is dropped.
 fn paint_scale(
     bounds: Bounds<Pixels>,
     window: &mut Window,
@@ -868,8 +720,6 @@ fn paint_scale(
         if !(0.0..=1.0).contains(&frac) {
             continue;
         }
-        // Low frequencies sit at the bottom of an upright axis, so the
-        // fraction counts up from the base edge rather than down from the top.
         let (rx, ry, rw, rh) = if flat {
             (ox + frac * w, oy, 1.0, h)
         } else {
@@ -901,8 +751,6 @@ fn paint_scale(
         };
         let line = window.text_system().shape_line(text, fs, &[run], None);
         let lw = f32::from(line.width);
-        // The tag hangs just clear of its own divider, then clamps so one near
-        // a corner never spills out of the panel.
         let (tx, ty) = if flat {
             (rx + 3.0, oy + 2.0)
         } else {
@@ -919,21 +767,15 @@ pub struct SpectrogramPanel {
     config: SpectrogramConfig,
     feed: Arc<AudioFeed>,
     view: Arc<Mutex<Waterfall>>,
-    /// The settings sliders' painted bounds and drag state, one per slider so
-    /// a drag on one never moves the others.
     lo_scrub: ScrubState,
     hi_scrub: ScrubState,
     floor_scrub: ScrubState,
     ceil_scrub: ScrubState,
     speed_scrub: ScrubState,
     history_scrub: ScrubState,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Wakes the panel when a session starts, so an idle window resumes
-    /// animating without the player bar's frame pump.
     _player_changed: Subscription,
 }
 
@@ -958,8 +800,7 @@ impl SpectrogramPanel {
         }
     }
 
-    /// The low bound stops a min-span short of the high one, so the axis never
-    /// inverts as the strip drags past it.
+    /// Stops a min-span short of the high bound so the axis never inverts.
     fn set_lo_hz(&mut self, fraction: f32, cx: &mut Context<Self>) {
         let hi = sane(self.config.hi_hz, HZ_MIN, HZ_MAX, 16_000.0);
         let ceil = (hi / MIN_RATIO).max(HZ_MIN);
@@ -990,16 +831,11 @@ impl SpectrogramPanel {
     }
 
     fn set_history(&mut self, columns: f32, cx: &mut Context<Self>) {
-        // A NaN out of the typed readout casts to zero rather than through,
-        // and the clamp catches it from there.
+        // A NaN from the typed readout casts to zero, and the clamp catches it.
         self.config.history = (columns.round() as i64).clamp(0, HISTORY_MAX as i64) as usize;
         cx.notify();
     }
 
-    /// One log-frequency bounds slider: the shared scalar slider with the Hz
-    /// readout alongside, click-to-type like the rest. The readout switches to
-    /// kHz up top, but the input is always plain Hz, so the seed drops the
-    /// unit and `hz_to_frac` reads what's typed straight.
     fn freq_slider(
         &self,
         scrub: &ScrubState,
@@ -1019,8 +855,6 @@ impl SpectrogramPanel {
         )
     }
 
-    /// The panel's own dropdown entries: a Display flyout of the quick toggles
-    /// the customize window also holds, for a flip without opening it.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -1070,16 +904,13 @@ impl SpectrogramPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // While audio moves the direct observe re-renders on every pump tick,
-        // and the wall clock decides how many columns that tick is worth.
-        // Frame polling is just for the silence scrolling in after audio
-        // stops; once the panel is empty it parks, and a resume wakes it
-        // through the pump's play-state notify.
+        // The observe re-renders on every pump tick while audio moves. Frame
+        // polling only scrolls the silence in after audio stops, then the panel
+        // parks.
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
-        // Freeze on pause holds the standing picture: paused mid-session, not
-        // a played-out queue.
+        // Paused mid-session, not a played-out queue.
         let hold = self.config.freeze && session && !playing && !player.queue_ended();
         if !playing && self.view.lock().unwrap().alive {
             window.request_animation_frame();
@@ -1134,9 +965,6 @@ impl PanelSettings for SpectrogramPanel {
         let (floor, ceil) = self.config.db_window();
         let speed = self.config.speed();
         let history = self.config.history() as f32;
-        // What the FFT is handed and what it reads back: the window, the
-        // frequency axis it folds into, and the two dB bounds the ramp is
-        // stretched between.
         let analysis = div()
             .flex()
             .flex_col()
@@ -1200,8 +1028,6 @@ impl PanelSettings for SpectrogramPanel {
                     cx,
                 ),
             ));
-        // How the reduced columns are drawn: the colors, the edge they enter
-        // from, and how much time the panel holds.
         let picture = div()
             .flex()
             .flex_col()
@@ -1256,7 +1082,6 @@ impl PanelSettings for SpectrogramPanel {
                     cx,
                 ),
             ));
-        // The frequency ruler over the picture.
         let scale = div()
             .flex()
             .flex_col()
@@ -1307,10 +1132,6 @@ impl PanelSettings for SpectrogramPanel {
             .into_any_element()
     }
 
-    /// Hold on Pause lives here rather than on the panel's own page: it's
-    /// about how the panel acts when the audio stops, not how the waterfall
-    /// is drawn, and this is where every other panel keeps that kind of
-    /// switch.
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             settings_ui::section(
@@ -1376,8 +1197,6 @@ impl Panel for SpectrogramPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered in
-    /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -1437,9 +1256,6 @@ impl Panel for SpectrogramPanel {
 impl Render for SpectrogramPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
@@ -1462,32 +1278,23 @@ mod tests {
         }
     }
 
-    /// Down low a log row sits well inside one bin, and taking that bin whole
-    /// would draw the bottom of the panel as a staircase of flat blocks.
     #[test]
     fn a_narrow_row_interpolates_between_its_neighbours() {
         let mags = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-        // Centered halfway between a cold bin and the hot one.
         assert!((fold(&mags, 3.4, 3.6) - 0.5).abs() < 1e-6);
-        // Sitting right on the hot bin takes all of it.
         assert!((fold(&mags, 3.9, 4.1) - 1.0).abs() < 1e-6);
-        // And a quarter of the way onto it takes a quarter.
         assert!((fold(&mags, 3.2, 3.3) - 0.25).abs() < 1e-6);
     }
 
-    /// Up top a row covers dozens of bins, and averaging them would bury a
-    /// narrow partial under the quiet either side of it.
     #[test]
     fn a_wide_row_keeps_the_narrow_partial() {
         let mut mags = [0.0f32; 32];
         mags[7] = 1.0;
         assert_eq!(fold(&mags, 2.0, 12.0), 1.0);
-        // A span that misses it entirely stays at the floor.
+        // A span that misses it stays at the floor.
         assert_eq!(fold(&mags, 12.0, 24.0), 0.0);
     }
 
-    /// A DC offset in the tap would print as a solid bar along the bottom of
-    /// everything, so bin 0 is out of reach in both regimes.
     #[test]
     fn the_dc_bin_never_reaches_a_row() {
         let mut mags = [0.0f32; 16];
@@ -1504,8 +1311,6 @@ mod tests {
         assert_eq!(fold(&[], 0.0, 4.0), 0.0);
     }
 
-    /// A tone at a known frequency has to land in the row that covers it, and
-    /// the dB window has to place it inside 0 to 1.
     #[test]
     fn a_tone_lands_in_its_own_row() {
         let map = mapping(128);
@@ -1524,15 +1329,13 @@ mod tests {
             .0;
         let f0 = freq_at(hot as f32 / ROWS as f32, map.lo, map.hi, map.log);
         let f1 = freq_at((hot + 1) as f32 / ROWS as f32, map.lo, map.hi, map.log);
-        // The bin is 46.9 Hz wide, so the row it lights is the one that bin
-        // falls in rather than exactly the one 1 kHz falls in.
+        // The bin is 46.9 Hz wide, so the lit row is the bin's, not exactly
+        // 1 kHz's.
         assert!(
             (f0 - 100.0..f1 + 100.0).contains(&1000.0),
             "1 kHz should light the row covering {f0}..{f1}"
         );
-        // Full scale is 0 dB, well over the -20 dB ceiling.
         assert_eq!(rows[hot], 1.0);
-        // And silence sits on the floor.
         assert_eq!(rows[0], 0.0);
     }
 
@@ -1544,8 +1347,7 @@ mod tests {
             view.rows.fill(v);
             view.push_column();
         }
-        // Five columns into four slots: the first one is gone and the rest
-        // read back oldest first from the head.
+        // Five columns into four slots: the first is gone.
         let read: Vec<f32> = (0..4)
             .map(|i| view.cells[((view.head + i) % 4) * ROWS])
             .collect();
@@ -1553,8 +1355,6 @@ mod tests {
         assert_eq!(view.quiet, 0);
     }
 
-    /// A parked panel must not keep rebuilding its texture out of silence it
-    /// already scrolled in.
     #[test]
     fn a_silent_ring_stops_taking_columns() {
         let mut view = Waterfall::new();
@@ -1567,8 +1367,7 @@ mod tests {
         assert!(!view.dirty);
         assert_eq!(view.head, 0);
 
-        // A loud column wakes it, and the silence after it scrolls until the
-        // ring is empty again.
+        // A loud column wakes it, and the silence after scrolls until empty again.
         view.rows.fill(0.7);
         view.push_column();
         assert_eq!(view.quiet, 0);
@@ -1579,10 +1378,6 @@ mod tests {
         assert_eq!(view.quiet, 4);
     }
 
-    /// The steady bake shifts the standing pixels and recolors only the new
-    /// columns. That shortcut has to land on exactly the pixels a
-    /// from-scratch bake produces, in every scroll direction, batched
-    /// columns and ring wrap included.
     #[test]
     fn an_incremental_bake_matches_a_full_one() {
         for (i, direction) in [
@@ -1610,23 +1405,19 @@ mod tests {
                 all.rows.clone_from(&inc.rows);
                 inc.push_column();
                 all.push_column();
-                // Baking every other push leaves batches of two, the shape a
-                // slow frame hands the incremental path.
+                // Every other push leaves batches of two, the shape a slow frame hands
+                // the incremental path.
                 if step % 2 == 0 {
                     assert!(inc.bake(&config).is_some());
                 }
             }
             assert!(inc.bake(&config).is_some());
-            // The reference never baked along the way, so this one runs the
-            // full rebuild.
             assert!(all.bake(&config).is_some());
             assert_eq!(inc.raw, all.raw, "direction {i} diverged");
         }
     }
 
-    /// The scroll rate is wall clock, so the same stretch of time moves the
-    /// same distance whatever the display's refresh is. Dropping the fraction
-    /// each tick would leave the fast run short.
+    /// Dropping the fraction each tick would leave the fast run short.
     #[test]
     fn columns_follow_the_wall_clock_not_the_frame_rate() {
         let mut slow = 0.0;
@@ -1640,7 +1431,6 @@ mod tests {
     #[test]
     fn a_tick_shorter_than_a_column_still_carries() {
         let mut accum = 0.0;
-        // Quarter of a column a tick: three ticks of nothing, then one.
         for _ in 0..3 {
             assert_eq!(columns_due(&mut accum, 0.25, 1.0), 0);
         }
@@ -1668,8 +1458,7 @@ mod tests {
         );
         assert_eq!(cell_color(Colormap::Ice, 0.0), ICE[0]);
         assert_eq!(cell_color(Colormap::Ice, 1.0), ICE[ICE.len() - 1]);
-        // An interior anchor is hit exactly, so the ramp really runs through
-        // the stops rather than near them.
+        // An interior anchor is hit exactly.
         assert_eq!(cell_color(Colormap::Magma, 0.5), MAGMA[2]);
     }
 
@@ -1681,7 +1470,6 @@ mod tests {
         assert_eq!(cell_color(Colormap::Magma, f32::INFINITY), MAGMA[4]);
     }
 
-    /// The lightness of each step of a heat ramp over a given background.
     fn heat_lightness(floor: Rgba, seed: Rgba, top: Rgba) -> Vec<f32> {
         (0..=10)
             .map(|i| {
@@ -1697,14 +1485,7 @@ mod tests {
             .collect()
     }
 
-    /// The whole point of the heat ramp: a cell only carries its level in its
-    /// color, so the palette maps have to travel the way the baked ramps do.
-    /// Cover used to hand back full accent at the floor, which painted the
-    /// whole panel one flat wash.
-    ///
-    /// Both themes are checked, since which way the ramp runs depends on
-    /// where the panel background sits: over a light panel the loud end is
-    /// the dark one.
+    /// Both themes, since the ramp's direction depends on the background.
     #[test]
     fn the_palette_colormaps_walk_away_from_the_background() {
         let accent = gpui::rgb(0xffb300);
@@ -1730,8 +1511,6 @@ mod tests {
         }
     }
 
-    /// Two hues a few degrees apart on either side of the wrap join across it
-    /// rather than travelling the long way round the wheel.
     #[test]
     fn the_ramp_takes_the_short_way_between_hues() {
         let pi = std::f32::consts::PI;
@@ -1742,8 +1521,6 @@ mod tests {
         );
     }
 
-    /// A hand-edited layout is the one place these arrive broken, and a NaN
-    /// would take a whole column with it.
     #[test]
     fn config_accessors_swallow_junk() {
         let config = SpectrogramConfig {
@@ -1775,16 +1552,12 @@ mod tests {
             let (lo, hi) = config.range();
             assert!(lo >= HZ_MIN && hi <= HZ_MAX);
             assert!(hi >= lo * MIN_RATIO, "{lo_hz}..{hi_hz} gave {lo}..{hi}");
-            // Both ends of the axis map to both ends of the panel.
             assert!((config.axis_frac(lo)).abs() < 1e-4);
             assert!((config.axis_frac(hi) - 1.0).abs() < 1e-4);
         }
     }
 
-    /// `next_power_of_two` overflow-panics near the top of `usize` and
-    /// [`Analyzer::new`] asserts on anything outside its range, so the clamp
-    /// has to come first. A hand-edited size must not be able to take the app
-    /// down, which is exactly what the other ordering does.
+    /// A hand-edited size must not panic or blank the panel.
     #[test]
     fn a_hand_edited_fft_size_cant_panic_or_reach_the_analyzer() {
         for size in [0, 1, 300, 1023, 5000, usize::MAX / 2, usize::MAX] {
@@ -1799,7 +1572,6 @@ mod tests {
                 "{size} gave {fft}"
             );
         }
-        // The picker's own steps come back untouched.
         for &(_, size) in FFT_CHOICES {
             let config = SpectrogramConfig {
                 fft_size: size,
@@ -1809,8 +1581,6 @@ mod tests {
         }
     }
 
-    /// The history is what bounds the panel's memory, so a config that asks
-    /// for more than the ceiling has to be held to it.
     #[test]
     fn the_history_stays_inside_its_bounds() {
         for asked in [0, 1, HISTORY_MIN, 900, HISTORY_MAX, usize::MAX] {

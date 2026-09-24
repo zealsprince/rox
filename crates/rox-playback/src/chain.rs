@@ -1,39 +1,27 @@
 //! The processing chain (ADR 19): DSP on the decode thread, after the stereo
-//! fold and resample, immediately before the push into the sample ring. The
-//! RT callback is untouched by it, keeping exactly its two jobs: draining
-//! the ring and applying user volume. The chain runs at the device rate, so
-//! nodes see one stable rate for the life of the stream; the events that
-//! change it (a device rebuild) rebuild the stream and reset the chain with
-//! the resampler.
+//! fold and resample, immediately before the ring push. The RT callback never
+//! runs it. Nodes see the device rate, reset with the resampler.
 //!
-//! The bypass rule, which makes bit-perfect checkable: with the chain empty,
-//! the samples pushed into the ring are the decoder's output unchanged.
+//! Bypass rule: with the chain empty, the ring gets the decoder's output unchanged.
 
-/// One DSP node. The contract (ADR 19): process an interleaved stereo f32
-/// buffer in place, same length out as in, at the rate given by the last
-/// reset. Allocate at construction and reset, never in process. Nodes are
-/// zero-latency by contract: anything that needs lookahead or introduces
-/// group delay (convolution, a limiter) stays out until a latency-reporting
-/// extension is worth designing, and the position clock stays honest.
+/// One DSP node (ADR 19): process interleaved stereo in place, same length,
+/// at the rate of the last reset. Allocate at construction and reset, never in
+/// `process`. Zero-latency only: no lookahead or group delay, or the position
+/// clock lies.
 ///
-/// Parameters are atomics shared with the UI, owned by the node, so a knob
-/// write is a store with no command round trip; structural edits (adding,
-/// removing, reordering nodes) are sent over the engine's command channel.
+/// Parameters are node-owned atomics shared with the UI; structural edits go
+/// over the engine's command channel.
 pub trait Node: Send {
-    /// Called at stream open and on every discontinuity the engine already
-    /// knows, the seek flush and the device rebuild, and never at the
-    /// gapless boundary, so filter history persists across a track splice.
+    /// Called at stream open, seek flush, and device rebuild, never at the
+    /// gapless boundary, so filter history carries across a track splice.
     fn reset(&mut self, rate: u32);
-    /// Process one buffer of interleaved stereo in place.
     fn process(&mut self, buf: &mut [f32]);
 }
 
-/// The chain of nodes the decoded stream passes through, in order. Owned by
-/// the decode thread; never touched from the RT callback.
+/// Owned by the decode thread; never touched from the RT callback.
 pub struct Chain {
     nodes: Vec<Box<dyn Node>>,
-    /// The rate handed to the last reset, so a node added mid-stream can be
-    /// reset to it on arrival.
+    /// The last reset's rate, handed to a node added mid-stream.
     rate: u32,
 }
 
@@ -45,7 +33,6 @@ impl Chain {
         }
     }
 
-    /// Reset every node to `rate`. Stream open, seek flush, device rebuild.
     pub fn reset(&mut self, rate: u32) {
         self.rate = rate;
         for node in &mut self.nodes {
@@ -53,16 +40,13 @@ impl Chain {
         }
     }
 
-    /// Append a node, resetting it to the chain's rate on the way in; a
-    /// structural edit is a discontinuity for the arriving node alone.
     pub fn push(&mut self, mut node: Box<dyn Node>) {
         node.reset(self.rate);
         self.nodes.push(node);
     }
 
-    /// Run the buffer through every node in order. Empty chain, untouched
-    /// buffer; that's the bypass rule, held structurally rather than by a
-    /// flag.
+    /// An empty chain leaves the buffer untouched: the bypass rule, held
+    /// structurally.
     pub fn process(&mut self, buf: &mut [f32]) {
         for node in &mut self.nodes {
             node.process(buf);
@@ -80,8 +64,6 @@ impl Default for Chain {
 mod tests {
     use super::*;
 
-    /// Records the last reset rate and applies gain + offset, enough to
-    /// observe ordering and reset propagation.
     struct Affine {
         gain: f32,
         offset: f32,
@@ -134,8 +116,6 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
 
-        /// Publishes its reset rate, the shape a real node's shared
-        /// parameter atomics take.
         struct RateProbe(Arc<AtomicU32>);
         impl Node for RateProbe {
             fn reset(&mut self, rate: u32) {

@@ -1,21 +1,14 @@
-//! Spectrum analysis shared by the audio views: Hann window, radix-2 FFT,
-//! normalized magnitudes, and the log-spaced band mapping the spectrum bars
-//! use. The window size is picked per analyzer (short windows react fast,
-//! long ones resolve fine), between [`MIN_FFT_SIZE`] and [`MAX_FFT_SIZE`],
-//! with [`FFT_SIZE`] the default. Hand-rolled for the same reason it always
-//! was: an FFT at these sizes at 60 Hz is nothing, and it keeps the crate
-//! dependency-free until a real DSP need justifies one.
+//! Spectrum analysis for the audio views: Hann window, radix-2 FFT, normalized
+//! magnitudes, and the log-spaced band mapping the bars use. Hand-rolled: an
+//! FFT at these sizes at 60 Hz is nothing, and it keeps DSP dependencies out.
 
-/// The default window size, and the bounds a caller may size an analyzer
-/// between. The ceiling matches what [`crate::AudioFeed`] keeps buffered.
+/// The ceiling matches what [`crate::AudioFeed`] keeps buffered.
 pub const FFT_SIZE: usize = 4096;
 pub const MIN_FFT_SIZE: usize = 512;
 pub const MAX_FFT_SIZE: usize = 16384;
 
 pub struct Analyzer {
-    /// Hann coefficients, precomputed; their length is the window size.
     window: Vec<f32>,
-    /// Sum of the window, for amplitude normalization.
     window_sum: f32,
     re: Vec<f32>,
     im: Vec<f32>,
@@ -44,14 +37,12 @@ impl Analyzer {
         }
     }
 
-    /// The window size this analyzer transforms.
     pub fn size(&self) -> usize {
         self.window.len()
     }
 
-    /// Window one frame of mono samples ([`Self::size`] of them), transform
-    /// it, and return the magnitudes of the lower half-spectrum, normalized
-    /// so a full-scale sine comes out near 1.0.
+    /// Magnitudes of the lower half-spectrum of one mono frame, normalized so a
+    /// full-scale sine reads near 1.0.
     pub fn magnitudes(&mut self, mono: &[f32]) -> &[f32] {
         debug_assert_eq!(mono.len(), self.size());
         for ((re, &s), &w) in self.re.iter_mut().zip(mono).zip(&self.window) {
@@ -73,10 +64,9 @@ impl Default for Analyzer {
     }
 }
 
-/// Map `bands` log-spaced bands across `lo_hz..hi_hz` to half-spectrum bin
-/// ranges at the given sample rate, for an analyzer with `half` output bins.
-/// Each range is at least one bin wide, so neighbours share bins where the
-/// FFT is too coarse to split them.
+/// `bands` log-spaced bands across `lo_hz..hi_hz` as half-spectrum bin ranges.
+/// Each is at least one bin wide, so neighbours share bins where the FFT is
+/// too coarse.
 pub fn log_bands(
     bands: usize,
     lo_hz: f32,
@@ -97,11 +87,8 @@ pub fn log_bands(
         .collect()
 }
 
-/// The 1-2-5 ladder a frequency axis is ruled on, over `lo_hz..hi_hz`. Each
-/// mark has its frequency, where it falls across a log axis spanning the
-/// range, and whether it's one of the labelled steps: the 1, 2 and 5 of a
-/// decade, the ones every analyzer prints. The rest of each decade comes
-/// back as minor marks, for a grid that can be counted between its numbers.
+/// The 1-2-5 ladder a log frequency axis is ruled on: (hz, position 0..1,
+/// labelled). The other steps of each decade come back as minor marks.
 pub fn hz_ladder(lo_hz: f32, hi_hz: f32) -> Vec<(f32, f32, bool)> {
     if lo_hz <= 0.0 || hi_hz <= lo_hz {
         return Vec::new();
@@ -122,12 +109,10 @@ pub fn hz_ladder(lo_hz: f32, hi_hz: f32) -> Vec<(f32, f32, bool)> {
     marks
 }
 
-/// In-place iterative radix-2 Cooley-Tukey. Length must be a power of two.
 fn fft(re: &mut [f32], im: &mut [f32]) {
     let n = re.len();
     debug_assert!(n.is_power_of_two());
 
-    // Bit-reversal permutation.
     let mut j = 0usize;
     for i in 1..n {
         let mut bit = n >> 1;
@@ -170,12 +155,10 @@ mod tests {
     use super::*;
     use std::f32::consts::TAU;
 
-    // The bin a real frequency falls in for a given window and rate.
     fn bin_of(freq: f32, size: usize, rate: u32) -> usize {
         (freq * size as f32 / rate as f32).round() as usize
     }
 
-    // Fill `buf` with a full-scale sine at `freq` Hz, sampled at `rate`.
     fn sine(buf: &mut [f32], freq: f32, rate: u32) {
         for (i, s) in buf.iter_mut().enumerate() {
             *s = (TAU * freq * i as f32 / rate as f32).sin();
@@ -185,13 +168,10 @@ mod tests {
     #[test]
     fn window_is_symmetric_with_zero_endpoints() {
         let a = Analyzer::new(1024);
-        // Hann starts and ends at zero.
         assert!(a.window[0].abs() < 1e-6);
         assert!(a.window[a.window.len() - 1].abs() < 1e-6);
-        // Peak is at the middle and rises to ~1.0.
         let mid = a.window[a.window.len() / 2];
         assert!(mid > 0.999, "hann midpoint should be ~1.0, got {mid}");
-        // Symmetric about the center.
         let n = a.window.len();
         for i in 0..n / 2 {
             assert!((a.window[i] - a.window[n - 1 - i]).abs() < 1e-5);
@@ -203,7 +183,6 @@ mod tests {
         let a = Analyzer::new(512);
         let sum: f32 = a.window.iter().sum();
         assert!((a.window_sum - sum).abs() < 1e-3);
-        // Hann's mean is ~0.5, so the sum is ~half the window length.
         assert!((a.window_sum - 256.0).abs() < 1.0);
     }
 
@@ -222,7 +201,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn rejects_out_of_range_size() {
-        // 256 is a power of two but below MIN_FFT_SIZE.
         Analyzer::new(256);
     }
 
@@ -242,7 +220,6 @@ mod tests {
         let mut a = Analyzer::new(1024);
         let input = vec![1.0f32; 1024];
         let mags = a.magnitudes(&input);
-        // A constant is all DC: bin 0 has the energy, the rest is noise.
         let max_ix = mags
             .iter()
             .enumerate()
@@ -256,8 +233,7 @@ mod tests {
     fn sine_peaks_in_its_own_bin() {
         let rate = 48_000;
         let size = 4096;
-        // Pick a frequency that falls exactly on a bin so windowing leakage
-        // stays in the neighbours, not smeared across the spectrum.
+        // A frequency exactly on a bin keeps windowing leakage in the neighbours.
         let target_bin = 100;
         let freq = target_bin as f32 * rate as f32 / size as f32;
         assert_eq!(bin_of(freq, size, rate), target_bin);
@@ -274,12 +250,10 @@ mod tests {
             .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
             .unwrap()
             .0;
-        // Allow one bin of slop from windowing.
         assert!(
             (peak_ix as i32 - target_bin as i32).abs() <= 1,
             "peak at {peak_ix}, expected near {target_bin}"
         );
-        // A full-scale sine normalizes to near 1.0 at its bin.
         assert!(
             (0.9..=1.1).contains(&mags[peak_ix]),
             "full-scale sine should normalize near 1.0, got {}",
@@ -305,7 +279,6 @@ mod tests {
         let mut a = Analyzer::new(size);
         let mags = a.magnitudes(&input);
 
-        // Both target bins should stand well above the noise floor between them.
         let floor = mags[bin_a + 20];
         assert!(mags[bin_a] > floor * 10.0);
         assert!(mags[bin_b] > floor * 10.0);
@@ -313,8 +286,7 @@ mod tests {
 
     #[test]
     fn fft_matches_naive_dft() {
-        // Cross-check the hand-rolled radix-2 against a direct DFT on a small
-        // arbitrary signal, so a subtle butterfly bug can't hide.
+        // Cross-check against a direct DFT so a butterfly bug can't hide.
         let n = 8;
         let signal: Vec<f32> = (0..n).map(|i| (i as f32 * 0.7).sin() + 0.3).collect();
 
@@ -340,12 +312,10 @@ mod tests {
         let bands = log_bands(24, 40.0, 16_000.0, 48_000, 2048);
         assert_eq!(bands.len(), 24);
         for &(lo, hi) in &bands {
-            // Every band is at least one bin wide and stays in range.
             assert!(lo < hi, "band {lo}..{hi} is empty");
             assert!(lo >= 1);
             assert!(hi <= 2048);
         }
-        // Lows are monotonically non-decreasing across bands.
         for pair in bands.windows(2) {
             assert!(pair[0].0 <= pair[1].0, "band lows went backwards");
         }
@@ -353,7 +323,6 @@ mod tests {
 
     #[test]
     fn log_bands_are_wider_toward_the_top() {
-        // Log spacing means high bands span more bins than low ones.
         let bands = log_bands(16, 40.0, 20_000.0, 48_000, 4096);
         let low_width = bands[0].1 - bands[0].0;
         let high_width = bands[bands.len() - 1].1 - bands[bands.len() - 1].0;
@@ -365,8 +334,6 @@ mod tests {
 
     #[test]
     fn log_bands_no_panic_on_edge_counts() {
-        // A single band, and a tiny half-spectrum, must not panic or produce
-        // an inverted range.
         let one = log_bands(1, 40.0, 16_000.0, 48_000, 256);
         assert_eq!(one.len(), 1);
         assert!(one[0].0 < one[0].1);
@@ -396,8 +363,7 @@ mod tests {
 
     #[test]
     fn hz_ladder_stays_inside_the_range_it_was_given() {
-        // A range whose ends aren't ladder steps: the marks are the round
-        // numbers within it, so the top one falls short of the edge.
+        // Ends that aren't ladder steps: the top mark falls short of the edge.
         let marks = hz_ladder(40.0, 16_000.0);
         let (first, last) = (marks[0], marks[marks.len() - 1]);
         assert_eq!(first.0, 40.0);

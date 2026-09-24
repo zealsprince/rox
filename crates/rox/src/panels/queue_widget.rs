@@ -1,8 +1,6 @@
-//! The queue widget (ADR 16): a compact queue icon with a badge counting the
-//! explicit up-next tracks, and a hover tooltip listing the next few. For a
-//! transport row, where the full queue panel would be too much. Reads the same
-//! explicit queue as the queue panel, so the context (the album or library
-//! playing on) stays off the count.
+//! The queue widget (ADR 16): a queue icon with a badge counting the explicit
+//! up-next tracks and a tooltip listing the next few. The context playing on
+//! stays off the count.
 
 use std::sync::Arc;
 
@@ -24,21 +22,14 @@ use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{setting_row, toggle};
 use rox_panels::queue::QueuePanel;
 
-/// How many titles the hover tooltip lists before summarizing the rest.
 const TOOLTIP_ROWS: usize = 12;
 
-/// The widget's config: the shared chrome plus its one knob, whether a click
-/// opens the queue.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueWidgetConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Click the widget to jump to an open queue panel, or open the queue in
-    /// a window when none is up. On by default; off leaves it a plain badge.
     pub open_on_click: bool,
-    /// Always open the modal on click, even when a queue panel is already
-    /// docked, instead of jumping to it. Off by default.
     pub always_modal: bool,
 }
 
@@ -55,11 +46,8 @@ impl Default for QueueWidgetConfig {
 pub struct QueueWidgetPanel {
     state: AppState,
     config: QueueWidgetConfig,
-    /// The explicit queue count, the badge number. Cached so the per-pump
-    /// observe repaints only when it changes.
+    /// Cached so the per-pump observe repaints only when it changes.
     count: usize,
-    /// The cheap change detector: the queue revision and the playing path, the
-    /// two things that move the count.
     rev: Option<u64>,
     playing_key: Option<TrackKey>,
     focus: FocusHandle,
@@ -84,8 +72,6 @@ impl QueueWidgetPanel {
         this
     }
 
-    /// Refresh the badge count, bailing on the cheap revision and playing-path
-    /// compare so a steady queue costs two reads per tick.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let rev = self.state.player.read(cx).queue_rev();
         let playing_key = self.state.player.read(cx).now_playing().map(|now| now.key);
@@ -98,18 +84,13 @@ impl QueueWidgetPanel {
         cx.notify();
     }
 
-    /// A click opens the queue: jump to an open queue panel when one is
-    /// docked, else open the queue modal on this window's workspace. A widget
-    /// that has been popped into its own window has no workspace behind it, so
-    /// there it falls back to floating the queue in a window of its own.
+    /// Falls back to a queue window when popped out with no workspace behind
+    /// it.
     ///
-    /// Takes the state rather than `&self` so the click never holds the
-    /// widget's own borrow: `focus_panel_named` iterates over every docked
-    /// panel and reads it to match the name, this widget included, which
-    /// would re-enter its update and panic.
+    /// Takes the state rather than `&self`: `focus_panel_named` reads every
+    /// docked panel, this one included, and a read inside its own update
+    /// panics.
     fn open_queue(state: &AppState, always_modal: bool, window: &mut Window, cx: &mut App) {
-        // Jump to a docked queue panel first, unless the widget is set to
-        // always open the modal.
         if !always_modal && panel::focus_panel_named(&state.tab_hosts, "queue", window, cx) {
             return;
         }
@@ -119,14 +100,10 @@ impl QueueWidgetPanel {
             workspace.update(cx, |ws, cx| ws.toggle_queue_modal(window, cx));
             return;
         }
-        // Built for this window rather than pulled out of a layout, so it
-        // gets no way back into one.
         let queue = cx.new(|cx| QueuePanel::windowed(state.clone(), window, cx));
         panel::open_panel_window(Arc::new(queue), state.clone(), cx);
     }
 
-    /// The tooltip's rows: the next titles with their artists, resolved
-    /// fresh at hover.
     fn next_up(&self, cx: &App) -> Vec<(SharedString, SharedString)> {
         let player = self.state.player.read(cx);
         let queued = player.queued();
@@ -135,8 +112,8 @@ impl QueueWidgetPanel {
             .iter()
             .take(TOOLTIP_ROWS)
             .map(|entry| {
-                // Through the pool mirror, so two cue tracks of one image
-                // list as themselves rather than the same title twice.
+                // Through the pool mirror, so two cue tracks of one image list
+                // as themselves.
                 let key = player.key_for(entry);
                 let meta = library.meta_for_key(&key);
                 let title = meta
@@ -156,9 +133,7 @@ impl QueueWidgetPanel {
     }
 }
 
-/// The hover tooltip: a small "up next" list of the queued titles. Reads
-/// its fill opaque like the popup menus: it floats over panel content
-/// with no backdrop behind it, so surface opacity stays off.
+/// Opaque fill: it floats over panel content with no backdrop behind it.
 struct QueueTooltip {
     rows: Vec<(SharedString, SharedString)>,
     more: usize,
@@ -248,7 +223,6 @@ impl PanelSettings for QueueWidgetPanel {
                     cx,
                 ),
             ));
-        // The modal-always knob only matters once clicking opens the queue.
         if self.config.open_on_click {
             rows = rows.child(setting_row(
                 rox_i18n::t!("queue-widget-always-modal"),
@@ -382,7 +356,6 @@ impl Render for QueueWidgetPanel {
                     .justify_center()
                     .px(tokens::SPACE_SM)
                     .size_full()
-                    // Click to open the queue, when the behavior is on.
                     .when(open_on_click, |d| {
                         let weak = weak.clone();
                         d.cursor_pointer().on_click(move |_, window, cx| {
@@ -405,10 +378,8 @@ impl Render for QueueWidgetPanel {
                                     palette::text_muted()
                                 },
                             ))
-                            // The badge: a small accent pill floating off the
-                            // icon's corner, so the widget's footprint never
-                            // shifts with the count. Anchored by its left edge;
-                            // a wider count grows away from the icon.
+                            // Floats off the icon's corner so the footprint never
+                            // shifts with the count.
                             .when(count > 0, |d| {
                                 d.child(
                                     div()
@@ -416,9 +387,8 @@ impl Render for QueueWidgetPanel {
                                         .top(px(-6.))
                                         .left(px(10.))
                                         .px(px(4.))
-                                        // The parent is the 16px icon, so the
-                                        // count has to be kept on one line or
-                                        // a two-digit badge wraps into a stack.
+                                        // One line, or a two-digit badge wraps inside the 16px
+                                        // parent.
                                         .whitespace_nowrap()
                                         .rounded_full()
                                         .bg(palette::accent())
@@ -429,7 +399,6 @@ impl Render for QueueWidgetPanel {
                                 )
                             }),
                     )
-                    // The hover list of the next titles.
                     .when(count > 0, |d| {
                         let weak = weak.clone();
                         d.tooltip(move |_window, cx| {

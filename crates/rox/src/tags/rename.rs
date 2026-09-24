@@ -1,30 +1,21 @@
-//! Renaming files from their tags: foobar2000's file operations, the
-//! guesser run backwards. A pattern like `%albumartist%/%album%/%track% -
-//! %title%` renders each selected track's tags into a path under the
-//! library root that track is already under, keeps the file's own
-//! extension, and shows every move before any of them happen. A pattern
-//! with no `/` in it is a file name alone, so it renames the file where
-//! it sits instead of hoisting it to the root. Apply moves
-//! the files and moves the rows with [`Library::rename_files`], so ids,
-//! ratings, play counts, and playlist membership all persist across the move.
+//! Renaming files from their tags, the guesser run backwards. A pattern
+//! renders each track's tags into a path under the library root it's already
+//! under, keeping its extension, and every move previews before any happen.
+//! A pattern with no `/` renames in place. Apply moves the rows with
+//! [`Library::rename_files`], so ids, ratings, play counts and playlist
+//! membership survive.
 //!
-//! The values come off the catalog's projection rather than a fresh read
-//! of every file, so the preview updates as fast as you type. That leaves
-//! %comment% with nothing to render (the projection doesn't include it) and
-//! it falls back like any missing field.
+//! Values come off the projection, which doesn't carry %comment%, so that
+//! falls back like any missing field.
 //!
-//! What this refuses rather than guesses: a cue track, which is a span
-//! inside an image the whole disc shares and has no file of its own to
-//! move; a track outside every library root, which has no root to render
-//! under; a track the projection has no row for, which has no tag values
-//! to render from; and any move whose destination already exists or that
-//! two tracks both target. A shuffle inside the selection (track 2 taking
-//! track 1's name) reads as occupied and refuses too, rather than ordering
-//! itself into a sequence that half-finishes if it fails.
+//! Refused rather than guessed: cue tracks (no file of their own), tracks
+//! outside every root, tracks with no projection row, and any destination
+//! that exists or that two tracks share. A shuffle within the selection
+//! reads as occupied too, rather than ordering itself into a sequence that
+//! half-finishes.
 //!
-//! Thumbnails and waveform peaks are keyed by path, so a moved file loses
-//! its cached ones and regenerates them on next sight. Lyrics sidecars
-//! travel with the file.
+//! Thumbnails and waveform peaks are keyed by path and regenerate after a
+//! move. Lyrics sidecars travel with the file.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -53,29 +44,21 @@ use rox_services::catalog::Library;
 use crate::matching::{WindowRegistry, open_or_focus};
 use crate::tags::guess;
 
-/// The pattern a first run starts on: the layout most libraries already
-/// half-follow, so the preview shows mostly no-ops instead of chaos.
 const DEFAULT_PATTERN: &str = "%albumartist%/%album%/%track% - %title%";
 
-/// How many patterns the dialog remembers. Enough for the two or three
-/// schemes a library actually uses, short enough to stay a row of chips.
 const REMEMBERED: usize = 6;
 
 actions!(rename, [Apply]);
 
-/// The key context the window's own bindings scope to.
 const CONTEXT: &str = "RenameFiles";
 
-/// The dialog's apply binding; call once at startup. It's on the
-/// window root, so enter applies wherever focus is and not only in the
-/// pattern field. The input still sees the key first, since its own
-/// binding is deeper along the focus path and it propagates up to here;
-/// the guard at the top of [`RenameFiles::apply`] eats the second arrival.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Apply, Some(CONTEXT))]);
+/// Bound on the window root, so enter applies from anywhere. The input sees
+/// the key first and propagates it; the guard in [`RenameFiles::apply`] eats
+/// the second arrival.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("enter", Apply, Some(CONTEXT))]
 }
 
-/// The open rename dialogs, keyed by their selection.
 #[derive(Default)]
 struct OpenRenamers(Vec<(Vec<i64>, WindowHandle<Root>)>);
 
@@ -88,8 +71,6 @@ impl WindowRegistry for OpenRenamers {
     }
 }
 
-/// Open the rename dialog on `ids`, or bring the one already on that
-/// selection to the front. An empty selection opens nothing.
 pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if ids.is_empty() {
         return;
@@ -118,42 +99,24 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     );
 }
 
-/// One selected track as the plan reads it: where its file is, which
-/// root it's under, and the tag values the pattern renders from.
 struct Track {
     from: PathBuf,
-    /// Which subsong of its file the row is, 0 for a plain file.
     sub: u16,
-    /// The library root the file is under, None when it's under none of
-    /// them.
     root: Option<PathBuf>,
-    /// The tag values the pattern renders from, None when the catalog has
-    /// no projection row for the track. Rendering an unresolved row would
-    /// take every field's fallback and file the track under "Unknown
-    /// Artist", so it doesn't render at all.
+    /// None without a projection row. Rendering it anyway would file the track
+    /// under "Unknown Artist".
     values: Option<Vec<(Field, String)>>,
 }
 
-/// Why a track stays where it is.
 #[derive(Clone, Debug, PartialEq)]
 enum Blocked {
-    /// A cue track is a span inside an image the whole disc shares.
-    /// Moving it would move every other track of that rip, and the sheet
-    /// pointing at the image would go stale, so a cue track never moves.
-    /// The same rule the tag writer keeps in `writer::writes_to_file`.
+    /// Moving a cue track would move the whole rip; the same rule as
+    /// `writer::writes_to_file`.
     CueTrack,
-    /// The file is under no library root, so there's no folder to
-    /// render the pattern under.
     OutsideRoots,
-    /// The catalog hasn't got a projection row for this track, which is
-    /// where the tag values come from. Nothing to render against, and
-    /// rendering the fallbacks anyway would name it "Unknown Artist".
     Unresolved,
-    /// The pattern can't render this track's values at all.
     Render(String),
-    /// Another selected track renders the same destination.
     Duplicate,
-    /// Something is already at the destination.
     Occupied,
 }
 
@@ -170,29 +133,24 @@ impl Blocked {
     }
 }
 
-/// One row of the plan: where the file is and where the pattern puts it.
 struct Move {
     from: PathBuf,
     to: PathBuf,
-    /// The move only changes the path's casing, which on a
-    /// case-insensitive filesystem is a rename onto itself. It goes
-    /// through a temp name so the filesystem sees two distinct steps.
+    /// Goes through a temp name, since a case-insensitive filesystem reads a
+    /// case-only rename as a no-op.
     case_only: bool,
-    /// The destination is exactly where the file already is.
     unchanged: bool,
     blocked: Option<Blocked>,
 }
 
 impl Move {
-    /// Whether this row moves a file when Apply runs.
     fn moves(&self) -> bool {
         self.blocked.is_none() && !self.unchanged
     }
 }
 
-/// Append `ext` to a rendered path. `set_extension` would eat everything
-/// after the last dot of the rendered name, which a title like "R.E.M."
-/// or "Vol. 2" leaves plenty of.
+/// Not `set_extension`, which would eat everything after a dot in a title
+/// like "R.E.M.".
 fn with_extension(path: PathBuf, ext: Option<&std::ffi::OsStr>) -> PathBuf {
     let Some(ext) = ext else { return path };
     let mut name: OsString = path.as_os_str().to_os_string();
@@ -201,15 +159,11 @@ fn with_extension(path: PathBuf, ext: Option<&std::ffi::OsStr>) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Whether two paths differ only in casing, the case-only rename a
-/// case-insensitive filesystem reads as a no-op.
 fn same_but_case(a: &Path, b: &Path) -> bool {
     a != b && a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
-/// Render every track through `pattern` and sort out what can actually
-/// move. `exists` reports whether a path is taken, injected so the plan
-/// can be tested without a filesystem.
+/// `exists` is injected so the plan tests without a filesystem.
 fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bool) -> Vec<Move> {
     let mut moves: Vec<Move> = Vec::with_capacity(tracks.len());
     for track in tracks {
@@ -232,9 +186,8 @@ fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bo
             });
             continue;
         }
-        // A pattern that names folders lays them out from the root. One
-        // that's only a file name keeps the file in its own folder: the
-        // root is where the layout starts, and a plain rename has none.
+        // A pattern with folders lays out from the root; a bare file name renames
+        // in place.
         let base = if pattern.has_folders() {
             track.root.clone().unwrap_or_default()
         } else {
@@ -268,9 +221,8 @@ fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bo
             blocked: None,
         });
     }
-    // Two sources onto one destination: neither is safe, since whichever
-    // moves second overwrites the first. Both rows say so rather than one
-    // silently winning.
+    // Two sources onto one destination: both refuse rather than one silently
+    // winning.
     let mut seen: HashMap<PathBuf, usize> = HashMap::new();
     for mv in moves.iter().filter(|mv| mv.moves()) {
         *seen.entry(mv.to.clone()).or_default() += 1;
@@ -280,9 +232,7 @@ fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bo
             mv.blocked = Some(Blocked::Duplicate);
         }
     }
-    // A destination that already exists on disk. The file's own path is
-    // not a collision, and neither is the case-only variant of it, which
-    // is the same file on a case-insensitive filesystem.
+    // The file's own path, or its case-only variant, isn't a collision.
     for mv in moves.iter_mut() {
         if mv.moves() && !mv.case_only && exists(&mv.to) {
             mv.blocked = Some(Blocked::Occupied);
@@ -291,16 +241,13 @@ fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bo
     moves
 }
 
-/// The writer's clone naming for the intermediate step of a move, so the
-/// watcher's clone filter ignores it the way it ignores a tag write's.
+/// The writer's clone naming, so the watcher ignores the hop.
 fn hop_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(CLONE_SUFFIX);
     path.with_file_name(name)
 }
 
-/// Whether a failed rename failed because the two paths are on different
-/// filesystems, the one error a copy can get past.
 fn cross_device(e: &std::io::Error) -> bool {
     #[cfg(unix)]
     let code = 18; // EXDEV
@@ -311,13 +258,9 @@ fn cross_device(e: &std::io::Error) -> bool {
     e.raw_os_error() == Some(code)
 }
 
-/// Move one file to `to`, making the folders above it first. A plain
-/// rename does it inside one filesystem. Across two it can't, so the
-/// bytes get copied to a clone beside the destination, flushed, renamed
-/// into place, and only then is the original unlinked: an interrupted
-/// copy costs a stray clone the watcher already ignores, never the file.
-/// A case-only rename hops through the same clone name, since asking a
-/// case-insensitive filesystem to rename a file onto itself does nothing.
+/// Across filesystems: copy to a clone beside the destination, flush, rename
+/// into place, and only then unlink the original, so an interrupted copy
+/// never costs the file.
 fn move_file(from: &Path, to: &Path, case_only: bool) -> Result<(), String> {
     if let Some(dir) = to.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -346,11 +289,8 @@ fn move_file(from: &Path, to: &Path, case_only: bool) -> Result<(), String> {
     }
 }
 
-/// Move a track's lyrics sidecars along with it. The candidate lists line
-/// up position by position, so a `.lrc` beside the old name ends up beside
-/// the new one in the same convention. Best effort: a sidecar that fails
-/// to move leaves the audio file where it now is, which is the
-/// half that matters. Returns the pairs that moved.
+/// Best effort: a sidecar that fails to move leaves the audio where it now
+/// is. Returns the pairs that moved.
 fn move_sidecars(from: &Path, to: &Path) -> Vec<(PathBuf, PathBuf)> {
     let mut moved = Vec::new();
     for (side_from, side_to) in lyrics::sidecar_candidates(from)
@@ -370,19 +310,12 @@ fn move_sidecars(from: &Path, to: &Path) -> Vec<(PathBuf, PathBuf)> {
 pub struct RenameFiles {
     library: Entity<Library>,
     tracks: Vec<Track>,
-    /// The pattern input. Seeded from the last applied pattern.
     pattern: Entity<InputState>,
-    /// The patterns applied before, newest first, offered as chips.
     remembered: Vec<SharedString>,
-    /// The current pattern's plan, rebuilt when the pattern changes
-    /// rather than per frame: it stats the disk for every destination,
-    /// which isn't something a repaint should pay for.
+    /// Rebuilt when the pattern changes, never per frame: it stats the disk.
     plan: Vec<Move>,
-    /// What's wrong with the pattern itself, when nothing parses.
     parse_error: Option<SharedString>,
-    /// A failed move, shown inline over the buttons.
     error: Option<SharedString>,
-    /// Moves are in flight; the input locks and the buttons hold still.
     applying: bool,
     done: usize,
     total: usize,
@@ -420,9 +353,7 @@ impl RenameFiles {
                 else {
                     continue;
                 };
-                // The deepest root that contains the file: roots never
-                // nest, so there's at most one, and the rendered path
-                // is built under it.
+                // Roots never nest, so at most one matches.
                 let root = roots.iter().find(|r| from.starts_with(r)).cloned();
                 let resolved = projection.as_ref().and_then(|projection| {
                     let row = *row_of.get(&id)?;
@@ -434,9 +365,7 @@ impl RenameFiles {
                         (Field::Album, v.album.to_owned()),
                         (Field::Genre, v.genre.to_owned()),
                     ];
-                    // A zero is the catalog's way of saying the file has
-                    // no number, so it renders as missing rather than as
-                    // "00" or the year 0.
+                    // A zero means no number, so it renders as missing, not "00" or year 0.
                     for (field, number) in [
                         (Field::Year, v.year),
                         (Field::TrackNo, v.track_no),
@@ -448,9 +377,6 @@ impl RenameFiles {
                     }
                     Some((values, v.sub))
                 });
-                // An unresolved row keeps its subsong at 0: with no
-                // projection there's nothing to say it's a cue span, and
-                // the missing values block it either way.
                 let sub = resolved.as_ref().map(|(_, sub)| *sub).unwrap_or(0);
                 tracks.push(Track {
                     from,
@@ -483,8 +409,6 @@ impl RenameFiles {
             &pattern,
             window,
             |this: &mut Self, _, event: &InputEvent, window, cx| match event {
-                // Enter applies: the preview is the confirmation, and it
-                // is right there above the button.
                 InputEvent::PressEnter { .. } => this.apply(window, cx),
                 InputEvent::Change => this.replan(cx),
                 _ => {}
@@ -520,9 +444,6 @@ impl RenameFiles {
         this
     }
 
-    /// Rebuild the plan from the pattern as it stands. Runs on every
-    /// keystroke in the pattern, so it does the disk probing the render
-    /// must not.
     fn replan(&mut self, cx: &mut Context<Self>) {
         match guess::parse(self.pattern.read(cx).value().trim()) {
             Ok(pattern) => {
@@ -537,16 +458,13 @@ impl RenameFiles {
         cx.notify();
     }
 
-    /// How many of the selection the current plan actually moves.
     fn movable(&self) -> usize {
         self.plan.iter().filter(|mv| mv.moves()).count()
     }
 
-    /// Move the files, one background hop each, then move the rows in one
-    /// batch. Each file is noted as a self-rename right before it moves,
-    /// so the watcher's echo of a move rox just made matches nothing;
-    /// noting the whole batch up front instead would let the suppression
-    /// window expire under a long run.
+    /// Each file is noted as a self-rename right before it moves; noting the
+    /// whole batch up front would let the suppression window expire on a long
+    /// run.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.applying {
             return;
@@ -591,9 +509,7 @@ impl RenameFiles {
                     .background_executor()
                     .spawn(async move {
                         let result = move_file(&from, &to, case_only).map(|()| {
-                            // Sidecars only follow a file that actually
-                            // landed; moving them first would strand them
-                            // beside a name with no audio.
+                            // Sidecars only follow a file that landed.
                             move_sidecars(&from, &to)
                         });
                         (from, to, result)
@@ -632,7 +548,6 @@ impl RenameFiles {
             }
             this.update_in(cx, move |this, window, cx| {
                 if !landed.is_empty() {
-                    // The rows follow the files in one batch, ids intact.
                     library.update(cx, |library, cx| library.rename_files(landed, cx));
                 }
                 match first_error {
@@ -641,9 +556,8 @@ impl RenameFiles {
                         window.remove_window();
                     }
                     Some(e) => {
-                        // The tracks are now where the finished moves put
-                        // them, so replanning makes a retry diff against
-                        // the current state instead of re-moving.
+                        // Replan against where the finished moves left things, so a retry doesn't
+                        // re-move them.
                         this.applying = false;
                         this.error = Some(if failures > 1 {
                             rox_i18n::t!(
@@ -665,9 +579,7 @@ impl RenameFiles {
         .detach();
     }
 
-    /// Point every track at the file it now has, after a partial apply.
-    /// A landed move left the file at the destination the plan named, so
-    /// that destination is where the next plan starts from.
+    /// After a partial apply, point each landed track at its new path.
     fn reseat(&mut self) {
         let landed: HashMap<PathBuf, PathBuf> = self
             .plan
@@ -682,7 +594,6 @@ impl RenameFiles {
         }
     }
 
-    /// Put the applied pattern at the head of the remembered list.
     fn remember(&mut self, cx: &App) {
         let pattern = self.pattern.read(cx).value().trim().to_owned();
         if pattern.is_empty() {
@@ -694,8 +605,6 @@ impl RenameFiles {
         self.remembered.truncate(REMEMBERED);
     }
 
-    /// Write the window frame and the remembered patterns into the
-    /// settings file, the restore for the next dialog.
     fn persist_frame(&self, window: &Window, _cx: &App) {
         let frame = window.window_bounds().get_bounds();
         let patterns: Vec<String> = self.remembered.iter().map(|p| p.to_string()).collect();
@@ -707,10 +616,7 @@ impl RenameFiles {
         });
     }
 
-    /// One preview row: where the file is now over where it would go,
-    /// both relative to the library root so the pattern's own shape is
-    /// what shows. A row that can't move says why in place of its
-    /// destination.
+    /// Both paths relative to the root, so the pattern's shape is what shows.
     fn preview_row(&self, mv: &Move, track: &Track) -> Div {
         let root = track.root.clone().unwrap_or_default();
         let rel = |path: &Path| {
@@ -755,8 +661,6 @@ impl RenameFiles {
             )
     }
 
-    /// The pattern input, the placeholder help, and the remembered
-    /// patterns as chips that fill the input when clicked.
     fn pattern_section(&self, cx: &mut Context<Self>) -> Div {
         let chips = self.remembered.iter().enumerate().map(|(i, pattern)| {
             let text = pattern.clone();
@@ -798,10 +702,6 @@ impl RenameFiles {
         })
     }
 
-    /// The dialog's actions, and the shortcut for them. A run in flight,
-    /// a pattern that won't parse, a move that failed, and a plan that
-    /// moves nothing each take the shortcut's place, so the refusal is
-    /// never silent.
     fn footer(&self, movable: usize, cx: &mut Context<Self>) -> Div {
         let reason = match (&self.parse_error, &self.error) {
             (Some(e), _) => Some((e.clone(), palette::tone_warn())),
@@ -870,9 +770,7 @@ impl RenameFiles {
                         self.applying || movable == 0,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
                     ))
-                    // Cancel stays live through a run: every move is its
-                    // own rename, so stopping leaves the files that moved
-                    // where they moved to and the rest where they were.
+                    // Cancel stays live: each move is its own rename, so stopping is safe.
                     .child(small_button(
                         rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
@@ -939,9 +837,6 @@ impl Render for RenameFiles {
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .p(tokens::SPACE_MD)
-                    // The body's own surface, a second elevated layer over
-                    // the window's, the same as the settings page. The
-                    // backdrop reads through two layers everywhere.
                     .bg(palette::bg_elevated())
                     .child(section(
                         rox_i18n::t!("tags-rename-pattern-section"),
@@ -1089,8 +984,7 @@ mod tests {
 
     #[test]
     fn a_case_only_rename_takes_the_temp_hop() {
-        // The source reads as taken, the same thing a case-insensitive
-        // filesystem reports about the destination of a case-only rename.
+        // The source reads as taken, as a case-insensitive filesystem would report.
         let got = run(
             &[album("/m/geogaddi/04 - julie.flac", "Julie", "4")],
             "%album%/%track% - %title%",
@@ -1103,9 +997,6 @@ mod tests {
 
     #[test]
     fn a_track_the_catalog_cannot_resolve_never_moves() {
-        // Every field would fall back and the file would end up at
-        // "Unknown Artist/Unknown Album/00 - Untitled", which is worse
-        // than where it started.
         let mut unknown = album("/m/a.flac", "Julie", "4");
         unknown.values = None;
         let got = run(&[unknown], "%albumartist%/%album%/%track% - %title%", &[]);
@@ -1118,9 +1009,6 @@ mod tests {
         assert!(matches!(got[0].blocked, Some(Blocked::Render(_))));
     }
 
-    /// The disk half on a real directory: the move digs out the folders
-    /// the pattern named, the lyrics sidecar follows the audio into them,
-    /// and a case-only rename gets there through the hop.
     #[test]
     fn a_move_digs_its_folders_and_takes_the_sidecar_along() {
         let dir = std::env::temp_dir().join("rox-rename-move");
@@ -1140,8 +1028,6 @@ mod tests {
         assert_eq!(moved, vec![(dir.join("old.lrc"), lrc.clone())]);
         assert!(lrc.exists() && !dir.join("old.lrc").exists());
 
-        // Case-only, the one a case-insensitive filesystem would read as
-        // renaming a file onto itself.
         let cased = dir.join("Boards/Geogaddi/04 - JULIE.flac");
         move_file(&to, &cased, true).unwrap();
         assert_eq!(fs::read(&cased).unwrap(), b"audio");

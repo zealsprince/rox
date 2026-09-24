@@ -1,20 +1,11 @@
 //! Playback bookmarks: a saved position inside a track, with an optional
-//! name and color. A row is what a press of M drops while a track plays,
-//! and what the seek strip, the waveform, and the bookmarks panel draw
-//! back: the audiobook and long-mix feature, the one thing the session
-//! restore's single "where was I" can't cover.
-//!
-//! Keyed by track id like the sort-name tables, with the path fragment
-//! snapshotted beside it the way playlist members and listens do it, so a
-//! file that leaves the library and comes back under a fresh id gets its
-//! marks back through [`reattach`]. The position is milliseconds into the
-//! track (a cue track's own clock, not its image's), which is the unit
-//! the cue sheet and the player already speak.
+//! name and color. Keyed by track id with the path fragment snapshotted
+//! beside it, so a file that returns under a fresh id gets its marks back
+//! through [`reattach`]. Positions are on a cue track's own clock.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// The table beside the tracks it points at. No foreign key: a deleted
-/// track keeps its marks dangling for the reattach, like listens.
+/// No foreign key: a deleted track's marks wait for [`reattach`].
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS bookmarks (
@@ -30,25 +21,19 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// One saved position.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bookmark {
     pub id: i64,
     pub track_id: i64,
-    /// Milliseconds into the track.
     pub position_ms: u32,
-    /// The label, empty for a mark dropped without one; views show the
-    /// time in its place.
+    /// Empty for an unnamed mark; views show the time instead.
     pub name: String,
-    /// `#rrggbb`, or None for the theme accent, which follows the palette.
+    /// `#rrggbb`, or None for the theme accent.
     pub color: Option<String>,
-    /// Unix seconds.
     pub created: i64,
 }
 
-/// A bookmark with the track it sits in, for views that list every mark
-/// rather than one track's. Tracks come off the live catalog, so a mark
-/// whose track is gone doesn't list until the reattach brings it back.
+/// A mark whose track is gone doesn't list until [`reattach`] brings it back.
 #[derive(Clone, Debug)]
 pub struct BookmarkRow {
     pub bookmark: Bookmark,
@@ -65,7 +50,6 @@ pub struct BookmarkRow {
     pub rating: u8,
 }
 
-/// The color column's shape on the way in and out: blank is the accent.
 fn color_of(raw: String) -> Option<String> {
     let raw = raw.trim().to_string();
     (!raw.is_empty()).then_some(raw)
@@ -78,8 +62,7 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// Drop a mark on a track. `path` is the key's fragment form, the join
-/// hint [`reattach`] matches on. Returns the new row's id.
+/// `path` is the key's fragment form, which [`reattach`] matches on.
 pub fn add(
     conn: &Connection,
     track_id: i64,
@@ -103,7 +86,6 @@ pub fn add(
     Ok(conn.last_insert_rowid())
 }
 
-/// Every mark on one track, earliest first.
 pub fn for_track(conn: &Connection, track_id: i64) -> rusqlite::Result<Vec<Bookmark>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, track_id, position_ms, name, color, created
@@ -124,7 +106,6 @@ fn row_bookmark(row: &rusqlite::Row) -> rusqlite::Result<Bookmark> {
     })
 }
 
-/// One mark by id, for a caller editing it that holds only the id.
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Bookmark>> {
     conn.query_row(
         "SELECT id, track_id, position_ms, name, color, created FROM bookmarks WHERE id = ?1",
@@ -134,9 +115,7 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Bookmark>> {
     .optional()
 }
 
-/// Every mark whose track is in the catalog, grouped by track in browse
-/// order (album artist, album, disc, track) and earliest mark first
-/// within a track. What the bookmarks panel lists.
+/// Every mark with a live track, in browse order.
 pub fn all(conn: &Connection) -> rusqlite::Result<Vec<BookmarkRow>> {
     let mut stmt = conn.prepare_cached(
         "SELECT b.id, b.track_id, b.position_ms, b.name, b.color, b.created,
@@ -167,8 +146,6 @@ pub fn all(conn: &Connection) -> rusqlite::Result<Vec<BookmarkRow>> {
     rows.collect()
 }
 
-/// Whether any mark exists at all, for a view deciding between its list
-/// and its empty-state line without reading the rows.
 pub fn count(conn: &Connection) -> rusqlite::Result<u64> {
     conn.query_row("SELECT COUNT(*) FROM bookmarks", [], |row| row.get(0))
 }
@@ -181,7 +158,6 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Set the color, None going back to the theme accent.
 pub fn set_color(conn: &Connection, id: i64, color: Option<&str>) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE bookmarks SET color = ?2 WHERE id = ?1",
@@ -190,7 +166,6 @@ pub fn set_color(conn: &Connection, id: i64, color: Option<&str>) -> rusqlite::R
     Ok(())
 }
 
-/// Slide a mark to a new position on the same track.
 pub fn set_position(conn: &Connection, id: i64, position_ms: u32) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE bookmarks SET position_ms = ?2 WHERE id = ?1",
@@ -204,8 +179,6 @@ pub fn remove(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// How many marks sit on these tracks together, for a menu deciding
-/// whether to offer clearing them.
 pub fn count_for_tracks(conn: &Connection, track_ids: &[i64]) -> rusqlite::Result<u64> {
     let mut stmt = conn.prepare_cached("SELECT COUNT(*) FROM bookmarks WHERE track_id = ?1")?;
     let mut total = 0u64;
@@ -215,7 +188,6 @@ pub fn count_for_tracks(conn: &Connection, track_ids: &[i64]) -> rusqlite::Resul
     Ok(total)
 }
 
-/// Drop every mark on these tracks. Returns how many went.
 pub fn remove_for_tracks(conn: &Connection, track_ids: &[i64]) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare_cached("DELETE FROM bookmarks WHERE track_id = ?1")?;
     let mut gone = 0;
@@ -225,13 +197,8 @@ pub fn remove_for_tracks(conn: &Connection, track_ids: &[i64]) -> rusqlite::Resu
     Ok(gone)
 }
 
-/// Match marks back to the catalog after a scan, the move
-/// [`crate::listens::reattach`] makes for events: a pruned-and-returned
-/// file comes back under a fresh id, and the marks that pointed at its
-/// old row relink through the path fragment recorded when they were set.
-/// Live rows just keep their path current.
-///
-/// Returns how many marks relinked, or None when nothing was dangling.
+/// Relink marks whose track was pruned and returned under a fresh id, by
+/// their path fragment. None when nothing was dangling.
 pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
     conn.execute(
         "UPDATE bookmarks SET path =
@@ -354,7 +321,6 @@ mod tests {
         track(&conn, 2, "/img.flac", 3);
         add(&conn, 1, "/a.flac", 5_000, "", None).unwrap();
         add(&conn, 2, "/img.flac#3", 5_000, "", None).unwrap();
-        // Nothing dangling: the sweep is a no-op.
         assert_eq!(reattach(&conn).unwrap(), None);
         conn.execute("DELETE FROM tracks", []).unwrap();
         track(&conn, 11, "/a.flac", 0);

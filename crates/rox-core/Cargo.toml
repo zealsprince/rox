@@ -5,41 +5,26 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# The settings file carries a whole palette, and the live setters push
-# straight through it.
+# The live setters push the palette, locale, and dock flags straight through.
 rox-design = { path = "../rox-design" }
-# The language setter swaps the active Fluent locale the same way the
-# theme setter swaps the palette.
 rox-i18n = { path = "../rox-i18n" }
-# The seams toggle writes through to the dock's resizable handles.
 rox-dock = { path = "../rox-dock" }
 # The saved loop mode and the signal routes are these crates' types.
 rox-playback = { path = "../rox-playback" }
 rox-viz = { path = "../rox-viz" }
-# Shallow: app globals for the live setters, plus the appearance and window
-# types the saved frames are written in.
 gpui = { workspace = true }
-# The settings file itself.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The workspace bundle's JSON Schema is derived from the types (ADR 22),
-# so a hand-written schema can't drift from what the writer produces.
+# The workspace schema is derived from the types (ADR 22) so it can't drift.
 schemars = "1"
-# Shader assets ride the bundle as encoded bytes, and the bundle is JSON.
+# Shader assets ride the JSON bundle as encoded bytes.
 base64 = "0.22"
-# Platform data dir, the anchor everything else here hangs off.
 dirs = "5"
-# The logging facade the whole tree writes through; our backend fans each
-# line to stderr, a rolling file, and the console window's ring, and chrono
-# gives it the wall-clock stamp.
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
-# The schema tests validate saved bundles against the derived schema the
-# way a stock editor would.
 jsonschema = { version = "0.33", default-features = false }
-# The executor panic test stands up its own PlatformDispatcher, whose methods
-# take async-task's Runnable, and blocks on a gpui Task from the test thread.
+# The executor panic test stands up its own PlatformDispatcher.
 async-task = "4.7"
 futures = "0.3"

@@ -1,19 +1,12 @@
 //! The shader route editor, shared by every surface that fills slots.
 //!
-//! Three windows edit the same kind of list and used to each draw it their
-//! own way: a panel's Shader page, the Shader panel's Bindings page, and
-//! Appearance > Shaders in the app settings. They differ only in where the
-//! routes are stored and how a write is applied, so that difference is the
-//! whole interface here: [`RouteEditor`] reads a borrowed slice and writes
-//! back through one [`RouteMutate`] closure. No trait: the settings window
-//! can't satisfy a route-host trait without duplicating state it has no
-//! business owning.
+//! Hosts differ only in where routes are stored and how a write lands, so
+//! [`RouteEditor`] reads a borrowed slice and writes back through one
+//! [`RouteMutate`] closure. No trait: the settings window can't satisfy one
+//! without duplicating state it doesn't own.
 //!
-//! The rows fold. A collapsed one shows which slot it fills and which
-//! signal drives it, with the switch and the delete at its edge; opening
-//! one brings out the slot and signal dropdowns and the span. The fold is
-//! stored in [`RouteEditState`] on the host window, never in config: which row you
-//! left open is where you are, not what you set.
+//! The row fold lives in [`RouteEditState`] on the host window, never in
+//! config: which row you left open isn't a setting.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,18 +25,12 @@ use rox_panel_kit::ui::{self as settings_ui, OVER};
 use super::{gate_mark, meter};
 
 /// How a host takes one edit to its route list. The editor never touches
-/// the routes it renders: it hands the host a mutation and the host decides
-/// what that means: a panel config write, a field on the panel itself, or
-/// the settings file plus the live driver.
-///
-/// A host's implementation is expected to notify; the editor's own
-/// listeners notify too, so a plain write is enough.
+/// the routes it renders. Its own listeners notify, so a plain write is
+/// enough.
 pub type RouteMutate<P> = Arc<dyn Fn(&mut P, &mut dyn FnMut(&mut Vec<Route>), &mut Context<P>)>;
 
-/// The editor's ephemeral state, embedded in the hosting view: one pair of
-/// span sliders per route and which rows stand open. [`sync`](Self::sync)
-/// keeps it in step with the list at the top of a render, the way
-/// [`super::sync`] keeps the pool widgets in step.
+/// The editor's ephemeral state, embedded in the hosting view. Call
+/// [`sync`](Self::sync) at the top of a render.
 #[derive(Default)]
 pub struct RouteEditState {
     scrubs: Vec<(ScrubState, ScrubState)>,
@@ -51,8 +38,6 @@ pub struct RouteEditState {
 }
 
 impl RouteEditState {
-    /// Match the host's list length: sliders for every route, and no fold
-    /// state pointing past the end.
     pub fn sync(&mut self, count: usize) {
         if self.scrubs.len() != count {
             self.scrubs.resize_with(count, Default::default);
@@ -60,16 +45,12 @@ impl RouteEditState {
         self.open.retain(|index| *index < count);
     }
 
-    /// Open one row alone, the right move for a freshly added route: it
-    /// arrives with nothing set, and every other row is something already
-    /// settled.
     fn expand_only(&mut self, index: usize) {
         self.open.clear();
         self.open.insert(index);
     }
 
-    /// Close over a deleted row: everything below it shifts up a place, so
-    /// the fold and the sliders follow rather than ending up on a neighbour.
+    /// Shift the fold and sliders up past a deleted row.
     fn removed(&mut self, index: usize) {
         self.open = self
             .open
@@ -93,9 +74,8 @@ impl RouteEditState {
     }
 }
 
-/// What the field shows and whether that's a prompt rather than a pick: a
-/// signal the pool no longer has reads as an invitation, drawn muted
-/// the way an empty input's placeholder is.
+/// The field's label, and whether it's a placeholder: a signal the pool no
+/// longer has reads as a prompt.
 fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
     match pool.iter().find(|signal| signal.id == route.signal) {
         Some(signal) => (signal.label(), false),
@@ -103,8 +83,6 @@ fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
     }
 }
 
-/// The folded row's signal summary: the signal's name, or a note that
-/// nothing is routed yet.
 fn ride_summary(route: &Route, pool: &[Signal]) -> String {
     match pool.iter().find(|signal| signal.id == route.signal) {
         Some(signal) => signal.label(),
@@ -112,13 +90,8 @@ fn ride_summary(route: &Route, pool: &[Signal]) -> String {
     }
 }
 
-/// The lowest slot no route fills yet, or None with all sixteen taken.
-/// What "Add Route" picks, so adding four in a row fills 0 through 3
-/// rather than stacking them all on the same slot.
-///
-/// Duplicates are still legal: the stepper will move a route onto a slot
-/// another already fills, and the last one resolved wins. This is only
-/// where a fresh route starts.
+/// The lowest slot no route fills yet, where a fresh route starts.
+/// Duplicates stay legal through the slot picker; the last resolved wins.
 pub fn next_free_slot(routes: &[Route]) -> Option<usize> {
     let taken: Vec<usize> = routes
         .iter()
@@ -127,12 +100,9 @@ pub fn next_free_slot(routes: &[Route]) -> Option<usize> {
     (0..SLOTS).find(|slot| !taken.contains(slot))
 }
 
-/// One host's route list under edit: what to draw and how to write back.
-///
-/// `id` scopes the element ids the rows build, so two editors in one window
-/// never share a dropdown's state. `labels` is the shader's own slot names
-/// where it declares them (`// @slot 0: bass`); a host with no names
-/// passes an empty slice and the slots read by number.
+/// `id` scopes the rows' element ids, so two editors in one window never
+/// share a dropdown's state. `labels` are the shader's `// @slot 0: bass`
+/// names; empty reads by number.
 pub struct RouteEditor<'a, P: 'static> {
     pub id: &'static str,
     pub hub: &'a Arc<SignalHub>,
@@ -145,14 +115,8 @@ pub struct RouteEditor<'a, P: 'static> {
 }
 
 impl<P: 'static> RouteEditor<'_, P> {
-    /// The Add Route button, for the header of whatever section hosts the
-    /// list. With every slot filled it dims and takes no press; the list
-    /// explains why underneath.
     pub fn add_button(&self, cx: &mut Context<P>) -> settings_ui::SmallButton {
         let full = next_free_slot(self.routes).is_none();
-        // A fresh route takes whatever signal the pool already has; with an
-        // empty pool it arrives with none set, and the row points at the
-        // window where one gets made.
         let signal = self.hub.pool().first().map(|signal| signal.id);
         let mutate = self.mutate.clone();
         let ui_mut = self.ui_mut;
@@ -186,8 +150,6 @@ impl<P: 'static> RouteEditor<'_, P> {
         )
     }
 
-    /// The list itself: a folding row per route, with a line about what an
-    /// empty list means and a line about a full one.
     pub fn list(&self, cx: &mut Context<P>) -> Div {
         let mut list = div().flex().flex_col().gap(tokens::SPACE_MD);
         if self.routes.is_empty() {
@@ -211,8 +173,6 @@ impl<P: 'static> RouteEditor<'_, P> {
         list
     }
 
-    /// One route's row: the summary that always shows, and the controls
-    /// under it while it's open.
     fn row(&self, index: usize, cx: &mut Context<P>) -> Div {
         let Some(route) = self.routes.get(index) else {
             return div();
@@ -224,9 +184,8 @@ impl<P: 'static> RouteEditor<'_, P> {
         let ui_mut = self.ui_mut;
         let mutate = self.mutate.clone();
 
-        // The chevron and the labels take the fold's click; the switch and
-        // the delete at the other edge stay out of it, or a press on its
-        // way to the trash would fold the row shut under it.
+        // Only the summary takes the fold's click, or a press on its way to
+        // the trash would fold the row shut under it.
         let summary = div()
             .flex()
             .flex_row()
@@ -332,10 +291,7 @@ impl<P: 'static> RouteEditor<'_, P> {
         settings_ui::nested(block)
     }
 
-    /// The slot picker: a select field over all sixteen slots, each under
-    /// the name the shader gives it where it gives one.
     fn slot_field(&self, index: usize, slot: Option<usize>, cx: &mut Context<P>) -> Div {
-        // A route whose target names no slot reads as a prompt.
         let label = match slot {
             Some(slot) => slot_label(self.labels, slot),
             None => rox_i18n::t!("route-pick-slot").to_string(),
@@ -381,9 +337,8 @@ impl<P: 'static> RouteEditor<'_, P> {
         )
     }
 
-    /// The signal picker: a select field over the shared pool. An empty
-    /// pool gets no dead control; the row explains that a signal has to
-    /// exist first and opens the window where they're made.
+    /// An empty pool gets no dead control, just a pointer to the Signals
+    /// window.
     fn signal_row(&self, index: usize, pool: &[Signal], cx: &mut Context<P>) -> Div {
         let Some(route) = self.routes.get(index) else {
             return div();
@@ -444,8 +399,6 @@ impl<P: 'static> RouteEditor<'_, P> {
                         }),
                 );
             }
-            // The way out of the list: a fresh signal gets made in the
-            // Signals window, and it shows up here on the next open.
             menu.separator().item(
                 PopupMenuItem::new(rox_i18n::t!("route-create-signal"))
                     .on_click(|_, _, cx| crate::openers::signals_window(cx)),
@@ -467,9 +420,8 @@ impl<P: 'static> RouteEditor<'_, P> {
     }
 }
 
-/// The span this route sweeps between silence and full signal. Its own,
-/// where everything above it is the shared signal: one signal can pull a
-/// slot all the way and nudge another.
+/// The span this route sweeps between silence and full signal. Per route,
+/// so one signal can pull a slot all the way and nudge another.
 fn spans<P: 'static>(
     editor: &RouteEditor<P>,
     index: usize,
@@ -541,7 +493,6 @@ fn spans<P: 'static>(
         ))
 }
 
-/// The editor's asides, all in the one muted voice.
 fn note(text: SharedString) -> Div {
     div()
         .text_xs()
@@ -573,9 +524,7 @@ mod tests {
 
     #[test]
     fn the_field_names_what_the_route_is_on() {
-        // The prompt below is a translated string, and a test in this same
-        // binary flips the locale to German under the lock, so pin one here
-        // the same way rather than read whichever it left behind.
+        // Another test in this binary flips the locale under the lock.
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
         rox_i18n::set_locale(Some("en-CA"));
         let pool = vec![signal(1, "Kick")];
@@ -584,8 +533,6 @@ mod tests {
         assert_eq!(pick_label(&riding, &pool), ("Kick".to_string(), false));
         assert_eq!(ride_summary(&riding, &pool), "Kick");
 
-        // A signal that left the pool prompts rather than showing a name
-        // it no longer has.
         let mut orphan = route("slot1");
         orphan.signal = 99;
         assert_eq!(pick_label(&orphan, &pool), ("Pick a signal".into(), true));
@@ -596,7 +543,6 @@ mod tests {
     fn next_free_slot_takes_the_lowest_gap() {
         assert_eq!(next_free_slot(&[]), Some(0));
         assert_eq!(next_free_slot(&[route("slot0")]), Some(1));
-        // A gap under a filled slot is still the lowest free one.
         assert_eq!(next_free_slot(&[route("slot1"), route("slot0")]), Some(2));
         assert_eq!(
             next_free_slot(&[route("slot0"), route("slot2"), route("slot1")]),
@@ -615,7 +561,6 @@ mod tests {
     fn every_slot_taken_leaves_nothing_to_add() {
         let full: Vec<Route> = (0..SLOTS).map(|slot| route(&slot_target(slot))).collect();
         assert_eq!(next_free_slot(&full), None);
-        // Free one and it's the one offered back.
         let mut freed = full.clone();
         freed.remove(4);
         assert_eq!(next_free_slot(&freed), Some(4));
@@ -628,20 +573,15 @@ mod tests {
         assert_eq!(ui.scrubs.len(), 3);
         ui.expand_only(2);
         assert!(ui.is_open(2) && !ui.is_open(0));
-        // A second row opens alongside; folding is per row from there.
         ui.toggle(0);
         assert!(ui.is_open(0) && ui.is_open(2));
         ui.toggle(0);
         assert!(!ui.is_open(0));
-        // Deleting a row shifts the ones under it up rather than leaving
-        // the fold on a neighbour.
         ui.removed(1);
         assert_eq!(ui.scrubs.len(), 2);
         assert!(ui.is_open(1) && !ui.is_open(2));
-        // Deleting the open row closes it.
         ui.removed(1);
         assert!(!ui.is_open(0) && !ui.is_open(1));
-        // A shrunk list drops fold state pointing past the end.
         ui.expand_only(0);
         ui.sync(0);
         assert!(!ui.is_open(0));

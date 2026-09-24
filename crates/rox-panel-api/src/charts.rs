@@ -1,12 +1,7 @@
-//! Small chart elements over gpui's paint primitives, shared by
-//! whichever views need one: a bar chart over counts with a hover pick
-//! (the stats window), and a ring showing one share of a whole (the
-//! health window's overview). They draw with quads and paths inside a
-//! canvas, cheap at any plausible size, and stay palette-agnostic: the
-//! caller passes colors, so they pick up panel and song theming wherever
-//! they're used. Text stays out of the paint closure (labels need the
-//! text system); the caller reads the hover pick back and writes its own
-//! readout, and lays its own number over the ring's hole.
+//! Small chart elements over gpui's paint primitives: a bar chart over counts
+//! with a hover pick (the stats window), and a ring showing one share of a
+//! whole (the health window). The caller passes colors so theming applies,
+//! and draws any text itself, since the paint closure has no text system.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,10 +12,8 @@ use gpui::{
 
 use rox_design::palette;
 
-/// The hover state a bar chart shares between paint, which has the
-/// chart's bounds, and the mouse handlers, which have the pointer: the
-/// hovered bucket's index, for the caller's readout. Behind Arcs so the
-/// paint closure, the handlers, and the owning view all hold it.
+/// Shared between paint, which has the chart's bounds, and the mouse
+/// handlers, which have the pointer.
 #[derive(Clone, Default)]
 pub struct BarHover {
     bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
@@ -28,26 +21,19 @@ pub struct BarHover {
 }
 
 impl BarHover {
-    /// The hovered bucket, None with the pointer off the chart.
     pub fn index(&self) -> Option<usize> {
         *self.index.lock().unwrap()
     }
 
-    /// Drop the pick, for a chart whose buckets are about to change under
-    /// a still pointer.
+    /// For a chart whose buckets are about to change under a still pointer.
     pub fn clear(&self) {
         *self.index.lock().unwrap() = None;
     }
 }
 
-/// A bar chart over the counts: one bar per bucket, heights against the
-/// busiest, each colored along the `lo` to `hi` ramp by its own height,
-/// so the busy stretches read at a glance. Hovering washes the bucket's
-/// column, recolors its bar to `pick`, and reports the index through
-/// `hover`; a click hands the hovered bucket to `on_pick`, and a chart
-/// with nothing to open under a bar passes None and keeps the plain
-/// cursor. The caller sizes the returned element and renders any
-/// readout itself.
+/// One bar per bucket, heights against the busiest, colored along `lo` to
+/// `hi` by height. A click hands the hovered bucket to `on_pick`; pass None
+/// for a chart with nothing to open.
 pub fn bars<V: 'static>(
     values: Vec<u64>,
     hover: &BarHover,
@@ -63,7 +49,6 @@ pub fn bars<V: 'static>(
     let clicked = hover.clone();
     let paint = hover.clone();
     div()
-        // The id makes the element stateful, which hover tracking needs.
         .id("bar-chart")
         .size_full()
         .when_some(on_pick, |d, on_pick| {
@@ -106,9 +91,7 @@ pub fn bars<V: 'static>(
         )
 }
 
-/// The bars into their bounds, a hairline gap once they're wide enough
-/// to afford one; the hovered bucket gets a full-height wash behind its
-/// bar so even an empty one marks the pick.
+/// The hovered bucket gets a full-height wash so even an empty one shows.
 fn paint_bars(
     values: &[u64],
     picked: Option<usize>,
@@ -159,23 +142,15 @@ fn paint_bars(
     }
 }
 
-/// The widest arc drawn in one SVG arc command. Ninety degrees keeps every
-/// arc a short one, so the large-arc flag is always false and there's no
-/// case where the sweep could pick the wrong half of the circle.
+/// Ninety degrees keeps every arc short, so the large-arc flag is always false.
 const ARC_STEP: f32 = 90.;
 
-/// Where the ring starts and which way it runs: twelve o'clock, clockwise,
-/// the way a progress dial reads.
+/// Twelve o'clock.
 const RING_START: f32 = -90.;
 
-/// A ring showing one share of a whole: a full track ring in `track`, with
-/// `fraction` of it drawn over in `value`, running clockwise from twelve.
-///
-/// One share, not a slice per category, on purpose. The health overview's
-/// checks overlap (a track missing genre and year fails two of them), so
-/// slices would add up to more than the library and read as a lie. The
-/// caller sizes and centres its own readout over the hole; text can't be
-/// painted from inside a canvas closure without the text system.
+/// A full `track` ring with `fraction` of it drawn over in `value`. One share,
+/// not a slice per category: the health checks overlap, so slices would add
+/// up to more than the library.
 pub fn ring(fraction: f32, diameter: Pixels, thickness: Pixels, track: Rgba, value: Rgba) -> Div {
     div().w(diameter).h(diameter).flex_none().child(
         canvas(
@@ -188,9 +163,7 @@ pub fn ring(fraction: f32, diameter: Pixels, thickness: Pixels, track: Rgba, val
     )
 }
 
-/// The arc spans a fraction covers, in degrees, each no wider than
-/// [`ARC_STEP`]. Empty at zero: nothing to draw is not the same as a
-/// zero-width arc, which tessellates to a stray sliver.
+/// Empty at zero: a zero-width arc tessellates to a stray sliver.
 fn ring_spans(fraction: f32) -> Vec<(f32, f32)> {
     let sweep = fraction.clamp(0., 1.) * 360.;
     if sweep <= 0. {
@@ -206,9 +179,6 @@ fn ring_spans(fraction: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// The track ring and the value arc into their bounds, both as annulus
-/// paths. The ring squares itself off the shorter side, so an over-wide
-/// slot leaves it centred rather than stretching it into an ellipse.
 fn paint_ring(
     fraction: f32,
     thickness: Pixels,
@@ -236,15 +206,10 @@ fn paint_ring(
     }
 }
 
-/// One closed contour running out along the outer radius and back along
-/// the inner one: the outer arcs clockwise, a step inward, then the inner
-/// arcs back counter-clockwise. A full ring's step inward is a hairline
-/// slit at twelve o'clock, which is the standard way to cut a hole with a
-/// single contour and tessellates cleanly either fill rule.
-///
-/// None when there's nothing to draw, or when the builder refuses the
-/// path: a chart that can't tessellate paints nothing rather than taking
-/// the frame down.
+/// One closed contour: the outer arcs clockwise, a step inward, the inner arcs
+/// back. A full ring's step inward is a hairline slit, the standard way to cut
+/// a hole with a single contour. None when there's nothing to draw or the
+/// builder refuses the path.
 fn annulus(
     centre: Point<Pixels>,
     outer: f32,
@@ -277,8 +242,7 @@ fn annulus(
     builder.build().ok()
 }
 
-/// A point on the circle at an angle in degrees, zero at three o'clock and
-/// growing clockwise, which is what screen coordinates give for free.
+/// Degrees from three o'clock, growing clockwise in screen coordinates.
 fn on_circle(centre: Point<Pixels>, radius: f32, degrees: f32) -> Point<Pixels> {
     let radians = degrees.to_radians();
     point(
@@ -291,35 +255,25 @@ fn on_circle(centre: Point<Pixels>, radius: f32, degrees: f32) -> Point<Pixels> 
 mod tests {
     use super::*;
 
-    /// The ring's arcs: none at empty, and a quarter circle apiece
-    /// otherwise, so no single arc command ever has to guess which half of
-    /// the circle the sweep meant.
     #[test]
     fn a_ring_splits_its_sweep_into_quarter_circles() {
         assert!(ring_spans(0.).is_empty());
         assert_eq!(ring_spans(0.5).len(), 2);
         assert_eq!(ring_spans(1.).len(), 4);
-        // A share that doesn't divide evenly still gets equal steps, so
-        // the arcs meet without a seam.
         let spans = ring_spans(0.3);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].1, spans[1].0);
         assert!((spans[1].1 - (RING_START + 108.)).abs() < 0.001);
     }
 
-    /// Out-of-range shares are clamped rather than wrapped: a fraction over
-    /// one would otherwise draw more than a full ring and paint over its
-    /// own start.
     #[test]
     fn a_ring_clamps_shares_outside_zero_to_one() {
         assert!(ring_spans(-0.5).is_empty());
         assert_eq!(ring_spans(2.).len(), 4);
     }
 
-    /// The arcs actually tessellate on the pinned gpui, at every share and
-    /// at a thickness thicker than the ring itself. Worth a test rather than
-    /// a look: `build` swallows a tessellation failure into an Err, and the
-    /// only symptom on screen would be a ring that silently isn't there.
+    /// `build` swallows a tessellation failure into an Err, and on screen that
+    /// is a ring that silently isn't there.
     #[test]
     fn every_share_builds_a_path() {
         let centre = point(px(60.), px(60.));
@@ -329,10 +283,8 @@ mod tests {
                 "{share} tessellates"
             );
         }
-        // A band thicker than the radius collapses the hole rather than
-        // inverting it, and still builds.
+        // A band thicker than the radius collapses the hole and still builds.
         assert!(annulus(centre, 50., 0., &ring_spans(1.)).is_some());
-        // Nothing to draw is None, not an empty path.
         assert!(annulus(centre, 50., 38., &ring_spans(0.)).is_none());
     }
 }

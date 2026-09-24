@@ -1,13 +1,9 @@
-//! Deezer (api.deezer.com): keyless album search that hands back cover
-//! URLs at fixed sizes. `cover_big` is the 500px preview, `cover_xl` the
-//! 1000px image a save embeds.
+//! Deezer (api.deezer.com): keyless album search with fixed-size cover URLs.
 
 use super::{ArtCandidate, ArtProvider, TrackQuery, agent, net_reason, string};
 
 const API: &str = "https://api.deezer.com/search/album";
 
-/// The pixel size Deezer's `cover_xl` serves; used for the caption and
-/// the quality sort.
 const XL_PX: u32 = 1000;
 
 pub struct Deezer;
@@ -45,8 +41,6 @@ impl ArtProvider for Deezer {
             if full.is_empty() {
                 continue;
             }
-            // The 500px cover is the preview; fall back to the xl when a
-            // result omits it.
             let thumb = {
                 let big = string(album.get("cover_big"));
                 if big.is_empty() { full.clone() } else { big }
@@ -67,10 +61,8 @@ impl ArtProvider for Deezer {
 
 const ARTIST_API: &str = "https://api.deezer.com/search/artist";
 
-/// Search Deezer for an artist's portrait: the xl picture URL of the
-/// best name match, None when nothing matches. The name has to match
-/// once folded: a search for an unknown act returns lookalikes, and a
-/// wrong face is worse than none.
+/// The xl portrait of an exact (folded) name match. Unknown acts return
+/// lookalikes, and a wrong face is worse than none.
 pub fn artist_picture(name: &str) -> Result<Option<String>, String> {
     if name.trim().is_empty() {
         return Ok(None);
@@ -100,8 +92,8 @@ pub fn artist_picture(name: &str) -> Result<Option<String>, String> {
                 xl
             }
         };
-        // An artist without a photo still gets a URL, pointing at the
-        // placeholder star; its empty id reads as a doubled slash.
+        // A photoless artist still gets a URL, to the placeholder star; its
+        // empty id shows as a doubled slash.
         if full.is_empty() || full.contains("/artist//") {
             continue;
         }

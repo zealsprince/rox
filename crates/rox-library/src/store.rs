@@ -22,9 +22,15 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 /// append a clean forward step here rather than growing another probe. See
 /// [`crate::migrate`] for the versioning and downgrade policy.
 const MIGRATIONS: &[crate::migrate::Migration] = &[
+    // Flagged for the baseline's album artist, codec and disc number probes,
+    // all filled from tags. Those used to reset mtime only when they fired;
+    // the flag resets on every baseline run instead. On a fresh database
+    // that's an empty table, and a pre-ladder file is owed the rescan by
+    // stream-format in the same batch regardless.
     crate::migrate::Migration {
         name: "baseline",
         up: baseline,
+        rescan: true,
     },
     // Playlist members and listens snapshot the track's path beside its tags,
     // the content key the post-scan reattach matches dangling rows back on
@@ -36,12 +42,14 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
             crate::playlists::add_path_snapshot(conn)?;
             crate::listens::add_path_snapshot(conn)
         },
+        rescan: false,
     },
     // The library's genre opinions (aliases, display, art) beside the
     // tracks they describe, never touching a file's tags.
     crate::migrate::Migration {
         name: "genre-meta",
         up: crate::genre_meta::init_schema,
+        rescan: false,
     },
     // The stream's sample rate and bit depth beside the bitrate, so the
     // library can show what a file actually is rather than just its
@@ -53,10 +61,10 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         up: |conn| {
             conn.execute_batch(
                 "ALTER TABLE tracks ADD COLUMN sample_rate INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE tracks ADD COLUMN bit_depth INTEGER NOT NULL DEFAULT 0;
-                 UPDATE tracks SET mtime = 0;",
+                 ALTER TABLE tracks ADD COLUMN bit_depth INTEGER NOT NULL DEFAULT 0;",
             )
         },
+        rescan: true,
     },
     // What a file's ReplayGain tags measured (ADR 19), so the player can
     // level a track without reopening it. Nullable rather than defaulted:
@@ -70,10 +78,10 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                 "ALTER TABLE tracks ADD COLUMN rg_track_gain REAL;
                  ALTER TABLE tracks ADD COLUMN rg_track_peak REAL;
                  ALTER TABLE tracks ADD COLUMN rg_album_gain REAL;
-                 ALTER TABLE tracks ADD COLUMN rg_album_peak REAL;
-                 UPDATE tracks SET mtime = 0;",
+                 ALTER TABLE tracks ADD COLUMN rg_album_peak REAL;",
             )
         },
+        rescan: true,
     },
     // Which of the two sources filled the four columns above: the file's
     // tags, or rox's own measurement pass (ADR 19). Nullable and unbackfilled,
@@ -84,6 +92,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "replaygain-source",
         up: |conn| conn.execute_batch("ALTER TABLE tracks ADD COLUMN rg_source INTEGER;"),
+        rescan: false,
     },
     // The acoustic feature vectors behind "sounds like this". Its own table
     // rather than columns on tracks: a vector is orders of magnitude wider
@@ -92,6 +101,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "acoustic-embeddings",
         up: crate::embeddings::init_schema,
+        rescan: false,
     },
     // Subsong identity: a track is (source, path, sub), where sub is 0 for a
     // plain file and a cue sheet's 1-based TRACK number for a span of an
@@ -147,6 +157,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                  ALTER TABLE tracks_new RENAME TO tracks;",
             )
         },
+        rescan: false,
     },
     // Where a cue track's span is stored. Its own table rather than two
     // nullable columns on tracks: rows exist only for cue tracks, so a library
@@ -164,6 +175,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                 );",
             )
         },
+        rescan: false,
     },
     // Smart playlists: a playlist row can hold a saved query instead of
     // member rows. Two columns on playlists rather than a side table,
@@ -172,6 +184,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "smart-playlists",
         up: crate::playlists::add_smart_columns,
+        rescan: false,
     },
     // What a track runs at in beats a minute, beside which of the two
     // sources filled it: the file's own tags, or rox's estimate for a file
@@ -186,10 +199,10 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         up: |conn| {
             conn.execute_batch(
                 "ALTER TABLE tracks ADD COLUMN bpm REAL;
-                 ALTER TABLE tracks ADD COLUMN bpm_source INTEGER;
-                 UPDATE tracks SET mtime = 0;",
+                 ALTER TABLE tracks ADD COLUMN bpm_source INTEGER;",
             )
         },
+        rescan: true,
     },
     // The Latin sort names a file's tags carry (TSOP and friends), one
     // column each. Text defaulting to empty rather than nullable, since a
@@ -204,10 +217,10 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                 "ALTER TABLE tracks ADD COLUMN title_sort TEXT NOT NULL DEFAULT '';
                  ALTER TABLE tracks ADD COLUMN artist_sort TEXT NOT NULL DEFAULT '';
                  ALTER TABLE tracks ADD COLUMN album_artist_sort TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE tracks ADD COLUMN album_sort TEXT NOT NULL DEFAULT '';
-                 UPDATE tracks SET mtime = 0;",
+                 ALTER TABLE tracks ADD COLUMN album_sort TEXT NOT NULL DEFAULT '';",
             )
         },
+        rescan: true,
     },
     // The tag triple the post-scan reattach matches a dangling playlist
     // member or listen on. Without it both the join and the correlated
@@ -222,6 +235,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                 "CREATE INDEX IF NOT EXISTS idx_tracks_tags ON tracks (title, artist, album);",
             )
         },
+        rescan: false,
     },
     // The column behind insert_batch's measured-gain question. That probe
     // runs once per batch, and unindexed it walked every local row to answer
@@ -234,6 +248,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                 "CREATE INDEX IF NOT EXISTS idx_tracks_rg_source ON tracks (rg_source);",
             )
         },
+        rescan: false,
     },
     // The library's own sort names for artists, filled from MusicBrainz by
     // the background pass and never from a file. Its own table beside the
@@ -244,6 +259,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "artist-meta",
         up: crate::artist_meta::init_schema,
+        rescan: false,
     },
     // Sort names for album titles, which no service publishes: the
     // romanization pass reads the characters and writes the answer here.
@@ -252,12 +268,14 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "album-meta",
         up: crate::album_meta::init_schema,
+        rescan: false,
     },
     // The same for track titles, keyed by track id rather than by value,
     // because a title is per row rather than interned. No mtime reset.
     crate::migrate::Migration {
         name: "track-meta",
         up: crate::track_meta::init_schema,
+        rescan: false,
     },
     // Playback bookmarks, a saved position inside a track. Keyed by track
     // id with the path snapshotted beside it for the post-scan reattach,
@@ -265,6 +283,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "bookmarks",
         up: crate::bookmarks::init_schema,
+        rescan: false,
     },
     // What a non-local row needs to become a locator again: the stream URL,
     // and whether the stream ever ends. A remote row's `path` holds the
@@ -283,6 +302,7 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
                  ALTER TABLE tracks ADD COLUMN remote_live INTEGER NOT NULL DEFAULT 0;",
             )
         },
+        rescan: false,
     },
     // Where a listen came from: rox watching a play, Last.fm's scrobble
     // history, or the import's own arithmetic filling a count out. Plus the
@@ -292,11 +312,28 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "listen-origin",
         up: crate::listens::add_origin,
+        rescan: false,
     },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
-    crate::migrate::run(conn, MIGRATIONS)
+    run_ladder(conn, MIGRATIONS)
+}
+
+/// Run `steps` with the library's rescan hook. Every caller in this crate goes
+/// through here rather than [`crate::migrate::run`], which refuses a ladder
+/// with flagged steps in it.
+fn run_ladder(conn: &Connection, steps: &[crate::migrate::Migration]) -> rusqlite::Result<()> {
+    crate::migrate::run_with_rescan(conn, steps, reset_mtimes)
+}
+
+/// The library's answer to a step that sets [`crate::migrate::Migration::rescan`].
+/// mtime is half the scanner's change key, so zeroing it makes every row look
+/// changed against the file it was read from, and the next scan reopens each
+/// file and reads its tags again. Only local rows feed that key (see
+/// [`local_files`]), so the reset means nothing to a remote row.
+fn reset_mtimes(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("UPDATE tracks SET mtime = 0;")
 }
 
 /// Run the ladder up to but not including the named rung, the shape of a
@@ -309,7 +346,7 @@ pub(crate) fn run_ladder_before(conn: &Connection, name: &str) -> rusqlite::Resu
         .iter()
         .position(|m| m.name == name)
         .unwrap_or_else(|| panic!("{name} is part of the ladder"));
-    crate::migrate::run(conn, &MIGRATIONS[..rung])
+    run_ladder(conn, &MIGRATIONS[..rung])
 }
 
 /// The baseline schema: the whole store as it stood before the version ladder,
@@ -343,16 +380,13 @@ fn baseline(conn: &Connection) -> rusqlite::Result<()> {
             UNIQUE (source, path)
         );",
     )?;
-    // A library from before the album artist column: add it, and reset
-    // every mtime so the next scan re-reads tags instead of skipping the
-    // files as unchanged, which would leave the column empty forever.
+    // A library from before the album artist column: add it. The column is
+    // filled from tags, so the step's rescan flag resets every mtime and the
+    // next scan re-reads the files instead of skipping them as unchanged.
     let mut stmt =
         conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'album_artist'")?;
     if !stmt.exists([])? {
-        conn.execute_batch(
-            "ALTER TABLE tracks ADD COLUMN album_artist TEXT NOT NULL DEFAULT '';
-             UPDATE tracks SET mtime = 0;",
-        )?;
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN album_artist TEXT NOT NULL DEFAULT '';")?;
     }
     // Same move for a library from before codec and bitrate.
     let mut stmt =
@@ -360,21 +394,17 @@ fn baseline(conn: &Connection) -> rusqlite::Result<()> {
     if !stmt.exists([])? {
         conn.execute_batch(
             "ALTER TABLE tracks ADD COLUMN codec TEXT NOT NULL DEFAULT '';
-             ALTER TABLE tracks ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 0;
-             UPDATE tracks SET mtime = 0;",
+             ALTER TABLE tracks ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     // And for a library from before the disc number.
     let mut stmt =
         conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'disc_no'")?;
     if !stmt.exists([])? {
-        conn.execute_batch(
-            "ALTER TABLE tracks ADD COLUMN disc_no INTEGER NOT NULL DEFAULT 0;
-             UPDATE tracks SET mtime = 0;",
-        )?;
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN disc_no INTEGER NOT NULL DEFAULT 0;")?;
     }
-    // And for a library from before ratings. No mtime reset here: the
-    // rating is the app's own, never read from tags, so no rescan is owed.
+    // And for a library from before ratings. It's the app's own, never read
+    // from tags, so it alone wouldn't owe a rescan.
     let mut stmt =
         conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'rating'")?;
     if !stmt.exists([])? {
@@ -2422,15 +2452,19 @@ mod tests {
 
         // Every column the baseline probes for is present now, the pre-existing
         // row survived, and the file is stamped at the head of the ladder.
-        let (album_artist, added): (String, i64) = conn
+        let (album_artist, added, mtime): (String, i64, i64) = conn
             .query_row(
-                "SELECT album_artist, added FROM tracks WHERE path = '/m/1.mp3'",
+                "SELECT album_artist, added, mtime FROM tracks WHERE path = '/m/1.mp3'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert_eq!(album_artist, "", "the new album_artist column reads empty");
         assert!(added > 0, "the added backfill stamped the old row");
+        assert_eq!(
+            mtime, 0,
+            "the old row is owed a re-read for its new tag columns"
+        );
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
@@ -2451,7 +2485,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         // Stop the ladder at the baseline: the pre-step-2 shape, member and
         // listen tables without a path column.
-        crate::migrate::run(&conn, &MIGRATIONS[..1]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..1]).unwrap();
         // Written as plain SQL against the baseline's own columns, not
         // through insert_batch: that write path targets the head of the
         // ladder, so it would need columns this fixture deliberately
@@ -2507,7 +2541,7 @@ mod tests {
             .expect("the stream-format rung is part of the ladder");
         // The ladder up to but not including it, then a row stamped as
         // already scanned.
-        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
         conn.execute(
             "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
                 track_no, duration_ms, codec, bitrate, size, mtime)
@@ -2517,7 +2551,7 @@ mod tests {
         .unwrap();
 
         // That one rung and nothing after it.
-        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
 
         let (rate, depth, mtime): (i64, i64, i64) = conn
             .query_row(
@@ -2540,7 +2574,7 @@ mod tests {
             .iter()
             .position(|m| m.name == "replaygain-source")
             .expect("the replaygain-source rung is part of the ladder");
-        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
         conn.execute(
             "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
                 track_no, duration_ms, codec, bitrate, sample_rate, bit_depth, size, mtime,
@@ -2551,7 +2585,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
 
         let (source, mtime): (Option<i64>, i64) = conn
             .query_row(
@@ -2579,7 +2613,7 @@ mod tests {
             .iter()
             .position(|m| m.name == "tempo")
             .expect("the tempo rung is part of the ladder");
-        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
         conn.execute(
             "INSERT INTO tracks (path, sub, title, artist, album_artist, album, genre, year,
                 track_no, duration_ms, codec, bitrate, sample_rate, bit_depth, size, mtime)
@@ -2589,7 +2623,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
 
         let (bpm, source, mtime): (Option<f32>, Option<i64>, i64) = conn
             .query_row(
@@ -2618,7 +2652,7 @@ mod tests {
             .iter()
             .position(|m| m.name == "track-subsong")
             .expect("the track-subsong rung is part of the ladder");
-        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
         conn.execute(
             "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
                 disc_no, track_no, duration_ms, codec, bitrate, sample_rate, bit_depth,
@@ -2632,7 +2666,7 @@ mod tests {
             .query_row("SELECT id FROM tracks", [], |r| r.get(0))
             .unwrap();
 
-        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
 
         let (id, sub, rating, added, gain): (i64, i64, i64, i64, f64) = conn
             .query_row(
@@ -2669,13 +2703,13 @@ mod tests {
             .iter()
             .position(|m| m.name == "cue-tracks")
             .expect("the cue-tracks rung is part of the ladder");
-        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
         assert!(
             conn.prepare("SELECT 1 FROM cue_tracks").is_err(),
             "the table arrives with its own rung, not before"
         );
 
-        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
         conn.execute(
             "INSERT INTO tracks (id, path, sub, title, artist, album_artist, album, genre,
                 year, track_no, duration_ms, size, mtime)

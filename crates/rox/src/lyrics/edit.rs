@@ -1,30 +1,11 @@
-//! The lyrics edit window: one OS window opened from the lyrics panel's
-//! pencil, so editing the raw sheet always has room even when the panel is
-//! docked narrow. It reads the file's current words off the UI thread into
-//! a multi-line input, stamps the cursor line with the live playback
-//! position on Shift+Enter for a play-along tag pass, and Save writes back
-//! where the sheet came from: the embedded tag through the writer's atomic
-//! layer, or the `.lrc` sidecar or app lyrics store as a plain file. On a
-//! save it rings the app-wide lyrics signal so every panel re-reads, then
-//! closes. Nothing is written until Save; closing leaves the file untouched.
+//! The lyrics edit window: the raw sheet in a multi-line input, with
+//! Shift+Enter stamping the cursor line at the playback position and an
+//! offset control that shifts every stamp. Save writes back where the sheet
+//! came from (tag, `.lrc` sidecar, or app store) and rings the save signal.
 //!
-//! While the edited track plays, the row under the playhead lights in the
-//! input, so a sheet's timing can be judged against the song without
-//! leaving the editor. A pulled sheet that's timed right but runs early or
-//! late as a whole gets the header's offset control: a step in seconds and
-//! an arrow each way, and a press moves every stamp by the step, rewriting
-//! the tags in place.
-//!
-//! Every keystroke, stamp and nudge is handed straight back to the lyrics
-//! panels as an unsaved draft, so the sheet on screen moves with the one
-//! being typed. Nothing is written by that: the draft is given back when
-//! the window closes and the panels fall to whatever is stored.
-//!
-//! One window per subject, registered like the match window, so asking
-//! again focuses the open one instead of stacking a twin. A subject rather
-//! than a path because not every track is a file: a station's words belong
-//! to the song it announced, and the editor is open on that song and not
-//! on the URL it came down.
+//! Every edit goes to the lyrics panels as an unsaved draft, dropped when the
+//! window closes. Keyed by subject rather than path: a station's words belong
+//! to the song it announced, not the stream URL.
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, Focusable, Global, KeyBinding, KeyDownEvent,
@@ -46,42 +27,28 @@ use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::lyrics::{LyricsTarget, playing_subject, save_target};
 use rox_services::player::{fmt_time, song_clock};
 
-/// The default window size: tall enough for a verse or two at a glance,
-/// and wide enough that a timestamped line rarely wraps.
 const DEFAULT_SIZE: (f32, f32) = (575., 620.);
 
-/// The wash behind the row under the playhead: the accent, thin enough
-/// that the stamp and the words read through it.
 const MARK_ALPHA: u8 = 48;
 
-/// The offset step the header opens with, in seconds: a quarter second,
-/// small enough to creep up on the beat and large enough to hear.
 const DEFAULT_STEP: &str = "0.25";
 
 actions!(lyrics_edit, [Save]);
 
-/// The key context the window's bindings scope to. The stamp binding in
-/// [`crate::keymap`] already names it, so the save joins it rather than
-/// opening a second context over the same window.
+/// Shared with the stamp binding in [`crate::keymap`].
 const CONTEXT: &str = "LyricsEdit";
 
-// The sheet is a multi-line input, where plain enter is a newline, so the
-// save uses the platform's primary modifier: Cmd on macOS, Ctrl
-// everywhere else, the fork every app-level chord takes.
+// Plain Enter is a newline in the sheet, so save takes the primary modifier.
 #[cfg(target_os = "macos")]
 const SAVE_CHORD: &str = "cmd-enter";
 
 #[cfg(not(target_os = "macos"))]
 const SAVE_CHORD: &str = "ctrl-enter";
 
-/// The editor's save binding; call once at startup, before
-/// [`crate::keymap::init`] snapshots what's bound.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(SAVE_CHORD, Save, Some(CONTEXT))]);
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new(SAVE_CHORD, Save, Some(CONTEXT))]
 }
 
-/// The open edit windows, keyed by subject, so a second request for the
-/// same track focuses the first. The match window's registry shape.
 #[derive(Default)]
 struct OpenEditors(Vec<(Subject, WindowHandle<Root>)>);
 
@@ -94,9 +61,6 @@ impl WindowRegistry for OpenEditors {
     }
 }
 
-/// Open a lyrics edit window on `target`, or focus the one already on it. A
-/// save broadcasts through [`crate::lyrics::saved`], so the window never
-/// holds a panel of its own.
 pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
     open_or_focus::<OpenEditors>(
         target.subject.clone(),
@@ -116,31 +80,20 @@ pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
 
 struct LyricsEdit {
     state: AppState,
-    /// What the words belong to and save back to.
     subject: Subject,
-    /// The track as the header shows it.
     line: SharedString,
     input: Entity<InputState>,
-    /// Where a save is written, resolved once the baseline read reports
-    /// the source. Until then it is the tag, so a brand-new sheet on a
-    /// file writes one, and the store for a track that has no file to
-    /// hold a tag.
+    /// Repointed by the baseline read. Until then the tag, or the store for a
+    /// track with no file.
     target: Source,
-    /// The text the read found, what save diffs against; None until it
-    /// comes in, and save stays inert without it.
+    /// None until the read lands; save stays inert until then.
     baseline: Option<String>,
-    /// A failed read or save, shown inline over the buttons.
     error: Option<SharedString>,
-    /// A save is in flight; the buttons hold still until it finishes.
     saving: bool,
-    /// Where the sheet's stamps sit, by row and time, kept current with
-    /// the text. The playhead mark and the offset arrows both read it.
+    /// (row, time) per stamp, kept current with the text.
     rows: Vec<(usize, f64)>,
-    /// The offset step in seconds, as typed in the header; the arrows
-    /// move the sheet by it.
     step: Entity<InputState>,
-    /// The whole second the stamp button last showed, so a playback tick
-    /// repaints the window only when that readout would change.
+    /// So a tick repaints only when the stamp readout changes.
     shown_secs: Option<u64>,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
@@ -161,45 +114,29 @@ impl LyricsEdit {
         let subject = target.subject.clone();
         let input = cx.new(|cx| InputState::new(window, cx).multi_line(true));
         window.focus(&input.read(cx).focus_handle(cx));
-        // The step takes only what parses as seconds, so a slip of the
-        // finger can't leave the arrows pointing at nothing.
         let step = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(DEFAULT_STEP)
                 .validate(|s, _| s.trim().is_empty() || s.trim().parse::<f64>().is_ok())
         });
-        // The header names the track off the tags the target was built
-        // from, so the window says what it is even before the read comes in.
         let line = target.label();
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        // The pump notifies the player on every tick; the window takes a
-        // frame from it only when the lit row or the stamp readout moves.
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| this.tick(cx));
-        // Every edit, stamp, and nudge lands as a change on the input, so
-        // one hook keeps the stamp index honest and hands the draft to the
-        // panels.
         let _input_changed = cx.subscribe(&input, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.reindex(cx);
                 this.publish(cx);
             }
         });
-        // The arrows go inert on an empty or zero step, so the header
-        // repaints as it's typed.
         let _step_changed = cx.subscribe(&step, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
         });
-        // Closing takes the draft back, so the panels fall to whatever is
-        // stored rather than holding the words that were never saved.
         let _draft_dropped = cx.on_release({
             let subject = subject.clone();
             move |_, cx| crate::lyrics::preview(&subject, None, cx)
         });
-        // A brand-new sheet writes a tag, the way it always has; the read
-        // below repoints this at wherever the words already live. A track
-        // with no file to hold a tag takes the store instead.
         let save_to = match subject.file() {
             Some(_) => Source::Tag,
             None => save_target(&subject),
@@ -229,11 +166,8 @@ impl LyricsEdit {
         this
     }
 
-    /// Hand the current text to every lyrics panel as the unsaved draft.
-    /// Runs on each change, which is what makes an offset nudge move the
-    /// words in the panel as the arrow is pressed. Held back until the
-    /// baseline read lands, so the empty input the window opens with never
-    /// blanks the panel for the frame before the words arrive.
+    /// Held back until the baseline lands, so the empty input doesn't blank the
+    /// panels for a frame.
     fn publish(&self, cx: &mut Context<Self>) {
         if self.baseline.is_none() {
             return;
@@ -243,9 +177,6 @@ impl LyricsEdit {
         cx.defer(move |cx| crate::lyrics::preview(&subject, Some(&text), cx));
     }
 
-    /// Fill the input off the UI thread, pinning the save target to the
-    /// source the read reports. A track with no words starts blank and
-    /// keeps the home it opened with.
     fn load(&self, window: &mut Window, cx: &mut Context<Self>) {
         let subject = self.subject.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -274,14 +205,8 @@ impl LyricsEdit {
         .detach();
     }
 
-    /// Where playback is within the edited song, or None when a different
-    /// one (or nothing) is playing. The stamp button keys off this.
-    ///
-    /// Matched on the subject rather than the track, so a station's
-    /// announced song lines up with the window open on that song. A
-    /// station's own clock counts the listen, which is the evening and not
-    /// the song, so the position comes off the song clock; for a file the
-    /// two are the same number.
+    /// Matched on the subject, not the track, so a station's announced song lines
+    /// up. A station's own clock counts the listen, so this reads the song clock.
     fn playback_position(&self, cx: &App) -> Option<f64> {
         let player = self.state.player.read(cx);
         if playing_subject(player).as_ref() != Some(&self.subject) {
@@ -292,21 +217,14 @@ impl LyricsEdit {
         Some(song_clock(now.position_secs, now.song_start_secs))
     }
 
-    /// Re-read where the stamps sit after the text changes, and re-light
-    /// the playhead row against them. The header's arrows go inert with
-    /// nothing to move, so the window takes a frame too.
     fn reindex(&mut self, cx: &mut Context<Self>) {
         self.rows = lyrics::stamp_rows(&self.input.read(cx).value());
         self.mark(self.playback_position(cx), cx);
         cx.notify();
     }
 
-    /// A playback tick: move the lit row with the playhead, and repaint
-    /// the stamp readout when its second turns over. Every other frame the
-    /// pump would ask for is left alone.
     fn tick(&mut self, cx: &mut Context<Self>) {
-        // One read of the clock for both jobs: resolving what is playing
-        // takes the station's title lock, and this runs on the pump.
+        // One clock read: resolving what's playing takes the station's title lock.
         let position = self.playback_position(cx);
         self.mark(position, cx);
         let secs = position.map(|secs| secs as u64);
@@ -316,9 +234,7 @@ impl LyricsEdit {
         }
     }
 
-    /// Light the row under the playhead in the input, or none while
-    /// another track (or nothing) plays. The input repaints itself when
-    /// the row moves, so this costs no frame of the window's own.
+    /// The input repaints itself, so this costs the window no frame.
     fn mark(&mut self, position: Option<f64>, cx: &mut Context<Self>) {
         let row = position.and_then(|position| lyrics::row_at(&self.rows, position));
         let wash = palette::alpha(palette::accent(), MARK_ALPHA);
@@ -327,19 +243,12 @@ impl LyricsEdit {
         });
     }
 
-    /// The header's step as seconds, or None while it's empty or zero:
-    /// nothing for the arrows to move by.
     fn step_secs(&self, cx: &App) -> Option<f64> {
         let secs: f64 = self.step.read(cx).value().trim().parse().ok()?;
         (secs.is_finite() && secs > 0.0).then_some(secs)
     }
 
-    /// Move every stamp in the sheet by the header's step, later for a
-    /// positive `direction` and earlier for a negative one: the arrows,
-    /// for a sheet whose lines are timed right against each other but run
-    /// early or late as a whole. The tags are rewritten in the text, so
-    /// what's saved is what any player reads, and the cursor stays on its
-    /// line.
+    /// Shift every stamp by the step, for a sheet that runs early or late as a whole.
     fn nudge(&mut self, direction: f64, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving || self.baseline.is_none() || self.rows.is_empty() {
             return;
@@ -360,10 +269,6 @@ impl LyricsEdit {
         });
     }
 
-    /// The header's offset control: the step in seconds, then an arrow
-    /// each way that moves the sheet by it. The arrows sit inert until
-    /// the sheet is in, while it has no stamps to move, and while the
-    /// step is empty or zero.
     fn offset_control(&self, ready: bool, cx: &mut Context<Self>) -> AnyElement {
         let inert = !ready || self.rows.is_empty() || self.step_secs(cx).is_none();
         div()
@@ -377,11 +282,7 @@ impl LyricsEdit {
                     .text_color(palette::text_muted())
                     .child(rox_i18n::t!("lyrics-edit-offset")),
             )
-            .child(
-                // Room for a sign and three places; the field frames
-                // itself, so it reads as the one typed thing in the header.
-                div().w(px(56.)).child(Input::new(&self.step).xsmall()),
-            )
+            .child(div().w(px(56.)).child(Input::new(&self.step).xsmall()))
             .child(
                 div()
                     .text_color(palette::text_muted())
@@ -400,12 +301,8 @@ impl LyricsEdit {
             .into_any_element()
     }
 
-    /// Advance to the next line, stamping the current one with the playback
-    /// position on the way if a position is available: strip whatever
-    /// leading time tag the line has and prepend a fresh one, so a
-    /// play-along tags line by line. The step down always happens, even with
-    /// nothing to stamp, and it adds a blank line when there's none below,
-    /// so Shift+Enter never dead-ends at the last line.
+    /// Stamp the current line (when there's a position) and step down, growing a
+    /// blank line at the end so Shift+Enter never dead-ends.
     fn stamp_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -428,8 +325,6 @@ impl LyricsEdit {
             let body = lyrics::strip_leading_stamps(&lines[ix]).to_owned();
             lines[ix] = format!("{}{body}", lyrics::format_stamp(position));
         }
-        // Make sure there's a line below to move to, so the last line grows
-        // a fresh one instead of pinning the cursor in place.
         if ix + 1 >= lines.len() {
             lines.push(String::new());
         }
@@ -442,14 +337,8 @@ impl LyricsEdit {
         cx.notify();
     }
 
-    /// Save the edited text back where it came from, off the UI thread.
-    /// Nothing moved closes the window; a failed save keeps it open with the
-    /// error inline, the file untouched. Success pokes every panel to
-    /// re-read.
-    ///
-    /// Saving an empty sheet says the track has no lyrics rather than just
-    /// emptying its home, so the automatic lookup leaves it alone from then
-    /// on. The panel's "No Lyrics for This Track" takes that back.
+    /// An empty sheet saves as "no lyrics" rather than an empty home, so the
+    /// automatic lookup leaves the track alone.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(baseline), false) = (&self.baseline, self.saving) else {
             return;
@@ -477,9 +366,7 @@ impl LyricsEdit {
             this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        // Panels cache lyrics off the projection, so every
-                        // one of them needs a poke to re-read. The window
-                        // closing hands the draft back on the way out.
+                        // Lyrics aren't in the projection, so every panel needs a poke.
                         crate::lyrics::saved(&subject, cx);
                         window.remove_window();
                     }
@@ -495,12 +382,7 @@ impl LyricsEdit {
         .detach();
     }
 
-    /// The window's own actions: the stamp with the position it would
-    /// write, the shortcuts for both of them, and the save.
     fn footer(&self, ready: bool, cx: &mut Context<Self>) -> Div {
-        // The stamp button shows the live position it will write, so the
-        // rhythm is visible; inert until the edited track is the one
-        // playing, since there's nothing to stamp with otherwise.
         let position = self.playback_position(cx);
         let stamp_label = match position {
             Some(secs) => rox_i18n::t!("lyrics-edit-stamp-time", time = fmt_time(secs)),
@@ -512,8 +394,6 @@ impl LyricsEdit {
             !ready || position.is_none(),
             cx.listener(|this, _, window, cx| this.stamp_line(window, cx)),
         );
-        // What's holding the save up, when something is, in place of the
-        // shortcut it would otherwise spell out.
         let reason = if self.baseline.is_none() {
             Some(rox_i18n::t!("lyrics-edit-loading"))
         } else if self.saving {
@@ -533,8 +413,6 @@ impl LyricsEdit {
                     Seg::Key(settings_ui::chord("Enter")),
                     Seg::Text("to save".into()),
                 ];
-                // The stamp chord only earns a mention while there's a
-                // position to stamp with.
                 if position.is_some() {
                     segs.push(Seg::Text(rox_i18n::t!("lyrics-edit-hint-or")));
                     segs.push(Seg::Key("Shift+Enter".into()));
@@ -555,8 +433,6 @@ impl LyricsEdit {
             .border_color(palette::border())
             .bg(palette::bg_panel())
             .child(
-                // Stamp on the left where the play-along attention is, its
-                // shortcut spelled out beside it.
                 div()
                     .flex()
                     .flex_row()
@@ -598,10 +474,8 @@ impl Render for LyricsEdit {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // SearchInput scopes the workspace's playback key bindings out
-            // while the input is focused; LyricsEdit scopes in the
-            // Shift+Enter stamp binding (see workspace::init) and this
-            // window's own save.
+            // SearchInput keeps the playback bindings out of the input; LyricsEdit
+            // scopes in the stamp and save bindings.
             .key_context("SearchInput LyricsEdit")
             .on_action(cx.listener(|this, _: &StampLine, window, cx| {
                 cx.stop_propagation();
@@ -614,8 +488,6 @@ impl Render for LyricsEdit {
                 }
                 window.remove_window();
             }))
-            // The backdrop paints first, under the page, so translucent
-            // surfaces back with the playing track's art like every window.
             .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(
                 div()
@@ -623,9 +495,6 @@ impl Render for LyricsEdit {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    // The page's own surface over the root's, the same second
-                    // pass the settings page takes: the backdrop reads through
-                    // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .gap(tokens::SPACE_SM)
                     .p(tokens::SPACE_MD)
@@ -647,11 +516,8 @@ impl Render for LyricsEdit {
                                         .child(self.line.clone()),
                                 )
                                 .child(
-                                    // The input frames itself transparent, and
-                                    // its editor background thins to nothing
-                                    // under surface opacity, so the sheet needs
-                                    // its own card to read as a surface, the
-                                    // match window's preview idiom.
+                                    // The input's background thins to nothing, so the
+                                    // sheet needs its own card.
                                     div()
                                         .flex_1()
                                         .min_h_0()

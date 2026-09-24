@@ -1,8 +1,6 @@
-//! A small blocking client over the socket: connect, shake hands, call
-//! methods. The reference consumers (the CLI, the MCP proxy) use this so
-//! the frame discipline stays in one place on their side too. The transport
-//! is behind boxed halves, which lets `call` stay one body over the Unix
-//! socket and the Windows pipe.
+//! A small blocking client over the socket, for the CLI and the MCP proxy.
+//! The transport sits behind boxed halves so `call` is one body on Unix
+//! sockets and Windows pipes.
 
 use std::collections::VecDeque;
 use std::io::{BufRead as _, BufReader, Read, Write};
@@ -12,26 +10,17 @@ use serde_json::{Value, json};
 
 use crate::protocol::{PROTOCOL_VERSION, RpcError};
 
-/// One connection past its handshake. Calls are strictly serial: one frame
-/// out, one frame back. Pushed events (id-less frames, flowing once
-/// `subscribe` has been called) can land anywhere in that rhythm; a call
-/// steps over them into the pending queue, and [`next_event`](Client::next_event)
-/// drains them in arrival order.
+/// Calls are strictly serial. Pushed events that arrive under a call are
+/// queued for [`next_event`](Client::next_event) in arrival order.
 pub struct Client {
     reader: BufReader<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
     next_id: u64,
-    /// Events read off the wire while waiting on a response, kept in order
-    /// for `next_event`.
     pending: VecDeque<(String, Value)>,
-    /// What the server said it was in the handshake.
     pub server: Value,
 }
 
 impl Client {
-    /// Connect and complete the version handshake. The error is a sentence
-    /// for the caller's stderr: no rox listening, or a rox that speaks a
-    /// different protocol generation.
     pub fn connect(path: &Path) -> Result<Client, String> {
         let (read_half, write_half) = open(path)?;
         let mut client = Client {
@@ -47,9 +36,8 @@ impl Client {
         Ok(client)
     }
 
-    /// One method call, one answer. `Err` carries the server's error
-    /// object; failures of the connection itself come back as the
-    /// transport code, so a holder can tell a dead socket from a refusal.
+    /// Connection failures come back as the transport code, so a holder can
+    /// tell a dead socket from a refusal.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         self.next_id += 1;
         let frame = json!({
@@ -65,8 +53,6 @@ impl Client {
 
         loop {
             let response = self.read_frame()?;
-            // An event arriving under the call keeps its place in line for
-            // next_event; the response is the frame carrying an id.
             if response.get("id").is_none() {
                 self.stash(response);
                 continue;
@@ -79,9 +65,6 @@ impl Client {
         }
     }
 
-    /// Block until the next pushed event and hand back its name and
-    /// payload. Only useful after a `subscribe` call; events that arrived
-    /// while a call waited on its response come out first, in order.
     pub fn next_event(&mut self) -> Result<(String, Value), RpcError> {
         loop {
             if let Some(event) = self.pending.pop_front() {
@@ -91,9 +74,7 @@ impl Client {
             if frame.get("id").is_none() {
                 self.stash(frame);
             }
-            // A frame with an id here is a response nobody is waiting on;
-            // with calls strictly serial it can't happen, and dropping it
-            // beats wedging the event loop over it.
+            // A stray response can't happen with serial calls; drop it.
         }
     }
 
@@ -120,8 +101,6 @@ impl Client {
     }
 }
 
-/// The two halves of a fresh connection, boxed behind the traits the
-/// client reads and writes through.
 type Halves = (Box<dyn Read + Send>, Box<dyn Write + Send>);
 
 #[cfg(unix)]

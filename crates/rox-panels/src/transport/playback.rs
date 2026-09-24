@@ -1,6 +1,6 @@
 //! The playback controls panel: prev, the seek nudges around play/pause,
-//! next, and the loop and shuffle modes, plus the optional stop and random
-//! buttons.
+//! next, and the loop and shuffle modes, plus the opt-in buttons the
+//! arrange editor offers.
 
 use std::time::{Duration, Instant};
 
@@ -35,58 +35,37 @@ use rox_panel_api::actions::{PLAYBACK_TIP_SCOPE, TogglePlayback};
 
 use super::{default_true, transport_panel};
 
-/// One button of the playback strip, the arrange editor's unit. The
-/// config's list holds the shown ones in display order.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlaybackItem {
-    /// The previous-track button.
     Prev,
-    /// The ten-second back nudge.
     SeekBack,
-    /// The play/pause button, the primary transport action.
     Play,
-    /// The ten-second forward nudge.
     SeekForward,
-    /// The next-track button.
     Next,
-    /// The stop button that ejects the playing track.
     Stop,
     /// The speaker button: a click mutes, the wheel nudges the level, and a
     /// right-click opens the slider. The volume strip without the strip,
     /// for a transport that only has room for the one button.
     Volume,
-    /// The loop button that cycles off, all, one.
     Repeat,
-    /// The shuffle button.
     Shuffle,
-    /// The continuation button: whether a queue that runs out keeps playing,
-    /// and which strategy refills it (ADR 17).
+    /// Whether a queue that runs out keeps playing (ADR 17).
     Continue,
-    /// The crossfade button: whether track boundaries overlap, and for how
-    /// long (ADR 19).
+    /// Whether track boundaries overlap, and for how long (ADR 19).
     Crossfade,
-    /// The random button that plays one track from anywhere in the library.
     Random,
-    /// The stop-after-current toggle: armed, the playing track ends the
-    /// motion and the next one cues up paused.
+    /// Armed, the playing track ends the motion and the next cues up paused.
     StopAfter,
-    /// The A-B button: mark the start of a section, mark its end, and the
-    /// player repeats what's between them until a third press clears it.
+    /// Mark A, mark B, and a third press clears the repeat.
     AbRepeat,
-    /// The heart over the playing track, the same toggle the favourite
-    /// panel and the library's heart column run.
     Favourite,
-    /// The stars over the playing track, the same write the rating panel
-    /// and the library's rating column make.
     Rating,
-    /// A flexible gap that pushes the buttons around it apart; the strip
-    /// holds as many as the layout needs.
+    /// A flexible gap; the strip holds as many as the layout needs.
     Spacer,
 }
 
-/// The strip's full catalog in stock order: what the arrange editor
-/// offers, and where a menu toggle slots a re-shown button back in.
+/// Stock order: where a menu toggle slots a re-shown button back in.
 const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
     panel::ArrangeSpec {
         key: "playback-item-previous",
@@ -192,39 +171,25 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
     },
 ];
 
-/// The playback panel's per-view config: what a saved layout restores,
-/// and what the settings window edits. Deserialization routes through
-/// [`TransportConfigDump`] so layouts from before the buttons became an
-/// ordered list still read.
+/// Reads through [`TransportConfigDump`] so layouts from before the
+/// ordered list still load.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(from = "TransportConfigDump")]
 pub struct TransportConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub align: Align,
-    /// The play button's accent highlight shape, or none for a flat
-    /// button like the rest of the strip.
     pub play_highlight: PlayHighlight,
-    /// The shown buttons in display order; one not listed is hidden.
+    /// Display order; one not listed is hidden.
     pub items: Vec<PlaybackItem>,
-    /// What the draw button's press does: a track from anywhere, or one
-    /// that sounds like the playing track.
     pub random_mode: RandomMode,
 }
 
 impl Default for TransportConfig {
     fn default() -> Self {
-        // The stock strip in the order it always rendered: nudges around
-        // play, the modes trailing. Stop, volume, random, continue,
-        // crossfade, stop-after and the heart are opt-in from the panel's
-        // menu.
-        //
-        // Continue is opt-in even though continuation ships on (ADR 17). Its
-        // strategy is picked on the Behavior page, where each one explains
-        // itself, and a default strip carrying a button for every mode that
-        // quietly does something is how a transport turns into a dashboard.
+        // Continue is opt-in even though continuation ships on (ADR 17): its
+        // strategy is picked on the Behavior page, and a stock button for every
+        // quiet mode turns a transport into a dashboard.
         TransportConfig {
             chrome: PanelChrome::default(),
             align: Align::default(),
@@ -243,10 +208,9 @@ impl Default for TransportConfig {
     }
 }
 
-/// The dump shape [`TransportConfig`] deserializes through: the ordered
-/// list newer layouts write, or the per-button toggles older ones had,
-/// folded back in the order the strip used to render. The one `seek`
-/// toggle was both nudges around play.
+/// Newer layouts write the ordered list. Older ones had per-button
+/// toggles, folded back in the order the strip used to render; the one
+/// `seek` toggle was both nudges.
 #[derive(Deserialize)]
 struct TransportConfigDump {
     #[serde(flatten)]
@@ -296,11 +260,8 @@ impl From<TransportConfigDump> for TransportConfig {
                 on(dump.stop, PlaybackItem::Stop);
                 on(dump.repeat, PlaybackItem::Repeat);
                 on(dump.shuffle, PlaybackItem::Shuffle);
-                // Continue, crossfade, volume and the heart aren't here: none
-                // of them ships in the stock strip, so a layout from before
-                // those buttons existed comes back looking exactly like a
-                // fresh install rather than growing controls nobody asked
-                // for.
+                // Continue, crossfade, volume and the heart aren't in the stock strip,
+                // so an old layout comes back looking like a fresh install.
                 on(dump.random, PlaybackItem::Random);
                 items
             }
@@ -315,21 +276,18 @@ impl From<TransportConfigDump> for TransportConfig {
     }
 }
 
-/// What the draw button draws. A layout from before the button had a
-/// dropdown reads as Random, which is the only thing it ever did.
+/// A layout from before the dropdown reads as Random, the only draw it
+/// ever did.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RandomMode {
-    /// A track from anywhere in the playing context, the dice roll.
     #[default]
     Random,
-    /// A track that sounds like the playing one, off the acoustic vectors.
-    /// Needs the library analyzed to do anything.
+    /// Off the acoustic vectors; needs the library analyzed.
     Similar,
 }
 
 impl RandomMode {
-    /// The label the dropdown shows.
     fn label(self) -> &'static str {
         match self {
             RandomMode::Random => rox_i18n::t_static("playback-item-random"),
@@ -337,80 +295,56 @@ impl RandomMode {
         }
     }
 
-    /// Both draws in menu order.
     const ALL: [RandomMode; 2] = [RandomMode::Random, RandomMode::Similar];
 }
 
-/// The play button's accent highlight: the filled disc it ships with, a
-/// soft square on the shared control radius, or no fill at all so the
-/// button reads flat like its neighbors.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayHighlight {
-    /// The filled disc, fully round.
     #[default]
     Circle,
-    /// A soft square, the same radius every other control uses.
+    /// The same radius every other control uses.
     Square,
-    /// No highlight, a flat icon like the other buttons.
     None,
 }
 
-/// The playback controls: prev, the seek nudges around play/pause, next,
-/// and the loop and shuffle modes, plus the optional stop and random
-/// buttons. What's playing is shown by the track info panel. The pump's
-/// tick notifies the player while a session runs, so the observe below
-/// keeps the play state fresh even in a popped-out window.
+/// What's playing belongs to the track info panel.
 pub struct TransportPanel {
     state: AppState,
     config: TransportConfig,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The row as it stood when a menu toggle last hid a control, so
-    /// showing it again puts it back where it was rather than at its
-    /// catalog rank. The undo for one toggle, not a layout anybody saves,
-    /// so it's stored on the panel and not the config.
+    /// The row before a menu toggle hid a control, so re-showing it restores
+    /// its place. Panel state, not config.
     items_stash: Option<Vec<PlaybackItem>>,
-    /// The last crossfade the render saw, so the frame where it disappears
-    /// can tell a finished fade (glow out) from a cancelled one (vanish,
-    /// today's behavior).
+    /// Lets the frame where the fade disappears tell a finished fade (glow
+    /// out) from a cancelled one (vanish).
     last_fade: Option<crate::player::FadeView>,
-    /// A finished fade's afterglow: when it ended and which button drew
-    /// the sweep. The gated observer goes quiet the moment the fade ends,
-    /// so the render drives these frames itself.
+    /// When a finished fade ended and which button drew it. The gated
+    /// observer goes quiet at the end, so the render drives these frames.
     outro: Option<(Instant, bool)>,
-    /// When the A-B cycle took its first mark, while it waits for the
-    /// second. The button pulses through that wait, and nothing else
-    /// wakes the panel for it, so the render drives those frames too.
+    /// When the A-B cycle took its first mark. Nothing else wakes the panel
+    /// for the pulse, so the render drives it.
     ab_waiting: Option<Instant>,
-    /// Bumped on every press of a mode button, so a stale hold check can
-    /// tell it belongs to a press that is already over.
+    /// Bumped per mode press, so a stale hold check knows its press is over.
     press_seq: u64,
-    /// The mode press in flight, if any. Taken on release, so a press that
-    /// turned into a hold doesn't also toggle.
+    /// Taken on release, so a press that turned into a hold doesn't also
+    /// toggle.
     press: Option<ModePress>,
-    /// The mode menu while it's open, hung from the point the press
-    /// started. The `PopoutHost` dock menu's shape (`panel.rs`), because a
-    /// gpui-component context menu opens on right-click and can't be asked
-    /// to open by anything else.
+    /// The `PopoutHost` dock menu's shape: a gpui-component context menu only
+    /// opens on right-click.
     mode_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
-    /// Where the volume slider hangs while it's open, the point the
-    /// right-click on the speaker hit. None while it's closed.
+    /// Where the right-click on the speaker hit, while the slider is open.
     volume_at: Option<Point<Pixels>>,
-    /// The volume slider's painted bounds and drag state.
     volume_scrub: ScrubState,
-    /// The playing track's heart, cached so a frame never turns into a
-    /// database lookup.
+    /// Cached so a frame never turns into a database lookup.
     heart: Option<Heart>,
     _player_changed: Subscription,
     _library_changed: Subscription,
 }
 
-/// The track the heart and the stars currently act on: the key it was
-/// resolved from, that key's catalog id (None for a file the library does
-/// not know), whether the id is favourited, and its rating. The favourite
-/// panel keeps the same shape, for the same reason.
+/// The key it was resolved from, its catalog id (None for a file the
+/// library doesn't know), its favourite state, and its rating.
 struct Heart {
     key: TrackKey,
     id: Option<i64>,
@@ -418,15 +352,9 @@ struct Heart {
     rating: u8,
 }
 
-/// A button whose click does something and whose hold opens the shades of
-/// it. Three of them: shuffle picks the order it puts the queue in,
-/// crossfade picks how long one track lies over the next, and the draw
-/// button picks what a press pulls out of the library.
-///
-/// Continue isn't one. Its strategies differ in kind rather than degree and
-/// they need a sentence each, so they belong on the Behavior page; these are
-/// short lists of shades of the same thing, which is what a hold menu is
-/// good at.
+/// A click does something and a hold opens its shades: shuffle order,
+/// crossfade length, and the draw. Continue isn't one: its strategies
+/// differ in kind and need a sentence each on the Behavior page.
 #[derive(Clone, Copy, PartialEq)]
 enum ModeButton {
     Shuffle,
@@ -434,22 +362,17 @@ enum ModeButton {
     Random,
 }
 
-/// A press on a mode button that hasn't been released yet.
 struct ModePress {
-    /// Which press this is. The delayed hold check compares against the
-    /// panel's counter, so a press that was released and replaced before the
-    /// delay elapsed can't open a menu for the press after it.
+    /// The delayed hold check compares against the panel's counter, so a
+    /// replaced press can't open a menu for the one after it.
     seq: u64,
-    /// Which button is down, so the hold opens the right list.
     button: ModeButton,
-    /// Whether the hold already fired. Set by the delayed check, read by the
-    /// release so it can tell not to toggle.
+    /// Set by the delayed check, so the release knows not to toggle.
     opened: bool,
 }
 
-/// The glyph a shuffle mode uses. Random keeps the crossed arrows shuffle
-/// has always meant. Similar takes the radio, which is both the metaphor
-/// people already have for "more of this" and where the mode is going.
+/// Random keeps the crossed arrows. Similar takes the radio, the metaphor
+/// people already have for "more of this".
 fn mode_icon(mode: ShuffleMode) -> &'static str {
     match mode {
         ShuffleMode::Random => icons::SHUFFLE,
@@ -457,10 +380,8 @@ fn mode_icon(mode: ShuffleMode) -> &'static str {
     }
 }
 
-/// The glyph a draw uses. Random keeps the dice the button has always been.
-/// Similar takes the waveform, the shape of the thing it draws by, and not
-/// the radio the shuffle order uses: two buttons in one strip with the same
-/// glyph would read as the same switch twice.
+/// Similar takes the waveform, not the shuffle's radio: two buttons in one
+/// strip with the same glyph would read as the same switch twice.
 fn draw_icon(mode: RandomMode) -> &'static str {
     match mode {
         RandomMode::Random => icons::DICE,
@@ -468,21 +389,16 @@ fn draw_icon(mode: RandomMode) -> &'static str {
     }
 }
 
-/// The crossfade lengths the hold menu offers, in seconds, zero being off.
-/// A short list of round numbers: the Audio page's scrub is where a length
-/// between these gets set, and this button is for reaching the common ones
-/// without leaving the music.
+/// Zero is off. Round numbers only: the Audio page's scrub sets anything
+/// between.
 const CROSSFADE_LENGTHS: [f32; 5] = [0.0, 2.0, 4.0, 6.0, 10.0];
 
-/// Whether two crossfade lengths are the same one. Floats, and the scrub
-/// writes tenths, so this is the resolution the readout shows rather than
-/// bit equality.
+/// The scrub writes tenths, so equal at the readout's resolution.
 fn is_length(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.05
 }
 
-/// A crossfade length as the menu says it: off, whole seconds where the
-/// number is one, and a tenth where the scrub left it between.
+/// Whole seconds, or a tenth where the scrub left it between.
 fn length_label(secs: f32) -> String {
     if secs <= 0.0 {
         rox_i18n::t!("panel-size-off").to_string()
@@ -493,36 +409,28 @@ fn length_label(secs: f32) -> String {
     }
 }
 
-/// How long a mode button has to be held before its menu opens. Long
-/// enough that a normal click never hits it, short enough that the hold
+/// Long enough that a click never hits it, short enough that the hold
 /// doesn't feel broken.
 const SHUFFLE_HOLD: Duration = Duration::from_millis(350);
 
-/// How wide the slider behind the speaker button is. Short of the volume
-/// strip's own cap: this one hangs over the transport rather than sitting
-/// in it, and it only has to be long enough to aim at.
+/// Short of the volume strip's cap: this hangs over the transport and only
+/// has to be long enough to aim at.
 const VOLUME_POP_W: Pixels = px(120.);
 
-/// A fade that got at least this far before disappearing finished; anything
-/// earlier was cancelled by a stop or a seek and shouldn't celebrate. Short
-/// of 1.0 because the observer wakes per quantized step and the last step
-/// may never be seen.
+/// A fade that got this far before disappearing finished; earlier was a
+/// stop or a seek. Short of 1.0 because the observer wakes per quantized
+/// step and may miss the last one.
 const OUTRO_FROM: f32 = 0.85;
 
-/// One breath of the A-B button's waiting dot, bright to dim and back.
+/// One breath of the A-B waiting dot.
 const AB_PULSE_SECS: f32 = 1.6;
-/// How dim the dot gets at the bottom of a breath: never out, since a dot
-/// that vanishes reads as the mark being dropped.
+/// Never out: a dot that vanishes reads as the mark being dropped.
 const AB_PULSE_FLOOR: f32 = 0.35;
-/// The waiting dot's diameter.
 const AB_DOT: Pixels = px(5.);
 
-/// The layer an open flyout hangs over: window-sized, so every press that
-/// isn't on the flyout itself hits it and closes it. Sized off the window
-/// rather than `size_full`, which would only span this panel; the transport
-/// is a short strip, so a click anywhere else in the app missed the layer
-/// entirely and left the flyout stuck open. The enclosing `anchored` snaps
-/// the layer back over the window from wherever the strip is.
+/// Window-sized so any press off the flyout hits it and closes it.
+/// `size_full` would only span this short strip, leaving the flyout stuck
+/// open after a click elsewhere in the app.
 fn overlay_layer(window: &Window) -> Div {
     div()
         .w(window.bounds().size.width)
@@ -532,12 +440,11 @@ fn overlay_layer(window: &Window) -> Div {
 
 impl TransportPanel {
     pub fn new(state: AppState, config: TransportConfig, cx: &mut Context<Self>) -> Self {
-        // Play state, loop, and shuffle change on a user action, never on
-        // the position tick, so use the gated observe.
+        // Play state, loop and shuffle change on a user action, never on the
+        // position tick, so the gated observe does.
         let _player_changed = observe_view(&state.player, cx);
-        // The heart moves on any playlist change, this strip's own click
-        // included; a rescan can rewrite the id -> path mapping under it, so
-        // that drops the cache entirely.
+        // Any playlist change moves the heart. A rescan can remap ids to paths,
+        // so it drops the cache.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| match event {
@@ -570,9 +477,8 @@ impl TransportPanel {
         }
     }
 
-    /// The panel's own dropdown entries: quick show/hide for the opt-in
-    /// buttons. A re-shown one goes back where it was; the order changes in
-    /// the settings window's arrange editor.
+    /// A re-shown button goes back where it was; order changes in the
+    /// arrange editor.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -627,13 +533,9 @@ impl TransportPanel {
         menu
     }
 
-    /// A mode button: a plain click toggles it, and holding it opens the
-    /// shades behind it.
-    ///
-    /// Its own control rather than [`panel::icon_control`] for two reasons.
-    /// That one fires on mouse down, and a hold has to be able to swallow the
-    /// click it started; and the corner arrow needs a positioned child, which
-    /// the shared button has no room for.
+    /// Its own control rather than [`panel::icon_control`]: that one fires on
+    /// mouse down, and a hold has to swallow the click it started. The corner
+    /// arrow also needs a positioned child.
     fn mode_control(
         &self,
         button: ModeButton,
@@ -648,9 +550,7 @@ impl TransportPanel {
             ModeButton::Random => "random",
         };
         // A button whose menu would hold one row isn't a button with a menu.
-        // Shuffle and the draw button both lose their hold while nothing has
-        // been described, since the random half is then the only half either
-        // list has; crossfade never has one to lose.
+        // Until something is described, shuffle and the draw lose their hold.
         if button != ModeButton::Crossfade && !crate::settings::similarity_ready() {
             return panel::icon_control(
                 icon,
@@ -658,16 +558,13 @@ impl TransportPanel {
                 panel::Tip::keyed(key, tip),
                 move |this: &mut Self, cx| match button {
                     ModeButton::Random => this.play_draw(cx),
-                    // Crossfade never gets here, it keeps its menu whatever
-                    // the library has been described with.
+                    // Crossfade never gets here: it keeps its menu regardless.
                     _ => this.state.player.update(cx, |p, cx| p.toggle_shuffle(cx)),
                 },
                 cx,
             );
         }
-        // The hold is the only way to the modes behind the button, and the
-        // corner chevron can only hint that there's something there. The
-        // tooltip is where it gets said.
+        // The chevron only hints at the hold; the tooltip says it.
         let tip = panel::Tip::keyed(
             key,
             match button {
@@ -696,9 +593,7 @@ impl TransportPanel {
                     cx.listener(|this, _, _, cx| this.release_mode(cx)),
                 )
                 .child(svg().path(icon).size(px(16.)).text_color(color))
-                // The corner mark: without it nothing says the button has
-                // modes behind it, and a hold nobody sees is a hold nobody
-                // does.
+                // Without the corner mark nobody knows to hold.
                 .child(
                     div().absolute().top(px(0.)).right(px(0.)).child(
                         svg()
@@ -710,8 +605,7 @@ impl TransportPanel {
         )
     }
 
-    /// Start a press: arm the hold, and remember where it went down so the
-    /// menu can hang from there.
+    /// Remembers where it went down so the menu can hang from there.
     fn press_mode(
         &mut self,
         button: ModeButton,
@@ -729,8 +623,8 @@ impl TransportPanel {
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SHUFFLE_HOLD).await;
             this.update_in(cx, |this, window, cx| {
-                // Only if this exact press is still down: a release, or a
-                // second press, both make this answer stale.
+                // Only if this exact press is still down: a release or a second press
+                // makes this stale.
                 let held = this
                     .press
                     .as_ref()
@@ -748,8 +642,7 @@ impl TransportPanel {
         .detach();
     }
 
-    /// Finish a press. A hold already did its work and swallows the click;
-    /// anything shorter is the plain press.
+    /// A hold already did its work and swallows the click.
     fn release_mode(&mut self, cx: &mut Context<Self>) {
         let Some(press) = self.press.take() else {
             return;
@@ -766,13 +659,12 @@ impl TransportPanel {
                 .state
                 .player
                 .update(cx, |player, cx| player.toggle_crossfade(cx)),
-            // The draw isn't a toggle: a press does whichever draw the
-            // dropdown last left it on.
+            // The draw isn't a toggle: a press does whichever draw the dropdown last
+            // picked.
             ModeButton::Random => self.play_draw(cx),
         }
     }
 
-    /// The mode menu, hung from where the press started.
     fn open_mode_menu(
         &mut self,
         button: ModeButton,
@@ -794,22 +686,16 @@ impl TransportPanel {
         cx.notify();
     }
 
-    /// The orders shuffle can put the upcoming queue in. The same two the
-    /// Behavior page lists, which is where they're explained; this is the
-    /// swap without the trip.
+    /// The same two the Behavior page lists and explains.
     fn shuffle_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
         let current = self.state.player.read(cx).shuffle_mode();
         let player = self.state.player.clone();
         PopupMenu::build(window, cx, move |menu, _, _| {
-            // The check goes on the right because these rows have their own
-            // glyphs. A left check replaces the icon rather than joining it
-            // (`render_icon`), so a row with an icon silently loses its mark,
-            // which is exactly what was happening here: the menu said what
-            // the modes were and never which one was on.
+            // The check goes on the right: a left check replaces the row's icon
+            // (`render_icon`) instead of joining it.
             let mut menu = menu.check_side(Side::Right);
-            // Every order this offers can run: the button drops its menu
-            // entirely while Similar has nothing to sort by, so there's no
-            // disabled row to explain here.
+            // The button drops its menu while Similar has nothing to sort by, so
+            // there's no disabled row here.
             for mode in ShuffleMode::ALL {
                 let player = player.clone();
                 menu = menu.item(
@@ -825,18 +711,13 @@ impl TransportPanel {
         })
     }
 
-    /// What the draw button pulls out of the library: a track from anywhere,
-    /// or one that sounds like the playing track.
-    ///
-    /// The pick belongs to the panel rather than the player, unlike shuffle's
-    /// order: nothing else in the app reads it, and a strip with two
-    /// draw buttons should be able to have one of each.
+    /// The pick belongs to the panel, unlike shuffle's order: nothing else
+    /// reads it, and a strip with two draw buttons can have one of each.
     fn random_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
         let current = self.random_mode();
         let weak = cx.entity().downgrade();
         PopupMenu::build(window, cx, move |menu, _, _| {
-            // The check on the right, so it joins the glyph instead of
-            // replacing it; see `shuffle_menu`.
+            // On the right; see `shuffle_menu`.
             let mut menu = menu.check_side(Side::Right);
             for mode in RandomMode::ALL {
                 let weak = weak.clone();
@@ -857,31 +738,22 @@ impl TransportPanel {
         })
     }
 
-    /// How long one track lies over the next (ADR 19), and whether an
-    /// album's own boundaries get the fade too.
-    ///
-    /// Lengths rather than a free number, because a scrub belongs on the
-    /// Audio page, which owns the same two knobs and writes through the same
-    /// player. The album row gets a switch rather than a checkmark: it isn't
-    /// one of the lengths, it's the other knob, and a check in a list of
-    /// picks would read as a sixth length.
+    /// Lengths rather than a free number: the scrub lives on the Audio page.
+    /// The album row is a switch, since a check would read as a sixth length.
     fn crossfade_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
         let player = self.state.player.read(cx);
         let current = player.crossfade_secs();
         let albums = player.crossfade_albums();
         let entity = self.state.player.clone();
-        // The presets, plus the length itself when the Audio page's scrub
-        // left it between them. A menu that can't mark what's set reads as
-        // though nothing is, and rounding 4.3 onto the 4 would be worse: it
-        // would mark a row that isn't what's playing.
+        // Plus the current length when the scrub left it between presets.
+        // Rounding 4.3 onto 4 would mark a row that isn't what's playing.
         let mut lengths = CROSSFADE_LENGTHS.to_vec();
         if !lengths.iter().any(|secs| is_length(*secs, current)) {
             lengths.push(current);
             lengths.sort_by(f32::total_cmp);
         }
         PopupMenu::build(window, cx, move |menu, _, _| {
-            // The check on the right, so it joins the glyph instead of
-            // replacing it; see `shuffle_menu`.
+            // On the right; see `shuffle_menu`.
             let mut menu = menu.check_side(Side::Right);
             for secs in lengths.iter().copied() {
                 let player = entity.clone();
@@ -894,9 +766,8 @@ impl TransportPanel {
                         }),
                 );
             }
-            // The album switch only while something is fading. With the
-            // length off there are no boundaries for it to take, so the row
-            // would be a switch that changes nothing.
+            // With the length off there are no boundaries, so the album switch would
+            // change nothing.
             if current <= 0.0 {
                 return menu;
             }
@@ -911,9 +782,8 @@ impl TransportPanel {
                         .gap(tokens::SPACE_MD)
                         .w_full()
                         .child(rox_i18n::t!("playback-crossfade-inside-albums"))
-                        // The switch is the row's face, not a control of its
-                        // own: the menu item takes the click, so a press
-                        // anywhere along the row flips it.
+                        // The switch is the row's face: the menu item takes the click anywhere
+                        // along the row.
                         .child(panel::toggle_face(albums))
                 })
                 .on_click(move |_, _, cx| {
@@ -923,13 +793,9 @@ impl TransportPanel {
         })
     }
 
-    /// The speaker button: a click mutes, the wheel nudges the level, and a
-    /// right-click opens the slider. The glyph reads the way the volume
-    /// strip's does, crossed out while muted and down to one wave low, so
-    /// the two never say different things about the same level.
-    ///
-    /// Its own control rather than [`panel::icon_control`] because that one
-    /// only handles a left click, and this button handles three gestures.
+    /// The glyph matches the volume strip's, crossed out while muted and one
+    /// wave low. Its own control since [`panel::icon_control`] only handles a
+    /// left click.
     fn volume_control(&self, volume: f32, muted: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let (speaker, color) = if muted {
             (icons::VOLUME_X, palette::text_faint())
@@ -938,10 +804,8 @@ impl TransportPanel {
         } else {
             (icons::VOLUME_2, palette::text())
         };
-        // Click mutes, so the tip leads with that. The level follows it
-        // because nothing beside this button shows a readout, and the
-        // right-click gets named since a slider nobody finds is a slider
-        // nobody uses.
+        // Nothing beside this button shows the level, so the tip carries it and
+        // names the right-click.
         let percent = (volume * 100.0).round() as u64;
         let tip = if muted {
             rox_i18n::t!("playback-volume-tip-muted", percent = percent).to_string()
@@ -966,9 +830,8 @@ impl TransportPanel {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(|this: &mut Self, event: &gpui::MouseDownEvent, _, cx| {
-                        // The tab panel handles a right-click on its body
-                        // with the panel dropdown, so swallow this one or
-                        // the slider opens stacked under a menu.
+                        // The tab panel opens its dropdown on a body right-click; swallow this
+                        // or the slider opens under a menu.
                         cx.stop_propagation();
                         this.volume_at = Some(event.position);
                         cx.notify();
@@ -983,10 +846,8 @@ impl TransportPanel {
         )
     }
 
-    /// The volume slider hung off the speaker button: a short strip with
-    /// the level beside it, over the occluding layer that takes the click
-    /// closing it. The mode menu's arrangement, drawn by hand rather than
-    /// built as a menu because a slider isn't a list of picks.
+    /// Drawn by hand over the occluding layer rather than built as a menu: a
+    /// slider isn't a list of picks.
     fn volume_slider(
         &self,
         at: Point<Pixels>,
@@ -998,8 +859,8 @@ impl TransportPanel {
         let scrub = self.volume_scrub.clone();
         let player = self.state.player.clone();
         let card = div()
-            // The card takes its own clicks, so a press on the slider
-            // doesn't reach the layer below and close what it's dragging.
+            // The card takes its own clicks, so a press on the slider doesn't close
+            // it.
             .occlude()
             .flex()
             .items_center()
@@ -1012,8 +873,7 @@ impl TransportPanel {
             .shadow_md()
             .child(
                 div()
-                    // Fixed, not flexible: this hangs over the strip rather
-                    // than in it, so there's no width to fill.
+                    // Fixed: this hangs over the strip, so there's no width to fill.
                     .w(VOLUME_POP_W)
                     .flex_none()
                     .h(tokens::CONTROL_H)
@@ -1083,16 +943,14 @@ impl TransportPanel {
         .into_any_element()
     }
 
-    /// Put the volume slider away, dropping any drag with it.
     fn close_volume(&mut self, cx: &mut Context<Self>) {
         self.volume_at = None;
         self.volume_scrub.end();
         cx.notify();
     }
 
-    /// The playing track's id and favourite state, resolving and caching on
-    /// a track change. No id while nothing plays, or while the file isn't
-    /// one the library has.
+    /// Resolves and caches on a track change. No id while nothing plays or
+    /// the library doesn't know the file.
     fn current_heart(&mut self, cx: &App) -> (Option<i64>, bool) {
         let Some(key) = TrackSource::Playing.resolve(&self.state, cx) else {
             self.heart = None;
@@ -1117,8 +975,6 @@ impl TransportPanel {
             .map_or((None, false), |heart| (heart.id, heart.on))
     }
 
-    /// The stars' side of the same cache: the playing track's id and its
-    /// rating, resolved through [`Self::current_heart`].
     fn current_rating(&mut self, cx: &App) -> (Option<i64>, u8) {
         self.current_heart(cx);
         self.heart
@@ -1126,9 +982,8 @@ impl TransportPanel {
             .map_or((None, 0), |heart| (heart.id, heart.rating))
     }
 
-    /// Re-read the shown track's favourite state after a playlist change,
-    /// here or on another surface. The id stays put, so this costs one
-    /// single-track query rather than a resolve.
+    /// The id stays put, so this is one single-track query rather than a
+    /// resolve.
     fn refresh_favourite(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.heart.as_ref().and_then(|heart| heart.id) else {
             return;
@@ -1140,8 +995,7 @@ impl TransportPanel {
         cx.notify();
     }
 
-    /// Re-read the shown track's rating after a star click, here or on
-    /// another surface. The id stays put, so this costs one lookup.
+    /// The id stays put, so this costs one lookup.
     fn refresh_rating(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.heart.as_ref().and_then(|heart| heart.id) else {
             return;
@@ -1160,11 +1014,9 @@ impl TransportPanel {
         cx.notify();
     }
 
-    /// Which draw the button does: the config's pick, with the fallback the
-    /// shuffle mode has for the same reason. Similar needs vectors to draw
-    /// by, so it reads as Random until something has been described; the pick
-    /// itself is left alone, so analyzing the library later brings it back
-    /// without asking twice.
+    /// Similar reads as Random until something has been described, the same
+    /// fallback shuffle has. The pick itself stays, so analyzing later brings
+    /// it back.
     fn random_mode(&self) -> RandomMode {
         if self.config.random_mode == RandomMode::Similar && !crate::settings::similarity_ready() {
             return RandomMode::Random;
@@ -1172,9 +1024,7 @@ impl TransportPanel {
         self.config.random_mode
     }
 
-    /// The draw button's press: a track from anywhere, or one that sounds
-    /// like the playing track. The player does both draws, so this only hands
-    /// over the library to draw from.
+    /// The player does both draws; this hands over the library.
     fn play_draw(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.clone();
         let mode = self.random_mode();
@@ -1273,14 +1123,10 @@ impl PanelSettings for TransportPanel {
 impl Render for TransportPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         let body = panel::themed(&chrome, || self.body(window, cx).track_focus(&focus));
-        // The afterglow runs after the fade the observer was watching is
-        // gone, so nothing else wakes this panel; it asks for its own
-        // frames until the glow reaches zero.
+        // The afterglow and the A-B pulse outlast what the observer watches, so
+        // the panel asks for its own frames.
         if self.outro.is_some() || self.ab_waiting.is_some() {
             window.request_animation_frame();
         }
@@ -1293,19 +1139,15 @@ impl TransportPanel {
         let player = self.state.player.read(cx);
         let playing = player.is_playing();
         let active = player.is_active();
-        // A station dialling, or dialling again after a drop. It's the one
-        // wait the transport has that outlasts a frame, and the press that
-        // started it landed on the play button, so that's where it shows.
-        // A file has none of these states and answers None.
+        // A station dialling or redialling: the one wait that outlasts a frame,
+        // shown on the play button that started it. A file answers None.
         let waiting = player
             .stream_state()
             .filter(|state| matches!(state, StreamState::Opening | StreamState::Reconnecting));
         let volume = player.volume();
         let muted = player.muted();
-        // Loop state reads through the button itself: dim while off, the
-        // accent while on, the one-track glyph for single-track loop. The
-        // tooltip says the same state in words, since a dim glyph and an
-        // accent one only differ once you've seen both.
+        // Loop reads through the button: dim off, the accent on, the one-track
+        // glyph for single-track loop. The tooltip says it in words too.
         let (loop_icon, loop_color, loop_tip) = match player.loop_mode() {
             LoopMode::Off => (
                 icons::REPEAT,
@@ -1323,10 +1165,8 @@ impl TransportPanel {
                 rox_i18n::t!("playback-loop-track"),
             ),
         };
-        // Shuffle reads the same way: dim while off, the accent while on.
-        // Its glyph follows the mode rather than the on/off state, so the
-        // button says what it would do before you press it; the colour is
-        // what says whether it's doing it.
+        // Shuffle's glyph follows the mode, so it says what a press would do;
+        // the colour says whether it's on.
         let shuffle_mode = player.shuffle_mode();
         let shuffle_color = if player.shuffle() {
             palette::accent()
@@ -1342,22 +1182,18 @@ impl TransportPanel {
         } else {
             rox_i18n::t!("playback-shuffle-off").to_string()
         };
-        // Continuation the same: dim while off, the accent while something
-        // is standing by to refill the queue.
         let continue_color = if player.continuation_mode() == continuation::Mode::Off {
             palette::text_faint()
         } else {
             palette::accent()
         };
-        // Which strategy is refilling matters here in a way the one glyph
-        // can't show, so the tooltip names it.
+        // The one glyph can't show which strategy is refilling, so the tooltip
+        // names it.
         let continue_tip = match player.continuation_mode() {
             continuation::Mode::Off => rox_i18n::t!("playback-continue-off"),
             continuation::Mode::Continue => rox_i18n::t!("playback-continue-down-list"),
             continuation::Mode::Weighted => rox_i18n::t!("playback-continue-weighted"),
         };
-        // Crossfade reads the same way: dim at zero length, the accent once
-        // boundaries are overlapping.
         let crossfade_secs = player.crossfade_secs();
         let crossfade_color = if crossfade_secs > 0.0 {
             palette::accent()
@@ -1373,15 +1209,13 @@ impl TransportPanel {
         } else {
             rox_i18n::t!("playback-crossfade-off").to_string()
         };
-        // The draw button has no on/off state, so nothing about it is
-        // dim; what changes is which draw a press does, in the glyph and in
-        // the words.
+        // The draw has no on/off state, so it's never dim; the glyph and the
+        // words follow the pick.
         let random_mode = self.random_mode();
         let random_tip = match random_mode {
             RandomMode::Random => rox_i18n::t!("playback-random-tip-random"),
             RandomMode::Similar => rox_i18n::t!("playback-random-tip-similar"),
         };
-        // Stop-after too: dim until armed, the accent while it waits.
         let stop_after_color = if player.stop_after() {
             palette::accent()
         } else {
@@ -1392,19 +1226,15 @@ impl TransportPanel {
         } else {
             rox_i18n::t!("playback-stop-after-tip")
         };
-        // A-B runs the same dim-to-lit ramp with a step in the middle:
-        // nothing marked reads as off, one mark reads as waiting, and a
-        // section repeating takes the accent like any armed control.
+        // Off, waiting on one mark, or the accent while a section repeats.
         let ab = player.ab_state();
         let ab_color = match ab {
             AbState::Off => palette::text_faint(),
             AbState::ASet(_) => palette::text(),
             AbState::Looping(..) => palette::accent(),
         };
-        // The wait for B is the state a glance has to catch: the first
-        // press changed nothing audible, so without a sign the button looks
-        // like it did nothing. A dot in the corner breathes until the
-        // second mark lands or the cycle is dropped.
+        // The wait for B needs a sign: the first press changed nothing audible.
+        // A corner dot breathes until the second mark lands or the cycle drops.
         match ab {
             AbState::ASet(_) => {
                 if self.ab_waiting.is_none() {
@@ -1425,14 +1255,11 @@ impl TransportPanel {
                     .to_string()
             }
         };
-        // A crossfade in flight sweeps across the button that started it,
-        // so the overlap the ear is hearing is visible and reads in the
-        // direction the queue moved. A boundary fade shows on Next, the way
-        // the queue went.
+        // A crossfade in flight sweeps across the button that started it, in the
+        // direction the queue moved. A boundary fade shows on Next.
         let fade = player.crossfade();
-        // The frame where the fade disappears decides its exit. Finished
-        // means the afterglow below; cancelled means gone, since glowing
-        // over a stop would congratulate an interruption.
+        // Finished means the afterglow; cancelled means gone, since glowing over
+        // a stop would celebrate an interruption.
         if fade.is_some() {
             self.outro = None;
             self.last_fade = fade;
@@ -1441,8 +1268,8 @@ impl TransportPanel {
         {
             self.outro = Some((Instant::now(), last.back));
         }
-        // The afterglow's strength this frame: the flash starts at full and
-        // the square falls it away, most of the dissolve in the front half.
+        // Starts at full and falls off with the square, most of the dissolve in
+        // the front half.
         let outro = self.outro.and_then(|(at, back)| {
             let t = at.elapsed().as_secs_f32() / tokens::EASE_SECS;
             (t < 1.0).then_some((back, (1.0 - t) * (1.0 - t)))
@@ -1450,9 +1277,7 @@ impl TransportPanel {
         if outro.is_none() {
             self.outro = None;
         }
-        // Only while the heart is actually up: resolving costs a lookup the
-        // first time a track comes round, and a strip without the button
-        // has no reason to pay it.
+        // Resolving costs a lookup, so only while the heart is shown.
         let (heart_id, heart_on) = if self.config.items.contains(&PlaybackItem::Favourite) {
             self.current_heart(cx)
         } else {
@@ -1464,11 +1289,7 @@ impl TransportPanel {
             (None, 0)
         };
 
-        // The strip renders the config's list as-is: each shown button in
-        // its place, whatever order the arrange editor left them in.
         let highlight = self.config.play_highlight;
-        // What the play button draws over: the accent fill, or the panel
-        // under it where the config took the fill away.
         let play_ink = if highlight == PlayHighlight::None {
             palette::text()
         } else {
@@ -1497,18 +1318,13 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
-                // Play/pause is the primary action, so it gets the accent
-                // fill while everything around it stays flat; the config
-                // picks the fill's shape, or drops it to match the
-                // neighbors.
-                // The one button here that has a key of its own, so its tip
-                // trails the shortcut.
+                // The accent fill marks the primary action; the config picks its shape
+                // or drops it. The only button with its own key, so its tip trails the
+                // shortcut.
                 PlaybackItem::Play => panel::Tip::keyed(
                     "play",
                     match waiting {
-                        // The same two sentences the strip's LIVE mark
-                        // carries, so both surfaces answer a hover with one
-                        // story.
+                        // The same sentences the strip's LIVE mark carries.
                         Some(StreamState::Reconnecting) => {
                             rox_i18n::t!("transport-live-reconnecting")
                         }
@@ -1546,12 +1362,9 @@ impl TransportPanel {
                             }),
                         )
                         .child(match waiting {
-                            // The seconds a station spends answering are
-                            // the only wait this button has, and a pause
-                            // glyph through them says the press did
-                            // something it hasn't done yet. The spinner is
-                            // the one every other wait in the app draws,
-                            // and its stock size is the glyph's.
+                            // A pause glyph while a station answers says the press did something it
+                            // hasn't yet. The spinner is the app's standard wait, at the glyph's
+                            // size.
                             Some(_) => Spinner::new().color(play_ink.into()).into_any_element(),
 
                             None => svg()
@@ -1582,8 +1395,8 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
-                // Stop ejects the track: the session drops and every view
-                // over it goes idle. Dim while nothing is loaded.
+                // Stop ejects the track and every view over the session goes idle. Dim
+                // while nothing is loaded.
                 PlaybackItem::Stop => panel::icon_control(
                     icons::STOP,
                     if active {
@@ -1600,15 +1413,13 @@ impl TransportPanel {
                 PlaybackItem::Repeat => panel::icon_control(
                     loop_icon,
                     loop_color,
-                    // Keyed, since the glyph and the words both follow the
-                    // mode and the id has to stay fixed under them.
+                    // Keyed: the glyph and the words follow the mode, and the id has to
+                    // stay fixed under them.
                     panel::Tip::keyed("loop", loop_tip.clone()),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
                     cx,
                 )
                 .into_any_element(),
-                // Shuffle's glyph follows its order and a hold swaps it; the
-                // colour says whether it's on.
                 PlaybackItem::Shuffle => self
                     .mode_control(
                         ModeButton::Shuffle,
@@ -1618,12 +1429,8 @@ impl TransportPanel {
                         cx,
                     )
                     .into_any_element(),
-                // Continue is a plain toggle: which strategy refills the
-                // queue is the Behavior page's business, where each one has
-                // room to say what it does. One glyph whatever the strategy,
-                // unlike shuffle above, because Continue and Weighted mean
-                // the same thing to the ear (the music doesn't stop) and
-                // differ only in taste.
+                // A plain toggle: the strategy is the Behavior page's business. One
+                // glyph, since to the ear the strategies differ only in taste.
                 PlaybackItem::Continue => panel::icon_control(
                     icons::INFINITY,
                     continue_color,
@@ -1636,9 +1443,8 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
-                // Crossfade holds like shuffle, and keeps one glyph whatever
-                // the length: the lengths differ by degree, and the colour
-                // already says whether anything is fading at all.
+                // One glyph whatever the length: the colour already says whether
+                // anything fades.
                 PlaybackItem::Crossfade => self
                     .mode_control(
                         ModeButton::Crossfade,
@@ -1648,9 +1454,6 @@ impl TransportPanel {
                         cx,
                     )
                     .into_any_element(),
-                // The draw button holds like shuffle: the dropdown swaps what
-                // a press pulls out, and the glyph follows the pick so the
-                // button says which draw it is before you press it.
                 PlaybackItem::Random => self
                     .mode_control(
                         ModeButton::Random,
@@ -1672,9 +1475,8 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
-                // One button for the whole cycle: mark, mark, clear. There's
-                // no secondary click on these controls, and a third press
-                // is a shorter way out than a modifier nobody would find.
+                // One button for mark, mark, clear: these controls have no secondary
+                // click.
                 PlaybackItem::AbRepeat => panel::icon_control(
                     icons::MOVE_HORIZONTAL,
                     ab_color,
@@ -1697,13 +1499,9 @@ impl TransportPanel {
                     )
                 })
                 .into_any_element(),
-                // The heart over the playing track, the same catalog toggle
-                // the favourite panel and the library's heart column run,
-                // so the state matches wherever else it shows.
                 PlaybackItem::Favourite => {
-                    // A dead heart gets a tip too: dimmed and unclickable
-                    // says something is wrong with the button, where
-                    // "nothing to favourite" says there's no track under it.
+                    // Dimmed and unclickable reads as broken, so the tip says there's no
+                    // track under it.
                     let tip = match (heart_id.is_some(), heart_on) {
                         (false, _) => rox_i18n::t!("transport-favourite-nothing"),
                         (true, true) => rox_i18n::t!("transport-favourite-remove"),
@@ -1729,9 +1527,8 @@ impl TransportPanel {
                                             palette::text_faint()
                                         }),
                                 )
-                                // Nothing to favourite: the heart stays up,
-                                // dimmed and dead, so the strip holds its
-                                // shape while the queue turns over.
+                                // Stays up dimmed so the strip holds its shape while the queue turns
+                                // over.
                                 .when(heart_id.is_none(), |d| d.opacity(0.4))
                                 .when_some(heart_id, |d, id| {
                                     d.cursor_pointer()
@@ -1748,14 +1545,10 @@ impl TransportPanel {
                         )
                         .into_any_element()
                 }
-                // The stars over the playing track, the rating panel's
-                // control in the strip: the same write the library's
-                // rating column makes, so a star set here shows
-                // everywhere else.
                 PlaybackItem::Rating => {
                     let state = self.state.clone();
-                    // Keyed by the shown track so the hover preview
-                    // matches every other surface rating the same track.
+                    // Keyed by the shown track so the hover preview matches every other
+                    // surface rating it.
                     let key = rating_id.unwrap_or(-1) as u64;
                     let control = rating_ui::control(key, rating_value, move |rating, _, cx| {
                         let Some(id) = rating_id else { return };
@@ -1768,9 +1561,7 @@ impl TransportPanel {
                         .flex()
                         .items_center()
                         .p(tokens::ICON_PAD)
-                        // Nothing to rate: the stars stay up, dimmed, so
-                        // the strip holds its shape while the queue turns
-                        // over.
+                        // Stays up dimmed so the strip holds its shape.
                         .when(rating_id.is_none(), |d| d.opacity(0.4))
                         .child(control)
                         .into_any_element()
@@ -1788,9 +1579,8 @@ impl TransportPanel {
             .gap(tokens::SPACE_XS)
             .px(tokens::SPACE_SM)
             .children(controls)
-            // The shuffle menu, over everything and pinned where the hold
-            // started. The occluding layer under it closes the menu on an
-            // outside click, `PopoutHost`'s arrangement in panel.rs.
+            // The occluding layer under it closes the menu on an outside click,
+            // `PopoutHost`'s arrangement in panel.rs.
             .when_some(self.mode_menu.as_ref(), |strip, (at, menu, _)| {
                 strip.child(
                     deferred(
@@ -1806,8 +1596,6 @@ impl TransportPanel {
                     .with_priority(1),
                 )
             })
-            // The volume slider, pinned where the right-click on the speaker
-            // hit, over the same kind of occluding layer.
             .when_some(self.volume_at, |strip, at| {
                 strip.child(self.volume_slider(at, volume, muted, window, cx))
             })
@@ -1829,18 +1617,15 @@ mod tests {
         CROSSFADE_LENGTHS, PlaybackItem, RandomMode, TransportConfig, is_length, length_label,
     };
 
-    /// The hold menu has to be able to mark a length the Audio page's scrub
-    /// wrote, which is the case the presets alone can't cover: a 4.3 is not
-    /// the 4, and saying so is the difference between a menu that marks
-    /// nothing and one that marks the wrong row.
+    /// A 4.3 from the scrub isn't the 4: marking the wrong row is worse than
+    /// marking none.
     #[test]
     fn a_length_between_the_presets_reads_as_itself() {
         assert_eq!(length_label(0.0), "Off");
         assert_eq!(length_label(4.0), "4 s");
         assert_eq!(length_label(10.0), "10 s");
         assert_eq!(length_label(4.3), "4.3 s");
-        // The scrub snaps to tenths, so anything closer than that to a whole
-        // number is that number rather than a trailing zero.
+        // The scrub snaps to tenths, so anything closer is the whole number.
         assert_eq!(length_label(3.999), "4 s");
 
         assert!(is_length(4.0, 4.0));
@@ -1852,17 +1637,12 @@ mod tests {
         );
     }
 
-    /// A layout with no button fields at all decodes to the stock strip:
-    /// nudges around play, the modes trailing, stop and random off.
     #[test]
     fn missing_toggles_default_to_the_stock_strip() {
         let config: TransportConfig = serde_json::from_str("{}").unwrap();
         assert!(config.items == TransportConfig::default().items);
     }
 
-    /// The per-button toggles older layouts wrote fold into the list in
-    /// the order the strip used to render; the one seek toggle was both
-    /// nudges.
     #[test]
     fn legacy_toggles_fold_in_render_order() {
         let config: TransportConfig =
@@ -1879,9 +1659,6 @@ mod tests {
         );
     }
 
-    /// Continue and crossfade are opt-in, so neither the stock strip nor a
-    /// layout from before they existed has one; a layout that names one
-    /// keeps it.
     #[test]
     fn continue_and_crossfade_are_opt_in() {
         let stock = TransportConfig::default();
@@ -1904,9 +1681,6 @@ mod tests {
         );
     }
 
-    /// The speaker and the heart are opt-in too, so nothing that existed
-    /// before them grows one; a layout that names them keeps them where it
-    /// put them, and they persist across a save.
     #[test]
     fn volume_and_favourite_are_opt_in() {
         let stock = TransportConfig::default();
@@ -1934,8 +1708,6 @@ mod tests {
         assert!(back.items == picked.items);
     }
 
-    /// The draw button's pick persists across a save, and a layout from before the
-    /// dropdown existed comes back on Random, the only draw it ever did.
     #[test]
     fn the_draw_mode_defaults_to_random_and_round_trips() {
         assert!(TransportConfig::default().random_mode == RandomMode::Random);
@@ -1952,8 +1724,6 @@ mod tests {
         assert!(back.random_mode == RandomMode::Similar);
     }
 
-    /// A layout with the list uses it as-is, duplicates dropped,
-    /// and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {
         let config: TransportConfig =

@@ -1,10 +1,6 @@
-//! The overlay panel: a main panel with a second panel layered over it,
-//! a corner button (or Tab) revealing the overlay with a short fade. The
-//! main stays visible below, dimmed under a scrim, so the overlay reads
-//! as a modal card floating on top instead of a full swap. For pairs that
-//! share one spot but need both in view (a library with its stats over it,
-//! cover art with lyrics on top). Hosted through [`crate::composite`]; the
-//! overlay costs nothing once it's hidden and settled.
+//! The overlay panel: a main panel with a second layered over it as a card,
+//! revealed by a corner button or Tab with a short fade. The main stays visible
+//! under a scrim. Hosted through [`crate::composite`].
 
 use std::time::Instant;
 
@@ -27,11 +23,7 @@ use rox_panel_api::panel_settings;
 use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{ScrubState, setting_row};
 
-/// The margin the revealed overlay leaves around itself, so the main panel
-/// frames it on every side.
 const OVERLAY_INSET: Pixels = tokens::SPACE_MD;
-/// How hard the main panel dims under a fully revealed overlay by
-/// default, the dim setting's starting point.
 const DEFAULT_DIM: f32 = 150.0 / 255.0;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -39,11 +31,7 @@ const DEFAULT_DIM: f32 = 150.0 / 255.0;
 pub struct OverlayConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Whether the overlay is up: false shows the main alone, true layers
-    /// the overlay on top of it.
     pub revealed: bool,
-    /// How hard the scrim dims the main under the revealed overlay, 0
-    /// leaving it bare to 1 blacking it out.
     pub dim: f32,
 }
 
@@ -63,19 +51,12 @@ pub struct OverlayPanel {
     config: OverlayConfig,
     /// Main at 0, overlay at 1.
     slots: [Slot; 2],
-    /// Whether the panel itself is active, so a toggle can hand the overlay
-    /// the right active state without waiting on the next dock call.
     active: bool,
-    /// When the last toggle started; a restore starts out settled.
     fade_at: Instant,
-    /// The settings page's dim slider strip.
     dim_scrub: ScrubState,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Whether the hosted children have been told which tab panel this
-    /// overlay is under; see [`composite::introduce_slots`].
     introduced: bool,
 }
 
@@ -89,7 +70,6 @@ impl OverlayPanel {
         Self::restore(state, workspace, config, Vec::new(), cx)
     }
 
-    /// Build with already-restored children, the layout-dump route in.
     pub fn restore(
         state: AppState,
         workspace: WeakEntity<Workspace>,
@@ -116,22 +96,18 @@ impl OverlayPanel {
         }
     }
 
-    /// The hosted slots, main then overlay, for the settings window's
-    /// layout tree.
     pub fn slots(&self) -> &[Slot] {
         &self.slots
     }
 
-    /// The slot the corner controls act on: the overlay while it's up, the
-    /// main otherwise.
     fn shown_ix(&self) -> usize {
         usize::from(self.config.revealed)
     }
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.config.revealed = !self.config.revealed;
-        // The overlay runs only while it's up; the main below keeps running
-        // the whole time, since it never leaves view.
+        // The main never leaves view, so it stays active; the overlay only
+        // while up.
         if let Some(overlay) = &self.slots[1] {
             overlay.set_active(self.active && self.config.revealed, window, cx);
         }
@@ -150,8 +126,6 @@ impl OverlayPanel {
         cx.notify();
     }
 
-    /// One slot's content: the child's view or the empty add affordance,
-    /// filling whatever box wraps it.
     fn slot_content(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         match &self.slots[ix] {
             Some(child) => div().size_full().child(child.view()),
@@ -176,8 +150,8 @@ impl OverlayPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // Let the children open this host from their own menus; the
-        // dock never sees a hosted panel, so nothing else offers it.
+        // The dock never sees a hosted panel, so the children offer this host
+        // from their own menus.
         let overlay_title = rox_i18n::t!("overlay-title");
         composite::report_hosted(
             self.slots.iter().flatten(),
@@ -189,16 +163,11 @@ impl OverlayPanel {
             cx,
         );
 
-        // Frames only while a toggle is actually running; a settled panel
-        // costs zero.
         let u = (self.fade_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
         if u < 1.0 {
             window.request_animation_frame();
         }
-        // Smoothstepped so the fade eases out instead of stopping dead.
         let u = u * u * (3.0 - 2.0 * u);
-        // The overlay fades in as it reveals, out as it hides. The main
-        // below never moves.
         let overlay_alpha = if self.config.revealed { u } else { 1.0 - u };
 
         let root = div()
@@ -206,8 +175,8 @@ impl OverlayPanel {
             .relative()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Tab flips the overlay from anywhere inside the panel, ahead of
-            // whatever the focused child would do with the key.
+            // Capture phase, so Tab flips the overlay ahead of the focused
+            // child.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = &event.keystroke;
                 if key.key != "tab"
@@ -223,10 +192,8 @@ impl OverlayPanel {
                 cx.stop_propagation();
                 this.toggle(window, cx);
             }))
-            // Keys only dispatch along the focus path, so Tab needs focus
-            // somewhere inside the panel. Children that take focus claim it
-            // first (bubble order); a click landing nowhere focusable pulls
-            // focus to the panel itself.
+            // Keys only dispatch along the focus path, so a click landing
+            // nowhere focusable pulls focus to the panel for Tab to work.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {
@@ -235,7 +202,6 @@ impl OverlayPanel {
                     }
                 }),
             )
-            // The main panel is always the base, at full weight.
             .child(
                 div()
                     .absolute()
@@ -244,26 +210,19 @@ impl OverlayPanel {
                     .child(self.slot_content(0, cx)),
             );
 
-        // The overlay layer, scrim and floating card together, only while
-        // it's up or still fading.
         let root = if overlay_alpha > 0.001 {
             root.child(
                 div()
                     .absolute()
                     .inset_0()
                     .opacity(overlay_alpha)
-                    // The scrim dims the main so the overlay reads as being
-                    // in front, not beside.
                     .child(div().absolute().inset_0().bg(palette::alpha(
                         palette::bg_root_opaque(),
                         (self.config.dim.clamp(0.0, 1.0) * 255.0).round() as u8,
                     )))
-                    // The overlay itself, inset so the main frames it.
-                    // Occluded so clicks on the card never fall through to
-                    // the dimmed main beneath it. The card only fills while
-                    // the slot is empty; a hosted panel's surface is the
-                    // background, so its opacity override (the Appearance
-                    // page) sets how much of the main shows through.
+                    // Occluded so clicks never fall through to the dimmed main.
+                    // The card only fills while the slot is empty; a hosted
+                    // panel's own surface is the background.
                     .child(
                         div().absolute().inset_0().p(OVERLAY_INSET).child(
                             div()
@@ -283,9 +242,8 @@ impl OverlayPanel {
             root
         };
 
-        // A layout that ships as finished furniture drops the builder's
-        // buttons; its slots are still swapped from the tree on the
-        // Workspace settings page.
+        // Finished layouts hide the builder's buttons; the Workspace page's
+        // tree still swaps slots.
         if self.config.chrome.controls_hidden() {
             return root;
         }
@@ -383,8 +341,6 @@ impl Panel for OverlayPanel {
         "overlay"
     }
 
-    /// The chord acts on the child you're standing in, not the container
-    /// around it; focus on the container itself falls back to its own.
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         composite::open_slot_settings(&self.slots, window, cx);
     }
@@ -414,7 +370,6 @@ impl Panel for OverlayPanel {
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
-        // The main tracks the panel; the overlay tracks it only while up.
         if let Some(main) = &self.slots[0] {
             main.set_active(active, window, cx);
         }

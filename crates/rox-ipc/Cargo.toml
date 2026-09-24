@@ -20,6 +20,9 @@ dirs = "5"
 # The named-pipe half of ADR 22. Only Windows: the Unix side speaks std's
 # own UnixStream and keeps the single-instance guard's bind discipline,
 # which pipes have no use for (they aren't filesystem objects and vanish
-# with the process). Sync API, so no runtime comes along.
+# with the process). Sync API, so no runtime comes along. It also carries
+# the Windows single-instance guard in `instance`, whose atomic ownership
+# rests on interprocess creating a listener's first instance with
+# FILE_FLAG_FIRST_PIPE_INSTANCE (checked against 2.4.3's source).
 [target.'cfg(windows)'.dependencies]
 interprocess = "2"

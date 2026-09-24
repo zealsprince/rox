@@ -1,11 +1,8 @@
 //! The bookmarks panel: every mark in the library, listed under the track
-//! it sits in, in browse order. Tracks draw as track rows with the shared
-//! columns the history and queue panels use; the marks sit indented under
-//! theirs. A click selects and a double click plays, the library's moves,
-//! so a set of marks can be recolored or removed together; a mark's
-//! right-click menu is the one the seek strip's chevrons carry, with a
-//! play row ahead of it. Rows read at panel-open and bookmark-edit
-//! cadence off the library, never per frame.
+//! it sits in, in browse order. Tracks draw with the shared track columns;
+//! marks sit indented under them. A mark's right-click menu is the seek
+//! strip's chevron menu with a play row ahead of it. Rows read off the
+//! library at panel-open and bookmark-edit cadence, never per frame.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -33,12 +30,10 @@ use crate::panel_settings;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost};
 
-/// A track row's height and a mark row's; the list is a uniform_list, so
-/// both are the one row height.
+/// One height for track and mark rows: the list is a uniform_list.
 const ROW_H: f32 = track_columns::ROW_HEIGHT_STOCK;
 
-/// The track columns, in render order: the shared set, all drawn by
-/// [`track_columns::cell`]. Rebuilt per call so a locale switch relabels.
+/// Rebuilt per call so a locale switch relabels.
 fn columns() -> Vec<Column> {
     vec![
         Column {
@@ -94,15 +89,11 @@ fn columns() -> Vec<Column> {
     ]
 }
 
-/// The panel's per-view config: the shared chrome and which track columns
-/// show. Missing fields take the defaults, so a layout dumped before a
-/// knob existed still loads.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BookmarksConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The shown column keys, in the registry's order.
     pub columns: Vec<String>,
 }
 
@@ -115,15 +106,12 @@ impl Default for BookmarksConfig {
     }
 }
 
-/// One track's marks, the unit the list groups by, with the tags its row
-/// draws.
 struct Group {
     key: TrackKey,
     track: BookmarkRow,
     marks: Vec<Bookmark>,
 }
 
-/// One list row: a track, or a mark under it.
 #[derive(Clone, Copy)]
 enum Row {
     Track(usize),
@@ -135,23 +123,15 @@ pub struct BookmarksPanel {
     config: BookmarksConfig,
     groups: Vec<Group>,
     rows: Vec<Row>,
-    /// Each track's sort names by id, for the readings beside the tags
-    /// when the switch is on.
     readings: HashMap<i64, SortNames>,
     favourites: HashSet<i64>,
     scroll: UniformListScrollHandle,
-    /// The selected rows by index, tracks and marks alike, and the row a
-    /// shift-click ranges from. A click selects, a double click plays, the
-    /// library's moves.
     selected: HashSet<usize>,
     anchor: Option<usize>,
-    /// The row the last right press landed on, what the menu acts on.
     menu_row: Option<Row>,
-    /// The track playing when the panel last drew, so its rows highlight
-    /// and the observe only repaints on a change of track.
+    /// The playing track, so the observe only repaints on a track change.
     playing: Option<TrackKey>,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _player_changed: Subscription,
@@ -163,8 +143,6 @@ impl BookmarksPanel {
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| match event {
                 LibraryEvent::BookmarksChanged | LibraryEvent::Updated => this.refresh(cx),
-                // A star or a heart moved: re-read the cells' inputs, the
-                // rows themselves are unchanged.
                 LibraryEvent::Rated | LibraryEvent::PlaylistsChanged => this.refresh(cx),
                 _ => {}
             },
@@ -197,8 +175,6 @@ impl BookmarksPanel {
         panel
     }
 
-    /// Re-read every mark and fold the rows into their tracks. The store
-    /// hands them back already grouped, so this is one pass.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.read(cx);
         let rows = library.all_bookmarks();
@@ -251,10 +227,6 @@ impl BookmarksPanel {
         cx.notify();
     }
 
-    /// Select row `ix`: shift ranges from the anchor, the secondary
-    /// modifier toggles, a plain click takes the one row. The tracks the
-    /// rows belong to go out as the shared selection, so the panels pinned
-    /// to it follow along.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
         if ix >= self.rows.len() {
             return;
@@ -293,7 +265,6 @@ impl BookmarksPanel {
         cx.notify();
     }
 
-    /// Escape drops the selection and the shared scope with it.
     fn deselect(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             return;
@@ -307,8 +278,7 @@ impl BookmarksPanel {
         cx.notify();
     }
 
-    /// The selected rows' tracks, in display order and once each: a mark
-    /// stands for the track it sits in.
+    /// A mark stands for the track it sits in.
     fn selected_track_ids(&self) -> Vec<i64> {
         let mut seen = HashSet::new();
         self.rows
@@ -325,7 +295,6 @@ impl BookmarksPanel {
             .collect()
     }
 
-    /// The selected marks' ids in display order.
     fn selected_mark_ids(&self) -> Vec<i64> {
         self.rows
             .iter()
@@ -349,8 +318,6 @@ impl BookmarksPanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// Ctrl+A takes every row; Escape drops the selection; Delete removes
-    /// the selected marks, the tracks among the selection left alone.
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
@@ -366,8 +333,6 @@ impl BookmarksPanel {
         }
     }
 
-    /// The right press records the row and, outside the selection,
-    /// reselects it, so the menu acts on what is highlighted.
     fn right_press(&mut self, ix: usize, row: Row, cx: &mut Context<Self>) {
         self.menu_row = Some(row);
         if !self.selected.contains(&ix) {
@@ -375,7 +340,6 @@ impl BookmarksPanel {
         }
     }
 
-    /// Play a mark's track from the mark.
     fn play_mark(&self, group: usize, mark: usize, cx: &mut Context<Self>) {
         let Some(group) = self.groups.get(group) else {
             return;
@@ -390,7 +354,6 @@ impl BookmarksPanel {
             .update(cx, |player, cx| player.play_now_at(key, secs, cx));
     }
 
-    /// Play a track from its top, the double click on its row.
     fn play_track(&self, group: usize, cx: &mut Context<Self>) {
         let Some(group) = self.groups.get(group) else {
             return;
@@ -415,9 +378,6 @@ impl BookmarksPanel {
             .collect()
     }
 
-    /// The shared row chrome: the hover group the rating and favourite
-    /// cells reveal on, the library's hover wash, the playing track in the
-    /// highlight role.
     fn row_base(&self, ix: usize, playing: bool) -> Stateful<Div> {
         let selected = self.selected.contains(&ix);
         div()
@@ -432,17 +392,12 @@ impl BookmarksPanel {
             .gap(tokens::SPACE_SM)
             .cursor_pointer()
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
-            // The playing track uses the highlight role, a faint cut apart
-            // from the accent-washed selection, the library's look.
             .when(playing && !selected, |d| {
                 d.bg(palette::alpha(palette::highlight(), 0x12))
             })
             .hover(|d| d.bg(palette::bg_control_hover()))
     }
 
-    /// A track row: the shown shared columns off the track's tags, the
-    /// history panel's look. A click selects, a double click plays the
-    /// track from its top.
     fn track_row(&self, ix: usize, g: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let group = &self.groups[g];
         let t = &group.track;
@@ -452,8 +407,6 @@ impl BookmarksPanel {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    // Take focus so Ctrl+A, Delete, and Escape reach the
-                    // panel's key handler.
                     window.focus(&this.focus);
                     if event.click_count > 1 {
                         this.play_track(g, cx);
@@ -504,10 +457,6 @@ impl BookmarksPanel {
         row
     }
 
-    /// A mark under its track: indented, with its color dot, its name or
-    /// time, the time beside a name, and how long ago it was set at the
-    /// right. A click selects, a double click plays the track from the
-    /// mark.
     fn mark_row(
         &self,
         ix: usize,
@@ -581,11 +530,7 @@ impl BookmarksPanel {
             )
     }
 
-    /// What a row's menu acts on, lifted out of the panel so the menu
-    /// builds without holding the panel borrowed. The right press already
-    /// pulled the row into the selection, so a track menu takes every
-    /// selected track and a mark menu every selected mark, with the
-    /// clicked one as the play target.
+    /// Lifted out of the panel so the menu builds without holding it borrowed.
     fn menu_target(&self, row: Row) -> Option<MenuTarget> {
         match row {
             Row::Track(g) => {
@@ -676,8 +621,6 @@ impl BookmarksPanel {
     }
 }
 
-/// A row as its menu sees it: the clicked row's play target, and the
-/// selection the edits act on.
 enum MenuTarget {
     Track {
         key: TrackKey,
@@ -691,7 +634,6 @@ enum MenuTarget {
     },
 }
 
-/// Drop a set of marks in one go.
 fn remove_marks(state: &AppState, ids: &[i64], cx: &mut App) {
     state.library.update(cx, |library, cx| {
         for &id in ids {
@@ -700,10 +642,6 @@ fn remove_marks(state: &AppState, ids: &[i64], cx: &mut App) {
     });
 }
 
-/// A row's menu. A track gets the shared track actions over the selected
-/// tracks, the history panel's; one mark gets play-from-here and then its
-/// edit rows; a set of marks gets play-from-here on the clicked one, a
-/// color for all of them, and a remove for all of them.
 fn row_menu(
     menu: PopupMenu,
     state: AppState,
@@ -895,7 +833,6 @@ impl Panel for BookmarksPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // Display section: the columns flyout, the history panel's shape.
         let menu = menu
             .label(rox_i18n::t!("panel-menu-display"))
             .item(PopupMenuItem::submenu(

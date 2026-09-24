@@ -1,18 +1,8 @@
-//! The stats window: one OS window opened from the menubar beside
-//! Settings, the listening record rolled up per ADR 11. A range knob
-//! (all time down to this week) scopes the page: the recency counts
-//! as cards, listens over time as bars, then the artists, albums, and
-//! genres you played most, each shown with the art its own wall uses (a
-//! face in a circle, a sleeve in a square, a genre's own color card), and
-//! the newest listens under them. Everything derives from the events
-//! table by SQL on the shared catalog's connection; nothing counts along
-//! the way.
-//!
-//! Rollups read entering the window and when a listen lands or the
-//! catalog changes, never per frame; the chart and the cards' geometry
-//! are gpui quads, cheap at this scale. The art comes through the same
-//! two services the panels draw from, so a face or a cover already in
-//! hand costs nothing here.
+//! The stats window: the listening record rolled up per ADR 11. A range knob
+//! scopes the page: recency counts, listens over time, the top artists,
+//! albums and genres, and the newest listens. Everything derives from the
+//! events table by SQL; nothing counts along the way. Rollups read on open
+//! and when a listen lands or the catalog changes, never per frame.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -44,40 +34,29 @@ use rox_services::catalog::{LibraryEvent, LocalCopy};
 use rox_services::history::HistoryEvent;
 use rox_services::thumbs::Thumb;
 
-/// How many rows the artist and album rollups show, how many cards the
-/// genres get, and how far back the recents run. Ten is the natural unit
-/// for a chart; the genres tile three across, so they go by threes.
 const TOP_NAMES: usize = 10;
 const TOP_GENRES: usize = 9;
 const RECENT_ROWS: usize = 15;
 
-/// Genre cards per lane, and how tall a card stands.
 const GENRE_COLS: usize = 3;
 const GENRE_CARD_H: f32 = 76.;
 
-/// The art size a rollup row draws at, and the smaller square a recents
-/// row uses, in px.
 const ART: f32 = 40.;
 const ROW_ART: f32 = 28.;
 
-/// The bar chart's height, in px.
 const CHART_H: f32 = 96.;
 
 const DAY: i64 = 86400;
 
-/// The hover scope for a playable row: the play control stays invisible
-/// in its slot until the row is hovered, the library's rating-cell move.
+/// The play control stays invisible until its row is hovered.
 const ROW_GROUP: &str = "stats-row";
 
-/// The same for a genre card, whose play glyph is drawn in its corner.
 const CARD_GROUP: &str = "stats-card";
 
-/// The play slot's width, [`panel::icon_control`]'s footprint, reserved
-/// even on rows without a control so the counts stay in column.
+/// Reserved even on rows without a control so the counts stay in column.
 const PLAY_SLOT_W: f32 = 28.;
 
-/// How far back the page counts. Trailing windows, no calendar math,
-/// like the recency rows, plus one stretch picked off the chart.
+/// Trailing windows, no calendar math, plus one stretch picked off the chart.
 #[derive(Clone, Copy, Default, PartialEq)]
 enum StatsRange {
     #[default]
@@ -85,9 +64,7 @@ enum StatsRange {
     Year,
     Month,
     Week,
-    /// A bar's worth: the calendar day a bucket fell on, or a wider
-    /// bucket's own stretch. `until` is exclusive. Never persisted; the
-    /// knob's own picks come back on reopen.
+    /// A clicked bar's stretch. `until` is exclusive. Never persisted.
     Span {
         since: i64,
         until: i64,
@@ -95,7 +72,6 @@ enum StatsRange {
 }
 
 impl StatsRange {
-    /// The range's lower bound in unix seconds; 0 counts every event.
     fn since(self, now: i64) -> i64 {
         match self {
             StatsRange::All => 0,
@@ -106,7 +82,6 @@ impl StatsRange {
         }
     }
 
-    /// The range's exclusive upper bound; the trailing windows have none.
     fn until(self) -> i64 {
         match self {
             StatsRange::Span { until, .. } => until,
@@ -114,8 +89,7 @@ impl StatsRange {
         }
     }
 
-    /// The pick's key in the settings file, and the way back; an unknown
-    /// key falls back to all time. A chart pick has no key.
+    /// An unknown key falls back to all time. A chart pick has no key.
     fn key(self) -> Option<&'static str> {
         match self {
             StatsRange::All => Some("all"),
@@ -135,8 +109,6 @@ impl StatsRange {
         }
     }
 
-    /// The overview card this range scopes the page to; a chart pick
-    /// has none.
     fn card(self) -> Option<&'static str> {
         match self {
             StatsRange::All => Some(rox_i18n::t_static("stats-range-all")),
@@ -147,8 +119,6 @@ impl StatsRange {
         }
     }
 
-    /// Whether a chart pick covers one calendar day, which changes how
-    /// its ends are named.
     fn single_day(self) -> bool {
         match self {
             StatsRange::Span { since, until } => fmt_date(since) == fmt_date(until - 1),
@@ -156,8 +126,6 @@ impl StatsRange {
         }
     }
 
-    /// A chart pick's own segment on the knob, so the page always shows
-    /// what it's scoped to: the day, or the stretch's two ends.
     fn label(self) -> Option<SharedString> {
         match self {
             StatsRange::Span { since, .. } if self.single_day() => Some(fmt_date(since).into()),
@@ -170,7 +138,6 @@ impl StatsRange {
         }
     }
 
-    /// What the chart's left edge is called.
     fn chart_start(self) -> SharedString {
         match self {
             StatsRange::All => rox_i18n::t!("stats-chart-start-all"),
@@ -181,8 +148,6 @@ impl StatsRange {
         }
     }
 
-    /// And its right edge: now for the trailing windows and for a pick
-    /// still running, else where the pick ended.
     fn chart_end(self, now: i64) -> SharedString {
         match self {
             StatsRange::Span { until, .. } if until <= now && self.single_day() => {
@@ -194,23 +159,16 @@ impl StatsRange {
     }
 }
 
-/// The shape a rollup row's art takes: a face reads as a circle, a
-/// record as a rounded square, the artist and album walls' own tells.
 #[derive(Clone, Copy, PartialEq)]
 enum ArtShape {
     Circle,
     Square,
 }
 
-/// The open stats window, if any: opening again focuses it instead of
-/// stacking a second one, same as the settings window.
 struct OpenStats(WindowHandle<Root>);
 
 impl Global for OpenStats {}
 
-/// Open the stats window, or bring the open one to the front. The state
-/// holds the library the rollups read through, the recorder whose
-/// events wake the refresh, and the shared art bake for the backdrop.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenStats>() {
         let handle = open.0;
@@ -221,8 +179,6 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    // The last closed window's size, sanity-floored, the tag editor's
-    // restore shape.
     let (width, height) = Settings::load()
         .windows
         .stats
@@ -240,75 +196,45 @@ pub fn open(state: AppState, cx: &mut App) {
     cx.set_global(OpenStats(handle));
 }
 
-/// Everything the window shows, measured whole on each refresh.
 #[derive(Default)]
 struct StatsData {
-    /// Listens recorded inside each trailing window: week, month, year,
-    /// and all time. Range-independent, the page's overview.
     week: u64,
     month: u64,
     year: u64,
     total: u64,
-    /// Listens inside the picked range, the page's own whole.
     range_total: u64,
-    /// How many of the whole record a Last.fm import wrote, the number
-    /// the clear confirm reads out. Range-independent like the counts
-    /// above it: what the clear takes doesn't care what the knob says.
+    /// Range-independent: the clear doesn't care what the knob says.
     imported: u64,
-    /// The chart's buckets over the range, oldest first, and the span
-    /// they were cut from, so the hover readout can name a bucket's
-    /// time.
     bars: Vec<u64>,
     chart_since: i64,
     bucket: i64,
-    /// What the browsing model costs to hold: the projection's row count
-    /// and the heap it occupies. Read off the shared projection, which is
-    /// already in memory, so this is arithmetic over its columns' capacities
-    /// rather than a measurement of anything.
+    /// Arithmetic over the shared projection's capacities, not a measurement.
     tracks: usize,
     heap_bytes: usize,
-    /// The range-bounded rollups and the newest listens in range.
     artists: Vec<NamePlays>,
     albums: Vec<NamePlays>,
     genres: Vec<NamePlays>,
     recents: Vec<TrackPlays>,
-    /// The library's own file of each live recent's song, by index into
-    /// `recents`; None for a listen off a file and for a song the library
-    /// has no copy of. A radio listen's row is the station and what it
-    /// names is the song, the history panel's rule, so this is where the
-    /// row's cover comes from and what its play button queues.
+    /// The library's own copy of each live recent's song, since a radio row is
+    /// the station. Supplies the cover and what the play button queues.
     recent_files: Vec<Option<LocalCopy>>,
 }
 
 struct StatsWindow {
-    /// The shared state: the library the rollups read through, the
-    /// player the play controls queue on, and the art bake the backdrop
-    /// paints from.
     state: AppState,
     range: StatsRange,
     data: StatsData,
-    /// The bar chart's hover pick, shared with its paint and handlers.
     bar_hover: charts::BarHover,
-    /// Whether the clear confirm is up. The record is the one thing this
-    /// window can destroy, so the button only raises the question and the
-    /// dialog does the deleting.
+    /// The button only raises the question; the dialog does the deleting.
     clearing: bool,
-    /// The keyboard's home while that dialog is up, so Escape reaches it
-    /// from wherever focus was, the settings window's arrangement.
     dialog_focus: FocusHandle,
-    /// The page's scroll position, shared with the scrollbar.
     scroll: ScrollHandle,
     backdrop: WindowBackdrop,
-    /// A new listen moves every number here.
     _history_changed: Subscription,
-    /// A rescan can retag tracks, which re-buckets the rollups.
     _library_changed: Subscription,
-    /// Arriving covers and faces notify their services; repaint so the
-    /// rows fill in.
     _thumbs_changed: Subscription,
     _portraits_changed: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
+    /// This window pumps its own frames, so the backdrop needs its own wake.
     _backdrop_changed: Subscription,
 }
 
@@ -318,9 +244,7 @@ impl StatsWindow {
             &state.history,
             |this: &mut Self, _, _: &HistoryEvent, cx| this.refresh(cx),
         );
-        // Every number on the page is a listens read, so a play-count import
-        // moves all of them; a rescan moves them too, by dropping tracks the
-        // events point at.
+        // A play-count import or a rescan moves every number here.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -332,9 +256,7 @@ impl StatsWindow {
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
         let _portraits_changed = cx.observe(&state.portraits, |_, _, cx| cx.notify());
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        // The OS close button never runs remove_window, so the frame
-        // persists through the should-close hook, the tag editor's move;
-        // the range writes as it's picked.
+        // The OS close button never runs remove_window, so persist the frame here.
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
@@ -368,9 +290,6 @@ impl StatsWindow {
         this
     }
 
-    /// Roll the events up whole: the recency counts over trailing
-    /// windows, the chart's buckets, then the range-bounded groupings
-    /// and recents.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -379,13 +298,10 @@ impl StatsWindow {
         let since = self.range.since(now);
         let until = self.range.until();
         let library = self.state.library.read(cx);
-        // The chart's span: the range's own for the bounded picks; all
-        // time runs from the first listen, bucketed to come out near 48
-        // bars whatever the record's age. The third is where the last
-        // bar stands.
+        // All time runs from the first listen, bucketed to about 48 bars whatever
+        // the record's age.
         let (chart_since, bucket, chart_end) = match self.range {
-            // Six-hour buckets over a week, so the bars still read as a
-            // shape rather than seven blocks.
+            // Six-hour buckets, so a week reads as a shape rather than seven blocks.
             StatsRange::Week => (now - 7 * DAY, DAY / 4, now),
             StatsRange::Month => (now - 30 * DAY, DAY, now),
             StatsRange::Year => (now - 365 * DAY, 7 * DAY, now),
@@ -396,14 +312,10 @@ impl StatsWindow {
                 }
                 _ => (now - 30 * DAY, DAY, now),
             },
-            // Twenty-four bars over the stretch, an hour each for a day.
             // The last bar ends at the edge rather than starting on it.
             StatsRange::Span { since, until } => (since, ((until - since) / 24).max(60), until - 1),
         };
         let recents = library.recent_listens(since, until, RECENT_ROWS);
-        // What the live rows named, looked up against the library in one
-        // pass, the history panel's move. A listen off a file asks
-        // nothing: its own path is already the file.
         let names: Vec<(&str, &str)> = recents
             .iter()
             .map(|row| match row.live {
@@ -439,11 +351,9 @@ impl StatsWindow {
             return;
         }
         self.range = range;
-        // The chart re-buckets under a pointer that hasn't moved, so the
-        // old pick would name a bar the new chart may not have.
+        // The old hover would name a bar the re-bucketed chart may not have.
         self.bar_hover.clear();
-        // The pick is written as it's made, so it persists across a quit
-        // that never runs the close hook; the frame keeps writing on close.
+        // Written as picked, since a quit never runs the close hook.
         if let Some(key) = range.key() {
             Settings::update(move |s| {
                 let state = s
@@ -456,9 +366,6 @@ impl StatsWindow {
         self.refresh(cx);
     }
 
-    /// Throw the listening record away, the confirm's yes: either the rows
-    /// an import wrote or all of them. The library emits its update when
-    /// the delete finishes, which walks every number on this page again.
     fn clear_listens(&mut self, what: listens::Clear, cx: &mut Context<Self>) {
         self.clearing = false;
         self.state
@@ -467,11 +374,8 @@ impl StatsWindow {
         cx.notify();
     }
 
-    /// The clear confirm, up while the button beside the range knob waits
-    /// on an answer. A scrim occludes the page under it, Escape backs out,
-    /// and the yes stays a click: one button takes what a Last.fm import
-    /// wrote and the other takes the whole record, which is the question
-    /// itself rather than a step on the way to one.
+    /// Two answers when there's imported history: what the import wrote, or
+    /// everything.
     fn clear_overlay(
         &self,
         window: &mut Window,
@@ -480,15 +384,11 @@ impl StatsWindow {
         if !self.clearing {
             return None;
         }
-        // The dialog takes the keyboard while it's up, unless focus is
-        // already inside it: pulling it back every frame would hold it on
-        // the scrim instead of letting Tab reach the buttons.
+        // Only refocus when focus is outside, or Tab could never reach the buttons.
         if !self.dialog_focus.contains_focused(window, cx) {
             window.focus(&self.dialog_focus);
         }
-        // Whether there are two answers to give. A library nothing has
-        // been imported into has one kind of listen in it, so the split
-        // would be offering to clear none of them and then all of them.
+        // With nothing imported, the split would offer to clear none then all.
         let split = self.data.imported > 0;
         let body = if split {
             rox_i18n::t!(
@@ -580,13 +480,9 @@ impl StatsWindow {
         )
     }
 
-    /// Scope the page to a clicked bar: the calendar day it fell on when
-    /// the buckets are a day or finer, else the bucket's own stretch, so
-    /// a week bar out of the year view reads as that week and a click
-    /// inside it can go on down to a day.
+    /// A day or finer scopes to the calendar day, else to the bucket's stretch,
+    /// so a click can drill down from a week to a day.
     fn pick_bar(&mut self, ix: usize, cx: &mut Context<Self>) {
-        // The index came off a drawn frame; a stale one past the bars
-        // names nothing.
         if ix >= self.data.bars.len() {
             return;
         }
@@ -605,17 +501,12 @@ impl StatsWindow {
         self.set_range(range, cx);
     }
 
-    /// Queue one rollup name's library tracks on the shared player under
-    /// the queue cap. An album plays in its own order; an artist or a
-    /// genre plays a random draw from the whole pool, since the top row
-    /// is the one you already know front to back and the same first
-    /// album every press wears thin. A name whose tracks are all gone
-    /// resolves to nothing and queues nothing, quietly.
+    /// An album plays in order; an artist or genre plays a random draw from
+    /// the whole pool.
     fn play_name(&mut self, by: Rollup, name: &str, cx: &mut Context<Self>) {
         let ids = match by {
             Rollup::Artist | Rollup::Genre => {
-                // Cap after the shuffle, not before: a cap on the query
-                // would draw from the first albums only.
+                // Cap after the shuffle, or the draw only reaches the first albums.
                 let mut ids = self
                     .state
                     .library
@@ -642,20 +533,13 @@ impl StatsWindow {
             .update(cx, |player, cx| player.play(keys, cx));
     }
 
-    /// Queue a recents row and what follows it in the list, the history
-    /// panel's move. A track deleted since its event resolves to no path
-    /// and drops out of the queue quietly.
     fn play_recent(&mut self, ix: usize, cx: &mut Context<Self>) {
-        // The index came off a drawn frame, and refresh rebuilds recents on
-        // history and library events, so a stale click can point past the
-        // end; bail rather than panic.
+        // A stale click can point past the end after a refresh.
         let Some(rows) = self.data.recents.get(ix..) else {
             return;
         };
-        // A radio listen's row is the station, and what it names is the
-        // song. Queueing the station would put whatever is on air now
-        // under a click on a song from last Tuesday, so the library's own
-        // copy wins where it has one, the history panel's rule.
+        // Never queue the station for a radio row: it would play what's on air
+        // now, not the song. The library's copy wins where it has one.
         let local = self
             .data
             .recent_files
@@ -690,9 +574,6 @@ impl StatsWindow {
             .update(cx, |player, cx| player.play(keys, cx));
     }
 
-    /// One track path's cover through the shared thumbnail service; None
-    /// while it loads, for a track with no art, and for a row whose file
-    /// is gone.
     fn cover(&self, path: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {
         if path.is_empty() {
             return None;
@@ -707,18 +588,12 @@ impl StatsWindow {
         }
     }
 
-    /// An artist's face through the shared portrait service, the artist
-    /// wall's own source; None while it looks up and for a name no
-    /// service has, where the row falls back to a cover.
     fn portrait(&self, name: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {
         self.state
             .portraits
             .update(cx, |portraits, cx| portraits.get(name, cx))
     }
 
-    /// The recency overview: one card per trailing window, whatever the
-    /// range knob is set to. The window the knob is on takes the accent,
-    /// which ties the rest of the page to a card.
     fn listens_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let cards = [
             (
@@ -743,9 +618,6 @@ impl StatsWindow {
             ),
         ];
         let scoped = self.range.card();
-        // What the browsing model weighs, beside the counts it feeds. The
-        // page is otherwise all record and no cost, and the cost is the
-        // one number a big library wants stated plainly.
         let held = (self.data.tracks > 0).then(|| {
             div()
                 .text_xs()
@@ -771,10 +643,6 @@ impl StatsWindow {
         )
     }
 
-    /// Listens over time as bars, empty stretches included, colored up
-    /// the accent ramp by height. Hovering a bucket reads its count and
-    /// age out in the caption row, which otherwise names the span's
-    /// ends.
     fn chart_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         if self.data.range_total == 0 {
             return section(
@@ -789,12 +657,8 @@ impl StatsWindow {
             .unwrap_or(0);
         let start = self.range.chart_start();
         let end = self.range.chart_end(now);
-        // A day's hour bars are the floor: nothing narrower to open, so
-        // the chart stops offering.
+        // A day's hour bars are the floor, so the chart stops offering picks.
         let pickable = !self.range.single_day();
-        // The hovered bucket's readout: its count, how long ago the bucket
-        // began, and the calendar day that was, in the caption's middle.
-        // Under a day the bars need the clock too.
         let picked = self.bar_hover.index().and_then(|ix| {
             let count = *self.data.bars.get(ix)?;
             let began = self.data.chart_since + ix as i64 * self.data.bucket;
@@ -854,9 +718,6 @@ impl StatsWindow {
         )
     }
 
-    /// One name rollup as art-led rows: the rank, the artist's face or
-    /// the record's sleeve, the name over a bar reading its share of the
-    /// section's leader, and the count on the right.
     fn name_section(
         &self,
         label: &'static str,
@@ -869,14 +730,11 @@ impl StatsWindow {
         if rows.is_empty() {
             body = body.child(empty_note(self.range));
         }
-        // The bars read against the leader rather than the range's whole:
-        // at ten rows out of a year of listening every bar would otherwise
-        // be a sliver.
+        // Against the leader, or at ten rows out of a year every bar is a sliver.
         let lead = rows.first().map_or(1, |row| row.plays).max(1);
         for (i, row) in rows.iter().enumerate() {
             let name = row.name.clone();
-            // The face first, a record of theirs behind it: an artist no
-            // service has still gets a cover rather than a blank.
+            // An artist with no face still gets a cover.
             let art = match shape {
                 ArtShape::Circle => self
                     .portrait(&row.name, cx)
@@ -902,14 +760,10 @@ impl StatsWindow {
                             .flex()
                             .flex_col()
                             .gap(px(3.))
-                            // The column does the clipping; a truncating
-                            // line inside it must not, since min-width 0 on
-                            // the cross axis collapses the line to its
-                            // ellipsis.
+                            // The column clips; a truncating line inside must not, or min-width 0
+                            // collapses it to its ellipsis.
                             .overflow_hidden()
                             .child(div().truncate().child(SharedString::from(row.name.clone())))
-                            // The album rollup's secondary text, its album
-                            // artist.
                             .when(!row.sub.is_empty(), |d| {
                                 d.child(
                                     div()
@@ -933,9 +787,6 @@ impl StatsWindow {
         section(label, None, body)
     }
 
-    /// The genres you played most as the genre wall's own cards: each
-    /// one's deterministic color under its own geometry, the name and
-    /// count set on it. Clicking a card plays the genre.
     fn genre_section(&self, rows: &[NamePlays], cx: &mut Context<Self>) -> Stateful<Div> {
         if rows.is_empty() {
             return section(
@@ -950,8 +801,6 @@ impl StatsWindow {
             for (col, row) in chunk.iter().enumerate() {
                 cards = cards.child(self.genre_card(lane * GENRE_COLS + col, row, cx));
             }
-            // A short last lane keeps its cards card-sized rather than
-            // stretching them across the row.
             for _ in chunk.len()..GENRE_COLS {
                 cards = cards.child(div().flex_1().min_w_0());
             }
@@ -960,8 +809,6 @@ impl StatsWindow {
         section(rox_i18n::t!("stats-section-top-genres"), None, grid)
     }
 
-    /// One genre card: the gradient the genre grid gives that name, its
-    /// motif under the text, the play glyph in the corner on hover.
     fn genre_card(&self, ix: usize, row: &NamePlays, cx: &mut Context<Self>) -> AnyElement {
         let (color, partner) = palette::genre_color_pair(&row.name);
         let seed = palette::genre_seed(&row.name);
@@ -978,8 +825,6 @@ impl StatsWindow {
             .overflow_hidden()
             .rounded(tokens::RADIUS)
             .cursor_pointer()
-            // The lean is the grid's: angle off the seed, second stop the
-            // genre's own drift along the wheel.
             .bg(linear_gradient(
                 ((seed >> 45) % 360) as f32,
                 linear_color_stop(color, 0.0),
@@ -1010,8 +855,6 @@ impl StatsWindow {
                             .child(SharedString::from(plays_label(row.plays))),
                     ),
             )
-            // Every card is the same size, so the rank is the only thing
-            // showing which genre outran which.
             .child(
                 div()
                     .absolute()
@@ -1036,10 +879,6 @@ impl StatsWindow {
             .into_any_element()
     }
 
-    /// The newest listens in range: the cover, the title over artist and
-    /// album, how long ago on the right. A listen off the air is marked as
-    /// one and draws the cover of the file its song is in, the history
-    /// panel's row in a smaller frame.
     fn recents_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1056,24 +895,18 @@ impl StatsWindow {
                 (true, false) => row.album.clone(),
                 (true, true) => String::new(),
             };
-            // A live row's picture ranks the way the transport's does: the
-            // song's own cover first, which for a capture off the air is
-            // the picture saved beside it, and the station's behind it.
-            // The row's own path is what the favicon is keyed on.
+            // The song's own cover first, then the station's favicon, keyed on the
+            // row's own path.
             let local = self.data.recent_files.get(ix).and_then(|l| l.as_ref());
             let art = local
                 .and_then(|local| self.cover(&local.path.to_string_lossy(), cx))
                 .or_else(|| self.cover(&row.path, cx));
-            // What a click on this row plays, which the row itself can't
-            // say: the file of the song, or the station it came off.
             let plays = match local.is_some() {
                 true => rox_i18n::t_static("history-live-plays-file"),
                 false => rox_i18n::t_static("history-live-plays-station"),
             };
             body = body.child(
                 div()
-                    // Identified so the live rows can carry a tooltip; the
-                    // play button inside keys on its own name.
                     .id(("recent-row", ix))
                     .group(ROW_GROUP)
                     .flex()
@@ -1101,11 +934,6 @@ impl StatsWindow {
                                     .items_center()
                                     .gap(tokens::SPACE_XS)
                                     .overflow_hidden()
-                                    // The mark that says this listen came
-                                    // off the air, the history panel's.
-                                    // Without it the row is
-                                    // indistinguishable from the file of
-                                    // the same song.
                                     .when(row.live, |d| {
                                         d.child(
                                             svg()
@@ -1150,9 +978,8 @@ impl StatsWindow {
     }
 }
 
-/// A heap figure as MB or GB, one decimal. The projection is tens of MB
-/// at the scale the ADRs were sized for and near a gigabyte at ten
-/// million tracks, so those are the only two units this ever needs.
+/// The projection is tens of MB at the scale the ADRs target and near a
+/// gigabyte at ten million tracks, so MB and GB are all this needs.
 fn heap_size(bytes: usize) -> String {
     let mb = bytes as f64 / 1_000_000.;
     if mb < 1000. {
@@ -1162,8 +989,6 @@ fn heap_size(bytes: usize) -> String {
     }
 }
 
-/// A unix second as the locale's date and wall-clock time, for a bar
-/// finer than a day.
 fn fmt_stamp(unix: i64) -> String {
     use chrono::{Datelike, Local, TimeZone, Timelike};
     let Some(local) = Local.timestamp_opt(unix, 0).single() else {
@@ -1178,9 +1003,6 @@ fn fmt_stamp(unix: i64) -> String {
     )
 }
 
-/// What a bar stands for and what a click on one does, in the chart's
-/// corner, so the level the page is at reads without guessing and the
-/// floor announces itself.
 fn bars_note(bucket: i64, pickable: bool) -> AnyElement {
     const HOUR: i64 = 3600;
     let text = if !pickable {
@@ -1203,9 +1025,8 @@ fn bars_note(bucket: i64, pickable: bool) -> AnyElement {
         .into_any_element()
 }
 
-/// The local calendar day around a unix second: its midnight and the
-/// next, so a chart pick means the day the clock showed rather than 24
-/// hours off a bucket edge. None for a second chrono can't place.
+/// Midnight to midnight, so a pick is the day the clock showed rather than
+/// 24 hours off a bucket edge.
 fn local_day(unix: i64) -> Option<(i64, i64)> {
     use chrono::{Days, Local, NaiveDate, NaiveTime, TimeZone};
     let date = Local.timestamp_opt(unix, 0).single()?.date_naive();
@@ -1221,9 +1042,6 @@ fn local_day(unix: i64) -> Option<(i64, i64)> {
     ))
 }
 
-/// One trailing window's card: the count large over its name, the page's
-/// opening line. `scoped` marks the window the range knob is on; a click
-/// moves the knob there.
 fn stat_card(
     ix: usize,
     label: &'static str,
@@ -1271,8 +1089,6 @@ fn stat_card(
         )
 }
 
-/// A row's place in its rollup. The top three take the accent, which
-/// makes a chart read as a chart at a glance.
 fn rank(ix: usize) -> Div {
     div()
         .flex_none()
@@ -1287,13 +1103,8 @@ fn rank(ix: usize) -> Div {
         .child(SharedString::from((ix + 1).to_string()))
 }
 
-/// A row's art: the face or sleeve when one is in hand, otherwise the
-/// quiet placeholder in the same shape, so an arriving image fills without
-/// shifting the row. The rounding is applied to the image itself: gpui
-/// content masks stay rectangular, so a round frame under a square image
-/// would paint over its own corners. The square box around it does the
-/// cropping, since `Cover` overruns the image element on the art's long
-/// side and the image can't mask its own overrun.
+/// The image does its own rounding, since gpui content masks stay
+/// rectangular; the square box crops `Cover`'s overrun.
 fn art_frame(image: Option<Arc<Image>>, shape: ArtShape, name: &str, side: gpui::Pixels) -> Div {
     let round = |element: gpui::Img| match shape {
         ArtShape::Circle => element.rounded_full(),
@@ -1305,8 +1116,6 @@ fn art_frame(image: Option<Arc<Image>>, shape: ArtShape, name: &str, side: gpui:
             .overflow_hidden()
             .child(round(img(image).size_full().object_fit(ObjectFit::Cover)))
             .into_any_element(),
-        // A face falls back to its initial, a record to the music glyph:
-        // a wall of identical placeholders tells you nothing.
         None => {
             let empty = div()
                 .size(side)
@@ -1335,7 +1144,6 @@ fn art_frame(image: Option<Arc<Image>>, shape: ArtShape, name: &str, side: gpui:
     div().flex_none().child(content)
 }
 
-/// A name's leading character, uppercased, for a face with no picture.
 fn initial(name: &str) -> String {
     name.chars()
         .next()
@@ -1343,8 +1151,6 @@ fn initial(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// How a row's count stands against its section's leader: a hairline
-/// under the name, which turns a list into a chart.
 fn share_bar(fraction: f32) -> Div {
     div()
         .h(px(3.))
@@ -1354,16 +1160,13 @@ fn share_bar(fraction: f32) -> Div {
         .child(
             div()
                 .h_full()
-                // Even the quietest row keeps a visible stub, so the bar
-                // never reads as a missing value.
+                // A visible stub, so the bar never reads as a missing value.
                 .w(relative(fraction.clamp(0.02, 1.0)))
                 .rounded_full()
                 .bg(palette::alpha(palette::accent(), 0xcc)),
         )
 }
 
-/// A row's play count, right of the play slot and in column with the
-/// rows above and below.
 fn plays_readout(plays: u64) -> Div {
     div()
         .flex_none()
@@ -1375,15 +1178,12 @@ fn plays_readout(plays: u64) -> Div {
         )))
 }
 
-/// A count with its noun, singular at one, for the genre cards.
 fn plays_label(plays: u64) -> String {
     rox_i18n::t!("stats-plays-count", count = plays).to_string()
 }
 
-/// A row's play control: invisible until the row is hovered, queueing
-/// on click. Every row uses the same glyph, so the tip is keyed by the
-/// row's own id: a shared one would leave the whole column hovering on
-/// one timer.
+/// The tip is keyed by the row's id: a shared key would put the whole
+/// column on one hover timer.
 fn play_button(
     id: impl Into<gpui::ElementId>,
     tip: &'static str,
@@ -1405,16 +1205,8 @@ fn play_button(
         .into_any_element()
 }
 
-/// The clear beside the range knob: a broom and nothing else, filled so
-/// it reads as a control against the segments rather than as a mark on
-/// the bar, with the tooltip carrying what a label would have said.
-///
-/// Stretched rather than sized. The lane and the segmented knob are both
-/// children of the range bar, so `align-self: stretch` gives the lane the
-/// bar's content height, which is the knob's own height however the text
-/// inside it measures out, and the button takes the lane. A number here
-/// would be that height copied by hand, and wrong the first time a font
-/// or a scale moved under it.
+/// Stretched rather than sized, so it matches the knob's height whatever
+/// the font or scale.
 fn clear_button(inert: bool, cx: &mut Context<StatsWindow>) -> Stateful<Div> {
     let mut button = settings_ui::icon_button(
         icons::BROOM,
@@ -1442,7 +1234,6 @@ fn clear_button(inert: bool, cx: &mut Context<StatsWindow>) -> Stateful<Div> {
     lane
 }
 
-/// What a section shows before any listen lands inside the range.
 fn empty_note(range: StatsRange) -> Div {
     div()
         .py(tokens::SPACE_XS)
@@ -1455,19 +1246,11 @@ fn empty_note(range: StatsRange) -> Div {
 
 impl Render for StatsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The page renders under the player's art tint like the workspace
-        // that opened it, and claims the widget theme while it holds focus,
-        // so the stats read in the playing track's colors.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {
-            // The range scopes every section under it, so it holds its own
-            // bar at the top rather than scrolling away with the first one.
-            // Both insets are the page's own: nothing in this bar scrolls,
-            // so the scrollbar's lane isn't its to leave open, and the
-            // clear sitting a whole lane off the edge just reads as a gap.
-            // A chart pick joins the knob as its own segment, the one
-            // place the page names what it's scoped to.
+            // The range bar stays fixed above the scrolling page, with the page's own
+            // insets since nothing in it scrolls.
             let mut options = vec![
                 (rox_i18n::t!("stats-range-all"), StatsRange::All),
                 (rox_i18n::t!("stats-range-year"), StatsRange::Year),
@@ -1501,9 +1284,6 @@ impl Render for StatsWindow {
                     .flex_1()
                     .min_w_0(),
                 )
-                // The record's own delete, beside the knob that scopes
-                // every reading of it. Inert with nothing to take, and it
-                // asks before it takes anything.
                 .child(clear_button(self.data.total == 0, cx));
             let page = div()
                 .flex()
@@ -1535,9 +1315,6 @@ impl Render for StatsWindow {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                // The backdrop paints first, under the page; without it
-                // translucent surfaces would sink into the window's own
-                // black instead of the playing track's art.
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
                 .child(
                     div()
@@ -1560,13 +1337,10 @@ impl Render for StatsWindow {
                                         .overflow_y_scroll()
                                         .track_scroll(&self.scroll)
                                         .p(tokens::SPACE_MD)
-                                        // Room for the scrollbar's 16px lane,
-                                        // so the counts and play controls
-                                        // never end up under the thumb.
+                                        // Room for the scrollbar's 16px lane.
                                         .pr(tokens::SPACE_MD + px(16.))
                                         .child(page),
                                 )
-                                // Fades out when idle, same as the panels.
                                 .child(
                                     div()
                                         .absolute()
@@ -1575,8 +1349,6 @@ impl Render for StatsWindow {
                                 ),
                         ),
                 )
-                // The clear confirm floats over the whole window on its own
-                // occluding layer, last so it paints on top of the page.
                 .children(self.clear_overlay(window, cx))
                 .into_any_element()
         })

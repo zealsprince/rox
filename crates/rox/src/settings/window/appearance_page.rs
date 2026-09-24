@@ -1,21 +1,14 @@
-//! The Appearance settings page: theme and language, song theming, ADR 10's
-//! transparency pair, window chrome, the frame, fonts, the backdrop visual,
-//! and the palette editor, a labeled swatch grid per listing group.
+//! The Appearance settings page: theme, language, window chrome, transparency
+//! (ADR 10), the frame, fonts, the Milkdrop backdrop and the palette editor.
 //!
-//! The editor works on a copy of the user palette, so the swatches show the
-//! base even while a playing track's seed tints the app over it; while song
-//! theming is on the editor locks, because the track is driving. Edits apply
-//! live through the palette setters and persist to the settings file per
-//! change, the volume slider's cadence. Palettes import and export as the
-//! settings map's role-to-hex JSON, so a file, the settings entry, and a
-//! shared theme are one shape.
+//! The editor works on a copy of the user palette and locks while song theming
+//! drives the colors. Palettes import and export as the settings map's
+//! role-to-hex JSON.
 
 use super::*;
 
 impl SettingsWindow {
-    /// A picker's change: the role into the working palette, out through
-    /// the one setter, into the file. Clearing the hex field reads as
-    /// back to the role's default.
+    /// Clearing the hex field resets the role to its default.
     pub(super) fn role_edited(
         &mut self,
         index: usize,
@@ -34,26 +27,20 @@ impl SettingsWindow {
             }
         }
         palette::set(self.base, cx);
-        // The palette is live above; the file write goes through the
-        // debounce, since a picker drag fires a change per tick like the
-        // sliders do.
+        // Debounced: a picker drag fires a change per tick.
         self.persist_palette = true;
         self.persist_appearance_soon(cx);
     }
 
-    /// The song-theming switch, the Window menu toggle's twin: through
-    /// the palette pipe, which also gates the backdrop layers, and into
-    /// the file. The toggle reads the palette static, not a cached field,
-    /// so the two entry points never show different states.
+    /// Reads the palette static, not a cached field, so it matches the Window
+    /// menu toggle.
     fn set_art_theming(&mut self, on: bool, cx: &mut Context<Self>) {
         palette::set_art_theming(on, cx);
         Settings::update(move |s| s.look.bundle.appearance.art_theming = on);
         cx.notify();
     }
 
-    /// The interface language. Through the settings pipe so every window
-    /// repaints in the new locale at once; the pick persists as the
-    /// registry id, and None keeps following the OS.
+    /// None keeps following the OS.
     fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
         settings::set_language(language.as_deref(), cx);
         self.language = language.clone();
@@ -61,20 +48,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The theme pick: which palette side renders, with System following
-    /// the OS. Through the settings pipe so the side re-resolves and every
-    /// window eases over; render then re-seeds the editor onto that side.
-    /// The radio reads the settings static, not a cached field, so this
-    /// and the theme toggle panel never show different states.
+    /// The radio reads the settings static, so it matches the theme toggle
+    /// panel.
     fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         settings::set_theme(theme, cx);
         Settings::update(move |s| s.theme = theme);
         cx.notify();
     }
 
-    /// The keep-theme switch: holds the active theme's palette under any
-    /// cover. Through the palette pipe so open windows ease over, and into
-    /// the file.
     fn set_keep_theme(&mut self, on: bool, cx: &mut Context<Self>) {
         self.keep_theme = on;
         palette::set_keep_theme(on, cx);
@@ -82,8 +63,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The editing side's designed anchor: what a cleared picker returns
-    /// a role to and what Reset returns the whole palette to.
     fn side_anchor(&self) -> Palette {
         match self.editor_mode {
             palette::Mode::Dark => Palette::default(),
@@ -91,18 +70,14 @@ impl SettingsWindow {
         }
     }
 
-    /// Persist the working palette onto its side of the settings file,
-    /// the immediate writers' shared tail (inverse, import, song theme).
     fn persist_palette_now(&self) {
         let mode = self.editor_mode;
         let map = self.base.to_map();
         Settings::update(move |s| *s.palette_map_mut(mode) = map);
     }
 
-    /// Point the editor at the side now rendering after a theme switch:
-    /// the working copy and every picker move to that theme's palette.
-    /// Runs from render, since every switch path (the toggle here, the OS
-    /// flipping under System, a workspace apply) repaints all windows.
+    /// Runs from render: every switch path, including the OS flipping under
+    /// System and a workspace apply, repaints all windows.
     pub(super) fn sync_editor_side(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editor_mode == palette::mode() {
             return;
@@ -115,45 +90,31 @@ impl SettingsWindow {
         }
     }
 
-    /// Catch the Typography slider up to a size this window didn't write:
-    /// the zoom shortcuts step the same live value from anywhere in the
-    /// app. Runs from render, `sync_editor_side`'s shape, since every step
-    /// repaints all windows. The slider's own scrub ends up back on the value
-    /// it just wrote, so this only moves for outside writers.
+    /// The zoom shortcuts step this value from anywhere, so catch the slider up
+    /// at render.
     pub(super) fn sync_font_size(&mut self) {
         self.font_size = palette::app_font_size();
     }
 
-    /// The menubar switch, the Window menu toggle's twin: through the
-    /// live static so every workspace window drops or regrows its bar,
-    /// and into the file. The toggle reads the static, not a cached
-    /// field, so the two entry points never show different states.
+    /// Reads the static, so it matches the Window menu toggle.
     fn set_hide_menubar(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_hide_menubar(on, cx);
         Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
         cx.notify();
     }
 
-    /// The design-mode switch, the menubar's Window entry from this side.
-    /// Same route as the menubar's: the live flag repaints every window,
-    /// and the file keeps it across launches.
     fn set_design_mode(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_design_mode(on, cx);
         Settings::update(move |s| s.design_mode = on);
         cx.notify();
     }
 
-    /// The seams switch: through the live static in the dock crate so
-    /// every window's panel dividers repaint, and into the file. The
-    /// toggle reads the static, like the menubar's.
     fn set_seams(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_seams(on, cx);
         Settings::update(move |s| s.look.bundle.appearance.seams = on);
         cx.notify();
     }
 
-    /// The decorations switch, the Window menu toggle's twin: flip the
-    /// flag, persist, and renegotiate the workspace windows.
     fn set_os_decorations(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_os_decorations(on);
         Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
@@ -161,9 +122,23 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The fallback titlebar's style and side. Every open window repaints
-    /// rather than just the workspaces: the strip draws in the child
-    /// windows too, this one included.
+    fn set_bare_child_windows(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_bare_child_windows(on);
+        Settings::update(move |s| s.look.bundle.appearance.bare_child_windows = on);
+        crate::workspace::apply_decorations(cx);
+        cx.notify();
+    }
+
+    /// The strip is decided at render, so a repaint is all it takes.
+    fn set_child_titlebar(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_child_titlebar(on);
+        Settings::update(move |s| s.look.bundle.appearance.child_titlebar = on);
+        crate::workspace::refresh_all_windows(cx);
+        cx.notify();
+    }
+
+    /// Repaints every window, not just the workspaces: the fallback titlebar
+    /// draws in child windows too.
     fn set_chrome_style(&mut self, style: ChromeStyle, cx: &mut Context<Self>) {
         settings::set_chrome_style(style);
         Settings::update(move |s| s.look.bundle.appearance.chrome_style = style);
@@ -178,8 +153,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The resize-border switch. Same shape as the decorations one above,
-    /// and only ever shown on Windows.
     fn set_resize_border(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_resize_border(on);
         Settings::update(move |s| s.look.bundle.appearance.resize_border = on);
@@ -187,18 +160,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The app font: through the live static, so every open window
-    /// repaints in the new family, and into the file. None follows the
-    /// platform default.
     fn set_app_font(&mut self, font: Option<String>, cx: &mut Context<Self>) {
         settings::set_app_font(font.clone(), cx);
         Settings::update(move |s| s.look.bundle.appearance.app_font = font);
         cx.notify();
     }
 
-    /// Ask whether the library's CJK text will draw through the slow font
-    /// fallback, for the warning under the font row. Off the UI thread:
-    /// it walks the library and reads every installed font's header.
+    /// Off the UI thread: it walks the library and reads every installed font's
+    /// header.
     pub(super) fn check_cjk_fonts(library: &Entity<Library>, cx: &mut Context<Self>) {
         let Some(projection) = library.read(cx).projection().cloned() else {
             return;
@@ -221,9 +190,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// The app font size: the strip fraction mapped onto whole px across
-    /// the shared range, through the palette pipe so every window's rem
-    /// follows the scrub live.
     fn set_font_size(&mut self, value: f32, cx: &mut Context<Self>) {
         self.font_size = value;
         palette::set_app_font_size(self.font_size, cx);
@@ -241,9 +207,6 @@ impl SettingsWindow {
         self.scalars_edited(cx);
     }
 
-    /// The backdrop-everywhere switch: live into the palette static the
-    /// layer's gate reads, straight into the file since a toggle is one
-    /// write, not a scrub.
     fn set_backdrop_windows(&mut self, on: bool, cx: &mut Context<Self>) {
         self.backdrop_all_windows = on;
         palette::set_backdrop_all_windows(on, cx);
@@ -251,9 +214,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Milkdrop backdrop's switch. A toggle is one write, so it goes
-    /// straight to the file, and every window is woken because a layer that
-    /// parked itself renders nothing that would ask for the next frame.
+    /// Wakes every window: a parked layer renders nothing that would ask for
+    /// the next frame.
     fn set_backdrop_visual_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         let mut config = settings::backdrop_visual();
         config.enabled = on;
@@ -266,9 +228,8 @@ impl SettingsWindow {
         self.backdrop_visual_switched(config, cx);
     }
 
-    /// The lock. Turning it on notes the preset that's up, so a restart
-    /// lands back on it; turning it off forgets it, since an unlocked
-    /// backdrop starting on last time's preset would read as stuck.
+    /// Locking remembers the preset that's up so a restart lands on it;
+    /// unlocking forgets it, or the backdrop would read as stuck.
     fn set_backdrop_visual_locked(&mut self, on: bool, cx: &mut Context<Self>) {
         let mut config = settings::backdrop_visual();
         config.locked = on;
@@ -290,7 +251,6 @@ impl SettingsWindow {
         self.backdrop_visual_switched(config, cx);
     }
 
-    /// Seconds, off the strip's own span.
     fn set_backdrop_visual_duration(&mut self, seconds: f32, cx: &mut Context<Self>) {
         let mut config = settings::backdrop_visual();
         config.duration_secs = f64::from(seconds.round());
@@ -339,9 +299,6 @@ impl SettingsWindow {
         self.backdrop_visual_switched(config, cx);
     }
 
-    /// Star or unstar the preset the backdrop is showing. The list is
-    /// app-wide, so this is the same write a panel's star makes; the
-    /// backdrop's own paint picks the change up through the generation.
     fn toggle_backdrop_visual_favorite(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = crate::backdrop_visual::current_preset() {
             let on = !settings::is_milkdrop_favorite(&path);
@@ -350,10 +307,8 @@ impl SettingsWindow {
         }
     }
 
-    /// A one-shot change: straight to the files, cache and layers woken.
-    /// The live cache is the working copy, so a workspace apply that
-    /// swapped the look underneath this window is what the next edit
-    /// starts from.
+    /// The live cache is the working copy, so an edit starts from whatever a
+    /// workspace apply put there.
     fn backdrop_visual_switched(
         &mut self,
         config: settings::BackdropVisualConfig,
@@ -365,9 +320,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The config's two halves to their two files: the look's fields into
-    /// the bundle, beside Backdrop Strength, and the machine's into
-    /// settings.json. The update writes whichever shard actually moved.
+    /// The look's fields go into the bundle and the machine's into
+    /// settings.json.
     fn persist_backdrop_visual(s: &mut Settings, config: settings::BackdropVisualConfig) {
         s.look.bundle.appearance.milkdrop = config.look();
         s.backdrop_visual = config;
@@ -379,17 +333,14 @@ impl SettingsWindow {
         self.backdrop_visual_edited(config, cx);
     }
 
-    /// The render scale, taken as a percentage of the window because that's
-    /// what the strip reads.
     fn set_backdrop_visual_scale(&mut self, percent: f32, cx: &mut Context<Self>) {
         let mut config = settings::backdrop_visual();
         config.scale = percent / 100.0;
         self.backdrop_visual_edited(config, cx);
     }
 
-    /// Live into the cache the layers read, file write debounced behind it,
-    /// the same deal the appearance scalars make: a slider drag would
-    /// otherwise rewrite the whole settings file once per tick.
+    /// Live into the cache, file write debounced: a drag would otherwise
+    /// rewrite the settings file per tick.
     fn backdrop_visual_edited(
         &mut self,
         config: settings::BackdropVisualConfig,
@@ -420,11 +371,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Persist the appearance scalars, frame, and any pending palette edit
-    /// after the current scrub settles. Each slider tick or picker change
-    /// would otherwise read, parse, and rewrite the whole settings file (dock
-    /// dumps and all); the live statics already hold the value, so only the
-    /// file write needs to wait for the last tick.
+    /// Debounced: every tick would otherwise rewrite the whole settings file,
+    /// dock dumps and all.
     fn persist_appearance_soon(&mut self, cx: &mut Context<Self>) {
         self.persist_gen += 1;
         let generation = self.persist_gen;
@@ -436,11 +384,8 @@ impl SettingsWindow {
             cx.background_executor()
                 .timer(Duration::from_millis(200))
                 .await;
-            // A later tick bumped the generation past this capture, so only
-            // the last edit in a burst writes. The palette rereads at fire
-            // time so an immediate writer (reset, import) that runs inside
-            // the wait isn't undone; the capture only stands in when the
-            // window closed before the timer.
+            // Only the last edit in a burst writes. The palette rereads at fire
+            // time so a reset or import inside the wait isn't undone.
             let (latest, palette) = this
                 .update(cx, |this, _| {
                     (
@@ -451,10 +396,8 @@ impl SettingsWindow {
                 })
                 .unwrap_or((generation, palette));
             if latest == generation {
-                // The font size comes off the live static rather than a
-                // capture: the zoom shortcuts write it from outside this
-                // window, and one that runs inside the wait would otherwise
-                // get rolled back to whatever the slider last wrote.
+                // Off the live static: the zoom shortcuts may have written it
+                // during the wait.
                 let font_size = palette::app_font_size();
                 Settings::update(move |s| {
                     s.look.bundle.appearance.surface_opacity = surface;
@@ -470,9 +413,7 @@ impl SettingsWindow {
         .detach();
     }
 
-    // The app-wide frame setters: whole px in, the new default every
-    // panel that sets no override of its own takes. A side of None comes
-    // off the linked strip and moves all four together.
+    // A side of None comes off the linked strip and moves all four.
 
     fn set_margin(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
         self.frame.margin = self.frame.margin.edited(side, value);
@@ -494,8 +435,8 @@ impl SettingsWindow {
         self.frame_edited(cx);
     }
 
-    // The link toggles. Splitting only opens the sides up; linking
-    // flattens them onto the widest, so nothing on screen disappears.
+    // Linking flattens the sides onto the widest, so nothing on screen
+    // disappears.
 
     fn split_margin(&mut self, split: bool, cx: &mut Context<Self>) {
         self.margin_split = split;
@@ -527,11 +468,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// One app-frame knob's slider row: the value over its 0 to `max`
-    /// range, the px readout alongside. Always set, since these are the
-    /// defaults themselves; a panel's own settings are where an override
-    /// forks off them. Typed values may run past the strip's top, the
-    /// setters accept whatever comes in.
+    /// Typed values may run past the strip's top; the setters accept them.
     fn frame_row(
         &self,
         scrub: &ScrubState,
@@ -550,8 +487,6 @@ impl SettingsWindow {
         )
     }
 
-    /// [`frame_row`](Self::frame_row) for a four-sided knob: the link
-    /// toggle and, behind it, one strip or four.
     #[allow(clippy::too_many_arguments)]
     fn frame_sides_row(
         &self,
@@ -575,9 +510,8 @@ impl SettingsWindow {
         )
     }
 
-    /// A whole palette into the editor at once: the working copy, every
-    /// picker, and the live palette. Persisting is the caller's, because
-    /// reset writes an empty map where import writes a full one.
+    /// Persisting is the caller's: reset writes an empty map, import a full
+    /// one.
     pub(super) fn apply_palette(
         &mut self,
         palette: Palette,
@@ -592,21 +526,14 @@ impl SettingsWindow {
         palette::set(self.base, cx);
     }
 
-    /// Back to the editing side's stock palette; the file's map empties
-    /// rather than filling with defaults.
     fn reset_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.apply_palette(self.side_anchor(), window, cx);
-        // Back off the debounced palette writes too, or a settling picker
-        // burst would refill the map this just emptied.
+        // Or a settling picker burst would refill the map this just emptied.
         self.persist_palette = false;
         let mode = self.editor_mode;
         Settings::update(move |s| s.palette_map_mut(mode).clear());
     }
 
-    /// Seed the working palette from the other theme's, flipped across
-    /// the designed ladders: editing dark, Inverse From Light Theme pulls
-    /// the light side's look dark, and the other way around. The map
-    /// persists like any other edit, so the flip is kept across a restart.
     fn inverse_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let other = match self.editor_mode {
             palette::Mode::Dark => palette::Mode::Light,
@@ -616,11 +543,8 @@ impl SettingsWindow {
         self.persist_palette_now();
     }
 
-    /// Bake the song theme into the palette: the colors the playing track
-    /// derives become the working palette, then song theming turns off so
-    /// they hold. The look a track gave the app is kept as a fixed theme.
-    /// The resolved palette is read before theming goes off, since turning
-    /// it off retargets the tint back to the base.
+    /// Read the resolved palette before theming goes off, which retargets the
+    /// tint to the base.
     fn apply_song_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let themed = palette::resolved();
         self.set_art_theming(false, cx);
@@ -628,10 +552,8 @@ impl SettingsWindow {
         self.persist_palette_now();
     }
 
-    /// Pick a palette file and load it: the same role-to-hex map the
-    /// settings file holds, so exports, settings, and shared themes are
-    /// one shape. Unknown roles and bad values fall away silently, a
-    /// file that isn't a map at all is ignored.
+    /// Unknown roles and bad values fall away; a file that isn't a map is
+    /// ignored.
     fn import_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -662,9 +584,7 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Save a palette file, [`Palette::to_map`]'s shape: the working
-    /// palette, or the derived one while song theming drives the colors,
-    /// so a look a track built can leave as a theme.
+    /// The derived palette while song theming drives the colors.
     fn export_palette(&mut self, cx: &mut Context<Self>) {
         let map = if palette::art_theming() {
             palette::resolved().to_map()
@@ -722,54 +642,71 @@ impl SettingsWindow {
                         &["title bar", "chrome", "frameless"],
                         panel::toggle(settings::os_decorations(), Self::set_os_decorations, cx),
                     )
-                    // Linux only: it's the one platform where the compositor
-                    // can refuse the OS frame outright, so the stand-in strip
-                    // these two dress is the only thing that ever draws there.
-                    // On Windows and macOS the frame always arrives and the
-                    // rows would be knobs on something invisible.
-                    .when(cfg!(target_os = "linux"), |rows| {
+                    .keyed(
+                        "settings-appearance-bare-child-windows",
+                        &["title bar", "chrome", "frameless", "settings", "popout"],
+                        panel::toggle(
+                            settings::bare_child_windows(),
+                            Self::set_bare_child_windows,
+                            cx,
+                        ),
+                    )
+                    .when(settings::bare_child_windows(), |rows| {
                         rows.keyed(
-                            "settings-appearance-chrome-style",
-                            &["title bar", "buttons", "close", "traffic lights"],
-                            panel::choices_shared(
-                                &[
-                                    (
-                                        rox_i18n::t!("window-controls-style-icons"),
-                                        ChromeStyle::Icons,
-                                    ),
-                                    (
-                                        rox_i18n::t!("window-controls-traffic-lights"),
-                                        ChromeStyle::Traffic,
-                                    ),
-                                ],
-                                settings::chrome_style(),
-                                Self::set_chrome_style,
-                                cx,
-                            ),
-                        )
-                        .keyed(
-                            "settings-appearance-chrome-side",
-                            &["title bar", "buttons", "align", "left", "right"],
-                            panel::choices_shared(
-                                &[
-                                    (
-                                        rox_i18n::t!("settings-appearance-chrome-side-left"),
-                                        ChromeSide::Left,
-                                    ),
-                                    (
-                                        rox_i18n::t!("settings-appearance-chrome-side-right"),
-                                        ChromeSide::Right,
-                                    ),
-                                ],
-                                settings::chrome_side(),
-                                Self::set_chrome_side,
-                                cx,
-                            ),
+                            "settings-appearance-child-titlebar",
+                            &["title bar", "chrome", "frameless", "close"],
+                            panel::toggle(settings::child_titlebar(), Self::set_child_titlebar, cx),
                         )
                     })
-                    // Windows only: on Linux and macOS the borderless window has
-                    // no edge resize to take away, so the row would be a switch
-                    // that does nothing.
+                    // The stand-in titlebar only draws on Linux when the
+                    // compositor refuses the OS frame, or anywhere once child
+                    // windows go bare with it.
+                    .when(
+                        cfg!(target_os = "linux")
+                            || (settings::bare_child_windows() && settings::child_titlebar()),
+                        |rows| {
+                            rows.keyed(
+                                "settings-appearance-chrome-style",
+                                &["title bar", "buttons", "close", "traffic lights"],
+                                panel::choices_shared(
+                                    &[
+                                        (
+                                            rox_i18n::t!("window-controls-style-icons"),
+                                            ChromeStyle::Icons,
+                                        ),
+                                        (
+                                            rox_i18n::t!("window-controls-traffic-lights"),
+                                            ChromeStyle::Traffic,
+                                        ),
+                                    ],
+                                    settings::chrome_style(),
+                                    Self::set_chrome_style,
+                                    cx,
+                                ),
+                            )
+                            .keyed(
+                                "settings-appearance-chrome-side",
+                                &["title bar", "buttons", "align", "left", "right"],
+                                panel::choices_shared(
+                                    &[
+                                        (
+                                            rox_i18n::t!("settings-appearance-chrome-side-left"),
+                                            ChromeSide::Left,
+                                        ),
+                                        (
+                                            rox_i18n::t!("settings-appearance-chrome-side-right"),
+                                            ChromeSide::Right,
+                                        ),
+                                    ],
+                                    settings::chrome_side(),
+                                    Self::set_chrome_side,
+                                    cx,
+                                ),
+                            )
+                        },
+                    )
+                    // Windows only: elsewhere the borderless window has no edge
+                    // resize to take away.
                     .when(cfg!(target_os = "windows"), |rows| {
                         rows.keyed(
                             "settings-appearance-resize-border",
@@ -833,9 +770,8 @@ impl SettingsWindow {
                             cx,
                         ),
                     )
-                    // Under the font row because that's where somebody
-                    // looks when text draws wrong, though no pick here
-                    // fixes it: the answer is a font package.
+                    // Under the font row because that's where somebody looks,
+                    // though the fix is a font package.
                     .when(self.cjk_fonts_missing, |rows| {
                         rows.custom(
                             &[
@@ -972,14 +908,7 @@ impl SettingsWindow {
             .section(self.colors_section(q, columns, cx))
     }
 
-    /// The Milkdrop Backdrop section: the frame behind the whole app, drawn
-    /// over the blurred cover and under everything else.
-    ///
-    /// Under Appearance, right after the Transparency section whose
-    /// backdrop strength it composites with, because that's where someone
-    /// deciding what the app looks like behind its panels is already
-    /// looking. It started life at the bottom of the Shader page on the
-    /// argument that it's a renderer with a cost, and nobody found it there.
+    /// Right after Transparency, whose backdrop strength it composites with.
     fn backdrop_visual_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let config = settings::backdrop_visual();
         let error = crate::backdrop_visual::error();
@@ -1005,18 +934,12 @@ impl SettingsWindow {
                     &["milkdrop", "visual", "visualizer", "background"],
                     panel::toggle(config.enabled, Self::set_backdrop_visual_enabled, cx),
                 );
-                // Everything under the switch is about a visual that's
-                // running; with it off the rows would only be furniture.
                 if !config.enabled {
                     return rows;
                 }
                 rows = rows
-                    // The picker works with nothing playing: the worker
-                    // takes a load while parked, and one that hasn't
-                    // started yet gets the pick at start. Random is
-                    // chosen here for the same reason. The row reads the
-                    // preset that's up and opens the picker window over
-                    // the backdrop; the list itself is too big for a row.
+                    // Works with nothing playing: the worker takes a load while
+                    // parked.
                     .keyed(
                         "settings-appearance-milkdrop-preset",
                         &[
@@ -1112,8 +1035,6 @@ impl SettingsWindow {
                             cx,
                         ),
                     )
-                    // The rotation options: everything, the favorites,
-                    // then every folder in the scan, the panel's list.
                     .keyed(
                         "settings-appearance-milkdrop-rotation",
                         &[
@@ -1152,8 +1073,8 @@ impl SettingsWindow {
                             )
                         },
                     )
-                    // Favorites picked with nothing starred is the one pick
-                    // that does something other than what it says.
+                    // Favorites with nothing starred doesn't do what it says,
+                    // so say so.
                     .when(config.favorites_only && favorites == 0, |rows| {
                         rows.custom(&["milkdrop", "favorites"], || {
                             div()
@@ -1163,8 +1084,8 @@ impl SettingsWindow {
                                 .into_any_element()
                         })
                     })
-                    // From here the rows are the panel's Tuning page in
-                    // the panel's order, so the two visuals tune alike.
+                    // From here, the panel's Tuning page in its order, so the
+                    // two visuals tune alike.
                     .keyed(
                         "settings-appearance-milkdrop-beat-sensitivity",
                         &["milkdrop", "beat", "sensitivity", "detect"],
@@ -1222,9 +1143,6 @@ impl SettingsWindow {
                             cx,
                         ),
                     )
-                    // Hold or fade with the audio gone, the panel's switch
-                    // with the panel's option labels. The fade time is only
-                    // a question once there's a fade to time.
                     .keyed(
                         "settings-appearance-milkdrop-idle",
                         &["milkdrop", "pause", "stop", "hold", "fade", "freeze"],
@@ -1321,10 +1239,7 @@ impl SettingsWindow {
         )
     }
 
-    /// One cell of the color grid: the picker with its label beside it,
-    /// or a dimmed inert swatch while song theming drives the palette.
-    /// The inert swatch shows the derived color the track produced, the
-    /// same values export saves, not the base underneath.
+    /// The locked swatch shows the derived color, the same one export saves.
     fn color_cell(&self, role: &Role, picker: &Entity<ColorPickerState>, locked: bool) -> Div {
         let control: AnyElement = if locked {
             div()
@@ -1336,9 +1251,8 @@ impl SettingsWindow {
                 .opacity(0.5)
                 .into_any_element()
         } else {
-            // The picker pads a 4px margin around its swatch square; the
-            // counter-margin keeps the live cell the same 20px footprint
-            // as the locked one, so the grid doesn't loosen when editable.
+            // Counter-margin for the picker's 4px pad, so the live cell matches
+            // the locked one's 20px.
             ColorPicker::new(picker)
                 .small()
                 .m(px(-4.))
@@ -1350,11 +1264,8 @@ impl SettingsWindow {
     fn colors_section(&self, q: &Query, columns: usize, cx: &mut Context<Self>) -> Section {
         let locked = palette::art_theming();
 
-        // Import, inverse, and reset lock with the rest of the editor:
-        // they change the palette too. Apply Song Theme is the opposite,
-        // live only while theming drives the colors it bakes in. Export
-        // stays live; unlocked it saves the base palette, locked the
-        // derived one the swatches show.
+        // Import, inverse and reset lock with the editor; Apply Song Theme is
+        // live only while theming is on. Export always works.
         let inverse_label = match self.editor_mode {
             palette::Mode::Dark => rox_i18n::t!("settings-appearance-inverse-from-light"),
             palette::Mode::Light => rox_i18n::t!("settings-appearance-inverse-from-dark"),

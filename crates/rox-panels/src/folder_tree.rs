@@ -1,16 +1,10 @@
 //! The folder tree panel: the library's folder hierarchy as an
-//! expand/collapse tree, reconstructed from the projection's interned
-//! folder strings, never a scan of the filesystem. The shared prefix
-//! above the music (the mount point, the home dir) collapses away, so the
-//! top nodes are the folders where the library actually starts. Expanding
-//! a folder shows its subfolders and then its songs; CUE-backed images stay
-//! one physical-file row with their logical subsongs nested underneath. A
-//! double click plays from there, and the right-click menu has the track
-//! actions every song surface shares plus the folder-scope filter, which
-//! narrows the shared query to the folder's whole subtree with a single
-//! pick. The active query narrows the tree too (the shared one by default,
-//! the panel's own box or the app-wide selection per config), and folders
-//! left with no matching songs drop out.
+//! expand/collapse tree, rebuilt from the projection's interned folder
+//! strings, never a filesystem scan. The shared prefix above the music
+//! collapses away, so the top nodes are where the library starts. CUE images
+//! stay one physical-file row with their subsongs nested underneath. The
+//! active query narrows the tree, and the right-click menu adds a
+//! folder-scope filter that narrows the shared query to a whole subtree.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{MAIN_SEPARATOR, PathBuf};
@@ -47,17 +41,14 @@ use crate::selection::SelectionEvent;
 use crate::track_ui::track_columns;
 use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
 
-/// One row's height, the filter panel's, so the two read as one family.
+/// Matches the filter panel's row height.
 const ROW_H: f32 = 26.;
 
-/// How far each depth level steps in.
 const INDENT: f32 = 14.;
 
-/// The opacity a dimmed row (outside the active facet filter) draws at.
 const DIM: f32 = 0.4;
 
-/// Where the tree shows cover art in place of the row icon: nowhere, on
-/// the folder rows (the album tile), on the song rows, or both.
+/// Where the tree shows cover art in place of the row icon.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CoverArt {
@@ -69,22 +60,17 @@ pub enum CoverArt {
 }
 
 impl CoverArt {
-    /// Whether folder rows show the album tile.
     fn on_folders(self) -> bool {
         matches!(self, CoverArt::Folders | CoverArt::Both)
     }
 
-    /// Whether song rows show their cover.
     fn on_songs(self) -> bool {
         matches!(self, CoverArt::Songs | CoverArt::Both)
     }
 }
 
-/// What the tree does with the folders and songs the active query leaves
-/// out (text terms and facet picks both): dim them in place so the branch
-/// still reads whole, or drop them so only the matches show. Folders and
-/// songs each have their own choice, so the tree can hide the folders with
-/// no match while still dimming the stray songs inside the folders that do.
+/// What the tree does with rows the active query leaves out: dim them in
+/// place or drop them. Folders and songs each pick their own.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterEffect {
@@ -93,43 +79,32 @@ pub enum FilterEffect {
     Hide,
 }
 
-/// The folder tree panel's per-view config: what a saved layout restores.
-/// The shared chrome plus the cover-art and filter knobs; the folder scope
-/// is app state, transient like the rest of the filter, and the expand
-/// state is saved with the layout.
+/// The folder tree panel's per-view config. The folder scope is app state
+/// and isn't saved here.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FolderTreeConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Where cover art shows in place of the row icon.
     pub cover: CoverArt,
     /// What happens to folders with no match under the active query.
     pub folders: FilterEffect,
     /// What happens to non-matching songs inside a folder that's shown.
     pub songs: FilterEffect,
-    /// Reveal and scroll to the playing track whenever it changes.
     pub follow_playing: bool,
     /// Scroll back to the playing track after browsing stops.
     pub resume_playing: bool,
-    /// Glide to the track instead of jumping.
     pub smooth_follow: bool,
     /// Whether the search box shows; the query only filters while it does.
     pub search: bool,
-    /// Follow the shared query, or filter by this panel's own box.
     pub query_source: QuerySource,
     /// The panel's own query, kept while following the shared one.
     pub query: String,
-    /// The folders left open when the layout was saved, so a relaunch
-    /// reopens the tree where it was instead of folding back to the
-    /// roots. Paths a rescan no longer knows just sit inert in the set.
+    /// Folders left open when the layout was saved. Paths a rescan no longer
+    /// knows sit inert.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expanded: Vec<String>,
-    /// The CUE backing images left open when the layout was saved. Full
-    /// paths keep equal filenames in different folders distinct; this is
-    /// separate from `expanded` because an image is not a directory branch.
+    /// CUE images left open, by full path so equal filenames stay distinct.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expanded_cues: Vec<PathBuf>,
 }
@@ -139,9 +114,8 @@ impl Default for FolderTreeConfig {
         FolderTreeConfig {
             chrome: PanelChrome::default(),
             cover: CoverArt::default(),
-            // Hide the folders that miss, so a search narrows the tree; keep
-            // and dim the stray songs inside the folders that hit, so a
-            // folder still shows its whole contents.
+            // Hide folders that miss so a search narrows the tree; dim stray songs so
+            // a folder still shows its whole contents.
             folders: FilterEffect::Hide,
             songs: FilterEffect::Dim,
             follow_playing: false,
@@ -159,15 +133,13 @@ impl Default for FolderTreeConfig {
 /// A directory, a CUE image, or a playable logical track.
 #[derive(Clone)]
 enum RowKind {
-    /// One physical audio image claimed by a CUE sheet. The row itself is
-    /// structural; `ids` are the playable logical tracks nested beneath it.
+    /// A physical image claimed by a CUE sheet; `ids` are its logical tracks.
     Cue {
         /// Full backing-file path, also the expansion-state key.
         path: PathBuf,
         expanded: bool,
         /// Drawn faint only when every currently listed child is dimmed.
         dimmed: bool,
-        /// Child library ids in the same subsong order the tree presents.
         ids: Vec<i64>,
     },
     Folder {
@@ -175,24 +147,18 @@ enum RowKind {
         count: u32,
         has_children: bool,
         expanded: bool,
-        /// Drawn faint: a folder whose subtree holds no filter match, in
-        /// Dim mode.
         dimmed: bool,
     },
     Track {
-        /// The projection row, for the duration and db id.
         row: u32,
         id: i64,
-        /// The owning folder's path and this song's position in its list,
-        /// what a play-from-here resolves against.
+        /// The owning folder and this song's index in its `folder_tracks` list.
         folder: String,
         pos: usize,
-        /// Drawn faint: a song outside the active facet filter, in Dim mode.
         dimmed: bool,
     },
 }
 
-/// One visible row of the flattened tree, what the uniform list renders.
 #[derive(Clone)]
 struct Row {
     label: SharedString,
@@ -200,8 +166,7 @@ struct Row {
     kind: RowKind,
 }
 
-/// One projection row with the path/subsong identity resolved once per
-/// flatten through the panel's shared key cache.
+/// A projection row with its track key resolved once per flatten.
 struct SongRow {
     row: u32,
     id: i64,
@@ -209,21 +174,16 @@ struct SongRow {
     key: Option<TrackKey>,
 }
 
-/// One first-level file entry in a folder. Plain files contain one song;
-/// CUE images contain every logical subsong that shares the same full path.
+/// One file entry in a folder: a plain file with one song, or a CUE image
+/// with every subsong sharing its full path.
 struct SongGroup {
-    /// Physical filename shown at the folder level.
     label: SharedString,
-    /// Full backing path for a CUE image; None for an ordinary file.
     cue: Option<PathBuf>,
-    /// Playable rows, ordered by CUE subsong number for an image.
     songs: Vec<SongRow>,
 }
 
-/// Turn projection rows into physical-file groups before the tree is
-/// flattened. CUE tracks group by full backing path regardless of scan order;
-/// ordinary files stay one row each. Groups sort naturally by filename while
-/// children sort by the stable `TrackKey.sub` number from the sheet.
+/// Group rows into physical files, CUE tracks by full path whatever the
+/// scan order. Groups sort naturally by filename, subsongs by `TrackKey.sub`.
 fn group_songs(songs: Vec<SongRow>) -> Vec<SongGroup> {
     let mut groups: Vec<SongGroup> = Vec::new();
     let mut images: HashMap<PathBuf, usize> = HashMap::new();
@@ -267,18 +227,16 @@ fn group_songs(songs: Vec<SongRow>) -> Vec<SongGroup> {
     groups.into_iter().map(|(_, group)| group).collect()
 }
 
-/// Open the structural CUE image that owns `key`, if `key` is a subsong.
-/// Plain files deliberately leave the expansion set untouched.
+/// Open the CUE image that owns `key`, if `key` is a subsong.
 fn reveal_cue(expanded: &mut HashSet<PathBuf>, key: &TrackKey) {
     if key.sub > 0 {
         expanded.insert(key.path.clone());
     }
 }
 
-/// Append one folder's grouped file entries to the flattened visible tree.
-/// `pos` advances across children of collapsed CUE images too: playback uses
-/// positions in `folder_tracks`, not visible-row indices, so hiding children
-/// must never change where the following file starts in the queue.
+/// Append one folder's file entries to the visible rows. `pos` counts
+/// children of collapsed images too: playback indexes `folder_tracks`, not
+/// visible rows, so folding must never shift where the next file starts.
 fn append_songs(
     out: &mut Vec<Row>,
     groups: &[SongGroup],
@@ -337,94 +295,63 @@ pub struct FolderTreePanel {
     state: AppState,
     config: FolderTreeConfig,
     focus: FocusHandle,
-    /// The panel's search box, shown per config; its query filters the tree
-    /// through whichever source is active.
     search: Entity<SearchBox>,
-    /// A pending box reset from a source toggle or a shared-query change,
-    /// consumed in render where a window exists.
+    /// A pending box reset, consumed in render where a window exists.
     resync_box: bool,
-    /// The track ids pinned while following the app-wide selection.
     selection_ids: Vec<i64>,
-    /// The top-level folders after collapsing the shared prefix, structure
-    /// rebuilt on a library update, counts on every query change.
+    /// Top-level folders after the shared prefix collapses.
     roots: Vec<Node>,
-    /// Each folder's own context songs by path, filename ordered; folders
-    /// with none stay out. Rebuilt with the counts.
+    /// Each folder's own listed songs by path, in play order.
     folder_tracks: HashMap<String, Vec<u32>>,
-    /// Shown songs outside the active facet filter, drawn faint in Dim mode.
-    /// Empty in Hide mode (non-matches are dropped) and when no filter is
-    /// active.
+    /// Listed songs outside the active filter, drawn faint in Dim mode.
     dimmed_songs: HashSet<u32>,
-    /// The flattened visible rows, rebuilt on expand and recount.
     visible: Vec<Row>,
-    /// The expanded folders by path. Kept across rescans; top-level nodes
-    /// seed in expanded once.
+    /// Kept across rescans; top-level nodes seed in expanded once.
     expanded: HashSet<String>,
-    /// CUE backing images currently unfolded, keyed by full physical path.
     expanded_cues: HashSet<PathBuf>,
     seeded: bool,
     scroll: UniformListScrollHandle,
-    /// The keyboard-and-click cursor, an index into `visible`: the lit
-    /// row, where arrows move from and enter acts. None until a key or
-    /// click sets one.
+    /// The keyboard-and-click cursor, an index into `visible`.
     cursor: Option<usize>,
-    /// The selected songs by library id, the multi-select set the shared
-    /// selection and a drag read from. Songs only; folders aren't selectable.
+    /// Selected songs by library id. Folders aren't selectable.
     selected: HashSet<i64>,
-    /// The shift-range anchor, a `visible` index into the last plainly
-    /// clicked song row.
+    /// The shift-range anchor, a `visible` index.
     anchor: Option<usize>,
-    /// The row under the last right press, what the context menu acts on;
-    /// cleared when the press falls off the rows.
+    /// The row under the last right press, what the context menu acts on.
     menu_row: Option<usize>,
-    /// The playing track's path and library id, the highlight's key, the
-    /// history panel's follow.
+    /// The playing track's key and library id; the highlight matches on the id.
     playing_key: Option<TrackKey>,
     playing: Option<i64>,
-    /// Per-track paths resolved for drag payloads, so a hover frame never
-    /// repeats the store lookup. Cleared on a library update.
+    /// Track keys by id, so a hover frame never repeats the store lookup.
     drag_keys: HashMap<i64, Option<TrackKey>>,
-    /// Bumped whenever the selection or the visible order changes, keying the
-    /// drag-set cache so a grab inside a big selection shares one Arc across
-    /// every visible selected row instead of rebuilding the set per row.
+    /// Bumped when the selection or visible order changes. Keys the drag-set
+    /// cache, so a big selection shares one Arc across its rows.
     drag_gen: u64,
     drag_set: Option<DragSet>,
-    /// The folder row the pointer is on, by path, and its drag payload once
-    /// something asks for it. Only that one row carries a drag, so the
-    /// subtree walk happens on hover instead of on every visible folder row
-    /// every frame.
+    /// The hovered folder row and its drag payload. Only that row carries a
+    /// drag, so the subtree walk runs on hover, not per folder row per frame.
     hover_folder: Option<String>,
     folder_drag: Option<FolderDrag>,
-    /// The idle clock behind resume: a browse gesture arms it, its wake
-    /// scrolls back to the playing track once the panel goes untouched.
     resume_idle: ResumeIdle,
-    /// The follow glide's target row and its per-frame clock, stepped in
-    /// render like the library's; None when nothing is easing.
     glide_to: Option<usize>,
     glide_tick: Instant,
-    /// The type-ahead phrase and when its last keystroke arrived, so a
-    /// quick run of letters jumps to a row by prefix.
     type_ahead: String,
     type_ahead_at: Option<Instant>,
-    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _query_changed: Subscription,
     _player_changed: Subscription,
     _search_events: Subscription,
     _selection_changed: Subscription,
-    /// Drops the phrase when focus leaves the panel, so tab goes back to
-    /// walking panels instead of cycling a phrase from a past visit.
+    /// Drops the phrase on blur, so tab goes back to walking panels.
     _type_ahead_blur: Subscription,
 }
 
-/// A cached multi-selection drag: the generation that built it, the keys a
-/// drop plays, and the catalog ids a playlist drop stores.
+/// A cached multi-selection drag: generation, keys to play, catalog ids.
 type DragSet = (u64, Arc<[TrackKey]>, Arc<[i64]>);
 
-/// The hovered folder's drag payload, held across frames so the subtree only
-/// resolves once per hover. `drag` is None when the folder's subtree came out
-/// empty, so a dead branch isn't re-walked every frame either.
+/// The hovered folder's cached drag payload. `drag` is None for an empty
+/// subtree, so a dead branch isn't re-walked every frame either.
 struct FolderDrag {
     path: String,
     generation: u64,
@@ -438,10 +365,8 @@ impl FolderTreePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // The folder set changes when the library rescans; rebuild the
-        // structure. Counts and the scope highlight follow the shared
-        // query, our own scope writes included. Recount is idempotent, so
-        // the echo settles in one pass.
+        // A rescan rebuilds the structure. Counts follow the shared query, our own
+        // scope writes included; recount is idempotent, so the echo settles.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -457,8 +382,6 @@ impl FolderTreePanel {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
-        // A panel restored as global opens showing the shared query; a local
-        // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
@@ -466,8 +389,7 @@ impl FolderTreePanel {
         let search =
             cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // Restored as selection-following, it opens on whatever is picked
-        // now, rather than blank until the next pick.
+        // Seed from the current pick so a restored selection-follower isn't blank.
         let selection_ids = state.selection.read(cx).tracks().to_vec();
         let _selection_changed = cx.subscribe(
             &state.selection,
@@ -475,14 +397,11 @@ impl FolderTreePanel {
                 this.on_selection_changed(event.source, cx);
             },
         );
-        // A restored layout carries its open folders; seed from them and
-        // skip the root seeding, so the tree comes back as it was left.
+        // A restored layout's open folders skip the root seeding.
         let expanded: HashSet<String> = config.expanded.iter().cloned().collect();
         let seeded = !expanded.is_empty();
         let expanded_cues = config.expanded_cues.iter().cloned().collect();
         let focus = cx.focus_handle().tab_stop(true);
-        // The phrase outlives its badge, so it needs an end: leaving the
-        // panel drops it, which is also what hands tab back to traversal.
         let panel = cx.weak_entity();
         let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
             panel
@@ -531,16 +450,13 @@ impl FolderTreePanel {
             _type_ahead_blur,
         };
         this.rebuild(cx);
-        // A duplicate opens with a track already playing; pick it up now
-        // instead of waiting for the next track change.
+        // A duplicate opens mid-track; pick the playing one up now.
         this.sync_playing(cx);
         this
     }
 
-    /// Rebuild the hierarchy from the projection's folder set, then count.
-    /// The structure only follows the library, never the query, so typing
-    /// a search never restructures the branches: it only hides the empty
-    /// ones.
+    /// Rebuild the hierarchy from the projection's folder set, then count. The
+    /// structure never follows the query, so typing only hides empty branches.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.roots = {
             let library = self.state.library.read(cx);
@@ -557,26 +473,18 @@ impl FolderTreePanel {
         self.recount(cx);
     }
 
-    /// Regroup the songs per folder and recount every subtree. The tree is
-    /// the full library hierarchy; the active query (the text terms and
-    /// every facet pick, the folder scope included) marks which songs
-    /// match, and [`FilterEffect`] decides the rest: a folder with no match
-    /// in its subtree hides or dims per `folders`, a non-matching song
-    /// inside a shown folder hides or dims per `songs`. Then reflatten.
+    /// Regroup the songs per folder, recount every subtree against the active
+    /// query, and reflatten. [`FilterEffect`] decides what happens to misses.
     fn recount(&mut self, cx: &mut Context<Self>) {
         {
             let song_hide = self.config.songs == FilterEffect::Hide;
-            // Whichever source is active: the shared query, the panel's own
-            // box, or the app-wide selection pinned as an id filter.
             let (text, facet) = (self.effective_query(cx), self.effective_filter(cx));
             let library = self.state.library.read(cx);
             self.folder_tracks.clear();
             self.dimmed_songs.clear();
             if let Some(projection) = library.projection() {
                 let len = projection.len();
-                // Two masks over the catalog: the text hits and the facet
-                // picks. None on either means it constrains nothing, so a
-                // song passes it. A song matches when it passes both.
+                // None on either mask constrains nothing; a song matches when it passes both.
                 let text_hits: Option<Vec<bool>> = (!text.is_empty()).then(|| {
                     let mut hits = vec![false; len];
                     for row in projection.search(&text) {
@@ -592,14 +500,10 @@ impl FolderTreePanel {
                 let nsym = projection.folders.strings.len();
                 let mut total_sym = vec![0u32; nsym];
                 let mut matched_sym = vec![0u32; nsym];
-                // The songs each folder lists: all of them in Dim, only the
-                // matches in Hide. Non-matches that stay get marked faint.
+                // All songs listed in Dim, only matches in Hide; kept misses go faint.
                 let mut listed: Vec<Vec<u32>> = vec![Vec::new(); nsym];
                 for row in 0..len {
-                    // Tombstoned rows are still columns; they count for
-                    // no folder until the next rebuild drops them. A radio
-                    // station has no folder worth a node either, and the
-                    // projection answers both in one read.
+                    // Skips tombstoned rows and radio stations alike.
                     if !projection.is_browsable(row as u32) {
                         continue;
                     }
@@ -618,8 +522,7 @@ impl FolderTreePanel {
                 }
                 let mut counts: HashMap<&str, (u32, u32)> = HashMap::with_capacity(nsym);
                 for (sym, list) in listed.into_iter().enumerate() {
-                    // Bare-filename tracks intern to the empty folder and
-                    // never get a node; skip them.
+                    // Bare-filename tracks intern to the empty folder and never get a node.
                     if total_sym[sym] == 0 || projection.folders.strings[sym].is_empty() {
                         continue;
                     }
@@ -637,34 +540,24 @@ impl FolderTreePanel {
         self.flatten(cx);
     }
 
-    /// Reflatten the visible rows from the roots and the expand sets:
-    /// subfolders first, then each folder's physical files, with CUE subsongs
-    /// nested beneath their backing image. Folders with no
-    /// context songs anywhere below stay out, so a search leaves only the
-    /// branches that still hold matches.
+    /// Reflatten the visible rows: subfolders first, then files, CUE subsongs
+    /// nested under their image. Empty branches stay out.
     fn flatten(&mut self, cx: &mut Context<Self>) {
         struct Walk<'a> {
             expanded: &'a HashSet<String>,
             folder_tracks: &'a HashMap<String, Vec<u32>>,
             dimmed_songs: &'a HashSet<u32>,
-            /// Hide the folders a filter leaves with no match, or keep them
-            /// faint.
             folder_hide: bool,
-            /// Physical-file groups for each expanded folder, built once
-            /// before the recursive walk so it never resolves store keys.
+            /// Built before the walk so it never resolves store keys.
             groups: HashMap<String, Vec<SongGroup>>,
-            /// CUE-image fold state shared with the panel.
             expanded_cues: &'a HashSet<PathBuf>,
             out: Vec<Row>,
         }
         impl Walk<'_> {
             fn folder(&mut self, node: &Node, depth: usize) {
-                // A genuinely empty branch is never a row.
                 if node.total == 0 {
                     return;
                 }
-                // No match anywhere below: Hide drops the whole branch, Dim
-                // keeps it faint.
                 let unmatched = node.matched == 0;
                 if unmatched && self.folder_hide {
                     return;
@@ -676,8 +569,7 @@ impl FolderTreePanel {
                     depth,
                     kind: RowKind::Folder {
                         path: node.path.clone(),
-                        // The badge reads the matches, so it lines up with
-                        // what a search leaves lit.
+                        // The badge counts matches, so it lines up with what a search leaves lit.
                         count: node.matched,
                         has_children: !node.children.is_empty() || tracks.is_some(),
                         expanded: open,
@@ -702,9 +594,7 @@ impl FolderTreePanel {
                 }
             }
         }
-        // The song rows in expanded folders, each with its db id and the
-        // title we fall back to. Gathered under an immutable library borrow
-        // before the path resolution below needs `&mut self`.
+        // Collected first: `key_for` below needs `&mut self`.
         let songs: Vec<(String, u32, i64, SharedString)> = {
             let library = self.state.library.read(cx);
             match library.projection() {
@@ -739,8 +629,8 @@ impl FolderTreePanel {
             .into_iter()
             .map(|(folder, songs)| (folder, group_songs(songs)))
             .collect();
-        // Playback positions include children of collapsed images as well.
-        // Group explicitly by path before ordering, independent of scan order.
+        // Play order follows the grouped order, so `pos` lines up, collapsed
+        // images' children included.
         for (folder, groups) in &groups {
             self.folder_tracks.insert(
                 folder.clone(),
@@ -763,11 +653,9 @@ impl FolderTreePanel {
             walk.folder(root, 0);
         }
         self.visible = walk.out;
-        // The visible order drives drag order, so a reflow invalidates the
-        // cached drag set even when the selection ids are unchanged.
+        // Visible order drives drag order, so a reflow drops the cached drag set.
         self.drag_gen += 1;
-        // The row set moved under the indices; drop the ones now off the end.
-        // The selection keys on ids, so it comes through untouched.
+        // Drop indices now off the end; the selection keys on ids and survives.
         if self.cursor.is_some_and(|ix| ix >= self.visible.len()) {
             self.cursor = None;
         }
@@ -780,9 +668,7 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// Follow the player: on a track change, resolve the playing track to
-    /// its id, the history panel's move. The highlight matches track rows
-    /// by that id.
+    /// On a track change, resolve the playing track to its id for the highlight.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let key = self.state.player.read(cx).now_playing().map(|now| now.key);
         if key == self.playing_key {
@@ -793,17 +679,14 @@ impl FolderTreePanel {
             .playing_key
             .as_ref()
             .and_then(|key| self.state.library.read(cx).id_for_key(key));
-        // Reveal and chase the new track when the follow is on; the move
-        // notifies on its own.
         if self.config.follow_playing {
             self.follow_playing(cx);
         }
         cx.notify();
     }
 
-    /// Open every branch from a root down to `path`, so the folder's row
-    /// shows even if it or an ancestor was collapsed. Takes the same prefix
-    /// descent as [`node_at`], banking each node on the way down.
+    /// Open every branch from a root down to `path`, the same prefix descent
+    /// as [`node_at`].
     fn expand_to(&mut self, path: &str) {
         let mut chain = Vec::new();
         let mut nodes = self.roots.as_slice();
@@ -821,10 +704,8 @@ impl FolderTreePanel {
         self.expanded.extend(chain);
     }
 
-    /// Open the branches down to the playing track's folder, reflatten, and
-    /// hand back its row index. None when nothing is playing or a filter with
-    /// Hide keeps the track off the tree, since there's no row to scroll to
-    /// then. The shared step behind the menu jump and the automatic follow.
+    /// Open the branches to the playing track, reflatten, and return its row.
+    /// None when nothing plays or Hide keeps it off the tree.
     fn reveal_playing(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let id = self.playing?;
         let folder = {
@@ -845,18 +726,14 @@ impl FolderTreePanel {
             .position(|row| matches!(row.kind, RowKind::Track { id: rid, .. } if rid == id))
     }
 
-    /// The menu's jump: reveal the playing track and put the cursor on it,
-    /// which selects it, publishes, and scrolls it into view in one move.
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
         if let Some(ix) = self.reveal_playing(cx) {
             self.set_cursor(ix, cx);
         }
     }
 
-    /// Reveal the playing track and scroll it into view: a glide when smooth
-    /// is on, a jump otherwise. Scroll only, no cursor move, since the
-    /// deliberate jump owns the selection. Runs on a track change while
-    /// follow is on and on the idle resume.
+    /// Scroll to the playing track, gliding when smooth is on. Never moves the
+    /// cursor; that's the menu jump's job.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
         let Some(ix) = self.reveal_playing(cx) else {
             return;
@@ -869,28 +746,19 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// A scroll, drag, or press: restart the idle clock and arm a wake, so
-    /// the tree scrolls back to the playing track once the user steps away.
-    /// A no-op unless the resume is on, so an off panel spends nothing per
-    /// gesture.
+    /// Restart the idle clock that scrolls back to the playing track.
     fn touch_resume(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.resume_idle.touch(cx, Self::resume_to_playing);
         }
     }
 
-    /// What the idle wake does: scroll back to the playing track, so long as
-    /// the resume is still on. The clock only fires once the tree has gone
-    /// untouched a full window, so no extra idle check is needed here.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.follow_playing(cx);
         }
     }
 
-    /// Map the box's events onto the panel: a changed query recounts the
-    /// tree, and a focus or dismiss repaints the tab title row that holds
-    /// the box.
     fn on_search_event(
         &mut self,
         _search: &Entity<SearchBox>,
@@ -913,17 +781,12 @@ impl FolderTreePanel {
         }
     }
 
-    /// Show or hide the panel's own search box, recounting the tree. The
-    /// config is stored in the layout dump, so the tab-panel repaint applies
-    /// it.
     fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
         self.config.search = on;
         self.rebuild_query_view(cx);
         panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
-    /// The menu's follow toggle: flip the follow and catch up right away when
-    /// turning it on, the same move as the settings switch.
     fn toggle_follow_playing(&mut self, cx: &mut Context<Self>) {
         self.config.follow_playing = !self.config.follow_playing;
         if self.config.follow_playing {
@@ -932,7 +795,6 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// Fold a directory or CUE image open or shut.
     fn toggle_expand(&mut self, ix: usize, cx: &mut Context<Self>) {
         match self.visible.get(ix).map(|row| &row.kind) {
             Some(RowKind::Folder { path, .. }) => {
@@ -950,9 +812,8 @@ impl FolderTreePanel {
         self.flatten(cx);
     }
 
-    /// Fold a folder and its whole subtree open or shut in one move, the
-    /// alt-click and branch-menu answer to deep trees: open when the
-    /// folder itself is shut, shut everything below otherwise.
+    /// Fold a folder and its whole subtree: open when the folder is shut, shut
+    /// everything below otherwise.
     fn toggle_expand_deep(&mut self, path: &str, cx: &mut Context<Self>) {
         fn collect(node: &Node, out: &mut Vec<String>) {
             out.push(node.path.clone());
@@ -976,8 +837,7 @@ impl FolderTreePanel {
         self.flatten(cx);
     }
 
-    /// Fold every directory and CUE image shut, leaving only the root rows.
-    /// The follow glide stops too: its target index just moved under it.
+    /// Fold everything shut. The glide stops too, since its target index moved.
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
         if self.expanded.is_empty() && self.expanded_cues.is_empty() {
             return;
@@ -988,10 +848,8 @@ impl FolderTreePanel {
         self.flatten(cx);
     }
 
-    /// Scope the shared folder filter to one folder's subtree, or clear it
-    /// if that folder is the scope already. One pick covers the branch,
-    /// since the filter matches folders by prefix, so this stays cheap at
-    /// any depth.
+    /// Scope the shared folder filter to one folder's subtree, or clear it if
+    /// already scoped. The filter matches by prefix, so one pick covers the branch.
     fn toggle_scope(&mut self, path: String, cx: &mut Context<Self>) {
         self.state.query.clone().update(cx, |query, cx| {
             let mut filter = query.filter().clone();
@@ -1002,13 +860,11 @@ impl FolderTreePanel {
             }
             query.set_filter(filter, cx);
         });
-        // The scope highlight reads the shared filter live; while the panel
-        // follows its own query the shared-query echo returns early, so
-        // repaint here.
+        // While following its own query the panel ignores the shared-query echo,
+        // so repaint here for the scope highlight.
         cx.notify();
     }
 
-    /// Drop the folder scope, the panel menu's clear.
     fn clear_scope(&mut self, cx: &mut Context<Self>) {
         self.state.query.clone().update(cx, |query, cx| {
             let mut filter = query.filter().clone();
@@ -1021,9 +877,8 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// A folder's whole subtree as projection rows, in the tree's order:
-    /// each folder's subfolders first, then its own songs. What Play
-    /// Folder queues and the folder context menu acts on.
+    /// A folder's whole subtree as projection rows in tree order: subfolders
+    /// first, then its own songs.
     fn subtree_rows(&self, path: &str) -> Vec<u32> {
         fn collect(node: &Node, folder_tracks: &HashMap<String, Vec<u32>>, out: &mut Vec<u32>) {
             for child in &node.children {
@@ -1040,9 +895,8 @@ impl FolderTreePanel {
         out
     }
 
-    /// A representative projection row for a folder's cover: its own first
-    /// song, or the first song in its subtree, top-down. None when the
-    /// subtree holds no context songs.
+    /// The row whose cover stands for a folder: its first song, or the first
+    /// in its subtree.
     fn folder_cover_row(&self, path: &str) -> Option<u32> {
         fn first(node: &Node, folder_tracks: &HashMap<String, Vec<u32>>) -> Option<u32> {
             if let Some(&row) = folder_tracks.get(&node.path).and_then(|rows| rows.first()) {
@@ -1055,8 +909,7 @@ impl FolderTreePanel {
         node_at(&self.roots, path).and_then(|node| first(node, &self.folder_tracks))
     }
 
-    /// The cached file path for a track id, resolved once through the store
-    /// and shared by the drag payloads and the cover thumbnails.
+    /// A track id's key, resolved once and shared by drags and covers.
     fn key_for(&mut self, id: i64, cx: &App) -> Option<TrackKey> {
         match self.drag_keys.get(&id) {
             Some(key) => key.clone(),
@@ -1074,10 +927,7 @@ impl FolderTreePanel {
         }
     }
 
-    /// The cover thumbnail for a projection row's file, resolved through the
-    /// path cache and the shared thumbnail service. None when the file has
-    /// no path yet; a pending or missing cover comes back as a placeholder
-    /// tile.
+    /// A row's cover thumbnail. None when the file has no path yet.
     fn cover_for(&mut self, row: u32, cx: &mut Context<Self>) -> Option<crate::thumbs::Thumb> {
         let id = self
             .state
@@ -1089,11 +939,9 @@ impl FolderTreePanel {
         track_columns::cover_thumb(&self.state, Some(key.path.as_path()), true, cx)
     }
 
-    /// Queue a set of projection rows on the shared player with the cursor
-    /// at `start`, capped like every other play surface.
+    /// Queue projection rows with the cursor at `start`, capped at [`QUEUE_CAP`].
     fn play_rows(&mut self, rows: &[u32], start: usize, cx: &mut Context<Self>) {
-        // Keep the clicked row inside the capped window, the history
-        // panel's centering.
+        // Keep the clicked row inside the capped window.
         let lo = start
             .saturating_sub(QUEUE_CAP / 2)
             .min(rows.len().saturating_sub(QUEUE_CAP));
@@ -1118,8 +966,7 @@ impl FolderTreePanel {
             .update(cx, |player, cx| player.play_at(keys, start - lo, cx));
     }
 
-    /// Queue an explicit set of library ids from the front, the multi-select
-    /// menu's play. Order is the caller's (view order for a selection).
+    /// Queue library ids from the front, in the caller's order.
     fn play_ids(&mut self, ids: &[i64], cx: &mut Context<Self>) {
         let capped = &ids[..ids.len().min(QUEUE_CAP)];
         let Ok(keys) = self.state.library.read(cx).keys_for(capped) else {
@@ -1133,14 +980,11 @@ impl FolderTreePanel {
             .update(cx, |player, cx| player.play_at(keys, 0, cx));
     }
 
-    /// Play a folder's subtree from the top; the double click's and the
-    /// context menu's move.
     fn play_folder(&mut self, path: &str, cx: &mut Context<Self>) {
         let rows = self.subtree_rows(path);
         self.play_rows(&rows, 0, cx);
     }
 
-    /// Play a folder's own songs starting at one of them.
     fn play_track(&mut self, folder: &str, pos: usize, cx: &mut Context<Self>) {
         let Some(rows) = self.folder_tracks.get(folder).cloned() else {
             return;
@@ -1152,15 +996,11 @@ impl FolderTreePanel {
     }
 
     /// A song row's drag payload: the whole selection in view order when the
-    /// dragged row is part of a multi-selection, otherwise just this row.
-    /// Keys resolve through the shared cache, the library table's route
-    /// into the play-drag story, and the ids they came from ride along for a
-    /// playlist drop.
+    /// row is part of it, otherwise just this row.
     fn song_drag(&mut self, ix: usize, title: &SharedString, cx: &App) -> Option<PlayDrag> {
         let id = self.song_id_at(ix)?;
-        // A grab inside a multi-selection takes the whole set in visible order,
-        // built once per selection or reflow and shared behind an Arc so it's a
-        // refcount bump per row, not a rebuild. Outside it, just this song.
+        // Built once per selection or reflow and shared behind an Arc, so each row
+        // costs a refcount bump.
         let (keys, ids): (Arc<[TrackKey]>, Arc<[i64]>) = if self.selected.len() > 1
             && self.selected.contains(&id)
         {
@@ -1193,16 +1033,12 @@ impl FolderTreePanel {
         })
     }
 
-    /// A folder row's drag payload: its whole subtree in tree order, capped
-    /// like a folder play, so dropping it on the queue or a playlist lands
-    /// the same set the double click would.
+    /// A folder row's drag payload: its subtree in tree order, capped like a
+    /// folder play.
     ///
-    /// gpui takes a drag value eagerly at render time, once per row per
-    /// frame, and a root folder's subtree runs to tens of thousands of rows.
-    /// So only the hovered row asks for a payload at all, and the answer is
-    /// kept until the pointer moves to another folder or the tree reflows
-    /// under it. The generation is the same one the song rows' drag set
-    /// rides on, bumped by every reflatten.
+    /// gpui takes a drag value eagerly at render, once per row per frame, and a
+    /// root folder's subtree can run to tens of thousands of rows. So only the
+    /// hovered row builds one, cached until the hover moves or the tree reflows.
     fn folder_drag(&mut self, path: &str, title: &SharedString, cx: &App) -> Option<PlayDrag> {
         if self.hover_folder.as_deref() != Some(path) {
             return None;
@@ -1227,10 +1063,7 @@ impl FolderTreePanel {
             .and_then(|cached| cached.drag.clone())
     }
 
-    /// Resolve a folder's projection rows into a payload: ids straight off
-    /// the projection, keys in one batch through the library, both capped
-    /// the way a folder play caps. None when nothing came back, which is
-    /// what keeps a folder of unresolvable files from offering a drag.
+    /// None when no key resolves, so a dead folder offers no drag.
     fn build_folder_drag(&self, rows: &[u32], title: &SharedString, cx: &App) -> Option<PlayDrag> {
         let library = self.state.library.read(cx);
         let projection = library.projection()?;
@@ -1252,14 +1085,11 @@ impl FolderTreePanel {
         })
     }
 
-    /// Browse from the keyboard while the panel is focused: up and down
-    /// move the cursor, left and right fold folders, enter folds a folder
-    /// or plays a song, and plain typing jumps to a row by prefix. The
-    /// filter panel's keys plus the tree's fold pair.
+    /// Keyboard browsing: arrows move and fold, enter folds or plays, and
+    /// plain typing jumps by prefix.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        // Cmd/Ctrl+A selects every shown song, before the modifier guard
-        // below rejects the rest of the chorded keys.
+        // Before the modifier guard, which rejects the rest of the chorded keys.
         if keystroke.modifiers.secondary() && keystroke.key == "a" {
             self.select_all(cx);
             return;
@@ -1267,12 +1097,9 @@ impl FolderTreePanel {
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
-        // Arrow and type-ahead navigation is browsing too, so it restarts
-        // the idle clock the same as a scroll or a click.
         self.touch_resume(cx);
         match keystroke.key.as_str() {
-            // Escape drops a phrase, which is what hands tab back to
-            // panel traversal.
+            // Escape drops a phrase, handing tab back to panel traversal.
             "escape" => {
                 self.clear_type_ahead(cx);
             }
@@ -1302,8 +1129,6 @@ impl FolderTreePanel {
                 else {
                     return;
                 };
-                // Shift folds the whole branch, the arrows' spelling of the
-                // shift-click.
                 if keystroke.modifiers.shift {
                     if *expanded {
                         let path = path.clone();
@@ -1365,22 +1190,19 @@ impl FolderTreePanel {
                 if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
                     return;
                 }
-                // Consumed as type-ahead text: stop it here so it doesn't
-                // also match the workspace's space-bound TogglePlayback
-                // binding, which this panel otherwise inherits unscoped.
+                // Stop it here, or it also fires the workspace's unscoped space-bound
+                // TogglePlayback.
                 cx.stop_propagation();
                 self.type_to(text.clone(), cx);
             }
         }
     }
 
-    /// Grow or restart the type-ahead phrase and jump to its next match
-    /// among the visible rows. A grown phrase re-tests the cursor's own
-    /// row first so refining a match stays put instead of skipping ahead.
+    /// Grow or restart the type-ahead phrase and jump to its next match. A
+    /// grown phrase re-tests the cursor's row so refining a match stays put.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when the window
-        // lapses; a miss below still updated it, so repaint either way.
+        // A miss still updated the badge, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let needle = self.type_ahead.to_lowercase();
@@ -1401,8 +1223,7 @@ impl FolderTreePanel {
         }
     }
 
-    /// Drop the phrase, handing tab back to Root's panel traversal. True
-    /// when there was one, for the escape ladder.
+    /// Drop the phrase. True when there was one, for the escape ladder.
     fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
         if self.type_ahead.is_empty() {
             return false;
@@ -1413,10 +1234,8 @@ impl FolderTreePanel {
         true
     }
 
-    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
-    /// off the cycle-scoped tab bindings. Deliberately leaves the window
-    /// stamp alone: the badge and the letter grouping belong to typing,
-    /// so a run of tabs steps silently rather than reviving them.
+    /// Step to the phrase's next match, Tab's cycle. Leaves the window stamp
+    /// alone, so a run of tabs doesn't revive the badge.
     fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
         if self.type_ahead.is_empty() {
             return;
@@ -1434,8 +1253,7 @@ impl FolderTreePanel {
         }
     }
 
-    /// Step the cursor; the first press with no cursor starts at the edge
-    /// it heads toward.
+    /// Step the cursor. With none, the first press starts at the edge it heads for.
     fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
         let len = self.visible.len();
         if len == 0 {
@@ -1449,11 +1267,8 @@ impl FolderTreePanel {
         self.set_cursor(ix, cx);
     }
 
-    /// Select song rows on click, the library table's rules. A plain click
-    /// takes just this song; shift extends the range from the anchor over
-    /// the song rows between (folders and gaps skipped); cmd or ctrl toggles
-    /// this one. The shared selection follows so the panels that read it turn
-    /// to the set.
+    /// Select song rows on click, the library table's rules: plain takes one,
+    /// shift extends from the anchor over song rows, cmd or ctrl toggles.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
         let Some(id) = self.song_id_at(ix) else {
             return;
@@ -1462,8 +1277,7 @@ impl FolderTreePanel {
             let anchor = self.anchor.unwrap_or(ix);
             let (lo, hi) = (anchor.min(ix), anchor.max(ix));
             let range: Vec<_> = (lo..=hi).filter_map(|i| self.song_id_at(i)).collect();
-            // Ctrl+Shift stacks the range onto the selection so you can
-            // skip a run and grab a second block; plain shift replaces.
+            // Ctrl+Shift stacks the range onto the selection; plain shift replaces.
             if modifiers.secondary() {
                 self.selected.extend(range);
             } else {
@@ -1486,8 +1300,7 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// Select every song currently shown, the Ctrl+A move; the anchor goes
-    /// on the first so a follow-up shift-click narrows from the top.
+    /// Select every shown song, anchored on the first.
     fn select_all(&mut self, cx: &mut Context<Self>) {
         self.selected = self
             .visible
@@ -1506,7 +1319,6 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// The library id of a song row, or None for a folder row.
     fn song_id_at(&self, ix: usize) -> Option<i64> {
         match self.visible.get(ix) {
             Some(Row {
@@ -1517,7 +1329,6 @@ impl FolderTreePanel {
         }
     }
 
-    /// Push the selected songs onto the shared selection, in view order.
     fn publish_selection(&self, cx: &mut Context<Self>) {
         let ids: Vec<i64> = self
             .visible
@@ -1533,7 +1344,6 @@ impl FolderTreePanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// Put the cursor on a row and scroll it into view.
     fn set_cursor(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.visible.len() {
             return;
@@ -1543,10 +1353,6 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// The visible slice of the tree's rows. Folder rows fold on click and
-    /// play on double click, with the subtree count on the right and a
-    /// funnel marking the scoped one; song rows select on click, play on
-    /// double click, and drag onto anything that takes a play drag.
     fn list_rows(
         &mut self,
         range: std::ops::Range<usize>,
@@ -1575,7 +1381,6 @@ impl FolderTreePanel {
                 RowKind::Track { id, .. } => Some(*id),
                 _ => None,
             };
-            // A selected song or the cursor row gets the accent wash.
             let lit =
                 cursor == Some(ix) || row_song_id.is_some_and(|id| self.selected.contains(&id));
             let base = div()
@@ -1589,8 +1394,6 @@ impl FolderTreePanel {
                 .items_center()
                 .gap(tokens::SPACE_XS)
                 .cursor_pointer()
-                // Outside the active filter, in Dim mode: faint but still
-                // there to browse, click, and play.
                 .when(dimmed, |d| d.opacity(DIM))
                 .when(lit, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
                 .hover(|d| d.bg(palette::bg_control_hover()))
@@ -1599,8 +1402,7 @@ impl FolderTreePanel {
                     cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.menu_row = Some(ix);
                         this.cursor = Some(ix);
-                        // A right click on a song outside the selection
-                        // reselects just it, so the menu acts on what's lit.
+                        // Reselect so the menu acts on what's lit.
                         if let Some(id) = row_song_id
                             && !this.selected.contains(&id)
                         {
@@ -1618,9 +1420,7 @@ impl FolderTreePanel {
                             window.focus(&this.focus);
                             this.type_ahead.clear();
                             this.cursor = Some(ix);
-                            // The folder row's split: a double click plays the
-                            // image whole, so its second press must not undo
-                            // the toggle the first one made.
+                            // The second press of a double click plays instead of undoing the fold.
                             if event.click_count > 1 {
                                 this.play_ids(&image_ids, cx);
                             } else {
@@ -1668,8 +1468,6 @@ impl FolderTreePanel {
                 } => {
                     let scoped = scope.iter().any(|p| p == path);
                     let path = path.clone();
-                    // The album tile in place of the folder icon: the
-                    // folder's first song stands in for its art.
                     let cover = self
                         .config
                         .cover
@@ -1691,34 +1489,24 @@ impl FolderTreePanel {
                         }),
                     )
                     .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                        // The fold waits for the click instead of the press,
-                        // so a drag off a folder row carries the folder
-                        // rather than flipping it open on the way out. gpui
-                        // drops the click once a drag starts, the same split
-                        // the song rows lean on for their collapse. The
-                        // second press of a double click plays, and its
-                        // click lands here, so it has to pass through.
+                        // Fold on click, not press, so a drag off a folder row carries the folder
+                        // instead of opening it; gpui drops the click once a drag starts. A double
+                        // click's second click lands here too and has to pass through.
                         if event.click_count() > 1 {
                             return;
                         }
                         let mods = event.modifiers();
                         if mods.alt || mods.shift {
-                            // Shift or Alt folds the whole branch, the file
-                            // manager's deep toggle. Both spellings because
-                            // Linux WMs commonly grab Alt+click for window
-                            // drags before the app sees it.
+                            // Shift or Alt folds the whole branch. Both, because Linux WMs often
+                            // grab Alt+click for window drags.
                             this.toggle_expand_deep(&fold_path, cx);
                         } else {
                             this.toggle_expand(ix, cx);
                         }
                     }))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        // The hover is what arms the drag, so it stays armed
-                        // after the pointer leaves: gpui calls hover off the
-                        // moment a button goes down, and dropping the payload
-                        // there would pull the drag out from under the press
-                        // that was starting it. The next folder the pointer
-                        // reaches takes it over.
+                        // Stays armed after the pointer leaves: gpui calls hover off as a button
+                        // goes down, and dropping the payload there kills the starting drag.
                         if !hovered || this.hover_folder.as_deref() == Some(hover_path.as_str()) {
                             return;
                         }
@@ -1822,20 +1610,18 @@ impl FolderTreePanel {
                             if event.click_count > 1 {
                                 this.play_track(&folder.clone(), pos, cx);
                             } else if event.modifiers.shift || event.modifiers.secondary() {
-                                // Shift and cmd/ctrl resolve on press.
                                 this.select(ix, event.modifiers, cx);
                             } else if !this.selected.contains(&id) {
-                                // A plain press on an unselected row picks it
-                                // now, so a drag from here includes it. A press
-                                // on a lit row keeps the set for a whole-set
-                                // drag; the collapse waits for the click.
+                                // Pick an unselected row on press so a drag includes
+                                // it. A lit row keeps the set for a whole-set drag;
+                                // the collapse waits for the click.
                                 this.select(ix, event.modifiers, cx);
                             }
                         }),
                     )
                     .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                        // A plain click that never became a drag collapses a
-                        // multi-selection down to the clicked row.
+                        // A plain click that never became a drag collapses the
+                        // selection to this row.
                         let mods = event.modifiers();
                         if event.click_count() == 1
                             && !mods.shift
@@ -1854,8 +1640,7 @@ impl FolderTreePanel {
                             })
                         })
                     })
-                    // The chevron column stays empty so songs align with
-                    // their folder's children.
+                    // Empty chevron column so songs align with sibling folders.
                     .child(div().flex_none().w(px(16.)))
                     .child(match cover {
                         Some(thumb) => {
@@ -1960,8 +1745,6 @@ impl PanelSettings for FolderTreePanel {
                     rox_i18n::t!("folder-tree-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
-                        // Catch up right away instead of waiting for the next
-                        // track change.
                         if on {
                             this.follow_playing(cx);
                         }
@@ -2038,8 +1821,6 @@ impl FolderTreePanel {
             return;
         }
         self.config.folders = effect;
-        // Hide drops branches, Dim keeps them faint, so the row set changes:
-        // recount rather than a plain repaint.
         self.recount(cx);
     }
 
@@ -2123,7 +1904,6 @@ impl Panel for FolderTreePanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The search box shares the title bar row, the playlists panel's spot.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
@@ -2147,14 +1927,11 @@ impl Panel for FolderTreePanel {
         false
     }
 
-    /// The panel body hands its right-click to the rows, so the track and
-    /// folder menus are the only ones a click over the list opens.
+    /// Hands the body's right-click to the rows' menus.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -2171,8 +1948,7 @@ impl Panel for FolderTreePanel {
 
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
-        // The live expand set rides along in the config, sorted so the
-        // saved layout doesn't churn with the set's iteration order.
+        // Sorted so the saved layout doesn't churn with set iteration order.
         let mut config = self.config.clone();
         config.expanded = self.expanded.iter().cloned().collect();
         config.expanded.sort_unstable();
@@ -2214,8 +1990,7 @@ impl Panel for FolderTreePanel {
             .values(FilterField::Folder)
             .is_empty();
         let weak = cx.entity().downgrade();
-        // Checks on the right so the follow toggle keeps its icon; the
-        // default left side would swap it out for the checkmark.
+        // Checks on the right, so the follow toggle keeps its icon.
         let menu = menu.check_side(Side::Right).item(
             PopupMenuItem::new(rox_i18n::t!("panel-jump-to-playing"))
                 .icon(Icon::default().path(icons::DISC))
@@ -2255,17 +2030,13 @@ impl Panel for FolderTreePanel {
                     this.update(cx, |this, cx| this.clear_scope(cx));
                 }),
         );
-        // The cover-art knob as a flyout, so the toggle is on the menu the
-        // same way it's on the settings page. Live checks through
-        // follow_panel + check_row, not plain .checked(), so the tick moves
-        // while the flyout stays open.
+        // Live checks through follow_panel + check_row, not .checked(), so the
+        // tick moves while the flyout stays open.
         let menu = menu.separator().label(rox_i18n::t!("panel-menu-display"));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
-            // The same four labels the settings row uses, so the two
-            // spellings of one knob can't drift apart.
             for (label, cover) in [
                 (rox_i18n::t!("shader-pick-none"), CoverArt::None),
                 (rox_i18n::t!("folder-tree-cover-folders"), CoverArt::Folders),
@@ -2286,8 +2057,6 @@ impl Panel for FolderTreePanel {
             rox_i18n::t!("folder-tree-cover-art"),
             submenu,
         ));
-        // The Dim/Hide knobs, the same flyout shape, so the behavior toggles
-        // are on the menu too: one for folders, one for songs.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -2332,7 +2101,6 @@ impl Panel for FolderTreePanel {
             rox_i18n::t!("folder-tree-nonmatch-songs"),
             submenu,
         ));
-        // Follow the shared search query, or filter by this panel's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
@@ -2377,14 +2145,10 @@ impl Render for FolderTreePanel {
 
 impl FolderTreePanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset (a source toggle or a shared-query change)
-        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
-        // The follow glide eases toward the playing row, stepped here in
-        // render one frame at a time until it arrives, the library's idiom.
         let dt = self.glide_tick.elapsed().as_secs_f32().min(0.05);
         self.glide_tick = Instant::now();
         if let Some(ix) = self.glide_to {
@@ -2403,36 +2167,25 @@ impl FolderTreePanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Bindings win over key listeners and an action stops
-            // propagation by default, so a key the workspace binds never
-            // reaches on_panel_key unless a context scopes the binding out.
-            // PanelNav is always on and takes back left and right, which
-            // fold a branch here, from seek; the type-ahead pair joins it
-            // while a phrase is up, to take back space (only while the
-            // phrase is still absorbing keystrokes) and tab (for as long as
-            // there's a phrase to cycle).
+            // Bindings beat key listeners, so a workspace-bound key never reaches
+            // on_panel_key unless a context scopes it out. PanelNav takes back left and
+            // right for folding; the type-ahead contexts take back space and tab while a
+            // phrase is up.
             .key_context(panel::panel_nav_context(
                 &self.type_ahead,
                 self.type_ahead_at,
             ))
-            // A press anywhere in the panel ends the phrase: the cursor
-            // has moved by hand, so the cycle it was stepping is stale,
-            // and tab belongs back with panel traversal. Capture phase,
-            // so rows and tiles that stop the press can't hide it.
+            // Any press ends the phrase, since the cursor moved by hand. Capture
+            // phase, so rows that stop the press can't hide it.
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 this.clear_type_ahead(cx);
             }))
-            // Tab cycles the live phrase's matches, off the bindings the
-            // TypeAhead context above scopes in; with no phrase up, tab
-            // stays Root's focus traversal.
             .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
             .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_panel_key(event, cx)),
             )
-            // Any scroll or press over the tree counts as browsing; the stamp
-            // only restarts the idle clock, leaving the gesture to the row
-            // handlers underneath, so nothing acts twice.
+            // Any scroll or press counts as browsing for the idle clock.
             .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                 this.touch_resume(cx);
             }))
@@ -2441,7 +2194,6 @@ impl FolderTreePanel {
                 cx.listener(|this, _, _, cx| this.touch_resume(cx)),
             );
         if self.visible.is_empty() {
-            // A search that hit nothing reads differently from an empty tree.
             let searching =
                 !self.effective_query(cx).is_empty() || !self.effective_filter(cx).is_empty();
             let message = if searching {
@@ -2487,21 +2239,17 @@ impl FolderTreePanel {
                 &self.type_ahead,
                 self.type_ahead_at,
             ))
-            // A press anywhere in the body takes keyboard focus, so
-            // type-ahead works without first clicking a row. It runs in
-            // the capture phase, before any row's bubble handler records
-            // itself, so a right press off the rows leaves no target and the
-            // menu below falls back to the panel's own.
+            // Any press takes focus so type-ahead works without clicking a row.
+            // Capture phase runs before the rows record a menu target, so a right press
+            // off the rows falls back to the panel menu.
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, _| {
                 window.focus(&this.focus);
                 if event.button == MouseButton::Right {
                     this.menu_row = None;
                 }
             }));
-        // The row context menu: the track actions every song surface
-        // shares (a folder row standing for its whole subtree), plus the
-        // folder-scope filter, then the panel menu appended so a click
-        // over the list never dead-ends at Play.
+        // Row menu: the shared track actions plus the folder scope, then the panel
+        // menu so a click over the list never dead-ends.
         let weak = cx.entity().downgrade();
         root.child(content.context_menu(move |menu, window, cx| {
             let Some(this) = weak.upgrade() else {
@@ -2597,9 +2345,6 @@ impl FolderTreePanel {
                             this.update(cx, |this, cx| this.toggle_scope(scope_path.clone(), cx));
                         }),
                     );
-                    // The branch fold, the menu's spelling of the
-                    // alt-click: one entry per state, so the label says
-                    // what the click will do.
                     let open = this.read(cx).expanded.contains(&path);
                     let deep_panel = weak.clone();
                     menu.item(
@@ -2622,9 +2367,7 @@ impl FolderTreePanel {
                     )
                 }
                 Target::Track { id, folder, pos } => {
-                    // A right click inside a multi-selection acts on the whole
-                    // set (the right-press already reselected a lone row), so
-                    // the menu queues exactly what's lit.
+                    // Inside a multi-selection the menu acts on the whole set.
                     let selection: Vec<i64> = {
                         let panel = this.read(cx);
                         if panel.selected.len() > 1 && panel.selected.contains(&id) {

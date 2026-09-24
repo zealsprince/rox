@@ -1,100 +1,61 @@
-//! The geometry behind the wall panels: the album grid, the genre wall, and
-//! the artist wall all pack square tiles into lanes the same way, so the
-//! packing math is here once and each panel just hands over its config.
-//!
-//! It computes in gpui [`Pixels`] against the panel's measured cross
-//! extent, so it belongs in the widget layer rather than down in rox-viz.
+//! The lane-packing geometry shared by the album grid, the genre wall, and
+//! the artist wall. Pure numbers, testable without a window.
 
 use gpui::{Along, Axis, Pixels, Point, px};
 
-/// The dim knob's ceiling, in percent of fully hidden: 100 fades the other
-/// tiles out entirely.
 pub const TILE_DIM_MAX: f32 = 100.;
 
-/// The caption block's height under a tile while labels are on, in px: two
-/// truncated text lines plus a little top gap. Fixed so the tile's total
-/// extent stays predictable for the virtual list's item sizes.
+/// Two truncated lines plus a gap, fixed so the virtual list's item sizes
+/// stay predictable.
 pub const TILE_LABEL_H: f32 = 40.;
 
-/// How many lines page up and page down cover. A wall shows a handful of
-/// lines at a usable tile size, so a page is a small number of them rather
-/// than the list panels' 25 rows.
 const PAGE_LINES: usize = 4;
 
-/// How far the dimmed tiles fade by default, in percent of fully hidden.
 pub fn default_dim() -> f32 {
     60.
 }
 
-/// The default space between tiles, in px.
 pub fn default_gap() -> f32 {
     8.
 }
 
-/// One wall's packing and focus state for the frame being laid out: the
-/// tile knobs off the panel's config, the measured cross extent, and which
-/// tile the pointer and the player are on.
-///
-/// A panel builds one of these per call. Every field is a plain number, so
-/// it's cheap to rebuild and the math stays testable without a window.
 #[derive(Clone, Copy, Debug)]
 pub struct WallLayout {
-    /// The panel's measured extent across the packing axis: the width of a
-    /// vertical wall, the height of a horizontal one. Zero before the first
-    /// paint has measured anything.
+    /// Extent across the packing axis; zero before the first paint.
     pub cross: Pixels,
-    /// The preferred tile edge in px, what the size knob sets.
     pub tile: f32,
-    /// The space between tiles, in px.
     pub gap: f32,
-    /// Whether captions show under every tile.
     pub labels: bool,
-    /// Scroll the wall vertically, lines filling the width; off scrolls it
-    /// horizontally, lines filling the height.
     pub vertical: bool,
-    /// How far the receded tiles fade, in percent of fully hidden.
+    /// Percent of fully hidden.
     pub dim: f32,
-    /// Fade the tiles the focus effects push back.
     pub dim_playing: bool,
-    /// Keep the focus effects on all the time, not only while a track
-    /// plays.
+    /// Keep the focus effects on while nothing plays.
     pub dim_always: bool,
-    /// Drain the receded tiles to grayscale.
     pub desaturate_playing: bool,
-    /// The tile under the pointer, exempt from the focus effects.
     pub hovered: Option<usize>,
-    /// The tile the player is on, also exempt.
     pub playing_ix: Option<usize>,
-    /// Whether audio is moving.
     pub playing: bool,
-    /// How many lanes the wall falls back to before its first paint has
-    /// measured a cross extent.
+    /// Lanes before the first paint has measured `cross`.
     pub fallback_lanes: usize,
-    /// Explicit caption height in px when labels are on; None falls back to
-    /// [`TILE_LABEL_H`].
     pub label_h: Option<f32>,
 }
 
 impl WallLayout {
-    /// How many tiles share a line at the current cross extent: enough that
-    /// the configured edge covers it. The ceil keeps the actual edge at or
-    /// under the configured one, so nothing upscales past the stored
-    /// thumbnail.
+    /// Ceil so the actual edge never exceeds the configured one and nothing
+    /// upscales past the stored thumbnail.
     pub fn lanes(&self) -> usize {
         let cross = f32::from(self.cross);
         if cross <= 0. {
             return self.fallback_lanes;
         }
         let gap = self.gap;
-        // The caption is below the tile, so while the wall scrolls
-        // horizontally each tile's footprint along the height grows by it;
-        // vertical packing is unchanged, the caption extends the line down
-        // into the scroll instead of eating a lane.
+        // A horizontal wall stacks captions across its lanes; a vertical one
+        // sends them into the scroll.
         let footprint = self.tile + self.cross_label();
         (((cross + gap) / (footprint + gap)).ceil() as usize).max(1)
     }
 
-    /// The caption's height when labels are on, else zero.
     pub fn label_height(&self) -> f32 {
         if self.labels {
             self.label_h.unwrap_or(TILE_LABEL_H)
@@ -103,9 +64,6 @@ impl WallLayout {
         }
     }
 
-    /// The caption's share of the cross extent: a horizontal wall has to
-    /// stack captions along the packing axis, a vertical wall sends them
-    /// into the scroll.
     pub fn cross_label(&self) -> f32 {
         if self.vertical {
             0.
@@ -114,7 +72,6 @@ impl WallLayout {
         }
     }
 
-    /// Which way the wall scrolls.
     pub fn axis(&self) -> Axis {
         if self.vertical {
             Axis::Vertical
@@ -123,23 +80,16 @@ impl WallLayout {
         }
     }
 
-    /// The leading tile currently in view, for the saved layout: the list's
-    /// first line spread back over the lanes. A restore still pending (the
-    /// panel never painted) reports its own target, so an unshown panel
-    /// round-trips its position instead of dropping to zero.
-    ///
-    /// `offset` is the scroll handle's raw offset, which runs negative as
-    /// the list scrolls.
+    /// The leading tile in view, for the saved layout. A restore still pending
+    /// reports its own target so an unshown panel keeps its position. `offset`
+    /// runs negative as the list scrolls.
     pub fn first_cell(&self, restore: Option<usize>, offset: Point<Pixels>, cells: usize) -> usize {
         if let Some(cell) = restore {
             return cell;
         }
         let lanes = self.lanes();
-        // The line pitch is the tile edge plus the gap, plus the caption on
-        // a vertical wall where it trails each tile into the scroll. A
-        // horizontal wall stacks the caption on the cross axis, so it stays
-        // out of the scroll pitch. This has to match the item sizes the
-        // virtual list lays out, or the restored cell drifts as you scroll.
+        // Must match the item sizes the virtual list lays out, or a restored
+        // cell drifts. Only a vertical wall's captions add to the pitch.
         let scroll_label = if self.vertical {
             self.label_height()
         } else {
@@ -154,9 +104,6 @@ impl WallLayout {
         (line * lanes).min(cells.saturating_sub(1))
     }
 
-    /// A tile's edge: the cross extent split evenly over the lanes with the
-    /// gaps taken out, so the last lane ends at the panel edge instead of
-    /// bleeding past it.
     pub fn tile_side(&self) -> Pixels {
         let cross = f32::from(self.cross);
         if cross <= 0. {
@@ -166,10 +113,8 @@ impl WallLayout {
         px((((cross - self.gap * (lanes - 1.)) / lanes) - self.cross_label()).max(1.))
     }
 
-    /// Whether tile `ix` is in the receded set: the tiles the focus
-    /// effects push back. The hovered tile and the playing one are always
-    /// exempt. Always mode pushes back every other tile; otherwise only the
-    /// rest while audio moves.
+    /// The hovered and playing tiles are always exempt; the rest recede while
+    /// audio moves, or always in always mode.
     pub fn receded(&self, ix: usize) -> bool {
         if self.hovered == Some(ix) || self.playing_ix == Some(ix) {
             return false;
@@ -177,8 +122,6 @@ impl WallLayout {
         self.dim_always || self.playing
     }
 
-    /// A tile's resting opacity under the dim mode: the configured floor for
-    /// a receded tile, full otherwise.
     pub fn dim_target(&self, ix: usize) -> f32 {
         if self.dim_playing && self.receded(ix) {
             1.0 - self.dim / TILE_DIM_MAX
@@ -187,23 +130,16 @@ impl WallLayout {
         }
     }
 
-    /// Whether tile `ix` draws drained of color.
     pub fn desaturated(&self, ix: usize) -> bool {
         self.desaturate_playing && self.receded(ix)
     }
 
-    /// How far page up and page down move the cursor, in tiles: a fixed
-    /// number of lines, widened by however many lanes the wall is packing
-    /// at its current size.
     pub fn page_step(&self) -> isize {
         (PAGE_LINES * self.lanes()) as isize
     }
 
-    /// How far an arrow key moves the cursor, or `None` for a key that
-    /// isn't a step on this wall. One tile along the line the arrow points
-    /// down, a whole line across it, and which arrow is which flips with
-    /// the wall's orientation: a vertical wall packs its lines left to
-    /// right, a horizontal one top to bottom.
+    /// One tile along a line, a whole line across. Which arrows are which
+    /// flips with the wall's orientation.
     pub fn step(&self, key: &str) -> Option<isize> {
         let line = self.lanes() as isize;
         let (along, across) = if self.vertical {
@@ -254,8 +190,6 @@ mod tests {
         assert_eq!(layout.step("enter"), None);
     }
 
-    /// A horizontal wall packs its lines top to bottom, so the pair swaps:
-    /// up and down walk one tile, left and right jump a column.
     #[test]
     fn a_horizontal_wall_swaps_the_arrow_pair() {
         let layout = WallLayout {
@@ -283,17 +217,11 @@ mod tests {
         };
         let lanes = layout.lanes();
         assert_eq!(lanes, 4);
-        // The gaps come out of the cross extent, so the last lane ends at
-        // the panel edge.
         assert!(layout.tile_side() <= px(160.));
         let side = f32::from(layout.tile_side());
         assert!((side * lanes as f32 + 8. * (lanes as f32 - 1.) - 600.).abs() < 0.01);
     }
 
-    /// A caption only takes from the cross extent on a horizontal wall,
-    /// where it stacks along the packing axis: the footprint grows, so
-    /// fewer lanes fit. A vertical wall sends the caption into the scroll
-    /// and packs exactly as it would bare.
     #[test]
     fn captions_take_a_lane_only_on_a_horizontal_wall() {
         let bare = WallLayout {
@@ -337,7 +265,6 @@ mod tests {
             y: px(-pitch * 3.),
         };
         assert_eq!(layout.first_cell(None, offset, 100), layout.lanes() * 3);
-        // Past the end it clamps onto the last cell.
         let far = Point {
             x: px(0.),
             y: px(-pitch * 900.),

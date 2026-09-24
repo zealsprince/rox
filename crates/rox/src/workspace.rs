@@ -135,28 +135,48 @@ fn typed_workspace(workspace: &gpui::AnyWeakEntity) -> Option<Entity<Workspace>>
     workspace.upgrade()?.downcast::<Workspace>().ok()
 }
 
-/// Renegotiate every workspace window's decorations to the live flag.
-/// Only the main windows follow it; child windows (settings, popouts,
-/// editors) keep the OS chrome. Called from the Window menu toggle and
-/// the settings window's Appearance page.
+/// Renegotiate every window's decorations to the live flags. The main
+/// windows follow OS Decorations; child windows (settings, popouts,
+/// editors) follow it only with Child Windows on, and keep the OS chrome
+/// otherwise. Called from the Window menu toggle and the settings window's
+/// Appearance page.
 pub(crate) fn apply_decorations(cx: &mut App) {
     // Deferred out of the caller's update: the menu toggle runs inside the
     // very window this renegotiates, and a window can't be updated while it's
     // already on the update stack. The re-entrant update errs and the window
     // silently keeps its old chrome until restart.
     cx.defer(|cx| {
-        let mode = settings::window_decorations();
-        let open: Vec<AnyWindowHandle> = cx
-            .default_global::<WorkspaceWindows>()
-            .open
-            .iter()
-            .map(|w| w.handle)
-            .collect();
-        for handle in open {
+        let workspaces = workspace_handles(cx);
+
+        // Every window rox opens is either a workspace or a child window,
+        // so whatever isn't in the registry takes the child mode.
+        let main = settings::window_decorations();
+        let child = settings::child_window_decorations();
+        for handle in cx.windows() {
+            if workspaces.contains(&handle) {
+                handle
+                    .update(cx, |_, window, _| window.request_decorations(main))
+                    .ok();
+                continue;
+            }
+
+            // A child window only hears about a real change. The OS
+            // Decorations flip alone leaves them where they are while
+            // Child Windows is off, and asking again isn't free on every
+            // backend (Wayland re-commits the surface).
             handle
-                .update(cx, |_, window, _| window.request_decorations(mode))
+                .update(cx, |_, window, _| {
+                    let bare = matches!(
+                        window.window_decorations(),
+                        gpui::Decorations::Client { .. }
+                    );
+                    if bare != matches!(child, gpui::WindowDecorations::Client) {
+                        window.request_decorations(child);
+                    }
+                })
                 .ok();
         }
+
         // Every window repaints, not just the renegotiated ones: the settings
         // window's Appearance toggle reads the flag live and would show stale
         // otherwise.
@@ -164,6 +184,16 @@ pub(crate) fn apply_decorations(cx: &mut App) {
             window.update(cx, |_, window, _| window.refresh()).ok();
         }
     });
+}
+
+/// The registered workspace windows' handles, for sweeps that treat them
+/// apart from the child windows.
+fn workspace_handles(cx: &mut App) -> Vec<AnyWindowHandle> {
+    cx.default_global::<WorkspaceWindows>()
+        .open
+        .iter()
+        .map(|w| w.handle)
+        .collect()
 }
 
 /// Repaint every open window, deferred. The caller is usually mid-update
@@ -178,20 +208,15 @@ pub(crate) fn refresh_all_windows(cx: &mut App) {
     });
 }
 
-/// Push the live resize-border flag at every workspace window, the
-/// decorations apply's twin. A no-op off Windows, where gpui leaves the
-/// call unimplemented. Deferred for the same reason: the Window menu runs
-/// inside one of the windows this loops over.
+/// Push the live resize-border flag at every open window, the decorations
+/// apply's twin. A child window with the OS frame up ignores it, so there's
+/// no need to pick out the bare ones. A no-op off Windows, where gpui
+/// leaves the call unimplemented. Deferred for the same reason: the Window
+/// menu runs inside one of the windows this loops over.
 pub(crate) fn apply_resize_border(cx: &mut App) {
     cx.defer(|cx| {
         let on = settings::resize_border();
-        let open: Vec<AnyWindowHandle> = cx
-            .default_global::<WorkspaceWindows>()
-            .open
-            .iter()
-            .map(|w| w.handle)
-            .collect();
-        for handle in open {
+        for handle in cx.windows() {
             handle
                 .update(cx, |_, window, _| window.set_resize_border(on))
                 .ok();
@@ -6573,6 +6598,7 @@ impl Render for Workspace {
                 settings::window_decorations(),
                 body,
                 window,
+                Some(self.state.player.entity_id()),
                 close,
             )
         })
@@ -6812,7 +6838,7 @@ mod shader_feed_tests {
     use rox_viz::AudioFeed;
     use rox_viz::signal::Source;
 
-    /// A hub with one band signal, ticked once so the engine has a slot
+    /// A hub with one band signal, read once so the engine has a slot
     /// to read. Silent: what's being checked here is which path fills the
     /// slots, and a route reads its Quiet end at silence, which makes the
     /// two paths tell themselves apart with no audio at all.
@@ -6825,7 +6851,11 @@ mod shader_feed_tests {
             },
             0.0,
         );
-        hub.tick();
+        // The first read steps the engine, which is what gives the band its slot.
+        assert!(
+            hub.value(id).is_some(),
+            "the first read should give the band a slot"
+        );
         (hub, id)
     }
 

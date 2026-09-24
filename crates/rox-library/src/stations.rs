@@ -1,23 +1,11 @@
-//! Web radio stations, which are ordinary track rows and deliberately
-//! nothing more. A station is one row under `source = 'radio'` with the
-//! stream URL in `path` and in `remote_url`, and `remote_live` set, so the
-//! queue, the playlists, the play history, search and every existing panel
-//! carry it without a line of new code. The alternative was a side table
-//! and a second play path, and that buys a schema at the cost of
-//! reimplementing all of the above.
+//! Web radio stations as ordinary track rows under `source = 'radio'`, stream
+//! URL in both `path` and `remote_url`, `remote_live` set. That gets the
+//! queue, playlists, history and search for free; a side table would have
+//! meant a second play path.
 //!
-//! What a station doesn't get falls out of what it is. There's no duration,
-//! because the stream has no end, so the row lands at `duration_ms = 0` and
-//! the seek strip prints `-:--`. There's no gapless boundary, because
-//! nothing follows a stream that never finishes. There's no ReplayGain
-//! figure, because nothing measured it and nothing can. The codec and
-//! bitrate columns start empty too: those come off the response headers at
-//! open time, not off a catalog, so they stay blank until the station has
-//! been played once and [`fill_empty`] writes back what it said.
-//!
-//! The URL is the identity. Adding the same stream twice updates the name
-//! rather than growing a second row, which is what
-//! `ON CONFLICT (source, path, sub)` already does for every source.
+//! No duration, gapless boundary or ReplayGain. Codec and bitrate come off
+//! the response headers, so they stay empty until [`fill_empty`] writes
+//! them. The URL is the identity.
 
 use std::collections::HashSet;
 
@@ -28,14 +16,9 @@ use crate::locator::{Locator, Remote};
 use crate::playlist_file::Format;
 use crate::store;
 
-/// The source string every station row is filed under. One source for all
-/// of them: unlike a Subsonic server, there's no account behind a station
-/// and nothing to tell two of them apart by.
+/// One source for every station: there's no account to tell them apart.
 pub const SOURCE: &str = "radio";
 
-/// One station as the user entered it. The URL is the identity; the name
-/// is what the library shows, and the genre is the one tag a station
-/// directory ever really carries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Station {
     pub url: String,
@@ -43,10 +26,7 @@ pub struct Station {
     pub genre: String,
 }
 
-/// What a stream says about itself past its name: the genre it announces,
-/// the codec its content type implies, and the bitrate it states. These
-/// are the three columns a station row cannot have until something has
-/// connected to it, which is why the header says they stay empty.
+/// The columns [`fill_empty`] writes once something has connected.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Heard {
     pub genre: String,
@@ -54,23 +34,16 @@ pub struct Heard {
     pub bitrate_kbps: u32,
 }
 
-/// Add or update stations. The URL goes in twice, as the row's path (its
-/// identity) and as `remote_url` (where the bytes come from), because a
-/// remote row's path is whatever its source calls the track and for radio
-/// those are the same string.
-///
-/// A station with no name takes the URL's last segment, the same fallback
-/// [`Locator::label`] gives every other untagged remote track, so nothing
-/// ever lands in the library as a blank row.
+/// Add or update stations. A nameless one takes the URL's last segment, via
+/// [`Locator::label`].
 pub fn put(conn: &mut Connection, stations: &[Station]) -> rusqlite::Result<()> {
     let rows: Vec<TrackRow> = stations.iter().map(row_for).collect();
 
     store::upsert_source_rows(conn, SOURCE, &rows)
 }
 
-/// Drop one station. Through [`store::prune_source`] rather than a delete
-/// of its own: that call is already scoped to the source, so a URL that
-/// happens to read like a path on disk can't reach a local row from here.
+/// Through [`store::prune_source`], which is scoped to the source, so a URL
+/// that reads like a local path can't reach a local row.
 pub fn remove(conn: &mut Connection, url: &str) -> rusqlite::Result<()> {
     let keep: HashSet<String> = all(conn)?
         .into_iter()
@@ -82,9 +55,7 @@ pub fn remove(conn: &mut Connection, url: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Every station in the library, by name so the list doesn't reshuffle
-/// between reads. The URL breaks ties, since two stations are allowed to
-/// share a name and only the URL is unique.
+/// By name, URL breaking ties.
 pub fn all(conn: &Connection) -> rusqlite::Result<Vec<Station>> {
     let mut stmt = conn.prepare(
         "SELECT path, title, genre FROM tracks
@@ -102,10 +73,7 @@ pub fn all(conn: &Connection) -> rusqlite::Result<Vec<Station>> {
     rows.collect()
 }
 
-/// Every station with what's known about its stream, in the same order
-/// [`all`] gives. Two reads rather than one because most callers want the
-/// list and nothing else: only the panel that draws a row's second line
-/// cares which codec came back off the wire.
+/// [`all`] plus what's known about each stream.
 pub fn detailed(conn: &Connection) -> rusqlite::Result<Vec<(Station, Heard)>> {
     let mut stmt = conn.prepare(
         "SELECT path, title, genre, codec, bitrate FROM tracks
@@ -130,16 +98,8 @@ pub fn detailed(conn: &Connection) -> rusqlite::Result<Vec<(Station, Heard)>> {
     rows.collect()
 }
 
-/// Write what the stream said into the columns that are still empty, and
-/// leave every column that isn't. True when something actually landed, so
-/// the caller knows whether the projection needs rebuilding.
-///
-/// The precedence is the whole point of this being an update rather than a
-/// [`put`]. A name typed into the add box, a genre a directory filled in,
-/// a codec corrected by hand: all of those are somebody's decision, and a
-/// station that announces "Various" every time it connects would overwrite
-/// them on every play. The stream only gets to answer the questions the
-/// row has no answer to.
+/// Fill only the empty columns: a typed name or chosen genre must survive a
+/// station announcing "Various" on every connect. True when something landed.
 pub fn fill_empty(conn: &Connection, url: &str, heard: &Heard) -> rusqlite::Result<bool> {
     let changed = conn.execute(
         "UPDATE tracks
@@ -156,37 +116,21 @@ pub fn fill_empty(conn: &Connection, url: &str, heard: &Heard) -> rusqlite::Resu
     Ok(changed > 0)
 }
 
-/// Why a URL can't be a station. One reason per thing a person actually
-/// pastes into the add box, because "that isn't a stream URL" for all
-/// three tells someone holding a perfectly good `.pls` nothing about what
-/// to do with it.
+/// One reason per thing a person pastes, so the add box can say what to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// Not http or https. A local path, a `file://`, an `mms://`: rox
-    /// opens stations over HTTP and nothing else.
+    /// Stations open over HTTP and nothing else.
     Scheme,
 
-    /// An `.m3u8`, which is HLS. The URL is a manifest of segment files
-    /// that a client is meant to fetch in turn, and the transport reads
-    /// one byte stream from one socket, so this would import as a row
-    /// that connects and then plays a few kilobytes of text. The station
-    /// directory drops HLS hits for the same reason.
+    /// HLS: a manifest of segments, while the transport reads one byte stream.
     Hls,
 
-    /// An `.m3u` or a `.pls`, which is a list of stations rather than one
-    /// of them. There's a reader for exactly this file two functions
-    /// down, so the answer is Import, not a refusal on its own.
+    /// A list of stations; the answer is [`import`].
     Playlist,
 }
 
-/// Why `url` can't be a station, or None when nothing about the URL
-/// itself rules it out. Pure and about the string alone: whether the
-/// other end serves audio or a web page is a question only a request can
-/// answer, and that lives in `rox-net`.
-///
-/// The suffix is read off the path and not off the whole URL, so a token
-/// in the query string can't make a stream look like a playlist, and
-/// `?format=.m3u8` on a real mount can't get it turned away.
+/// About the string alone; whether the far end serves audio is `rox-net`'s
+/// question. The suffix is read off the path, never the query.
 pub fn refusal(url: &str) -> Option<Refusal> {
     let lower = url.trim().to_ascii_lowercase();
     if !lower.starts_with("http://") && !lower.starts_with("https://") {
@@ -206,21 +150,11 @@ pub fn refusal(url: &str) -> Option<Refusal> {
     None
 }
 
-/// Read stations out of a playlist file, which is how everyone already has
-/// their stations: a `.pls` or an `.m3u` of stream URLs, handed around or
-/// downloaded from a station's own site. Typing them in one at a time is
-/// the reason a feature like this goes unused.
-///
-/// The shared readers in [`crate::playlist_file`] answer with URLs alone,
-/// and a station without its name is half an import, so the walk here is
-/// its own: an `#EXTINF` title or a `Title<n>` key names the entry that
-/// follows it. Anything [`refusal`] turns down is dropped rather than
-/// turned into a station, so a normal playlist of local files imports as
-/// nothing instead of as a list of streams that can't play, and a list
-/// that points at other lists doesn't import them as rows either.
+/// Stations from a `.pls` or `.m3u`. Its own walk, since the shared readers
+/// drop the names. Anything [`refusal`] rejects is dropped, so a playlist of
+/// local files imports as nothing.
 pub fn import(text: &str) -> Vec<Station> {
-    // Windows tools save UTF-8 with a BOM, and left on it clings to the
-    // first line, which is the same trap the m3u and pls readers strip for.
+    // A leading BOM would cling to the first line.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
 
     match Format::sniff(text) {
@@ -228,8 +162,7 @@ pub fn import(text: &str) -> Vec<Station> {
 
         Format::M3u => from_m3u(text),
 
-        // XSPF carries its titles inside the XML, so there's no name pass
-        // to run here. The shared reader's URLs are the honest answer.
+        // XSPF titles live in the XML; take the shared reader's URLs.
         Format::Xspf => crate::xspf::parse(text)
             .iter()
             .filter_map(|url| station(url, ""))
@@ -237,9 +170,8 @@ pub fn import(text: &str) -> Vec<Station> {
     }
 }
 
-/// An extended M3U, read as name-then-URL pairs. A title only counts for
-/// the next entry, so a dropped local path never lends its name to the URL
-/// after it.
+/// A title only counts for the next entry, so a dropped local path never
+/// lends its name onward.
 fn from_m3u(text: &str) -> Vec<Station> {
     let mut out = Vec::new();
     let mut pending = String::new();
@@ -249,8 +181,6 @@ fn from_m3u(text: &str) -> Vec<Station> {
             continue;
         }
 
-        // `#EXTINF:<secs>,<name>`: the duration is meaningless for a
-        // stream (it writes -1) and the name is the whole point.
         if let Some(rest) = line.strip_prefix("#EXTINF:") {
             pending = rest
                 .split_once(',')
@@ -270,9 +200,7 @@ fn from_m3u(text: &str) -> Vec<Station> {
     out
 }
 
-/// A PLS file, read as `File<n>`/`Title<n>` pairs in entry-number order.
-/// The numbers are what the format says to trust, not the line order, so a
-/// hand-written file that lists entry 2 first still pairs correctly.
+/// In entry-number order, which the format says to trust over line order.
 fn from_pls(text: &str) -> Vec<Station> {
     let mut urls: Vec<(u32, String)> = Vec::new();
     let mut names: Vec<(u32, String)> = Vec::new();
@@ -288,8 +216,7 @@ fn from_pls(text: &str) -> Vec<Station> {
             continue;
         }
 
-        // The Winamp lineage wrote File1, file1 and FILE1 interchangeably,
-        // so both key readings are case-insensitive.
+        // Winamp-era files mix File1, file1 and FILE1.
         if let Some(index) = numbered(key, "file") {
             urls.push((index, value.to_string()));
         } else if let Some(index) = numbered(key, "title") {
@@ -312,8 +239,6 @@ fn from_pls(text: &str) -> Vec<Station> {
         .collect()
 }
 
-/// The entry number behind a `File7` or `Title7` key, None for anything
-/// else in the file.
 fn numbered(key: &str, prefix: &str) -> Option<u32> {
     let head = key.get(..prefix.len())?;
     if !head.eq_ignore_ascii_case(prefix) {
@@ -323,11 +248,8 @@ fn numbered(key: &str, prefix: &str) -> Option<u32> {
     key[prefix.len()..].trim().parse().ok()
 }
 
-/// One import entry as a station, or None for a line [`refusal`] turns
-/// down. The reason is dropped here on purpose: a file holding forty
-/// lines has no room to explain each one, and the count that did import
-/// is what the import notice reports. The add box, where one URL is one
-/// deliberate act, keeps the reason.
+/// Drops the refusal reason: a forty-line file can't explain each, and the
+/// import notice reports the count.
 fn station(url: &str, name: &str) -> Option<Station> {
     if refusal(url).is_some() {
         return None;
@@ -340,9 +262,7 @@ fn station(url: &str, name: &str) -> Option<Station> {
     })
 }
 
-/// The row a station lands as. Everything a file row carries off its tags
-/// is empty here, including the album, which keeps stations out of the
-/// album rollups that count distinct non-empty albums.
+/// An empty album keeps stations out of the distinct-album rollups.
 fn row_for(station: &Station) -> TrackRow {
     let title = if station.name.trim().is_empty() {
         label_of(&station.url)
@@ -368,8 +288,6 @@ fn row_for(station: &Station) -> TrackRow {
         year: 0,
         disc_no: 0,
         track_no: 0,
-        // No end, so no length. The seek strip reads the missing duration
-        // and prints `-:--` without being told anything about radio.
         duration_ms: 0,
         codec: String::new(),
         bitrate_kbps: 0,
@@ -383,8 +301,6 @@ fn row_for(station: &Station) -> TrackRow {
     }
 }
 
-/// The name a URL stands in with, through the locator's own fallback so a
-/// station reads the same way any other untagged remote track does.
 fn label_of(url: &str) -> String {
     Locator::Remote(Remote {
         url: url.to_string(),
@@ -413,8 +329,6 @@ mod tests {
         }
     }
 
-    /// The URL is the identity, so the same stream added again is an edit
-    /// of the row that's already there.
     #[test]
     fn the_same_url_twice_is_one_row_with_the_newer_name() {
         let mut conn = db();
@@ -431,7 +345,6 @@ mod tests {
         assert_eq!(held[0].name, "Jazz Forever");
     }
 
-    /// Removing one station leaves the rest where they were.
     #[test]
     fn remove_takes_only_its_own_row() {
         let mut conn = db();
@@ -452,9 +365,6 @@ mod tests {
         assert_eq!(held[0].url, "https://host/soul");
     }
 
-    /// A station's path is a URL and a file's is a path, but nothing stops
-    /// the two strings from being equal. The source on the key is what
-    /// keeps them apart, seen from the stations side.
     #[test]
     fn a_station_and_a_local_file_can_share_a_path_string() {
         let mut conn = db();
@@ -480,14 +390,11 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 2, "one row per source");
 
-        // And the stations side sees only its own.
         let held = all(&conn).unwrap();
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].name, "Jazz");
     }
 
-    /// A station row carries the live flag and no duration, which is what
-    /// every downstream reader keys off.
     #[test]
     fn a_station_row_is_live_and_lengthless() {
         let mut conn = db();
@@ -517,14 +424,9 @@ mod tests {
         assert_eq!(duration, 0);
     }
 
-    /// Where a station lands in the library's rollups, checked rather than
-    /// assumed. The folder count and the per-folder rollup are scoped to
-    /// local rows and don't see stations, which is what a station being
-    /// lengthless and sizeless needs. The whole-library counts are scoped
-    /// to nothing, so a station reads as one more track carrying no gain
-    /// and no tempo. Whether those three want a scope is store.rs's call,
-    /// not this module's; it's pinned here so the next reader doesn't have
-    /// to go find out.
+    /// Pins where stations land in the rollups: the folder counts are local
+    /// only, the whole-library counts include them. Scoping those is store.rs's
+    /// call.
     #[test]
     fn a_station_in_the_library_rollups() {
         let mut conn = db();
@@ -547,14 +449,10 @@ mod tests {
         assert_eq!(stats.bytes, 1_000, "and no bytes on disk");
         assert_eq!(stats.tracks, 2, "but it does count as a track");
 
-        // The coverage splits count every row too, so a station sits in
-        // the missing bucket of both.
         assert_eq!(store::replaygain_breakdown(&conn).unwrap().missing, 2);
         assert_eq!(store::bpm_breakdown(&conn).unwrap().missing, 2);
     }
 
-    /// An unnamed station takes the URL's last segment rather than landing
-    /// in the library as a blank row.
     #[test]
     fn an_unnamed_station_falls_back_to_the_url() {
         let mut conn = db();
@@ -564,8 +462,6 @@ mod tests {
         assert_eq!(all(&conn).unwrap()[0].name, "jazz");
     }
 
-    /// The PLS shape a station directory hands out: File and Title pairs,
-    /// matched by entry number.
     #[test]
     fn import_reads_a_pls() {
         let text = "[playlist]\n\
@@ -587,8 +483,6 @@ mod tests {
         );
     }
 
-    /// The m3u shape, where the name rides the `#EXTINF` line above the URL
-    /// and the duration is the -1 a stream always writes.
     #[test]
     fn import_reads_an_m3u() {
         let text = "#EXTM3U\n\
@@ -606,9 +500,6 @@ mod tests {
         );
     }
 
-    /// A playlist of local files imports as nothing, and a mixed one
-    /// imports only its streams. The dropped entry doesn't hand its name
-    /// down to the URL that follows it either.
     #[test]
     fn import_rejects_everything_that_is_not_a_stream() {
         let mixed = "#EXTM3U\n\
@@ -631,10 +522,7 @@ mod tests {
         assert!(import(pls_local).is_empty());
     }
 
-    /// A stream URL with nothing wrong with it is waved through, query
-    /// string and all. The query is the case worth pinning: plenty of
-    /// mounts carry a listener token, and reading the suffix off the
-    /// whole URL instead of off the path would turn those away.
+    /// Plenty of mounts carry a listener token in the query.
     #[test]
     fn an_ordinary_stream_url_is_not_refused() {
         assert_eq!(refusal("https://host/jazz"), None);
@@ -642,8 +530,6 @@ mod tests {
         assert_eq!(refusal("https://host/live?session=.m3u"), None);
     }
 
-    /// Nothing but http and https. Said as its own reason because the
-    /// three refusals want three different messages.
     #[test]
     fn a_url_that_is_not_http_is_refused_for_its_scheme() {
         assert_eq!(refusal("mms://host/legacy"), Some(Refusal::Scheme));
@@ -651,9 +537,6 @@ mod tests {
         assert_eq!(refusal("file:///music/one.flac"), Some(Refusal::Scheme));
     }
 
-    /// An `.m3u8` is HLS, which the transport can't read, so it's turned
-    /// away at the door rather than imported as a row that connects and
-    /// plays a manifest.
     #[test]
     fn an_m3u8_is_refused_as_hls() {
         assert_eq!(refusal("https://host/live.m3u8"), Some(Refusal::Hls));
@@ -661,8 +544,6 @@ mod tests {
         assert_eq!(refusal("https://host/live.m3u8?t=9"), Some(Refusal::Hls));
     }
 
-    /// An `.m3u` or a `.pls` is a list of stations, and there's a reader
-    /// for it. The refusal exists to point at that reader.
     #[test]
     fn a_playlist_url_is_refused_as_a_playlist() {
         assert_eq!(
@@ -679,8 +560,6 @@ mod tests {
         );
     }
 
-    /// The import reader runs the same rule, so a list that points at
-    /// other lists imports as nothing rather than as rows that play text.
     #[test]
     fn import_drops_playlists_and_hls_the_way_the_add_box_does() {
         let nested = "#EXTM3U\n\
@@ -697,7 +576,6 @@ mod tests {
         );
     }
 
-    /// An import goes straight into the library, names and all.
     #[test]
     fn imported_stations_land_as_rows() {
         let mut conn = db();
@@ -711,8 +589,6 @@ mod tests {
         );
     }
 
-    /// The row starts with three empty columns and the stream fills them,
-    /// which is the whole reason anything reads the response headers.
     #[test]
     fn the_stream_fills_the_columns_the_row_left_empty() {
         let mut conn = db();
@@ -733,14 +609,10 @@ mod tests {
         assert_eq!(station.genre, "Jazz");
         assert_eq!(filled, heard);
 
-        // Nothing left to fill, so a second connect writes nothing and the
-        // projection doesn't get rebuilt for a station that said the same
-        // thing it said an hour ago.
+        // Nothing left to fill, so no projection rebuild.
         assert!(!fill_empty(&conn, "https://host/jazz", &heard).unwrap());
     }
 
-    /// What the user typed wins. A station that announces "Various" on
-    /// every connect would otherwise walk over a genre somebody chose.
     #[test]
     fn what_the_row_already_says_survives_the_stream() {
         let mut conn = db();
@@ -767,9 +639,6 @@ mod tests {
         assert_eq!(filled.bitrate_kbps, 128);
     }
 
-    /// A station that says nothing writes nothing. Without the guard the
-    /// update would report a change on every connect and rebuild the
-    /// projection for it.
     #[test]
     fn a_station_that_describes_nothing_writes_nothing() {
         let mut conn = db();

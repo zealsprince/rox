@@ -1,16 +1,12 @@
-//! Run the engine for ten seconds with no UI and print what it cost.
-//!
-//! Three numbers come out: frames per second the worker actually delivered,
-//! the average time its readback spent mapping and flipping a frame, and the
-//! libprojectM version it ran. They're the baseline the zero-copy follow-up
-//! gets judged against, so they belong in a PR body rather than in a test.
+//! Run the engine for ten seconds with no UI and print frames per second,
+//! the average readback cost, and the libprojectM version: the baseline the
+//! zero-copy follow-up gets judged against.
 //!
 //! ```text
 //! cargo run -p rox-milkdrop --release --example headless -- /path/to/presets
 //! ```
 //!
-//! Without a preset directory it runs projectM's built-in idle preset, which
-//! is a fine smoke test but a light one: real presets are much heavier.
+//! Without a preset directory it runs projectM's light built-in idle preset.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,9 +34,7 @@ fn main() {
         height: HEIGHT,
     });
 
-    // A sine sweep so the beat detector has something to chew on. Real audio
-    // would be better; silence would be worse, because several presets do
-    // nothing at all without it.
+    // Several presets draw nothing on silence, so feed a sine.
     let mut phase = 0.0f32;
     let mut tone = |samples: usize| {
         let mut buffer = Vec::with_capacity(samples * 2);
@@ -53,7 +47,6 @@ fn main() {
         buffer
     };
 
-    // Wait for the context, which is slow on a cold driver.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         match engine.status() {

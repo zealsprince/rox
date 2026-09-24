@@ -1,52 +1,31 @@
 //! MilkDrop visuals, rendered by libprojectM on a thread of their own.
 //!
-//! A MilkDrop preset is a little program: a per-frame equation block, a
-//! per-vertex warp mesh, and hand-written GLSL for the composite. Twenty
-//! years of them exist, thousands of files, and there's no path to running
-//! them that doesn't run their GLSL. So rox doesn't reimplement MilkDrop; it
-//! embeds libprojectM, which is the reference implementation, and gives it
-//! what it needs: an OpenGL context, a framebuffer, and audio.
+//! A preset runs its own GLSL, so rox embeds libprojectM (the reference
+//! implementation) rather than reimplementing it. gpui draws through blade and
+//! D3D11, none of which let a second renderer into their swapchain, so the
+//! engine owns a private windowless GL context ([`context`]), renders into an
+//! FBO, and publishes rgba8 pixels for the panel to upload. Nothing here knows
+//! gpui exists.
 //!
-//! That context is the reason this crate exists as a crate. rox draws through
-//! gpui, which draws through blade on Vulkan and Metal and through D3D11 on
-//! Windows, and none of those will let a second renderer scribble into their
-//! swapchain. So the engine owns a private, windowless GL context on its own
-//! thread ([`context`]), renders into its own FBO, reads the pixels back, and
-//! publishes an rgba8 buffer. The panel picks that buffer up and uploads it
-//! as a texture. Nothing in here knows gpui exists, and nothing in here draws
-//! a pixel of rox's UI.
+//! ## The readback
 //!
-//! ## The readback, said out loud
+//! ADR 8 refused a GPU readback for the generative visual; ADR 28 takes it on
+//! here, since the alternative is porting MilkDrop's shader language to WGSL.
+//! Two pixel buffers alternate, frame N reading back while N-1 is mapped: one
+//! frame of latency for no pipeline stall, a smooth sixty over a sawtooth
+//! thirty.
 //!
-//! Reading a frame off the GPU and pushing it back up as a texture is a cost
-//! ADR 8 refused for the generative visual, and ADR 28 takes on purpose here,
-//! because the alternative is porting MilkDrop's shader language to WGSL. The
-//! readback goes through two pixel buffer objects: frame N's `glReadPixels`
-//! starts into one while frame N-1's pixels are mapped out of the other. That
-//! buys one frame of latency and spends it on not stalling the GL pipeline
-//! waiting for a synchronous read, which is the difference between a smooth
-//! sixty and a sawtooth thirty.
-//!
-//! What the panel picks up is a handle, not a copy. [`Engine::frame_after`]
-//! used to clone the whole buffer out of the slot, and the texture upload
-//! copied it again, which at a 776x1049 panel measured 2.6 ms of UI thread
-//! per frame: two three-megabyte allocations faulting in a page at a time,
-//! with the memcpys themselves only a fortieth of it. Now the pixels live
-//! behind an `Arc` and the worker takes the buffer back once the last handle
-//! is gone, so a steady state allocates nothing on either side. The readback
-//! itself is still a readback; a zero-copy import (external memory on Linux,
-//! D3D interop on Windows) is the planned follow-up, and the numbers this
-//! crate's `examples/headless.rs` prints are what it gets judged against.
+//! Frames are handed out as an `Arc`, and the worker reclaims the buffer once
+//! the last handle drops. Copying instead measured 2.6 ms of UI thread per
+//! frame at 776x1049, nearly all page faults. Zero-copy import is the planned
+//! follow-up; `examples/headless.rs` prints its baseline.
 //!
 //! ## Shape
 //!
-//! [`Engine::spawn`] starts the worker and returns immediately, because
-//! context creation can take a second on a cold driver and a panel opening
-//! shouldn't wait on it. Everything after that is one-way: [`Command`]s go
-//! down the channel, frames and [`Event`]s and [`Status`] come back through
-//! shared state. Failure is a [`Status::Failed`] with a sentence in it, never
-//! a panic, because a machine with no usable GL is a normal machine that
-//! should get every other panel working.
+//! [`Engine::spawn`] returns before the context exists (a cold driver takes a
+//! second). [`Command`]s go down a channel; frames, [`Event`]s and [`Status`]
+//! come back through shared state. Failure is [`Status::Failed`], never a
+//! panic: a machine with no GL should still get every other panel.
 
 pub mod context;
 mod gl;
@@ -64,57 +43,41 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 pub use library::{PresetLibrary, Rotation};
 
-/// One rendered frame: straight-alpha rgba8, `width * height * 4` bytes, top
-/// row first. `glReadPixels` hands back bottom-up rows and the worker flips
-/// them, so this is already in the orientation a texture upload wants.
-///
-/// The pixels are shared, not owned, so handing a frame out is a refcount
-/// bump rather than a megabyte-scale copy. The worker takes the buffer back
-/// when the last handle to it is gone, which is what keeps a steady state
-/// from allocating.
+/// Straight-alpha rgba8, top row first. Shared rather than owned, so handing
+/// one out is a refcount bump.
 #[derive(Clone)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub rgba8: Arc<Vec<u8>>,
-    /// Monotonic per engine. The panel keeps the seq it last drew and passes
-    /// it to [`Engine::frame_after`], which is how it skips a frame it has.
+    /// Monotonic per engine; see [`Engine::frame_after`].
     pub seq: u64,
 }
 
-/// What the worker is doing, for the panel to show and for a failure to be
-/// visible instead of silent.
 #[derive(Clone, Debug)]
 pub enum Status {
-    /// Spawned, context not up yet.
     Starting,
     Running {
         preset: Option<PathBuf>,
         projectm_version: String,
-        /// `GL_RENDERER` and `GL_VERSION` as the driver reports them. The
-        /// panel names them when the engine runs but no frame arrives, so
-        /// a bug report carries the one fact that decides most of them.
+        /// Shown when the engine runs but no frame arrives: the fact that
+        /// decides most bug reports.
         renderer: String,
         gl_version: String,
     },
-    /// No usable OpenGL, or projectM refused to start. The string names the
-    /// platform and the step, and is meant to be shown to the user.
+    /// Names the platform and the step; shown to the user.
     Failed(String),
 }
 
-/// Things that happened since the panel last looked.
 #[derive(Clone, Debug)]
 pub enum Event {
     PresetChanged(PathBuf),
     PresetFailed { path: PathBuf, message: String },
 }
 
-/// What the panel asks the worker for. Everything is fire and forget: a
-/// command that arrives after the worker has failed is dropped, which is the
-/// same as it being ignored, which is what a dead engine should do.
+/// Fire and forget: commands to a failed worker are dropped.
 pub enum Command {
-    /// Render size in device pixels. Reallocates the FBO, its texture, and
-    /// both readback buffers, so the panel debounces this during a drag.
+    /// Device pixels. Reallocates every target, so the panel debounces it.
     Resize {
         width: u32,
         height: u32,
@@ -123,24 +86,18 @@ pub enum Command {
         path: PathBuf,
         smooth: bool,
     },
-    /// Random pick from the rotation, honouring `locked`.
+    /// Random pick from the rotation.
     NextPreset {
         smooth: bool,
     },
     PreviousPreset {
         smooth: bool,
     },
-    /// Narrow what `NextPreset`, `PreviousPreset` and projectM's own timed
-    /// switch walk. A rotation that selects nothing falls back to the whole
-    /// library, so a folder the user deleted since last run doesn't strand
-    /// the panel on one preset.
+    /// A rotation that selects nothing falls back to the whole library, so a
+    /// deleted folder doesn't strand the panel on one preset.
     SetRotation(Rotation),
-    /// Replace the library a running worker walks, after a rescan found
-    /// presets that weren't there when the panel opened. `rotation` is
-    /// re-resolved against the new list, since the old indices mean nothing
-    /// once the list changes. A worker that had nothing to show and now does
-    /// loads a preset straight away rather than sitting on projectM's idle
-    /// one until something else nudges it.
+    /// After a rescan. A worker that had nothing to show loads a preset at
+    /// once rather than sitting on projectM's idle one.
     SetLibrary {
         library: PresetLibrary,
         rotation: Rotation,
@@ -150,7 +107,7 @@ pub enum Command {
     SetBeatSensitivity(f32),
     SetHardCut(bool),
     SetFps(u32),
-    /// Stop rendering, keep the context. A parked panel sends this.
+    /// Stop rendering, keep the context.
     Pause,
     Resume,
 }
@@ -158,28 +115,20 @@ pub enum Command {
 pub struct EngineOptions {
     pub feed: Arc<rox_viz::AudioFeed>,
     pub library: PresetLibrary,
-    /// The preset to come up on, if the caller is restoring one. With
-    /// `None` the worker shuffles one from the library. A restored preset
-    /// sent as a command after spawn would land behind that shuffle, and
-    /// the owner would see two switches at start: the random one, then
-    /// the restore. The backdrop writes the preset it sees to settings
-    /// while locked, and with both events in one drain it kept the random
-    /// one, so every restart came up somewhere else.
+    /// Loaded first, with no shuffle before it. Sent as a command instead, it
+    /// would land behind the startup shuffle, and the backdrop (which saves
+    /// what it sees while locked) would keep the random one.
     pub preset: Option<PathBuf>,
     pub fps: u32,
     pub width: u32,
     pub height: u32,
 }
 
-/// Everything the worker publishes and the panel reads.
-///
-/// `seq` is out here as an atomic rather than inside the frame lock so the
-/// panel can answer "is there anything new" without contending with the
-/// worker mid-publish. It's the only field read on every UI frame.
+/// `seq` is an atomic outside the frame lock so the per-frame "anything new"
+/// check never contends with a publish.
 pub(crate) struct Shared {
     pub(crate) seq: AtomicU64,
-    /// The last frame's map-and-flip, in microseconds. Only the headless
-    /// example reads it, and it's an atomic so reading it costs nothing.
+    /// Only the headless example reads this.
     pub(crate) readback_micros: AtomicU64,
     pub(crate) frame: Mutex<Option<Frame>>,
     pub(crate) status: Mutex<Status>,
@@ -203,56 +152,42 @@ impl Shared {
 
     pub(crate) fn push_event(&self, event: Event) {
         let mut events = self.events.lock().unwrap();
-        // A panel that stopped draining, because it's parked or the window
-        // is hidden, must not grow this without bound.
+        // A parked or hidden panel stops draining; don't grow without bound.
         if events.len() < 64 {
             events.push(event);
         }
     }
 }
 
-/// How long a dropped engine waits for its worker to stand down before it
-/// gives up on the thread and leaves it to the exit guard in [`worker`].
-///
-/// There is a wait at all so a caller that drops one engine and spawns
-/// another doesn't end up with two GL contexts alive at once. There is a
-/// bound on it because the same drop runs on the quit path, with the UI
-/// thread sitting on it, and a driver call that never comes back would hang
-/// the quit instead of crashing it.
+/// How long a dropped engine waits for its worker. A wait at all avoids two
+/// GL contexts alive at once; a bound, because the quit path runs this on the
+/// UI thread and a hung driver call must not hang the quit.
 const STAND_DOWN: Duration = Duration::from_millis(400);
 
-/// The worker's mailbox. Cloneable and cheap; the last clone dropped shuts
-/// the worker down and waits up to [`STAND_DOWN`] for it.
+/// The last clone dropped shuts the worker down.
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<EngineInner>,
 }
 
 struct EngineInner {
-    /// Behind a lock because [`Engine::stop`] hangs up through a shared
-    /// handle. `Some` for the whole life of the engine otherwise.
+    /// Behind a lock so [`Engine::stop`] can hang up through a shared handle.
     commands: Mutex<Option<Sender<Command>>>,
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    /// Never sent on. The worker thread holds the sending half, so this
-    /// disconnects when that thread returns, which is a join with a timeout
-    /// on it in everything but name.
+    /// Never sent on: it disconnects when the worker thread returns, a join
+    /// with a timeout.
     finished: Receiver<()>,
 }
 
 impl Engine {
-    /// Spawn the worker: GL context, projectM instance, render loop. Returns
-    /// as soon as the thread is running, which is before the context exists.
-    /// Errors arrive through [`Engine::status`], never as a panic.
     pub fn spawn(options: EngineOptions) -> Engine {
         let shared = Arc::new(Shared::new());
         let (commands, receiver) = crossbeam_channel::unbounded();
 
         let worker_shared = Arc::clone(&shared);
-        // The sending half goes into the thread and is never used. What the
-        // engine waits on is its drop, which happens when the closure
-        // returns, past the worker's own GL teardown. A thread that never
-        // started drops it with the closure, so the wait ends at once.
+        // Never sent on; its drop at closure end, after GL teardown, is what
+        // `finished` waits for.
         let (ran, finished) = crossbeam_channel::bounded::<()>(0);
         let worker = std::thread::Builder::new()
             .name("rox-milkdrop".to_string())
@@ -280,39 +215,25 @@ impl Engine {
 
     pub fn send(&self, command: Command) {
         if let Some(commands) = self.inner.commands.lock().unwrap().as_ref() {
-            // A closed channel means the worker gave up. Nothing to report:
-            // `status()` already says why.
+            // A closed channel means the worker gave up; `status()` says why.
             let _ = commands.send(command);
         }
     }
 
-    /// Tell the worker to stand down without waiting for it.
-    ///
-    /// Dropping the engine does this and then waits. The two are separable
-    /// for the quit path, which has several engines to take down at once:
-    /// hanging all of them up first and waiting afterwards overlaps the
-    /// teardowns instead of stacking them end to end. It also reaches the
-    /// worker through a shared handle, which the drop can't do while a
-    /// retained render tree still holds a clone of the engine.
+    /// Hang up without waiting. Separate from drop so the quit path can hang
+    /// up several engines before waiting on any, and so it works while a
+    /// retained render tree still holds a clone.
     pub fn stop(&self) {
         self.inner.commands.lock().unwrap().take();
     }
 
-    /// Wait up to [`STAND_DOWN`] for the worker thread to be gone, and say
-    /// whether it is. Only meaningful after [`Engine::stop`] or the last
-    /// clone's drop; nothing here asks the worker to finish.
+    /// Only meaningful after [`Engine::stop`] or the last clone's drop.
     pub fn wait(&self) -> bool {
         self.inner.wait()
     }
 
-    /// The newest frame if its seq is past `after`. The caller keeps the seq
-    /// it last drew and passes it back here.
-    ///
-    /// What comes back is a handle on the worker's pixels, so this costs a
-    /// refcount bump and the lock is held for exactly that long. Hold the
-    /// frame no longer than the paint that draws it: the worker can only
-    /// reuse the buffer once nothing else is pointing at it, and a consumer
-    /// that keeps one around makes the next render allocate.
+    /// The newest frame if its seq is past `after`. Hold it no longer than
+    /// the paint that draws it, or the next render allocates.
     pub fn frame_after(&self, after: u64) -> Option<Frame> {
         if self.inner.shared.seq.load(Ordering::Acquire) <= after {
             return None;
@@ -325,9 +246,7 @@ impl Engine {
         Some(frame.clone())
     }
 
-    /// Microseconds the worker's last readback spent mapping the pixel
-    /// buffer and flipping its rows. This is the cost the zero-copy
-    /// follow-up exists to remove, so it's measurable from outside.
+    /// The map-and-flip cost the zero-copy follow-up exists to remove.
     pub fn last_readback_micros(&self) -> u64 {
         self.inner.shared.readback_micros.load(Ordering::Relaxed)
     }
@@ -336,19 +255,13 @@ impl Engine {
         self.inner.shared.status.lock().unwrap().clone()
     }
 
-    /// Preset switches and failures since the last call. The panel drains
-    /// these each frame to show the preset name and to report broken files.
     pub fn take_events(&self) -> Vec<Event> {
         std::mem::take(&mut *self.inner.shared.events.lock().unwrap())
     }
 }
 
 impl EngineInner {
-    /// Wait for the worker thread to be gone, or [`STAND_DOWN`] to pass.
-    ///
-    /// The wait is on the thread finishing rather than on the join, because
-    /// a join has no timeout and this runs on the quit path with the UI
-    /// thread sitting on it.
+    /// Waits on `finished`, not the join: a join has no timeout.
     fn wait(&self) -> bool {
         !matches!(
             self.finished.recv_timeout(STAND_DOWN),
@@ -359,9 +272,7 @@ impl EngineInner {
 
 impl Drop for EngineInner {
     fn drop(&mut self) {
-        // Hanging up is the shutdown signal: the worker's loop ends when the
-        // channel disconnects, and only then does it destroy the projectM
-        // instance and drop the context.
+        // Hanging up is the shutdown signal.
         self.commands.lock().unwrap().take();
 
         let Some(worker) = self.worker.lock().unwrap().take() else {
@@ -373,10 +284,8 @@ impl Drop for EngineInner {
             return;
         }
 
-        // Stuck in a driver call, most likely. Leaving the handle unjoined
-        // detaches the thread, which is the lesser evil: the exit guard
-        // parks it before the GL under it is freed, and the alternative is
-        // a quit that never finishes.
+        // Stuck in a driver call, most likely. Detaching beats a quit that
+        // never finishes; the exit guard parks the thread before GL is freed.
         log::warn!(
             "milkdrop engine did not stand down in {} ms; leaving its thread to the exit guard",
             STAND_DOWN.as_millis()

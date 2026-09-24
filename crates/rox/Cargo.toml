@@ -5,18 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "A desktop music player for large, carefully tagged local libraries"
 
-# Read by `cargo deb -p rox --no-build` in the release workflow, which packs
-# the already built binaries into a Debian package. Paths under target/release
-# resolve against the workspace target dir; everything else is relative to
-# this crate.
+# Read by `cargo deb -p rox --no-build` in the release workflow. Paths under
+# target/release resolve against the workspace target dir.
 [package.metadata.deb]
 maintainer = "Andrew Lake <andrew@zealsprince.com>"
 section = "sound"
-# No Debian revision, so the artifact is named rox_<version>_amd64.deb the way
-# an upstream package normally is.
+# No Debian revision, so the artifact is rox_<version>_amd64.deb.
 revision = ""
-# dpkg-shlibdeps derives the runtime dependencies from the binary on the
-# build runner.
 depends = "$auto"
 assets = [
     ["target/release/rox", "usr/bin/", "755"],
@@ -31,185 +26,111 @@ assets = [
 gpui = { workspace = true }
 gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
-# The acoustic stack: both extractors, the model catalog, and the pass,
-# re-exported as crate::embeddings so the app's paths into it read the way
-# they always have.
+# crate::embeddings holds the app's bookkeeping around a running pass.
 rox-acoustic = { path = "../rox-acoustic" }
-# The settings model, the log backend, and the pace estimates, re-exported
-# as crate::settings, crate::logging and crate::pace so the app's paths into
-# them read the way they always have.
 rox-core = { path = "../rox-core" }
-# The palette, tokens, and embedded assets, re-exported as crate::design
-# and crate::assets so panels path through them the way they always have.
 rox-design = { path = "../rox-design" }
 rox-dock = { path = "../rox-dock" }
-# Message lookup and locale-aware formatting (ADR 27): every user-facing
-# string in this binary resolves through its t! macro.
+# ADR 27: every user-facing string resolves through its t! macro.
 rox-i18n = { path = "../rox-i18n" }
-# The control socket's wire side (ADR 22); the answers live in
-# crate::integrations::ipc.
+# The control socket's wire side (ADR 22).
 rox-ipc = { path = "../rox-ipc" }
 rox-library = { path = "../rox-library" }
-# The enrichment providers, the signed Last.fm calls, and the baked-in
-# service identities, re-exported as crate::providers and crate::discord.
 rox-net = { path = "../rox-net" }
-# The seam the panels compile against: the shared state, the panel chrome
-# and its settings window, the shared track/query/signal surfaces, and the
-# openers table this binary installs so panels can reach up into its
-# windows. Re-exported at crate::panel, crate::panel_settings,
-# crate::signal_ui and the rest of the old paths.
+# The seam the panels compile against, including the openers table this
+# binary installs so panels can reach its windows.
 rox-panel-api = { path = "../rox-panel-api" }
-# libprojectM behind a worker thread (ADR 28). The Milkdrop panel drives its
-# own engine out of rox-panels; the binary drives one more for the app-wide
-# backdrop, in crate::backdrop_visual.
+# libprojectM (ADR 28); the binary runs one engine for the app-wide backdrop.
 rox-milkdrop = { path = "../rox-milkdrop" }
-# The shared widget layer, re-exported through crate::panel and
-# crate::settings::ui so the panels' paths into it read the way they always
-# have.
 rox-panel-kit = { path = "../rox-panel-kit" }
-# The panels themselves. The eight that still call into the workspace stay
-# in the binary; the rest render out of here and are re-exported at
-# crate::panels so every path in the app reads the way it always did.
+# The nine panels that call into the workspace stay in crate::panels.
 rox-panels = { path = "../rox-panels" }
 rox-playback = { path = "../rox-playback" }
-# Latin spellings for the titles, albums and artists that have none, and
-# the optional Japanese dictionary behind the kanji half of that. The
-# romanization pass is crate::romanize_job.
 rox-romanize = { path = "../rox-romanize" }
-# The headless service layer the shared state is made of: the catalog, the
-# player, the scrobbler, the caches, the selection, the backdrop, and the
-# presence, re-exported at the module paths the app always read them at.
 rox-services = { path = "../rox-services" }
 rox-viz = { path = "../rox-viz" }
-# Platform data dir for the library database.
+# Home for file pickers, runtime dir for the instance socket, data dir for
+# the desktop entry.
 dirs = "5"
-# Decodes and blurs cover art into the baked backdrop; already in the tree
-# through gpui, same version.
+# The tray icon, and in tests the shipped workspaces' images.
 image = "0.25"
-# The settings file; both already in the tree through gpui.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Artwork rides the control socket as base64; already in the tree through
-# rox-core, same 0.22 line.
+# Artwork rides the control socket as base64.
 base64 = "0.22"
-# Embeds our own icons over the gpui-component set; already in the tree
-# through gpui-component-assets.
+# Our own icons over the gpui-component set.
 rust-embed = "8"
-# The loved-list import still makes its own blocking calls; the signed
-# Last.fm side moved to rox-net with its md5.
+# The Last.fm imports and the updater make their own blocking calls.
 ureq = "2"
-# The updater's checksum verify; already in the tree through rox-acoustic,
-# same 0.10 line.
+# The updater's checksum verify.
 sha2 = "0.10"
-# The update check's version ordering. Release candidates tag as
-# 1.25.0-rc.1 and have to sort below 1.25.0 and above 1.24.x, which is the
-# spec's prerelease rule and not worth reimplementing; already in the tree
-# through several build scripts, same 1.x line.
+# Release candidates (1.25.0-rc.1) must sort below 1.25.0 and above 1.24.x:
+# the spec's prerelease rule.
 semver = "1"
-# The logging facade the app and rox-playback write through; our own backend
-# (crate::logging) fans each line to stderr, a rolling file, and the console
-# window's ring. Already in the tree, and chrono for the wall-clock stamp on
-# each line so a reported log reads in real time.
+# chrono places the stats window's timestamps in local time.
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# The tag editor's field suggestions ride the input widget's completion
-# menu, whose provider trait speaks these types; both already in the tree
-# through gpui-component.
+# The tag editor's completion provider speaks these types.
 lsp-types = "0.97"
 anyhow = "1"
-# The tag editor's batch find and replace: a literal find is escaped into
-# a pattern so one engine runs both modes. Already in the tree through
-# gpui-component, same 1.x line.
+# The tag editor's batch find and replace.
 regex = "1"
-# OS media controls: MPRIS on Linux, SMTC on Windows, the remote command
-# center on macOS. Answers the hardware media keys and shows the now-playing
-# track in the desktop's media widget. The zbus backend is pure Rust, so a
-# build needs no system libdbus.
+# The zbus backend is pure Rust, so a build needs no system libdbus.
 souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
-# Carries media-key events from souvlaki's callback thread to the UI without a
-# poll; already in the tree through gpui, same 2.x line.
+# Media-key events from souvlaki's thread to the UI, no poll.
 async-channel = "2"
-# The workspaces folder watch (ADR 22): an edited file re-applies live. The
-# same watcher the library roots ride, debounced the same way.
+# The workspaces folder watch (ADR 22).
 notify-debouncer-full = "0.7"
-# The duplicates window's delete: files go to the OS trash, never unlinked,
-# so a wrong pick comes back. Defaults off to drop coinit_apartmentthreaded:
-# the delete runs on gpui's background executor, which on Windows is the
-# WinRT thread pool, and those threads are already in the multithreaded
-# apartment - the default's CoInitializeEx(STA) there fails and the crate
-# panics. coinit_multithreaded is a no-op success on them.
+# The duplicates window's delete goes to the OS trash, never unlink.
+# coinit_multithreaded: the delete runs on the WinRT thread pool, already in
+# the MTA, where the default CoInitializeEx(STA) fails and the crate panics.
 trash = { version = "5", default-features = false, features = ["coinit_multithreaded", "chrono"] }
-# Builds the file:// URL for the now-playing cover souvlaki hands the OS
-# transport; percent-encodes the path so spaces and unicode survive. Already
-# in the tree, same 2.x line.
+# The now-playing cover's file:// URL for the OS transport.
 url = "2"
 
-# The quit-to-tray icon: StatusNotifierItem over D-Bus, pure Rust on the
-# same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io
-# instead of the default tokio; blocking gives the thread-and-handle API.
 [target.'cfg(target_os = "linux")'.dependencies]
-# The glibc malloc knobs main() sets before anything allocates; see
-# tune_allocator. Already in the tree through every native dependency.
+# The glibc malloc knobs; see tune_allocator.
 libc = "0.2"
+# Quit-to-tray over StatusNotifierItem, on async-io rather than tokio.
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
-# The updater unpacks the release tarball; flate2 is already in the tree
-# through image's png path, same 1.x line.
+# The updater unpacks the release tarball.
 flate2 = "1"
 tar = "0.4"
-# Taskbar progress: Unity's LauncherEntry update is a plain session-bus
-# broadcast, so all this needs is a connection to emit on. Same zbus 5 line
-# ksni and souvlaki already ride, on async-io rather than tokio so no second
-# runtime comes along with it.
+# Taskbar progress over Unity's LauncherEntry, on async-io rather than tokio.
 zbus = { version = "5", default-features = false, features = ["async-io"] }
-# The CJK fonts check (cjk_fonts.rs) reads the font database and locale the
-# way gpui's cosmic-text does, to predict its fallback. Both are already in
-# the tree under cosmic-text at these versions, so they match what it sees.
+# cjk_fonts.rs predicts cosmic-text's fallback, so these match cosmic-text's versions.
 fontdb = "0.16.2"
 sys-locale = "0.3.2"
 
-# Shaders ride blade's render pipelines, so on Mac they need blade to be the
-# renderer rather than the hand-written Metal one. Features unify across the
-# graph, so declaring it here turns it on for every crate that pulls gpui in.
-# The cost is the whole Mac render path, not just the shader surfaces: every
-# glyph and quad goes through blade too. It does drop the `xcrun metal` build
-# step, since gpui only compiles its Metal shaders when the feature is off.
-# Removing the block goes back to the Metal renderer and shaders stop running.
+# Shaders ride blade's pipelines, so on Mac blade must be the renderer, and
+# features unify, so this switches the whole Mac render path to blade. Removing
+# it goes back to the Metal renderer and shaders stop running.
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { workspace = true, features = ["macos-blade"] }
 
-# The Win32 HWND souvlaki's SMTC backend binds to, pulled off the gpui window.
-# Already in the tree through gpui, same 0.6 line.
+# The Win32 HWND souvlaki's SMTC backend binds to.
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-# The updater unpacks the release zip; deflate only, which is all
-# Compress-Archive writes, so none of the crypto features come along.
+# Deflate only: all Compress-Archive writes.
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# The quit-to-tray icon on this side: a thin wrapper over Shell_NotifyIcon,
-# no GTK anywhere. Its defaults are the gtk and libxdo pair Linux would need,
-# which this target has no use for.
+# Its defaults are the gtk and libxdo pair only Linux would need.
 tray-icon = { version = "0.24", default-features = false }
-# The win32 message pump the icon has to live on, and the thread messages the
-# app pokes its menu with. Already in the tree many times over, same 0.61 line.
+# The tray's win32 message pump and thread messages.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
-# The taskbar button's progress bar rides ITaskbarList3, and windows-sys has
-# the constants but no COM interfaces worth calling, so the write side needs
-# the typed crate. Same 0.61 line, already in the tree through gpui.
+# ITaskbarList3: windows-sys has no COM interfaces worth calling.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Shell",
 ] }
 
-# Embeds assets/app/rox.ico into the exe as the application icon.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
 [dev-dependencies]
-# Pulls in gpui's headless TestAppContext and the #[gpui::test] macro, so the
-# shared selection can be driven against a real Context<Self> without a
-# display.
+# gpui's headless TestAppContext and #[gpui::test].
 gpui = { workspace = true, features = ["test-support"] }

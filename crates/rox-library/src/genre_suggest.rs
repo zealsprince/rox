@@ -1,50 +1,17 @@
-//! What genre an untagged track probably is, argued from the library the
-//! user already tagged.
+//! What genre an untagged track probably is, voted on by the library the
+//! user already tagged: the rest of the album, the rest of the artist, and
+//! the acoustic neighbours, with the evidence kept beside each result. Pure
+//! over a projection snapshot; only [`suggest`] touches SQLite.
 //!
-//! Nothing here talks to a service or guesses from a title. A library that
-//! has been curated for years is its own best reference: the rest of the
-//! album, the rest of the artist, and the tracks that sound like this one
-//! already carry the answer often enough that filling a blank genre is a
-//! confirmation rather than a decision. So this is a vote. Every live row
-//! that has something to say about the seed puts weight behind the values it
-//! carries, the weights are summed per value, and the caller gets the ranked
-//! result with the evidence still attached, because a suggestion a user can't
-//! see the reason for is a suggestion they have to check by hand anyway.
+//! The weights are lopsided on purpose. `examples/genreprobe.rs` hides known
+//! genres on a 53k-track library: album siblings alone score 98.6% top-1,
+//! artist siblings 87.7%, acoustic neighbours 58.4%. A seed can have
+//! hundreds of artist siblings, so at equal weights the artist outvotes the
+//! album; weighting a whole discography to roughly tie one album lifts the
+//! combination to 98.8% at full coverage. The lookup weight is unmeasured.
 //!
-//! Written in the register of [`crate::health`]: a pure function over a
-//! projection snapshot, no settings, no i18n, no entities. [`suggest`] is the
-//! only thing here that touches SQLite, and only to ask the acoustic table
-//! for neighbours; the vote itself never does.
-//!
-//! The weights are constants rather than a tuned model, and they're lopsided
-//! on purpose. `examples/genreprobe.rs` hides the genre on tagged tracks and
-//! scores what the vote would have said; on a 53k-track library it puts album
-//! siblings at 98.6% top-1 on their own, artist siblings at 87.7%, and
-//! acoustic neighbours at 58.4%. So the album is the unit and everything else
-//! is priced well under it.
-//!
-//! The gap between those and the per-row weights is cardinality, which is the
-//! part that isn't obvious: a seed has a handful of album siblings, a couple
-//! of dozen neighbours, and sometimes hundreds of artist siblings. At equal
-//! weights a prolific artist's other lane simply outvotes the album the track
-//! is on, and the combined vote scored worse than the album alone. Dropping
-//! the per-row artist weight far enough that a whole discography roughly
-//! ties one album is what turns the combination into an improvement (98.8%
-//! against the album's 98.6%, at full coverage instead of 99.6%). Read the
-//! artist and acoustic numbers as tie-breaks and gap-fillers, not as
-//! statements about how trustworthy those sources are on their own.
-//!
-//! An acoustic neighbour weighs its own cosine, which already says how much
-//! of a neighbour it is, and a negative one weighs nothing rather than voting
-//! against. A lookup value is priced at one and a half album siblings: a
-//! service that names a genre has usually been told it by a person, so it
-//! beats one sibling, but an album that agrees with itself still beats the
-//! service. That one is unmeasured, since the probe votes with no lookup.
-//!
-//! Genre values are "; " lists (see [`crate::genre`]), so the tally is per
-//! split value, resolved through the alias map and grouped case-folded. The
-//! spelling that comes back is the one the most rows use, so a suggestion
-//! written into a file matches its neighbours character for character.
+//! The tally is per split, alias-resolved, case-folded value, and the
+//! winning spelling is the one most rows use.
 
 use std::collections::{HashMap, HashSet};
 
@@ -52,35 +19,23 @@ use rusqlite::Connection;
 
 use crate::projection::Projection;
 
-/// How many acoustic neighbours a suggestion reads.
 pub const NEIGHBOURS: usize = 24;
 
-/// What one live row on the same album is worth. The unit the rest is
-/// priced against: a track whose album siblings agree is not a guess.
+/// The unit the other weights are priced against.
 pub const ALBUM_WEIGHT: f32 = 8.0;
 
-/// What one live row by the same artist is worth, when it isn't already
-/// counted as an album sibling. Small because there are so many of them:
-/// eighty of them tie one album, which is about where a prolific artist's
-/// other lane stops overruling the record in front of it.
+/// Per artist row outside the album: eighty tie one album.
 pub const ARTIST_WEIGHT: f32 = 0.1;
 
-/// What one acoustic neighbour's cosine is multiplied by. The score does the
-/// real weighting; this is the dial that says how much the model gets to
-/// argue against the tags, and it's set low: the whole neighbour set at full
-/// agreement is worth about half an album sibling.
+/// Times the cosine: the whole neighbour set at full agreement is worth
+/// about half an album sibling.
 pub const ACOUSTIC_WEIGHT: f32 = 0.15;
 
-/// What one value an external service offered is worth: one and a half album
-/// siblings, expressed against the album so a retune of that one carries.
+/// One and a half album siblings: beats one, loses to two.
 pub const LOOKUP_WEIGHT: f32 = ALBUM_WEIGHT * 1.5;
 
-/// The four sources' weights, so the probe can turn them one at a time and a
-/// later tuning pass has one place to change.
-///
-/// A weight of zero turns its source off rather than counting it at zero:
-/// a source that contributes nothing shouldn't put its values on the ballot
-/// where they'd take the ranking's tie-breaks with them.
+/// A zero weight takes its source off the ballot entirely, so it can't
+/// sway tie-breaks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Weights {
     pub album: f32,
@@ -100,28 +55,20 @@ impl Default for Weights {
     }
 }
 
-/// One candidate genre and where its support came from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Suggestion {
-    /// The genre value as it would be written, one value (never a "; " list),
-    /// passed through `crate::genre::resolve`.
+    /// One value, never a "; " list, alias-resolved.
     pub genre: String,
-    /// Normalized weight in 0..=1: this candidate's share of the total
-    /// weight of all candidates. Sorted descending, ties by name.
+    /// This candidate's share of the total weight.
     pub score: f32,
-    /// Live rows on the same album (same album symbol and same folder) that
-    /// carry this value.
+    /// Same album symbol and same folder.
     pub album: usize,
-    /// Live rows by the same artist (artist or album_artist symbol match),
-    /// not already counted under album, that carry this value.
+    /// Artist or album artist match, not already counted under album.
     pub artist: usize,
-    /// Acoustic neighbours that carry this value.
     pub acoustic: usize,
-    /// Whether an external lookup offered this value.
     pub lookup: bool,
 }
 
-/// One value's running total while the vote is being counted.
 #[derive(Default)]
 struct Tally {
     weight: f32,
@@ -129,8 +76,6 @@ struct Tally {
     artist: usize,
     acoustic: usize,
     lookup: bool,
-    /// How many times each spelling of this value was seen, so the winner
-    /// can display the one the library actually writes.
     spellings: HashMap<String, usize>,
 }
 
@@ -144,8 +89,7 @@ impl Tally {
         }
     }
 
-    /// The most common spelling, ties to the lexicographically smaller so
-    /// two runs over the same library agree.
+    /// Ties go to the lexicographically smaller, so runs agree.
     fn display(&self) -> String {
         self.spellings
             .iter()
@@ -155,13 +99,9 @@ impl Tally {
     }
 }
 
-/// Every live row with an empty genre, as projection row indices, in
-/// projection order.
+/// Live rows with an empty genre, in projection order.
 pub fn untagged(projection: &Projection) -> Vec<u32> {
-    // Asked once per distinct value rather than once per row, the same move
-    // [`crate::health::completeness`] makes: a library holds far fewer genre
-    // strings than tracks, and a whitespace-only tag is as empty as a blank
-    // one.
+    // Per distinct value, not per row.
     let blank: Vec<bool> = projection
         .genres
         .strings
@@ -173,11 +113,8 @@ pub fn untagged(projection: &Projection) -> Vec<u32> {
         .collect()
 }
 
-/// The pure vote for one row. `neighbours` is (db track id, score) as
-/// `embeddings::ranked` returns them, nearest first (empty when there's no
-/// vector). `lookup` is genre strings an external service offered (may be
-/// "; " lists; split them). The seed row itself never contributes. At most
-/// `cap` suggestions.
+/// `neighbours` is (db id, score), nearest first, as `embeddings::ranked`
+/// returns them. `lookup` may hold "; " lists. The seed never votes.
 pub fn vote(
     projection: &Projection,
     row: u32,
@@ -188,15 +125,9 @@ pub fn vote(
     vote_weighted(projection, row, neighbours, lookup, cap, Weights::default())
 }
 
-/// [`vote`] with the weights named, for the probe that measures what each
-/// source is worth on its own.
-///
-/// One pass over the columns, which is what makes this affordable to call
-/// per row rather than per library: the album siblings, the artist siblings
-/// and the acoustic neighbours are all recognized in the same loop, against
-/// a small map of the neighbour ids. There's no db-id index on the
-/// projection to reach for, and building one here would cost a hash entry
-/// per track to answer two dozen questions.
+/// One pass over the columns, matching neighbours through a small id map:
+/// the projection has no db-id index, and building one costs a hash entry
+/// per track.
 pub fn vote_weighted(
     projection: &Projection,
     row: u32,
@@ -214,10 +145,8 @@ pub fn vote_weighted(
     let artist_on = weights.artist > 0.;
     let acoustic_on = weights.acoustic > 0. && !neighbours.is_empty();
 
-    // The seed's own names, folded, empties dropped: an untagged artist is
-    // the empty symbol, and letting it match would make every other
-    // artistless row in the library a sibling. The album has the folder
-    // beside it to bound it, so it needs no such guard.
+    // An empty artist would make every artistless row a sibling. The album is
+    // bounded by the folder already.
     let mut wanted: HashSet<&str> = HashSet::new();
     if artist_on {
         for name in [
@@ -229,8 +158,7 @@ pub fn vote_weighted(
             }
         }
     }
-    // Per symbol rather than per row again, and the two tables intern
-    // separately so the match is by name and not by symbol id.
+    // The two tables intern separately, so match by name, not symbol.
     let artist_hit: Vec<bool> = symbol_hits(&projection.artists.lower, &wanted);
     let album_artist_hit: Vec<bool> = symbol_hits(&projection.album_artists.lower, &wanted);
 
@@ -264,10 +192,8 @@ pub fn vote_weighted(
         if !album && !artist && acoustic.is_none() {
             continue;
         }
-        // A row can be both a sibling and a neighbour, and it counts as
-        // both: the two are separate claims about the same value, and
-        // hiding one of them from the caller's evidence would make the
-        // counts stop adding up to the score.
+        // A row can be both sibling and neighbour and counts as both, so the
+        // evidence adds up to the score.
         let mut weight = 0.;
         if album {
             weight += weights.album;
@@ -310,9 +236,7 @@ pub fn vote_weighted(
         .values()
         .map(|tally| Suggestion {
             genre: tally.display(),
-            // A ballot where every voter weighed nothing (a neighbour set
-            // that is all negative cosines) still names its candidates,
-            // scored honestly at zero.
+            // All-negative neighbours still name their candidates, at zero.
             score: if total > 0. { tally.weight / total } else { 0. },
             album: tally.album,
             artist: tally.artist,
@@ -329,9 +253,6 @@ pub fn vote_weighted(
     out
 }
 
-/// Which symbols in a folded table are one of the names wanted. All false
-/// when nothing is, which is the artistless seed and costs one pass over the
-/// table rather than a branch per row.
 fn symbol_hits(lower: &[String], wanted: &HashSet<&str>) -> Vec<bool> {
     if wanted.is_empty() {
         return vec![false; lower.len()];
@@ -342,13 +263,7 @@ fn symbol_hits(lower: &[String], wanted: &HashSet<&str>) -> Vec<bool> {
         .collect()
 }
 
-/// One row's genre values as (display, folded key) pairs, resolved through
-/// the alias map, memoized per genre symbol.
-///
-/// Memoized because the resolution takes the alias lock and allocates, and a
-/// vote's matching rows share a handful of genre strings between them; the
-/// cache is one slot per distinct value in the library, filled only for the
-/// values the vote actually meets.
+/// Memoized per genre symbol: resolving takes the alias lock and allocates.
 fn row_values<'a>(
     projection: &Projection,
     row: usize,
@@ -360,7 +275,7 @@ fn row_values<'a>(
         for part in crate::genre::split(&projection.genres.strings[sym]) {
             let display = crate::genre::resolve(part);
             let key = display.to_lowercase();
-            // A tag spelling one value twice ("Rock; rock") is one vote.
+            // "Rock; rock" is one vote.
             if !values.iter().any(|(_, seen)| *seen == key) {
                 values.push((display, key));
             }
@@ -370,9 +285,8 @@ fn row_values<'a>(
     cache[sym].as_deref().unwrap_or(&[])
 }
 
-/// [`vote`] fed by the acoustic table: runs `embeddings::ranked(conn, id, model)`
-/// for the row's db id, keeps the top NEIGHBOURS, and votes. Any error or a
-/// row with no vector degrades to a vote with no neighbours; never panics.
+/// [`vote`] with the top NEIGHBOURS from `embeddings::ranked`. Errors and
+/// missing vectors degrade to no neighbours.
 pub fn suggest(
     conn: &Connection,
     model: &str,
@@ -390,10 +304,8 @@ pub fn suggest(
     vote(projection, row, &neighbours, lookup, cap)
 }
 
-/// The best `k` of a score map, nearest first, ties by id so two calls
-/// agree. `ranked` hands back the whole library scored, and only the head of
-/// it is a neighbour; selecting before sorting keeps the cost off the tail
-/// nobody reads.
+/// The best `k`, nearest first, ties by id. Selects before sorting so the
+/// unread tail costs nothing.
 pub fn nearest(mut scored: Vec<(i64, f32)>, k: usize) -> Vec<(i64, f32)> {
     let cmp = |a: &(i64, f32), b: &(i64, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
     if scored.len() > k && k > 0 {
@@ -410,7 +322,6 @@ mod tests {
     use crate::rusqlite::Connection;
     use crate::{TrackRow, store};
 
-    /// A plain row; a test sets the fields its case is about.
     fn track(path: &str) -> TrackRow {
         TrackRow {
             remote_url: String::new(),
@@ -454,8 +365,6 @@ mod tests {
         (0..p.len()).find(|&i| p.title.get(i) == title).unwrap() as u32
     }
 
-    /// The blank list is live rows only, and a whitespace-only tag is as
-    /// blank as an empty one.
     #[test]
     fn untagged_lists_only_live_empty_rows() {
         let tagged = track("/m/a/1.mp3");
@@ -483,12 +392,8 @@ mod tests {
         assert_eq!(blanks, [1, 2], "the tagged row and the tombstone are out");
     }
 
-    /// Two album siblings against three artist siblings: the album wins on
-    /// weight even outnumbered, and the counts say which rows were which.
     #[test]
     fn album_siblings_outweigh_artist_siblings() {
-        // `folder` is the sibling rows' directory: the same album name in
-        // two places is two albums.
         let library = |folder: &str| {
             let mut rows = Vec::new();
             let mut seed = track("/m/album/1.mp3");
@@ -517,12 +422,10 @@ mod tests {
         assert_eq!(out[1].genre, "Dream Pop");
         assert_eq!((out[1].album, out[1].artist), (0, 3));
         assert!(out[0].score > out[1].score);
-        // Two albums against three artists, priced.
         let album = 2. * ALBUM_WEIGHT;
         let artist = 3. * ARTIST_WEIGHT;
         assert!((out[0].score - album / (album + artist)).abs() < 1e-6);
 
-        // The same album name in another folder is not the same album.
         let p = projection(&library("/m/reissue"));
         let seed = row_of(&p, "Seed");
         let out = vote(&p, seed, &[], &[], 5);
@@ -530,8 +433,6 @@ mod tests {
         assert_eq!(out[0].album, 0);
     }
 
-    /// Neighbours vote their cosine, a negative one weighs nothing, and the
-    /// seed's own row is never a voter even when the caller hands it in.
     #[test]
     fn neighbours_count_and_the_seed_never_votes() {
         let mut seed = track("/m/a/1.mp3");
@@ -575,8 +476,6 @@ mod tests {
         );
     }
 
-    /// A list value is as many votes as it has parts, and the spelling the
-    /// most rows use is the one that comes back.
     #[test]
     fn list_values_split_and_the_common_spelling_wins() {
         let mut seed = track("/m/a/1.mp3");
@@ -598,8 +497,7 @@ mod tests {
         assert_eq!(out[1].genre, "Dream Pop");
     }
 
-    /// Aliases fold two spellings into one candidate under the canonical
-    /// display. The map is process-global, so the test clears it after.
+    /// The map is process-global, so the test clears it after.
     #[test]
     fn aliases_fold_into_one_candidate() {
         let mut seed = track("/m/a/1.mp3");
@@ -625,7 +523,6 @@ mod tests {
         assert_eq!(out[0].score, 1.0);
     }
 
-    /// The cap bounds the list, and a cap of nothing asks for nothing.
     #[test]
     fn the_cap_holds() {
         let mut rows = Vec::new();
@@ -646,9 +543,6 @@ mod tests {
         assert!(vote(&p, seed_row, &[], &[], 0).is_empty());
     }
 
-    /// A lookup value is a voter like the rest: it outweighs one album
-    /// sibling, loses to two, and is flagged so a panel can say where it
-    /// came from.
     #[test]
     fn lookup_contributes() {
         let seed = || {
@@ -667,7 +561,6 @@ mod tests {
         assert_eq!(out[2].genre, "Shoegaze", "the one sibling is outweighed");
         assert!(!out[2].lookup);
 
-        // Two siblings put the tags back on top.
         let p = projection(&[seed(), track("/m/a/2.mp3"), track("/m/a/3.mp3")]);
         let seed_row = row_of(&p, "Seed");
         let out = vote(&p, seed_row, &[], &["Post-Rock".into()], 5);
@@ -675,9 +568,6 @@ mod tests {
         assert_eq!(out[0].album, 2);
     }
 
-    /// Turning a source's weight off takes its candidates off the ballot
-    /// rather than scoring them at zero, which is what lets the probe
-    /// measure one source at a time.
     #[test]
     fn a_zero_weight_turns_its_source_off() {
         let mut seed = track("/m/album/1.mp3");
@@ -707,8 +597,6 @@ mod tests {
         assert_eq!(out.iter().map(|s| s.album).sum::<usize>(), 0);
     }
 
-    /// The acoustic path over a library with no vectors at all: an empty
-    /// table is a vote with no neighbours, not a panic.
     #[test]
     fn suggest_degrades_when_there_are_no_vectors() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -725,8 +613,6 @@ mod tests {
         assert!(suggest(&conn, "nothing-here", &p, 999, &[], 5).is_empty());
     }
 
-    /// The head of a score map is the best of it, ties by id, and a map
-    /// shorter than the cap comes back sorted whole.
     #[test]
     fn nearest_takes_the_head() {
         let scored = vec![(3, 0.1), (1, 0.9), (2, 0.9), (4, -0.2)];

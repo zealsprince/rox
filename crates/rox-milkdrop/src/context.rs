@@ -1,28 +1,13 @@
-//! A current OpenGL context with no window under it.
+//! A current OpenGL context with no window under it, which is all
+//! libprojectM needs: it draws into an FBO we read back.
 //!
-//! libprojectM is a GL renderer that asks for two things: a context that's
-//! current on the calling thread, and a function that resolves GL symbols by
-//! name. It doesn't want a window and never presents anything, because
-//! everything it draws lands in an FBO we read back. So this module's whole
-//! job is to talk each platform's context API into handing over a context
-//! with nothing attached to it.
+//! Linux tries the X11 display (a null display pointer) and an EGL device
+//! display on a render node for machines with no X server. CGL does
+//! surfaceless natively. WGL needs a device context, so the worker makes a
+//! hidden 1x1 window. Where a driver refuses surfaceless, a 1x1 pbuffer is made
+//! current and ignored.
 //!
-//! Every platform has an answer and they're all slightly different. On Linux
-//! it takes two: the X11 display handle with a null display pointer that every
-//! desktop has always used, and an EGL device display opened straight on a
-//! render node for the machines with no X server to answer the first one. CGL
-//! treats surfaceless as normal. WGL is the awkward one: it can't produce a context
-//! without a device context, and a device context comes from a window, so the
-//! worker makes a 1x1 window nobody ever shows and throws it away afterwards.
-//!
-//! Where surfaceless is refused anyway, and some drivers do refuse it, the
-//! fallback is a 1x1 pbuffer that gets made current and then ignored. Nothing
-//! is ever drawn into it.
-//!
-//! Errors are strings that name the platform and the step that failed. They
-//! travel up into `Status::Failed` and end up as the panel's body text, so
-//! they're written to be read by whoever is looking at a black panel and
-//! wondering why.
+//! Errors name the platform and step; they end up as the panel's body text.
 
 use std::ffi::{CStr, c_void};
 use std::num::NonZeroU32;
@@ -38,23 +23,17 @@ use glutin::prelude::*;
 use glutin::surface::{PbufferSurface, Surface, SurfaceAttributesBuilder};
 use raw_window_handle::RawWindowHandle;
 
-/// The GL profile projectM's shaders are compiled against. 3.3 core is
-/// libprojectM's own floor everywhere but macOS, where CGL's core profile
-/// tops out at 4.1 and won't advertise anything lower.
+/// libprojectM's floor is 3.3 core; macOS's CGL core profile only advertises
+/// 4.1.
 #[cfg(target_os = "macos")]
 const GL_VERSION: Version = Version { major: 4, minor: 1 };
 #[cfg(not(target_os = "macos"))]
 const GL_VERSION: Version = Version { major: 3, minor: 3 };
 
-/// A current context and the display that can resolve GL symbols for it.
-///
-/// Not `Send`: it's created on the worker thread, used there, and dropped
-/// there. A GL context that changes threads has to be released first, and the
-/// worker has no reason to ever want that.
+/// Not `Send`: created, used and dropped on the worker thread.
 pub struct HeadlessGl {
     context: PossiblyCurrentContext,
-    /// Kept alive because the context is current on it. Only present when
-    /// surfaceless was refused.
+    /// Only when surfaceless was refused; the context is current on it.
     _surface: Option<Surface<PbufferSurface>>,
     display: Display,
     #[cfg(windows)]
@@ -65,26 +44,15 @@ pub struct HeadlessGl {
 /// process.
 ///
 /// libprojectM's `GLResolver` is a process singleton that latches the first
-/// resolver callback and user pointer it's handed and returns early from
-/// every later `Initialize` (`Renderer/Platform/GLResolver.cpp`, the
-/// `if (m_loaded) return true;` at the top). So a pointer to any one
-/// engine's `HeadlessGl` is the wrong thing to give it: close the panel that
-/// owns that engine, open another, and projectM resolves through a pointer
-/// to freed memory on the next instance's glad probe. That's a segfault
-/// inside `projectm_create_with_opengl_load_proc`, and it's what this static
-/// exists to stop.
-///
-/// A clone of the display is safe to keep forever. glutin refcounts it, and
-/// on EGL it never calls `eglTerminate` because the underlying display is
-/// itself a process singleton. Symbol resolution doesn't read per-context
-/// state, so the first engine's display answers correctly for every later
-/// engine on the same driver.
+/// callback and user pointer it's handed (`Renderer/Platform/GLResolver.cpp`,
+/// `if (m_loaded) return true;`). Handing it a pointer to one engine's
+/// `HeadlessGl` segfaults in `projectm_create_with_opengl_load_proc` once that
+/// engine is dropped and another opens. A display clone is safe forever:
+/// glutin refcounts it, EGL's display is itself a process singleton, and
+/// symbol resolution reads no per-context state.
 static RESOLVER: OnceLock<Display> = OnceLock::new();
 
-/// Resolve a GL entry point through the process-lifetime display. Returns
-/// null before any context has been built, which is projectM's own "not
-/// found" and can't happen in practice: the resolver is only ever called
-/// from inside a `projectm_create_*` that a live worker is making.
+/// Null before any context exists, which can't happen from inside projectM.
 pub fn resolve(name: &CStr) -> *const c_void {
     match RESOLVER.get() {
         Some(display) => display.get_proc_address(name),
@@ -93,21 +61,16 @@ pub fn resolve(name: &CStr) -> *const c_void {
 }
 
 impl HeadlessGl {
-    /// Resolve a GL entry point. This is what loads our own small GL function
-    /// table; projectM goes through [`resolve`] instead, for the lifetime
-    /// reason documented there.
+    /// For our own GL table; projectM goes through [`resolve`] instead.
     pub fn get_proc_address(&self, name: &CStr) -> *const c_void {
         self.display.get_proc_address(name)
     }
 
-    /// True while this context is the one the calling thread would render
-    /// through. The worker checks it once after setup.
     pub fn is_current(&self) -> bool {
         self.context.is_current()
     }
 }
 
-/// Build a headless context, or explain why not.
 pub fn create() -> Result<HeadlessGl, String> {
     #[cfg(windows)]
     let window = windows_helper::HiddenWindow::create()?;
@@ -118,7 +81,7 @@ pub fn create() -> Result<HeadlessGl, String> {
     let window_handle: Option<RawWindowHandle> = None;
 
     let display = create_display(window_handle)?;
-    // First engine wins and every later one resolves through it. See RESOLVER.
+    // First engine wins; see RESOLVER.
     let _ = RESOLVER.set(display.clone());
     let config = find_config(&display)?;
 
@@ -132,8 +95,7 @@ pub fn create() -> Result<HeadlessGl, String> {
             #[cfg(windows)]
             _window: window,
         }),
-        // Some drivers only pretend to be surfaceless. A 1x1 pbuffer nobody
-        // draws into satisfies them, and costs a few kilobytes.
+        // Some drivers only pretend to be surfaceless.
         Err(surfaceless_error) => {
             let context = unsafe { display.create_context(&config, &attributes) }
                 .map_err(|e| step_error("recreating the OpenGL context for a pbuffer", &e))?;
@@ -159,24 +121,11 @@ pub fn create() -> Result<HeadlessGl, String> {
     }
 }
 
-/// A context at the profile projectM was built for, or failing that, whatever
-/// the driver will give.
-///
-/// The first ask is 3.3 core, which is libprojectM's floor. Some drivers turn
-/// that exact request down and still hand out a usable context when asked
-/// for nothing in particular: the Intel Windows drivers of the Haswell era
-/// answer a versioned core request with an error code that isn't in any
-/// header, and the report that led here was one of those, a black panel
-/// under `wglCreateContextAttribsARB` failing with `0xC007000D`. A second
-/// ask with no version and the compatibility profile gets the driver's
-/// default, which under the ARB rules is the highest version it has that
-/// is backward compatible. projectM accepts a compatibility context of 3.3
-/// or newer, and it probes the context itself, so a driver that can only
-/// do 3.1 is refused there with the version in the log rather than here
-/// with an error code nobody can look up.
-///
-/// Not on macOS: CGL's compatibility profile is stuck at 2.1 by design,
-/// so the retry would only trade one refusal for another.
+/// 3.3 core first, then the driver's default compatibility context. Haswell
+/// era Intel Windows drivers refuse the versioned request with
+/// `0xC007000D` from `wglCreateContextAttribsARB` but hand out a usable
+/// default; projectM probes the version itself and logs a refusal. Not on
+/// macOS, where the compatibility profile is stuck at 2.1.
 fn create_context(
     display: &Display,
     config: &Config,
@@ -234,8 +183,8 @@ fn create_display(window_handle: Option<RawWindowHandle>) -> Result<Display, Str
             .map_err(|e| step_error("opening the graphics display", &e));
     }
 
-    // WGL wants the window's device context, which it takes from the handle
-    // passed here rather than from the one on the context attributes.
+    // WGL takes the window's device context from this handle, not the one on
+    // the context attributes.
     #[cfg(windows)]
     {
         let handle = raw_window_handle::RawDisplayHandle::Windows(
@@ -251,32 +200,20 @@ fn create_display(window_handle: Option<RawWindowHandle>) -> Result<Display, Str
     }
 }
 
-/// The two ways this module knows to reach EGL.
-///
-/// They are tried in whichever order the machine makes likelier, and the first
-/// one that opens wins.
 #[cfg(not(any(target_os = "macos", windows)))]
 #[derive(Clone, Copy)]
 enum EglPlatform {
-    /// A null Xlib display handle, which glutin's EGL backend maps onto
-    /// `EGL_DEFAULT_DISPLAY`. The name promises more than it delivers: Mesa
-    /// resolves it through the X11 platform, so it wants a reachable X server
-    /// and fails with `EGL_NOT_INITIALIZED` when there isn't one.
+    /// Maps to `EGL_DEFAULT_DISPLAY`, which Mesa resolves through X11, so it
+    /// fails with `EGL_NOT_INITIALIZED` without a reachable X server.
     X11,
-    /// An `EGL_PLATFORM_DEVICE_EXT` display, opened on a render node with
-    /// nothing windowing-related in the way. This is the one that works in a
-    /// Flatpak sandbox, over a bare SSH session, and on a headless CI runner.
+    /// `EGL_PLATFORM_DEVICE_EXT` on a render node: works in Flatpak, over SSH,
+    /// and on headless CI.
     Device,
 }
 
-/// Open an EGL display, preferring whichever platform this machine is set up
-/// for.
-///
-/// The X11 handle goes first when `DISPLAY` names a server, because that is
-/// the path every working desktop has been taking and there is no reason to
-/// move them off it. With no X server the device platform goes first instead,
-/// and X11 still runs behind it so a driver that offers no device extensions
-/// keeps whatever it had.
+/// X11 first when `DISPLAY` names a server, the path desktops already take;
+/// device first otherwise, with X11 behind it for drivers without device
+/// extensions.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn create_egl_display() -> Result<Display, String> {
     let has_x11 = std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty());
@@ -297,8 +234,7 @@ fn create_egl_display() -> Result<Display, String> {
         }
     }
 
-    // The first failure is the one the machine was expected to succeed at, so
-    // its wording leads and keeps the shape the single-attempt path had.
+    // The failure the machine was expected to succeed at leads.
     Err(failures.join(", and "))
 }
 
@@ -316,18 +252,9 @@ fn open_egl_display(platform: EglPlatform) -> Result<Display, String> {
     }
 }
 
-/// Open a display on the first EGL device that will have us.
-///
-/// `query_devices` lists every renderer the driver stack knows about, hardware
-/// and software together and in no promised order, so they get sorted before
-/// anything is opened: a machine with a GPU should use it, and Mesa's llvmpipe
-/// marks itself with `EGL_MESA_device_software` and makes a fine last resort.
-///
-/// glutin 0.32 reaches the device platform but not `EGL_PLATFORM_SURFACELESS_MESA`,
-/// which has no `RawDisplayHandle` variant and no constructor of its own. The
-/// two behave the same for our purposes: both open without a window system,
-/// both hand back pbuffer-capable configs and `EGL_KHR_surfaceless_context`.
-/// Device has the edge that it says which GPU it picked.
+/// Hardware devices sort ahead of llvmpipe (`EGL_MESA_device_software`).
+/// glutin 0.32 can't reach `EGL_PLATFORM_SURFACELESS_MESA`, which behaves the
+/// same for our purposes.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn open_device_display() -> Result<Display, String> {
     use glutin::api::egl::device::Device;
@@ -349,12 +276,8 @@ fn open_device_display() -> Result<Display, String> {
     Err(failure)
 }
 
-/// Name the path that worked, once per process.
-///
-/// Which platform answered decides whether this machine can run Milkdrop at
-/// all, and it is the first thing worth knowing when a bug report says the
-/// panel is black. Once, because opening and closing the panel builds a fresh
-/// context every time and the answer never changes inside a run.
+/// Once per process: which platform answered is the first thing a black
+/// panel bug report needs.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn announce(platform: EglPlatform) {
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();
@@ -369,9 +292,8 @@ fn announce(platform: EglPlatform) {
 }
 
 fn find_config(display: &Display) -> Result<Config, String> {
-    // Ask for a pbuffer-capable config first: it keeps the fallback below
-    // open, and every driver that can do surfaceless can also do this. A
-    // driver that offers neither gets the surfaceless-only template.
+    // Pbuffer-capable first, to keep the fallback open; surfaceless-only
+    // otherwise.
     for surface_types in [ConfigSurfaceTypes::PBUFFER, ConfigSurfaceTypes::empty()] {
         let template = ConfigTemplateBuilder::new()
             .with_alpha_size(8)
@@ -381,8 +303,7 @@ fn find_config(display: &Display) -> Result<Config, String> {
             .build();
         let found = unsafe { display.find_configs(template) };
         if let Ok(configs) = found {
-            // Hardware first, then anything: llvmpipe is a fine last resort
-            // and is what a headless CI runner has.
+            // Hardware first; llvmpipe is a fine last resort.
             if let Some(config) = configs.max_by_key(|c| c.hardware_accelerated() as u8) {
                 return Ok(config);
             }
@@ -394,10 +315,8 @@ fn find_config(display: &Display) -> Result<Config, String> {
     ))
 }
 
-/// glutin exposes `make_current_surfaceless` on each backend's own context
-/// type but not on the enum that wraps them, so this unwraps the enum and
-/// puts it back together. The catch-all covers backends we don't ask for,
-/// like GLX arriving from a preference we never pass.
+/// glutin exposes `make_current_surfaceless` per backend but not on the
+/// wrapping enum.
 fn make_current_surfaceless(context: NotCurrentContext) -> Result<PossiblyCurrentContext, String> {
     match context {
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
@@ -433,10 +352,8 @@ fn step_error(step: &str, error: &impl std::fmt::Display) -> String {
     format!("{PLATFORM} failed at {step}: {error}")
 }
 
-/// WGL's chicken and egg: `wglCreateContext` needs an HDC, an HDC comes from
-/// a window, and we don't want a window. So we make the smallest, quietest
-/// one Windows will give us, never show it, and destroy it when the worker
-/// shuts down.
+/// WGL needs an HDC, which needs a window: the smallest one Windows gives,
+/// never shown.
 #[cfg(windows)]
 mod windows_helper {
     use std::num::NonZeroIsize;
@@ -482,9 +399,7 @@ mod windows_helper {
                     ));
                 }
 
-                // CS_OWNDC so the device context WGL takes stays valid for
-                // the window's whole life rather than being handed back to
-                // the system cache after every paint.
+                // CS_OWNDC keeps the DC WGL takes valid for the window's life.
                 let class = WNDCLASSW {
                     style: CS_OWNDC,
                     lpfnWndProc: Some(DefWindowProcW),
@@ -497,9 +412,8 @@ mod windows_helper {
                     lpszMenuName: std::ptr::null(),
                     lpszClassName: CLASS_NAME.as_ptr(),
                 };
-                // A second engine registers the same class, which returns
-                // zero with ERROR_CLASS_ALREADY_EXISTS. That's fine, so the
-                // result is deliberately not checked.
+                // A second engine gets ERROR_CLASS_ALREADY_EXISTS, which is
+                // fine, so the result isn't checked.
                 RegisterClassW(&class);
 
                 let hwnd = CreateWindowExW(
@@ -528,8 +442,6 @@ mod windows_helper {
         }
 
         pub fn raw_handle(&self) -> RawWindowHandle {
-            // raw-window-handle wants the HWND as a non-zero integer, not a
-            // pointer; `create` already refused a null one.
             let mut handle = Win32WindowHandle::new(
                 NonZeroIsize::new(self.hwnd as isize).expect("checked non-null at creation"),
             );

@@ -1,12 +1,5 @@
-//! The go-to modal: Ctrl+G, or the Playback menu's own row, drops a
-//! timestamp field and a scrub strip over the workspace. Type a time you
-//! already know, off a tracklist or a cue sheet or a note you took, and
-//! Enter lands on it; drag the strip for the "somewhere around there"
-//! case. Escape or a click outside closes.
-//!
-//! A view over the same player the panels use, hosted as an overlay the
-//! way quick-play is: the workspace owns one at most and drops it on
-//! dismiss.
+//! The go-to modal: a timestamp field and a scrub strip over the workspace,
+//! hosted as an overlay the way quick-play is.
 
 use std::sync::{Arc, LazyLock};
 
@@ -22,10 +15,8 @@ use rox_panel_api::panel::{self, AppState, ScrubState};
 use rox_panel_kit::ui::{Seg, kbd_line};
 use rox_services::player::NowPlaying;
 
-/// The modal's width, narrower than quick-play's: one field and one strip.
 const WIDTH: f32 = 420.;
 
-/// The scrub strip's height, room for the slider knob and the hover pill.
 const STRIP_H: f32 = 24.;
 
 pub struct GoTo {
@@ -33,9 +24,6 @@ pub struct GoTo {
     input: Entity<InputState>,
     scrub: ScrubState,
     _input_events: Subscription,
-    /// The strip and the clocks read the player, so it needs the player's
-    /// own notify to stay live rather than freezing at the time the modal
-    /// opened. Same raw observe the seek strip runs on.
     _player: Subscription,
 }
 
@@ -49,10 +37,8 @@ impl Focusable for GoTo {
 
 impl GoTo {
     pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Empty rather than seeded with the current time: a seeded field
-        // puts the caret after four characters you have to clear before you
-        // can type the one time you came here to type. The clocks beside
-        // the strip say where you are instead.
+        // Empty rather than seeded with the current time, which would have to be
+        // cleared before typing. The clocks show where playback is.
         let input =
             cx.new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("goto-placeholder")));
         let _input_events = cx.subscribe_in(
@@ -75,9 +61,7 @@ impl GoTo {
         }
     }
 
-    /// The time the field currently reads, clamped inside the track. None
-    /// while the field is empty or holds something that isn't a time, which
-    /// is what leaves Enter inert.
+    /// Clamped inside the track. None leaves Enter inert.
     fn target(&self, cx: &App) -> Option<f64> {
         let secs = parse_time(&self.input.read(cx).value())?;
         let duration = self
@@ -86,16 +70,13 @@ impl GoTo {
             .read(cx)
             .now_playing()
             .and_then(|now| now.duration_secs);
-        // A time past the end lands on the end rather than refusing: the
-        // intent is legible, and a track whose tagged duration is short by
-        // a second shouldn't reject the last second of itself.
+        // Past the end lands on the end: tagged durations can be short by a second.
         Some(match duration {
             Some(duration) => secs.min(duration),
             None => secs,
         })
     }
 
-    /// Seek and close.
     fn commit(&mut self, cx: &mut Context<Self>) {
         let Some(secs) = self.target(cx) else {
             return;
@@ -104,9 +85,6 @@ impl GoTo {
         cx.emit(DismissEvent);
     }
 
-    /// The scrub strip between the two clocks: the playhead as a slider, a
-    /// press or drag seeks, a hover previews the time under the pointer.
-    /// The same strip state and handlers the seek panel runs on.
     fn strip(&self, now: &NowPlaying, cx: &mut Context<Self>) -> Div {
         let duration = now.duration_secs.filter(|d| *d > 0.0);
         let progress = duration
@@ -146,8 +124,6 @@ impl GoTo {
                 )
                 .size_full(),
             )
-            // The preview shows once the duration resolves; before that a
-            // fraction maps to nothing.
             .when_some(duration, |d, duration| {
                 d.child(panel::seek_hover(&self.scrub, duration, cx))
             });
@@ -161,8 +137,6 @@ impl GoTo {
             .children(duration.map(|d| clock(fmt_time(d))))
     }
 
-    /// What Enter would do with the field as it stands: the time it
-    /// resolves to, a note that it doesn't, or nothing while it's empty.
     fn target_line(&self, cx: &App) -> Option<Div> {
         let text = self.input.read(cx).value();
         if text.trim().is_empty() {
@@ -178,8 +152,6 @@ impl GoTo {
         Some(div().text_sm().text_color(color).child(text))
     }
 
-    /// The footer: the one shortcut, the way quick-play's footer names its
-    /// syntax.
     fn hint_row(&self) -> Div {
         div()
             .px(tokens::SPACE_SM)
@@ -196,14 +168,11 @@ impl GoTo {
     }
 }
 
-/// Tabular digits for the clocks, built once: [`clock`] runs twice per
-/// pump tick while playing, so the feature list shouldn't reallocate
-/// every call. Same feature the seek strip's clocks use.
+/// Built once: [`clock`] runs twice per pump tick while playing.
 static TNUM: LazyLock<FontFeatures> =
     LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
 
-/// One clock beside the strip: muted, sized to its digits, and tabular so
-/// a tick never changes the text width and shifts the strip.
+/// Tabular so a tick never changes the width and shifts the strip.
 fn clock(text: String) -> Div {
     let mut clock = div()
         .flex_none()
@@ -230,13 +199,10 @@ impl Render for GoTo {
             .shadow_md()
             .occlude()
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
-            // Scopes the workspace's playback key bindings out while the
-            // modal is up, so space and arrows work the field instead.
+            // Keeps space and arrows in the field instead of the playback bindings.
             .key_context("SearchInput")
-            // The field passes an idle escape through (it only keeps one
-            // that closes its IME or context menu), so it arrives here;
-            // stopped so the workspace's own escape ladder never fires
-            // over a handled one.
+            // The field passes an idle escape through. Stop it here so the workspace's
+            // escape ladder doesn't fire too.
             .on_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key != "escape" {
                     return;
@@ -272,13 +238,8 @@ impl Render for GoTo {
     }
 }
 
-/// A typed timestamp as seconds: plain seconds ("83"), minutes and seconds
-/// ("1:23"), or hours in front of both ("1:02:03"), with a fraction allowed
-/// on the last field either way ("1:23.5"). Fields over 60 read as written,
-/// so "0:90" is a minute and a half rather than an error.
-///
-/// Anything else is None, which keeps a half-typed entry inert instead of
-/// resolving it to a time nobody asked for.
+/// "83", "1:23", or "1:02:03", with a fraction on the last field. Fields over
+/// 60 read as written ("0:90" is 90s). Anything else is None.
 fn parse_time(text: &str) -> Option<f64> {
     let text = text.trim();
     if text.is_empty() {
@@ -291,8 +252,7 @@ fn parse_time(text: &str) -> Option<f64> {
     let mut secs = 0.0f64;
     for (ix, field) in fields.iter().enumerate() {
         let field = field.trim();
-        // Only the last field takes a fraction. A fractional minute is a
-        // typo far more often than it's an intent.
+        // A fractional minute is far more often a typo than an intent.
         let value: f64 = if ix + 1 == fields.len() {
             field.parse().ok()?
         } else {
@@ -328,12 +288,9 @@ mod tests {
     fn a_fraction_rides_the_last_field() {
         assert_eq!(parse_time("1:23.5"), Some(83.5));
         assert_eq!(parse_time("83.25"), Some(83.25));
-        // Not on a minute, where it reads as a slip rather than a time.
         assert_eq!(parse_time("1.5:23"), None);
     }
 
-    /// A field over 60 is unambiguous, so it's taken at face value rather
-    /// than refused: "0:90" is a minute and a half.
     #[test]
     fn oversized_fields_read_as_written() {
         assert_eq!(parse_time("0:90"), Some(90.0));

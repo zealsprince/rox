@@ -1,17 +1,9 @@
-//! The couple dozen OpenGL calls this crate makes for itself.
+//! The couple dozen OpenGL calls this crate makes for itself: the FBO and
+//! texture projectM renders into, the two readback pixel buffers, and
+//! `glGetString` for the log. projectM loads its own GL through glad.
 //!
-//! libprojectM loads its own GL through its vendored glad, off the same proc
-//! address we hand it, so nothing here is about drawing. It's the plumbing on
-//! either side of `projectm_opengl_render_frame_fbo`: the framebuffer and
-//! texture projectM renders into, the two pixel buffers the finished frame is
-//! read back through, and enough of `glGetString` to put a renderer name in
-//! the log when something looks wrong.
-//!
-//! No `gl` or `glow` crate for this. Both generate tens of thousands of lines
-//! for an API we touch a couple dozen functions of, and the loader they bring
-//! is the part we already have from glutin. A couple dozen `extern "system"`
-//! pointers resolved by name is the whole thing, and it makes the GL surface
-//! this crate depends on readable in one screen.
+//! No `gl` or `glow` crate: both generate tens of thousands of lines for a
+//! couple dozen functions, and glutin already supplies the loader.
 
 use std::ffi::{CStr, CString, c_void};
 
@@ -49,9 +41,8 @@ pub const DEPTH_BUFFER_BIT: GLbitfield = 0x0000_0100;
 pub const RENDERER: GLenum = 0x1F01;
 pub const VERSION: GLenum = 0x1F02;
 
-/// Every entry point resolved once at startup. A null here means the driver
-/// doesn't have the function, which for this set means it isn't a GL 3.0
-/// driver and nothing downstream would work anyway, so `load` refuses.
+/// Resolved once. A null means the driver isn't GL 3.0 and nothing
+/// downstream would work, so `load` refuses.
 #[allow(non_snake_case)]
 pub struct Gl {
     pub GenFramebuffers: unsafe extern "system" fn(GLsizei, *mut GLuint),
@@ -97,15 +88,10 @@ pub struct Gl {
 }
 
 impl Gl {
-    /// Resolve everything through `resolve`, which is the context's own
-    /// `get_proc_address`. Names every symbol that came back null, because
-    /// one missing function is a driver story and ten is a "you have no GL"
-    /// story, and the difference matters to whoever reads the panel.
-    /// The transmutes below carry no turbofish because their target type is
-    /// the struct field each one is assigned to, declared above and checked
-    /// by the compiler. Spelling all twenty-eight signatures out a second
-    /// time is what the lint would buy, and the only thing that buys is a
-    /// chance for the two copies to disagree.
+    /// Names every symbol that came back null: one missing is a driver story,
+    /// ten is "you have no GL".
+    // No turbofish on the transmutes: each target type is the field it's
+    // assigned to, and spelling 28 signatures twice only lets them disagree.
     #[allow(clippy::missing_transmute_annotations)]
     pub fn load(resolve: impl Fn(&CStr) -> *const c_void) -> Result<Gl, String> {
         let mut missing = Vec::new();
@@ -118,8 +104,7 @@ impl Gl {
             pointer
         };
 
-        // Every pointer is read out before `missing` is checked, so the error
-        // lists all of them rather than only the first.
+        // Read every pointer before checking `missing`, so the error lists them all.
         macro_rules! entry {
             ($name:literal) => {
                 unsafe { std::mem::transmute(get($name)) }
@@ -168,8 +153,6 @@ impl Gl {
         }
     }
 
-    /// `glGetString` as a Rust string, for the log line. Null means the
-    /// driver declined to say, which isn't worth failing over.
     pub fn string(&self, name: GLenum) -> String {
         unsafe {
             let pointer = (self.GetString)(name);
@@ -183,13 +166,11 @@ impl Gl {
         }
     }
 
-    /// Drain and report the error queue. Called at the few points where an
-    /// error means the frame is wrong, not at every call: `glGetError` is a
-    /// pipeline flush on some drivers and this runs sixty times a second.
+    /// Only at the few points where an error means a wrong frame: `glGetError`
+    /// flushes the pipeline on some drivers.
     pub fn take_error(&self) -> Option<GLenum> {
         unsafe {
             let mut last = None;
-            // The queue can hold several; the newest one is the useful one.
             while let error @ 1.. = (self.GetError)() {
                 last = Some(error);
             }

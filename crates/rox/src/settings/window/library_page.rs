@@ -1,13 +1,10 @@
 //! The Library settings page: the sources table, the library switches, the
-//! kanji dictionary, and the embed catch-up. The Subsonic rows in the sources
-//! table are `subsonic`'s, and the acoustic and tempo passes further down the
-//! page are `analysis`'s.
+//! acoustic and tempo passes (`analysis`), the kanji dictionary and the embed
+//! catch-up. Subsonic rows come from `subsonic`.
 
 use super::*;
 
 impl SettingsWindow {
-    /// The watch-folders switch: flip the local copy and hand it to the shared
-    /// library, which persists it and arms or drops the watcher on the spot.
     fn set_watch_library(&mut self, on: bool, cx: &mut Context<Self>) {
         self.watch_library = on;
         self.library
@@ -15,9 +12,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The case-fold switch: flip the live flag, persist, and reload the
-    /// projection so every symbol table re-interns under the new rule.
-    /// The database never changes; this is a read-model rebuild.
+    /// A read-model rebuild: the database never changes.
     fn set_fold_case(&mut self, on: bool, cx: &mut Context<Self>) {
         self.fold_case = on;
         settings::set_fold_case(on);
@@ -27,10 +22,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The genre-separator switch, the case-fold's twin: flip the live
-    /// flag in the genre module, persist, and reload the projection so
-    /// every genre surface re-splits under the new rule. Files and the
-    /// database never change; matching splits stored strings at read.
+    /// Files and the database never change; matching splits stored strings at
+    /// read.
     fn set_split_genre_compounds(&mut self, on: bool, cx: &mut Context<Self>) {
         self.split_genre_compounds = on;
         rox_library::genre::set_split_compounds(on);
@@ -40,19 +33,151 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The readings switch: through the live static, which every name cell
-    /// reads as it draws, and into the file. Nothing is rebuilt, since the
-    /// sort names are already in the projection; the windows just repaint.
-    /// The toggle reads the static rather than a cached field, so it can't
-    /// drift from what the panels are drawing.
+    /// Nothing rebuilds: the sort names are already in the projection. Reads
+    /// the static, so it can't drift from the panels.
     fn set_show_readings(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_show_readings(on, cx);
         Settings::update(move |s| s.show_readings = on);
         cx.notify();
     }
 
-    /// One row of the folder table: the path, its rollup numbers, and a
-    /// remove control, inert while a scan runs.
+    /// A pattern the glob parser can't read is refused here with its reason, so
+    /// the scan never has to skip one.
+    pub(super) fn add_exclusion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pattern = self.exclude_input.read(cx).value().trim().to_string();
+        if pattern.is_empty() {
+            return;
+        }
+
+        if let Err(reason) = rox_library::exclude::check(&pattern) {
+            self.exclude_notice = Some(rox_i18n::t!(
+                "settings-library-exclude-invalid",
+                reason = reason
+            ));
+            cx.notify();
+            return;
+        }
+
+        if !self.library_exclude.contains(&pattern) {
+            self.library_exclude.push(pattern);
+            self.write_exclusions(cx);
+        }
+        self.exclude_notice = None;
+        self.exclude_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        cx.notify();
+    }
+
+    fn remove_exclusion(&mut self, pattern: &str, cx: &mut Context<Self>) {
+        self.library_exclude.retain(|p| p != pattern);
+        self.write_exclusions(cx);
+        cx.notify();
+    }
+
+    fn write_exclusions(&self, cx: &mut Context<Self>) {
+        let patterns = self.library_exclude.clone();
+        self.library
+            .update(cx, |library, _| library.set_exclusions(patterns));
+    }
+
+    fn exclusion_row(&self, pattern: &str, cx: &mut Context<Self>) -> Stateful<Div> {
+        let remove = icon_button(icons::CLOSE, false, {
+            let pattern = pattern.to_string();
+            cx.listener(move |this, _, _, cx| this.remove_exclusion(&pattern, cx))
+        });
+
+        div()
+            // Prefixed so a pattern spelling a folder path can't share an id
+            // with that folder's row.
+            .id(ElementId::Name(format!("exclude:{pattern}").into()))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_MD)
+            .py(tokens::SPACE_XS)
+            .border_b_1()
+            .border_color(palette::border())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(pattern.to_string()),
+            )
+            .child(action_cell(remove))
+    }
+
+    fn exclusion_table(&self, cx: &mut Context<Self>) -> Div {
+        let mut table = div().flex().flex_col().child(
+            div()
+                .pb(tokens::SPACE_XS)
+                .border_b_1()
+                .border_color(palette::border())
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!("settings-library-exclude-col")),
+        );
+        if self.library_exclude.is_empty() {
+            table = table.child(
+                div()
+                    .py(tokens::SPACE_XS)
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("settings-library-exclude-none")),
+            );
+        }
+        for pattern in &self.library_exclude {
+            table = table.child(self.exclusion_row(pattern, cx));
+        }
+
+        let add = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(Input::new(&self.exclude_input)),
+            )
+            .child(icon_button(
+                icons::PLUS,
+                false,
+                cx.listener(|this, _, window, cx| this.add_exclusion(window, cx)),
+            ));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("settings-library-exclude-intro")),
+            )
+            .child(table)
+            .child(add)
+            .when_some(self.exclude_notice.clone(), |d, notice| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::tone_warn())
+                        .child(notice),
+                )
+            })
+            // The watcher follows a change at once, but rows an earlier scan
+            // put in stay until the next one.
+            .when(self.library_exclude != self.library_exclude_scanned, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(rox_i18n::t!("settings-library-exclude-nudge")),
+                )
+            })
+    }
+
     fn folder_row(
         &self,
         root: &Path,
@@ -69,8 +194,7 @@ impl SettingsWindow {
             })
         });
         div()
-            // Named after the folder, so the row's remove button is its
-            // own rather than every other row's. See
+            // Named after the folder so its remove button is its own. See
             // `rox_panel_kit::ui::control_focus`.
             .id(ElementId::Name(path.clone()))
             .flex()
@@ -90,31 +214,24 @@ impl SettingsWindow {
     pub(super) fn library_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let busy = self.library.read(cx).busy();
         let scanning = busy.is_some();
-        // Past the ceiling the watch stays off, so the toggle grays
-        // out at off and the note says why, with the numbers. Folders summed
-        // off the cached rollups, not a per-frame count; the roots never
-        // nest, so nothing counts twice. Matched to the catalog's own limit,
-        // which is None where the platform prices watching flat.
+        // Past the platform's watch ceiling the toggle locks off and the note
+        // says why. The roots never nest, so summing their rollups counts
+        // nothing twice.
         let dirs = self.root_stats.iter().map(|(_, s)| s.dirs).sum::<u64>();
         let over_limit = rox_services::catalog::watch_limit_dirs().filter(|limit| dirs > *limit);
         let lead_in = div()
             .text_xs()
             .text_color(palette::text_muted())
             .child(rox_i18n::t!("settings-library-folders-intro"));
-        // The rescan nudge, only while the separator rule has moved
-        // this session: filtering and the genre wall follow the flip
-        // right away, but genre lists earlier scans wrote into the
-        // database keep their old shape until a rescan re-reads the
+        // Stored genre lists keep their old shape until a rescan re-reads the
         // tags.
-        let separators_moved = self.split_genre_compounds != self.split_genre_compounds_at_open;
+        let separators_moved = self.split_genre_compounds != self.split_genre_compounds_scanned;
         let nudge = div()
             .text_xs()
             .text_color(palette::text_muted())
             .child(rox_i18n::t!("settings-library-genre-separator-nudge"));
-        // The sources table: a column header line, then a hairlined row per
-        // folder and per server. One list for every kind, so a source that
-        // arrives later as an extension takes a row here rather than a
-        // section of its own.
+        // One list for every kind of source, so a later source kind takes a row
+        // here, not a section.
         let mut table = div().flex().flex_col().child(
             div()
                 .flex()
@@ -166,17 +283,14 @@ impl SettingsWindow {
         for (root, stats) in &self.root_stats {
             table = table.child(self.folder_row(root, *stats, scanning, cx));
 
-            // A folder the sandbox reaches through the document portal:
-            // every read goes through the portal and the watcher sees
-            // nothing. The callout under the row carries the override that
-            // grants the real folder. Only ever true inside a Flatpak.
+            // Only inside a Flatpak: reads go through the document portal and
+            // the watcher sees nothing. The callout carries the override that
+            // grants the real folder.
             if rox_core::install::is_portal_path(root) {
                 table = table.child(portal_banner(root));
             }
         }
         table = table.children(servers);
-        // An add slot at the foot of the list, where the eye lands after
-        // reading it. Same menu the header's Add opens.
         let this = cx.entity().downgrade();
         table = table.child(
             div()
@@ -189,8 +303,6 @@ impl SettingsWindow {
                         .dropdown_menu(move |menu, _, _| add_source_menu(menu, &this, scanning)),
                 ),
         );
-        // The library's badge and the file under the scan cursor, or the
-        // resting status, under the table.
         let note: Option<SharedString> = busy.or_else(|| {
             let status = self.library.read(cx).status();
             (!status.is_empty()).then_some(status)
@@ -202,9 +314,8 @@ impl SettingsWindow {
             .child(table)
             .when_some(note, |d, note| {
                 d.child(
-                    // w_full: truncate with no definite width measures at
-                    // min-content and the line collapses to a bare
-                    // ellipsis.
+                    // w_full: truncate with no definite width collapses to a
+                    // bare ellipsis.
                     div()
                         .w_full()
                         .min_w_0()
@@ -215,9 +326,6 @@ impl SettingsWindow {
                 )
             });
 
-        // Add and rescan are in the section header like the colors
-        // controls. Add drops the kinds of source; rescan walks the folders,
-        // since a server has its own Sync.
         let this = cx.entity().downgrade();
         let controls = div()
             .flex()
@@ -240,9 +348,7 @@ impl SettingsWindow {
                     this.library.update(cx, |library, cx| library.rescan(cx));
                 }),
             ))
-            // The tag repair window: find and rewrite files with the
-            // broken ID3v2.4 tag shape lofty reads mangled, where a user
-            // ends up after seeing garbled tags.
+            // Rewrites files with the broken ID3v2.4 shape lofty reads mangled.
             .child(small_button(
                 rox_i18n::t!("settings-library-repair-tags"),
                 icons::FILE_TEXT,
@@ -253,8 +359,6 @@ impl SettingsWindow {
                     crate::tags::repair::open(library, now_art, cx);
                 }),
             ))
-            // The duplicates window: find tracks the library has more than
-            // once and move the spare copies to the trash.
             .child(small_button(
                 rox_i18n::t!("settings-library-duplicates"),
                 icons::COPY,
@@ -266,10 +370,10 @@ impl SettingsWindow {
                     crate::duplicates::open(library, thumbs, now_art, cx);
                 }),
             ));
-        // The lead-in describes the table, so both use the same terms
-        // and a search never turns up one without the other. The portal
-        // callouts live inside the table, so it answers to their terms too,
-        // but only while one is showing.
+        let excludes = self.exclusion_table(cx);
+
+        // The lead-in and the table share terms, so a search never finds one
+        // without the other. Portal terms only while a callout shows.
         let mut folders = vec![
             "scan", "rescan", "music", "add", "remove", "folder", "source",
         ];
@@ -335,6 +439,10 @@ impl SettingsWindow {
                         })
                     })
                     .custom(&folders, || table.into_any_element())
+                    .custom(
+                        &["exclude", "ignore", "skip", "pattern", "glob", "rescan"],
+                        || excludes.into_any_element(),
+                    )
                 },
             ))
             .section(self.acoustic_section(q, cx))
@@ -343,16 +451,8 @@ impl SettingsWindow {
             .section(self.embed_section(q, cx))
     }
 
-    /// The catch-up for the three save settings: what rox is already holding
-    /// written into the files themselves.
-    ///
-    /// It's here, under the acoustic radio, because this page already has two
-    /// of the three questions it answers: the save mode for descriptions is
-    /// the row above it, and the folder tools at the top of the page are the
-    /// other things that rewrite a library's files. The
-    /// counts belong to the dialog rather than this row: working out how many
-    /// files each source would touch means reading their tags, which is not
-    /// something a settings page should do on the way past.
+    /// The counts belong to the dialog: working out how many files each source
+    /// touches means reading their tags.
     fn embed_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let button = small_button(
             rox_i18n::t!("settings-library-embed-button"),
@@ -388,15 +488,9 @@ impl SettingsWindow {
         )
     }
 
-    /// Roll each scan folder up off the UI thread. Every row of that table
-    /// is a COUNT and a SUM over the tracks under one path, which is a
-    /// full table scan on a big library, and opening this window used to
-    /// pay for all of them before it drew anything. The rows are already
-    /// on screen by then; their numbers fill in when this lands.
-    ///
-    /// Its own connection rather than the catalog's, since the catalog's
-    /// lives on the UI thread. WAL gives readers concurrency for free, so
-    /// a scan running alongside this doesn't block it.
+    /// Every row is a COUNT and SUM over the tracks under one path, a full
+    /// table scan on a big library. Its own connection, since the catalog's
+    /// lives on the UI thread; WAL keeps a running scan from blocking it.
     pub(super) fn measure_root_stats(library: &Entity<Library>, cx: &mut Context<Self>) {
         let db = library.read(cx).db_path();
         let roots = library.read(cx).roots();
@@ -417,8 +511,7 @@ impl SettingsWindow {
                     )
                 })
                 .await;
-            // A database that wouldn't open is nothing to report: leave the
-            // folders listed with whatever they last showed.
+            // A database that wouldn't open leaves the rows as they were.
             let Some(measured) = measured else { return };
             this.update(cx, |this, cx| {
                 this.root_stats = measured;
@@ -429,26 +522,12 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// The Japanese dictionary behind kanji readings.
+    /// On the Library page, not the ML Models page: that page hides with the AI
+    /// switch, which would strand the romanization pass. It isn't a model
+    /// either, just a 2007 lookup table of Japanese readings.
     ///
-    /// On the Library page rather than beside the acoustic weights, which
-    /// is where it looks like it belongs: it's a download with a size and
-    /// a licence, the same shape those have. The ML Models page comes and
-    /// goes with the AI switch, and with that switch off the dictionary
-    /// would be unreachable while the romanization pass still ran and
-    /// still pointed people at a page that wasn't in the sidebar. It also
-    /// isn't a model. It's a lookup table of Japanese words and their
-    /// readings, compiled in 2007, and nothing about it is learned.
-    ///
-    /// A second row rather than one shared with the model rows. The
-    /// acoustic rows carry a Use button, an active mark and an extractor
-    /// pick, because a library runs exactly one of several models and
-    /// choosing between them is what that page half is for. There's one
-    /// dictionary, nothing to choose, and no state for a Use button to
-    /// move; factoring the two together would mean a row builder taking
-    /// half its arguments as None from one caller. The download button,
-    /// the progress readout and the licence line are the parts that
-    /// repeat, and they're four lines each.
+    /// Its own row rather than the model rows' builder: there's one dictionary
+    /// and nothing to choose.
     fn dictionary_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let dictionary = &rox_romanize::dictionary::IPADIC;
         let note = self.dictionary_note(cx);
@@ -497,8 +576,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The dictionary row's buttons: where it came from, then the one
-    /// button that changes state.
     fn dictionary_controls(
         &self,
         dictionary: &'static rox_romanize::dictionary::Dictionary,
@@ -541,8 +618,8 @@ impl SettingsWindow {
                 small_button(
                     rox_i18n::t!("settings-common-delete"),
                     icons::TRASH,
-                    // Deleting under a running pass would pull the
-                    // dictionary out from under it mid-title.
+                    // Deleting under a running pass would pull the dictionary
+                    // out mid-title.
                     crate::romanize_job::progress(cx).is_some(),
                     cx.listener(move |this, _, _, cx| this.delete_dictionary(dictionary, cx)),
                 )
@@ -557,8 +634,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// What the dictionary row says under itself: the download's progress,
-    /// or why the last one didn't finish.
     fn dictionary_note(&self, cx: &Context<Self>) -> Option<String> {
         if let Some(job) = &self.dictionary_job {
             if job.stopping() {
@@ -577,7 +652,6 @@ impl SettingsWindow {
         Some(rox_i18n::t!("settings-dictionary-download-failed", reason = reason).to_string())
     }
 
-    /// Fetch and unpack the dictionary.
     fn download_dictionary(
         &mut self,
         dictionary: &'static rox_romanize::dictionary::Dictionary,
@@ -589,10 +663,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Drop the dictionary. What it already romanized stays in the
-    /// library's tables: those rows are still the best answer rox has, and
-    /// making a delete cost a re-run would turn a reclaim-some-disk into a
-    /// second pass.
+    /// What it already romanized stays: a delete shouldn't cost a re-run.
     fn delete_dictionary(
         &mut self,
         dictionary: &'static rox_romanize::dictionary::Dictionary,
@@ -601,15 +672,12 @@ impl SettingsWindow {
         if let Err(e) = dictionary.delete() {
             log::error!("deleting {}: {e}", dictionary.id);
         }
-        // Whatever the shared accessor handed out stays mapped, but the
-        // next caller has to find out the files are gone.
+        // Already-mapped handles stay valid; the next caller finds the files
+        // gone.
         rox_romanize::reload();
         cx.notify();
     }
 
-    /// Keep the dictionary row moving while its download runs. Its own
-    /// loop rather than a branch in [`Self::poll_analyzing`], since the two
-    /// downloads are independent and either can run without the other.
     pub(super) fn poll_dictionary(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
@@ -628,10 +696,7 @@ impl SettingsWindow {
     }
 }
 
-/// The kinds of source the Add menu offers. A folder opens the file picker
-/// straight away, the way the add slot always has; a server opens its setup
-/// dialog. Scanning holds the folder back, since a new folder starts a
-/// scan of its own.
+/// Scanning holds the folder back, since a new folder starts a scan of its own.
 fn add_source_menu(
     menu: PopupMenu,
     this: &WeakEntity<SettingsWindow>,
@@ -662,12 +727,9 @@ fn add_source_menu(
     )
 }
 
-/// The Library page's callout under a folder the sandbox reaches through
-/// the document portal: what that costs, and the `flatpak override` that
-/// grants the real folder. The portal never tells a sandboxed app where the
-/// folder really lives (`Documents.info` is host-only), so the command
-/// carries a placeholder parent for the user to fill in and the hint says
-/// so, rather than the command pretending to be complete.
+/// The portal never tells a sandboxed app where the folder lives
+/// (`Documents.info` is host-only), so the command carries a placeholder parent
+/// and the hint says so.
 fn portal_banner(root: &Path) -> Div {
     let name = root
         .file_name()
@@ -692,9 +754,8 @@ fn portal_banner(root: &Path) -> Div {
                 rox_i18n::t!("settings-library-portal-hint"),
             ],
         ))
-        // The command on its own line with the copy button beside it, the
-        // socket path's shape: overrides run long, and a line that
-        // truncates is a command that's wrong.
+        // On its own line: overrides run long, and a truncated command is
+        // wrong.
         .child(
             div()
                 .flex()
@@ -713,9 +774,6 @@ fn portal_banner(root: &Path) -> Div {
         )
 }
 
-/// The scan folders with their rollups blank, what the table shows until
-/// [`SettingsWindow::measure_root_stats`] comes back. Reading the roots
-/// costs nothing; it's counting under them that's the scan.
 pub(super) fn seed_root_stats(library: &Entity<Library>, cx: &App) -> Vec<(PathBuf, Stats)> {
     library
         .read(cx)

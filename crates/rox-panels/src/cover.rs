@@ -1,12 +1,8 @@
 //! The cover art panel: the current track's artwork letterboxed into
 //! whatever space the panel has. Which track is per-view config through
-//! [`crate::source::TrackSource`] (the playing one by default, or the
-//! library selection), so a duplicate can watch each. Art comes off the
-//! file on a background thread through the library's art module and is
-//! cached per track; a track without art shows a dim disc instead. Every
-//! change of what the panel shows (blank to art, one cover to the next,
-//! art to the disc stand-in) is a short cross-fade, never a pop, the same
-//! move the waveform makes.
+//! [`crate::source::TrackSource`], so a duplicate can watch each. Art is read
+//! off the file on a background thread and cached per track. Every change of
+//! what the panel shows is a short cross-fade, never a pop.
 
 use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
@@ -35,22 +31,17 @@ use crate::panel_settings;
 use crate::selection::SelectionEvent;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
-/// The spin speed slider's range and default, in revolutions per minute.
-/// A real disc spins far too fast to watch; the default is a lazy
-/// turntable pace that keeps the art readable.
+/// Revolutions per minute. A real disc spins far too fast to watch, so the
+/// default is a lazy turntable pace.
 const SPIN_RPM_MIN: f32 = 1.0;
 const SPIN_RPM_MAX: f32 = 60.0;
 const SPIN_RPM_DEFAULT: f32 = 10.0;
 
-/// The ramp slider's ceiling and default, in seconds from rest to full
-/// speed; zero snaps straight to speed.
 const SPIN_RAMP_MAX: f32 = 10.0;
 const SPIN_RAMP_DEFAULT: f32 = 2.0;
 
-/// Which picture slot the panel shows. Disc is the tag's "media"
-/// picture, the CD scan; every pick falls back through the front cover,
-/// any embedded picture, and folder art in the art module, so a slot the
-/// file doesn't have still shows something.
+/// Disc is the tag's "media" picture. Every pick falls back through the art
+/// module, so a slot the file doesn't have still shows something.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArtPick {
@@ -72,44 +63,30 @@ impl ArtPick {
     }
 }
 
-/// Dress the artwork as a physical disc, whatever picture is in the slot:
-/// the face of a CD under its translucent plastic, or the label of a
-/// vinyl record. Off leaves the picture flat. Defined in
-/// [`crate::discs`] now that the art shelf uses the same styles;
-/// re-exported here because it's this panel's config vocabulary.
+/// Re-exported because it's this panel's config vocabulary.
 pub use crate::discs::DiscStyle;
 
-/// The cover panel's per-view config: what a saved layout restores, and
-/// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CoverConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
     pub source: TrackSource,
-    /// The picture slot to show, front by default.
     #[serde(default)]
     pub art: ArtPick,
     #[serde(default)]
     pub align: Align,
-    /// Stretch the art to fill the panel, ignoring its aspect ratio,
-    /// instead of letterboxing it to fit.
     #[serde(default)]
     pub stretch: bool,
-    /// Spin the disc while a track plays, ramping up to speed and coasting
-    /// back down on pause like a real player. Applies when the panel shows
-    /// a disc: the disc art slot, or any art in a disc style.
+    /// Applies when the panel shows a disc: the disc art slot, or any art in
+    /// a disc style.
     #[serde(default)]
     pub spin: bool,
-    /// Full spin speed, in revolutions per minute.
     #[serde(default = "default_spin_rpm")]
     pub spin_rpm: f32,
-    /// Seconds the spin takes from rest to full speed, and back.
+    /// Seconds from rest to full speed and back; zero snaps.
     #[serde(default = "default_spin_ramp")]
     pub spin_ramp: f32,
-    /// The disc dress-up: off, CD, or vinyl.
     #[serde(default)]
     pub disc_style: DiscStyle,
 }
@@ -138,35 +115,25 @@ impl Default for CoverConfig {
     }
 }
 
-/// One thing the panel can show. The fade runs between two of these.
 #[derive(Clone)]
 enum Slide {
-    /// Nothing at all: what the first slide fades in from.
     Blank,
-    /// The source points at no track: an empty sleeve stands in.
+    /// The source points at no track.
     Empty,
-    /// The track has no art anywhere: the dim disc stand-in.
+    /// The track has no art anywhere.
     Disc,
-    /// A station with nothing to show yet: the radio mark, the disc's
-    /// sibling. A stream never had a file to carry a cover, so the disc
-    /// would be claiming the wrong kind of absence.
+    /// A station with nothing to show yet.
     Radio,
-    /// The playing station's picture: the song on air where one was found
-    /// for it, the station's own logo otherwise, with its aspect ratio.
-    /// Drawn exactly like a file's art and retired differently: the handle
-    /// belongs to the shared art entity, which replaces it on the next
-    /// turnover, so this panel must not drop its decode.
+    /// The playing station's picture. The handle belongs to the shared art
+    /// entity, so this panel must never drop its decode.
     Live(Arc<Image>, f32),
-    /// A track's artwork, with its width over height so the art layer can
-    /// size itself to the letterboxed fit, and the disc bake when the
-    /// panel shows it as one.
+    /// Art, its width over height, and the disc bake when shown as one.
     Art(Arc<Image>, f32, Option<Arc<RenderImage>>),
 }
 
 impl Slide {
-    /// Same visual target; art compares by content id so a cache drop and
-    /// re-read of the same bytes never fades a cover into itself, plus the
-    /// bake's identity so flipping the disc shape does fade over.
+    /// Art compares by content id, so a re-read of the same bytes never fades
+    /// into itself; the bake by identity, so a new disc shape does fade.
     fn same(&self, other: &Slide) -> bool {
         match (self, other) {
             (Slide::Blank, Slide::Blank)
@@ -186,7 +153,6 @@ impl Slide {
         }
     }
 
-    /// The disc bake behind the slide, if it has one.
     fn disc_base(&self) -> Option<&Arc<RenderImage>> {
         match self {
             Slide::Art(_, _, Some(base)) => Some(base),
@@ -195,60 +161,43 @@ impl Slide {
     }
 }
 
-/// Loaded cover art with its aspect ratio and, when the panel shows it as
-/// a disc, the masked square bake the GPU spins; None means the track has
-/// no art.
+/// None means the track has no art.
 type LoadedArt = Option<(Arc<Image>, f32, Option<Arc<RenderImage>>)>;
 
 pub struct CoverArtPanel {
     state: AppState,
     config: CoverConfig,
-    /// The loaded art keyed by the track it belongs to, with its aspect
-    /// ratio; None inside means the track has no art. Kept so the pump's
-    /// per-frame notifies never re-read the file.
+    /// Keyed by path, so the pump's per-frame notifies never re-read the file.
     art: Option<(PathBuf, LoadedArt)>,
-    /// The track a load is running for, so a render can tell "already
-    /// fetching" from "needs a fetch".
     pending: Option<PathBuf>,
-    /// The playing station picture's id and the aspect ratio read off it,
-    /// so the letterbox doesn't re-parse a header every frame.
     live_ratio: Option<(u64, f32)>,
-    /// The cached source resolve, so the pump's per-frame notifies never
-    /// turn into selection lookups.
     resolved: ResolvedTrack,
     /// Discards stale load results when the track changes mid-read.
     generation: u64,
-    /// What the panel is fading from and toward, and when the fade started.
     from: Slide,
     to: Slide,
     fade_at: Instant,
-    /// The disc's rotation and angular velocity in radians, and the last
-    /// frame's clock for the per-frame step.
+    /// Disc rotation and angular velocity, in radians.
     angle: f32,
     velocity: f32,
     spin_tick: Instant,
-    /// The spin speed and ramp sliders' drag state, and the panel's one
-    /// in-flight readout edit.
     rpm_scrub: ScrubState,
     ramp_scrub: ScrubState,
     value_edit: ValueEdit,
     focus: FocusHandle,
-    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _selection_changed: Subscription,
     _library_changed: Subscription,
-    /// Retires whatever cover is still on screen when the panel is dropped
-    /// (closed or its pop-out window shut). Without it a closed panel leaves
-    /// its last decoded cover pinned in gpui's never-evicting asset cache.
+    /// Without it a closed panel leaves its last cover pinned in gpui's
+    /// never-evicting asset cache.
     _retire_on_drop: Subscription,
 }
 
 impl CoverArtPanel {
     pub fn new(state: AppState, config: CoverConfig, cx: &mut Context<Self>) -> Self {
-        // The cover only turns over when the playing track does; the fade
-        // between them drives its own frames. Gated so the pump's per-tick
-        // notify doesn't rebuild the panel behind a settled cover.
+        // Gated so the pump's per-tick notify doesn't rebuild the panel behind
+        // a settled cover.
         let _player_changed = crate::player::observe_view(&state.player, cx);
         let _selection_changed = cx.subscribe(
             &state.selection,
@@ -257,8 +206,6 @@ impl CoverArtPanel {
                 cx.notify();
             },
         );
-        // A rescan can rewrite tags, art files, and id -> path mappings;
-        // drop the caches so both the resolve and the art re-read.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -270,10 +217,8 @@ impl CoverArtPanel {
                 cx.notify();
             },
         );
-        // On drop the panel is gone, so nothing is still showing: force the
-        // decoded covers out of the asset cache rather than going through the
-        // showing-guarded retire, and take the published content shape with
-        // it.
+        // Nothing is showing once the panel is gone, so this skips the
+        // showing-guarded retire and forces the covers out.
         let panel_id = cx.entity().entity_id();
         let _retire_on_drop = cx.on_release(move |this, cx| {
             panel::shader::forget_content_shape(panel_id);
@@ -283,9 +228,8 @@ impl CoverArtPanel {
             ] {
                 if let Slide::Art(image, _, disc) = slide {
                     image.remove_asset(cx);
-                    // The disc bake bypasses the asset cache, so it leaves
-                    // the sprite atlases directly; dropping an already
-                    // dropped bake is a no-op.
+                    // The bake lives in the sprite atlases, not the asset
+                    // cache. A double drop is a no-op.
                     if let Some(disc) = disc {
                         cx.drop_image(disc, None);
                     }
@@ -302,8 +246,7 @@ impl CoverArtPanel {
             generation: 0,
             from: Slide::Blank,
             to: Slide::Blank,
-            // Backdated so a fresh panel starts settled instead of fading
-            // blank into blank.
+            // Backdated so a fresh panel starts settled.
             fade_at: Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS),
             angle: 0.0,
             velocity: 0.0,
@@ -320,9 +263,8 @@ impl CoverArtPanel {
         }
     }
 
-    /// Whether this key is a station that's on air right now: the one row
-    /// whose cover comes from the shared art entity, since the song playing
-    /// on it changes under the same key and only that entity follows it.
+    /// A station on air takes its cover from the shared art entity, since the
+    /// song on it changes under the same key.
     fn on_air(&self, key: &TrackKey, cx: &App) -> bool {
         let Some(now) = self.state.player.read(cx).now_playing() else {
             return false;
@@ -331,10 +273,8 @@ impl CoverArtPanel {
         !key.is_local() && now.live && now.key == *key
     }
 
-    /// A station picture's width over height, read off the header and kept
-    /// against the picture's own id. The letterboxed frame needs the ratio
-    /// every frame and the bytes are already in memory, so the only thing
-    /// worth avoiding is parsing the header sixty times a second.
+    /// Cached against the picture's id so the letterbox doesn't parse the
+    /// header every frame.
     fn live_ratio(&mut self, image: &Arc<Image>) -> f32 {
         if let Some((id, ratio)) = self.live_ratio
             && id == image.id()
@@ -351,10 +291,8 @@ impl CoverArtPanel {
         ratio
     }
 
-    /// Make sure the art for `path` is cached or on its way: read the file
-    /// off the UI thread and swap the result in when done. A `remote` row
-    /// has no file and no picture slots, so it reads the one picture the
-    /// thumbnail store holds for it whichever slot the panel shows.
+    /// A `remote` row has no file or picture slots, so it reads the one
+    /// picture the thumbnail store holds, whichever slot is picked.
     fn ensure_art(&mut self, path: &Path, remote: bool, cx: &mut Context<Self>) {
         if self.art.as_ref().map(|(p, _)| p.as_path()) == Some(path)
             || self.pending.as_deref() == Some(path)
@@ -387,9 +325,7 @@ impl CoverArtPanel {
                         };
                         art.and_then(|(bytes, mime)| {
                             let format = ImageFormat::from_mime_type(&mime)?;
-                            // The shape off the header alone, no decode:
-                            // the art layer sizes itself by it so alignment
-                            // has a fitted element to place.
+                            // The shape off the header alone, no decode.
                             let ratio = image::ImageReader::new(std::io::Cursor::new(&bytes))
                                 .with_guessed_format()
                                 .ok()
@@ -416,22 +352,15 @@ impl CoverArtPanel {
         .detach();
     }
 
-    /// Point the panel at what it should show: the same slide stays put, a
-    /// different one starts a fade from whatever was showing. A fade
-    /// interrupted early keeps its original source, the waveform's rule, so
-    /// an intermediate that barely painted never flashes. Whatever the swap
-    /// leaves behind is retired, dropping its decoded bitmap.
+    /// A fade interrupted early keeps its original source, so an intermediate
+    /// that barely painted never flashes. What the swap drops is retired.
     fn retarget(&mut self, slide: Slide, cx: &mut App) {
         if self.to.same(&slide) {
             return;
         }
         let abandoned = if self.fade_at.elapsed().as_secs_f32() >= tokens::EASE_SECS {
-            // The fade finished: the settled target becomes the new floor,
-            // the outgoing floor drops away.
             std::mem::replace(&mut self.from, self.to.clone())
         } else {
-            // Mid-fade: keep the original floor, abandon the intermediate
-            // that barely painted.
             self.to.clone()
         };
         self.to = slide;
@@ -439,18 +368,14 @@ impl CoverArtPanel {
         self.retire(abandoned, cx);
     }
 
-    /// Drop a retired cover's decoded bitmap from gpui's asset cache, unless
-    /// the same art is still on screen. Covers are drawn through `img`,
-    /// which keeps every distinct decode in the process-wide asset
-    /// cache and never evicts on its own, so without this a long session
-    /// pins one full-size bitmap per album played.
+    /// gpui's asset cache never evicts, so without this a long session pins
+    /// one full-size bitmap per album played.
     fn retire(&self, slide: Slide, cx: &mut App) {
         let Slide::Art(image, _, disc) = slide else {
             return;
         };
-        // The disc bake goes straight into the sprite atlases, not the
-        // asset cache, so it drops from them directly unless another slide
-        // still shows the same bake.
+        // The disc bake goes straight into the sprite atlases, not the asset
+        // cache.
         if let Some(disc) = disc {
             let showing =
                 |s: &Slide| matches!(s, Slide::Art(_, _, Some(d)) if Arc::ptr_eq(d, &disc));
@@ -466,9 +391,6 @@ impl CoverArtPanel {
         image.remove_asset(cx);
     }
 
-    /// Point the panel at a different picture slot: drop the cached art
-    /// and the load in flight so the next render fetches the new slot,
-    /// fading over once it loads.
     fn set_art(&mut self, art: ArtPick, cx: &mut Context<Self>) {
         if self.config.art == art {
             return;
@@ -477,8 +399,6 @@ impl CoverArtPanel {
         self.reload_art(cx);
     }
 
-    /// Drop the cached art and the load in flight so the next render
-    /// fetches afresh, fading over once it loads.
     fn reload_art(&mut self, cx: &mut Context<Self>) {
         self.art = None;
         self.pending = None;
@@ -486,9 +406,6 @@ impl CoverArtPanel {
         cx.notify();
     }
 
-    /// Whether the loaded art gets a disc bake, and in which shape: None
-    /// for the plain picture, the bare crop for a spinning disc scan, or
-    /// the picked dress-up style.
     fn disc_mode(&self) -> Option<DiscShape> {
         match self.config.disc_style {
             DiscStyle::Cd => Some(DiscShape::Cd),
@@ -500,13 +417,10 @@ impl CoverArtPanel {
         }
     }
 
-    /// Pick the disc dress-up, reloading the art when the bake changes.
     fn set_disc_style(&mut self, style: DiscStyle, cx: &mut Context<Self>) {
         self.edit_disc_config(|config| config.disc_style = style, cx);
     }
 
-    /// Flip the spin: turning it off also rests the disc upright, so a
-    /// motionless disc never stops at a stray angle.
     fn set_spin(&mut self, on: bool, cx: &mut Context<Self>) {
         self.edit_disc_config(|config| config.spin = on, cx);
         if !on {
@@ -515,8 +429,6 @@ impl CoverArtPanel {
         }
     }
 
-    /// Flip a config knob that may change the disc bake: when it does, the
-    /// art reloads so the new shape fades over.
     fn edit_disc_config(&mut self, edit: impl FnOnce(&mut CoverConfig), cx: &mut Context<Self>) {
         let before = self.disc_mode();
         edit(&mut self.config);
@@ -526,9 +438,6 @@ impl CoverArtPanel {
         cx.notify();
     }
 
-    /// The labelled art slots, the settings row's and the flyout's one
-    /// list. A function rather than a `const` array of `&'static str`
-    /// labels, since the labels are translated at call time.
     fn art_picks() -> [(SharedString, ArtPick); 4] {
         [
             (rox_i18n::t!("cover-art-front"), ArtPick::Front),
@@ -538,8 +447,6 @@ impl CoverArtPanel {
         ]
     }
 
-    /// The panel's own dropdown entries: the source and artwork picks,
-    /// the same knobs the customize window edits.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -559,8 +466,7 @@ impl CoverArtPanel {
         );
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
-            // Follow the panel so the picked row's tick swaps live, the
-            // source flyout's rule.
+            // Follow the panel so the picked row's tick swaps live.
             panel::follow_panel(&panel, cx);
             let mut submenu = submenu.check_side(gpui_component::Side::Right);
             for (label, pick) in Self::art_picks() {
@@ -580,8 +486,6 @@ impl CoverArtPanel {
         ));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
-            // Follow the panel so the picked row's tick swaps live, the
-            // source flyout's rule.
             panel::follow_panel(&panel, cx);
             let mut submenu = submenu.check_side(gpui_component::Side::Right);
             for (label, style) in DISC_STYLES {
@@ -693,9 +597,7 @@ impl PanelSettings for CoverArtPanel {
                 ),
             ))
             .child({
-                // DISC_STYLES holds i18n keys, not labels; choices_shared
-                // wants the resolved text, so translate before handing it
-                // off rather than through the legacy `choices` adapter.
+                // DISC_STYLES holds i18n keys; choices_shared wants the text.
                 let styles: Vec<_> = DISC_STYLES
                     .iter()
                     .map(|(key, style)| (rox_i18n::t!(*key), *style))
@@ -805,8 +707,6 @@ impl Panel for CoverArtPanel {
         false
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -851,8 +751,6 @@ impl Panel for CoverArtPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The config block: the panel's quick entries and the settings
-        // window, apart from the core panel items.
         let menu = self.config_menu(menu, window, cx);
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
@@ -879,12 +777,9 @@ impl Panel for CoverArtPanel {
     }
 }
 
-/// One slide at a weight, filling the panel. Opacity cascades to the
-/// subtree, so the whole slide fades as one; the alignment knob places the
-/// content when the panel is wider than it. The art applies the panel
-/// theme's rounding itself: gpui content masks stay rectangular,
-/// so the body's rounded corners would otherwise be painted square over
-/// by a cover running edge to edge.
+/// One slide at a weight, filling the panel. The art applies the theme's
+/// rounding itself: gpui content masks stay rectangular, so a cover running
+/// edge to edge would paint square over the body's rounded corners.
 fn layer(
     slide: &Slide,
     angle: f32,
@@ -902,15 +797,12 @@ fn layer(
             .opacity(opacity),
         align,
     );
-    // Only the art runs edge to edge; the stand-ins keep a margin from
-    // the panel sides so an alignment never presses them into the edge.
+    // The stand-ins keep a margin so an alignment never presses them into the
+    // panel edge.
     match slide {
         Slide::Blank => base,
-        // An empty sleeve: a bare outline where a cover would sit, a faint
-        // note inside. Quieter than the disc, which means a track is up but
-        // has no art. It claims the space a square cover would (full width,
-        // the height cap transferring through the aspect ratio), so it
-        // stays a letterboxed square and the note scales with it.
+        // Claims a square cover's space, so it stays a letterboxed square and
+        // the note scales with it.
         Slide::Empty => {
             let mut sleeve = div()
                 .w_full()
@@ -931,10 +823,8 @@ fn layer(
                 ),
             )
         }
-        // Same square claim as the empty sleeve: a 1x1 box takes the space a
-        // cover would, so the disc centers itself no matter where the
-        // alignment pushes. Without it a right align presses the icon into
-        // the panel edge.
+        // A 1x1 box takes a cover's space, so the disc stays centered wherever
+        // the alignment pushes.
         Slide::Disc => {
             let mut frame = div()
                 .w_full()
@@ -952,8 +842,6 @@ fn layer(
                 ),
             )
         }
-        // The station stand-in: the disc's square claim, the radio mark
-        // inside it.
         Slide::Radio => {
             let mut frame = div()
                 .w_full()
@@ -971,8 +859,6 @@ fn layer(
                 ),
             )
         }
-        // A station's picture, drawn the way a file's art is: the same
-        // letterboxed frame, the same stretch and rounding.
         Slide::Live(image, _) if stretch => base.child(
             img(image.clone())
                 .object_fit(ObjectFit::Fill)
@@ -991,9 +877,8 @@ fn layer(
                 ),
             )
         }
-        // The disc'd art: the square bake in the same letterboxed fit,
-        // spun on the GPU about its center. A disc keeps its circle, so
-        // the stretch and the corner rounding don't apply.
+        // Spun on the GPU. A disc keeps its circle, so the stretch and the
+        // rounding don't apply.
         Slide::Art(_, _, Some(disc)) => {
             let disc = disc.clone();
             let mut frame = div().w_full().max_h_full();
@@ -1017,11 +902,8 @@ fn layer(
                 ),
             )
         }
-        // The frame hugs the letterboxed fit instead of filling the panel
-        // (full width, the height cap transferring back through the art's
-        // own ratio), so the alignment above has something to place.
-        // Stretch fills the panel edge to edge, dropping the aspect ratio
-        // and the alignment along with it; the letterboxed fit keeps both.
+        // The frame hugs the letterboxed fit so the alignment has something
+        // to place. Stretch drops the ratio and the alignment.
         Slide::Art(image, _, None) if stretch => base.child(
             img(image.clone())
                 .object_fit(ObjectFit::Fill)
@@ -1047,9 +929,8 @@ fn layer(
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
+        // A focus stop, which also puts the tab group on the focus path for
+        // the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
@@ -1059,9 +940,6 @@ impl CoverArtPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         match self.resolved.get(self.config.source, &self.state, cx) {
             None => self.retarget(Slide::Empty, cx),
-            // A station on air shows what the backdrop is following: the
-            // song on air where the lookup found a cover, and the station's
-            // logo behind that.
             Some(key) if self.on_air(&key, cx) => {
                 let target = match self.state.now_art.read(cx).live_art() {
                     Some(image) => {
@@ -1074,14 +952,9 @@ impl CoverArtPanel {
                 self.retarget(target, cx);
             }
             Some(key) => {
-                // Art is a property of the file, not the track: every cue
-                // track of one image shares its cover, so the cache stays
-                // keyed on the path and a boundary between two of them
-                // reloads nothing. A row with no file (a server's song, a
-                // station off the air) reads its picture out of the
-                // thumbnail store under the same key instead, and its
-                // stand-in follows the kind of row: a station never had a
-                // disc.
+                // Art belongs to the file, so cue tracks of one image share
+                // the path-keyed cache. A row with no file reads the
+                // thumbnail store instead.
                 let remote = !key.is_local();
                 let stand_in = if key.origin() == Origin::Radio {
                     Slide::Radio
@@ -1097,8 +970,7 @@ impl CoverArtPanel {
                         }
                         None => stand_in,
                     }),
-                    // A load is still on its way; the current slide stays up
-                    // and the next one fades in when it arrives.
+                    // A load is on its way; the current slide stays up.
                     _ => None,
                 };
                 if let Some(target) = target {
@@ -1107,12 +979,8 @@ impl CoverArtPanel {
             }
         }
 
-        // Tell the panel's shader surface what shape the slide actually
-        // takes in the body rect, so a frame shader can hug the picture
-        // instead of guessing at a square: the art's own ratio letterboxed,
-        // 1 for the square stand-ins and the disc bake, and the whole rect
-        // under stretch. While a fade runs, the shape comes from the
-        // settling target.
+        // Tell the shader surface the slide's shape so a frame shader can hug
+        // the picture. During a fade it's the settling target's shape.
         let shape = match &self.to {
             Slide::Blank => 0.0,
             Slide::Empty | Slide::Disc | Slide::Radio | Slide::Art(_, _, Some(_)) => 1.0,
@@ -1121,10 +989,6 @@ impl CoverArtPanel {
         };
         panel::shader::note_content_shape(cx.entity().entity_id(), shape);
 
-        // The spin: velocity ramps toward full speed while a track plays
-        // and back to rest when it stops, the angle integrating per frame.
-        // Runs only with a disc bake on screen, so the plain picture never
-        // pays for it.
         let has_disc = self.to.disc_base().is_some() || self.from.disc_base().is_some();
         let mut spinning = false;
         if has_disc {
@@ -1146,8 +1010,6 @@ impl CoverArtPanel {
         }
         self.spin_tick = Instant::now();
 
-        // Frames only while a fade or the spin is actually running; a
-        // settled panel costs zero.
         let u = (self.fade_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
         if u < 1.0 || spinning {
             window.request_animation_frame();
@@ -1159,19 +1021,16 @@ impl CoverArtPanel {
         let align = self.config.align;
         let rounding = self.config.chrome.theme.rounding;
         let stretch = self.config.stretch;
-        // The layers are children of an in-flow inner wrapper, not the root
-        // the theme pads: absolute insets resolve against the container
-        // minus its border only, so on the root the frame padding would
-        // never apply to them.
+        // The layers go in an inner wrapper: absolute insets resolve against
+        // the container minus its border only, so the theme's padding on the
+        // root would never apply to them.
         let inner = div().size_full().relative();
         let inner = if u >= 1.0 {
             inner.child(layer(&self.to, angle, 1.0, align, rounding, stretch))
         } else {
-            // Hold the outgoing cover at full under an incoming one so a
-            // same-art track change never dips toward the background, the
-            // backdrop's move. A disc'd incoming has transparent surround
-            // the old art would show through, and everything else coming in
-            // (the stand-ins) covers nothing, so both cross-fade instead.
+            // Hold outgoing art at full under incoming art so a same-art
+            // change never dips toward the background. A disc bake or a
+            // stand-in covers nothing, so those cross-fade.
             let floor = if matches!(self.to, Slide::Art(_, _, None)) {
                 1.0
             } else {

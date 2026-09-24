@@ -1,22 +1,16 @@
-//! The actions panels dispatch and bind against. The keymap registration
-//! and every handler stay up in the app; only the types are here, so a
-//! panel's `on_action` and the workspace's binding name the same one.
+//! The actions panels dispatch and bind against. Keymap registration and
+//! handlers stay in the app; only the types live here.
 
 use gpui::actions;
 
 actions!(
     rox,
     [
-        /// Play or pause the workspace's player, bound to space.
         TogglePlayback,
-        /// Nudge the playing track back, bound to the left arrow.
         SeekBackward,
-        /// Nudge the playing track forward, bound to the right arrow.
         SeekForward,
-        /// Step a panel's live type-ahead phrase to its next match,
-        /// bound to tab while a phrase is up.
+        /// Step a panel's live type-ahead phrase to its next match.
         TypeAheadNext,
-        /// The same backwards, bound to shift-tab.
         TypeAheadPrev
     ]
 );
@@ -24,15 +18,12 @@ actions!(
 actions!(
     lyrics,
     [
-        /// Stamp the cursor's line with the current playback position and
-        /// step to the next, bound to Shift+Enter while the editor is open.
+        /// Stamp the cursor's line with the playback position and step on.
         StampLine
     ]
 );
 
-/// The playback bindings' scope as a plain context, for the tooltips that
-/// show what key runs the button they're on. A lookup parses its argument
-/// as a context to match predicates against, and the binding's own scope
-/// (which excludes the search box) isn't one, so passing it finds no
-/// binding and the tip loses its key.
+/// The playback bindings' scope as a plain context, for key tooltips. A
+/// lookup parses its argument as a context, and the binding's own scope
+/// (which excludes the search box) isn't one, so passing it finds nothing.
 pub const PLAYBACK_TIP_SCOPE: Option<&'static str> = Some("Workspace");

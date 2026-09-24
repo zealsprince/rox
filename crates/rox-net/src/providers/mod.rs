@@ -1,15 +1,7 @@
 //! Online enrichment providers per ADR 14: per-domain traits implemented
-//! by per-service modules, blocking calls run on the background executor,
-//! plain data out. A provider never touches a file; whatever it fetches
-//! goes through the existing write paths (the metadata writer, the lyrics
-//! save). All HTTP goes through one shared agent that sends the app's
-//! User-Agent on every request. The metadata and art traits are defined
-//! alongside their first services; lyrics is the domain built out so far.
-//!
-//! A lookup returns ranked candidates rather than one best guess, so a
-//! picker can show them and the user confirms before anything is written.
-//! Confidence scores each candidate against the track's own tags, the
-//! same scorer every domain reuses.
+//! by per-service modules, blocking calls, plain data out. A provider never
+//! touches a file; what it fetches goes through the existing write paths.
+//! Lookups return ranked candidates for the user to confirm.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,17 +16,14 @@ pub mod lrclib;
 pub mod musicbrainz;
 pub mod theaudiodb;
 
-/// The identity every provider request sends; MusicBrainz requires a
-/// contactable User-Agent and the other services appreciate one.
+/// MusicBrainz requires a contactable User-Agent.
 const USER_AGENT: &str = concat!(
     "rox/",
     env!("CARGO_PKG_VERSION"),
     " (https://github.com/zealsprince/rox)"
 );
 
-/// The one HTTP agent every provider shares: pooled connections, the app
-/// User-Agent, and timeouts short enough that a dead network never parks
-/// a background task for long.
+/// Short timeouts, so a dead network never parks a background task for long.
 pub fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -45,14 +34,9 @@ pub fn agent() -> &'static ureq::Agent {
     })
 }
 
-/// A ureq error folded to a short reason that's safe to show and safe to
-/// log. ureq's own Display prints the full request URL, and Last.fm's URL
-/// includes the api key as a query param, so its string must never reach
-/// a panel or a log line. Stopping that leak is why this exists.
-/// A status failure reports the bare code; a transport failure maps to its
-/// kind, with the offline family (no dns, refused connection, dropped io)
-/// folded to one plain "no connection". This is the only sanctioned way to
-/// stringify a provider's ureq error; never call `.to_string()` on one.
+/// The only sanctioned way to stringify a provider's ureq error; never call
+/// `.to_string()` on one. ureq's Display prints the full URL, and Last.fm's
+/// carries the api key.
 pub fn net_reason(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, _) => format!("service returned {code}"),
@@ -65,10 +49,8 @@ pub fn net_reason(e: &ureq::Error) -> String {
     }
 }
 
-/// Whether any lyrics provider is enabled, a static like the rating
-/// style's: the panel checks it in render and menu paths where a
-/// settings-file load has no place. Seeded at startup from the settings,
-/// flipped by the settings window's Providers page.
+/// Static so render and menu paths can check it without a settings load.
+/// Seeded at startup, flipped by the Providers page. Same for the flags below.
 static LYRICS_ONLINE: AtomicBool = AtomicBool::new(true);
 
 pub fn lyrics_online() -> bool {
@@ -79,8 +61,6 @@ pub fn set_lyrics_online(on: bool) {
     LYRICS_ONLINE.store(on, Ordering::Relaxed);
 }
 
-/// Whether any metadata provider is enabled, the lyrics static's twin for
-/// the tag lookup. Seeded at startup, flipped by the Providers page.
 static METADATA_ONLINE: AtomicBool = AtomicBool::new(true);
 
 pub fn metadata_online() -> bool {
@@ -91,9 +71,6 @@ pub fn set_metadata_online(on: bool) {
     METADATA_ONLINE.store(on, Ordering::Relaxed);
 }
 
-/// Whether the fingerprint identify is enabled, the metadata static's
-/// companion for the lookup that goes by sound instead of by tags. Seeded
-/// at startup, flipped by the Providers page.
 static ACOUSTID_ONLINE: AtomicBool = AtomicBool::new(true);
 
 pub fn acoustid_online() -> bool {
@@ -104,22 +81,13 @@ pub fn set_acoustid_online(on: bool) {
     ACOUSTID_ONLINE.store(on, Ordering::Relaxed);
 }
 
-/// Whether the identify can actually be offered: the toggle is on and some
-/// application key exists, the build's own or one the user typed. AcoustID
-/// is the one provider here that refuses an anonymous caller, so a build
-/// that shipped without a key hides the button rather than offering one
-/// that always fails.
-///
-/// The settings read this needs is the reason it isn't a bare static, so
-/// it belongs on a click or an open, not in a paint. A build carrying a key
-/// answers off the baked const and never touches the file.
+/// AcoustID refuses anonymous callers, so the identify is offered only when
+/// some key exists. Reads settings when the build has none, so call it on a
+/// click, not in a paint.
 pub fn acoustid_available() -> bool {
     acoustid_online() && (!acoustid::CLIENT_KEY.is_empty() || !acoustid::client_key().is_empty())
 }
 
-/// Whether each cover-art service is enabled. Three providers rather than
-/// one domain flag, so a user can lean on whichever service covers their
-/// library better. Seeded at startup, flipped by the Providers page.
 static ITUNES_ONLINE: AtomicBool = AtomicBool::new(true);
 static DEEZER_ONLINE: AtomicBool = AtomicBool::new(true);
 static LASTFM_ART_ONLINE: AtomicBool = AtomicBool::new(true);
@@ -148,15 +116,11 @@ pub fn set_lastfm_art_online(on: bool) {
     LASTFM_ART_ONLINE.store(on, Ordering::Relaxed);
 }
 
-/// Whether any cover-art service is on, the gate for offering the search
-/// at all.
 pub fn art_online() -> bool {
     itunes_online() || deezer_online() || lastfm_art_online()
 }
 
-/// Whether the artist lookup is enabled, the biography panel's domain:
-/// Last.fm's text and stats plus the deezer portrait.
-/// Seeded at startup, flipped by the Providers page.
+/// The biography panel's domain: Last.fm text and stats plus the deezer portrait.
 static ARTIST_ONLINE: AtomicBool = AtomicBool::new(true);
 
 pub fn artist_online() -> bool {
@@ -167,22 +131,12 @@ pub fn set_artist_online(on: bool) {
     ARTIST_ONLINE.store(on, Ordering::Relaxed);
 }
 
-/// The per-session lookup cache, per ADR 14: in-memory, keyed by query,
-/// negative results included. Every aggregate search stores what it found
-/// under the query it ran, so asking again inside a session answers from
-/// memory instead of the network. Nothing persists; a restart starts cold,
-/// which is the whole invalidation story until bulk operations need more.
-/// The per-session lookup cache with single-flight compute. Results cache by
-/// key; an error is not stored, so a network blip does not pin a miss for the
-/// rest of the session. Two callers asking for the same key at once (the
-/// lyrics panel and an open match window, say) share one compute: the second
-/// waits on the first's per-key gate and reads its result, instead of both
-/// hitting the network and MusicBrainz's ~1.1s throttle.
+/// The per-session lookup cache, per ADR 14: keyed by query, empty results
+/// included, nothing persisted. Errors aren't stored. Concurrent asks for one
+/// key share a single compute, so they don't both hit MusicBrainz's ~1.1s
+/// throttle.
 struct SessionCache<T> {
     entries: Mutex<HashMap<String, T>>,
-    /// One gate per key held for the duration of that key's compute. Grows
-    /// with the distinct queries seen, the same unbounded-per-session shape
-    /// as `entries`; a restart clears both.
     inflight: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -196,9 +150,6 @@ impl<T> Default for SessionCache<T> {
 }
 
 impl<T: Clone> SessionCache<T> {
-    /// Answer from the cache under `key`, or run `compute` and store what it
-    /// returns, empty results and all. Cheap results are cloned out; the
-    /// entries never move.
     fn get_or_compute(
         &self,
         key: String,
@@ -215,7 +166,6 @@ impl<T: Clone> SessionCache<T> {
             .or_default()
             .clone();
         let _held = gate.lock().unwrap();
-        // The caller we may have waited on could have just filled the entry.
         if let Some(hit) = self.entries.lock().unwrap().get(&key) {
             return Ok(hit.clone());
         }
@@ -225,12 +175,8 @@ impl<T: Clone> SessionCache<T> {
     }
 }
 
-/// Run each provider search in turn, keeping every candidate and skipping a
-/// provider that errors rather than failing the whole lot. The error only
-/// surfaces when nothing came back at all: one dead service shouldn't sink
-/// the results a working one returned. With a single provider this matches a
-/// plain `?`, so it's correct today and stays correct once a domain gains a
-/// second service.
+/// Keep every candidate, skipping providers that error. The error surfaces
+/// only when nothing came back at all.
 fn collect_candidates<T>(
     searches: impl IntoIterator<Item = Result<Vec<T>, String>>,
 ) -> Result<Vec<T>, String> {
@@ -252,12 +198,8 @@ fn collect_candidates<T>(
     Ok(found)
 }
 
-/// The cache key for a query: its fields folded to one stable string, so
-/// the same lookup answers from one entry whatever the casing or spacing.
-/// The unit separator between fields keeps a long artist from colliding
-/// with a title; duration rounds to whole seconds, so a hair of drift does
-/// not miss. Providers that toggle independently append their own state,
-/// since a different provider set is a different answer.
+/// Fields folded and joined with the unit separator; duration rounds to
+/// whole seconds so a hair of drift still hits.
 fn query_key(query: &TrackQuery) -> String {
     format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}",
@@ -268,9 +210,6 @@ fn query_key(query: &TrackQuery) -> String {
     )
 }
 
-/// What a lookup matches on: the track's tags, or a hand-edited query
-/// standing in for them. The duration narrows the confidence score when
-/// known; None still queries.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackQuery {
     pub artist: String,
@@ -279,11 +218,7 @@ pub struct TrackQuery {
     pub duration_secs: Option<f64>,
 }
 
-/// One lyrics result a provider offered: the tags it includes so a picker
-/// can show what it matched, the sheet text, whether that text is timed,
-/// which service answered, and how well it scored against the query. The
-/// text is the LRC when synced, plain lines otherwise; the parser tells
-/// them apart on the re-read.
+/// `text` is LRC when synced, plain lines otherwise.
 #[derive(Clone)]
 pub struct LyricsCandidate {
     pub provider: &'static str,
@@ -296,19 +231,13 @@ pub struct LyricsCandidate {
     pub confidence: f32,
 }
 
-/// A lyrics service. Returns every candidate it found, unscored; the
-/// aggregate below scores and ranks them so one scorer decides the order
-/// across providers. Blocking, background executor only.
+/// Returns candidates unscored; the aggregate ranks across providers with one scorer.
 pub trait LyricsProvider {
     fn name(&self) -> &'static str;
     fn search(&self, query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String>;
 }
 
-/// Search every enabled lyrics provider, score each candidate against
-/// the query, and return them best first. An empty vec is a clean
-/// no-match; Err is the network or an API failing. The order is code
-/// (ADR 14: providers fixed, toggles in settings), so the ranking is the
-/// confidence score, not which service happened to answer.
+/// Ranked by confidence, not by which service answered (ADR 14).
 pub fn search_lyrics(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
     if !lyrics_online() {
         return Ok(Vec::new());
@@ -330,11 +259,8 @@ pub fn search_lyrics(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String>
     })
 }
 
-/// One metadata result a provider offered: the tag values it includes so a
-/// compare can show them next to the track's own, which service answered,
-/// and how well it scored. A field the service doesn't have comes back
-/// empty, and the compare leaves an empty fetched field alone. Year,
-/// track, and disc are strings, the shape the writer takes.
+/// A field the service lacks comes back empty and the compare leaves it
+/// alone. Year, track, and disc are strings, the shape the writer takes.
 #[derive(Clone)]
 pub struct MetadataCandidate {
     pub provider: &'static str,
@@ -342,10 +268,8 @@ pub struct MetadataCandidate {
     pub artist: String,
     pub album: String,
     pub album_artist: String,
-    /// The Latin sort names for the two credited artists, empty when the
-    /// service has none. Only these two: nothing rox queries serves a
-    /// title or album sort, and a field nothing ever fills is a lie in the
-    /// compare table.
+    /// Only these two sorts: no service rox queries serves a title or album
+    /// sort.
     pub artist_sort: String,
     pub album_artist_sort: String,
     pub year: String,
@@ -355,17 +279,11 @@ pub struct MetadataCandidate {
     pub confidence: f32,
 }
 
-/// A metadata service. Returns every candidate it found, unscored; the
-/// aggregate scores and ranks them, the lyrics shape. Blocking,
-/// background executor only.
 pub trait MetadataProvider {
     fn name(&self) -> &'static str;
     fn search(&self, query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String>;
 }
 
-/// Search every enabled metadata provider, score each candidate against
-/// the query on the shared scorer, and return them best first. An empty
-/// vec is a clean no-match; Err is the network or an API failing.
 pub fn search_metadata(query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String> {
     if !metadata_online() {
         return Ok(Vec::new());
@@ -393,27 +311,16 @@ pub fn search_metadata(query: &TrackQuery) -> Result<Vec<MetadataCandidate>, Str
     })
 }
 
-/// How many of AcoustID's hits get their tags fetched. MusicBrainz takes
-/// one request a second and the throttle serialises them, so every hit past
-/// this one is another second the user waits at the button. Five is deep
-/// enough to hold the right recording when a track is on several releases
-/// and shallow enough to answer while someone is still looking.
+/// MusicBrainz's one-a-second throttle makes every hit past this another
+/// second at the button.
 const IDENTIFY_HITS: usize = 5;
 
-/// Identify a track by its sound rather than by its tags: AcoustID matches
-/// the fingerprint to MusicBrainz recording ids, then each id is fetched
-/// for the tags a compare needs. An empty vec is a clean no-match, the
-/// search's shape, and Err is the wire or an API failing.
+/// Identify a track by its sound: AcoustID maps the fingerprint to
+/// MusicBrainz recordings, then each is fetched for its tags.
 ///
-/// Confidence is AcoustID's score, not the text scorer's. The fingerprint
-/// already matched the audio, so how well the candidate's title happens to
-/// resemble whatever the file was tagged with says nothing about whether
-/// this is the right recording, and ranking on it would push the right
-/// answer under a wrong one that shares a misspelling.
-///
-/// `query` still matters: it picks which of a recording's releases the
-/// numbers come from, so a track that names its album gets that release's
-/// track and disc rather than a compilation's.
+/// Confidence is AcoustID's score, never the text scorer's: the tags may be
+/// the very thing that's wrong. `query` only picks which release the track
+/// and disc numbers come from.
 pub fn identify(
     fingerprint: &str,
     duration_secs: u32,
@@ -424,11 +331,8 @@ pub fn identify(
     }
     static CACHE: OnceLock<SessionCache<Vec<MetadataCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    // Keyed on what was sent rather than on the track's tags: the
-    // fingerprint is the question here, and two files with the same audio
-    // deserve the one answer however they happen to be tagged. The cost is
-    // that a re-ask with an edited query keeps the first run's release
-    // pick, which is the only thing the query decides.
+    // Keyed on the fingerprint, not the tags: same audio, same answer. An
+    // edited query re-asked keeps the first run's release pick.
     let key = format!("{fingerprint}\u{1f}{duration_secs}");
     cache.get_or_compute(key, || {
         let hits = acoustid::lookup(fingerprint, duration_secs)?;
@@ -447,19 +351,12 @@ pub fn identify(
     })
 }
 
-/// One cover-art result a provider offered: where to fetch a small
-/// preview and the full image, its pixel size for the caption and the
-/// quality sort, and the release it belongs to. No stored confidence:
-/// the match grid judges by thumbnail, and the presence, which picks
-/// unattended, scores a candidate through [`art_confidence`].
+/// No stored confidence: the grid judges by eye, and unattended callers use
+/// [`art_confidence`].
 #[derive(Clone)]
 pub struct ArtCandidate {
     pub provider: &'static str,
-    /// The release the cover belongs to, so the grid tells a compilation
-    /// or a reissue apart from the album.
     pub album: String,
-    /// The artist credited on the release, empty when the service omits
-    /// it. The unattended pick scores on it; the by-eye grid does not.
     pub artist: String,
     pub thumb_url: String,
     pub full_url: String,
@@ -467,22 +364,15 @@ pub struct ArtCandidate {
     pub height: u32,
 }
 
-/// A cover-art service. Returns candidates as URLs, not bytes; the picker
-/// fetches the preview and, on apply, the full image. Blocking,
-/// background executor only.
 pub trait ArtProvider {
     fn name(&self) -> &'static str;
     fn search(&self, query: &TrackQuery) -> Result<Vec<ArtCandidate>, String>;
 }
 
-/// Search every enabled art service and return the candidates, largest
-/// first, so the crispest covers lead. A provider that errors is skipped
-/// rather than failing the lot; only when all fail and nothing came back
-/// does the error surface.
+/// Largest first. A provider that errors is skipped.
 pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
     let (itunes, deezer, lastfm_art) = (itunes_online(), deezer_online(), lastfm_art_online());
-    // Which services are on is part of the answer, so it goes in the key: a
-    // toggle since the last search is a different result, not a stale hit.
+    // Which services are on is part of the answer, so it's in the key.
     let key = format!(
         "{}\u{1f}{itunes}\u{1f}{deezer}\u{1f}{lastfm_art}",
         query_key(query)
@@ -506,12 +396,9 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
     })
 }
 
-/// How well an art candidate matches a query, 0 to 1: the release title
-/// against the album, or against the track title when the query has
-/// no album, the same subject the providers searched on. The artist
-/// weighs in when the candidate names one. The art searches are fuzzy,
-/// so a caller picking without a human eye filters on this rather than
-/// trusting result order; a wrong cover reads worse than none.
+/// 0 to 1: the release title against the album (or the title when there's
+/// no album), with the artist weighed in when named. Callers picking without
+/// a human filter on this, since a wrong cover reads worse than none.
 pub fn art_confidence(query: &TrackQuery, candidate: &ArtCandidate) -> f32 {
     let subject = if query.album.is_empty() {
         &query.title
@@ -526,21 +413,15 @@ pub fn art_confidence(query: &TrackQuery, candidate: &ArtCandidate) -> f32 {
     }
 }
 
-/// The biggest an image download will read, so a bad URL or a hostile
-/// server can't stream gigabytes into a cover slot. Comfortably past a
-/// high-resolution album scan.
+/// Cap on an image download, well past a high-resolution album scan.
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Download an image over the shared agent, capped at [`MAX_IMAGE_BYTES`].
-/// Used for both the grid previews and the full picture a save embeds, so
-/// all art traffic sends the app User-Agent like the rest.
 pub fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let response = agent().get(url).call().map_err(|e| net_reason(&e))?;
     let mut bytes = Vec::new();
-    // Read one byte past the cap: a body that fills that far is over the
-    // limit, and silently truncating it would cache a corrupt image that
-    // the exists-gates then never refetch.
+    // Read one byte past the cap: truncating silently would cache a corrupt
+    // image the exists-gates never refetch.
     response
         .into_reader()
         .take(MAX_IMAGE_BYTES + 1)
@@ -552,11 +433,8 @@ pub fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// How well a candidate matches the query, 0 to 1: a weighted blend of
-/// title, artist, and album similarity with duration proximity. Title
-/// weighs the most, album the least (compilations and reissues rename
-/// it freely), and an unknown field on either side scores neutral rather
-/// than punishing. The same scorer the tag lookup will reuse.
+/// Title weighs most, album least (reissues rename it freely); an unknown
+/// field scores neutral.
 fn confidence(query: &TrackQuery, candidate: &LyricsCandidate) -> f32 {
     score_fields(
         query,
@@ -567,9 +445,7 @@ fn confidence(query: &TrackQuery, candidate: &LyricsCandidate) -> f32 {
     )
 }
 
-/// The scorer both domains share: a candidate's bare tag fields against
-/// the query, so lyrics and metadata rank the same way. Kept field-based
-/// rather than over a candidate type so one function serves both.
+/// Field-based so lyrics and metadata candidates share one scorer.
 fn score_fields(
     query: &TrackQuery,
     title: &str,
@@ -595,10 +471,8 @@ fn score_fields(
     (0.45 * title + 0.30 * artist + 0.10 * album + 0.15 * duration).clamp(0.0, 1.0)
 }
 
-/// A rough similarity of two tag strings, 0 to 1: 1 when they normalize
-/// equal, otherwise the Jaccard overlap of their word sets, so
-/// "Harder, Better" and "harder better" match and word order does not
-/// matter. Empty on either side scores 0, there is nothing to compare.
+/// 1 when equal after normalizing, else Jaccard overlap of the word sets.
+/// Empty on either side scores 0.
 fn similarity(a: &str, b: &str) -> f32 {
     let (a, b) = (normalize(a), normalize(b));
     if a.is_empty() || b.is_empty() {
@@ -618,10 +492,8 @@ fn similarity(a: &str, b: &str) -> f32 {
     }
 }
 
-/// Fold a tag down to comparable words: lowercase, every run of
-/// non-alphanumerics to one space, trimmed. Punctuation and accents in
-/// the raw casing stop being the reason two equal titles miss. Public
-/// because the artist store keys its cache files on the same folding.
+/// Lowercase, runs of non-alphanumerics to one space, trimmed. The artist
+/// store keys its cache files on this too.
 pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_space = true;
@@ -640,17 +512,9 @@ pub fn normalize(s: &str) -> String {
     out
 }
 
-/// `normalize` with the accents taken off as well, for the places where two
-/// spellings of the same name have to compare equal rather than merely
-/// score well: a MusicBrainz artist row spelled "Beyoncé" against a tag
-/// spelled "Beyonce" is the same artist, and an exact-name gate that says
-/// otherwise writes nothing for half a library.
-///
-/// A table rather than a normalizer, because rox-net is a leaf crate with
-/// no ICU dependency and this only has to cover the Latin blocks a tag
-/// actually carries: Latin-1 Supplement and Latin Extended-A. Anything
-/// outside them (CJK, Cyrillic, Greek) has no marks to strip and comes
-/// through untouched, which is exactly right.
+/// [`normalize`] with accents stripped, for exact-name gates ("Beyoncé" vs
+/// "Beyonce"). A table rather than ICU: rox-net is a leaf crate, and only
+/// Latin-1 Supplement and Latin Extended-A carry marks tags use.
 pub fn normalize_folded(s: &str) -> String {
     let normalized = normalize(s);
     if normalized.is_ascii() {
@@ -666,10 +530,6 @@ pub fn normalize_folded(s: &str) -> String {
     out
 }
 
-/// The unaccented letters a keyboard without the mark produces, for one
-/// character. None means there's nothing to strip. Only the lowercase half
-/// of each block matters in practice since [`normalize`] lowercases first,
-/// but the ranges cover both so the function stands on its own.
 fn unaccent(c: char) -> Option<&'static str> {
     Some(match c {
         '\u{00C0}'..='\u{00C5}' | '\u{00E0}'..='\u{00E5}' => "a",
@@ -684,8 +544,6 @@ fn unaccent(c: char) -> Option<&'static str> {
         '\u{00D9}'..='\u{00DC}' | '\u{00F9}'..='\u{00FC}' => "u",
         '\u{00DD}' | '\u{00FD}' | '\u{00FF}' => "y",
         '\u{00DE}' | '\u{00FE}' => "th",
-        // The sharp s carries no mark to strip, and a keyboard without it
-        // types two esses.
         '\u{00DF}' => "ss",
         '\u{0100}'..='\u{0105}' => "a",
         '\u{0106}'..='\u{010D}' => "c",
@@ -749,11 +607,6 @@ mod tests {
         assert_eq!(similarity("Harder, Better", "harder better"), 1.0);
     }
 
-    /// The normalizer collapses every run of non-alphanumerics to one space
-    /// and trims the ends, so leading, trailing, and repeated punctuation
-    /// never leave stray spaces or empty words behind.
-    /// The accent fold on top of the normalize, for the comparisons that
-    /// have to come out equal rather than merely close.
     #[test]
     fn normalize_folded_takes_the_accents_off_too() {
         assert_eq!(normalize_folded("Beyoncé!"), "beyonce");
@@ -762,8 +615,6 @@ mod tests {
         assert_eq!(normalize_folded("Mylène Farmer"), "mylene farmer");
         assert_eq!(normalize_folded("Straße"), "strasse");
         assert_eq!(normalize_folded("Antonín Dvořák"), "antonin dvorak");
-        // Nothing to strip: ASCII takes the fast path, and a script with
-        // no marks comes through as normalize left it.
         assert_eq!(normalize_folded("Daft Punk"), "daft punk");
         assert_eq!(normalize_folded("米津玄師"), "米津玄師");
     }
@@ -773,33 +624,24 @@ mod tests {
         assert_eq!(normalize("  Air - Talkie Walkie  "), "air talkie walkie");
         assert_eq!(normalize("Sunday!!! (Live)"), "sunday live");
         assert_eq!(normalize("AC/DC"), "ac dc");
-        // Digits stay, and mixed case folds down.
         assert_eq!(normalize("Blink-182"), "blink 182");
     }
 
-    /// A punctuation-only name folds to the empty string. The prior fix keeps
-    /// two such names from reading as a match: "!!!" and "+/-" both normalize
-    /// to empty, but `similarity` scores an empty side 0, not 1, so distinct
-    /// symbol-only band names never collide into one.
+    /// Symbol-only names fold to empty, and `similarity` scores an empty side
+    /// 0, so "!!!" and "+/-" never collide.
     #[test]
     fn punctuation_only_names_fold_empty_and_do_not_collide() {
         assert_eq!(normalize("!!!"), "");
         assert_eq!(normalize("+/-"), "");
-        // Same folded form, but the empty-side guard scores them apart.
         assert_eq!(similarity("!!!", "+/-"), 0.0);
         assert_eq!(similarity("!!!", "!!!"), 0.0);
     }
 
-    /// Word-set overlap, not order: the Jaccard fallback matches rearranged
-    /// or partially shared titles and ranks a full overlap above a partial one.
     #[test]
     fn similarity_is_word_set_overlap() {
-        // Reordered words, same set: a full match.
         assert_eq!(similarity("Better Harder", "Harder Better"), 1.0);
-        // Two words shared of three total: 2/3.
         let partial = similarity("one more time", "one more");
         assert!((partial - 2.0 / 3.0).abs() < 1e-6);
-        // A larger shared fraction outranks a smaller one.
         assert!(similarity("a b c", "a b c d") > similarity("a b c", "a b c d e f"));
     }
 
@@ -833,8 +675,6 @@ mod tests {
         assert!(exact > 0.9);
     }
 
-    /// Exact beats partial beats none: a candidate matching every field
-    /// outscores one matching some, which outscores one matching nothing.
     #[test]
     fn confidence_orders_exact_partial_none() {
         let query = TrackQuery {
@@ -847,12 +687,10 @@ mod tests {
             &query,
             &candidate("La Femme d'Argent", "Air", "Moon Safari", Some(430.0)),
         );
-        // Title matches, artist and album miss, duration off.
         let partial = confidence(
             &query,
             &candidate("La Femme d'Argent", "Nobody", "Wrong", Some(120.0)),
         );
-        // Nothing matches at all.
         let none = confidence(
             &query,
             &candidate("Unrelated", "Nobody", "Wrong", Some(10.0)),
@@ -862,9 +700,6 @@ mod tests {
         assert!(exact > 0.9);
     }
 
-    /// Title weighs more than artist (0.45 vs 0.30), so matching the
-    /// title with the artist wrong beats matching the artist with the title
-    /// wrong. The scorer leans on the title because it identifies the track.
     #[test]
     fn title_outweighs_artist() {
         let query = TrackQuery {
@@ -878,8 +713,6 @@ mod tests {
         assert!(title_hit > artist_hit);
     }
 
-    /// Confidence stays inside 0..1 whatever the inputs, so a badge or a bar
-    /// never reads past full or below empty.
     #[test]
     fn confidence_stays_in_unit_range() {
         let query = TrackQuery {
@@ -907,10 +740,7 @@ mod tests {
                 Ok(value)
             })
         };
-        // First call computes, even for an empty (negative) result.
         assert_eq!(run(Vec::new()).unwrap(), Vec::<i32>::new());
-        // Second call hits the cache: compute never runs, and the stored
-        // empty comes back, not a fresh compute.
         assert_eq!(run(vec![1, 2, 3]).unwrap(), Vec::<i32>::new());
         assert_eq!(runs, 1);
     }
@@ -918,8 +748,6 @@ mod tests {
     #[test]
     fn cache_does_not_store_errors() {
         let cache: SessionCache<Vec<i32>> = SessionCache::default();
-        // A failed compute stores nothing, so a retry runs again and can
-        // return the real result instead of a pinned miss.
         assert!(
             cache
                 .get_or_compute("k".into(), || Err("boom".into()))
@@ -950,10 +778,7 @@ mod tests {
             album: "DISCOVERY".into(),
             duration_secs: Some(224.0),
         };
-        // Same track, different casing, spacing, and a hair of duration
-        // drift: one cache entry.
         assert_eq!(query_key(&a), query_key(&b));
-        // A different title is a different key.
         let c = TrackQuery {
             title: "One More Time".into(),
             ..a.clone()
@@ -973,10 +798,8 @@ mod tests {
         }
     }
 
-    /// The right album outscores a reissue, which outscores another album
-    /// by the same artist. The last one is the wrong-artwork case the
-    /// presence used to pick blind (issue #79); it has to score under the
-    /// 0.5 bar the presence filters on.
+    /// The wrong album by the right artist (issue #79) has to score under the
+    /// presence's 0.5 bar.
     #[test]
     fn art_confidence_prefers_the_right_album() {
         let query = TrackQuery {
@@ -995,9 +818,6 @@ mod tests {
         assert!(wrong < 0.5);
     }
 
-    /// A candidate without an artist scores on the release title alone,
-    /// and an albumless query falls back to the track title, the subject
-    /// the providers searched on for it.
     #[test]
     fn art_confidence_handles_missing_fields() {
         let query = TrackQuery {
@@ -1007,7 +827,6 @@ mod tests {
             duration_secs: None,
         };
         assert_eq!(art_confidence(&query, &art("Sexy Boy", "")), 1.0);
-        // A different release by the right artist still misses the bar.
         assert!(art_confidence(&query, &art("Moon Safari", "Air")) < 0.5);
     }
 
@@ -1019,8 +838,6 @@ mod tests {
             album: String::new(),
             duration_secs: None,
         };
-        // Album and duration unknown on the query side, but title and
-        // artist match, so the score still clears a useful bar.
         let score = confidence(
             &query,
             &candidate(

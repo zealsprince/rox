@@ -1,8 +1,5 @@
-//! The shared payload for dragging tracks. Holds the tracks in drag order so
-//! a drop queues them straight through, out-of-library files included, and
-//! carries their library ids alongside for a target that wants catalog rows
-//! instead (a playlist). One type so library rows, other panels, and external
-//! file drops all go through the same enqueue path.
+//! The shared payload for dragging tracks, so library rows, other panels,
+//! and external file drops all go through the same enqueue path.
 
 use std::sync::Arc;
 
@@ -12,22 +9,14 @@ use gpui::{SharedString, div};
 use rox_design::{palette, tokens};
 use rox_library::cue::TrackKey;
 
-/// The value carried through a track drag. `keys` is the drag order a drop
-/// enqueues; keys rather than paths, so dragging two tracks of one cue rip
-/// queues two tracks instead of the image twice. `ids` is the same drag in
-/// catalog terms for a target that stores rows rather than plays them. Both
-/// are in drag order, and neither is an index into the other: a cue rip
-/// spreads one id over several keys, and a file with no catalog row has a key
-/// and no id. `title` labels the floating preview. Both lists sit behind an
-/// Arc so a row attaches the payload with a refcount bump: a grab inside a big
-/// multi-selection would otherwise clone the whole set into every visible
-/// selected row on every frame.
+/// `keys` is what a drop enqueues: keys, not paths, so two tracks of one cue
+/// rip queue as two tracks. `ids` is the same drag as catalog rows and isn't
+/// index-aligned with `keys`. Both sit behind an Arc because every visible
+/// selected row attaches the payload each frame.
 #[derive(Clone)]
 pub struct PlayDrag {
     pub keys: Arc<[TrackKey]>,
-    /// The library track ids behind the keys, in drag order, for a drop
-    /// target that wants catalog rows rather than something to play (a
-    /// playlist). Empty when the source had none.
+    /// Empty when the source had no catalog rows.
     pub ids: Arc<[i64]>,
     pub title: SharedString,
 }
@@ -42,8 +31,6 @@ impl PlayDrag {
     }
 }
 
-/// The label that floats under the pointer while tracks are dragged. A multi
-/// drag shows the grabbed title with a count of the rest.
 pub struct PlayDragPreview {
     pub title: SharedString,
     pub extra: usize,

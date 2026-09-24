@@ -1,17 +1,13 @@
 //! The small readouts the whole app shares: durations, counts, and ages.
-//! Nothing here draws anything, so the panels, the settings windows, and the
-//! modals all read the same clock without any one of them owning it.
 
 use gpui::SharedString;
 
-/// A track's stored duration as minutes and seconds.
 pub fn fmt_ms(ms: u32) -> String {
     let secs = ms / 1000;
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
-/// A track number or year cell: blank when zero, since the scanner stores
-/// a missing tag as 0 and a bare 0 reads as data.
+/// Blank when zero: the scanner stores a missing tag as 0.
 pub fn fmt_num(n: u16) -> SharedString {
     if n == 0 {
         SharedString::default()
@@ -20,13 +16,11 @@ pub fn fmt_num(n: u16) -> SharedString {
     }
 }
 
-/// The playback clock format the panels share: minutes and seconds.
 pub fn fmt_time(secs: f64) -> String {
     fmt_time_padded(secs, 1)
 }
 
-/// `fmt_time` with the minutes zero-padded to `digits`, for clocks that
-/// tick every frame and need to hold one width for a whole track.
+/// Minutes zero-padded to `digits`, so a per-frame clock holds one width.
 pub fn fmt_time_padded(secs: f64, digits: usize) -> String {
     let m = (secs / 60.0).floor() as u64;
     format!(
@@ -35,14 +29,10 @@ pub fn fmt_time_padded(secs: f64, digits: usize) -> String {
     )
 }
 
-/// A listen's age as a short readout: seconds up through years, one
-/// unit, no calendar math. The stats panel's recents read it too.
 pub fn fmt_ago(secs: i64) -> String {
     let secs = secs.max(0);
-    // The unit suffix is part of the sentence, not notation: German wants
-    // "vor 2 Wo." where English wants "2w ago", and the number doesn't
-    // always lead. So each unit is its own message with the value in it,
-    // rather than a shared "{value}{unit} ago" frame.
+    // One message per unit, not a shared "{value}{unit} ago" frame: German
+    // says "vor 2 Wo." and the number doesn't always lead.
     let (value, key) = match secs {
         s if s < 60 => return rox_i18n::t!("ago-just-now").to_string(),
         s if s < 3600 => (s / 60, "ago-minutes"),
@@ -54,8 +44,7 @@ pub fn fmt_ago(secs: i64) -> String {
     rox_i18n::t!(key, count = value as u64).to_string()
 }
 
-/// Bytes as a short human size: whole numbers through KB, one decimal
-/// from MB up, decimal units like the file managers show.
+/// Decimal units like the file managers show.
 pub fn fmt_bytes(bytes: u64) -> String {
     let mut value = bytes as f64;
     let mut unit = "B";
@@ -73,9 +62,6 @@ pub fn fmt_bytes(bytes: u64) -> String {
     }
 }
 
-/// A unix timestamp as the locale's calendar date, on the machine's own
-/// clock, for readouts that want the day a thing happened rather than
-/// how long ago that was.
 pub fn fmt_date(unix_secs: i64) -> String {
     use chrono::Datelike;
     let Some(utc) = chrono::DateTime::from_timestamp(unix_secs, 0) else {
@@ -85,7 +71,6 @@ pub fn fmt_date(unix_secs: i64) -> String {
     rox_i18n::format::format_date(local.year(), local.month() as u8, local.day() as u8)
 }
 
-/// A unix timestamp formatted as YYYY-MM-DD HH:MM:SS in the machine's local time.
 pub fn fmt_datetime(unix_secs: i64) -> String {
     if unix_secs <= 0 {
         return String::new();
@@ -97,8 +82,6 @@ pub fn fmt_datetime(unix_secs: i64) -> String {
     local.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-/// A total running time: minutes and seconds, growing an hours place once
-/// it earns one.
 pub fn fmt_total(ms: u64) -> String {
     let secs = ms / 1000;
     if secs >= 3600 {
@@ -108,15 +91,9 @@ pub fn fmt_total(ms: u64) -> String {
     }
 }
 
-/// A long running time in words: the largest unit that fits and the one
-/// under it, "3 weeks, 2 days". The clock readouts stop meaning much past
-/// a day, so the library totals show this beside them.
-///
-/// Each unit is its own message rather than a shared "{count} {noun}"
-/// frame, for the reason [`fmt_ago`] is: a noun that only ever gains an
-/// "s" is an English assumption, and German, French, and Italian all
-/// inflect differently. The joiner is a message too, since a locale that
-/// wants "3 Wochen und 2 Tage" should be able to say so.
+/// The largest unit that fits and the one under it, "3 weeks, 2 days".
+/// Each unit and the joiner are their own messages, for the reason
+/// [`fmt_ago`]'s are.
 pub fn fmt_span(secs: u64) -> String {
     const UNITS: &[(u64, &str)] = &[
         (86_400 * 365, "span-years"),
@@ -131,7 +108,6 @@ pub fn fmt_span(secs: u64) -> String {
     };
     let (span, key) = UNITS[top];
     let first = rox_i18n::t!(key, count = secs / span).to_string();
-    // A spent second place drops rather than reading "3 weeks, 0 days".
     let Some(&(next_span, next_key)) = UNITS.get(top + 1) else {
         return first;
     };
@@ -155,18 +131,11 @@ mod tests {
         rox_i18n::t!("span-pair", first = first, second = second).to_string()
     }
 
-    /// Two units at most, adjacent ones, and a spent second place drops
-    /// rather than reading "3 weeks, 0 days".
-    ///
-    /// Asserted as composition rather than against English text: the
-    /// wording belongs to the locale files, and pinning it here would
-    /// make the suite fail on a machine whose OS locale isn't English.
-    /// These assertions check which units get picked.
+    /// Asserted as composition rather than English text, so the suite passes
+    /// on a machine whose OS locale isn't English.
     #[test]
     fn spans_read_in_two_units() {
-        // Held even though nothing here sets a locale: the assertions
-        // call fmt_span and the expected side separately, so a sibling
-        // test switching locales between the two would split the pair.
+        // Both sides resolve the locale separately, so hold the lock.
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
         assert_eq!(fmt_span(0), unit("span-seconds", 0));
         assert_eq!(fmt_span(45), unit("span-seconds", 45));
@@ -189,9 +158,6 @@ mod tests {
         );
     }
 
-    /// The wording itself, pinned in one locale under the shared lock so
-    /// the plural selectors and the joiner are exercised end to end and
-    /// not just against themselves.
     #[test]
     fn spans_read_like_english_in_english() {
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
@@ -205,11 +171,8 @@ mod tests {
         rox_i18n::set_locale(None);
     }
 
-    /// One unit, the largest that fits, and anything under a minute reads
-    /// as now rather than as a number of seconds.
     #[test]
     fn ages_read_in_one_unit() {
-        // Same reason as the spans above: both sides resolve separately.
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
         assert_eq!(fmt_ago(-5), rox_i18n::t!("ago-just-now"));
         assert_eq!(fmt_ago(59), rox_i18n::t!("ago-just-now"));

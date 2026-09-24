@@ -1,11 +1,8 @@
-//! The Playback settings page: how the queue arranges and extends itself,
-//! what a launch brings back, the step keys, ratings, the live buffer, and
-//! stream capture.
+//! The Playback settings page: queue order and continuation, step keys, the
+//! live buffer, stream capture, startup and ratings.
 
 use super::*;
 
-/// The orders shuffle can put the upcoming queue in, and what each one
-/// means. Read on the Playback page.
 fn shuffle_modes() -> Vec<panel::ModeSpec<ShuffleMode>> {
     vec![
         panel::ModeSpec {
@@ -21,15 +18,9 @@ fn shuffle_modes() -> Vec<panel::ModeSpec<ShuffleMode>> {
     ]
 }
 
-/// The strategies that refill a queue which has run dry (ADR 17).
-///
-/// Note how these differ from the orders above: every one of them is about
-/// which tracks join the queue, and not one of them touches the order the
-/// queue already has.
-///
-/// There's no Radio here. The Similar order does the radio draw when it runs
-/// out, so it's part of that pick instead of a fourth strategy that only ever
-/// made sense alongside it.
+/// The strategies that refill a queue which has run dry (ADR 17). They pick
+/// which tracks join, never the order. No Radio: the Similar order does the
+/// radio draw itself.
 fn continuation_modes() -> Vec<panel::ModeSpec<continuation::Mode>> {
     vec![
         panel::ModeSpec {
@@ -51,16 +42,12 @@ fn continuation_modes() -> Vec<panel::ModeSpec<continuation::Mode>> {
 }
 
 impl SettingsWindow {
-    /// The restore switch: straight into the file. Launch reads it there,
-    /// so the flip is live for the next start without touching playback.
     fn set_restore_last_track(&mut self, on: bool, cx: &mut Context<Self>) {
         self.restore_last_track = on;
         Settings::update(move |s| s.restore_last_track = on);
         cx.notify();
     }
 
-    /// The rating scale: through the live static, so every open rating
-    /// column redraws, and into the file.
     fn set_rating_style(&mut self, style: RatingStyle, cx: &mut Context<Self>) {
         self.rating_style = style;
         settings::set_rating_style(style, cx);
@@ -68,7 +55,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The unrated dots, the scale's sibling: same live-static route.
     fn set_rating_dots(&mut self, on: bool, cx: &mut Context<Self>) {
         self.rating_dots = on;
         settings::set_rating_dots(on, cx);
@@ -76,17 +62,9 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The live buffer row's description: what the buffer is, then what
-    /// the length it's set to actually weighs.
-    ///
-    /// The weight is the only reason the top of the range is where it is,
-    /// and a number of seconds says nothing about it. Two reference rates
-    /// bracket what stations broadcast at, so the line holds whatever the
-    /// listener is about to tune into. A station already playing gets a
-    /// third clause at its own measured rate, which is the one figure on
-    /// the row that's about this listener's own memory rather than radio
-    /// in general. The ceiling comes last, because every weight above it
-    /// is what the length asks for rather than what it gets.
+    /// Seconds say nothing about cost, so the row names the weight at two
+    /// reference bitrates, the playing station's own rate, and the memory
+    /// ceiling.
     fn live_buffer_description(&self, cx: &mut Context<Self>) -> SharedString {
         let player = self.playback.read(cx);
         let secs = player.live_buffer_secs() as f64;
@@ -109,11 +87,8 @@ impl SettingsWindow {
             ));
         }
 
-        // The ceiling under all of it, which the weights above can be well
-        // past: a lossless station at twelve hours asks for more memory
-        // than most machines have. Named only when the machine said how
-        // much it has, since the sentence is about this machine's memory
-        // and there's nothing honest to say about a figure we guessed.
+        // Only when the machine reported its memory: nothing honest to say
+        // about a guessed figure.
         if rox_playback::memory::total().is_some() {
             text.push(' ');
             text.push_str(&rox_i18n::t!(
@@ -125,10 +100,6 @@ impl SettingsWindow {
         text.into()
     }
 
-    /// The Playback page: how the queue arranges and extends itself, what a
-    /// launch brings back, and how tracks get rated along the way. Split off
-    /// the Application page so the music behavior reads together instead of
-    /// between window and data rows.
     pub(super) fn playback_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new()
             .section(self.playback_behavior_section(q, cx))
@@ -226,7 +197,6 @@ impl SettingsWindow {
             ))
     }
 
-    /// How far one step key moves the playhead.
     fn step_row(&self, cx: &mut Context<Self>) -> Div {
         panel::setting_row(
             rox_i18n::t!("settings-playback-step"),
@@ -252,7 +222,6 @@ impl SettingsWindow {
         )
     }
 
-    /// How long a step taken while paused plays for.
     fn step_preview_row(&self, cx: &mut Context<Self>) -> Div {
         panel::setting_row(
             rox_i18n::t!("settings-playback-step-preview"),
@@ -278,21 +247,11 @@ impl SettingsWindow {
         )
     }
 
-    /// What the transport's shuffle and continue buttons are doing when
-    /// they're on.
-    ///
-    /// Here rather than behind the buttons themselves, where these two
-    /// lists used to be as press-and-hold menus. Both are a pick
-    /// between strategies that differ in kind, and the difference is the
-    /// whole question: a menu of four bare words next to a menu of two bare
-    /// words made the two buttons read as the same button twice. A settings
-    /// row has room to say what each one does, and the button goes back to
-    /// being a plain on/off.
+    /// Here rather than as press-and-hold menus on the transport buttons: the
+    /// strategies differ in kind, and a settings row has room to say how.
     fn playback_behavior_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
-        // Similar needs vectors to sort by, and the switch that builds them
-        // being on isn't enough: it permits the pass, it doesn't run it. The
-        // mode stays listed either way, so it's discoverable and its own row
-        // can say what's missing.
+        // The switch permits the pass but doesn't run it. The mode stays listed
+        // so its row can say what's missing.
         let analyzed = settings::similarity_ready();
         let shuffle_mode = self.playback.read(cx).shuffle_mode();
         let continuation = self.playback.read(cx).continuation_mode();
@@ -366,13 +325,9 @@ impl SettingsWindow {
         )
     }
 
-    /// Saving songs off a stream. Two controls and one warning, because the
-    /// warning is the part someone has to read before turning it on: a
-    /// station flips its title a few seconds either side of the audio
-    /// switching, so what lands on disk carries a little of the song
-    /// before it or the one after. It lives on the Playback page beside
-    /// the live buffer because the two are one knob from the listener's
-    /// side: a song longer than the buffer is never saved.
+    /// The warning matters: a station flips its title a few seconds off the
+    /// audio switch, so saved songs carry a little of their neighbours. Beside
+    /// the live buffer because a song longer than the buffer is never saved.
     fn capture_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         Section::new(
             q,
@@ -389,12 +344,8 @@ impl SettingsWindow {
                     ],
                     panel::toggle(self.capture_enabled, Self::set_capture_enabled, cx),
                 )
-                // A saved song is only ever as long as the buffer it comes
-                // out of, so a buffer shorter than what a station plays is
-                // capture quietly doing nothing, with the setting that
-                // decides it sitting in another section. Warn rather than
-                // Bad, the same reading the ffmpeg note takes: nothing
-                // failed, a capability is just out of reach where it stands.
+                // Capture can't save a song longer than the buffer. Warn, not
+                // Bad: nothing failed.
                 .when(
                     self.capture_enabled && buffer < settings::DEFAULT_LIVE_BUFFER_SECS,
                     |rows| {
@@ -417,10 +368,8 @@ impl SettingsWindow {
                 .when(self.capture_enabled, |rows| {
                     let folder = self.capture_folder.clone();
 
-                    // The vocabulary is the renamer's, so a pattern
-                    // learned there reads the same here. What the tip
-                    // adds is the three names a broadcast reads its own
-                    // way.
+                    // The renamer's vocabulary; the tip adds the three names a
+                    // broadcast reads its own way.
                     let notes = vec![
                         rox_i18n::t!("settings-playback-capture-pattern-station"),
                         rox_i18n::t!("settings-playback-capture-pattern-source"),
@@ -457,8 +406,6 @@ impl SettingsWindow {
                                     this.pick_capture_folder(window, cx)
                                 }),
                             ))
-                            // Reveal creates the folder if the first capture
-                            // hasn't yet, so there's always something to open.
                             .child(small_button(
                                 rox_i18n::t!("settings-common-reveal"),
                                 icons::FOLDER,
@@ -527,8 +474,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The capture switch. The tee in the transport reads the file, so
-    /// this writes it and then tells the service to look again.
+    /// The transport's tee reads the file, so write it and tell the service to
+    /// look again.
     fn set_capture_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.capture_enabled = on;
         Settings::update(move |s| s.capture.enabled = on);
@@ -536,7 +483,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Browse for the folder captures land in.
     fn pick_capture_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -564,10 +510,6 @@ impl SettingsWindow {
     }
 }
 
-/// What `secs` of a stream running at `bytes_per_sec` weighs in memory,
-/// which is what the live buffer setting is really spending. A bitrate in
-/// kbps is kilobits over the wire, so the eight is the only arithmetic in
-/// it and the rest is the app's own size formatter.
 fn live_buffer_weight(bytes_per_sec: f64, secs: f64) -> String {
     human_size((bytes_per_sec * secs).max(0.0) as u64)
 }
@@ -576,10 +518,7 @@ fn live_buffer_weight(bytes_per_sec: f64, secs: f64) -> String {
 mod tests {
     use super::live_buffer_weight;
 
-    /// What the live buffer row prints under its slider. The setting is a
-    /// length of time and the cost is a weight of memory, so the line has
-    /// to do that conversion out loud: ten minutes of a 128 kbps stream is
-    /// 9.6 MB, and of a 320 kbps one it's two and a half times that.
+    /// Ten minutes of a 128 kbps stream is 9.6 MB.
     #[test]
     fn the_buffer_weighs_its_seconds_at_the_streams_rate() {
         let at = |kbps: f64| kbps * 1000.0 / 8.0;

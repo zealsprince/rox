@@ -1,22 +1,18 @@
-//! The Audio settings page: crossfade, ReplayGain, and the output backend,
-//! with exclusive mode's device, rate, format and period rows. ReplayGain's
-//! measure pass polls from here, since this page is where its progress shows.
+//! The Audio settings page: crossfade, ReplayGain, the equalizer, and the
+//! output backend with exclusive mode's device, rate, format and period rows.
 
 use super::*;
 
-/// The rates the exclusive picker offers: the two base clocks and their
-/// doubles and quadruples, which is every rate consumer hardware actually
-/// runs. A card that hasn't got one falls back to its nearest and reports that.
+/// The two base clocks, doubled and quadrupled. A card missing one falls back
+/// to its nearest and reports that.
 const RATES: &[u32] = &[44100, 48000, 88200, 96000, 176400, 192000];
 
-/// The periods the buffer picker offers, in milliseconds, either side of the
-/// backend's 10 ms default.
+/// Either side of the backend's 10 ms default.
 const PERIODS_MS: &[f64] = &[2.5, 5.0, 10.0, 20.0, 40.0];
 
 impl SettingsWindow {
-    /// Everything that shapes the samples on their way to the device, in the
-    /// order the audio meets it: the chain first (ADR 19), then the backend
-    /// that hands it over.
+    /// In the order the audio meets it: the chain first (ADR 19), then the
+    /// backend.
     pub(super) fn audio_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new()
             .section(Section::new(
@@ -66,9 +62,8 @@ impl SettingsWindow {
             .section(self.output_section(q, cx))
     }
 
-    /// How long one track overlaps the next. Zero is off, which is the
-    /// gapless boundary rox has always had; anything else fades only where
-    /// the music isn't continuous, so an album still splices.
+    /// Zero is gapless. Anything else fades only where the music isn't
+    /// continuous, so an album still splices.
     fn crossfade_row(&self, cx: &mut Context<Self>) -> Div {
         panel::setting_row(
             rox_i18n::t!("settings-audio-crossfade"),
@@ -90,8 +85,6 @@ impl SettingsWindow {
         )
     }
 
-    /// Whether the fade takes an album's own boundaries too. Inert while
-    /// the fade is off, since there'd be nothing for it to change.
     fn crossfade_albums_row(&self, cx: &mut Context<Self>) -> Div {
         let player = self.playback.read(cx);
         let on = player.crossfade_albums();
@@ -118,10 +111,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The ReplayGain section: which of a file's two gains to level by, the
-    /// two offsets around it, and where the measurement pass puts what it
-    /// measures. The offsets only show once a mode is picked, since with
-    /// leveling off there's nothing for them to offset.
     fn replay_gain_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let modes: Vec<(SharedString, GainModeSetting)> = vec![
             (
@@ -138,9 +127,6 @@ impl SettingsWindow {
             ),
         ];
         let rg = self.playback.read(cx).replay_gain();
-        // A running pass takes over the line under the section: its count, the
-        // file it's on, and whatever it had to skip. With nothing scanned
-        // there's no coverage to state either.
         let split = self.rg_coverage;
         let total = split.total();
         let note: Option<String> = if let Some(job) = &self.rg_job {
@@ -263,24 +249,16 @@ impl SettingsWindow {
         )
     }
 
-    /// Where a measured gain saves. Through the player like the other three
-    /// leveling knobs, since it holds the live copy of the whole struct.
+    /// Through the player, which holds the live copy of the whole struct.
     fn set_replay_gain_save(&mut self, save: ReplayGainSave, cx: &mut Context<Self>) {
         self.playback
             .update(cx, |player, cx| player.set_replay_gain_save(save, cx));
         cx.notify();
     }
 
-    /// The follow-the-watcher switch, through the player like the rest of the
-    /// section. On the way on it asks about the backlog: the pass's work list
-    /// is everything with no gain, so a switch flipped over a library nobody
-    /// has measured would start hours of decoding at the next watch sync
-    /// without anyone having seen a number first. The prompt prices that
-    /// backlog and measures it now; declining is a no to the switch too, and
-    /// comes back here through `pass_refused`.
-    ///
-    /// Nothing to ask about with nothing missing, or with a pass already
-    /// working through it, so the switch just goes on.
+    /// On the way on, the prompt prices the backlog, since the work list is
+    /// everything with no gain; declining turns the switch back off through
+    /// `pass_refused`.
     fn set_replay_gain_auto(&mut self, on: bool, cx: &mut Context<Self>) {
         self.playback
             .update(cx, |player, cx| player.set_replay_gain_auto(on, cx));
@@ -291,9 +269,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The section header's control: start the pass, or stop the one that's
-    /// running. Inert with nothing missing, and while the library is busy
-    /// scanning, since a scan is rewriting the very rows the pass reads.
     fn measure_control(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(job) = &self.rg_job {
             let stopping = job.stopping();
@@ -322,8 +297,6 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Copy the running pass into the section, the scan badge's cadence.
-    /// Stops itself once the pass clears the global.
     pub(super) fn poll_measuring(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
@@ -331,8 +304,6 @@ impl SettingsWindow {
                 let live = this.update(cx, |this, cx| {
                     let was = this.rg_job.is_some();
                     this.rg_job = replaygain_job::progress(cx);
-                    // The pass that just ended wrote what it measured per file;
-                    // pick it up so the next estimate prices off it.
                     if was && this.rg_job.is_none() {
                         this.rg_pace = Settings::load().session.replaygain_pace;
                     }
@@ -347,11 +318,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// A rough cost for measuring `missing` files at the current worker
-    /// setting, ready to append to the coverage line, or nothing until a
-    /// pass has measured this machine's pace. Off the last pass's own
-    /// average, so it prices these files on this disk rather than an
-    /// imagined library.
     fn rg_estimate_suffix(&self, missing: u64) -> String {
         match rox_core::pace::estimate(self.rg_pace, missing, self.rg_workers) {
             Some(estimate) => format!(
@@ -366,9 +332,6 @@ impl SettingsWindow {
         }
     }
 
-    /// The running pass as one line: how far along, what it's on, and what
-    /// it gave up on. The work list is built first, so a zero total means
-    /// the pass hasn't finished building it.
     fn measure_progress_line(job: &replaygain_job::Progress) -> String {
         let total = job.total();
         if total == 0 {
@@ -406,17 +369,12 @@ impl SettingsWindow {
         line
     }
 
-    /// Whether this platform's exclusive backend has ever been run by us on
-    /// real hardware. ALSA and CoreAudio have; the WASAPI backend is written
-    /// from the platform contract and shipped for testers, which is exactly
-    /// what the badge and the issue link say.
+    /// ALSA and CoreAudio have been run on real hardware. WASAPI is written
+    /// from the platform contract and shipped for testers.
     fn exclusive_experimental() -> bool {
         cfg!(target_os = "windows")
     }
 
-    /// The prefilled new-issue page for exclusive-mode reports: the platform
-    /// and version filled in, plus what the stream negotiated if one is up,
-    /// so a report from a tester arrives with the part they'd forget.
     fn exclusive_issue_url(&self, cx: &Context<Self>) -> String {
         let negotiated = self
             .playback
@@ -453,10 +411,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The badge and its report button are in the Output header rather than
-    /// the Exclusive Mode row: they're about the whole backend, not the switch,
-    /// and the header's right edge is where a section-wide caveat belongs.
-    /// Returns None where nothing is being warned about.
+    /// In the Output header: the caveat covers the whole backend, not the
+    /// switch.
     fn exclusive_notice(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if !output::exclusive_supported() || !Self::exclusive_experimental() {
             return None;
@@ -518,15 +474,11 @@ impl SettingsWindow {
         )
     }
 
-    /// The Output section: the exclusive switch, the device list for
-    /// whichever backend that picks, and what the running stream actually
-    /// negotiated. The readout is the point of the section: the two rows
-    /// above it are requests, and ADR 19 asks the UI to state the reality
-    /// rather than repeat the ask.
+    /// The readout is the point: the rows above are requests, and ADR 19 has
+    /// the UI state what was negotiated.
     fn output_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
-        // Where no exclusive backend is built there's nothing to toggle:
-        // every claim would fall back, and a switch that never does
-        // anything reads as a bug in the hardware rather than a gap in rox.
+        // No exclusive backend built: a switch that never does anything reads
+        // as a hardware bug.
         let exclusive: AnyElement = if output::exclusive_supported() {
             panel::toggle(self.output_exclusive, Self::set_output_exclusive, cx).into_any_element()
         } else {
@@ -563,15 +515,14 @@ impl SettingsWindow {
         )
     }
 
-    /// The three hardware knobs below only mean anything on a device rox
-    /// holds alone. In shared mode the server owns the rate, the format and
-    /// the buffer, so they draw inert rather than pretending.
+    /// In shared mode the server owns the rate, format and buffer, so these
+    /// draw inert.
     fn exclusive_only(&self) -> bool {
         !self.output_exclusive || !output::exclusive_supported()
     }
 
-    /// The rate the device runs at: following each file's own lets a
-    /// mixed-rate library play without a resampler anywhere, so it leads.
+    /// Following each file's rate plays a mixed-rate library without a
+    /// resampler.
     fn output_rate_row(&self, cx: &mut Context<Self>) -> Div {
         let mut options: Vec<(Option<u32>, SharedString)> =
             vec![(None, rox_i18n::t!("settings-audio-output-rate-follow"))];
@@ -601,8 +552,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The sample format asked for. Widest-available is right almost always;
-    /// the pick exists for a card whose driver works better on one of them.
+    /// Widest-available is right almost always; the pick is for a driver that
+    /// prefers one.
     fn output_format_row(&self, cx: &mut Context<Self>) -> Div {
         let options: Vec<(Option<String>, SharedString)> = vec![
             (None, rox_i18n::t!("settings-audio-output-format-widest")),
@@ -637,7 +588,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The period, the latency trade stated plainly.
     fn output_period_row(&self, cx: &mut Context<Self>) -> Div {
         let mut options: Vec<(Option<f64>, SharedString)> =
             vec![(None, rox_i18n::t!("settings-audio-output-buffer-default"))];
@@ -665,10 +615,7 @@ impl SettingsWindow {
         )
     }
 
-    /// The device picker for the mode that's on, the system default at the
-    /// head so switching back is one pick. Rescan is beside it because the
-    /// list is taken when the window opens: plugging an interface in while
-    /// it's up shouldn't mean closing and reopening.
+    /// Rescan because the list is taken when the window opens.
     fn output_devices_block(&self, cx: &mut Context<Self>) -> Div {
         let mut options: Vec<(Option<String>, SharedString)> = vec![(
             None,
@@ -679,10 +626,9 @@ impl SettingsWindow {
                 .iter()
                 .map(|device| (Some(device.id.clone()), device.name.clone().into())),
         );
-        // The toggle swaps which backend's list this is, and on Linux the two
-        // don't even overlap: exclusive enumerates kernel sound cards, and a
-        // Bluetooth headset only exists inside the sound server. The note has
-        // to say so, or a device that was just here reads as lost.
+        // On Linux the two backends' lists don't overlap: a Bluetooth headset
+        // only exists in the sound server. The note says so, or a device reads
+        // as lost.
         let description = if self.exclusive_only() {
             rox_i18n::t!("settings-audio-output-device.description-default")
         } else if cfg!(target_os = "linux") {
@@ -715,15 +661,12 @@ impl SettingsWindow {
         )
     }
 
-    /// What the stream negotiated, in plain words. Nothing here is derived
-    /// from the settings above: a fallback line only appears because a
-    /// backend reported one, and the rate line compares the device's rate
-    /// against the file's rather than against what was asked for.
+    /// Nothing here is derived from the settings: fallback lines come from the
+    /// backend, and the rate compares against the file, not the request.
     fn output_status_block(&self, cx: &mut Context<Self>) -> Div {
         let Some(status) = self.playback.read(cx).output_status() else {
-            // No stream and an error means the last open failed, which is a
-            // different thing from an idle player and shouldn't read the
-            // same: one is waiting, the other is broken.
+            // An error with no stream means the last open failed, which must
+            // not read as idle.
             return match self.playback.read(cx).error() {
                 Some(error) => panel::banner(
                     panel::Tone::Bad,
@@ -748,11 +691,8 @@ impl SettingsWindow {
         let resampling = status
             .source_rate
             .is_some_and(|source| source != negotiated.sample_rate);
-        // The tone is the whole point of the callout, and the two bad cases
-        // aren't the same size. A claim that failed is a setting that didn't
-        // take, which is an error: exclusive is switched on and you aren't
-        // hearing it. Resampling is the mode working and still not being
-        // bit-perfect, which is worth flagging without crying wolf.
+        // A failed claim is an error: exclusive is on and you aren't hearing
+        // it. Resampling is only a warning.
         let tone = if negotiated.fallback.is_some() {
             panel::Tone::Bad
         } else if resampling {
@@ -760,9 +700,8 @@ impl SettingsWindow {
         } else {
             panel::Tone::Good
         };
-        // The experimental note goes in the banner too: someone reading only
-        // the status line should know the mode they're hearing is the one
-        // nobody has hardware-tested.
+        // The experimental note goes in the banner too, for someone reading
+        // only this line.
         let experimental =
             negotiated.mode == output::Mode::Exclusive && Self::exclusive_experimental();
         let headline = rox_i18n::t!(
@@ -779,16 +718,13 @@ impl SettingsWindow {
             format = negotiated.format.to_string()
         )
         .to_string();
-        // The expanded register: this block has a page to itself, so each
-        // reason keeps a sentence of its own where the output panel folds
-        // them into one line.
+        // Expanded: this block gets a sentence per reason where the output
+        // panel folds them into one line.
         panel::banner(tone, headline, status.lines(true, true))
     }
 
-    /// Ask for exclusive output, or give the device back. The player
-    /// rebuilds its running session onto the other backend right here, so
-    /// the switch takes effect without a restart, and the device list is
-    /// the other backend's from this point.
+    /// The player rebuilds its session onto the other backend on the spot, so
+    /// no restart.
     fn set_output_exclusive(&mut self, on: bool, cx: &mut Context<Self>) {
         self.output_exclusive = on;
         self.playback
@@ -797,23 +733,18 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Pick a device for the mode that's on, None for the system default.
     fn set_output_device(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         self.playback
             .update(cx, |player, cx| player.set_output_device(id, cx));
         cx.notify();
     }
 
-    /// Re-enumerate, for an interface plugged in while this window is open.
     fn rescan_output_devices(&mut self, cx: &mut Context<Self>) {
         self.output_devices = output::devices(output_mode(self.output_exclusive));
         cx.notify();
     }
 }
 
-/// The hover note behind the Experimental badge and its issue button. Same
-/// card the track info chip's tooltip uses, so the explanation reads the
-/// same wherever it pops up.
 struct ExperimentalTooltip(SharedString);
 
 impl Render for ExperimentalTooltip {
@@ -832,10 +763,7 @@ impl Render for ExperimentalTooltip {
     }
 }
 
-/// Percent-encode a string for a GitHub issue URL's query. Only the handful
-/// of characters that break a query string; anything else passes through,
-/// since the issue form is forgiving and over-encoding makes the URL
-/// unreadable in logs.
+/// Every byte outside the unreserved set goes out as `%XX`.
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
@@ -849,9 +777,8 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-/// The exclusive toggle as the output layer's mode. The two device lists
-/// don't share ids, so which one to ask for follows the toggle rather than
-/// what happens to be running.
+/// The two device lists don't share ids, so this follows the toggle, not what's
+/// running.
 pub(super) fn output_mode(exclusive: bool) -> output::Mode {
     if exclusive {
         output::Mode::Exclusive

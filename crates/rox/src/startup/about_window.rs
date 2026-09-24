@@ -1,11 +1,7 @@
-//! The about window: one OS window opened from the Application menu beside
-//! Welcome. The build's identity (logo, name, running version), a link
-//! back to the project, and the update check with the updater behind it:
-//! where the install can replace itself the announcement grows a Download
-//! button, progress while the download runs, and a restart prompt once the
-//! new build is in place; everywhere else it stays a link to the release
-//! page. The daily launch check has its own toggle over in settings under
-//! Application; the button here checks now either way.
+//! The about window: the build's identity, a link back to the project, and
+//! the update check with the updater behind it. Where the install can replace
+//! itself the check offers a download and a restart; everywhere else it's a
+//! link to the release page.
 
 use gpui::{
     App, Bounds, Context, Div, Global, MouseButton, ScrollHandle, SharedString, Subscription,
@@ -24,23 +20,16 @@ use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ui::{SECTION_GAP, SmallButton, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
-/// The project's home, where the source and the releases live.
 const REPO: &str = "https://github.com/zealsprince/rox";
 
-/// The author's site and profile, and the license text the copyleft notice
-/// points at.
 const SITE: &str = "https://zealsprince.com";
 const PROFILE: &str = "https://github.com/zealsprince";
 const LICENSE_URL: &str = "https://www.gnu.org/licenses/";
 
-/// The open about window, if any: opening again focuses it instead of
-/// stacking a second one, same as the welcome and settings windows.
 struct OpenAbout(WindowHandle<Root>);
 
 impl Global for OpenAbout {}
 
-/// Open the about window, or bring the open one to the front. The state
-/// holds the shared art bake the backdrop paints from.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenAbout>() {
         let handle = open.0;
@@ -51,10 +40,8 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    // Size the fixed window against the current font. The page is one set
-    // shape at the stock 16px rem; a larger app font grows the rem-based text
-    // past the 960x240 it was tuned at and strands the tail of the copy
-    // offscreen. Growing the bounds with the text keeps the whole page in view.
+    // Size the fixed window against the app font: it was tuned at 960x240 on
+    // the stock 16px rem, and a larger font would push the copy offscreen.
     let scale = palette::font_scale();
     let bounds = Bounds::centered(None, size(px(960. * scale), px(240. * scale)), cx);
     let handle = rox_panel_api::panel::open_fixed_window(
@@ -66,9 +53,6 @@ pub fn open(state: AppState, cx: &mut App) {
     cx.set_global(OpenAbout(handle));
 }
 
-/// The update check as it moves along: nothing asked yet, the request in
-/// flight, or a finished result. The result variants hold what the status
-/// line beside the button shows.
 enum UpdateCheck {
     Idle,
     Checking,
@@ -78,9 +62,6 @@ enum UpdateCheck {
 }
 
 impl UpdateCheck {
-    /// What a freshly opened window shows: the last cached check mapped to
-    /// up-to-date or an available release against the running build, or Idle
-    /// when nothing has been checked yet.
     fn from_cache(settings: &Settings) -> Self {
         match &settings.session.update_cache {
             Some(cache) => {
@@ -101,25 +82,19 @@ impl UpdateCheck {
 }
 
 struct AboutWindow {
-    /// The shared state: the art bake the backdrop paints from.
     state: AppState,
     backdrop: WindowBackdrop,
-    /// The update check, the status line's subject.
     update_check: UpdateCheck,
-    /// The page scrolls as a fallback: the window sizes itself to the font,
-    /// but a large enough font still outgrows the fixed titlebar and padding,
-    /// so this keeps the tail of the copy reachable instead of clipped.
+    /// A fallback for fonts large enough to outgrow the sized window.
     scroll: ScrollHandle,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
+    /// This window pumps its own frames, so the backdrop needs its own wake.
     _backdrop_changed: Subscription,
 }
 
 impl AboutWindow {
     fn new(state: AppState, cx: &mut Context<Self>) -> Self {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        // A launch-check auto-download may already be running when the
-        // window opens; pick up its progress the same as one started here.
+        // A launch-check auto-download may already be running.
         if matches!(updater::status(), updater::Status::Downloading(_)) {
             Self::poll_update(cx);
         }
@@ -132,9 +107,7 @@ impl AboutWindow {
         }
     }
 
-    /// Kick off the update check on the background executor, putting the
-    /// result on the status line and refreshing the cache so it persists and
-    /// a launch treats it as recent. Ignored while one is already in flight.
+    /// Also refreshes the cache so a launch treats this check as recent.
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         if matches!(self.update_check, UpdateCheck::Checking) {
             return;
@@ -150,9 +123,7 @@ impl AboutWindow {
                     Ok(release) => {
                         let entry = updates::cache(&release);
                         Settings::update(move |s| s.session.update_cache = Some(entry));
-                        // The menubar chip reads a live static off this
-                        // cache; recompute it and repaint the workspaces so
-                        // they agree with the answer here.
+                        // The menubar chip reads a static off this cache, so recompute and repaint.
                         updates::refresh_available(&Settings::load());
                         cx.refresh_windows();
                         if release.is_new() {
@@ -174,9 +145,6 @@ impl AboutWindow {
         cx.notify();
     }
 
-    /// Hand the release to the updater on the background executor and
-    /// start polling its progress. The updater holds the one download
-    /// slot, so a second request while one runs is a no-op.
     fn download(release: &updates::Release, cx: &mut Context<Self>) {
         if let Some(job) = updater::begin(release) {
             cx.background_executor()
@@ -187,12 +155,6 @@ impl AboutWindow {
         cx.notify();
     }
 
-    /// The buttons for a newer release, the notes link before the download
-    /// so the acting button holds the end of the row. Where the install can
-    /// replace itself it offers the download with the release page demoted
-    /// to notes; everywhere else (a distro package, a read-only home, a
-    /// platform without an artifact) the page link is the whole offer,
-    /// notify-only as before.
     fn release_buttons(release: &updates::Release, cx: &mut Context<Self>) -> Vec<SmallButton> {
         let url = release.url.clone();
         if updater::can_update() {
@@ -221,7 +183,6 @@ impl AboutWindow {
         }
     }
 
-    /// The check button, the row's resting state.
     fn check_button(&self, cx: &mut Context<Self>) -> SmallButton {
         small_button(
             rox_i18n::t!("about-check-for-updates"),
@@ -231,10 +192,8 @@ impl AboutWindow {
         )
     }
 
-    /// Repaint on a timer while the download runs: the progress is stored in
-    /// atomics the render reads, so the window just needs frames until the
-    /// updater settles. The last tick paints the settled state on its way
-    /// out.
+    /// The progress lives in atomics, so the window only needs frames until the
+    /// updater settles.
     fn poll_update(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
@@ -254,13 +213,10 @@ impl AboutWindow {
     }
 }
 
-/// A muted body line, the pages' copy register.
 fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
 }
 
-/// An inline link: accent, underlined, opening its URL on click. Placed in a
-/// wrapping row beside the muted prose around it.
 fn link(text: impl Into<SharedString>, url: &'static str) -> Div {
     div()
         .text_color(palette::accent())
@@ -273,14 +229,11 @@ fn link(text: impl Into<SharedString>, url: &'static str) -> Div {
         .child(text.into())
 }
 
-/// A link that ends a sentence. The period goes inside a gapless row with the
-/// link so the paragraph's gap doesn't open a space before the full stop.
+/// The period sits in a gapless row with the link, so no space opens before it.
 fn link_end(text: impl Into<SharedString>, url: &'static str) -> Div {
     div().flex().flex_row().child(link(text, url)).child(".")
 }
 
-/// A muted paragraph that wraps text and inline links together, the license
-/// prose's line register.
 fn prose() -> Div {
     div()
         .flex()
@@ -293,20 +246,12 @@ fn prose() -> Div {
 
 impl Render for AboutWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The window renders under the player's art tint like the
-        // workspace it was opened from, and claims the widget theme while
-        // it holds focus.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
 
         panel::window_body(player, || {
-            // The update row: the state's wording first, then the buttons,
-            // one wording per state. The row ends on one button that
-            // transforms with the update (check, download, restart), going
-            // inert while a check or download runs; only a found release
-            // adds the notes link beside it. The updater's state outranks
-            // the check's: once a download is running or done, that's the
-            // story, whatever the last check said.
+            // The updater's state outranks the check's: once a download runs or lands,
+            // that's what the row says.
             let (note, buttons): (Option<SharedString>, Vec<SmallButton>) = match updater::status()
             {
                 updater::Status::Applied { version } => (
@@ -339,8 +284,6 @@ impl Render for AboutWindow {
                 updater::Status::Failed { error } => (
                     Some(rox_i18n::t!("about-update-failed", error = error)),
                     match &self.update_check {
-                        // The release the download failed for is still the
-                        // cached one, so the retry appears beside the reason.
                         UpdateCheck::Available(release) => Self::release_buttons(release, cx),
                         _ => vec![self.check_button(cx)],
                     },
@@ -382,8 +325,6 @@ impl Render for AboutWindow {
                 .when_some(note, |d, note| d.child(line(note)))
                 .children(buttons);
 
-            // The identity column beside the logo: name and version up top, then
-            // the copyright, the copyleft notice, and where the source lives.
             let identity = div()
                 .flex()
                 .flex_col()
@@ -430,9 +371,7 @@ impl Render for AboutWindow {
                 .child(
                     svg()
                         .path(icons::LOGO)
-                        // The logo is fixed px, not rem, so it holds while the
-                        // copy beside it grows with the font. Track the app
-                        // scale so it keeps pace and the balance holds.
+                        // Fixed px, so scale it with the font to keep pace with the copy.
                         .size(px(192. * palette::font_scale()))
                         .flex_none()
                         .text_color(palette::text_bright()),
@@ -447,19 +386,12 @@ impl Render for AboutWindow {
                 .text_color(palette::text_bright())
                 .text_sm()
                 .when_some(settings::app_font(), |d, font| d.font_family(font))
-                // The backdrop paints first, under the page; without it
-                // translucent surfaces would sink into the window's own black
-                // instead of the playing track's art.
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
                 .child(
                     div()
                         .flex_1()
                         .min_h_0()
                         .relative()
-                        // The page's own surface over the backdrop, the same
-                        // one the settings pages use: opaque at full
-                        // surface opacity, so the art only reads through as
-                        // the surfaces thin, never straight under the copy.
                         .bg(palette::bg_elevated())
                         .child(
                             div()
@@ -470,9 +402,6 @@ impl Render for AboutWindow {
                                 .p(tokens::SPACE_MD)
                                 .child(page),
                         )
-                        // The scrollbar is overlaid on the page, the same way
-                        // the settings pages do it: it only does anything when
-                        // a large font pushes the copy past the window.
                         .child(div().absolute().inset_0().child(
                             Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
                         )),

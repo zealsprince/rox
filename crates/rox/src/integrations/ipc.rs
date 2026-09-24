@@ -1,22 +1,11 @@
 //! The control socket's app side (ADR 22): rox-ipc owns the wire, this
-//! module owns the answers. One bind per process at launch, an accept
-//! machinery contained entirely in the crate, and a drain here on the
-//! foreground executor, the same marshalling the tray, the media keys, and
-//! the single-instance guard use to get onto the UI thread. Every method
-//! reads or drives the same player and library entities the panels do, so
-//! the socket can never say something the UI wouldn't.
+//! module owns the answers. Requests drain on the foreground executor and
+//! drive the same player and library entities the panels do, so the socket
+//! can never say something the UI wouldn't.
 //!
-//! Method surface, version 1: `transport.*` for the deck and its A-B
-//! section, `queue.*` for
-//! edits by stable entry id, `library.*` for search, now-playing tags,
-//! artwork, and kicking off a rescan, `tasks.*` for the long analysis
-//! passes the tasks window runs, `ai.status` for whether the AI gate and
-//! the MCP switch are on. `subscribe` turns on the push half: `event.*` frames for track
-//! turnover, play-state edges, and queue revision bumps, published off the
-//! player observer below so a front end never has to poll. The `debug.*`
-//! scope is the runtime test surface: the settings and panel dumps and the
-//! Milkdrop panel's verbs here, and the drive half (windows, actions,
-//! synthetic input) in the sibling `drive` module.
+//! Surface, version 1: `transport.*`, `queue.*`, `library.*`, `tasks.*`,
+//! `ai.status`, and `event.*` pushes after `subscribe`. `debug.*` is the
+//! runtime test surface; its input half is the sibling `drive` module.
 
 use std::path::PathBuf;
 
@@ -32,15 +21,11 @@ use rox_playback::Shift;
 use rox_services::catalog::Library;
 use rox_services::player::AbState;
 
-/// How many search rows come back when the caller doesn't say, and the most
-/// it can ask for. Each row costs a path lookup on the UI-side connection,
-/// so the cap keeps one greedy query from holding the thread.
+/// Each row costs a path lookup on the UI thread, so the cap bounds one greedy query.
 const SEARCH_LIMIT_DEFAULT: usize = 50;
 const SEARCH_LIMIT_MAX: usize = 500;
 
-/// Bind the control socket and start answering. Failure to bind (another
-/// instance, an unwritable runtime dir, a platform with no backend yet) logs
-/// and returns: rox runs on without the surface.
+/// A failed bind logs and returns; rox runs on without the surface.
 pub fn serve(state: &AppState, cx: &mut App) {
     let path = rox_ipc::socket_path(&rox_core::settings::data_dir());
     let server = match rox_ipc::Server::bind(&path) {
@@ -69,7 +54,6 @@ pub fn serve(state: &AppState, cx: &mut App) {
     .detach();
 }
 
-/// The slice of player state whose edges become events.
 struct Snapshot {
     playing: bool,
     active: bool,
@@ -95,14 +79,8 @@ impl Snapshot {
     }
 }
 
-/// Publish `event.*` frames to subscribed connections off the player
-/// observer, the same wake the media widget publishes on: the player pump
-/// already notifies on exactly the edges the contract names (play-state
-/// flips, track turnover, queue revision bumps), so this diffs a small
-/// snapshot and emits only when something moved. While audio plays the
-/// pump notifies every tick for the clock; the diff makes those free, and
-/// the emit itself never blocks (a consumer that can't keep up is cut off
-/// in the crate, not waited on here).
+/// Diffs a small snapshot on every player notify and emits only what moved.
+/// The emit never blocks: rox-ipc cuts off a consumer that can't keep up.
 fn publish_events(state: &AppState, events: rox_ipc::Events, cx: &mut App) {
     let state = state.clone();
     let player = state.player.clone();
@@ -126,9 +104,7 @@ fn publish_events(state: &AppState, events: rox_ipc::Events, cx: &mut App) {
     .detach();
 }
 
-/// Route one request. The blocking answers (art reads, the search scan)
-/// leave for the background executor with their responder; everything else
-/// responds right here.
+/// The blocking answers (art reads, search) respond from the background executor.
 fn dispatch(state: &AppState, request: Request, cx: &mut App) {
     match request.method.as_str() {
         "library.search" => return search(state, request, cx),
@@ -172,17 +148,9 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             state.player.update(cx, |player, cx| player.stop(cx));
             Ok(status(state, cx))
         }
-        // Two timelines behind one verb. A file has a position, so `to` is
-        // where in it to play from and `by` steps along it. A station has
-        // no position at all: its clock counts how long you have been
-        // listening, and the only thing a seek can move is the cursor
-        // through the tape. So on a live entry `to` means seconds behind
-        // the live edge, and `by` keeps its direction, forward closing the
-        // distance to live and backward opening it.
-        //
-        // `behind` says the same thing outright and refuses on anything
-        // that isn't live, for a caller that would rather be told than
-        // have its number quietly reinterpreted.
+        // On a station there's no position, only the tape: `to` means seconds behind
+        // live and `by` keeps its direction. `behind` says so outright and refuses
+        // anything that isn't live.
         "transport.seek" => {
             let player = state.player.read(cx);
             let now = player.now_playing();
@@ -200,13 +168,8 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                     false => player.seek_to(to),
                 }
             } else if let Some(by) = params.get("by").and_then(Value::as_f64) {
-                // One call for both timelines: the step is the same verb
-                // either way and the player is what knows which one is
-                // playing. It reads the distance off the tape rather than
-                // off anything remembered here, which is what a pause needs
-                // (it keeps taping, so the distance grows under a caller
-                // that stepped back a minute ago), and it holds the step
-                // inside the buffer at both ends.
+                // The player knows which timeline is playing, and reads the distance off
+                // the tape, which keeps growing under a pause.
                 player.seek_by(by);
             } else {
                 return Err(RpcError::invalid_params(
@@ -226,12 +189,8 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                 .update(cx, |player, cx| player.set_volume(volume as f32, cx));
             Ok(status(state, cx))
         }
-        // The A-B section the transport button runs. `mark` steps the same
-        // three-press cycle the button does (A, then B and loop, then
-        // clear), `clear` drops it wherever the cycle stands, and two
-        // positions set a section outright. Nothing playing is a refusal
-        // rather than a silent no-op, since a mark on silence has nothing
-        // to hold onto.
+        // `mark` steps the button's three-press cycle, `clear` drops it, two
+        // positions set it outright. Nothing playing is a refusal.
         "transport.ab" => {
             let a = params.get("a").and_then(Value::as_f64);
             let b = params.get("b").and_then(Value::as_f64);
@@ -285,10 +244,7 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             Ok(Value::Null)
         }
         "library.now_playing" => Ok(now_playing(state, cx)),
-        // Kick off the same rescan as the menubar's refresh button. The scan
-        // runs in the background; the reply only says it started. Refused in
-        // a sentence while other background work holds the library, since
-        // rescan() would silently no-op and the caller would wait forever.
+        // Refused while the library is busy: rescan() would silently no-op.
         "library.rescan" => {
             let library = state.library.read(cx);
             if let Some(busy) = library.busy() {
@@ -305,11 +261,8 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         "tasks.status" => Ok(tasks_status(state, cx)),
         "tasks.start" => tasks_start(state, params, cx),
         "tasks.stop" => tasks_stop(params, cx),
-        // What rox-mcp asks before serving a tool call: with the AI gate or
-        // the MCP page's own switch off it turns clients away in a sentence
-        // instead of hanging or pretending (ADR 22). The socket itself stays
-        // up either way; the toggles gate what talks to AI tooling, not the
-        // control surface.
+        // rox-mcp asks this before each tool call (ADR 22). The socket stays up
+        // either way; the toggles only gate AI tooling.
         "ai.status" => {
             let settings = rox_core::settings::Settings::load();
             Ok(json!({
@@ -320,19 +273,12 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         "debug.settings" => {
             serde_json::to_value(rox_core::settings::Settings::load()).map_err(RpcError::app)
         }
-        // The artwork service's cumulative counters: requests served,
-        // loads started/landed/refused, current pool depth and cache
-        // size. Never reset, so two samples a few seconds apart and their
-        // difference is the rate; a scroll that stalls shows here as
-        // requests still climbing while lands stall, or as requests
-        // themselves going flat.
+        // Cumulative, never reset: sample twice and diff for rates.
         "debug.thumbs" => {
             serde_json::to_value(state.thumbs.read(cx).stats()).map_err(RpcError::app)
         }
         "debug.panels" => panel_tree(cx),
-        // Apply a workspace to the front window by name, the welcome tiles'
-        // path. Debug scope: lets a script step through looks without
-        // driving the settings window's dialog (ADR 22).
+        // Step through looks by name without driving the settings dialog.
         "debug.workspace" => {
             let name = params
                 .get("name")
@@ -344,15 +290,10 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             crate::workspace::apply_workspace_to_front(name, cx);
             Ok(Value::Null)
         }
-        // The Milkdrop panel by verb rather than by pixel: put a preset up
-        // from any path, hold it, rescan, step, and read back what's on
-        // screen and what projectM refused. `frame` returns the worker's
-        // own readback as PNG, engine output rather than a window capture,
-        // so none of the panel's tint or grade is in it. Debug scope
-        // (ADR 22): the preset-authoring loop runs off this.
+        // The preset-authoring loop. `frame` is the engine's own readback, free of
+        // the panel's tint and grade.
         "debug.milkdrop" => milkdrop(params, cx),
-        // Live gpui entity counts by type, largest first. Diagnostic surface
-        // for leak hunting; rides the vendored entity-map accessor.
+        // Entity counts by type for leak hunting; rides the vendored entity-map accessor.
         "debug.entities" => {
             let counts = cx.entity_diagnostic_counts();
             let total: usize = counts.iter().map(|(_, n)| n).sum();
@@ -364,13 +305,8 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                     .collect::<Vec<_>>(),
             }))
         }
-        // Fault the output stream the way a device dropping out faults it:
-        // unplugged card, ALSA I/O error, Bluetooth sink reconnecting. The
-        // player reopens the device under the running engine, and a station
-        // keeps its connection, its tape and the capture in flight through
-        // it. Debug scope (ADR 22): a real fault can't be asked for from a
-        // script, so without this the recovery is only ever exercised by
-        // accident.
+        // Fault the output the way an unplugged device would, so the recovery path
+        // can be exercised on purpose.
         "debug.device_lost" => {
             let faulted = state.player.read(cx).fault_output();
             if !faulted {
@@ -378,12 +314,8 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             }
             Ok(json!({ "faulted": true }))
         }
-        // Re-read every play count off the listens table into the shared
-        // projection and raise `PlaysReloaded`, exactly what a finished
-        // Last.fm backfill does. Debug scope (ADR 22): without it the bulk
-        // path can only be exercised through a real account, so a test
-        // writes listens straight into the database and calls this to
-        // publish them.
+        // What a finished Last.fm backfill does, so a test can write listens straight
+        // into the database and publish them.
         "debug.reload_plays" => {
             state
                 .library
@@ -395,7 +327,6 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
     }
 }
 
-/// The pass a tasks method names, or a sentence listing what it takes.
 fn pass_param(params: &Value) -> Result<&str, RpcError> {
     match params.get("pass").and_then(Value::as_str) {
         Some(pass @ ("acoustic" | "replaygain" | "tempo" | "sortnames" | "romanize")) => Ok(pass),
@@ -406,9 +337,6 @@ fn pass_param(params: &Value) -> Result<&str, RpcError> {
     }
 }
 
-/// One pass's row: whether it could start, what it would work through, and
-/// live progress while it runs. `progress` arrives pre-serialized because
-/// the three passes each have their own Progress type.
 fn pass_json(enabled: bool, missing: u64, extra: Value, progress: Option<Value>) -> Value {
     let mut out = match progress {
         Some(Value::Object(mut fields)) => {
@@ -419,18 +347,14 @@ fn pass_json(enabled: bool, missing: u64, extra: Value, progress: Option<Value>)
         }
         _ => json!({ "running": false, "enabled": enabled, "missing": missing }),
     };
-    // Whatever the pass has that the other two don't. It merges rather than
-    // nesting so a reader asking for one number gets it at the same depth
-    // as `missing`, which is the only reason it's worth carrying.
+    // Merged flat so a pass's own numbers sit at the same depth as `missing`.
     if let (Some(out), Value::Object(extra)) = (out.as_object_mut(), extra) {
         out.extend(extra);
     }
     out
 }
 
-/// The four long passes the tasks window lists, one row each. The library
-/// scan isn't in here: it has its own surface in `library.rescan` and the
-/// menubar, the same split the window's badge makes.
+/// The library scan isn't here: it has `library.rescan`.
 fn tasks_status(state: &AppState, cx: &App) -> Value {
     let settings = rox_core::settings::Settings::load();
     let source = rox_services::acoustic::acoustic_source();
@@ -463,10 +387,7 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
         "tempo": pass_json(
             settings.tempo_analysis,
             bpm.missing,
-            // Tracks the pass listened to and heard no beat in. They're not
-            // missing (nothing picks them up again on its own) and they're
-            // not measured either, so a client counting the library's
-            // untimed tracks off `missing` alone would be short by these.
+            // Heard with no beat: neither missing nor measured.
             json!({ "refused": bpm.refused }),
             crate::tempo_job::progress(cx).map(|p| json!({
                 "done": p.done(), "total": p.total(), "failed": p.failed(),
@@ -476,9 +397,7 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
         "sortnames": pass_json(
             true,
             sort.missing,
-            // Counted in artists rather than tracks, and split by what the
-            // default scope reaches, since a client pricing this pass
-            // needs to know which of the two numbers the button uses.
+            // In artists, split by what the default (non-Latin) scope reaches.
             json!({ "unit": "artists", "non_latin": sort.non_latin, "total": sort.total }),
             crate::sortnames_job::progress(cx).map(|p| json!({
                 "done": p.done(), "total": p.total(), "failed": p.failed(),
@@ -488,10 +407,8 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
         "romanize": pass_json(
             true,
             romanize.missing,
-            // Counted in values (titles, albums, artists) rather than
-            // tracks. `kanji` is how many of those need the Japanese
-            // dictionary; with it uninstalled they're what the pass will
-            // skip, which is `skipped` here, and the rest still runs.
+            // In values, not tracks. Without the dictionary the kanji values are
+            // skipped and the rest still runs.
             json!({
                 "unit": "values",
                 "total": romanize.total,
@@ -511,17 +428,9 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
     })
 }
 
-/// Start one of the long passes, the tasks window's start button without
-/// its prompt. The UI never starts these on a bare press, so the reply
-/// carries what the prompt would have shown: the track count, the worker
-/// count, the estimate where this machine has a pace, and the save mode,
-/// which matters because tags mode rewrites audio files. The silent no-op
-/// guards inside the passes become sentences here, same as the rescan.
-///
-/// The tempo pass takes an optional `retry_refused` alongside the pass
-/// name, the dialog's Retry Refused button: with it the run covers the
-/// tracks an earlier pass heard and couldn't call, instead of the ones
-/// nothing has looked at.
+/// The tasks window's start button without its prompt, so the reply carries
+/// what the prompt would show, and the passes' silent no-ops become errors.
+/// The tempo pass takes an optional `retry_refused`.
 fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let pass = pass_param(params)?;
     let settings = rox_core::settings::Settings::load();
@@ -567,9 +476,7 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
             if crate::sortnames_job::progress(cx).is_some() {
                 return Err(RpcError::app("the sort-name pass is already running"));
             }
-            // The narrow scope, the same one the prompt opens on: the
-            // wide one is an hour and a half and nothing over a socket
-            // should commit to that by default.
+            // The narrow scope: the wide one is an hour and a half.
             let scope = crate::sortnames_job::Scope::NonLatin;
             let missing =
                 crate::sortnames_job::coverage(library.read(cx).projection().map(|p| p.as_ref()))
@@ -593,9 +500,6 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
                     &crate::romanize_job::stale(&library.db_path()),
                 )
             };
-            // A missing dictionary costs the kanji values and nothing
-            // else, so the pass starts and the reply says what it will
-            // leave for a later run.
             let skipped = if crate::romanize_job::dictionary_installed() {
                 0
             } else {
@@ -619,9 +523,6 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
                      Run\" on Settings > Library first",
                 ));
             }
-            // Additive on the wire: a caller that says nothing gets the
-            // missing pile, the same run the start button gives it, and
-            // asking for the retry runs the refusals instead.
             let retry_refused = params
                 .get("retry_refused")
                 .and_then(Value::as_bool)
@@ -653,8 +554,7 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
     Ok(reply)
 }
 
-/// Ask a running pass to stop. Graceful the way the stop button is: the
-/// workers drop out at the next file, so "stopping" rather than "stopped".
+/// Workers drop out at the next file, hence "stopping".
 fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let pass = pass_param(params)?;
     let running = match pass {
@@ -677,18 +577,12 @@ fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "stopping": true }))
 }
 
-/// The frontmost workspace's dock tree, the same dump the layout persist
-/// writes. Debug scope: no external consumer needs it, but it lets a script
-/// or an agent verify a layout against a live instance without eyes on the
-/// screen (ADR 22).
 fn panel_tree(cx: &mut App) -> Result<Value, RpcError> {
     let workspace = workspace_for(None, cx)?;
     let dump = workspace.read(cx).dock().read(cx).dump(cx);
     serde_json::to_value(dump).map_err(RpcError::app)
 }
 
-/// The front workspace's view, or the one in the window `id` names, for
-/// the debug verbs that read or drive a dock.
 fn workspace_for(
     id: Option<u64>,
     cx: &mut App,
@@ -702,10 +596,7 @@ fn workspace_for(
         .ok_or_else(|| RpcError::app("no workspace window open"))
 }
 
-/// `debug.milkdrop`: the first Milkdrop panel in the front workspace (or
-/// the window `window` names), driven by `op`. Every op but `frame`
-/// answers with the panel's snapshot, so a caller sees what its command
-/// did without a second round trip.
+/// Every op but `frame` answers with the panel's snapshot.
 fn milkdrop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let op = params.get("op").and_then(Value::as_str).unwrap_or("status");
     let workspace = workspace_for(params.get("window").and_then(Value::as_u64), cx)?;
@@ -767,26 +658,19 @@ fn milkdrop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     serde_json::to_value(snapshot).map_err(RpcError::app)
 }
 
-/// The deck at a glance: what's playing, where its clock is, the A-B
-/// section if one is marked, and the
-/// queue revision an event consumer will later diff against. Every
-/// transport verb replies with this, so a caller sees what its command did
-/// without a second round trip.
+/// Every transport verb replies with this.
 fn status(state: &AppState, cx: &App) -> Value {
     let player = state.player.read(cx);
     let now = player.now_playing();
     let track = now.as_ref().map(|now| {
-        // Through the player, so a relay of a station reports the song it
-        // just announced rather than the station row's own title.
+        // Through the player, so a station reports the song it announced.
         let tags = player.live_over(state.library.read(cx).meta_for_key(&now.key));
         track_json(&now.key, tags.as_ref())
     });
     json!({
         "playing": player.is_playing(),
         "active": player.is_active(),
-        // Beside the other deck booleans: a stream has no end, so a caller
-        // reading `duration_secs` as null needs to know whether that's a
-        // length still resolving or a length that will never arrive.
+        // Tells a null `duration_secs` still resolving from one that never will.
         "live": now.as_ref().is_some_and(|n| n.live),
         "position_secs": now.as_ref().map(|n| n.position_secs),
         "duration_secs": now.as_ref().and_then(|n| n.duration_secs),
@@ -794,19 +678,14 @@ fn status(state: &AppState, cx: &App) -> Value {
         "muted": player.muted(),
         "queue_rev": player.queue_rev(),
         "ab": ab_json(player.ab_state()),
-        // Where in the tape a station is playing from, null for anything
-        // else. `position_secs` on a station counts the listen and says
-        // nothing about this, so a caller that wants to know whether it is
-        // on the broadcast or a few minutes behind it has to read here.
+        // On a station `position_secs` counts the listen; this says where in the tape.
         "shift": now.as_ref().and_then(|now| now.shift).map(shift_json),
         "track": track,
     })
 }
 
-/// The timeshift as the wire shows it. `timeshifted` is the same exact
-/// compare the seek strip makes: the engine snaps the distance to zero at
-/// the edge, so rounding a near-zero off here would put a second boundary
-/// beside that one and flicker across it.
+/// `timeshifted` is the seek strip's exact compare: the engine snaps to zero
+/// at the edge, so rounding here would add a second, flickering boundary.
 fn shift_json(shift: Shift) -> Value {
     json!({
         "behind_secs": shift.behind_secs,
@@ -816,9 +695,7 @@ fn shift_json(shift: Shift) -> Value {
     })
 }
 
-/// The A-B section as the wire shows it: null with nothing marked, `a`
-/// alone while the cycle waits for B, both ends once the section repeats.
-/// Seconds are track-relative, the same clock `position_secs` runs on.
+/// Seconds are track-relative, on the `position_secs` clock.
 fn ab_json(ab: AbState) -> Value {
     match ab {
         AbState::Off => Value::Null,
@@ -827,7 +704,6 @@ fn ab_json(ab: AbState) -> Value {
     }
 }
 
-/// The playing track's full tags, or null while nothing plays.
 fn now_playing(state: &AppState, cx: &App) -> Value {
     let player = state.player.read(cx);
     let Some(now) = player.now_playing() else {
@@ -835,9 +711,7 @@ fn now_playing(state: &AppState, cx: &App) -> Value {
     };
     let tags = player.live_over(state.library.read(cx).meta_for_key(&now.key));
     let mut track = track_json(&now.key, tags.as_ref());
-    // The playback-scoped keys this method grafts onto the track object,
-    // which `track_json` itself never carries: those describe a row, and
-    // the queue listing shares them.
+    // Playback-scoped keys stay out of `track_json`, which the queue listing shares.
     track["position_secs"] = json!(now.position_secs);
     track["duration_secs"] = json!(now.duration_secs);
     track["live"] = json!(now.live);
@@ -845,9 +719,6 @@ fn now_playing(state: &AppState, cx: &App) -> Value {
     track
 }
 
-/// One track as the wire shows it: the key that names it, and the library's
-/// tags where it has a row. The filename stands in for a missing title the
-/// same way the media widget's card does.
 fn track_json(key: &TrackKey, tags: Option<&rox_library::store::TrackMeta>) -> Value {
     let fallback_title = || {
         key.path
@@ -874,9 +745,6 @@ fn track_json(key: &TrackKey, tags: Option<&rox_library::store::TrackMeta>) -> V
     })
 }
 
-/// The whole play order with the handles an edit needs: stable ids for
-/// remove, move, and jump, the explicit flag the queue widgets split on,
-/// and which entry is audible.
 fn queue_list(state: &AppState, cx: &App) -> Value {
     let player = state.player.read(cx);
     let Some((entries, cursor)) = player.play_order() else {
@@ -902,28 +770,18 @@ fn queue_list(state: &AppState, cx: &App) -> Value {
     })
 }
 
-/// What one `queue.add` argument names, before the library gets a say.
-/// Reading the string and asking whether the row exists are separate steps
-/// so the reading can be tested without an app around it.
+/// Parsed apart from the library lookup so it tests without an app.
 #[derive(Debug, PartialEq)]
 enum AddTarget {
-    /// A row belonging to some source other than the disk, written the way
-    /// [`TrackKey::to_fragment`] writes it: `subsonic:<digest>|<song id>`,
-    /// `radio|<url>`. What `library.search` hands back as `key`.
+    /// A [`TrackKey::to_fragment`] key, as `library.search` returns it.
     Row(TrackKey),
-    /// A bare stream URL, which is a station row's own identity: the
-    /// stations panel and the Radio page both file one under its URL, so
-    /// pasting that URL is the obvious thing to try and it should work.
+    /// A bare stream URL, a station row's own identity.
     Station(TrackKey),
-    /// A cue track, `path#N`: a slice of a file rather than a file.
     Subsong(TrackKey),
-    /// A path on disk, for the filesystem walk that has always run here.
     Path(PathBuf),
 }
 
-/// Read one add argument. `is_file` decides the literal reading the same
-/// way [`TrackKey::from_fragment`] uses it, so a real file whose name holds
-/// a `|` or ends in `#2` still beats the fragment reading of it.
+/// A real file whose name holds `|` or ends in `#2` beats the fragment reading.
 fn add_target(s: &str, is_file: impl Fn(&str) -> bool) -> AddTarget {
     let key = TrackKey::from_fragment(s, &is_file);
 
@@ -931,9 +789,7 @@ fn add_target(s: &str, is_file: impl Fn(&str) -> bool) -> AddTarget {
         return AddTarget::Row(key);
     }
 
-    // Only after the fragment reading and the disk check have both passed
-    // on it: a scheme is not something a path has, but the callback is the
-    // one thing here that knows what is really on this machine.
+    // Only after the disk check: the callback knows what's really on this machine.
     if (s.starts_with("http://") || s.starts_with("https://")) && !is_file(s) {
         return AddTarget::Station(TrackKey {
             source: rox_library::cue::source_id(rox_library::stations::SOURCE),
@@ -948,22 +804,10 @@ fn add_target(s: &str, is_file: impl Fn(&str) -> bool) -> AddTarget {
     }
 }
 
-/// Queue tracks. `mode` places them: "end" (the default) behind what's
-/// queued, "next" right after the playing track, "now" splices and jumps.
-///
-/// Four things can name a track. A path is filtered to decodable audio the
-/// same way an OS file open is, and a folder walks. A `path#N` string names
-/// a cue track the way the m3u export does. A `source|path` fragment names
-/// a row belonging to a source, which is what `library.search` prints as
-/// `key`. A bare `http(s)://` URL names the station filed under it.
-///
-/// The last two are refused rather than guessed at when the library holds
-/// no such row: nothing here can fetch a stream or a server's catalog, so
-/// a key with no row behind it would enter the queue and fail at the open,
-/// several seconds later and somewhere else. Local paths keep the old
-/// behaviour, where a path that isn't audio just falls out of the batch.
-///
-/// Returns how many made the cut.
+/// `mode`: "end" (default), "next", or "now". Paths filter to audio and
+/// folders walk; `path#N` is a cue track; `source|path` fragments and bare
+/// stream URLs name library rows and are refused when no such row exists,
+/// since nothing here can fetch a stream or a server's catalog.
 fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let paths = params
         .get("paths")
@@ -971,7 +815,6 @@ fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, Rp
         .ok_or_else(|| RpcError::invalid_params("add takes {\"paths\": [..], \"mode\"?}"))?;
     let mut keys = Vec::new();
     {
-        // Scoped, because the queue edit below needs the context back.
         let library = state.library.read(cx);
         for path in paths {
             let Some(s) = path.as_str() else {
@@ -999,8 +842,7 @@ fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, Rp
                     keys.push(key);
                 }
 
-                // A cue track names a slice, not a file to sniff; the
-                // engine resolves its span off the library at insert.
+                // The engine resolves the span off the library at insert.
                 AddTarget::Subsong(key) => keys.push(key),
 
                 AddTarget::Path(path) => keys.extend(
@@ -1032,7 +874,6 @@ fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, Rp
     Ok(json!({ "queued": queued }))
 }
 
-/// The ids a batch edit names, from `{"ids": [..]}` or a single `{"id": ..}`.
 fn id_list(params: &Value) -> Result<Vec<u64>, RpcError> {
     if let Some(id) = params.get("id").and_then(Value::as_u64) {
         return Ok(vec![id]);
@@ -1045,14 +886,9 @@ fn id_list(params: &Value) -> Result<Vec<u64>, RpcError> {
         .ok_or_else(|| RpcError::invalid_params("remove takes {\"ids\": [..]}"))
 }
 
-/// Search the library off the projection, the same scan the panels run,
-/// widened to the stations: this is a general search, not a browse, so a
-/// station answers a query here the way it does in the app's own search
-/// box. Its hits come after the tracks.
-///
-/// The scan itself is rayon-parallel and proportional to the library, so it
-/// leaves for the background executor with the responder; only the id-to-
-/// path resolve comes back to the UI side, bounded by the row cap.
+/// The panels' scan widened to stations, whose hits come after the tracks.
+/// The scan runs on the background executor; only the path resolve returns
+/// to the UI side, bounded by the row cap.
 fn search(state: &AppState, request: Request, cx: &mut App) {
     let (_, params, responder) = request.into_parts();
     let Some(query) = params.get("query").and_then(Value::as_str) else {
@@ -1102,14 +938,8 @@ fn search(state: &AppState, request: Request, cx: &mut App) {
     .detach();
 }
 
-/// One search hit: the projection row's tags plus the key that plays it,
-/// resolved through the same id the rating writes use.
-///
-/// `path` alone stopped naming a track when sources arrived: a Subsonic
-/// song's path is whatever its server calls the song, and two servers can
-/// hand back the same string. `source` and `key` close that. `key` is the
-/// fragment form, which is exactly what `queue.add` takes back, so a hit
-/// here can be queued without the caller assembling anything.
+/// `path` alone doesn't name a track (two servers can share a string), so
+/// `source` and `key` do. `key` is what `queue.add` takes back.
 fn search_row(projection: &Projection, row: u32, library: &Library) -> Value {
     let view = projection.resolve(row);
     let id = projection.db_id[row as usize];
@@ -1135,9 +965,6 @@ fn search_row(projection: &Projection, row: u32, library: &Library) -> Value {
     })
 }
 
-/// Cover art by path, read off the background executor: the same embedded-
-/// tag-then-folder resolve the media widget uses, handed back as base64
-/// with its mime beside it.
 fn artwork(request: Request, cx: &mut App) {
     use base64::Engine as _;
 
@@ -1166,14 +993,10 @@ fn artwork(request: Request, cx: &mut App) {
 mod tests {
     use super::*;
 
-    /// A file on disk, for the `is_file` callback the reading takes.
     fn on_disk(paths: &'static [&'static str]) -> impl Fn(&str) -> bool {
         move |p| paths.contains(&p)
     }
 
-    /// The reading every argument had before sources: a path walks, a
-    /// `path#N` names a cue track, and a name that really ends in `#2`
-    /// beats the cue reading of it.
     #[test]
     fn a_local_argument_reads_the_way_it_always_did() {
         let disk = on_disk(&["/m/album.flac", "/m/odd#2"]);
@@ -1193,16 +1016,12 @@ mod tests {
             add_target("/m/odd#2", &disk),
             AddTarget::Path(PathBuf::from("/m/odd#2"))
         );
-        // A path that isn't there is still a path: the walk drops it, the
-        // same silence a file open gives.
         assert_eq!(
             add_target("/m/gone.flac", &disk),
             AddTarget::Path(PathBuf::from("/m/gone.flac"))
         );
     }
 
-    /// A bare stream URL names the station row filed under it, and the key
-    /// it becomes is the one the stations panel plays.
     #[test]
     fn a_stream_url_names_a_station() {
         let disk = on_disk(&[]);
@@ -1221,15 +1040,12 @@ mod tests {
             add_target("https://stream.example/live.mp3", &disk),
             expect("https://stream.example/live.mp3")
         );
-        // Not every scheme: only the two a station can be served over.
         assert_eq!(
             add_target("file:///m/album.flac", &disk),
             AddTarget::Path(PathBuf::from("file:///m/album.flac"))
         );
     }
 
-    /// The fragment form round trips: what `library.search` prints as
-    /// `key` reads back as the same key.
     #[test]
     fn a_source_fragment_names_the_row_it_came_from() {
         let disk = on_disk(&[]);
@@ -1254,9 +1070,6 @@ mod tests {
         }
     }
 
-    /// A file whose name holds a `|` stays whole. The disk answer wins, or
-    /// every rip with a pipe in its title would queue under a source
-    /// nobody has.
     #[test]
     fn a_pipe_in_a_filename_is_not_a_source_prefix() {
         let disk = on_disk(&["/m/a|b.flac"]);
@@ -1266,8 +1079,6 @@ mod tests {
         );
     }
 
-    /// The shift block carries the three numbers a client draws a tape
-    /// with, and says whether the playhead has left the edge.
     #[test]
     fn the_shift_block_reports_the_tape_and_the_edge() {
         let tape = |behind| Shift {

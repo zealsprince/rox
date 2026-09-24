@@ -1,20 +1,12 @@
-//! Persisted app settings, in the app's data directory next to the library
-//! database. `settings.json` holds the preferences and the library setup,
-//! `workspace.json` the look the app is currently using, `windows.json`,
-//! `session.json`, and `accounts.json` a shard each (window frames, playback
-//! state, account connections), and `workspaces/` the saved workspaces, one
-//! file each. Writers each own a few fields (the player its playback
-//! state, the workspace its window and layout) and write through
-//! [`Settings::update`], which reloads first so one writer's save never
-//! reverts another's fields to what they were at startup.
+//! Persisted app settings in the data directory. `settings.json` holds the
+//! preferences and library setup, small enough to hand-edit. `workspace.json`
+//! holds the live look, `windows.json`, `session.json`, and `accounts.json` a
+//! shard each, and `workspaces/` the saved workspaces, one exported bundle per
+//! file. Writers go through [`Settings::update`], which reloads first so one
+//! writer's save never reverts another's fields.
 //!
-//! The split keeps `settings.json` small enough to read and hand-edit: the
-//! dock dumps and palettes that dwarfed it now have their own files, and a
-//! saved workspace on disk is already an exported one.
-//!
-//! `layouts` here is the named dock presets, `panel_presets` the named single
-//! panels. The settings window and its chrome (`ui`, `window`,
-//! `shader_confirm`) are defined up in rox, where the widgets are.
+//! `layouts` holds the named dock presets, `panel_presets` the named single
+//! panels. The settings window lives up in rox, with the widgets.
 
 pub mod layouts;
 pub mod panel_presets;
@@ -39,37 +31,24 @@ use crate::continuation;
 use crate::install;
 use crate::pattern::{self, Pattern, PatternField};
 
-/// The floor under every rox window. Applying a layout or toggling the
-/// mini-player resizes the window to a preset's stored size, and a bad or
-/// zero size there used to collapse the window to nothing, so you had to go
-/// fish it back out with the window manager. This is the OS-level minimum and
-/// the clamp the programmatic resizes run through, never zero.
-///
-/// Low enough to stay out of the way, because it isn't what usually stops a
-/// resize. The dock floors a window at what its layout needs: every panel
-/// has a minimum, a stack adds its children's along its own axis, and a
-/// drag actually stops at that sum. This is the backstop under that, for a
-/// layout whose panels have all been set small enough to get down to it.
+/// The OS minimum and the clamp programmatic resizes run through, so a bad
+/// stored preset size can't collapse a window to nothing. Kept low: the
+/// dock's per-panel minimums usually stop a resize first.
 pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
     width: px(20.),
     height: px(20.),
 };
 
-/// Where a pre-split settings file's workspaces go. The bundle handling is
-/// up in rox, so the migration hands each one back through here; startup
-/// installs the sink before anything reads a setting.
+/// Where a pre-split settings file's workspaces go. Startup installs it
+/// before anything reads a setting.
 static WORKSPACE_MIGRATOR: OnceLock<fn(WorkspaceBundle)> = OnceLock::new();
 
-/// Point [`Settings::load`]'s one-shot migration at the workspace writer.
 pub fn set_workspace_migrator(migrate: fn(WorkspaceBundle)) {
     let _ = WORKSPACE_MIGRATOR.set(migrate);
 }
 
-/// The folder holding the running executable, portable mode's anchor.
-/// Under an AppImage it's the folder holding the .AppImage file: the mount
-/// under /tmp the executable actually runs from is read-only and gone
-/// after exit, and a portable folder has to outlive the run. None when the
-/// exe path can't be read, which just leaves portable off.
+/// Under an AppImage this is the folder holding the .AppImage, since the
+/// mount the binary runs from is read-only and gone after exit.
 fn exe_dir() -> Option<PathBuf> {
     if let Some(dir) = install::appimage().and_then(Path::parent) {
         return Some(dir.to_path_buf());
@@ -80,39 +59,24 @@ fn exe_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
-/// The marker file beside the executable that keeps portable mode on
-/// across launches; the Behavior page's toggle creates and removes it.
+/// The marker file beside the executable that keeps portable mode on.
 pub fn portable_marker() -> Option<PathBuf> {
     exe_dir().map(|dir| dir.join("portable"))
 }
 
-/// The portable data folder's name. rox-data rather than data so it stays
-/// recognizable in a folder shared with other apps.
 const PORTABLE_DATA: &str = "rox-data";
 
-/// The portable data folder beside the executable.
 pub fn portable_data_dir() -> Option<PathBuf> {
     exe_dir().map(|dir| dir.join(PORTABLE_DATA))
 }
 
-/// The resolved data root and whether it's the portable one, decided
-/// once per process so a mid-run toggle can't split the stores: the
-/// `portable` marker beside the executable, or a `--portable` flag for
-/// one run, routes everything into rox-data; a flip takes effect on the
-/// next launch. A portable request against an executable folder that
-/// takes no writes falls back to the OS data dir with a warning, since
-/// the alternative is a data dir every store fails to open. In debug
-/// builds `--fresh` overrides both with a wiped scratch folder for
-/// testing the first-run experience.
+/// The data root and whether it's portable, decided once per process so a
+/// mid-run toggle can't split the stores.
 static DATA_DIR: OnceLock<(PathBuf, bool)> = OnceLock::new();
 
 fn resolve_data_dir() -> (PathBuf, bool) {
-    // A fresh run routes everything into a scratch folder in the OS temp
-    // dir, wiped here (the once-per-process choke point) so each launch
-    // is a genuine first run: no settings file, so the welcome
-    // window shows, and no library or caches. Debug-build aid for the
-    // first-time experience (`cargo run -- --fresh`); release builds
-    // ignore the flag so it never becomes user-facing surface.
+    // `--fresh` wipes a scratch data dir so each launch is a real first run.
+    // Debug builds only, so it never becomes user-facing.
     if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--fresh") {
         let dir = std::env::temp_dir().join("rox-fresh");
         let _ = std::fs::remove_dir_all(&dir);
@@ -124,10 +88,6 @@ fn resolve_data_dir() -> (PathBuf, bool) {
     choose_data_dir(portable, exe_dir().as_deref())
 }
 
-/// The portable decision over its inputs, split from the flag and marker
-/// reading so a test can hand it a folder. A portable request only takes
-/// the folder beside the executable when that folder takes writes;
-/// otherwise the OS data dir, so the stores still open.
 fn choose_data_dir(portable: bool, exe_dir: Option<&Path>) -> (PathBuf, bool) {
     if portable {
         match exe_dir {
@@ -148,29 +108,22 @@ fn choose_data_dir(portable: bool, exe_dir: Option<&Path>) -> (PathBuf, bool) {
     (dir, false)
 }
 
-/// The app's data directory, shared with the library database. Created on
-/// first use. Portable runs read rox-data beside the executable instead
-/// of the OS data dir.
 pub fn data_dir() -> PathBuf {
     let (dir, _) = DATA_DIR.get_or_init(resolve_data_dir);
     let _ = std::fs::create_dir_all(dir);
     dir.clone()
 }
 
-/// Whether this run reads the portable folder, however it was asked for.
 pub fn portable() -> bool {
     DATA_DIR.get_or_init(resolve_data_dir).1
 }
 
-/// Whether the executable's folder takes writes, the portable toggle's
-/// gate: install dirs (app bundles, Program Files, /usr/bin) are often
-/// read-only, and a directory permission read isn't reliable across
-/// platforms, so probe with a real file.
+/// Whether the executable's folder takes writes. Probes with a real file,
+/// since permission reads aren't reliable across platforms.
 pub fn portable_available() -> bool {
     exe_dir().is_some_and(|dir| dir_writable(&dir))
 }
 
-/// The write probe itself: create and remove a file in the folder.
 fn dir_writable(dir: &Path) -> bool {
     let probe = dir.join(".rox-write-probe");
 
@@ -183,9 +136,8 @@ fn dir_writable(dir: &Path) -> bool {
     }
 }
 
-/// Whether this launch found no settings file, the welcome window's
-/// first-run signal. Recorded once at startup through [`note_first_run`],
-/// before anything can write the file.
+/// Whether this launch found no settings file. [`note_first_run`] records it
+/// at startup, before anything can write the file.
 static FIRST_RUN: AtomicBool = AtomicBool::new(false);
 
 pub fn note_first_run() {
@@ -196,92 +148,56 @@ pub fn first_run() -> bool {
     FIRST_RUN.load(Ordering::Relaxed)
 }
 
-/// The settings file inside [`data_dir`], public so the settings window
-/// can hand the raw file to the system editor. Preferences and the library
-/// setup only: the things a person would actually want to read, change, or
-/// carry to another machine.
 pub fn settings_path() -> PathBuf {
     data_dir().join("settings.json")
 }
 
-/// The live look's own file: the workspace the app is currently using plus
-/// its working state. The dock dumps and palettes that dwarfed everything
-/// else are stored here.
 pub fn look_path() -> PathBuf {
     data_dir().join("workspace.json")
 }
 
-/// Where the windows are on this machine: the main frame plus what each
-/// auxiliary window remembers. Never worth copying anywhere, and safe to
-/// delete: the windows just reopen at their defaults.
 pub fn windows_path() -> PathBuf {
     data_dir().join("windows.json")
 }
 
-/// What was playing and where the library stood: the volatile half that
-/// changes on every track and would otherwise churn the preferences file.
-/// Safe to delete; it all regenerates.
 pub fn session_path() -> PathBuf {
     data_dir().join("session.json")
 }
 
-/// The account connections and their keys. Its own file so the file people
-/// are invited to open and hand around holds no credentials, and a sync
-/// setup can leave the secrets behind.
+/// Account keys get their own file so the settings file people hand around
+/// holds no credentials.
 pub fn accounts_path() -> PathBuf {
     data_dir().join("accounts.json")
 }
 
-/// The folder the user's saved workspaces are stored in, one JSON file each. A
-/// bundle on disk is already an exported bundle: drop a shared file in here
-/// and it joins the list, delete one and it's gone.
 pub fn workspaces_dir() -> PathBuf {
     data_dir().join("workspaces")
 }
 
-/// The folder the ejected shaders are written to, one subfolder per workspace
-/// and one `.wgsl` per pool entry. Ejecting is how a shader that arrived inside
-/// a bundle gets a file an editor can open, and hot reload watches that file
-/// from then on. Nothing is created here; the first eject makes the
-/// folders, the same rule the lyrics and artist stores keep.
+/// Ejected shaders, one subfolder per workspace. The first eject creates it.
 pub fn shaders_dir() -> PathBuf {
     data_dir().join("shaders")
 }
 
-/// The folder the Milkdrop panel looks for presets and textures in:
-/// `presets/` holds the `.milk` files, `textures/` the images a preset can
-/// ask for by name, and a pack's own `textures/` folder under `presets/`
-/// is found by the scan as well. Nothing is created here; the packs worth having are a
-/// download the user makes themselves, and the panel's settings page shows
-/// this path so they know where to unzip them (ADR 28).
+/// Milkdrop `presets/` and `textures/`. Not created here: users unzip packs
+/// into it themselves (ADR 28).
 pub fn milkdrop_dir() -> PathBuf {
     data_dir().join("milkdrop")
 }
 
-/// Where a workspace's shader ejects to. Both halves of the name double as
-/// path components, so both go through [`safe_file_stem`]; a look that was
-/// never saved under a name (the live one you're editing) goes under
-/// `_local`. A workspace someone actually calls "_local" shares that folder,
-/// which is a name collision like any other here, and the re-link only takes
-/// a file whose contents still hash to the entry's, so the worst it costs is
-/// a bookmark that doesn't attach.
+/// An unsaved look ejects under `_local`. A workspace named that shares the
+/// folder, which costs at worst a bookmark, since the re-link checks the hash.
 pub fn shader_eject_path(workspace: &str, shader: &str) -> PathBuf {
     shader_eject_path_in(&shaders_dir(), workspace, shader)
 }
 
-/// The eject path under a given root. What the tests and the re-link up in
-/// rox exercise without writing into the folder the running app ejects to.
 pub fn shader_eject_path_in(root: &Path, workspace: &str, shader: &str) -> PathBuf {
     root.join(safe_file_stem(workspace, "_local"))
         .join(format!("{}.wgsl", safe_file_stem(shader, "shader")))
 }
 
-/// A name as a file or folder name. Names double as filenames all over the
-/// data directory, so anything that can't be one is stripped: separators,
-/// the characters Windows refuses, and control characters all fold to
-/// spaces, then the result is trimmed of space and of the leading dots that
-/// would hide the file. A name of pure punctuation empties out and returns
-/// `fallback`.
+/// A name as a file or folder name: separators, Windows-reserved and control
+/// characters fold to spaces, and leading dots go so the file isn't hidden.
 pub fn safe_file_stem(name: &str, fallback: &str) -> String {
     let folded: String = name
         .chars()
@@ -299,16 +215,12 @@ pub fn safe_file_stem(name: &str, fallback: &str) -> String {
     }
 }
 
-/// Write pretty JSON through a sibling temp file, then rename over the real
-/// one. A crash mid-write can't truncate a file and take every layout,
-/// palette, and the Last.fm session down with it; rename is atomic within the
-/// same directory. Failures log under `what` and move on: losing a write
-/// isn't worth interrupting playback for.
+/// Write pretty JSON through a sibling temp file and rename, so a crash
+/// mid-write can't truncate the file. Failures log under `what` and move on.
 pub fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bool {
     let text = match serde_json::to_string_pretty(value) {
         Ok(text) => text,
-        // A non-finite f32 would fail here; log and keep the old file rather
-        // than panic the whole app mid-playback.
+        // A non-finite f32 fails here. Keep the old file rather than panic.
         Err(e) => {
             log::warn!("{what}: serializing: {e}");
             return false;
@@ -333,23 +245,15 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bool {
     true
 }
 
-/// Deserializers that keep a file readable when one piece of it isn't.
+/// Deserializers that drop only the broken piece of a file, where serde's
+/// default would reset the whole file over one bad entry. Each logs what it
+/// drops.
 ///
-/// Serde's default is all or nothing: a preset whose dump went missing fails
-/// the list, which fails the look, which resets a whole file to defaults over
-/// one bad entry. These narrow that blast radius to the piece that's actually
-/// broken. A collection drops the entries that don't parse and keeps the rest;
-/// an optional field reads as None, a defaulted one as its default. All three
-/// say what they dropped, since a silent one is a preset or a queue vanishing
-/// with no thread back to why.
-///
-/// Which of the three a field takes isn't a style choice. A list of presets is
-/// independent, so dropping one costs one preset. A queue's `cursor` indexes
-/// its `entries`, so dropping an entry shifts the cursor and resumes the wrong
-/// track: that one has to fail whole, as an option, or not at all. A closed set
-/// of words, a mode or a style or a destination, takes the default: a spelling
-/// a newer build wrote is a word this build doesn't know rather than damage,
-/// and refusing it would cost the whole shard.
+/// Which one a field takes matters. Independent lists drop the bad entry. A
+/// queue's `cursor` indexes its `entries`, so the queue fails whole as an
+/// option: dropping one entry would resume the wrong track. Closed word sets
+/// (modes, styles) take the default, since an unknown word is likely a newer
+/// build's spelling.
 mod lenient {
     use std::collections::BTreeMap;
 
@@ -403,8 +307,6 @@ mod lenient {
     }
 }
 
-/// Each file's serialized contents at one moment, so a write can tell which
-/// ones an edit actually touched.
 #[derive(PartialEq)]
 struct Shards {
     core: Option<String>,
@@ -414,11 +316,9 @@ struct Shards {
     accounts: Option<String>,
 }
 
-/// Read one shard file, or fall back to reading it out of a pre-split
-/// `settings.json` where its fields were flat beside everything else. A file
-/// that no longer parses resets to defaults rather than blocking start, and
-/// never falls through to the legacy read: the shard's contents are gone
-/// either way, and a stale copy would only resurrect an older version of them.
+/// Read one shard file, or its fields out of a pre-split `settings.json`. A
+/// file that no longer parses resets to defaults and never falls through to
+/// the legacy read, which would resurrect stale contents.
 fn load_shard<T, F>(path: &Path, what: &str, legacy: &serde_json::Value, from_legacy: F) -> T
 where
     T: Default + serde::de::DeserializeOwned,
@@ -433,14 +333,8 @@ where
     }
 }
 
-/// Read a shard straight out of a pre-split map. Every field kept its name
-/// through the move, so this is the whole migration for three of the four
-/// shards; the look needs its own because its appearance knobs went from flat
-/// siblings to a nested object.
-///
-/// A map this can't read costs the whole shard, so it says so rather than
-/// quietly handing back defaults: that's an upgrade losing someone's playback
-/// state or Last.fm session, and a log line is the only thread back to why.
+/// Read a shard out of a pre-split map, where every field kept its name. A
+/// failure costs the whole shard, so it's logged.
 fn from_legacy<T: Default + serde::de::DeserializeOwned>(value: &serde_json::Value) -> T {
     if value.is_null() {
         return T::default();
@@ -451,7 +345,6 @@ fn from_legacy<T: Default + serde::de::DeserializeOwned>(value: &serde_json::Val
     })
 }
 
-/// Write one shard when the edit moved it, or when its file isn't there yet.
 fn write_shard<T: Serialize>(
     path: PathBuf,
     what: &str,
@@ -465,334 +358,171 @@ fn write_shard<T: Serialize>(
     }
 }
 
-/// The preferences and the library setup, `settings.json`'s own contents,
-/// plus the states stored in files of their own. Unknown fields are
-/// dropped on load and missing ones take defaults, so every file tolerates
-/// version drift in both directions. The shards below are skipped here and
-/// written separately; this struct holds them so callers still see one
-/// settings object and go through one [`Settings::update`].
+/// `settings.json`'s preferences plus the shards stored in their own files,
+/// held together so callers go through one [`Settings::update`]. Unknown
+/// fields drop on load and missing ones default, so files tolerate version
+/// drift both ways.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// The look the app is using: the live workspace bundle plus the dock
-    /// state it's working on. Persisted to [`look_path`].
+    /// Persisted to [`look_path`].
     #[serde(skip)]
     pub look: LookState,
-    /// Where this machine's windows are. Persisted to [`windows_path`].
+    /// Persisted to [`windows_path`].
     #[serde(skip)]
     pub windows: WindowsState,
-    /// What was playing and where the library stood. Persisted to
-    /// [`session_path`].
+    /// Persisted to [`session_path`].
     #[serde(skip)]
     pub session: SessionState,
-    /// The account connections. Persisted to [`accounts_path`].
+    /// Persisted to [`accounts_path`].
     #[serde(skip)]
     pub accounts: AccountsState,
-    /// Whether this was read out of a pre-split file. The shards are all
-    /// missing in that case so they write themselves, but this file is
-    /// already on disk holding the old flat shape, and a no-op edit
-    /// serializes to the same bytes it would have anyway. Without this the
-    /// stale keys, credentials included, would stay there forever.
+    /// Read out of a pre-split file, so force a rewrite. A no-op edit would
+    /// serialize to the same bytes and leave the stale keys, credentials
+    /// included, on disk forever.
     #[serde(skip)]
     migrated: bool,
-    /// The folders the library scans, in the order they were added. Empty
-    /// until one has been opened.
     pub library_roots: Vec<PathBuf>,
-    /// The single folder `library_roots` replaced. Read once on load to
-    /// seed the list, never written back.
+    /// Legacy single root, read once to seed `library_roots`, never written.
     #[serde(skip_serializing)]
     library_root: Option<PathBuf>,
-    /// Whether the library watches its roots for filesystem changes and
-    /// folds adds, edits, and deletes in without a manual rescan. On by
-    /// default; the settings toggle turns it off for network mounts or when
-    /// the watch load isn't wanted.
+    /// Globs the scan and watcher leave out, compiled by
+    /// `rox_library::exclude`.
+    pub library_exclude: Vec<String>,
     pub watch_library: bool,
-    /// Whether library values differing only by case count as one: Rock
-    /// and rock become the same genre, artist, album artist, and album,
-    /// shown under the casing most tracks use. Off keeps values exact,
-    /// today's behavior; flipping it reloads the projection.
+    /// Rock and rock count as one value, shown under the majority casing.
+    /// Flipping it reloads the projection.
     pub fold_case: bool,
-    /// Whether commas and slashes split genre lists alongside the
-    /// semicolon that always does: "Dubstep, Trap" and "Drum & Bass /
-    /// Neurofunk" count each value on their own. On by default; off for
-    /// libraries whose slashes name single genres. Flipping it reloads
-    /// the projection.
+    /// Commas and slashes split genre lists alongside the semicolon.
+    /// Flipping it reloads the projection.
     pub split_genre_compounds: bool,
-    /// Whether a name written in a script the reader can't sound out
-    /// carries its reading after it, "秋ノ風 (Aki no kaze)", wherever a
-    /// title, artist or album is drawn. The reading is the sort name the
-    /// value already has, so a library with none shows nothing either way,
-    /// and a Latin name never gets one. On by default.
+    /// Non-Latin names show their sort name as a reading, "秋ノ風 (Aki no
+    /// kaze)".
     pub show_readings: bool,
-    /// The theme pick: which of the two user palettes renders, with
-    /// System following the OS's light/dark preference live.
     #[serde(deserialize_with = "lenient::or_default")]
     pub theme: Theme,
-    /// The interface language, a locale id from rox-i18n's registry.
-    /// None follows the OS, negotiated against what ships and falling
-    /// back to English when nothing matches; an id the registry has dropped
-    /// negotiates the same way instead of failing.
+    /// A locale id from rox-i18n's registry. None follows the OS; an unknown
+    /// id negotiates the same way instead of failing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    /// The app-wide text size in px, the rem every window's rem-based text
-    /// scales from. Clamped to the palette's shared range on apply; 16 is
-    /// the stock size the app has always drawn at.
+    /// The app-wide rem in px. 16 is gpui's stock rem.
     pub app_font_size: f32,
-    /// Whether launch loads the last playing track back up, paused where
-    /// it left off. The track below is written either way; this only
-    /// gates the restore.
+    /// Gates the restore only; the last track is written either way.
     pub restore_last_track: bool,
-    /// Whether played tracks scrobble at all, to every connected
-    /// destination at once; the connections stay either way. One switch
-    /// rather than one per account, like the threshold under it: off for
-    /// an evening means off, not off here and still on over there.
+    /// One switch for every scrobble destination; the connections stay
+    /// either way.
     pub scrobbling: bool,
-    /// How much of a track has to actually play before it scrobbles, as a
-    /// fraction of its duration. One knob for every scrobble destination:
-    /// Last.fm, Libre.fm and ListenBrainz all send on the same crossing,
-    /// and the seek strip and waveform can mark it. The listen rule behind
-    /// history is its own fixed line and doesn't read this.
+    /// The played fraction that scrobbles, shared by every destination.
+    /// History's listen rule is fixed and doesn't read this.
     pub scrobble_threshold: f32,
-    /// The equalizer's curve and whether it's on, the Audio page's
-    /// Equalizer section. A preference rather than session state: it's a
-    /// tone choice, and it travels with a copied settings file the way the
-    /// rest of this file does.
     pub eq: EqSettings,
-    /// How long a crossfade runs at a track boundary, in seconds. Zero is
-    /// off and every boundary stays the gapless splice (ADR 19). Tracks
-    /// that belong to the same album never fade whatever this says: the
-    /// fade is for the cut between unrelated music that shuffle and
-    /// skipping make, not for a boundary an engineer meant to be seamless.
+    /// Seconds. Zero keeps the gapless splice (ADR 19). Same-album
+    /// boundaries never fade unless `crossfade_albums` is on.
     pub crossfade_secs: f32,
-    /// The length a switched-off crossfade comes back at. The field above
-    /// says off with a zero, so it has nowhere to keep the number a toggle
-    /// would restore; this holds the last length that was actually set, and
-    /// the transport's crossfade button reads it when it turns the fade back
-    /// on. Never zero: with nothing ever set it stands at
-    /// [`DEFAULT_CROSSFADE_SECS`].
+    /// The length the transport's toggle restores, since `crossfade_secs`
+    /// stores off as zero. Never zero.
     pub crossfade_restore_secs: f32,
-    /// Whether the fade also takes boundaries inside one album, which the
-    /// rule above leaves alone. Off by default: a record that runs track
-    /// into track was made that way, and fading it is a change to the
-    /// record rather than a smoothing of it.
     pub crossfade_albums: bool,
-    /// How far one step key moves the playhead, in milliseconds. The fine
-    /// counterpart to the seek keys' five seconds: comma and dot walk the
-    /// track at this size.
+    /// How far the comma and dot step keys move the playhead, in ms.
     pub step_ms: f32,
-    /// How long a step taken while paused plays for, in milliseconds, so
-    /// the step can be heard as well as read. Its own number rather than
-    /// the step's: a 25 ms move is a useful step and an inaudible preview.
+    /// How long a paused step plays, in ms. Separate from the step, since a
+    /// 25 ms preview is inaudible.
     pub step_preview_ms: f32,
-    /// How tagged loudness is levelled, the Audio page's ReplayGain
-    /// section.
     pub replay_gain: ReplayGainSettings,
-    /// How the samples reach the device, the Audio page's Output section.
     pub output: OutputSettings,
-    /// The icecast broadcast sink (ADR 22), off by default. Applied at
-    /// startup and whenever the settings save.
+    /// The icecast broadcast sink (ADR 22).
     pub broadcast: BroadcastSettings,
-    /// Saving whole songs off a live stream, off by default. The Sources
-    /// page's Capture section.
     pub capture: CaptureSettings,
-    /// How much of a live stream is kept in memory behind the playhead, in
-    /// seconds. It's what makes a station pausable: the connection stays up
-    /// through a pause and the bytes pile up here, so Play carries on where
-    /// the listener stopped instead of at the broadcast's live edge, and the
-    /// last few minutes can be stepped back through. Held to
-    /// [`clamp_live_buffer_secs`]'s band, since the memory is real: fifteen
-    /// minutes of a 320 kbps stream is 36 MB.
+    /// Seconds of a live stream kept in memory behind the playhead, which is
+    /// what makes a station pausable. Held to [`clamp_live_buffer_secs`]:
+    /// fifteen minutes of a 320 kbps stream is 36 MB.
     pub live_buffer_secs: u32,
-    /// Whether closing the last workspace window leaves the app resident,
-    /// music playing, with the tray (Linux) or the dock (macOS) as the way
-    /// back in. Off quits, the default. Ignored on Windows until a tray
-    /// backend exists there; a headless process would have no way back.
+    /// Closing the last window leaves the app resident in the tray (dock on
+    /// macOS).
     pub quit_to_tray: bool,
-    /// Whether the layout can be edited in place: the panel menus'
-    /// Add Panel, Rename, Duplicate, Pop Out and Close rows, the controls a
-    /// composition host floats over its slots, and the dock's own tab drag
-    /// and drop. On by default, since a first look at the app is also the
-    /// only place these actions announce themselves. Off, the layout reads
-    /// as finished furniture and is still edited from the Workspace page's
-    /// tree in Settings. A preference rather than part of the workspace
-    /// bundle: it's how someone works, not how a look is built, so applying
-    /// a workspace leaves it alone.
+    /// Whether the layout can be edited in place. A preference rather than
+    /// part of the bundle, so applying a workspace leaves it alone.
     pub design_mode: bool,
-    /// Whether panel resizing is reserved for design mode. Off by
-    /// default, so the seams stay draggable whatever the mode and a fresh
-    /// layout is easy to shape. On, a finished layout only resizes while
-    /// design mode is, and a drag near a seam can't nudge it. A
-    /// preference like design mode above, not part of the workspace
+    /// Reserve panel resizing for design mode. A preference, not part of the
     /// bundle.
     pub resize_lock: bool,
-    /// Whether launch checks GitHub for a newer release, at most once a
-    /// day. The About page's toggle flips it; off leaves only the manual
-    /// button.
+    /// Check GitHub for a newer release at launch, at most once a day.
     pub check_updates: bool,
-    /// Whether the check considers release candidates, the prereleases
-    /// the workflow tags with a suffix (1.25.0-rc.1) ahead of a release.
-    /// Off by default, so a stable install only ever hears about stable
-    /// releases; a build that is itself a candidate reads as opted in
-    /// whatever this says, since it has to learn about the next candidate
-    /// and the release that closes the cycle.
+    /// Consider release candidates. A candidate build is always opted in, so
+    /// it learns about the release that closes its cycle.
     pub prerelease_updates: bool,
-    /// Whether a check that finds a newer release also downloads and
-    /// stages it, so the next start runs it. Off by default, leaving a check
-    /// notify-only, and moot wherever the install can't update itself (a
-    /// read-only executable, a package manager's copy).
+    /// Download and stage a newer release for the next start. Moot where the
+    /// install can't update itself.
     pub download_updates: bool,
-    /// Whether the unfinished work shows: the experimental panels join the
-    /// Panels menu and the launcher. Off by default, flipped on the
-    /// Development page. A layout that already holds an experimental panel
-    /// still restores it either way.
+    /// Offer experimental panels. A layout already holding one restores it
+    /// either way.
     pub experimental: bool,
-    /// Whether anything of rox talks to AI tooling: the MCP surface, and
-    /// any LLM-facing feature that comes later (ADR 22). Off by default,
-    /// flipped at the top of the Application page, and revealing the MCP and
-    /// ML Models pages when on. The built-in acoustic analysis below
-    /// stands on its own and never reads this; enablement only layers AI
-    /// capability on top.
+    /// Whether anything of rox talks to AI tooling (ADR 22). Acoustic
+    /// analysis never reads this.
     pub ai_enabled: bool,
-    /// Whether the MCP surface actually answers tool calls. Its own switch
-    /// under [`ai_enabled`](Self::ai_enabled): turning AI on reveals the MCP
-    /// page but doesn't open the door, and the rox-mcp proxy checks this on
-    /// every call, so a flip applies to the next tool use. Off by default.
+    /// Whether MCP answers tool calls. The rox-mcp proxy checks it on every
+    /// call, so a flip applies to the next tool use.
     pub mcp_enabled: bool,
-    /// Whether the library may describe how its tracks sound, the vectors
-    /// behind "more like this". Off by default and separate from the panel
-    /// switch above: this one costs real decoding time across the whole
-    /// library rather than just showing something that was already built.
-    /// Flipped on the Library page, which is also where the extractor is
-    /// picked and the pass is run from, since all three are about what the
-    /// library knows.
+    /// Whether the library may compute the acoustic vectors behind "more like
+    /// this". Separate from the AI switches, since it costs decoding time.
     pub acoustic_analysis: bool,
-    /// Whether the analysis pass follows the watcher, so files that arrive
-    /// in the library while rox is running get described without anyone
-    /// asking. Off by default, [`ReplayGainSettings::auto`]'s stance: a
-    /// pass that decodes audio shouldn't start on its own until it's been
-    /// agreed to once. Means nothing with the switch above off.
+    /// Whether the analysis pass follows the watcher. Off by default, like
+    /// [`ReplayGainSettings::auto`].
     pub acoustic_auto: bool,
-    /// Whether the library may work out what its tracks run at, the tempo
-    /// pass behind the BPM column. Off by default, the acoustic switch's
-    /// twin in every respect: this one is the feature as well as the
-    /// permission, so with it off nothing measures and the column isn't
-    /// offered. Flipped on the Library page beside the acoustic rows,
-    /// since both are about what the library knows about its audio.
+    /// The tempo pass behind the BPM column. Off, nothing measures and the
+    /// column isn't offered.
     pub tempo_analysis: bool,
-    /// Whether the tempo pass follows the watcher, the acoustic auto
-    /// switch's twin. Off by default; means nothing with the switch above
-    /// off.
     pub tempo_auto: bool,
-    /// How many tracks the analysis pass works on at once. The default
-    /// leaves the machine usable while a pass runs behind other work;
-    /// someone happy to hand the whole box over for an afternoon raises it
-    /// on the prompt that opens before a pass. Clamped to the machine's own
-    /// cores when a pass starts, so a settings file copied from a bigger
-    /// machine can't oversubscribe a smaller one. A pass already running
-    /// keeps the count it started with.
-    ///
-    /// Stored here rather than on the prompt alone so the last pick is the
-    /// next pass's default: someone who settled on two workers shouldn't
-    /// have to say so every time.
+    /// Analysis workers, clamped to this machine's cores when a pass starts
+    /// so a copied settings file can't oversubscribe it.
     pub acoustic_workers: usize,
-    /// The same for the ReplayGain measurement pass, which parallelizes by
-    /// album. Its own field rather than a shared one because the two passes
-    /// don't cost the same thing: analysis is arithmetic start to finish,
-    /// while measurement in tags mode spends part of every file writing to
-    /// disk, so the counts that suit them differ.
+    /// ReplayGain workers, by album. Each pass keeps its own count because
+    /// their costs differ.
     pub replaygain_workers: usize,
-    /// The same for the tempo pass, which parallelizes by track. Its own
-    /// field for the same reason the other two have theirs: a tempo
-    /// estimate decodes a minute of audio per track and nothing else, so
-    /// the count that suits it is neither of theirs.
     pub tempo_workers: usize,
-    /// Which model the analysis pass runs and which model's vectors the
-    /// similarity queries read, by its catalog id
-    /// (rox's embeddings model catalog). Kept next to the switch
-    /// above because neither means anything without the other. Vectors from
-    /// every model coexist in the database, so switching back and forth
-    /// costs nothing already analyzed. A name from a newer build, or one
-    /// whose downloaded weights have since been deleted, falls back to the
-    /// built-in extractor.
+    /// The catalog id the analysis pass runs and similarity reads. An unknown
+    /// id or deleted weights fall back to the built-in extractor.
     pub acoustic_model: String,
-    /// Which downloadable model the ML Models page is offering, by catalog
-    /// id. Distinct from the field above, which is what the library is
-    /// actually running: the two differ whenever the extractor switch is set
-    /// to the built-in sketch, and keeping them apart lets the switch go
-    /// back to a model without asking which one again.
+    /// The downloadable model the ML Models page offers. Kept apart from
+    /// `acoustic_model` so switching back from the built-in extractor
+    /// remembers it.
     pub acoustic_ml_model: String,
-    /// A weights file the user pointed rox at, outside the catalog. One at a
-    /// time: this is a way to run a checkpoint of your own, not a second
-    /// catalog to manage. Its id is derived from the file's hash rather than
-    /// chosen, so its vectors can never end up in another model's coordinates.
+    /// A weights file outside the catalog. Its id comes from the file's hash,
+    /// so its vectors never land in another model's coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustic_local_model: Option<LocalModel>,
-    /// Where the analysis pass puts the vectors it works out. Read once when
-    /// a pass starts, like the ReplayGain destination it's modelled on.
+    /// Read once when a pass starts.
     #[serde(deserialize_with = "lenient::or_default")]
     pub acoustic_save: AcousticSave,
-    /// The whole-window post-process shader, the Shader settings page's Screen
-    /// shader section.
     pub post_shader: PostShaderConfig,
-    /// The Milkdrop visual behind the whole app, composited over the
-    /// blurred cover while something plays.
-    ///
-    /// Machine settings rather than the look bundle, next to the screen
-    /// shader and for the same reason: it only draws anything if this
-    /// machine has preset packs on disk, so a look carrying it would
-    /// import as a switch that does nothing on anyone else's install.
+    /// The Milkdrop visual behind the whole app. Machine settings, not the
+    /// bundle, since it depends on preset packs on this disk.
     pub backdrop_visual: BackdropVisualConfig,
-    /// What every Milkdrop surface shares: the favorites list. Machine
-    /// state, like the backdrop visual above it, since it names files on
-    /// this disk.
     pub milkdrop: MilkdropSettings,
-    /// What the convert dialog opens on: the preset it last ran, where it
-    /// wrote, how it named the files, and which ffmpeg to spawn.
     pub convert: ConvertSettings,
-    /// The chords that have been moved off their defaults, by command id
-    /// (rox's keymap registry). Only what differs is written: a command
-    /// with no entry here runs the chords it ships with, so a default that
-    /// changes in a later build applies to everyone who never touched it.
-    ///
-    /// An entry holding an empty list is a command that was unbound rather
-    /// than never touched. That's the state the absent entry can't express,
-    /// and it's why unbinding writes the empty list instead of removing the
-    /// key.
+    /// Chords moved off their defaults, by command id; only overrides are
+    /// written. An empty list means unbound, so never remove the key to
+    /// unbind.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keymap: BTreeMap<String, Vec<String>>,
 }
 
-/// A weights file outside the catalog, as the settings file stores it. The
-/// live form is rox's `embeddings::Local`; this is the same pair of values
-/// with a serde derive on it.
+/// The serde form of `rox_acoustic::Local`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LocalModel {
-    /// Where the file is. Absolute, and not copied into the data folder: a
-    /// checkpoint someone is iterating on should stay where they're building
-    /// it, and rox re-reads it whenever a pass starts.
+    /// Absolute, and never copied: rox re-reads it whenever a pass starts.
     pub path: PathBuf,
-    /// The name its vectors are stored under, from
-    /// rox's `embeddings::local_id`.
     pub id: String,
-    /// What the file looked like when that hash was taken, [`file_stamp`]'s
-    /// size and mtime. A checkpoint someone is iterating on gets rewritten at
-    /// the same path, and the id would then name bytes that are gone, so
-    /// [`resolve_acoustic`] checks these before it hands the file to a pass.
-    /// Zero in a file written before the stamp existed, which reads as changed
-    /// and costs one re-hash.
+    /// The [`file_stamp`] taken with the hash, checked before a pass so a
+    /// rewritten checkpoint gets re-hashed. Zero reads as changed.
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
     pub mtime: i64,
 }
 
-/// A weights file's size and its mtime in unix seconds, the pair that says
-/// whether the bytes behind a hash are still the ones it was taken from. The
-/// scan and the peaks cache stamp files the same way. None when the path isn't
-/// a readable file, which reads as the checkpoint being gone.
-///
-/// Seconds, like every other stamp here, so a rewrite inside the same second
-/// as the write that was hashed is the one change this can't see.
+/// A file's size and mtime in unix seconds. A rewrite within the same second
+/// as the hashed write goes unseen.
 pub fn file_stamp(path: &Path) -> Option<(u64, i64)> {
     let meta = std::fs::metadata(path).ok().filter(|meta| meta.is_file())?;
     let mtime = meta
@@ -804,237 +534,129 @@ pub fn file_stamp(path: &Path) -> Option<(u64, i64)> {
     Some((meta.len(), mtime))
 }
 
-/// Where this machine's windows are: `windows.json`'s whole contents. Pure
-/// machine state, and the one file here that's disposable: delete it and
-/// every window reopens at its default shape, nothing else notices.
+/// `windows.json`: machine state, safe to delete.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowsState {
-    /// The main window's last frame, restored on open. None until the first
-    /// window closes.
     #[serde(alias = "window", deserialize_with = "lenient::option")]
     pub main: Option<WindowState>,
-    /// The tag editor's last window size and column widths, restored on
-    /// the next open. None until an editor closes.
     #[serde(deserialize_with = "lenient::option")]
     pub tag_editor: Option<TagEditorState>,
-    /// The rename dialog's last size and the patterns it applied, restored
-    /// on the next open. None until the dialog closes.
     #[serde(deserialize_with = "lenient::option")]
     pub rename_dialog: Option<RenameDialogState>,
-    /// The stats window's last size and range pick, restored on the next
-    /// open. None until the window closes.
     #[serde(alias = "stats_window", deserialize_with = "lenient::option")]
     pub stats: Option<StatsWindowState>,
-    /// The library health window's last size, restored on the next open.
-    /// None until the window closes.
     #[serde(deserialize_with = "lenient::option")]
     pub health: Option<HealthWindowState>,
-    /// The power search window's last size, restored on the next open.
-    /// None until the window closes.
     #[serde(deserialize_with = "lenient::option")]
     pub search: Option<SearchWindowState>,
-    /// The app settings window's last size, restored on the next open.
-    /// None until the window closes.
     #[serde(alias = "settings_window", deserialize_with = "lenient::option")]
     pub settings: Option<LayoutSize>,
-    /// The console window's last size, restored on the next open. None until
-    /// the window closes.
     #[serde(alias = "console_window", deserialize_with = "lenient::option")]
     pub console: Option<LayoutSize>,
-    /// The tasks window's last size, restored on the next open. None until
-    /// the window closes.
     #[serde(deserialize_with = "lenient::option")]
     pub tasks: Option<LayoutSize>,
-    /// The convert dialog's last size, restored on the next open. None until
-    /// the dialog closes. What it converts to and where is stored in
-    /// [`ConvertSettings`], since those are choices rather than machine
-    /// state.
     #[serde(deserialize_with = "lenient::option")]
     pub convert_dialog: Option<LayoutSize>,
-    /// The embed dialog's last size, restored on the next open. None until
-    /// the dialog closes. Nothing else about it is remembered: what it offers
-    /// is whatever the library holds at the time, so there's no choice worth
-    /// keeping for the next open.
     #[serde(deserialize_with = "lenient::option")]
     pub bake_dialog: Option<LayoutSize>,
-    /// The equalizer window's last size, restored on the next open. None
-    /// until the window closes. The curve itself is stored in `eq`, since it
-    /// shapes audio whether or not the window is ever opened.
     #[serde(alias = "eq_window", deserialize_with = "lenient::option")]
     pub eq: Option<LayoutSize>,
-    /// The Milkdrop preset picker's last size and its browser switches,
-    /// shared between the backdrop and the panels it serves, restored on
-    /// the next open. None until the window closes or a switch flips.
     #[serde(deserialize_with = "lenient::option")]
     pub milkdrop_picker: Option<MilkdropPickerWindowState>,
-    /// The signals window's last size and the fold state of its explainer,
-    /// restored on the next open. None until the window closes. The pool it
-    /// edits is stored in the look bundle, since it travels with a workspace.
     #[serde(deserialize_with = "lenient::option")]
     pub signals: Option<SignalsWindowState>,
-    /// The panel settings window's last size, shared across panels and
-    /// restored on the next open. None until a window closes.
     #[serde(alias = "panel_settings_window", deserialize_with = "lenient::option")]
     pub panel_settings: Option<LayoutSize>,
-    /// The view for the queue window the widget opens (its columns and album
-    /// headings), so the modal and popped-out queue come back the way you
-    /// left them. A docked queue panel keeps its own view in the layout dump
-    /// instead. Kept as raw JSON, like the dock layout, so the file stays
-    /// readable when the queue's config schema moves. None until edited.
+    /// The modal and popped-out queue's view. Raw JSON so the file stays
+    /// readable when the queue's config schema moves.
     pub queue_view: Option<serde_json::Value>,
 }
 
-/// What was playing and where the library stood: `session.json`'s whole
-/// contents. The volatile half, rewritten as the music moves, kept off the
-/// preferences file so a volume nudge doesn't churn it. Disposable like the
-/// windows: delete it and playback starts cold and the library rescans.
+/// `session.json`: the volatile playback state, kept off the preferences file
+/// so a volume nudge doesn't churn it. Safe to delete.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionState {
-    /// Linear playback volume, same range the engine clamps to (0 to 2).
+    /// Linear, 0 to 2 like the engine's clamp.
     pub volume: f32,
-    /// Whether output is muted. The volume above is the level mute returns
-    /// to, so muting never loses the setting.
     pub muted: bool,
-    /// Loop mode as its wire name: "off", "all", or "one". The engine's
-    /// `LoopMode` stays serde-free; convert through the accessors.
+    /// "off", "all", or "one". The engine's `LoopMode` stays serde-free, so
+    /// convert through the accessors.
     pub loop_mode: String,
-    /// Whether playback shuffles: the queue plays in some order other than
-    /// front to back. Which order is [`Self::shuffle_mode`]'s business; this
-    /// is only whether shuffling happens at all, so turning it off and back
-    /// on returns to the mode that was picked rather than a default.
+    /// Separate from [`Self::shuffle_mode`], so toggling keeps the picked
+    /// mode.
     pub shuffle: bool,
-    /// Which order shuffle puts the queue in. Random is what shuffle has
-    /// always meant; Similar orders what's coming by how much it sounds like
-    /// the playing track, off the acoustic vectors.
     #[serde(deserialize_with = "lenient::or_default")]
     pub shuffle_mode: ShuffleMode,
-    /// Which strategy refills the queue when it runs dry (ADR 17). Continue
-    /// out of the box: a local player that goes silent mid-flow feels broken,
-    /// and Off is here for anyone who disagrees.
+    /// Which strategy refills the queue when it runs dry (ADR 17).
     pub continuation: continuation::Mode,
-    /// What was playing when the app closed, as a library track id so a
-    /// moved file still resolves, plus where the clock was. None when nothing
-    /// was playing; a stale id degrades to the cold start on restore.
+    /// A library track id, so a moved file still resolves.
     #[serde(deserialize_with = "lenient::option")]
     pub last_track: Option<LastTrack>,
-    /// The whole play queue as it stood at close, restored on the next launch
-    /// so Prev/Next and the queue panel come back. Preferred over
-    /// [`SessionState::last_track`]; None when nothing was playing or an older
-    /// file predates it, when the single-track fallback takes over.
+    /// Preferred over [`SessionState::last_track`] when present.
     #[serde(deserialize_with = "lenient::option")]
     pub last_queue: Option<QueueState>,
-    /// When the library last reconciled with disk through a full scan, unix
-    /// seconds. Launch catches up on edits made while the app was closed by
-    /// scanning, but only when this is stale, so a quick restart doesn't walk
-    /// the whole library again. 0 means never, which always catches up. Kept
-    /// here rather than beside the library folders: it describes this
-    /// machine's disk, so it must not travel with a copied settings file.
+    /// Unix seconds of the last full scan; launch rescans only when it's
+    /// stale. Session state because it describes this machine's disk.
     pub last_scan: i64,
-    /// The last update check that completed, so the About page shows an answer
-    /// without hitting the network and a launch can tell a fresh check from
-    /// a recent one. None until the first check.
     #[serde(
         skip_serializing_if = "Option::is_none",
         deserialize_with = "lenient::option"
     )]
     pub update_cache: Option<UpdateCache>,
-    /// The release version whose menubar chip was dismissed, so the chip
-    /// stays away for that version across restarts and comes back when a
-    /// newer one lands. None until a dismissal.
+    /// The version whose menubar chip was dismissed; a newer one shows again.
     #[serde(
         skip_serializing_if = "Option::is_none",
         deserialize_with = "lenient::option"
     )]
     pub update_dismissed: Option<String>,
-    /// Whether the welcome window's offer to add an AppImage menu entry was
-    /// turned down. A flag rather than the entry's absence, because absence
-    /// is "never asked": a fresh install should hear the offer, someone who
-    /// said no shouldn't hear it twice. Per machine, like the entry itself.
     pub appimage_menu_declined: bool,
-    /// What the last acoustic pass measured on this machine, worker-seconds
-    /// per track by model id, so the Library page can price Analyze Missing
-    /// before it runs: divide by the worker setting, multiply by what's
-    /// missing. Per model because the built-in sketch and a network differ
-    /// by most of an order of magnitude, and per machine (which is why it's
-    /// in the session file) because a laptop and a desktop do too.
-    /// Empty until a pass has run long enough to measure.
+    /// Measured worker-seconds per track by model id, for pricing a pass
+    /// before it runs. Per model and per machine, since both vary it by up
+    /// to an order of magnitude.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub acoustic_pace: HashMap<String, f32>,
-    /// The same for ReplayGain measurement: worker-seconds per track the
-    /// last pass averaged. Zero until measured.
     #[serde(skip_serializing_if = "is_zero")]
     pub replaygain_pace: f32,
-    /// The same for the tempo pass: worker-seconds per track the last pass
-    /// averaged. One number rather than a map, unlike the acoustic pace,
-    /// because there's no model behind it to key by. Zero until measured.
     #[serde(skip_serializing_if = "is_zero")]
     pub tempo_pace: f32,
-    /// The same for the romanization pass: worker-seconds per value the
-    /// last probe or pass averaged. Unlike the three above it there's no
-    /// audio to decode, so the number is small and dominated by whether a
-    /// Japanese dictionary is loaded; measured all the same, because "how
-    /// long would this take" has no honest constant answer across a
-    /// library of kana and one of kanji. Zero until measured.
+    /// Worker-seconds per value, not per track.
     #[serde(skip_serializing_if = "is_zero")]
     pub romanize_pace: f32,
-    /// The shader sources this machine has agreed to run, hex SHA-256 of the
-    /// trimmed WGSL. Panel shaders are stored in layout dumps and workspace
-    /// bundles as inline source, so an imported look arrives with somebody
-    /// else's code; nothing registers until its hash is in here. Written by a
-    /// file pick, a reload, a preset, or the Approve button, never by an apply.
-    /// Machine-local for the same reason the window frames are: a trust
-    /// decision belongs to the person who made it, so a copied settings file
-    /// must not bring it along. Losing the list costs one Approve per
-    /// imported shader, which is why it belongs in the disposable file.
+    /// Hex SHA-256 of the trimmed WGSL of every shader this machine agreed to
+    /// run. Never written by an apply, and machine-local so a copied settings
+    /// file can't carry someone else's trust decision.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub approved_shaders: BTreeSet<String>,
 }
 
-/// Serde's skip test for an unmeasured pace.
 fn is_zero(value: &f32) -> bool {
     *value == 0.0
 }
 
-/// The account connections: `accounts.json`'s whole contents. Split off so
-/// the settings file people are pointed at, and might hand to someone or sync
-/// between machines, holds no session keys or API secrets. Not disposable:
-/// deleting it means connecting everything again.
+/// `accounts.json`: session keys and API secrets, kept out of the settings
+/// file people share. Not disposable.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AccountsState {
-    /// The Last.fm connection and the hearts mirror, the settings window's
-    /// Integrations page. The scrobble switch and threshold every
-    /// destination shares live on [`Settings`] itself.
+    /// The shared scrobble switch and threshold live on [`Settings`].
     pub lastfm: Lastfm,
-    /// The ListenBrainz connection, beside the Last.fm one on the same
-    /// page. Two scrobble destinations, no relationship between them.
     pub listenbrainz: ListenBrainz,
-    /// The Libre.fm connection, the third destination. Its own session,
-    /// not one of Last.fm's: same protocol, different account.
+    /// Its own session: same protocol as Last.fm, different account.
     pub librefm: LibreFm,
-    /// The online enrichment providers and their knobs (ADR 14), the
-    /// settings window's Providers page.
+    /// The online enrichment providers (ADR 14).
     pub providers: Providers,
-    /// Discord Rich Presence options (enable toggle, the Last.fm and
-    /// YouTube buttons).
     pub discord: DiscordSettings,
-    /// The Subsonic servers, on the same Integrations page. Each is an
-    /// account and a server like the three connections above, and a
-    /// library source on top of that, with rows filed under its own id.
     pub subsonic_servers: Vec<SubsonicAccount>,
-    /// The one server a file from before there could be several held.
-    /// Read once on load into [`AccountsState::subsonic_servers`], never
-    /// written back.
+    /// Legacy single server, read once into `subsonic_servers`, never
+    /// written.
     #[serde(skip_serializing)]
     subsonic: Option<SubsonicAccount>,
 }
 
 impl AccountsState {
-    /// Fold a single-server file's account into the list. A list that's
-    /// already there wins, since only this build writes one, and an
-    /// account that never named an address has nothing worth keeping.
+    /// A list that's already there wins, since only this build writes one.
     fn fold_legacy_subsonic(&mut self) {
         let Some(legacy) = self.subsonic.take() else {
             return;
@@ -1049,8 +671,7 @@ impl AccountsState {
 impl Default for SessionState {
     fn default() -> Self {
         SessionState {
-            // Full volume, not silence: a derived default would open the app
-            // muted-sounding on a fresh install.
+            // Not derived: a zero volume would open a fresh install silent.
             volume: 1.0,
             muted: false,
             loop_mode: "off".into(),
@@ -1091,29 +712,19 @@ impl SessionState {
     }
 }
 
-/// The order shuffle puts the upcoming queue in.
-///
-/// Unlike the loop mode above this is a real enum rather than a wire string,
-/// because an unknown value has a sensible answer: fall back to Random, which
-/// is what shuffle meant before modes existed and what a settings file
-/// written by a newer build should degrade to. The fallback comes from the
-/// field that reads it, through `lenient::or_default`, so any other field
-/// holding one of these needs the same read or it goes back to failing its
-/// shard.
+/// The order shuffle puts the upcoming queue in. An unknown value falls back
+/// to Random only through `lenient::or_default`, so any field holding one
+/// needs that read or it fails its shard.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShuffleMode {
-    /// A random order, the shuffle everyone means by the word.
     #[default]
     Random,
-    /// Nearest first by sound: what's coming is ordered by how much it
-    /// resembles the track playing when the mode was engaged, off the
-    /// acoustic vectors. Needs the library analyzed to do anything.
+    /// Nearest first by acoustic vector to the track playing when engaged.
     Similar,
 }
 
 impl ShuffleMode {
-    /// The label the mode menu shows.
     pub fn label(self) -> &'static str {
         match self {
             ShuffleMode::Random => "Random",
@@ -1121,15 +732,10 @@ impl ShuffleMode {
         }
     }
 
-    /// Every mode in menu order.
     pub const ALL: [ShuffleMode; 2] = [ShuffleMode::Random, ShuffleMode::Similar];
 }
 
-/// The theme pick: dark, light, or the OS's own preference. Dark and
-/// light name the two user palettes directly; System resolves to one of
-/// them against the desktop's light/dark setting and follows it live.
-/// System is the default: a fresh install matches the desktop it's
-/// installed on. The pick is the user's alone: workspace bundles hold no
+/// Which user palette renders; System follows the OS live. Bundles hold no
 /// theme, so applying a look never flips it.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1140,35 +746,24 @@ pub enum Theme {
     System,
 }
 
-/// The live theme pick, a static like the rating style's: the OS
-/// appearance observers read it to decide whether a change re-themes.
-/// Seeded at startup, flipped by the settings window and workspace apply.
 static THEME: RwLock<Theme> = RwLock::new(Theme::Dark);
 
-/// The last OS appearance reported, [`seed_os_appearance`]'s startup read
-/// refreshed by every workspace window's observer. Cached because the
-/// platform's own read borrows the whole Wayland client, which panics
-/// from inside window construction or event dispatch; the observers hand
-/// us the window's already-cached value instead.
+/// Cached because the platform read borrows the whole Wayland client, which
+/// panics inside window construction or event dispatch. Window observers
+/// keep it fresh.
 static OS_APPEARANCE: RwLock<WindowAppearance> = RwLock::new(WindowAppearance::Light);
 
 pub fn theme() -> Theme {
     *THEME.read().unwrap()
 }
 
-/// Flip the live theme and re-resolve which palette renders. Persisting
-/// is the caller's, startup seeds from the file through here too.
 pub fn set_theme(theme: Theme, cx: &mut App) {
     *THEME.write().unwrap() = theme;
     palette::set_mode(resolve_theme(theme), cx);
 }
 
-/// Swap the interface language and repaint every window. Persisting is
-/// the caller's, and startup seeds from the file through here too; None
-/// negotiates from the OS's list. The locale static is outside gpui's
-/// reactivity like the palette's, so the repaint is explicit: strings
-/// resolve at render time, and the few an entity cached in state catch
-/// up on that entity's next notify.
+/// Swap the interface language and repaint every window, since the locale
+/// static is outside gpui's reactivity.
 pub fn set_language(language: Option<&str>, cx: &mut App) {
     rox_i18n::set_locale(language);
     for window in cx.windows() {
@@ -1176,9 +771,6 @@ pub fn set_language(language: Option<&str>, cx: &mut App) {
     }
 }
 
-/// A theme pick resolved to a palette side: System reads the cached OS
-/// appearance, which reads Light until a backend (the xdg-desktop-portal
-/// on Linux) has reported otherwise.
 fn resolve_theme(theme: Theme) -> palette::Mode {
     match theme {
         Theme::Dark => palette::Mode::Dark,
@@ -1190,19 +782,13 @@ fn resolve_theme(theme: Theme) -> palette::Mode {
     }
 }
 
-/// Seed the appearance cache from the platform, once at startup before
-/// [`set_theme`]: the one place the platform read is safe, since the
-/// event loop isn't running yet. The portal may report the true
-/// preference after this; the window observers fold that in and the theme
-/// eases over.
+/// Call once at startup before [`set_theme`]: the only place the platform
+/// read is safe, since the event loop isn't running yet.
 pub fn seed_os_appearance(cx: &App) {
     *OS_APPEARANCE.write().unwrap() = cx.window_appearance();
 }
 
-/// A window reported its OS appearance, at open and on every change:
-/// refresh the cache, and while the theme follows the system re-resolve
-/// the palette side. The mode setter dedupes, so windows past the first
-/// and no-op reports cost nothing.
+/// Every window reports here; the mode setter dedupes repeats.
 pub fn note_os_appearance(appearance: WindowAppearance, cx: &mut App) {
     *OS_APPEARANCE.write().unwrap() = appearance;
     if theme() == Theme::System {
@@ -1210,10 +796,8 @@ pub fn note_os_appearance(appearance: WindowAppearance, cx: &mut App) {
     }
 }
 
-/// The rating scale: five stars for quick clicks, or a 0-10 number in
-/// half steps for finer review scores. Both write the library's one
-/// 0-100 value (a star is 20 points, 7.5 is 75), so flipping the style
-/// never loses a rating.
+/// Five stars or a 0-10 number in half steps, both over the library's 0-100
+/// value.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RatingStyle {
@@ -1222,24 +806,17 @@ pub enum RatingStyle {
     Numeric,
 }
 
-/// A completed update check, cached in the settings file. Holds the latest
-/// release GitHub reported rather than a yes/no, so the About page derives
-/// up-to-date from the running build: a cached "available" turns to
-/// up-to-date on its own once the user updates.
+/// Holds the latest release rather than a yes/no, so an update clears a
+/// cached "available" on its own.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateCache {
-    /// Unix seconds of the check, for the once-a-day spacing.
     pub checked_at: u64,
-    /// The latest release's version, the leading v stripped.
+    /// The leading v stripped.
     pub latest: String,
-    /// That release's page on GitHub.
     pub url: String,
 }
 
-/// The live rating style, a static like the palette's: rating cells read
-/// it in render paths where a settings-file load has no place. Seeded at
-/// startup, flipped by the settings window.
 static RATING_NUMERIC: AtomicBool = AtomicBool::new(false);
 
 pub fn rating_style() -> RatingStyle {
@@ -1250,9 +827,8 @@ pub fn rating_style() -> RatingStyle {
     }
 }
 
-/// Flip the live style and repaint every window: the static is outside
-/// gpui's reactivity, so nothing else would notice. Persisting is the
-/// caller's, startup seeds from the file through here too.
+/// Repaints every window, since the static is outside gpui's reactivity. The
+/// other live-flag setters below follow the same pattern.
 pub fn set_rating_style(style: RatingStyle, cx: &mut App) {
     RATING_NUMERIC.store(style == RatingStyle::Numeric, Ordering::Relaxed);
     for window in cx.windows() {
@@ -1260,15 +836,12 @@ pub fn set_rating_style(style: RatingStyle, cx: &mut App) {
     }
 }
 
-/// The live unrated-dots flag, a static beside the style's, read in the
-/// same render paths.
 static RATING_DOTS: AtomicBool = AtomicBool::new(false);
 
 pub fn rating_dots() -> bool {
     RATING_DOTS.load(Ordering::Relaxed)
 }
 
-/// Flip the dots and repaint, the style setter's twin.
 pub fn set_rating_dots(on: bool, cx: &mut App) {
     RATING_DOTS.store(on, Ordering::Relaxed);
     for window in cx.windows() {
@@ -1276,18 +849,12 @@ pub fn set_rating_dots(on: bool, cx: &mut App) {
     }
 }
 
-/// The live menubar-hidden flag, a static like the rating style's: the
-/// workspace reads it per frame where a settings-file load has no place.
-/// Seeded at startup, flipped by the settings window.
 static HIDE_MENUBAR: AtomicBool = AtomicBool::new(false);
 
 pub fn hide_menubar() -> bool {
     HIDE_MENUBAR.load(Ordering::Relaxed)
 }
 
-/// Flip the live flag and repaint every window: the static is outside
-/// gpui's reactivity, so nothing else would notice. Persisting is the
-/// caller's, startup seeds from the file through here too.
 pub fn set_hide_menubar(on: bool, cx: &mut App) {
     HIDE_MENUBAR.store(on, Ordering::Relaxed);
     for window in cx.windows() {
@@ -1295,16 +862,15 @@ pub fn set_hide_menubar(on: bool, cx: &mut App) {
     }
 }
 
-/// Which of the menubar's status-side buttons draw. Each is on by default;
-/// a right-click on that side of the bar flips them.
+/// Which of the menubar's status-side buttons draw.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct MenubarButtons {
-    /// The tasks button, the clock that opens the library tasks window.
+    /// The tasks button.
     pub tasks: bool,
-    /// The sleep timer button and its dropdown.
+    /// The sleep timer button.
     pub sleep: bool,
-    /// The rescan button that shows once a library folder is known.
+    /// The rescan button.
     pub rescan: bool,
 }
 
@@ -1338,9 +904,6 @@ impl MenubarButtons {
     }
 }
 
-/// The live menubar-buttons set, packed into a static the way the hidden
-/// flag is: the bar reads it per frame. Seeded at startup, flipped from
-/// the bar's own right-click menu.
 static MENUBAR_BUTTONS: AtomicU8 =
     AtomicU8::new(MenubarButtons::TASKS | MenubarButtons::SLEEP | MenubarButtons::RESCAN);
 
@@ -1348,8 +911,6 @@ pub fn menubar_buttons() -> MenubarButtons {
     MenubarButtons::from_bits(MENUBAR_BUTTONS.load(Ordering::Relaxed))
 }
 
-/// Set the live set and repaint every window, the hidden flag's
-/// arrangement. Persisting is the caller's.
 pub fn set_menubar_buttons(buttons: MenubarButtons, cx: &mut App) {
     MENUBAR_BUTTONS.store(buttons.to_bits(), Ordering::Relaxed);
     for window in cx.windows() {
@@ -1357,11 +918,8 @@ pub fn set_menubar_buttons(buttons: MenubarButtons, cx: &mut App) {
     }
 }
 
-/// The live case-fold flag, a static like the menubar's: row scans,
-/// rollups, and the projection load read it where a settings-file load
-/// has no place. Seeded at startup; the settings window flips it and
-/// reloads the projection, whose update repaints everything, so the
-/// setter needs no refresh of its own.
+/// No repaint in the setter: flipping it reloads the projection, which
+/// repaints everything.
 static FOLD_CASE: AtomicBool = AtomicBool::new(false);
 
 pub fn fold_case() -> bool {
@@ -1372,11 +930,6 @@ pub fn set_fold_case(on: bool) {
     FOLD_CASE.store(on, Ordering::Relaxed);
 }
 
-/// The live readings flag, a static like the two above. Every cell that
-/// draws a name reads it, so it has to be a load rather than a settings
-/// file: a panel row is the hottest path in the app. Seeded at startup and
-/// flipped from the Library settings page, which refreshes the windows
-/// after it stores.
 static SHOW_READINGS: AtomicBool = AtomicBool::new(true);
 
 pub fn show_readings() -> bool {
@@ -1390,16 +943,13 @@ pub fn set_show_readings(on: bool, cx: &mut App) {
     }
 }
 
-/// The live OS-decorations flag, a static like the menubar's. Seeded at
-/// startup, flipped from the Window menu. Only the main workspace
-/// windows follow it; child windows always open with the OS chrome.
+/// Child windows only follow this with [`bare_child_windows`] on.
 static OS_DECORATIONS: AtomicBool = AtomicBool::new(true);
 
 pub fn os_decorations() -> bool {
     OS_DECORATIONS.load(Ordering::Relaxed)
 }
 
-/// The flag as the decoration mode new workspace windows open with.
 pub fn window_decorations() -> WindowDecorations {
     if os_decorations() {
         WindowDecorations::Server
@@ -1408,17 +958,44 @@ pub fn window_decorations() -> WindowDecorations {
     }
 }
 
-/// Flip the live flag. Persisting is the caller's, and so is
-/// renegotiating the open workspace windows
-/// (`workspace::apply_decorations`).
+/// Open windows are renegotiated by the caller (`workspace::apply_decorations`).
 pub fn set_os_decorations(on: bool) {
     OS_DECORATIONS.store(on, Ordering::Relaxed);
 }
 
-/// How rox's stand-in window buttons draw when it supplies its own
-/// chrome: flat icons in the app's palette, or the macOS traffic lights.
-/// Shared by the window controls panel and the fallback titlebar, so a
-/// layout and a settings window read the same on one desktop.
+/// Whether child windows go bare with the main ones. Opt-in, since they
+/// only have the fallback titlebar to stand in for the OS chrome.
+static BARE_CHILD_WINDOWS: AtomicBool = AtomicBool::new(false);
+
+pub fn bare_child_windows() -> bool {
+    BARE_CHILD_WINDOWS.load(Ordering::Relaxed)
+}
+
+pub fn set_bare_child_windows(on: bool) {
+    BARE_CHILD_WINDOWS.store(on, Ordering::Relaxed);
+}
+
+pub fn child_window_decorations() -> WindowDecorations {
+    if !os_decorations() && bare_child_windows() {
+        WindowDecorations::Client
+    } else {
+        WindowDecorations::Server
+    }
+}
+
+/// Whether bare child windows draw the fallback titlebar. Off leaves them
+/// no chrome at all; Close Window still reaches them from the keyboard.
+static CHILD_TITLEBAR: AtomicBool = AtomicBool::new(true);
+
+pub fn child_titlebar() -> bool {
+    CHILD_TITLEBAR.load(Ordering::Relaxed)
+}
+
+pub fn set_child_titlebar(on: bool) {
+    CHILD_TITLEBAR.store(on, Ordering::Relaxed);
+}
+
+/// Rox's own window buttons: flat icons or macOS traffic lights.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChromeStyle {
@@ -1427,9 +1004,7 @@ pub enum ChromeStyle {
     Traffic,
 }
 
-/// Which end of the fallback titlebar the buttons sit at. Right is the
-/// Windows and GNOME convention and the default; left is where macOS puts
-/// them, and where anyone coming from a tiling setup tends to want them.
+/// Which end of the fallback titlebar the buttons sit at.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChromeSide {
@@ -1438,10 +1013,6 @@ pub enum ChromeSide {
     Right,
 }
 
-/// The live style and side for the fallback titlebar, seeded at startup
-/// and flipped from the Appearance page. Statics like the decorations
-/// flag above, since the titlebar draws in every window and none of them
-/// hold a settings entity.
 static CHROME_STYLE: AtomicU8 = AtomicU8::new(ChromeStyle::Icons as u8);
 static CHROME_SIDE: AtomicU8 = AtomicU8::new(ChromeSide::Right as u8);
 
@@ -1467,29 +1038,26 @@ pub fn set_chrome_side(side: ChromeSide) {
     CHROME_SIDE.store(side as u8, Ordering::Relaxed);
 }
 
-/// The live resize-border flag, the decorations flag's twin. Windows only:
-/// everywhere else the edges of a borderless window already do nothing, so
-/// there's no border to take away and the flag is never applied to a window.
+/// Only applied on Windows; elsewhere a borderless window's edges already
+/// do nothing.
 static RESIZE_BORDER: AtomicBool = AtomicBool::new(true);
 
 pub fn resize_border() -> bool {
     RESIZE_BORDER.load(Ordering::Relaxed)
 }
 
-/// Flip the live flag. Persisting is the caller's, and so is pushing it at
-/// the open workspace windows (`workspace::apply_resize_border`).
+/// The caller pushes it to open windows (`workspace::apply_resize_border`).
 pub fn set_resize_border(on: bool) {
     RESIZE_BORDER.store(on, Ordering::Relaxed);
 }
 
-/// The live panel-seams flag is defined in the dock crate, where the resize
-/// handles render; these wrappers keep the settings surface in one place.
+/// The seams, design-mode, and resize-lock flags live in the dock crate,
+/// which reads them per frame. These wrappers keep the settings surface in
+/// one place.
 pub fn seams() -> bool {
     rox_dock::resizable::seams()
 }
 
-/// Flip the seams and repaint, the rating-dots setter's twin. Persisting
-/// is the caller's, startup seeds from the file through here too.
 pub fn set_seams(on: bool, cx: &mut App) {
     rox_dock::resizable::set_seams(on);
     for window in cx.windows() {
@@ -1497,19 +1065,10 @@ pub fn set_seams(on: bool, cx: &mut App) {
     }
 }
 
-/// The live design-mode flag, kept in the dock crate for the same reason
-/// the seams flag is: the tab groups read it per frame and can't read app
-/// settings from there. These wrappers keep the settings surface in one
-/// place.
 pub fn design_mode() -> bool {
     rox_dock::design_mode()
 }
 
-/// Flip design mode and repaint. Every surface that offers a layout edit
-/// (the panel menus, the in-panel controls, the dock's own drag and close)
-/// reads the flag as it renders, so the repaint is all it takes.
-/// Persisting is the caller's, startup seeds from the file through here
-/// too.
 pub fn set_design_mode(on: bool, cx: &mut App) {
     rox_dock::set_design_mode(on);
     for window in cx.windows() {
@@ -1517,15 +1076,10 @@ pub fn set_design_mode(on: bool, cx: &mut App) {
     }
 }
 
-/// The live resize-lock flag, the design-mode wrapper's twin: the resize
-/// handles read the pair per frame from the dock crate's statics.
 pub fn resize_lock() -> bool {
     rox_dock::resize_lock()
 }
 
-/// Flip the resize lock and repaint, the design-mode setter's shape.
-/// Persisting is the caller's, startup seeds from the file through here
-/// too.
 pub fn set_resize_lock(on: bool, cx: &mut App) {
     rox_dock::set_resize_lock(on);
     for window in cx.windows() {
@@ -1533,33 +1087,23 @@ pub fn set_resize_lock(on: bool, cx: &mut App) {
     }
 }
 
-/// The live quit-to-tray flag, a static like the ones above: the window
-/// close path reads it where a settings-file load has no place. Seeded at
-/// startup, flipped from the Window menu and the Behavior page.
 static QUIT_TO_TRAY: AtomicBool = AtomicBool::new(false);
 
 pub fn quit_to_tray() -> bool {
     QUIT_TO_TRAY.load(Ordering::Relaxed)
 }
 
-/// Flip the live flag. Persisting is the caller's, and so is reconciling
-/// the tray icon (`tray::sync`).
+/// The caller reconciles the tray icon (`tray::sync`).
 pub fn set_quit_to_tray(on: bool) {
     QUIT_TO_TRAY.store(on, Ordering::Relaxed);
 }
 
-/// The live experimental flag, a static like the ones above: the panel
-/// catalog is read while building menus, where a settings-file load has no
-/// place. Seeded at startup, flipped on the Development page.
 static EXPERIMENTAL: AtomicBool = AtomicBool::new(false);
 
 pub fn experimental() -> bool {
     EXPERIMENTAL.load(Ordering::Relaxed)
 }
 
-/// Flip the live flag and repaint every window: the static is outside
-/// gpui's reactivity, and the empty window's launcher draws its tiles
-/// straight from the catalog. Persisting is the caller's.
 pub fn set_experimental(on: bool, cx: &mut App) {
     EXPERIMENTAL.store(on, Ordering::Relaxed);
     for window in cx.windows() {
@@ -1567,18 +1111,12 @@ pub fn set_experimental(on: bool, cx: &mut App) {
     }
 }
 
-/// The live acoustic-analysis flag, [`EXPERIMENTAL`]'s twin and a static for
-/// the same reason: the library's column registry is read while building the
-/// header menu, which is no place to load a settings file.
 static ACOUSTIC_ANALYSIS: AtomicBool = AtomicBool::new(false);
 
 pub fn acoustic_analysis() -> bool {
     ACOUSTIC_ANALYSIS.load(Ordering::Relaxed)
 }
 
-/// Flip the live flag and repaint, so the Similar column appears in and
-/// disappears from the column menus without a relaunch. Persisting is the
-/// caller's.
 pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
     ACOUSTIC_ANALYSIS.store(on, Ordering::Relaxed);
     for window in cx.windows() {
@@ -1586,18 +1124,12 @@ pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
     }
 }
 
-/// The live tempo-analysis flag, [`ACOUSTIC_ANALYSIS`]'s twin and a static
-/// for the same reason: the BPM column is offered or withheld while the
-/// header menu is being built, where a settings load has no place.
 static TEMPO_ANALYSIS: AtomicBool = AtomicBool::new(false);
 
 pub fn tempo_analysis() -> bool {
     TEMPO_ANALYSIS.load(Ordering::Relaxed)
 }
 
-/// Flip the live flag and repaint, so the BPM column appears in and
-/// disappears from the column menus without a relaunch. Persisting is the
-/// caller's.
 pub fn set_tempo_analysis(on: bool, cx: &mut App) {
     TEMPO_ANALYSIS.store(on, Ordering::Relaxed);
     for window in cx.windows() {
@@ -1605,11 +1137,8 @@ pub fn set_tempo_analysis(on: bool, cx: &mut App) {
     }
 }
 
-/// The live leveling mode, a static for the column registry's reason: the
-/// library's Gain column reads it per cell, and the sort behind that column
-/// runs where there's no player entity to query. Seeded at startup, flipped
-/// with the setting. The player keeps its own copy, which is the one the
-/// engine levels by; this is only what the library draws.
+/// What the library's Gain column draws. The engine levels by the player's
+/// own copy, not this.
 static GAIN_MODE: AtomicU8 = AtomicU8::new(0);
 
 pub fn gain_mode() -> GainModeSetting {
@@ -1620,8 +1149,6 @@ pub fn gain_mode() -> GainModeSetting {
     }
 }
 
-/// Publish the mode and repaint, so a Gain column follows the pick without
-/// a relaunch. Persisting is the caller's, and startup seeds through here.
 pub fn set_gain_mode(mode: GainModeSetting, cx: &mut App) {
     GAIN_MODE.store(
         match mode {
@@ -1636,28 +1163,15 @@ pub fn set_gain_mode(mode: GainModeSetting, cx: &mut App) {
     }
 }
 
-/// Whether the model in use has actually described anything. The switch
-/// above only permits the pass; this says it has run, which is the
-/// difference between a mode that ranks by sound and one that quietly does
-/// nothing.
-///
-/// A static for the same reason as its neighbours: the transport draws the
-/// shuffle button from it on every frame, and a settings load or a database
-/// query has no place there. Published by whoever learns the answer, which
-/// is the library on a refresh, the analysis pass when it finishes, and the
-/// settings window when the extractor changes under it.
+/// Whether the model in use has vectors, as opposed to the switch merely
+/// permitting the pass. Published by whoever learns the answer.
 static ACOUSTIC_DESCRIBED: AtomicBool = AtomicBool::new(false);
 
-/// Whether ordering by sound can return anything right now: the feature is
-/// switched on and its model has vectors in the table. What every surface
-/// that offers Similar is gated on.
+/// What every surface that offers Similar is gated on.
 pub fn similarity_ready() -> bool {
     acoustic_analysis() && ACOUSTIC_DESCRIBED.load(Ordering::Relaxed)
 }
 
-/// Publish whether the model in use has described anything, and repaint: the
-/// shuffle button grows and loses its menu on this, and nothing else would
-/// notice the answer changing.
 pub fn set_acoustic_described(described: bool, cx: &mut App) {
     if ACOUSTIC_DESCRIBED.swap(described, Ordering::Relaxed) == described {
         return;
@@ -1667,21 +1181,13 @@ pub fn set_acoustic_described(described: bool, cx: &mut App) {
     }
 }
 
-/// The live app font, a static like the rating style's: window and panel
-/// render paths read it where a settings-file load has no place. None
-/// follows the platform default. Seeded at startup, changed by the app
-/// settings window.
+/// None follows the platform default.
 static APP_FONT: RwLock<Option<SharedString>> = RwLock::new(None);
 
-/// The app-wide font family as it currently stands, for the render paths
-/// that apply it at a window root and the panels that fall back to it.
 pub fn app_font() -> Option<SharedString> {
     APP_FONT.read().unwrap().clone()
 }
 
-/// Set the live app font and repaint every window: the static is outside
-/// gpui's reactivity, so nothing else would notice. Persisting is the
-/// caller's, startup seeds from the file through here too.
 pub fn set_app_font(font: Option<String>, cx: &mut App) {
     *APP_FONT.write().unwrap() = font.map(SharedString::from);
     for window in cx.windows() {
@@ -1689,68 +1195,34 @@ pub fn set_app_font(font: Option<String>, cx: &mut App) {
     }
 }
 
-/// The length a crossfade takes when it's switched on without ever having
-/// been set: long enough to hear as an overlap rather than a click, short
-/// enough that it doesn't eat the end of a song.
 pub const DEFAULT_CROSSFADE_SECS: f32 = 4.0;
 
-/// The step keys' stock size. Small enough to land on a transient rather
-/// than near it, and short enough that holding the key walks rather than
-/// scrubs.
 pub const DEFAULT_STEP_MS: f32 = 25.0;
 
-/// The range the step size scrubs. The floor is a millisecond because
-/// anything under it stops being a step; the ceiling meets the seek keys'
-/// five seconds, past which stepping is just seeking.
+/// The ceiling meets the seek keys' five seconds.
 pub const STEP_MS_MIN: f32 = 1.0;
 pub const STEP_MS_MAX: f32 = 5000.0;
 
-/// How long a paused step plays for out of the box: long enough to hear a
-/// transient as a sound rather than a click, short enough that holding the
-/// key still reads as stepping.
 pub const DEFAULT_STEP_PREVIEW_MS: f32 = 100.0;
 
-/// The preview's range. It shares the step's ceiling, and its floor is the
-/// shortest blip that's more than a pop.
 pub const STEP_PREVIEW_MS_MIN: f32 = 10.0;
 pub const STEP_PREVIEW_MS_MAX: f32 = STEP_MS_MAX;
 
-/// How much of a live stream is buffered behind the playhead out of the
-/// box: fifteen minutes. Long enough to take a call and come back to the
-/// song that was playing, to step back to the song before it, and to hold
-/// all but the longest thing a station puts on, which is what saving songs
-/// off the air is sliced out of. About 36 MB on the fattest stream anyone
-/// broadcasts.
-///
-/// It doubles as the mark the Capture section warns under, since a buffer
-/// below what a station plays is capture quietly doing nothing.
+/// Fifteen minutes, about 36 MB at 320 kbps. Also the mark the Capture
+/// section warns under, since capture slices songs out of this buffer.
 pub const DEFAULT_LIVE_BUFFER_SECS: u32 = 900;
 
-/// The band that buffer is held to. The floor is the shortest window that
-/// still survives a pause worth taking. The ceiling is twelve hours, which
-/// is the practical infinite: nobody leaves a station on longer than that
-/// in one sitting, so a buffer set here never rolls over and a pause is
-/// always resumable. It costs about 1.7 GB on a 320 kbps stream, which is
-/// the honest price of asking for that and the reason it isn't the default.
-///
-/// A ceiling in bytes sits under the whole band, since seconds are only
-/// half of what a buffer costs and the other half is a bitrate nobody
-/// knows when they set it: past
-/// [`rox_playback::memory::live_buffer_cap`] the window comes up short of
-/// the length rather than taking the machine's memory.
+/// The ceiling is twelve hours, about 1.7 GB at 320 kbps.
+/// [`rox_playback::memory::live_buffer_cap`] caps the bytes under the whole
+/// band, since the bitrate isn't known when this is set.
 pub const LIVE_BUFFER_SECS_MIN: u32 = 30;
 pub const LIVE_BUFFER_SECS_MAX: u32 = 43200;
 
-/// The buffer length as the engine is allowed to have it. Every byte of it
-/// is resident memory, so a hand-edited file doesn't get to ask for a week
-/// of radio.
 pub fn clamp_live_buffer_secs(secs: u32) -> u32 {
     secs.clamp(LIVE_BUFFER_SECS_MIN, LIVE_BUFFER_SECS_MAX)
 }
 
-/// The frame knobs' ceilings, in px: every knob runs from 0 (off) up to
-/// its own. Shared by the app defaults' clamp and both settings windows'
-/// sliders, so the app-wide and per-panel frames scrub the same range.
+/// The frame knobs' ceilings in px, shared by the app and per-panel sliders.
 pub const MARGIN_MAX: f32 = 24.0;
 pub const PADDING_MAX: f32 = 24.0;
 pub const ROUNDING_MAX: f32 = 24.0;
@@ -1764,13 +1236,8 @@ fn clamp_knob(value: f32, max: f32) -> f32 {
     }
 }
 
-/// ADR 13's frame knobs lifted to the app: the cell margin, the inner
-/// padding, the corner rounding, and the border width, all in px. Margin,
-/// padding, and border hold a value per side, written as one number while
-/// the four match. These are the defaults every panel inherits; a panel's
-/// own [`PanelTheme`] overrides any of them knob for knob. Zero each by
-/// default, so a fresh look has no frame until asked, matching what an
-/// unthemed panel drew before the lift.
+/// ADR 13's frame knobs in px, the defaults every panel's `PanelTheme` can
+/// override.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Frame {
@@ -1781,7 +1248,6 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Every knob off.
     pub const DEFAULT: Frame = Frame {
         margin: Sides::ZERO,
         padding: Sides::ZERO,
@@ -1789,8 +1255,7 @@ impl Frame {
         border: Sides::ZERO,
     };
 
-    /// The knobs held to their ceilings, a non-finite one reset to zero,
-    /// for a hand-edited file.
+    /// Held to the ceilings, non-finite reset to zero, for hand-edited files.
     pub fn clamped(self) -> Frame {
         Frame {
             margin: self.margin.clamped(MARGIN_MAX),
@@ -1807,21 +1272,12 @@ impl Default for Frame {
     }
 }
 
-/// The live app-wide frame defaults, a static like the app font's: the
-/// themed wrapper reads it as it lays each panel's frame, in a render path
-/// where a settings-file load has no place. Seeded at startup, changed by
-/// the app settings window.
 static FRAME: RwLock<Frame> = RwLock::new(Frame::DEFAULT);
 
-/// The app-wide frame defaults as they currently stand, for the themed
-/// wrapper that lays a panel's frame and the app settings sliders.
 pub fn app_frame() -> Frame {
     *FRAME.read().unwrap()
 }
 
-/// Set the live frame defaults and repaint every window: the static is
-/// outside gpui's reactivity, so nothing else would notice. Persisting is
-/// the caller's, startup seeds from the file through here too.
 pub fn set_app_frame(frame: Frame, cx: &mut App) {
     *FRAME.write().unwrap() = frame.clamped();
     for window in cx.windows() {
@@ -1829,15 +1285,13 @@ pub fn set_app_frame(frame: Frame, cx: &mut App) {
     }
 }
 
-/// How the quick-play modal draws its result list, the knobs its inline
-/// config panel edits. Persisted so the look persists across reopening the
-/// modal, which the workspace rebuilds each time.
+/// How the quick-play modal draws its result list.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct QuickPlayConfig {
     /// Show a cover thumbnail at the left of each result.
     pub show_cover: bool,
-    /// Show the artist and album line under each result's title.
+    /// Show the artist and album line under each title.
     pub show_subtitle: bool,
     /// Show each result's duration on the right.
     pub show_duration: bool,
@@ -1856,31 +1310,21 @@ impl Default for QuickPlayConfig {
     }
 }
 
-/// One image a shader samples: the flat filename an `// @asset name: file`
-/// line points at, and the encoded file itself as base64.
+/// One image a shader samples via `// @asset name: file`, stored in the
+/// bundle as the encoded file in base64.
 ///
-/// The bytes are canonical for the same reason the source on
-/// [`NamedShader`] is. A plate referenced by path imports as a hole in the
-/// look on anyone else's machine, so the file is stored inside the
-/// bundle, byte for byte as it was on disk. Encoded rather than raw pixels
-/// because that's what eject writes back out and what `image` reads in, and
-/// the 1-bit imagery this is for costs almost nothing that way.
-///
-/// Assets never gate. Approval is over code, and an image the approved code
-/// samples can spoil a look but can't run anything, so no fingerprint ever
-/// covers one (ADR 23).
+/// Assets never gate: approval is over code, and an image can't run anything
+/// (ADR 23).
 #[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ShaderAsset {
-    /// The name the shader declares it under, which is also the name eject
-    /// writes beside the `.wgsl`. A flat filename with no separators in it.
+    /// The flat filename the shader declares it under, also used by eject.
     pub file: String,
-    /// The encoded image file, base64. A PNG stays a PNG in here.
+    /// The encoded image file in base64.
     pub data: String,
 }
 
 impl ShaderAsset {
-    /// Take a file's bytes into an entry, ready to travel.
     pub fn from_bytes(file: impl Into<String>, bytes: &[u8]) -> Self {
         ShaderAsset {
             file: file.into(),
@@ -1888,9 +1332,6 @@ impl ShaderAsset {
         }
     }
 
-    /// The encoded file back out, for a decoder or for eject to write
-    /// straight to disk. The error is base64's own text, so a hand-edited
-    /// entry reads out the way a bad shader does.
     pub fn decode(&self) -> Result<Vec<u8>, String> {
         BASE64
             .decode(self.data.as_bytes())
@@ -1898,37 +1339,19 @@ impl ShaderAsset {
     }
 }
 
-/// One shader in a workspace's pool: a name, the WGSL behind it, and
-/// optionally the file it's being edited in.
-///
-/// The inline source is canonical. It's what compiles and what runs, and
-/// it's the only half that still means anything on another machine, so a
-/// bundle that travelled holds working shaders rather than paths into
-/// somebody else's home directory.
-///
-/// The path is a local bookmark: eject a pool entry to a file and the
-/// bookmark links the two, so the hot reload watch can pull edits back into
-/// the entry while you work. Export scrubs it ([`WorkspaceBundle::scrub_paths`])
-/// because it's dead weight anywhere but the machine that wrote it, and a
-/// path kept in the bundle would only aim a reload at a file that either
-/// isn't there or, worse, is somebody else's.
+/// One shader in a workspace's pool. The inline source is canonical; the
+/// path is a local hot-reload bookmark that export scrubs.
 #[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct NamedShader {
-    /// What the look's panels point at this entry by. Unique within a pool;
-    /// the last entry with a name wins if a hand-edited file repeats one.
+    /// Unique within a pool; the last entry wins on a repeat.
     pub name: String,
-    /// The fragment stage itself: a `fs_user(uv)` definition and whatever it
-    /// calls. This is what runs.
+    /// The fragment stage: a `fs_user(uv)` definition and whatever it calls.
     pub source: String,
-    /// The working copy this entry was ejected to, for hot reload. None for
-    /// an entry that has never been ejected, and None on every entry in an
-    /// exported bundle.
+    /// The ejected working copy, for hot reload. None in exported bundles.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
-    /// The images the source declares with `// @asset`, stored as bytes so
-    /// the look arrives whole. Empty for every shader that only reads the
-    /// screen, which is most of them, and an empty list writes no key.
+    /// The images the source declares with `// @asset`.
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "lenient::vec"
@@ -1936,108 +1359,67 @@ pub struct NamedShader {
     pub assets: Vec<ShaderAsset>,
 }
 
-/// The whole-window post-process shader: whether it runs and which WGSL
-/// file it reads. The source is kept in a file rather than here because the
-/// app has no multi-line editor, and a file gives shader authors hot reload
-/// with the editor they already have.
+/// The whole-window post-process shader.
 #[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct PostShaderConfig {
-    /// Whether the pass runs at all. Off is exactly today's rendering.
+    /// Whether the pass runs at all.
     pub enabled: bool,
-    /// The user's WGSL fragment source file, absolute. None until picked.
+    /// The WGSL fragment source file, absolute.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
-    /// The fragment stage inline, the same way a panel shader stores it.
-    /// Empty is the older behaviour, where the path above is read at
-    /// startup; anything else is what actually runs. Storing it here lets
-    /// the screen shader travel inside a bundle, since a path alone imports
-    /// as a dead pass on anyone else's machine.
+    /// The fragment stage inline, so it travels in a bundle. Empty falls back
+    /// to reading `path` at startup.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub source: String,
-    /// A reference into the workspace's shader pool by name. When it's set
-    /// and it resolves, the pool's source wins over the inline copy: the
-    /// pool is the one place a bundle's author edits a shader that several
-    /// surfaces share. A name that resolves to nothing runs nothing, the
-    /// same way a route to a signal that's gone reads zero.
+    /// A pool entry by name, which wins over the inline source. A name that
+    /// resolves to nothing runs nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Whether child windows (settings, stats, equalizer, popped-out
-    /// panels) get the shader too. Off shades only the workspace
-    /// windows; meaningless while the switch above is off. The confirm
-    /// dialog stays bare either way, so a hostile shader can't take the
-    /// way out with it.
+    /// Whether child windows get the shader too. The confirm dialog stays
+    /// bare either way, so a hostile shader can't hide the way out.
     pub all_windows: bool,
-    /// The signal routes filling the shader's sixteen slots, the same list
-    /// a panel's surface shader holds. Empty is the older behaviour and
-    /// stays supported rather than migrated: the pool fills the slots in
-    /// its own order, signal i into slot i. Adding one route replaces that
-    /// fill entirely, so an unrouted slot reads zero from then on.
+    /// Signal routes into the sixteen slots. Empty fills signal i into slot
+    /// i; any route replaces that fill, so unrouted slots read zero.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
-    /// Hand-set slot values, the twin of the Shader panel config's list:
-    /// what a slot reads with nothing routed to it, which is how a screen
-    /// shader's named parameters get tuned without a signal in sight. A
-    /// route on the same slot wins while it's there; the hand-set value
-    /// comes back when it goes. Under the legacy no-routes fill a hand-set
-    /// slot is likewise held out of the pool's order.
+    /// Hand-set slot values, read where nothing is routed. A route on the
+    /// same slot wins.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manual: Vec<(u8, f32)>,
-    /// Keep frames coming while the audio is silent, the panel shaders'
-    /// switch grown app-wide. Off, a paused player parks the pass on its
-    /// last frame and it costs nothing; on, the pass keeps drawing. The
-    /// clock only advances with the signal feed either way, so idle frames
-    /// track the mouse without the animation creeping forward. A shader
-    /// that reads the pointer requests its own frames while the pointer
-    /// still counts for anything, so it follows the cursor with nothing
-    /// playing whichever way this is set.
+    /// Keep drawing while the audio is silent. The clock only advances with
+    /// the signal feed either way.
     pub run_when_idle: bool,
 }
 
 impl PostShaderConfig {
-    /// Whether anybody has set this up at all: it runs, or it points at
-    /// something that could. An untouched default returns false, which keeps
-    /// a screen shader nobody asked for out of an exported bundle.
+    /// False for an untouched default, which keeps it out of an export.
     pub fn configured(&self) -> bool {
         self.enabled || !self.source.is_empty() || self.name.is_some() || self.path.is_some()
     }
 }
 
-/// The approved shader hashes, cached out of the session file. The gate is
-/// read where a shader is about to register, which is a paint path with no
-/// business touching the disk, so the file is read once on the first look
-/// and every write goes through [`approve_shader`], which keeps the cache
-/// and the file in step.
+/// Cached because the gate runs in a paint path. Every write goes through
+/// [`approve_shader`] to keep the cache and file in step.
 static APPROVED_SHADERS: LazyLock<RwLock<BTreeSet<String>>> =
     LazyLock::new(|| RwLock::new(Settings::load().session.approved_shaders));
 
-/// The hashes of the shaders inside the bundles this build ships in its own
-/// assets. Trusted by construction, the same argument the panel side's
-/// `builtin()` makes for the presets: they came with the binary, so asking
-/// for a second agreement would only be re-confirming the decision that
-/// installing rox already made. Seeded once at startup by the app, which is
-/// the only thing that can read its own assets, and never persisted: a
-/// shipped set that changes with the build has no business outliving it in
-/// somebody's session file.
+/// Hashes of the shaders this build ships, trusted by construction. Never
+/// persisted, since the set changes with the build.
 static SHIPPED_SHADERS: LazyLock<RwLock<BTreeSet<String>>> =
     LazyLock::new(|| RwLock::new(BTreeSet::new()));
 
-/// Record the hashes of every shader the build ships, at startup.
 pub fn trust_shipped(fingerprints: impl IntoIterator<Item = String>) {
     SHIPPED_SHADERS.write().unwrap().extend(fingerprints);
 }
 
-/// Whether this machine has agreed to run the source behind this hash, or
-/// never had to because the build ships it.
 pub fn shader_approved(fingerprint: &str) -> bool {
     APPROVED_SHADERS.read().unwrap().contains(fingerprint)
         || SHIPPED_SHADERS.read().unwrap().contains(fingerprint)
 }
 
-/// Put a hash in the live list, returning whether it wasn't there already.
-/// The half of an approval that costs nothing, split out so the gate's tests
-/// can exercise it without a settings file underneath them. Everything
-/// outside a test approves through [`approve_shader`], which persists.
+/// Cache only, for tests. Everything else approves through
+/// [`approve_shader`], which persists.
 pub fn note_approved(fingerprint: &str) -> bool {
     APPROVED_SHADERS
         .write()
@@ -2045,9 +1427,6 @@ pub fn note_approved(fingerprint: &str) -> bool {
         .insert(fingerprint.to_string())
 }
 
-/// Record a source as approved, here and on disk. Idempotent: approving a
-/// hash the list already holds writes nothing, so a reload that produces the
-/// same text twice doesn't touch the file.
 pub fn approve_shader(fingerprint: &str) {
     if !note_approved(fingerprint) {
         return;
@@ -2058,34 +1437,24 @@ pub fn approve_shader(fingerprint: &str) {
     });
 }
 
-/// Drop a hash from the live list. Nothing in the UI revokes one yet; the
-/// gate's tests, here and up in rox, use it to clean up after themselves.
+/// Test cleanup; nothing in the UI revokes an approval.
 pub fn forget_approved(fingerprint: &str) {
     APPROVED_SHADERS.write().unwrap().remove(fingerprint);
 }
 
-/// The live shader pool, cached out of the look the app is using. Read
-/// where a shader is about to register, which is a render path with no
-/// business touching the disk, so the file is read once on the first look
-/// and every write goes through [`set_shader_pool`], which keeps the cache
-/// and the file in step. The same shape as [`APPROVED_SHADERS`] above, for
-/// the same reason.
+/// Cached like [`APPROVED_SHADERS`]; writes go through [`set_shader_pool`].
 static SHADER_POOL: LazyLock<RwLock<Vec<NamedShader>>> =
     LazyLock::new(|| RwLock::new(Settings::load().look.bundle.shaders));
 
-/// How many times the pool has been replaced. A surface resolves its name
-/// once and holds the answer; this tells it the answer went stale without
-/// diffing a few kilobytes of WGSL every frame.
+/// Bumped on every replacement, so a cached resolution checks staleness with
+/// one load instead of diffing WGSL every frame.
 static SHADER_POOL_REV: AtomicU64 = AtomicU64::new(0);
 
-/// Everything in the pool. Cloned out rather than handed a guard: entries
-/// are a name and a page of text, and holding the lock across a render would
-/// mean a shader edit blocking paint.
+/// Cloned out so a render never holds the lock and blocks a shader edit.
 pub fn shader_pool() -> Vec<NamedShader> {
     SHADER_POOL.read().unwrap().clone()
 }
 
-/// One pool entry by name, or None when the look doesn't have it.
 pub fn shader_pool_get(name: &str) -> Option<NamedShader> {
     SHADER_POOL
         .read()
@@ -2095,9 +1464,6 @@ pub fn shader_pool_get(name: &str) -> Option<NamedShader> {
         .cloned()
 }
 
-/// Replace the pool, here and on disk. The pool belongs to the look, so it
-/// persists into the bundle the app is using and travels with the next
-/// export.
 pub fn set_shader_pool(shaders: Vec<NamedShader>) {
     note_shader_pool(shaders.clone());
     Settings::update(move |s| {
@@ -2105,125 +1471,75 @@ pub fn set_shader_pool(shaders: Vec<NamedShader>) {
     });
 }
 
-/// Replace the pool in the cache alone. The half of a pool write that costs
-/// nothing, split out the way [`note_approved`] is: the tests use it to
-/// exercise resolution without a settings file underneath them, and a
-/// workspace apply uses it because it has already written the whole bundle
-/// in one go and a second write would only rewrite the same field.
+/// Cache only, for tests and for a workspace apply that already wrote the
+/// bundle.
 pub fn note_shader_pool(shaders: Vec<NamedShader>) {
     *SHADER_POOL.write().unwrap() = shaders;
     SHADER_POOL_REV.fetch_add(1, Ordering::Relaxed);
 }
 
-/// The pool's generation. Bumped on every replacement, so a cached
-/// resolution can be checked with one atomic load instead of a comparison
-/// against the source it came from.
 pub fn shader_pool_rev() -> u64 {
     SHADER_POOL_REV.load(Ordering::Relaxed)
 }
 
-/// The live look's backdrop shader config, cached out of the settings file
-/// the way the pool is: the workspace root reads it every render, which is
-/// no place for disk.
+/// Cached like the pool, since the workspace root reads it every render.
 static BACKDROP_SHADER: LazyLock<RwLock<Option<PostShaderConfig>>> =
     LazyLock::new(|| RwLock::new(Settings::load().look.bundle.backdrop_shader.clone()));
 
-/// The backdrop's shader config, or None for a bare art wash.
+/// None for a bare art wash.
 pub fn backdrop_shader() -> Option<PostShaderConfig> {
     BACKDROP_SHADER.read().unwrap().clone()
 }
 
-/// Replace the backdrop shader in the cache alone, [`note_shader_pool`]'s
-/// twin: a workspace apply has already written the whole bundle.
+/// Cache only, like [`note_shader_pool`].
 pub fn note_backdrop_shader(config: Option<PostShaderConfig>) {
     *BACKDROP_SHADER.write().unwrap() = config;
 }
 
-/// The Milkdrop backdrop: whether the visual runs behind the whole app,
-/// how far over the blurred cover it composites, and what fraction of the
-/// window it renders at.
-///
-/// Only three knobs, because everything else about the visual is the
-/// Milkdrop panel's business. Preset rotation, beat sensitivity and the
-/// rest belong to a surface someone is looking at; a backdrop is furniture,
-/// and its whole job is to move behind the text without being read.
-///
-/// This is the live, merged shape every paint reads. Three of its fields
-/// are the look's ([`MilkdropLook`]) and are skipped here so the machine
-/// file never carries a second copy of them: they're filled from the
-/// look on load and whenever a workspace applies.
+/// The Milkdrop backdrop's live, merged config. The skipped fields belong to
+/// [`MilkdropLook`] and are filled from the look on load and on apply, so
+/// the machine file never carries a second copy.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BackdropVisualConfig {
-    /// Whether the visual runs at all. The look's; see [`MilkdropLook`].
     #[serde(skip)]
     pub enabled: bool,
-    /// How far the frame carries over the blurred cover. The look's.
     #[serde(skip)]
     pub strength: f32,
-    /// Render size as a fraction of the window's device pixels. The
-    /// backdrop sits under a heavy blur and everything the app draws, so
-    /// this defaults well below 1: half the side is a quarter of the
-    /// readback for a picture nobody can focus on.
+    /// Fraction of the window's device pixels. Defaults well below 1, since
+    /// half the side is a quarter of the readback under a heavy blur.
     pub scale: f32,
-    /// The frame rate the worker aims for. The other cost lever beside
-    /// the scale: every frame is a readback, so 30 is half the bill of 60
-    /// for a picture that sits under a blur.
+    /// Every frame is a readback, so 30 costs half of 60.
     pub fps: u32,
-    /// How readily projectM calls something a beat, 0 to 5. The panel's
-    /// knob, offered here too so the two visuals tune the same way.
+    /// How readily projectM calls something a beat, 0 to 5.
     pub beat_sensitivity: f32,
-    /// Whether a loud enough beat cuts straight to the next preset.
     pub hard_cuts: bool,
-    /// The folder the rotation is narrowed to, as its path under a scan
-    /// root with forward slashes, the way a panel keeps its own. None
-    /// rotates the whole library. The favorites switch wins over it while
-    /// on; the pick is kept for when it's off.
+    /// Rotation folder under a scan root, forward slashes. `favorites_only`
+    /// wins over it while on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation_folder: Option<String>,
-    /// Mirror the frame left to right. The look's; see [`MilkdropLook`].
     #[serde(skip)]
     pub flip_horizontal: bool,
-    /// Mirror the frame top to bottom. The look's.
     #[serde(skip)]
     pub flip_vertical: bool,
-    /// Shuffle from the favorites list rather than the whole library. With
-    /// nothing starred yet the worker falls back to everything, so
-    /// switching this on before starring anything changes nothing.
+    /// With nothing starred the worker falls back to everything.
     pub favorites_only: bool,
-    /// Stay on the current preset: no timed switch, no cut on a beat. On
-    /// by default: a backdrop is furniture, and furniture that rearranges
-    /// itself every half minute is the panel's job, not this layer's.
+    /// Stay on the current preset: no timed switch, no cut on a beat.
     pub locked: bool,
-    /// Seconds a preset holds before the next one comes up.
     pub duration_secs: f64,
-    /// How the frame's colours meet the theme. The look's.
     #[serde(skip)]
     pub color: MilkdropColor,
-    /// What losing the audio does to the picture. On is fade, the default
-    /// here: the visual goes down to the cover backdrop over `fade_secs`
-    /// on a pause or a stop and comes back on play. Off is hold, the
-    /// panel's default: the last frame stays up behind the app and the
-    /// worker sleeps under it.
+    /// On fades to the cover over `fade_secs` on pause or stop. Off holds
+    /// the last frame.
     pub fade: bool,
-    /// Seconds the fade takes, out on a pause or stop and back in on
-    /// play. Only read with `fade` on.
     pub fade_secs: f32,
-    /// The preset the backdrop is on, restored on the next start. Written
-    /// on a pick from the Appearance page and, while the lock is on, on
-    /// every switch; an unlocked backdrop changes preset every half
-    /// minute, and that isn't worth a settings write.
+    /// Written on a pick and, while locked, on every switch. An unlocked
+    /// rotation isn't worth a settings write.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset: Option<PathBuf>,
 }
 
 /// How a Milkdrop frame's colours are treated before they reach the screen.
-///
-/// Presets are drawn on black by people who assumed black, and on the
-/// light theme that makes a Milkdrop surface a dark hole in a pale window.
-/// The two remaps here are the answer: one keeps the preset and flips its
-/// lightness so black becomes white, the other paints the preset's shape
-/// in the theme's own colours.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -2231,66 +1547,39 @@ pub struct BackdropVisualConfig {
 pub enum MilkdropColor {
     /// The preset's own colours, whatever the theme.
     Preset,
-    /// The preset's own colours on the dark theme, and its lightness
-    /// inverted on the light one, so the black it was drawn on reads as
-    /// the pale background it's sitting over.
+    /// The preset's own colours, lightness inverted on the light theme.
     #[default]
     Theme,
-    /// The frame's lightness mapped onto a ramp from the theme's root
-    /// background to its accent. Reads as the app's own colours on both
-    /// themes, and follows the cover when song theming is on.
+    /// Lightness mapped onto a ramp from the theme's background to its accent.
     Palette,
-    /// The playing cover's dominant colour, whatever the song-theming
-    /// switch says: a ramp from the background through the cover's colour
-    /// at full chroma, with the preset's own hue and chroma detail kept on
-    /// top. The accent stands in while nothing plays or the cover has no
-    /// colour.
+    /// A ramp through the playing cover's dominant colour, or the accent
+    /// while nothing plays.
     Cover,
 }
 
-/// The seconds a backdrop preset holds by default, the same half minute
-/// the panel starts at.
 pub const BACKDROP_VISUAL_DURATION: f64 = 30.0;
 
-/// Everything Milkdrop shares across the panels and the backdrop.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MilkdropSettings {
-    /// The starred presets, by path, in the order they were starred. One
-    /// list for the whole app: a favorite is a favorite whichever panel
-    /// it was starred from, and the backdrop shuffles the same list.
+    /// One app-wide list, in starring order.
     pub favorites: Vec<PathBuf>,
     /// Preset folders beyond `milkdrop_dir()/presets`, which is always
-    /// scanned. Somebody who keeps their packs on another drive points at
-    /// them here rather than copying a few thousand files. App-wide and
-    /// machine-local: every panel and the backdrop walk the same folders,
-    /// and a layout never carries a path off this machine.
+    /// scanned. Machine-local, so a layout never carries a path.
     pub roots: Vec<PathBuf>,
 }
 
-/// The strength a fresh install runs at: present enough to see the visual
-/// moving, faint enough that a track's own colours still set the mood.
 pub const BACKDROP_VISUAL_STRENGTH: f32 = 0.35;
 
-/// The render scale a fresh install runs at. See [`BackdropVisualConfig::scale`].
 pub const BACKDROP_VISUAL_SCALE: f32 = 0.5;
 
-/// How long the backdrop's fade runs on a fresh install. Short, because a
-/// backdrop that takes its own sweet time reads as a bug; the slider is
-/// there for anyone who wants it slower.
 pub const BACKDROP_VISUAL_FADE_SECS: f32 = 0.7;
-/// The longest fade the Appearance page offers, the panel's ceiling too.
 pub const BACKDROP_VISUAL_FADE_MAX: f32 = 5.0;
 
-/// The frame rate a fresh install runs the backdrop at. The panel defaults
-/// to sixty because someone is watching it; the backdrop runs the whole
-/// time the app plays, so it starts at the rate that reads as motion for
-/// half the bill.
+/// Half the panel's sixty, since the backdrop runs the whole time the app
+/// plays.
 pub const BACKDROP_VISUAL_FPS: u32 = 30;
 
-/// The frame rates the backdrop will take, the panel's own span: below the
-/// floor the visual stops reading as motion, above the ceiling the
-/// readback is the bottleneck whatever projectM does.
 pub const BACKDROP_VISUAL_FPS_MIN: u32 = 10;
 pub const BACKDROP_VISUAL_FPS_MAX: u32 = 240;
 
@@ -2318,7 +1607,6 @@ impl Default for BackdropVisualConfig {
 }
 
 impl BackdropVisualConfig {
-    /// The look's fields taken over this config.
     pub fn with_look(mut self, look: &MilkdropLook) -> BackdropVisualConfig {
         self.enabled = look.enabled;
         self.strength = look.strength;
@@ -2328,8 +1616,6 @@ impl BackdropVisualConfig {
         self.clamped()
     }
 
-    /// The look's fields as they stand here, for writing back into the
-    /// bundle when the Appearance page edits them.
     pub fn look(&self) -> MilkdropLook {
         MilkdropLook {
             enabled: self.enabled,
@@ -2340,10 +1626,8 @@ impl BackdropVisualConfig {
         }
     }
 
-    /// The config with hand-edited numbers pulled back into range. Both
-    /// scalars read straight into render math, so a file that says 1e30
-    /// has to land somewhere sane rather than allocating a framebuffer
-    /// nobody asked for.
+    /// Hand-edited numbers pulled into range, since they feed render math and
+    /// framebuffer sizes directly.
     fn clamped(mut self) -> BackdropVisualConfig {
         self.strength = if self.strength.is_finite() {
             self.strength.clamp(0.0, 1.0)
@@ -2355,8 +1639,7 @@ impl BackdropVisualConfig {
         } else {
             BACKDROP_VISUAL_SCALE
         };
-        // The duration goes straight to projectM's timer; a zero or a NaN
-        // there is a preset switch every frame.
+        // Zero or NaN in projectM's timer is a preset switch every frame.
         self.duration_secs = if self.duration_secs.is_finite() {
             self.duration_secs.clamp(1.0, 120.0)
         } else {
@@ -2367,15 +1650,13 @@ impl BackdropVisualConfig {
         } else {
             1.0
         };
-        // The fade goes straight into a Duration, which panics on a
-        // negative or a NaN.
+        // Feeds a Duration, which panics on a negative or NaN.
         self.fade_secs = if self.fade_secs.is_finite() {
             self.fade_secs.clamp(0.0, BACKDROP_VISUAL_FADE_MAX)
         } else {
             BACKDROP_VISUAL_FADE_SECS
         };
-        // A zero here is a worker that never renders, and the file from
-        // before the field reads as zero too.
+        // Zero is a worker that never renders; older files read as zero.
         self.fps = if self.fps == 0 {
             BACKDROP_VISUAL_FPS
         } else {
@@ -2386,9 +1667,7 @@ impl BackdropVisualConfig {
     }
 }
 
-/// The live backdrop visual config, cached out of the settings file the
-/// way the backdrop shader is: every window's backdrop layer reads it on
-/// every frame it paints, which is no place for disk.
+/// Cached because every window's backdrop layer reads it per frame.
 static BACKDROP_VISUAL: LazyLock<RwLock<BackdropVisualConfig>> = LazyLock::new(|| {
     let settings = Settings::load();
     RwLock::new(
@@ -2399,61 +1678,47 @@ static BACKDROP_VISUAL: LazyLock<RwLock<BackdropVisualConfig>> = LazyLock::new(|
     )
 });
 
-/// What the backdrop visual is set to right now.
 pub fn backdrop_visual() -> BackdropVisualConfig {
     BACKDROP_VISUAL.read().unwrap().clone()
 }
 
-/// Replace the backdrop visual in the cache alone, so a slider drag reaches
-/// the paint without a settings write per pixel of travel.
+/// Cache only, so a slider drag doesn't write settings per pixel.
 pub fn note_backdrop_visual(config: BackdropVisualConfig) {
     *BACKDROP_VISUAL.write().unwrap() = config.clamped();
 }
 
-/// Take a look's Milkdrop share into the live config, keeping the
-/// machine's own fields. What a workspace apply calls.
+/// Take a look's Milkdrop fields into the live config, keeping the
+/// machine's own.
 pub fn set_backdrop_visual_look(look: &MilkdropLook) {
     let mut cache = BACKDROP_VISUAL.write().unwrap();
     *cache = cache.clone().with_look(look);
 }
 
-/// The favorites list, cached out of the settings file for the same reason
-/// the backdrop visual is: every Milkdrop surface asks on every frame
-/// whether the list moved, and a menu row asks per render whether the
-/// preset on screen is in it.
+/// The Milkdrop lists are cached, since surfaces check them per frame.
 static MILKDROP_FAVORITES: LazyLock<RwLock<Vec<PathBuf>>> =
     LazyLock::new(|| RwLock::new(Settings::load().milkdrop.favorites.clone()));
 
-/// The extra preset folders, cached like the favorites and for the same
-/// reason: the scan roots are asked for on every rescan and compared on
-/// every frame that checks the generation.
 static MILKDROP_ROOTS: LazyLock<RwLock<Vec<PathBuf>>> =
     LazyLock::new(|| RwLock::new(Settings::load().milkdrop.roots.clone()));
 
-/// Bumped on every edit to either list, so a surface can tell whether the
-/// favorites or the folders changed with one atomic load rather than a
-/// list compare.
+/// Bumped on every edit to either list, so surfaces skip the list compare.
 static MILKDROP_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// The starred presets, in starring order.
 pub fn milkdrop_favorites() -> Vec<PathBuf> {
     MILKDROP_FAVORITES.read().unwrap().clone()
 }
 
-/// The extra preset folders, in the order they were added.
 pub fn milkdrop_roots() -> Vec<PathBuf> {
     MILKDROP_ROOTS.read().unwrap().clone()
 }
 
-/// Every folder a Milkdrop scan walks: the app's own presets folder
-/// first, then the extras.
 pub fn milkdrop_scan_roots() -> Vec<PathBuf> {
     let mut roots = vec![milkdrop_dir().join("presets")];
     roots.extend(milkdrop_roots());
     roots
 }
 
-/// Replace the extra preset folders. Returns whether the list changed.
+/// Returns whether the list changed.
 pub fn set_milkdrop_roots(roots: Vec<PathBuf>) -> bool {
     {
         let mut held = MILKDROP_ROOTS.write().unwrap();
@@ -2467,9 +1732,6 @@ pub fn set_milkdrop_roots(roots: Vec<PathBuf>) -> bool {
     true
 }
 
-/// Which edit of the Milkdrop lists (favorites and folders) is current.
-/// Starts at zero and only ever goes up; a surface that stored the value
-/// it last acted on has a change to pick up whenever this reads higher.
 pub fn milkdrop_gen() -> u64 {
     MILKDROP_GEN.load(Ordering::Acquire)
 }
@@ -2482,8 +1744,7 @@ pub fn is_milkdrop_favorite(path: &Path) -> bool {
         .any(|favorite| favorite == path)
 }
 
-/// Star or unstar a preset. Returns whether the list actually changed;
-/// starring what's already starred is a no-op that costs no write.
+/// Returns whether the list changed; a no-op costs no write.
 pub fn set_milkdrop_favorite(path: &Path, on: bool) -> bool {
     let changed = {
         let mut favorites = MILKDROP_FAVORITES.write().unwrap();
@@ -2508,17 +1769,14 @@ pub fn set_milkdrop_favorite(path: &Path, on: bool) -> bool {
     changed
 }
 
-/// One connected account. Last.fm binds a session to the api key it was
-/// authorized under, so this is only ever usable by a build signing with
-/// that same key.
+/// Last.fm binds a session to the api key that authorized it, so only a
+/// build signing with that key can use it.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LastfmSession {
-    /// What the connect flow returned. Never expires until it's revoked on
-    /// Last.fm. Empty means this api key has no session: it never
-    /// connected, the user disconnected, or Last.fm refused what it had.
+    /// Empty means this api key has no session: never connected,
+    /// disconnected, or refused.
     pub key: String,
-    /// The account it belongs to, for the settings readout.
     pub username: String,
 }
 
@@ -2528,67 +1786,41 @@ impl LastfmSession {
     }
 }
 
-/// The Last.fm account and how scrobbling behaves. The key and secret
-/// override the build's own api identity (`lastfm::keys`), for builds
-/// that ship none.
+/// The key and secret override the build's own api identity
+/// (`lastfm::keys`), for builds that ship none.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Lastfm {
     pub api_key: String,
     pub api_secret: String,
-    /// The sessions this machine holds, filed under the api key that
-    /// minted each. A map rather than one session because the identity
-    /// varies by where the build came from: the nix package, the release
-    /// workflow, and a local `.env` build each sign with their own pair,
-    /// and they all read this one file. One session per key means moving
-    /// between them costs a connect the first time and nothing after.
+    /// Sessions by the api key that minted each, since nix, release, and
+    /// local builds sign differently but share this file.
     ///
-    /// The empty key is the unattributed slot, holding the single session
-    /// a file from before this split held. Whichever build it belongs
-    /// to claims it on the first call that succeeds ([`Self::attribute`]);
-    /// every other build files its own refusal and stops trying it.
+    /// The empty key holds a pre-split file's session. The first build it
+    /// works for claims it ([`Self::attribute`]); every other build files
+    /// its own refusal.
     pub sessions: BTreeMap<String, LastfmSession>,
-    /// How far the play-history import has read each account, by
-    /// lowercased username: the second of the newest scrobble it took.
-    /// The next run asks Last.fm for what arrived after it, which is the
-    /// difference between a re-import costing one page and costing a
-    /// decade of them.
-    ///
-    /// Filed per account rather than read off the listens table, which
-    /// records that a row came from Last.fm and not which account sent
-    /// it. One global bound meant connecting a second account and
-    /// importing it asked for "scrobbles since the first account's
-    /// newest", got nothing back, and filed that account's whole history
-    /// as dateless estimates.
+    /// The newest imported scrobble's timestamp, by lowercased username.
+    /// Per account, never global: a second account would otherwise import
+    /// nothing, since its history predates the first account's bound.
     pub imported: BTreeMap<String, i64>,
-    /// The session a pre-`sessions` file held, with nothing recording
-    /// which api key minted it. Read once on load into the unattributed
-    /// slot, never written back.
+    /// Legacy session, read once into the unattributed slot, never written.
     #[serde(skip_serializing)]
     session_key: String,
     #[serde(skip_serializing)]
     username: String,
-    /// Where the switch lived before every scrobble destination shared
-    /// it ([`Settings::scrobbling`]). Read once on load to seed the shared
-    /// one, never written back.
+    /// Legacy, read once to seed [`Settings::scrobbling`], never written.
     #[serde(skip_serializing)]
     scrobbling: Option<bool>,
-    /// Whether the heart also sends a Last.fm love. Off by default, unlike
-    /// scrobbling: connecting an account is consent to publish what played,
-    /// not to rewrite the loved list a user may have curated over there for
-    /// years. Turning it on applies from that point forward; it never pushes
-    /// the favourites already on the shelf.
+    /// Whether the heart also sends a Last.fm love. Off by default, and it
+    /// never pushes favourites that predate turning it on.
     pub love_favourites: bool,
-    /// Where the threshold lived before every scrobble destination shared
-    /// it ([`Settings::scrobble_threshold`]). Read once on load to seed the
-    /// shared knob, never written back.
+    /// Legacy, read once to seed [`Settings::scrobble_threshold`], never
+    /// written.
     #[serde(skip_serializing)]
     threshold: Option<f32>,
 }
 
-/// The band the scrobble threshold is held to: the low end stops short of
-/// a threshold that scrobbles on the first note, and a non-finite value
-/// from a hand-edited file falls back to the default.
 pub fn clamp_threshold(threshold: f32) -> f32 {
     if threshold.is_finite() {
         threshold.clamp(0.1, 1.0)
@@ -2597,18 +1829,12 @@ pub fn clamp_threshold(threshold: f32) -> f32 {
     }
 }
 
-/// The slot holding a session no api key has claimed yet.
 const UNATTRIBUTED: &str = "";
 
 impl Lastfm {
-    /// The session a build signing with `api_key` can actually use: its
-    /// own, or the unattributed one while this key has never tried. A
-    /// build with no identity at all gets None, since nothing it sent
-    /// could be signed anyway.
-    ///
-    /// An entry that's present but empty is a key that asked and was
-    /// refused, which is the whole reason it's stored: without it, every
-    /// launch would try a session it has already been told isn't its own.
+    /// This key's own session, or the unattributed one while this key has
+    /// never tried. A present but empty entry is a recorded refusal, so a
+    /// launch never retries a session it was told isn't its own.
     pub fn session(&self, api_key: &str) -> Option<&LastfmSession> {
         if api_key.is_empty() {
             return None;
@@ -2619,35 +1845,24 @@ impl Lastfm {
         }
     }
 
-    /// The account name for the settings readout, empty where this build
-    /// holds no session.
     pub fn username(&self, api_key: &str) -> &str {
         self.session(api_key).map_or("", |s| s.username.as_str())
     }
 
-    /// Whether some other api key holds a session, for telling "never
-    /// connected" apart from "connected, but under a different build".
     pub fn connected_elsewhere(&self, api_key: &str) -> bool {
         self.sessions
             .iter()
             .any(|(key, session)| key != api_key && session.connected())
     }
 
-    /// File the session the connect flow just returned under the key that
-    /// minted it.
     pub fn connect(&mut self, api_key: &str, key: String, username: String) {
         self.sessions
             .insert(api_key.to_string(), LastfmSession { key, username });
     }
 
-    /// Leave this build without a session: what Disconnect does, and
-    /// where a refusal from Last.fm is recorded. The entry stays behind empty
-    /// rather than going away, because an absent key is one that hasn't
-    /// tried the unattributed session yet and this one has.
-    ///
-    /// A build with no identity has nothing to clear, and writing its
-    /// refusal would take the unattributed slot and the session in it
-    /// down with it.
+    /// Disconnect, or record a refusal. The entry stays empty rather than
+    /// going away, since an absent key would retry the unattributed session.
+    /// An empty key returns early: its entry is the unattributed slot.
     pub fn clear_session(&mut self, api_key: &str) {
         if api_key.is_empty() {
             return;
@@ -2657,8 +1872,7 @@ impl Lastfm {
     }
 
     /// Claim the unattributed session for the key that just used it
-    /// successfully, which is the only proof of who minted it there is.
-    /// True when that moved something, so the caller knows to persist.
+    /// successfully. True when the caller should persist.
     pub fn attribute(&mut self, api_key: &str) -> bool {
         if api_key.is_empty() || self.sessions.contains_key(api_key) {
             return false;
@@ -2670,32 +1884,22 @@ impl Lastfm {
         true
     }
 
-    /// How far `user`'s history has been imported, or None for an account
-    /// nothing has read yet, which asks for the whole thing.
     pub fn imported_through(&self, user: &str) -> Option<i64> {
         self.imported.get(&user.to_lowercase()).copied()
     }
 
-    /// Record how far a run got. Never moves the bound backwards: a run
-    /// stopped partway holds the older end of what it asked for, and
-    /// lowering the bound to its newest second would step over everything
-    /// above it.
+    /// Never moves the bound backwards, or a run stopped partway would skip
+    /// everything above it.
     pub fn note_import(&mut self, user: &str, through: i64) {
         let slot = self.imported.entry(user.to_lowercase()).or_default();
         *slot = (*slot).max(through);
     }
 
-    /// Forget where every account's import got to, what clearing the
-    /// listens out of the library leaves behind. Without it a re-import
-    /// asks for what arrived since a history that isn't there any more
-    /// and comes back with nothing.
+    /// Call when the listens are cleared, or a re-import comes back empty.
     pub fn forget_imports(&mut self) {
         self.imported.clear();
     }
 
-    /// Fold a pre-`sessions` file's flat session into the unattributed
-    /// slot. Nothing on disk says which build authorized it, so it goes
-    /// in unclaimed and the first call that succeeds names it.
     fn fold_legacy_session(&mut self) {
         let (key, username) = (
             std::mem::take(&mut self.session_key),
@@ -2709,72 +1913,43 @@ impl Lastfm {
     }
 }
 
-/// The ListenBrainz connection: a user token minted on the site is the
-/// whole credential, so there's no auth dance and nothing filed per api
-/// key the way Last.fm's sessions are. All this holds is the token and
-/// the name the service answered with when it accepted it.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ListenBrainz {
     /// The user token from listenbrainz.org/settings. Empty means not
-    /// connected: nothing is ever sent without one.
+    /// connected.
     pub token: String,
-    /// The MusicBrainz account name `validate-token` returned, None until
-    /// a check has come back clean. Only the settings readout uses it.
     pub username: Option<String>,
 }
 
-/// The Libre.fm connection. Libre.fm takes any api pair, so rox signs
-/// with the one baked into rox-net and there's nothing to file sessions
-/// under: one session key and the name it came with is the whole
-/// connection.
+/// Libre.fm takes any api pair, so there's no per-key session map.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LibreFm {
-    /// The session key the connect flow traded the authorized token for.
     /// Empty means not connected.
     pub session_key: String,
-    /// The account name the session came back with, for the readout.
     pub username: String,
 }
 
-/// A Subsonic or OpenSubsonic server rox reads a catalog off. Unlike the
-/// three above it this isn't a scrobble destination, it's a library: the
-/// sync pulls rows in under its own source id and playback streams from
-/// it. There can be several, each with its own switch and its own rows.
-///
-/// The password sits here rather than in `settings.json` because it's a
-/// real account credential, not the shared-secret plumbing an icecast
-/// source password is. It's held in the clear because the protocol derives
-/// a per-request token from it, so there's nothing else the server would
-/// take.
+/// A Subsonic or OpenSubsonic library source. The password is stored in the
+/// clear because the protocol derives a per-request token from it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SubsonicAccount {
-    /// Whether the server is used at all: synced, browsed, streamed from.
-    /// Off leaves the rows in the library, since pruning someone's whole
-    /// catalog because they flipped a switch would be a surprise.
+    /// Off leaves the rows in the library.
     pub enabled: bool,
-    /// What the server is called where rox names it: the settings block,
-    /// the metadata panel's Source row, a playlist that has to tell two
-    /// servers' lists apart. Empty lets the address's host stand in.
+    /// Empty lets the address's host stand in.
     pub name: String,
-    /// Base URL with scheme, no `/rest` on the end. Empty means not
-    /// configured.
+    /// Base URL with scheme, no `/rest` on the end.
     pub url: String,
     pub user: String,
     pub password: String,
-    /// When the last sync finished, unix seconds; 0 until one has. The
-    /// settings row reads it, and nothing else does: a sync is always
-    /// asked for, never scheduled off this.
+    /// Unix seconds, for display only; syncs are never scheduled off it.
     pub last_sync: i64,
 }
 
 impl SubsonicAccount {
-    /// The name this server goes by: the one typed for it, or the host of
-    /// its address when there isn't one. The scheme and the path are the
-    /// machine's business, and anywhere this shows has one line for it.
-    /// Empty when there's neither.
+    /// The typed name, or the address's host.
     pub fn label(&self) -> String {
         let name = self.name.trim();
         if !name.is_empty() {
@@ -2791,63 +1966,44 @@ impl SubsonicAccount {
     }
 }
 
-/// Where a fetched lyrics sheet saves: the embedded tag through the
-/// writer's atomic layer, an `.lrc` sidecar next to the audio file, or
-/// the app's own lyrics store under [`lyrics_dir`].
+/// Where a fetched lyrics sheet saves.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LyricsSave {
     Tag,
     Sidecar,
-    /// The default: rox's data folder, so fetches never leave files in
-    /// the library and never rewrite the audio.
+    /// [`lyrics_dir`], so fetches never touch the library.
     #[default]
     Store,
 }
 
-/// The app's own lyrics store inside [`data_dir`], one flat folder of
-/// hashed-name `.lrc` files. Not created here: the first save makes it,
-/// so an unused store never leaves an empty folder behind.
+/// Hashed-name `.lrc` files. The first save creates it.
 pub fn lyrics_dir() -> PathBuf {
     data_dir().join("lyrics")
 }
 
-/// The artist store inside [`data_dir`]: the biography panel's fetched
-/// bios and portraits, one hashed-name pair per artist. Not created
-/// here: the first fetch makes it, the lyrics store's rule.
+/// Fetched bios and images, plus per-track caches under `tracks/` and
+/// `releases/`. The first fetch creates it.
 pub fn artists_dir() -> PathBuf {
     data_dir().join("artists")
 }
 
-/// The online enrichment providers (ADR 14): per-service enable toggles
-/// and the per-domain knobs. Providers only ever fetch on a user action,
-/// so on-by-default keeps the offline-first rule intact.
+/// The online enrichment providers (ADR 14). On by default is fine because
+/// they only fetch on a user action.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Providers {
-    /// Fetch lyrics from lrclib.net when the lyrics panel asks.
     pub lrclib: bool,
-    /// Where a fetched sheet is saved.
     #[serde(deserialize_with = "lenient::or_default")]
     pub lyrics_save: LyricsSave,
-    /// Look up tags on MusicBrainz when the metadata compare asks.
     pub musicbrainz: bool,
-    /// Search iTunes for cover art when the cover lookup asks.
     pub itunes: bool,
-    /// Search Deezer for cover art when the cover lookup asks.
     pub deezer: bool,
-    /// Search Last.fm for cover art when the cover lookup asks.
     pub lastfm_art: bool,
-    /// Fetch artist biographies from Last.fm, a Deezer portrait and
-    /// theaudiodb's banner and fanart along, when the biography panel asks.
+    /// Artist bios from Last.fm, with Deezer and theaudiodb images.
     pub artist: bool,
-    /// Identify a track by its sound through AcoustID when the metadata
-    /// compare asks.
     pub acoustid: bool,
-    /// A user's own AcoustID application key, registered at
-    /// acoustid.org/new-application. Empty means the build's own key, and
-    /// a build that shipped without one leaves the identify unavailable
-    /// until this is filled in.
+    /// A user's own AcoustID key. Empty uses the build's key, if it has one.
     pub acoustid_key: String,
 }
 
@@ -2867,59 +2023,39 @@ impl Default for Providers {
     }
 }
 
-/// The equalizer's preset folder inside [`data_dir`]: one text file per
-/// saved curve, named after the preset. Not created here, the lyrics
-/// store's rule; the first save makes it. Its own folder under `eq/`
-/// because a preset is a file the user is meant to find, copy and hand to
-/// someone else, the way the milkdrop presets sit in one.
+/// One text file per saved curve. The first save creates it.
 pub fn eq_presets_dir() -> PathBuf {
     data_dir().join("eq").join("presets")
 }
 
-/// The graphic equalizer's saved curve (ADR 19): whether it shapes the
-/// output at all, and the per-band gains in dB in
-/// [`rox_playback::eq::BAND_HZ`] order. The live values are atomics the
-/// settings page writes straight into (see rox's `player::set_eq_gain`);
-/// this is only what they're seeded from and flushed back to.
+/// The equalizer's saved curve (ADR 19). The live values are atomics
+/// (`rox_services::player::set_eq_gain`); this seeds them and gets flushed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EqSettings {
     pub enabled: bool,
-    /// A list rather than a fixed array so a file written against a
-    /// different band count still loads: extra values are dropped and
-    /// missing ones read flat.
+    /// A list so a file with a different band count still loads.
     pub gains: Vec<f32>,
-    /// Each band's center, in Hz. Empty in a file written before the
-    /// centers could move, which loads onto the ISO octaves the graphic EQ
-    /// had them welded to.
+    /// Band centers in Hz. Empty loads the ISO octaves.
     #[serde(default)]
     pub freqs: Vec<f32>,
-    /// How wide each band is. Empty loads at one octave, the old fixed
-    /// width.
+    /// Band widths. Empty loads one octave.
     #[serde(default)]
     pub qs: Vec<f32>,
-    /// How the live analyzer behind the curve is drawn, if at all.
     #[serde(default, deserialize_with = "lenient::or_default")]
     pub analyzer: AnalyzerStyle,
-    /// The analyzer's window, in samples. Snapped to a power of two the
-    /// analyzer takes when it's read, so a hand-edited number can't panic
-    /// the window it opens.
+    /// In samples. Snapped to a power of two on read, so a hand-edited value
+    /// can't panic the window.
     pub fft_size: usize,
 }
 
-/// How the equalizer draws the music behind its curve. The analyzer is
-/// context for the shaping, never the subject, so the default is the shape
-/// that stays out of the way: bars show more detail but read as the loudest
-/// thing on screen, and the curve is what's being edited.
+/// How the equalizer draws the music behind its curve.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AnalyzerStyle {
-    /// One smoothed outline, filled underneath.
     #[default]
     Wave,
-    /// A bar per band, the spectrum panel's shape.
     Bars,
-    /// Nothing behind the curve at all.
     Off,
 }
 
@@ -2931,81 +2067,56 @@ impl Default for EqSettings {
             freqs: rox_playback::eq::BAND_HZ.to_vec(),
             qs: vec![rox_playback::eq::Q_DEFAULT; rox_playback::eq::BANDS],
             analyzer: AnalyzerStyle::default(),
-            // Long, because the analyzer is here to show where a band is: at
-            // a short window the bottom two octaves fall into a handful of
-            // bins and the bass reads as one smear.
+            // Long, or the bottom two octaves fall into a handful of bins.
             fft_size: 8192,
         }
     }
 }
 
-/// How tagged loudness is levelled (ADR 19). Off by default: leveling is
-/// processing, and a player that quietly turns every track down without
-/// being asked is one you can't trust the bit-perfect claim from.
+/// How tagged loudness is levelled (ADR 19). Off by default to keep the
+/// bit-perfect claim.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReplayGainSettings {
-    /// Which of a file's two gains to read, or none at all.
     #[serde(deserialize_with = "lenient::or_default")]
     pub mode: GainModeSetting,
-    /// Added to every tagged gain, in dB. ReplayGain's reference is well
-    /// below where modern masters are cut, so a levelled library plays
-    /// quieter than the same library raw; this is where that's taken back.
+    /// Added to every tagged gain, in dB.
     pub preamp_db: f32,
-    /// What a file with no ReplayGain tags plays at, in dB. Its own knob
-    /// rather than the preamp: an untagged track has nothing to be offset
-    /// from, so the number is the whole decision.
+    /// What an untagged file plays at, in dB.
     pub fallback_db: f32,
-    /// Where the measurement pass puts what it measured. Nothing the engine
-    /// reads: it's here because it's about levelling, and the job reads it
-    /// once when it starts.
+    /// Read by the measurement pass when it starts, never by the engine.
     #[serde(deserialize_with = "lenient::or_default")]
     pub save: ReplayGainSave,
-    /// Whether the measurement pass follows the watcher, so files that arrive
-    /// in the library while rox is running get measured without anyone asking
-    /// (ADR 19). Off by default: measuring decodes every file, and in tags
-    /// mode it rewrites them, neither of which should start on its own until
-    /// it's been agreed to once.
+    /// Whether the measurement pass follows the watcher (ADR 19). Off by
+    /// default, since tags mode rewrites files.
     pub auto: bool,
 }
 
-/// Where a measured ReplayGain is written, the Audio page's pick (ADR 19).
+/// Where a measured ReplayGain is written (ADR 19).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReplayGainSave {
-    /// The default: rox's own library database, so a measurement pass never
-    /// rewrites a file and never bumps an mtime.
+    /// Never rewrites a file or bumps an mtime.
     #[default]
     Database,
-    /// The file's own tags, through the writer's atomic layer, so every
-    /// other player reads the same numbers. Rewrites the audio files.
+    /// Rewrites the audio files so other players read the same numbers.
     Tags,
 }
 
-/// Where an acoustic vector is written, the Library page's pick.
-///
-/// [`ReplayGainSave`]'s shape with one difference that matters: the database
-/// row is written either way. A vector is only useful through the similarity
-/// query, and that query reads the table, so tags mode is a second copy
-/// rather than a different destination. What it buys is a description that
-/// outlives the database: wipe the library, or carry the folder to another
-/// machine, and the files still say what they sound like.
+/// Where an acoustic vector is written. Unlike [`ReplayGainSave`], the
+/// database row is written either way, since similarity queries read the
+/// table; tags mode adds a copy that outlives the database.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AcousticSave {
-    /// The default: the library database alone, so a pass never rewrites a
-    /// file and never bumps an mtime.
+    /// Never rewrites a file or bumps an mtime.
     #[default]
     Database,
-    /// The database and the file's own tags. MP3 and FLAC only, the two
-    /// formats the vector has a tag path for; every other format keeps its
-    /// database row and nothing else.
+    /// Also the file's tags, for MP3 and FLAC only.
     Tags,
 }
 
-/// The persisted spelling of [`rox_playback::gain::GainMode`], kept apart
-/// from it so the settings file stays readable words rather than whatever
-/// the engine's enum happens to derive.
+/// The persisted spelling of [`rox_playback::gain::GainMode`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GainModeSetting {
@@ -3016,7 +2127,6 @@ pub enum GainModeSetting {
 }
 
 impl ReplayGainSettings {
-    /// The rule the engine levels by.
     pub fn rule(&self) -> rox_playback::gain::GainRule {
         use rox_playback::gain::GainMode;
         rox_playback::gain::GainRule {
@@ -3031,68 +2141,45 @@ impl ReplayGainSettings {
     }
 }
 
-/// How samples reach the device (ADR 19): which backend opens the stream
-/// and which device it claims. These are a request. What the hardware
-/// accepted is on the running session, and the Audio page shows that
-/// rather than these values.
+/// How samples reach the device (ADR 19). A request: what the hardware
+/// accepted lives on the running session.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputSettings {
-    /// Whether output claims the device for rox alone, at the file's own
-    /// rate where the hardware takes one. Off shares the system mixer with
-    /// every other app, which is where rox has always been. A claim that
-    /// fails falls back to shared with the reason shown, never to silence.
+    /// A failed exclusive claim falls back to shared, never to silence.
     pub exclusive: bool,
-    /// The shared-mode device, by the name cpal calls it. None follows the
-    /// system default, and so does a name that isn't on this machine.
+    /// By cpal name. None or an unknown name follows the system default.
     pub device: Option<String>,
-    /// The exclusive-mode device, by its ALSA name. Kept apart from the
-    /// pick above because the two id spaces don't cross: a cpal device name
-    /// means nothing to ALSA, and vice versa.
+    /// By ALSA name, kept apart because cpal and ALSA names don't cross.
     pub exclusive_device: Option<String>,
-    /// The rate exclusive mode runs at, or None to follow each file's own
-    /// (ADR 19), which is the setting that makes a mixed-rate library play
-    /// bit-perfect throughout. Pinning trades that for never paying the
-    /// reopen gap at a boundary, worth it on a card whose clock hates
-    /// switching.
+    /// None follows each file's rate (ADR 19). Pinning trades bit-perfect
+    /// for no reopen gap at rate changes.
     #[serde(default)]
     pub rate: Option<u32>,
-    /// The sample format exclusive mode asks for by short name (`f32`,
-    /// `s32`, `s16`), or None for the widest the device offers. A card that
-    /// won't take the pick runs the widest anyway and says so.
+    /// `f32`, `s32`, or `s16`. None takes the widest the device offers.
     #[serde(default)]
     pub format: Option<String>,
-    /// The exclusive device's period in milliseconds, or None for the
-    /// backend's default. Lower wakes the writer thread more often, which
-    /// starts crackling on a loaded machine.
+    /// In ms. Lower crackles on a loaded machine.
     #[serde(default)]
     pub period_ms: Option<f64>,
 }
 
-/// The icecast broadcast sink (ADR 22): rox as a source client pushing the
-/// processed stream at a mount, with everything downstream (the mount,
-/// the listeners, the network face) belonging to icecast. The password is
-/// stored in this file the way the Last.fm session is; the file is the
-/// user's own data dir, and icecast's source password is shared-secret
-/// plumbing, not an account credential.
+/// The icecast broadcast sink (ADR 22). The source password stays in
+/// `settings.json`, since it's shared-secret plumbing rather than an
+/// account credential.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BroadcastSettings {
-    /// Whether the sink runs. Off tears the connection down, which releases
-    /// the mount.
     pub enabled: bool,
-    /// The icecast server's host, no scheme; the source protocol runs over
-    /// a plain socket.
+    /// No scheme; the source protocol runs over a plain socket.
     pub host: String,
     pub port: u16,
-    /// The mount listeners tune to. A leading slash is optional.
+    /// A leading slash is optional.
     pub mount: String,
-    /// Source credentials, icecast.xml's source user and password.
     pub user: String,
     pub password: String,
-    /// The stream name the mount advertises. Empty stays nameless.
     pub name: String,
-    /// Encoder bitrate in kbps, snapped to the nearest step LAME takes.
+    /// In kbps, snapped to the nearest LAME step.
     pub bitrate: u32,
 }
 
@@ -3101,8 +2188,7 @@ impl Default for BroadcastSettings {
         BroadcastSettings {
             enabled: false,
             host: String::new(),
-            // icecast's stock port and source user, so a config is usually
-            // just a host, a password, and the switch.
+            // icecast's stock port and source user.
             port: 8000,
             mount: "/rox".into(),
             user: "source".into(),
@@ -3113,34 +2199,20 @@ impl Default for BroadcastSettings {
     }
 }
 
-/// Saving songs off a live stream. The bytes of a station are already
-/// passing through the transport in the container the station encodes in,
-/// and the in-band metadata marks where one song ends and the next begins,
-/// so a song heard from one title change to the next can be written to
-/// disk without a decoder or an encoder touching it. Off by default: an
-/// evening of radio is a few hundred megabytes, and nobody should find
-/// that on their disk without having asked.
+/// Saving songs off a live stream, cut at the in-band title changes and
+/// written without re-encoding.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureSettings {
-    /// Whether whole songs get written out.
     pub enabled: bool,
-    /// Where they land. A folder of its own rather than a library root,
-    /// because a station's boundaries are approximate and a capture is
-    /// worth looking at before it joins the collection.
+    /// Its own folder rather than a library root, since station boundaries
+    /// are approximate.
     pub folder: PathBuf,
-    /// What a saved song is called, in the renamer's pattern language.
-    /// A "/" in it makes a folder under [`CaptureSettings::folder`], so
-    /// the default files an evening of radio by station rather than
-    /// piling it up flat. Read through
+    /// A renamer pattern; "/" makes a subfolder. Read through
     /// [`CaptureSettings::parsed_pattern`], never straight.
     pub pattern: String,
-    /// What a saved song's album tag says, in the same pattern language.
-    /// Empty writes no album at all, which is the default: a song off the
-    /// air has no release, and stamping the station's name into the album
-    /// field pollutes every album view it lands in. Someone who wants it
-    /// there types `%station%`; someone filing radio as a shelf of its own
-    /// types "Radio" or "Singles". The station always goes in the comment.
+    /// The album tag as a pattern. Empty by default, so the station name
+    /// doesn't pollute album views; it always goes in the comment.
     pub album: String,
 }
 
@@ -3155,16 +2227,11 @@ impl Default for CaptureSettings {
     }
 }
 
-/// How a capture is named when nobody has said otherwise: the station's
-/// own folder, and the song inside it the way the air announced it.
 pub const DEFAULT_CAPTURE_PATTERN: &str = "%station%/%artist% - %title%";
 
 impl CaptureSettings {
-    /// The pattern, parsed, with the default standing in for one that
-    /// won't. A pattern is free text in a settings file and the only
-    /// place it gets checked is the row that types it, so a hand-edited
-    /// file or a placeholder retired from under it can't be allowed to
-    /// stop captures from landing.
+    /// Falls back to the default pattern, so a hand-edited or outdated one
+    /// can't stop captures.
     pub fn parsed_pattern<F: PatternField>(&self) -> Pattern<F> {
         if let Ok(pattern) = pattern::parse(&self.pattern) {
             return pattern;
@@ -3179,71 +2246,40 @@ impl CaptureSettings {
     }
 }
 
-/// Where captures go when nobody has said otherwise: a folder of their own
-/// under the OS music directory, which is where a music player's output
-/// belongs and where the library is most likely already pointed. A machine
-/// that names no music directory falls back to the data dir, which always
-/// exists.
 pub fn default_capture_folder() -> PathBuf {
     dirs::audio_dir()
         .map(|dir| dir.join("rox Captures"))
         .unwrap_or_else(|| data_dir().join("captures"))
 }
 
-/// The card's first text line, under the app name. A pattern in the
-/// renamer's grammar, rendered against the playing track.
+/// Presence card patterns in the renamer's grammar.
 pub const DEFAULT_PRESENCE_FIRST_LINE: &str = "%artist% - %title%";
 
-/// The card's second line. The album, which the card otherwise only
-/// carried in the artwork's hover text.
 pub const DEFAULT_PRESENCE_SECOND_LINE: &str = "%album%";
 
-/// The artwork's hover text. The quality, which is the one thing about a
-/// track the card has nowhere else to say: the album is a line of its
-/// own now, and having it here too said it twice.
 pub const DEFAULT_PRESENCE_HOVER: &str = "%format%";
 
-/// Which of the presence card's lines Discord repeats beside your name in
-/// the member list.
-///
-/// Discord picks that line from a field the card already carries rather
-/// than taking text of its own. The app name is the Discord application's
-/// name and a client can't override it over IPC, so the pick is between
-/// the card's three fields rather than a line of its own.
+/// Which card line Discord repeats in the member list. Discord only picks
+/// from the card's own fields; a client can't override the app name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiscordStatusLine {
-    /// "Listening to rox", the application name.
     App,
-    /// The first line, "Listening to Aphex Twin - Xtal" by default. The
-    /// default pick: the member list is where everyone else reads the
-    /// status, and the app name says nothing about what's playing.
     #[default]
     First,
-    /// The second line, the album by default.
     Second,
 }
 
-/// Discord Rich Presence settings: enable toggle and metadata options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscordSettings {
-    /// Whether Discord Rich Presence is enabled.
     pub enabled: bool,
-    /// Whether "View on Last.fm" button is shown.
     pub show_lastfm_button: bool,
-    /// Whether "Search on YouTube" button is shown.
     pub show_youtube_button: bool,
-    /// The card's first text line as a pattern. Empty leaves the line
-    /// off the card; a pattern that no longer parses renders as the
-    /// default rather than blanking the card.
+    /// Empty leaves the line off; an unparseable pattern renders the default.
     pub first_line: String,
-    /// The card's second line, same rules.
     pub second_line: String,
-    /// The text behind the artwork, on hover. A pattern like the two
-    /// lines, and empty leaves the artwork without a tooltip.
     pub hover_line: String,
-    /// Which line the member list shows beside your name.
     #[serde(deserialize_with = "lenient::or_default")]
     pub status_line: DiscordStatusLine,
 }
@@ -3262,48 +2298,34 @@ impl Default for DiscordSettings {
     }
 }
 
-/// A dock layout the user saved as a named preset: a full dock dump under
-/// a name. The dump stays raw JSON like [`LookState::layout`] so the file
-/// still loads when the layout schema moves; the workspace validates it on
-/// apply.
+/// A named dock layout preset. The dump stays raw JSON so the file loads
+/// when the layout schema moves.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NamedLayout {
     pub name: String,
     pub dump: serde_json::Value,
-    /// The window size the preset restores to, in logical pixels. None for
-    /// presets from before sizes were stored, which apply at whatever size
-    /// the window already has.
+    /// The window size the preset restores to. None keeps the current size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<LayoutSize>,
 }
 
-/// A single configured panel the user saved under a name: the panel's own
-/// dump, the leaf a layout holds per panel. Adding one back builds the
-/// panel with its config, its rename, and whatever children a composite
-/// holds, so a dialed-in panel is reproducible without redoing its settings.
-///
-/// The dump stays raw JSON for the reasons [`NamedLayout`]'s does: rox-core
-/// stays off the dock crate, and the file still loads through a
-/// config-schema move.
+/// A single configured panel saved under a name. Raw JSON keeps rox-core off
+/// the dock crate.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PanelPreset {
     pub name: String,
-    /// The dock's `PanelState` as JSON: the panel's registry name, its config
-    /// blob, and its children.
+    /// The dock's `PanelState` as JSON.
     pub panel: serde_json::Value,
 }
 
 impl PanelPreset {
-    /// The registry name of the panel inside, so a menu can find its icon and
-    /// placement without deserializing the dump. None for a blob that isn't
-    /// shaped like a panel state.
+    /// The panel's registry name, without deserializing the dump.
     pub fn panel_name(&self) -> Option<&str> {
         self.panel.get("panel_name")?.as_str()
     }
 }
 
-/// A window size in logical pixels, stored with a layout preset so applying
-/// it can size the window to match.
+/// A window size in logical pixels.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct LayoutSize {
@@ -3311,106 +2333,73 @@ pub struct LayoutSize {
     pub height: f32,
 }
 
-/// A layout's unsaved working state: the dock dump plus the window size it
-/// was last at, kept in [`LookState::layout_edits`] so switching back restores
-/// both the arrangement and the size without touching the saved preset.
+/// A layout's unsaved working state, kept apart from the saved preset.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LayoutEdit {
     pub dump: serde_json::Value,
-    /// The window size when the edit was stashed. None for a copy from before
-    /// sizes were stored, which falls back to the preset's saved size on apply.
+    /// None falls back to the preset's saved size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<LayoutSize>,
 }
 
-/// The workspace bundle format version, bumped when the bundle shape changes
-/// so a reader can refuse a file from a newer format. Independent of the dock
-/// layout version the dumps inside have.
+/// Independent of the dock layout version the dumps carry.
 pub const WORKSPACE_VERSION: u32 = 1;
 
-/// A shareable workspace: a named set of layout presets with their
-/// mini-player roles, the palette, and the appearance that dress them. The
-/// unit rox's sharing ecosystem trades: written to a file by export, shipped
-/// in the app's assets, and imported into the collection. Versioned so a file
-/// still loads when the shape moves; the layouts inside have their own
-/// dock-layout version the workspace validates on apply. Machine- and
-/// account-bound state (library folders, Last.fm, window frames) is left out,
-/// so a bundle travels between installs as pure look.
+/// A shareable workspace: layouts, palettes, pools, and appearance. Machine
+/// and account state stays out, so a bundle travels as pure look.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct WorkspaceBundle {
     /// Format version; a reader refuses a bundle from a newer format.
     pub version: u32,
-    /// The bundle's name. A shipped bundle falls back to its file stem when
-    /// this is empty, the layouts' own convention.
+    /// The bundle's name. Empty falls back to the file stem.
     pub name: String,
-    /// The layout presets the workspace holds, each a named dock dump.
+    /// The layout presets, each a named dock dump.
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "lenient::vec"
     )]
     pub layouts: Vec<NamedLayout>,
-    /// The panel presets the workspace holds, each a named single panel.
-    /// They're stored in the bundle rather than in the user's settings
-    /// because a panel can name a shader out of the pool below, and that name
-    /// only means something while this workspace's pool is the live one.
+    /// The panel presets. In the bundle because they can name pool shaders.
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "lenient::vec"
     )]
     pub panel_presets: Vec<PanelPreset>,
-    /// The mini-player button's two roles, by preset name, scoped to this
-    /// workspace's own layouts.
+    /// The mini-player button's primary layout, by preset name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mini_layout: Option<String>,
-    /// The two theme palettes as role-name-to-`#rrggbb`,
-    /// [`Palette::to_map`]'s shape; an empty map means that theme's
-    /// designed defaults.
+    /// Role name to `#rrggbb`. Empty means the designed defaults.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub palette_dark: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub palette_light: BTreeMap<String, String>,
-    /// The shared signal pool the workspace's looks route from: a layout that
-    /// pulses to the kick is meaningless without "Kick", so the pool
-    /// travels with the look and an apply replaces it wholesale.
+    /// The signal pool the looks route from. An apply replaces it wholesale.
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "lenient::vec"
     )]
     pub signals: Vec<Signal>,
-    /// The shader pool the workspace's looks point into: every named WGSL
-    /// the bundle holds, in one place. A panel that names "Grain" is
-    /// meaningless without it, so the pool travels with the look exactly the
-    /// way the signal pool above does, and an apply replaces it wholesale.
+    /// The named WGSL the looks point into. An apply replaces it wholesale.
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "lenient::vec"
     )]
     pub shaders: Vec<NamedShader>,
-    /// Who made this workspace and what it is. Empty on a look nobody has
-    /// filled in, which is every look until it's exported with a card.
+    /// Who made this workspace and what it is.
     #[serde(skip_serializing_if = "WorkspaceMeta::is_empty")]
     pub meta: WorkspaceMeta,
-    /// The whole-window shader the workspace applies, the screen-sized twin of
-    /// the per-panel ones its layouts hold.
-    ///
-    /// None applies as the disabled default rather than as "leave what's
-    /// there". An apply replaces the look wholesale, and a workspace that
-    /// says nothing about a screen shader means a look without one, so
-    /// switching to it can't leave the last look's shader running over it.
+    /// The whole-window shader. None applies as disabled, never as "leave
+    /// what's there".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_shader: Option<PostShaderConfig>,
-    /// The shader painted over the backdrop and under everything else, so
-    /// it only ever reads the art wash and the panels stay untouched. The
-    /// same config shape as the screen shader, but it's stored in the bundle
-    /// rather than the machine settings: a backdrop treatment is part of
-    /// the look, not of this install. None means a bare backdrop, the
-    /// same replace-wholesale read as `post_shader`'s.
+    /// The shader over the backdrop and under the panels. None means a bare
+    /// backdrop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backdrop_shader: Option<PostShaderConfig>,
-    /// The appearance knobs the workspace dresses the app with.
+    /// The appearance knobs.
     pub appearance: AppearanceBundle,
 }
 
@@ -3435,21 +2424,14 @@ impl Default for WorkspaceBundle {
     }
 }
 
-/// The JSON Schema for saved workspace files, derived from the bundle types
-/// so it can't drift from them (ADR 22). It describes the current write
-/// shape only: the read side's legacy folding accepts older shapes the
-/// writer no longer produces, and the schema owes them nothing. The copy
-/// committed at `assets/workspace.schema.json` is held to this output by a
-/// test, and the app writes the same bytes beside the workspaces folder for
-/// the files' `$schema` to resolve to.
+/// The JSON Schema for saved workspace files (ADR 22), current write shape
+/// only. A test holds `assets/workspace.schema.json` to this output.
 pub fn workspace_schema() -> serde_json::Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(WorkspaceBundle))
         .expect("schema serializes: it is built from plain maps");
     if let Some(root) = schema.as_object_mut() {
-        // The write shape's spine. The derive marks nothing required
-        // because every field folds in on read, but the writer always
-        // produces these three, so their absence is a hand-edit worth an
-        // editor's flag.
+        // The derive marks nothing required since every field defaults on
+        // read, but the writer always produces these three.
         root.insert(
             "required".into(),
             serde_json::json!(["version", "name", "appearance"]),
@@ -3458,27 +2440,23 @@ pub fn workspace_schema() -> serde_json::Value {
     schema
 }
 
-/// The card on a workspace: who made it, what it is, and where it came from.
-/// Every field is free text and empty means unset, because this is the half
-/// of a bundle nothing reads but a person. It exists so a shared workspace
-/// arrives with an author's name on it instead of a filename.
+/// The card on a workspace. Free text throughout; empty means unset.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct WorkspaceMeta {
     /// Who made it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub author: String,
-    /// A line or two on what the look is going for.
+    /// What the look is going for.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub description: String,
-    /// Where to find it: the author's page, a repo, a forum thread.
+    /// Where to find it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub website: String,
-    /// The author's own version string, whatever they count in. Nothing to
-    /// do with [`WORKSPACE_VERSION`], which is the file format's.
+    /// The author's own version string, unrelated to the file format's.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub version: String,
-    /// The terms it's shared under, if the author says.
+    /// The terms it's shared under.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub license: String,
     /// When it was first exported, ISO `YYYY-MM-DD`.
@@ -3490,8 +2468,6 @@ pub struct WorkspaceMeta {
 }
 
 impl WorkspaceMeta {
-    /// Whether anybody has filled in anything at all, which keeps an empty
-    /// card out of the file.
     pub fn is_empty(&self) -> bool {
         self.author.is_empty()
             && self.description.is_empty()
@@ -3502,10 +2478,7 @@ impl WorkspaceMeta {
             && self.updated.is_empty()
     }
 
-    /// Date the card for an export. `updated` always moves; `created` is
-    /// written once and then left alone, since it's the day the workspace
-    /// first existed and every export after that would only overwrite it
-    /// with today.
+    /// `updated` always moves; `created` is written once.
     pub fn stamp(&mut self, today: &str) {
         if self.created.is_empty() {
             self.created = today.to_string();
@@ -3513,17 +2486,9 @@ impl WorkspaceMeta {
         self.updated = today.to_string();
     }
 
-    /// Take what the card being replaced said wherever this one says
-    /// nothing. Saving over a workspace is a fresh snapshot of the same
-    /// look, so the card somebody filled in belongs to it just as much as
-    /// the layouts do; wiping it because the live look never had one
-    /// would throw away work nobody asked to lose.
-    ///
-    /// `created` always comes back, since it's the day the workspace first
-    /// existed and the replacement has no way to know it. `updated` is left
-    /// alone, so whatever stamped this card keeps today's date. Everything
-    /// else only fills a gap, which lets a live look with its own author
-    /// keep it.
+    /// Fill this card's gaps from the one being saved over, so an overwrite
+    /// never wipes a filled-in card. `created` always comes back; `updated`
+    /// is left alone.
     pub fn carry_forward(&mut self, prior: &WorkspaceMeta) {
         for (mine, theirs) in [
             (&mut self.author, &prior.author),
@@ -3542,99 +2507,59 @@ impl WorkspaceMeta {
     }
 }
 
-/// Today's date in UTC as `YYYY-MM-DD`, the stamp on an exported bundle.
-/// UTC rather than local because the date on a shared file shouldn't depend
-/// on which side of midnight the exporter's timezone happens to be.
 fn utc_today() -> String {
     chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
-/// The appearance a workspace holds: the visual knobs it dresses the app
-/// with, pulled from and pushed back to [`Settings`]. The subset that reads
-/// as pure look, so a bundle recolors and rearranges without dragging along
-/// another machine's folders or account. The theme pick stays out: a
-/// workspace brings both palettes and the user's dark/light/System choice
-/// decides which one shows. The app font size stays out for the same reason:
-/// it's a per-user readability choice, not a look to hand around, so applying
-/// a workspace never resizes the text out from under someone.
+/// The appearance knobs a workspace carries. The theme pick and font size
+/// stay out: they're the user's own choices.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct AppearanceBundle {
-    /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
-    /// surfaces read, 1 fully opaque...
+    /// How opaque the app's surfaces read, 0 to 1 (ADR 10).
     pub surface_opacity: f32,
-    /// ...and how strongly the backdrop shows behind them, 1 the bare
-    /// bake, 0 sunk into the floor.
+    /// How strongly the backdrop shows behind the surfaces, 0 to 1.
     pub backdrop_strength: f32,
-    /// Whether the child windows (settings, editors, dialogs, popped-out
-    /// panels) paint the cover backdrop too, with the transparency applied
-    /// the same way the workspaces do. On by default; off keeps the treatment
-    /// to the workspace windows and the children on their plain surfaces.
+    /// Whether child windows paint the cover backdrop too.
     pub backdrop_all_windows: bool,
-    /// The app-wide frame defaults every panel inherits: margin, padding,
-    /// rounding, and border, all in px. A panel's own theme overrides any
-    /// of them; unset there, the panel takes these.
+    /// The frame defaults every panel inherits, in px.
     pub frame: Frame,
-    /// Whether the 1px seams between panel tiles paint. Off leaves the
-    /// resize grips invisible but still draggable, so panels sit flush.
+    /// Whether the 1px seams between panels paint. Off still resizes.
     pub seams: bool,
-    /// Whether the playing track's art re-tints the palette and backs
-    /// the windows (ADR 10's derived mode). Off by default: the look
-    /// only follows the music when asked to.
+    /// Whether the playing track's art re-tints the palette (ADR 10).
     pub art_theming: bool,
-    /// Whether song theming is held to the active theme. Song theming
-    /// still tints hue and chroma, but a cover's brightness never swaps
-    /// the light and dark palettes. Off by default: the app follows a
-    /// bright album all the way.
+    /// Keep song theming from swapping between light and dark.
     pub keep_theme: bool,
-    /// The app-wide font family, the base every window and panel inherits.
-    /// None follows the platform default. A panel's own font override layers
-    /// over this; a name that isn't installed falls back at render, so the
-    /// file still works when it moves between machines.
+    /// The app-wide font family. None follows the platform default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
-    /// How ratings read and click everywhere they show.
+    /// How ratings read and click.
     #[serde(deserialize_with = "lenient::or_default")]
     pub rating_style: RatingStyle,
-    /// Whether unfilled star slots draw a faint dot, so an unrated row
-    /// reads as a quiet row of dots instead of empty space.
+    /// Whether unfilled star slots draw a faint dot.
     pub rating_dots: bool,
-    /// The quick-play modal's appearance knobs, edited from its own config
-    /// panel.
+    /// The quick-play modal's appearance.
     pub quick_play: QuickPlayConfig,
-    /// The Milkdrop backdrop as a look: whether it's on, how far it carries
-    /// over the cover wash, and how it's coloured. Here rather than with
-    /// the machine's own Milkdrop state because a workspace can be built
-    /// around it, the way Metro is built around song theming; what stays
-    /// per machine (the preset, the lock, the render scale) is in
+    /// The Milkdrop backdrop's look. Per-machine state lives in
     /// [`BackdropVisualConfig`].
     pub milkdrop: MilkdropLook,
-    /// Whether the in-window menubar stays hidden, showing only while alt
-    /// is held or a menu is open. Off by default: the bar is the way into
-    /// everything.
+    /// Hide the menubar except while alt is held or a menu is open.
     pub hide_menubar: bool,
-    /// Which of the bar's status-side buttons show. All on by default.
+    /// Which of the bar's status-side buttons show.
     pub menubar_buttons: MenubarButtons,
-    /// Whether the main workspace windows get the OS's own decorations
-    /// (titlebar, borders). Off asks the compositor for a bare
-    /// client-drawn window; the window controls panel stands in for the
-    /// missing buttons. Child windows (settings, popouts, editors) always
-    /// ask for the OS chrome, and draw the fallback titlebar below when
-    /// the compositor can't give it.
+    /// Whether the main windows get the OS's own titlebar and borders.
     pub os_decorations: bool,
-    /// How the fallback titlebar's buttons draw: flat icons, or the macOS
-    /// traffic lights. Only ever seen on a Wayland compositor with no
-    /// xdg-decoration support, where nothing else supplies a close button.
+    /// Whether child windows go bare too while `os_decorations` is off.
+    pub bare_child_windows: bool,
+    /// Whether those bare child windows draw the fallback titlebar.
+    pub child_titlebar: bool,
+    /// How the fallback titlebar's buttons draw.
     #[serde(deserialize_with = "lenient::or_default")]
     pub chrome_style: ChromeStyle,
-    /// Which end of the fallback titlebar those buttons sit at.
+    /// Which end of the fallback titlebar the buttons sit at.
     #[serde(deserialize_with = "lenient::or_default")]
     pub chrome_side: ChromeSide,
-    /// Whether the main windows resize by dragging their edges. Windows
-    /// only, and only once the OS decorations are off: with them on the OS
-    /// owns the frame and its border. Off keeps the frame itself, so the
-    /// shadow, snap layouts and Win+arrow still work, and only the resize
-    /// cursor at the edges goes away.
+    /// Whether bare windows resize from their edges. Windows only.
     pub resize_border: bool,
 }
 
@@ -3656,6 +2581,8 @@ impl Default for AppearanceBundle {
             hide_menubar: false,
             menubar_buttons: MenubarButtons::default(),
             os_decorations: true,
+            bare_child_windows: false,
+            child_titlebar: true,
             chrome_style: ChromeStyle::default(),
             chrome_side: ChromeSide::default(),
             resize_border: true,
@@ -3663,15 +2590,13 @@ impl Default for AppearanceBundle {
     }
 }
 
-/// The Milkdrop backdrop's share of a look. See
-/// [`AppearanceBundle::milkdrop`].
+/// The Milkdrop backdrop's share of a look.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct MilkdropLook {
-    /// Whether the visual runs at all. Off is exactly the cover backdrop.
+    /// Whether the visual runs at all.
     pub enabled: bool,
-    /// How far the frame carries over the blurred cover, 0 to 1. It goes
-    /// out as the pass's alpha, so 0 is the art alone and 1 replaces it.
+    /// The pass's alpha over the blurred cover, 0 to 1.
     pub strength: f32,
     /// How the frame's colours meet the theme.
     pub color: MilkdropColor,
@@ -3693,35 +2618,19 @@ impl Default for MilkdropLook {
     }
 }
 
-/// The look the app is using: `workspace.json`'s whole contents. The bundle
-/// half is the shareable look, the same shape a saved workspace file holds, so
-/// saving one out is a copy rather than a field-by-field transcription. The
-/// working state under it never travels: it's about this dock on this machine,
-/// not about how the app looks.
+/// `workspace.json`: the live bundle plus working state that never travels.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LookState {
-    /// The live look. Its `name` records the workspace it was applied from,
-    /// so the UI can say which one you're on; empty for a look that was never
-    /// applied from a saved workspace.
+    /// Its `name` is the workspace it was applied from, if any.
     pub bundle: WorkspaceBundle,
-    /// The dock layout as the dock crate's own serialized state, kept as raw
-    /// JSON so the file stays readable even when the layout schema moves; the
-    /// workspace validates and versions it on restore. None until a layout
-    /// has been saved.
+    /// Raw dock JSON, so the file stays readable when the layout schema
+    /// moves.
     pub layout: Option<serde_json::Value>,
-    /// The named preset the window is currently on, by name, so a workspace
-    /// save captures the layout in front of you and the mini button knows
-    /// which side it's on. None means an unnamed arrangement (the default
-    /// build, an empty window, or a one-off import).
+    /// The named preset in front of you. None for an unnamed arrangement.
     pub active_layout: Option<String>,
-    /// Per-layout working copies: the unsaved dock tweaks for each named
-    /// layout that isn't the one in front of you, keyed by layout name.
-    /// Switching layouts stashes the outgoing one here and restores the
-    /// incoming one's copy, so edits persist across a switch and a relaunch
-    /// without touching the saved preset. The layout in front of you keeps
-    /// its live dock in `layout` instead; an explicit save folds a copy into
-    /// its preset and clears it here.
+    /// Unsaved tweaks for the layouts not in front of you, by name. The
+    /// active one lives in `layout`; a save folds its copy in and clears it.
     #[serde(
         skip_serializing_if = "BTreeMap::is_empty",
         deserialize_with = "lenient::map"
@@ -3730,19 +2639,12 @@ pub struct LookState {
 }
 
 impl LookState {
-    /// Rebuild the look from a pre-split `settings.json`, where every look
-    /// field was flat beside the machine state. The bundle's own fields kept
-    /// their names through the move, and so did the appearance knobs, so both
-    /// halves deserialize straight out of the old flat map without a field
-    /// list to keep in sync. Runs while `workspace.json` is missing; the next
-    /// save writes the split files and the stale keys drop as unknown fields.
+    /// Rebuild the look from a pre-split `settings.json`. Field names never
+    /// changed, so both halves deserialize straight out of the flat map.
     fn from_legacy(value: &serde_json::Value) -> LookState {
         let mut bundle: WorkspaceBundle = serde_json::from_value(value.clone()).unwrap_or_default();
-        // The appearance knobs were top-level siblings before the split, not
-        // a nested object, so they need their own pass over the same map.
+        // The appearance knobs were flat siblings, so they take their own pass.
         bundle.appearance = serde_json::from_value(value.clone()).unwrap_or_default();
-        // A pre-split file records no workspace name: the look is whatever it
-        // has been edited into, not a named one.
         bundle.name = String::new();
         bundle.version = WORKSPACE_VERSION;
         LookState {
@@ -3761,14 +2663,11 @@ impl LookState {
     }
 }
 
-/// The Shader panel's dock name, the one panel whose own config holds a
-/// source and a file bookmark instead of having one applied as chrome.
-/// Spelled here because the scrub walks dumps as raw JSON, well below the
-/// crate that defines the panel.
+/// The Shader panel's dock name, spelled here because the dump walks work on
+/// raw JSON below the crate that defines it.
 const SHADER_PANEL: &str = "shader";
 
-/// Walk a dock dump and take the shader file bookmarks out of it. Recursive
-/// because a dump is a tree of dock nodes and a panel can be at any depth.
+/// Take the shader file bookmarks out of a dock dump.
 fn scrub_dump_paths(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -3792,29 +2691,19 @@ fn scrub_dump_paths(value: &mut serde_json::Value) {
     }
 }
 
-/// Every shader source a dock dump holds, in whatever order the walk finds
-/// them. One of a family of walks over the same two shapes ([`scrub_dump_paths`],
-/// [`dump_wears_shader`], [`strip_dump_shaders`]), kept apart because some take
-/// the tree by `&mut` and some can't, and Rust has no way to write one walk over
-/// both. Whatever gets added to one belongs in all of them.
+/// Every shader source a dock dump holds.
 ///
-/// The startup trust pass hands this to [`trust_shipped`], so a shipped
-/// look's panels paint without asking anyone to agree to code that came with
-/// the binary.
+/// One of four walks over the same two shapes ([`scrub_dump_paths`],
+/// [`dump_wears_shader`], [`strip_dump_shaders`]), split by `&mut`. Whatever
+/// gets added to one belongs in all of them.
 pub fn dump_shader_sources(value: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     collect_dump_shader_sources(value, &mut out);
     out
 }
 
-/// Whether anything in a dock dump would actually paint a shader: a panel
-/// with one applied as chrome, or the Shader panel itself. The question the
-/// apply confirm asks to decide whether the look gets the with-shaders choice
-/// at all, which is about what runs rather than about what the machine trusts.
-///
-/// A pool name counts the same as inline text. A name that resolves to
-/// nothing paints nothing, but that's a question for the pool the apply is
-/// about to install, not for a config that has already named one.
+/// Whether anything in a dock dump would paint a shader, trusted or not. A
+/// pool name counts the same as inline text.
 pub fn dump_wears_shader(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(map) => {
@@ -3828,16 +2717,14 @@ pub fn dump_wears_shader(value: &serde_json::Value) -> bool {
                     return true;
                 }
             }
-            // The Shader panel, which is a shader by definition: it counts
-            // unless its config has been emptied out or switched off. A
-            // config saying nothing at all runs the shipped example.
+            // The Shader panel counts unless emptied or switched off. A
+            // config saying nothing runs the shipped example.
             if map.get("panel_name").and_then(|name| name.as_str()) == Some(SHADER_PANEL) {
                 let config = map.get("info").and_then(|info| info.get("panel"));
                 let quiet = match config {
                     Some(serde_json::Value::Object(config)) => {
-                        // Source text that's there and blank is a panel
-                        // somebody emptied; a config with no source line at
-                        // all is one that never said, and runs the default.
+                        // Blank source is emptied; a missing one runs the
+                        // default.
                         let emptied = !has_text(config, "name")
                             && config.contains_key("source")
                             && !has_text(config, "source");
@@ -3857,27 +2744,15 @@ pub fn dump_wears_shader(value: &serde_json::Value) -> bool {
     }
 }
 
-/// Whether a shader config's field holds a string with something in it.
 fn has_text(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
     map.get(key)
         .and_then(|v| v.as_str())
         .is_some_and(|text| !text.trim().is_empty())
 }
 
-/// Walk a dock dump and switch every shader in it off: the surface one
-/// panels use as chrome, and the Shader panel's own. The write twin of
-/// [`dump_wears_shader`], for a workspace applied without the shaders it
-/// brought.
-///
-/// Off, not gone. The source, the pool name and the routes all stay on the
-/// config, so a look arrives quiet and every shader it brought is one toggle
-/// away on the panel that uses it. Nothing runs on the way in: an unread
-/// source still has to get past the approval block, and a switch that's down
-/// paints nothing whatever the trust says.
-///
-/// Deleting them was the old reading of the button, and it left the Shader
-/// panel with an empty config and no way back to the shader the look came
-/// with.
+/// Switch every shader in a dock dump off, for an apply without shaders.
+/// Never delete them instead: the Shader panel would lose its way back to
+/// the shader the look came with.
 pub fn strip_dump_shaders(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -3885,9 +2760,8 @@ pub fn strip_dump_shaders(value: &mut serde_json::Value) {
                 shader.insert("enabled".into(), serde_json::Value::Bool(false));
             }
             if map.get("panel_name").and_then(|name| name.as_str()) == Some(SHADER_PANEL) {
-                // A panel that saved no config of its own still runs the
-                // shipped example, so the switch has to be written even
-                // where there's nothing else to write it beside.
+                // With no config it still runs the shipped example, so the
+                // switch is written regardless.
                 let info = map
                     .entry("info")
                     .or_insert_with(|| serde_json::json!({}))
@@ -3940,17 +2814,9 @@ fn collect_dump_shader_sources(value: &serde_json::Value, out: &mut Vec<String>)
 }
 
 impl WorkspaceBundle {
-    /// Snapshot the current shareable state into a named bundle: the layouts
-    /// and their roles, the palette, and the appearance. Reads the persisted
-    /// settings, which every live edit already writes through.
-    ///
-    /// Folds the live dock into the layout the window is on, but only inside
-    /// this bundle's own copy of the layouts: a save captures what's in front
-    /// of you without editing the global preset pool other workspaces share,
-    /// since layouts belong to the workspace they were saved in, not to a
-    /// shared pool. An unnamed arrangement is saved as "Untitled", and when the
-    /// bundle has no primary the captured layout becomes it, so it fills the
-    /// window on apply. No live dock yet leaves the layouts as they are.
+    /// Snapshot the shareable state into a named bundle. The live dock folds
+    /// into this bundle's copy of the active layout ("Untitled" if unnamed),
+    /// never into the live look's saved presets.
     pub fn from_settings(name: String, s: &Settings) -> WorkspaceBundle {
         let mut bundle = s.look.bundle.clone();
         bundle.version = WORKSPACE_VERSION;
@@ -3979,10 +2845,8 @@ impl WorkspaceBundle {
                 bundle.primary_layout = Some(active);
             }
         }
-        // The screen shader is in the machine settings rather than in the
-        // look, since what it reads is a local path, so it gets copied in by
-        // hand here, before the two passes below that turn that local path
-        // into something that travels.
+        // The screen shader lives in machine settings, so copy it in before
+        // the passes that make it travel.
         if s.post_shader.configured() {
             bundle.post_shader = Some(s.post_shader.clone());
         }
@@ -3992,12 +2856,8 @@ impl WorkspaceBundle {
         bundle
     }
 
-    /// Pull the screen shader's file into the bundle, so it travels. A
-    /// pass configured the old way points at a path and nothing else, and a
-    /// path is the one thing that means nothing on the machine this arrives
-    /// on. Best effort: a file that's gone or unreadable leaves the source
-    /// empty, which is the same dead pass the bundle would have held
-    /// anyway, and there's nobody to tell at export time.
+    /// Pull path-only shaders' files inline so they travel. Best effort: an
+    /// unreadable file leaves the source empty.
     pub fn inline_post_shader(&mut self) {
         for shader in [self.post_shader.as_mut(), self.backdrop_shader.as_mut()]
             .into_iter()
@@ -4014,19 +2874,10 @@ impl WorkspaceBundle {
         }
     }
 
-    /// Drop every local file bookmark on the way out. Paths are the one part
-    /// of a shader that can't travel: at best they point at nothing on the
-    /// machine that imports the bundle, and at worst they aim a hot reload
-    /// at a file that happens to exist there and belongs to somebody else.
-    /// The sources came along inline, so nothing is lost.
-    ///
-    /// The dumps get walked rather than reserialized, since this layer has
-    /// no idea what a panel config looks like. Two shapes hold a bookmark:
-    /// any panel's surface shader, which is stored on its config flattened
-    /// under `shader`, and the Shader panel's own config, which keeps its
-    /// source and path at the top level of the dock node's panel info. Both are
-    /// targeted by name rather than by stripping every `path` key in sight,
-    /// which would take a folder panel's root with it.
+    /// Drop every shader file bookmark on the way out, so an import never
+    /// aims a hot reload at someone else's file. Targets the two shader
+    /// shapes by name: stripping every `path` key would take a folder
+    /// panel's root with it.
     pub fn scrub_paths(&mut self) {
         for shader in &mut self.shaders {
             shader.path = None;
@@ -4042,98 +2893,54 @@ impl WorkspaceBundle {
         }
     }
 
-    /// Replace the settings' shareable state with this bundle's, the apply's
-    /// persistence half. The live dock and the preset it belongs to stay put:
-    /// the layout swap belongs to the caller, which has the workspace whose
-    /// dock it changes. The live statics stay the caller's too, since they
-    /// need an `App` this layer doesn't have.
+    /// The apply's persistence half. The layout swap and the live statics
+    /// are the caller's, since they need the workspace and an `App`.
     pub fn apply_to(self, s: &mut Settings) {
-        // A workspace brings its own presets; drop any working copies keyed to
-        // the old look so they can't shadow the incoming layouts.
+        // Old working copies would shadow the incoming layouts.
         s.look.layout_edits.clear();
         s.look.bundle = self;
     }
 }
 
-/// The closing snapshot of the playing track: its library id and the
-/// position clock in seconds. Superseded by [`QueueState`] for files written
-/// since; kept as the single-track fallback so an older settings file still
-/// restores something.
+/// The single-track fallback for files that predate [`QueueState`].
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LastTrack {
     pub id: i64,
-    /// Which subsong of its file the track was: 0 for a plain file, the cue
-    /// sheet's track number for a span of an image. Defaulted, so a file
-    /// written before cue support reads as a plain file, which is what every
-    /// track in it was.
+    /// The cue track number, 0 for a plain file.
     pub sub: u16,
     pub position_secs: f64,
 }
 
-/// The closing snapshot of the whole play queue, restored as a full session
-/// on the next launch so Prev and Next step through the same order and the
-/// up-next queue panel comes back. Entries are library ids so a moved file
-/// still resolves; one whose file has left the library drops out on restore,
-/// the cursor shifting to stay on the track that was playing.
+/// The play queue at close. An entry whose file has left the library drops
+/// out on restore, and the cursor shifts to stay on the playing track.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QueueState {
-    /// The play order, history and upcoming both, in the order the engine
-    /// held them.
+    /// History and upcoming both, in engine order.
     pub entries: Vec<QueuedTrack>,
-    /// Index into `entries` of the track that was playing.
     pub cursor: usize,
-    /// Where that track's clock was, in seconds.
     pub position_secs: f64,
 }
 
-/// One entry in a persisted [`QueueState`]: the track's library id and
-/// whether it was hand-queued (Play Next, Add to Queue) rather than part of
-/// the playing context. The queue panel lists only the explicit ones.
+/// `explicit` marks a hand-queued entry, the only kind the queue panel lists.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct QueuedTrack {
     pub id: i64,
-    /// Which subsong of its file the entry is, 0 for a plain file. Stored
-    /// beside the id rather than left to be re-derived: the restore resolves
-    /// the id to a path before the projection is necessarily up, and without
-    /// this a whole-disc rip would come back as twelve copies of the image.
-    /// Defaulted per field, since the struct itself isn't, so a session file
-    /// written before cue support still reads instead of costing the queue.
+    /// The cue track number, stored because the restore can run before the
+    /// projection is up. Defaulted per field, since the struct isn't.
     #[serde(default)]
     pub sub: u16,
     pub explicit: bool,
 }
 
-/// The tag editor's remembered shape: window size in logical pixels,
-/// the table's column widths (one slot per column in field order, shown
-/// or not), which columns the table shows, and the last guess pattern.
-/// Every editor window writes it on close, the last writer wins.
+/// The tag editor's remembered shape; the last window to close wins.
 ///
-/// Two sets say what shows, because the columns come in two kinds. A
-/// field shows unless it's in `hidden`, so a build that adds a field
-/// shows it without anyone asking. A column that has to be asked for -
-/// an additional tag, or one of the four sort names - shows only when
-/// it's in `shown`, so a selection carrying fifteen stray tags doesn't
-/// open with fifteen surprise columns.
-///
-/// `columns` is positional over the fixed order and `tag_columns` is
-/// keyed, for the same reason: a tag's place in the order changes with
-/// the selection, so a slot would land its width on the wrong tag. The
-/// map keeps a width for every tag ever sized, including tags no
-/// current selection carries; that's a handful of bytes each and it's
-/// what makes a width survive editing a different album in between.
-///
-/// `sort_fields` is the shared form's version of that same ask. The
-/// sheet folds the four sort rows away until it's on, so a library
-/// that carries no romanizations doesn't read four empty rows on every
-/// open. Off by default, and the table keeps its own answer in `shown`.
-///
-/// The replace panel's two switches ride along, its boxes don't:
-/// whether a library's rules are regexes is a habit, what they say is
-/// not. The case switch is stored as ignore rather than match, so a
-/// file written before it existed reads as the exact match a fresh
-/// panel starts with.
+/// A field column shows unless it's in `hidden`, so new fields appear on
+/// their own. An opt-in column (extra tags, sort names) shows only when it's
+/// in `shown`. `tag_columns` is keyed rather than positional because a tag's
+/// place changes with the selection. `replace_ignore_case` is stored
+/// inverted so older files read as exact match.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TagEditorState {
@@ -4149,10 +2956,7 @@ pub struct TagEditorState {
     pub replace_ignore_case: bool,
 }
 
-/// The rename dialog's remembered shape: window size in logical pixels
-/// and the patterns that were last applied, newest first. The list is
-/// the point of remembering: one library tends to a couple of naming
-/// schemes, and retyping the good one every time is the whole friction.
+/// `patterns` holds the last applied patterns, newest first.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RenameDialogState {
@@ -4161,39 +2965,24 @@ pub struct RenameDialogState {
     pub patterns: Vec<String>,
 }
 
-/// What the convert dialog opens on, kept between runs so converting a
-/// second album is a click rather than the same four answers again. The
-/// preset is stored as its key (rox's `convert::Preset`), so an unknown one
-/// from a newer build falls back to the default rather than failing the read.
-/// The one key that isn't a preset is "custom", which sends the reader to the
-/// two custom fields below it.
-///
-/// `ffmpeg` is the binary the conversion spawns. Empty means the one on
-/// PATH, which is what almost every machine wants; a path here is for an
-/// ffmpeg that isn't on it, and it's also the only thing in this struct
-/// nothing in the app writes on its own.
+/// What the convert dialog opens on. `preset` is a `convert::Preset` key or
+/// "custom"; an unknown key falls back to the default. Empty `ffmpeg` means
+/// the one on PATH.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ConvertSettings {
     pub preset: String,
     pub destination: Option<PathBuf>,
     pub pattern: String,
-    /// The container a custom format writes, as a bare extension ("ogg").
-    /// Only read when `preset` is the custom key.
+    /// A bare extension ("ogg"), read only for the custom preset.
     pub custom_ext: String,
-    /// The ffmpeg output arguments a custom format runs, as typed. Split on
-    /// whitespace where it's read, so there's no quoting in here.
+    /// Split on whitespace, so there's no quoting.
     pub custom_args: String,
-    /// Whether outputs reproduce the library's folder shape rather than
-    /// being written flat into the destination.
     pub mirror: bool,
     pub ffmpeg: String,
 }
 
-/// The stats window's remembered shape: size in logical pixels and the
-/// range pick, written on close and when the range changes. The range is
-/// stored as the pick's key ("all", "year", "month"), decoded back in
-/// rox's stats window; an unknown key falls back to all time.
+/// `range` is "all", "year", or "month"; an unknown key reads as all time.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct StatsWindowState {
@@ -4202,10 +2991,6 @@ pub struct StatsWindowState {
     pub range: String,
 }
 
-/// The library health window's remembered shape: size in logical pixels,
-/// written on close. Nothing else is worth keeping: what the page shows is
-/// whatever the library measures at the time, so there's no pick to restore
-/// the way the stats window restores its range.
 #[derive(Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct HealthWindowState {
@@ -4213,9 +2998,6 @@ pub struct HealthWindowState {
     pub height: f32,
 }
 
-/// The power search window's remembered shape: size in logical pixels,
-/// written on close. The seed it opened with isn't kept: it belongs to the
-/// click that opened the window, not to the window.
 #[derive(Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SearchWindowState {
@@ -4223,10 +3005,7 @@ pub struct SearchWindowState {
     pub height: f32,
 }
 
-/// The signals window's remembered shape: size in logical pixels, written
-/// on close, and whether the page's explainer is unfolded, written when it
-/// folds. An older file with only the size reads back with the
-/// explainer open, which is where a first run starts anyway.
+/// `about` is whether the explainer is unfolded.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SignalsWindowState {
@@ -4245,10 +3024,6 @@ impl Default for SignalsWindowState {
     }
 }
 
-/// The Milkdrop preset picker's remembered shape: size in logical pixels,
-/// written on close, and the browser's two switches, written when they
-/// flip. An older file with only the size reads back with the switches
-/// where a first run starts them: every preset, folders showing.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MilkdropPickerWindowState {
@@ -4269,8 +3044,7 @@ impl Default for MilkdropPickerWindowState {
     }
 }
 
-/// A window frame in logical pixels, plus whether the window was maximized
-/// (the frame is then the restore size).
+/// When maximized, the frame is the restore size.
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowState {
@@ -4281,12 +3055,9 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
-/// Carry the threshold over from where it lived before every scrobble
-/// destination shared it: the Last.fm account. A settings file that has
-/// never written the shared knob takes the account's value; once it has,
-/// the account's copy is stale and stays ignored until a save drops it.
-/// `core` is the settings file as parsed, the only place that says
-/// whether the knob was written or defaulted.
+/// Seed the shared threshold from the Last.fm account's legacy copy, only
+/// while the settings file has never written it. `core` is the parsed file,
+/// the only place that says whether the knob was written or defaulted.
 fn seed_threshold(settings: &mut Settings, core: &serde_json::Value) {
     let legacy = settings.accounts.lastfm.threshold.take();
     if core.get("scrobble_threshold").is_some() {
@@ -4297,9 +3068,7 @@ fn seed_threshold(settings: &mut Settings, core: &serde_json::Value) {
     }
 }
 
-/// The switch moved the same way, and seeds the same way: an account
-/// file that turned Last.fm's scrobbling off keeps scrobbling off until
-/// the shared switch has been written once.
+/// The scrobbling switch, seeded the same way.
 fn seed_scrobbling(settings: &mut Settings, core: &serde_json::Value) {
     let legacy = settings.accounts.lastfm.scrobbling.take();
     if core.get("scrobbling").is_some() {
@@ -4320,6 +3089,7 @@ impl Default for Settings {
             accounts: AccountsState::default(),
             library_roots: Vec::new(),
             library_root: None,
+            library_exclude: Vec::new(),
             watch_library: true,
             fold_case: false,
             split_genre_compounds: true,
@@ -4371,13 +3141,11 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Read the settings file, falling back to defaults if it's missing or
-    /// unreadable. A corrupt file logs and resets rather than blocking start.
+    /// A missing or corrupt file resets to defaults rather than blocking start.
     pub fn load() -> Settings {
         let path = settings_path();
-        // Parsed to a Value first, not straight to Settings: a pre-split file
-        // holds the look flat beside the machine state, and the migration
-        // below reads it back out of this same map.
+        // Parsed to a Value first, since the pre-split migration reads the
+        // shards back out of this same map.
         let raw = std::fs::read_to_string(&path).ok();
         let value: serde_json::Value = match raw.as_deref() {
             Some(text) => serde_json::from_str(text).unwrap_or_else(|e| {
@@ -4394,8 +3162,7 @@ impl Settings {
                 Settings::default()
             })
         };
-        // A pre-split file holds all four shards flat beside the
-        // preferences; back it up and drain its workspaces before any of them
+        // Back up a pre-split file and drain its workspaces before the shards
         // read out of it.
         settings.migrated = raw.is_some() && Self::shard_missing();
         if let Some(text) = raw.as_deref()
@@ -4407,16 +3174,14 @@ impl Settings {
         settings.windows = load_shard(&windows_path(), "windows", &value, from_legacy);
         settings.session = load_shard(&session_path(), "session", &value, from_legacy);
         settings.accounts = load_shard(&accounts_path(), "accounts", &value, from_legacy);
-        // A hand-edited volume seeds the engine's atomics directly, so the
-        // engine's clamp range applies here too.
+        // Hand-edited values feed the engine, render math, and window bounds
+        // directly, so everything below gets clamped.
         settings.session.volume = if settings.session.volume.is_finite() {
             settings.session.volume.clamp(0.0, 2.0)
         } else {
             1.0
         };
         let appearance = &mut settings.look.bundle.appearance;
-        // The transparency pair reads straight into color math, so
-        // hand-edited values clamp to the unit range.
         for scalar in [
             &mut appearance.surface_opacity,
             &mut appearance.backdrop_strength,
@@ -4427,33 +3192,19 @@ impl Settings {
                 1.0
             };
         }
-        // The frame knobs go straight into div sizes, so a hand-edited file
-        // clamps each to its ceiling.
         appearance.frame = appearance.frame.clamped();
-        // Same deal for the backdrop visual's pair: strength is an alpha
-        // and scale sizes a framebuffer.
+        // `with_look` clamps too.
         settings.backdrop_visual = settings
             .backdrop_visual
             .clone()
             .with_look(&settings.look.bundle.appearance.milkdrop);
         seed_threshold(&mut settings, &value);
         seed_scrobbling(&mut settings, &value);
-        // The threshold reads straight into the scrobble math and the
-        // marker paint, so a hand-edited value clamps to a sane band.
         settings.scrobble_threshold = clamp_threshold(settings.scrobble_threshold);
-        // A file from before sessions were filed by api key holds one
-        // flat session; it reads in unattributed here and the next save
-        // drops the flat pair.
         settings.accounts.lastfm.fold_legacy_session();
-        // A file from before there could be several Subsonic servers holds
-        // one; it becomes the first of the list and the next save drops
-        // the old key.
         settings.accounts.fold_legacy_subsonic();
-        // The restored frame reads straight into window Bounds on open: a
-        // non-finite field drops back to the centered default, and the size
-        // floors at the window minimum so a zero or negative frame can't
-        // open an invisible window. Negative origins are real on
-        // multi-monitor setups, so finite ones stand.
+        // Negative origins are real on multi-monitor setups, so only the
+        // size gets floored.
         let bad_frame = settings
             .windows
             .main
@@ -4465,8 +3216,6 @@ impl Settings {
             w.width = w.width.max(f32::from(MIN_WINDOW_SIZE.width));
             w.height = w.height.max(f32::from(MIN_WINDOW_SIZE.height));
         }
-        // A file from before multi-folder holds one library_root; it
-        // seeds the list here and the next save drops it.
         if settings.library_roots.is_empty()
             && let Some(root) = settings.library_root.take()
         {
@@ -4475,23 +3224,20 @@ impl Settings {
         settings
     }
 
-    /// Whether any shard file has yet to be written, the signal that the
-    /// settings file still holds the pre-split shape.
+    /// A missing shard means the settings file still holds the pre-split
+    /// shape.
     fn shard_missing() -> bool {
         [look_path(), windows_path(), session_path(), accounts_path()]
             .iter()
             .any(|path| !path.exists())
     }
 
-    /// The one-shot move off the single-file format: keep a copy of the file
-    /// as it stood, then write each workspace it holds out to its own file.
-    /// The shards themselves need no move, since each reads its own fields
-    /// straight out of the old flat map. Guarded to once per process, and the
-    /// drain leaves a workspace already on disk alone, so a crash between here
-    /// and the first save can't duplicate one on the next launch.
+    /// Back up the single-file format and write out its workspaces. Once per
+    /// process, and the drain skips workspaces already on disk, so a crash
+    /// before the first save can't duplicate one.
     fn migrate_split(value: &serde_json::Value, raw: &str) {
-        // Checked before the one-shot guard: a load that beats the sink into
-        // place leaves the move for the next one rather than burning it.
+        // Checked before the one-shot guard, so a load that beats the sink
+        // into place doesn't burn the move.
         let Some(migrate) = WORKSPACE_MIGRATOR.get() else {
             return;
         };
@@ -4519,27 +3265,20 @@ impl Settings {
         }
     }
 
-    /// Change some fields and persist: reload the files, apply, write them
-    /// back. Writers hold their own in-memory copies for reads, so going
-    /// through the files here keeps one writer's save from reverting
+    /// Reload, apply, and write back, so one writer's save never reverts
     /// another's fields.
     pub fn update(f: impl FnOnce(&mut Settings)) {
-        // Serialize the load-modify-save so a background writer (the update
-        // check) and a UI-thread writer can't both read the same file, each
-        // apply their own field, and have the last save drop the other's
-        // change. The lock only spans the read-modify-write here.
+        // Serialize the read-modify-write, or a background writer and the
+        // UI thread could each drop the other's change.
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut settings = Settings::load();
-        // Most writes touch one file: a volume nudge shouldn't rewrite every
-        // dock dump, and a layout drag shouldn't rewrite the Last.fm session.
-        // Compare each across the edit and write only what moved.
+        // Write only the files the edit moved.
         let before = settings.prints();
         f(&mut settings);
         settings.save_changed(&before);
     }
 
-    /// Each file's serialized contents, the before-and-after a write compares.
     fn prints(&self) -> Shards {
         Shards {
             core: serde_json::to_string(self).ok(),
@@ -4550,12 +3289,8 @@ impl Settings {
         }
     }
 
-    /// Write every file whose contents moved since `before`, plus any that
-    /// isn't on disk yet (a fresh install, or the first save after the split).
-    ///
-    /// The writes aren't atomic across files: a crash partway leaves one of
-    /// them an edit behind the others. Each is independent enough that this
-    /// costs a repaint's worth of drift and never a corrupt file.
+    /// Not atomic across files: a crash partway leaves one an edit behind,
+    /// never corrupt.
     fn save_changed(&self, before: &Shards) {
         let after = self.prints();
         let forced = self.migrated;
@@ -4601,19 +3336,14 @@ impl Settings {
         );
     }
 
-    /// The dark theme's user palette, its map over the defaults.
     pub fn palette_dark(&self) -> Palette {
         Palette::from_map(&self.look.bundle.palette_dark)
     }
 
-    /// The light theme's user palette, its map over the designed light
-    /// ladder.
     pub fn palette_light(&self) -> Palette {
         Palette::from_map_over(Palette::light(), &self.look.bundle.palette_light)
     }
 
-    /// The stored palette map for a theme side, where the editor's edits are
-    /// written.
     pub fn palette_map_mut(&mut self, mode: palette::Mode) -> &mut BTreeMap<String, String> {
         match mode {
             palette::Mode::Dark => &mut self.look.bundle.palette_dark,
@@ -4626,8 +3356,6 @@ impl Settings {
 mod tests {
     use super::*;
 
-    /// A scratch folder for the portable tests, its own per process so two
-    /// test binaries can't collide on it.
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rox-portable-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4635,8 +3363,6 @@ mod tests {
         dir
     }
 
-    /// A portable run against a folder that takes writes lands in rox-data
-    /// beside the executable, flagged portable.
     #[test]
     fn portable_takes_a_writable_exe_folder() {
         let dir = scratch("writable");
@@ -4646,8 +3372,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Without a portable request the executable's folder is never
-    /// consulted, writable or not.
     #[test]
     fn a_stock_run_ignores_the_exe_folder() {
         let dir = scratch("stock");
@@ -4657,9 +3381,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The read-only install case (an AppImage mount, /usr/bin, Program
-    /// Files): a portable request can't be honored, so the run falls back
-    /// to the OS data dir instead of a folder every store fails to open.
     #[test]
     fn portable_falls_back_when_the_exe_folder_is_read_only() {
         let dir = scratch("readonly");
@@ -4684,16 +3405,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// No executable path at all is the same fallback.
     #[test]
     fn portable_without_an_exe_folder_falls_back() {
         let (_, portable) = choose_data_dir(true, None);
         assert!(!portable);
     }
 
-    /// A picker entry written before the switches were remembered is the
-    /// size alone. It reads back with the switches at their first-run
-    /// positions rather than failing the whole windows file.
     #[test]
     fn milkdrop_picker_state_reads_size_only_entry() {
         let state: MilkdropPickerWindowState =
@@ -4704,8 +3421,6 @@ mod tests {
         assert!(state.nested);
     }
 
-    /// A settings object with a look worth capturing, the source every
-    /// bundle test snapshots from.
     fn dressed() -> Settings {
         let mut src = Settings {
             theme: Theme::Light,
@@ -4736,8 +3451,6 @@ mod tests {
         src
     }
 
-    /// A bundle must come back out of the file intact and apply to a fresh
-    /// settings object, or a shared workspace drifts on every hop.
     #[test]
     fn workspace_bundle_roundtrips() {
         let src = dressed();
@@ -4752,9 +3465,7 @@ mod tests {
         assert_eq!(look.appearance.surface_opacity, 0.5);
         assert_eq!(look.appearance.frame.rounding, 12.0);
         assert_eq!(look.appearance.frame.padding, Sides::all(8.0));
-        // The theme pick is the user's alone; a bundle never moves it.
         assert!(dst.theme == Theme::default());
-        // Nor the font size: a readability choice, not a look to hand around.
         assert_eq!(dst.app_font_size, Settings::default().app_font_size);
         assert!(look.appearance.art_theming);
         assert!(look.appearance.keep_theme);
@@ -4773,9 +3484,6 @@ mod tests {
         assert_eq!(look.primary_layout.as_deref(), Some("one"));
     }
 
-    /// The bundle holds only the look, never machine- or account-bound
-    /// state, so a shared file can't drag another install's folders or
-    /// Last.fm session along.
     #[test]
     fn workspace_bundle_omits_machine_state() {
         let bundle = WorkspaceBundle::from_settings("mine".into(), &Settings::default());
@@ -4786,10 +3494,8 @@ mod tests {
         assert!(!json.contains("last_track"));
     }
 
-    /// The point of filing sessions by api key: two installs signing with
-    /// their own identities read the same file and each find their own.
-    /// Last.fm binds a session to the key that authorized it, so a build
-    /// picking up another's would be handed a refusal on every call.
+    /// Last.fm binds a session to the key that minted it, so each install
+    /// has to find its own.
     #[test]
     fn a_session_belongs_to_the_key_that_minted_it() {
         let mut lastfm = Lastfm::default();
@@ -4801,8 +3507,6 @@ mod tests {
         assert!(lastfm.session("release-key").is_none());
         assert!(lastfm.connected_elsewhere("release-key"));
 
-        // Connecting the second install leaves the first alone, which is
-        // what makes moving between them a one-time cost each.
         lastfm.connect("release-key", "sk-release".into(), "zealsprince".into());
         assert_eq!(
             lastfm.session("nix-key").map(|s| s.key.as_str()),
@@ -4814,11 +3518,8 @@ mod tests {
         );
     }
 
-    /// The import bound belongs to the account, not to the library. One
-    /// bound for all of them is what made connecting a second account and
-    /// importing it ask Last.fm for "anything since the first account's
-    /// newest scrobble", come back with nothing, and file the whole
-    /// history as dateless estimates instead.
+    /// One global bound would make a second account's import fetch nothing
+    /// and file its history as dateless estimates.
     #[test]
     fn each_account_carries_its_own_import_bound() {
         let mut lastfm = Lastfm::default();
@@ -4837,20 +3538,14 @@ mod tests {
             "and Last.fm's own casing of a name is the same account"
         );
 
-        // A stopped run holds the older end of what it asked for, so its
-        // newest second can't pull the bound back down over the rest.
+        // A stopped run can't pull the bound back down.
         lastfm.note_import("zealsprince", 1_600_000_000);
         assert_eq!(lastfm.imported_through("zealsprince"), Some(1_700_000_000));
 
-        // Clearing the listens out of the library leaves nothing for a
-        // bound to stand on.
         lastfm.forget_imports();
         assert_eq!(lastfm.imported_through("zealsprince"), None);
     }
 
-    /// A file from before the split holds one session with nothing
-    /// saying who minted it, so every build may try it and the one whose
-    /// call succeeds keeps it.
     #[test]
     fn the_unattributed_session_goes_to_whoever_proves_it_works() {
         let mut lastfm: Lastfm = serde_json::from_value(serde_json::json!({
@@ -4859,7 +3554,6 @@ mod tests {
         }))
         .unwrap();
         lastfm.fold_legacy_session();
-        // Unclaimed, so either build can use it.
         assert_eq!(
             lastfm.session("nix-key").map(|s| s.key.as_str()),
             Some("sk-old")
@@ -4881,9 +3575,8 @@ mod tests {
         );
     }
 
-    /// A refusal has to be recorded, not just acted on. Without the empty
-    /// entry the build would try the unattributed session again on
-    /// the next launch, and every launch after that.
+    /// Without the empty entry, every launch retries a session that isn't
+    /// this build's.
     #[test]
     fn a_refused_key_stops_reaching_for_a_session_that_isnt_its_own() {
         let mut lastfm: Lastfm = serde_json::from_value(serde_json::json!({
@@ -4894,21 +3587,15 @@ mod tests {
         lastfm.fold_legacy_session();
         lastfm.clear_session("release-key");
         assert!(lastfm.session("release-key").is_none());
-        // And the build it does belong to still has it.
         assert_eq!(
             lastfm.session("nix-key").map(|s| s.key.as_str()),
             Some("sk-old")
         );
 
-        // The record has to come back out of the file, or the next launch
-        // asks again.
         let back: Lastfm = serde_json::from_str(&serde_json::to_string(&lastfm).unwrap()).unwrap();
         assert!(back.session("release-key").is_none());
     }
 
-    /// Disconnecting has to hold even where an unattributed session is
-    /// behind this build's own: the account came off screen, and
-    /// a fallback that quietly put it back would read as connected again.
     #[test]
     fn disconnecting_doesnt_fall_back_to_someone_elses_session() {
         let mut lastfm: Lastfm = serde_json::from_value(serde_json::json!({
@@ -4922,8 +3609,6 @@ mod tests {
         assert!(lastfm.session("release-key").is_none());
     }
 
-    /// A single-server accounts file carries its server into the list,
-    /// and the old key doesn't come back out on the next write.
     #[test]
     fn a_single_subsonic_server_becomes_the_first_of_the_list() {
         let mut accounts: AccountsState = serde_json::from_value(serde_json::json!({
@@ -4950,8 +3635,6 @@ mod tests {
         assert!(json.get("subsonic_servers").is_some());
     }
 
-    /// A list already on file is this build's own and wins, and a legacy
-    /// account that never named an address isn't a server to carry.
     #[test]
     fn the_legacy_subsonic_server_never_overrides_a_list() {
         let mut listed: AccountsState = serde_json::from_value(serde_json::json!({
@@ -4973,8 +3656,6 @@ mod tests {
         assert!(blank.subsonic_servers.is_empty());
     }
 
-    /// A server goes by its own name when it has one and by its host when
-    /// it doesn't: the host and its port, without the scheme or the path.
     #[test]
     fn a_subsonic_server_is_labelled_by_name_then_host() {
         let mut account = SubsonicAccount {
@@ -4994,8 +3675,6 @@ mod tests {
         assert_eq!(SubsonicAccount::default().label(), "");
     }
 
-    /// A build with no identity of its own can't sign anything, so it
-    /// holds no session however the file reads.
     #[test]
     fn no_api_key_means_no_session() {
         let mut lastfm = Lastfm::default();
@@ -5003,8 +3682,7 @@ mod tests {
         assert!(lastfm.session("").is_none());
         assert_eq!(lastfm.username(""), "");
 
-        // And it can't file a refusal either, which would go into the
-        // unattributed slot and take a carried-over session with it.
+        // A refusal here would clobber the unattributed slot.
         let mut carried: Lastfm = serde_json::from_value(serde_json::json!({
             "session_key": "sk-old",
         }))
@@ -5017,10 +3695,6 @@ mod tests {
         );
     }
 
-    /// A named shader means nothing without the pool, so it has to come back
-    /// out of the file with its sources intact. The bookmarks don't travel:
-    /// they're the one part that means nothing on the machine this arrives
-    /// on.
     #[test]
     fn workspace_bundle_carries_its_shader_pool() {
         let mut bundle = WorkspaceBundle {
@@ -5042,8 +3716,6 @@ mod tests {
             ..WorkspaceBundle::default()
         };
 
-        // A pool entry keeps its bookmark while it's the live look; only the
-        // export scrub takes it off.
         let live = serde_json::to_value(&bundle).unwrap();
         assert_eq!(live["shaders"][0]["path"], "/home/someone/grain.wgsl");
         assert!(
@@ -5064,8 +3736,6 @@ mod tests {
         assert_eq!(back.shaders[1].name, "Bloom");
     }
 
-    /// A pool entry that no longer parses costs that entry and nothing else,
-    /// the lenient rule every other list in the bundle follows.
     #[test]
     fn a_broken_pool_entry_costs_only_itself() {
         let json = serde_json::json!({
@@ -5079,10 +3749,6 @@ mod tests {
         assert_eq!(bundle.shaders[0].name, "Grain");
     }
 
-    /// A plate a shader samples travels the way its source does, byte for
-    /// byte, and the scrub doesn't touch it: assets hold no paths, so
-    /// there's nothing local in one to take off. A pool with no assets
-    /// writes no key, which is every look that exists today.
     #[test]
     fn shader_assets_ride_the_pool_entry() {
         let plain = serde_json::to_value(NamedShader {
@@ -5125,8 +3791,6 @@ mod tests {
         );
     }
 
-    /// A hand-mangled asset costs that asset and nothing else, the same
-    /// lenient rule the pool itself follows.
     #[test]
     fn a_broken_asset_costs_only_itself() {
         let json = serde_json::json!({
@@ -5144,8 +3808,6 @@ mod tests {
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].decode().unwrap(), vec![0u8, 1, 2]);
 
-        // Data that isn't base64 at all reads out rather than panicking, so
-        // the failure shows in a shader readout like every other one.
         let bad = ShaderAsset {
             file: "plate.png".to_string(),
             data: "not base64!".to_string(),
@@ -5153,9 +3815,6 @@ mod tests {
         assert!(bad.decode().is_err());
     }
 
-    /// The card and the screen shader are stored in the bundle, and a look
-    /// that has neither writes neither key, so no existing workspace file
-    /// grows a line it didn't have.
     #[test]
     fn workspace_meta_and_post_shader_ride_the_bundle() {
         let plain = serde_json::to_value(WorkspaceBundle::default()).unwrap();
@@ -5201,8 +3860,6 @@ mod tests {
         assert_eq!(post.source, "// crt");
         assert_eq!(post.name.as_deref(), Some("Grain"));
 
-        // A bundle file written before any of this parses as a look with no
-        // pool, no card, and no screen shader, which is what it was.
         let older: WorkspaceBundle =
             serde_json::from_value(serde_json::json!({ "version": 1, "name": "old" })).unwrap();
         assert!(older.shaders.is_empty());
@@ -5210,8 +3867,6 @@ mod tests {
         assert!(older.post_shader.is_none());
     }
 
-    /// `created` is the day the workspace first existed, so it's written once
-    /// and left alone; `updated` moves on every export.
     #[test]
     fn a_card_is_created_once_and_updated_always() {
         let mut meta = WorkspaceMeta::default();
@@ -5226,8 +3881,6 @@ mod tests {
         assert_eq!(meta.created, "2026-01-02");
         assert_eq!(meta.updated, "2026-08-07");
 
-        // A card is only empty while every field is, so one filled line keeps
-        // the whole thing in the file.
         let described = WorkspaceMeta {
             description: "Warm and quiet.".to_string(),
             ..WorkspaceMeta::default()
@@ -5235,11 +3888,8 @@ mod tests {
         assert!(!described.is_empty());
     }
 
-    /// Saving over a workspace keeps the card the old one had: the author's
-    /// name, their notes, and the day it was first made all come through, and
-    /// today's stamp stays on `updated`. A live look with its own card wins
-    /// field by field, so a fork doesn't come out signed by the person you
-    /// forked from.
+    /// A live look with its own card wins field by field, so a fork isn't
+    /// signed by the person you forked from.
     #[test]
     fn carry_forward_keeps_a_card_through_an_overwrite() {
         let prior = WorkspaceMeta {
@@ -5252,8 +3902,6 @@ mod tests {
             updated: "2026-03-04".into(),
         };
 
-        // The everyday overwrite: the live look holds nothing but today's
-        // stamp, so the whole card comes back.
         let mut fresh = WorkspaceMeta::default();
         fresh.stamp("2026-08-07");
         fresh.carry_forward(&prior);
@@ -5265,7 +3913,6 @@ mod tests {
         assert_eq!(fresh.created, "2026-01-02", "the first day survives");
         assert_eq!(fresh.updated, "2026-08-07", "today stays on updated");
 
-        // A look with its own card only fills the gaps.
         let mut mine = WorkspaceMeta {
             author: "Juniper".into(),
             version: "2".into(),
@@ -5277,7 +3924,6 @@ mod tests {
         assert_eq!(mine.version, "2");
         assert_eq!(mine.license, "CC BY");
 
-        // Nothing to carry leaves the fresh card exactly as it was.
         let mut alone = WorkspaceMeta::default();
         alone.stamp("2026-08-07");
         alone.carry_forward(&WorkspaceMeta::default());
@@ -5285,25 +3931,17 @@ mod tests {
         assert!(alone.author.is_empty());
     }
 
-    /// An export dates itself, so a shared file says when it was made
-    /// without the author having to type it.
     #[test]
     fn from_settings_stamps_the_card() {
         let bundle = WorkspaceBundle::from_settings("mine".into(), &Settings::default());
         let today = utc_today();
         assert_eq!(bundle.meta.created, today);
         assert_eq!(bundle.meta.updated, today);
-        // Ten characters of digits and hyphens, since a reader elsewhere
-        // parses this as a date.
+        // A reader elsewhere parses this as a date.
         assert_eq!(today.len(), 10);
         assert!(today.chars().all(|c| c.is_ascii_digit() || c == '-'));
     }
 
-    /// The screen shader an export captures is the one the machine is
-    /// running, since it's stored in the settings rather than in the look. It
-    /// arrives inlined and with its bookmark gone, the same way a pool entry
-    /// does, and a machine that has never set one up exports no shader at
-    /// all rather than a disabled placeholder.
     #[test]
     fn from_settings_takes_the_screen_shader_along() {
         let file = std::env::temp_dir().join("rox-test-from-settings-shader.wgsl");
@@ -5326,8 +3964,6 @@ mod tests {
         assert!(post.enabled);
         assert!(post.all_windows);
 
-        // A pass that's off but points somewhere still travels: it's set up,
-        // and the look it belongs to decides when it runs.
         let parked = Settings {
             post_shader: PostShaderConfig {
                 path: Some(file.clone()),
@@ -5351,11 +3987,8 @@ mod tests {
         std::fs::remove_file(&file).ok();
     }
 
-    /// A shader ejects to a file named after the workspace and the entry,
-    /// both folded through the filename sanitizer, so a pool entry called
-    /// "Grain / Fine" gets a real filename instead of writing into a folder
-    /// nobody asked for. A look with no name of its own is the one you're
-    /// editing, which ejects under `_local`.
+    /// Both names go through the filename sanitizer, so an entry called
+    /// "Grain / Fine" can't write into a folder nobody asked for.
     #[test]
     fn shader_ejects_under_its_workspace() {
         let root = Path::new("/tmp/rox-shaders");
@@ -5371,8 +4004,6 @@ mod tests {
             shader_eject_path_in(root, "", "Grain"),
             root.join("_local").join("Grain.wgsl")
         );
-        // Pure punctuation empties out on both halves rather than writing a
-        // hidden folder or a file with no name.
         assert_eq!(
             shader_eject_path_in(root, "...", "..."),
             root.join("_local").join("shader.wgsl")
@@ -5381,9 +4012,8 @@ mod tests {
         assert_eq!(safe_file_stem(".hidden", "fallback"), "hidden");
     }
 
-    /// The trust pass reads sources out of a dump the same two places the
-    /// scrub takes bookmarks out of, or a shipped look's panels would come
-    /// up blank waiting for an approval nobody can give.
+    /// The trust pass must find sources where the scrub finds bookmarks, or a
+    /// shipped look's panels wait on an approval nobody can give.
     #[test]
     fn dump_shader_sources_finds_both_shapes() {
         let dump = serde_json::json!({
@@ -5410,9 +4040,6 @@ mod tests {
         assert_eq!(found, ["// the shader panel", "// the surface one"]);
     }
 
-    /// A dump with a shader in it reads as one, whichever of the two shapes
-    /// it is, and a pool name counts the same as inline text: that's the one
-    /// a promoted shader leaves behind.
     #[test]
     fn a_dump_knows_when_it_wears_a_shader() {
         let worn = |shader: serde_json::Value| {
@@ -5437,17 +4064,12 @@ mod tests {
             "panel_name": "folder tree",
             "info": { "panel": { "path": "/home/someone/Music" }},
         })));
-        // The Shader panel is one by definition, and a config saying nothing
-        // runs the shipped example.
         assert!(dump_wears_shader(&serde_json::json!({
             "panel_name": "shader",
             "info": { "panel": {}},
         })));
     }
 
-    /// Applying a look without its shaders switches both shapes off and
-    /// leaves everything else, the sources included: nothing paints, and
-    /// what the look came with is still there to turn on.
     #[test]
     fn stripping_a_dump_parks_both_shapes() {
         let mut dump = serde_json::json!({
@@ -5472,8 +4094,7 @@ mod tests {
         });
         strip_dump_shaders(&mut dump);
         assert!(!dump_wears_shader(&dump));
-        // The sources stay where they are. They're still code that arrived
-        // with a bundle, so the trust walk goes on seeing them.
+        // Sources stay, so the trust walk still sees them.
         assert_eq!(dump_shader_sources(&dump), vec!["// the shader panel"]);
         let panels = &dump["children"];
         assert_eq!(panels[0]["info"]["panel"]["enabled"], false);
@@ -5485,9 +4106,6 @@ mod tests {
         assert_eq!(panels[1]["info"]["panel"]["path"], "/home/someone/Music");
     }
 
-    /// A Shader panel that saved no config of its own runs the shipped
-    /// example, so parking it has to write the switch where there was
-    /// nothing to write it beside.
     #[test]
     fn stripping_parks_a_shader_panel_with_no_config() {
         let mut dump = serde_json::json!({ "panel_name": "shader" });
@@ -5496,9 +4114,6 @@ mod tests {
         assert_eq!(dump["info"]["panel"]["enabled"], false);
     }
 
-    /// The screen shader's file gets pulled inline on the way out, since a
-    /// path alone imports as a dead pass. A path that reads nothing leaves
-    /// the source empty rather than failing the export.
     #[test]
     fn an_export_inlines_the_screen_shader() {
         let file = std::env::temp_dir().join("rox-test-export-shader.wgsl");
@@ -5518,7 +4133,6 @@ mod tests {
         assert_eq!(post.source, "// crt\n");
         assert!(post.path.is_none(), "the bookmark doesn't travel");
 
-        // An inline source already in hand is never overwritten by the file.
         let mut kept = WorkspaceBundle {
             post_shader: Some(PostShaderConfig {
                 source: "// what runs".to_string(),
@@ -5532,8 +4146,6 @@ mod tests {
 
         std::fs::remove_file(&file).ok();
 
-        // A file that's gone leaves an empty source, which is the same dead
-        // pass the bundle would have held anyway.
         let mut missing = WorkspaceBundle {
             post_shader: Some(PostShaderConfig {
                 path: Some(file),
@@ -5545,9 +4157,7 @@ mod tests {
         assert!(missing.post_shader.unwrap().source.is_empty());
     }
 
-    /// The scrub targets the two shapes that hold a shader bookmark and
-    /// leaves every other `path` in a dump alone, since a folder panel's
-    /// root is a path too and it's none of the scrub's business.
+    /// A folder panel's root is a `path` too, and must survive the scrub.
     #[test]
     fn scrub_paths_takes_only_the_shader_bookmarks() {
         let mut bundle = WorkspaceBundle {
@@ -5600,9 +4210,6 @@ mod tests {
         assert_eq!(folder["shader"]["source"], "// the surface one");
     }
 
-    /// A render path reads the pool cache, so it resolves by name and reports
-    /// when it moved. The rev is the whole point: a surface holds its
-    /// resolution and checks one atomic instead of diffing a page of WGSL.
     #[test]
     fn the_shader_pool_answers_by_name_and_bumps_its_rev() {
         let before = shader_pool_rev();
@@ -5627,34 +4234,25 @@ mod tests {
         assert!(shader_pool_get("Grain").is_none(), "an apply replaces it");
     }
 
-    /// What the build ships runs without anyone agreeing to it a second
-    /// time, and that trust is kept beside the machine's own list rather than
-    /// in it, so it never gets written to a session file.
     #[test]
     fn shader_approved_trusts_what_the_build_ships() {
         let print = "shipped-with-the-binary-not-a-real-hash";
         assert!(!shader_approved(print));
         trust_shipped([print.to_string()]);
         assert!(shader_approved(print));
-        // The session's own list never learned it, so nothing persists.
         assert!(!APPROVED_SHADERS.read().unwrap().contains(print));
     }
 
-    /// The frame knobs go straight into div sizes, so `clamped` holds each to
-    /// its own ceiling and floors at zero. This is the sanitizer `load` runs
-    /// over a hand-edited frame.
     #[test]
     fn frame_clamps_each_knob_to_its_ceiling() {
         let clamped = Frame {
             margin: Sides::all(MARGIN_MAX + 100.0),
             padding: Sides::all(-5.0),
             rounding: ROUNDING_MAX + 1.0,
-            // A split knob is held side by side, not by its widest.
             border: Sides::all(1.0).with(palette::Side::Top, BORDER_MAX + 10.0),
         }
         .clamped();
         assert_eq!(clamped.margin, Sides::all(MARGIN_MAX));
-        // A negative knob floors at zero, not its ceiling.
         assert_eq!(clamped.padding, Sides::ZERO);
         assert_eq!(clamped.rounding, ROUNDING_MAX);
         assert_eq!(
@@ -5663,8 +4261,6 @@ mod tests {
         );
     }
 
-    /// A non-finite knob resets to zero rather than propagating NaN into a
-    /// layout size.
     #[test]
     fn frame_resets_non_finite_knobs() {
         let clamped = Frame {
@@ -5676,14 +4272,10 @@ mod tests {
         .clamped();
         assert_eq!(clamped.margin, Sides::ZERO);
         assert_eq!(clamped.padding, Sides::ZERO);
-        // Finite, in-range knobs stand.
         assert_eq!(clamped.rounding, 6.0);
         assert_eq!(clamped.border, Sides::all(2.0));
     }
 
-    /// A round-trip through the JSON file format preserves the fields a
-    /// settings write cares about, so nothing silently drops on save and
-    /// reload.
     #[test]
     fn settings_roundtrip_preserves_fields() {
         let mut src = Settings {
@@ -5706,9 +4298,6 @@ mod tests {
         assert_eq!(back.library_roots, vec![PathBuf::from("/music")]);
     }
 
-    /// The post shader pick round-trips through the file, and a file that
-    /// predates the field reads as off with no path rather than failing the
-    /// load.
     #[test]
     fn post_shader_round_trips_and_defaults_off() {
         let mut src = Settings::default();
@@ -5731,9 +4320,6 @@ mod tests {
         assert!(older.post_shader.routes.is_empty());
     }
 
-    /// The screen shader's routes are stored on the same field, and a file
-    /// written before they existed reads as none, which keeps the older
-    /// pool-order fill running for anyone who never opens the editor.
     #[test]
     fn post_shader_routes_round_trip_and_stay_out_of_older_files() {
         let mut src = Settings::default();
@@ -5751,8 +4337,6 @@ mod tests {
         assert_eq!(back.post_shader.routes[0].target, "slot3");
         assert_eq!(back.post_shader.routes[0].to, 1.5);
 
-        // An empty list writes nothing at all, so a settings file that was
-        // never routed stays exactly as it was.
         let bare = serde_json::to_string(&Settings::default()).unwrap();
         assert!(!bare.contains("routes"));
 
@@ -5760,9 +4344,6 @@ mod tests {
         assert!(older.post_shader.routes.is_empty());
     }
 
-    /// The measurement pass's destination round-trips through the file, and an
-    /// older file that predates the field reads as the database default rather
-    /// than as permission to rewrite everyone's tags.
     #[test]
     fn replay_gain_save_round_trips_and_defaults_to_the_database() {
         let mut src = Settings::default();
@@ -5776,11 +4357,8 @@ mod tests {
         assert_eq!(older.save, ReplayGainSave::Database);
     }
 
-    /// The analysis pass's destination round-trips through the file, and
-    /// neither an older file that predates the field nor a newer file naming
-    /// something this build never heard of reads as permission to rewrite
-    /// everyone's tags. Both fall back to the database, the answer that
-    /// touches nothing.
+    /// A missing or unknown value falls back to the database. Neither may
+    /// read as permission to rewrite everyone's tags.
     #[test]
     fn acoustic_save_round_trips_and_defaults_to_the_database() {
         let mut src = Settings::default();
@@ -5797,10 +4375,6 @@ mod tests {
         assert_eq!(newer.acoustic_save, AcousticSave::Database);
     }
 
-    /// The follow-the-watcher switch round-trips through the file, and a file
-    /// that predates it reads as off: measuring is an afternoon of decoding
-    /// and in tags mode it rewrites files, so an upgrade never turns it on
-    /// for you.
     #[test]
     fn replay_gain_auto_round_trips_and_defaults_to_off() {
         let mut src = Settings::default();
@@ -5814,7 +4388,6 @@ mod tests {
         assert!(!older.auto);
     }
 
-    /// Each of the three plain shards round-trips through its own file.
     #[test]
     fn shard_files_roundtrip() {
         let mut session = SessionState {
@@ -5862,10 +4435,8 @@ mod tests {
         assert!(back.queue_view.is_some());
     }
 
-    /// Nothing that has a file of its own is written into the settings file:
-    /// the look's dock dumps, the window frames, the volatile playback state,
-    /// and above all the credentials, which is the whole point of the accounts
-    /// file. The settings file is the one people are pointed at.
+    /// The settings file is the one people are pointed at, so it must carry no
+    /// shard, above all no credentials.
     #[test]
     fn settings_file_carries_only_preferences() {
         let mut src = dressed();
@@ -5889,9 +4460,7 @@ mod tests {
             "surface_opacity",
             "rating_style",
             "workspaces",
-            // the windows. Quote-anchored: the post shader's all_windows
-            // preference legitimately contains the substring, while a leaked
-            // shard would appear as this exact key.
+            // Quote-anchored: `all_windows` legitimately contains the substring.
             "\"windows\"",
             "main",
             "tag_editor",
@@ -5915,9 +4484,6 @@ mod tests {
         }
     }
 
-    /// The threshold moved off the Last.fm account. A file that predates
-    /// the move seeds the shared knob from there once; a file that has
-    /// written the knob keeps it, whatever the account still says.
     #[test]
     fn the_legacy_threshold_seeds_the_shared_knob_once() {
         let mut settings = Settings::default();
@@ -5950,9 +4516,6 @@ mod tests {
         );
     }
 
-    /// The switch moved off the Last.fm account the same way: a file from
-    /// before reads the account's setting once, and one that has written
-    /// the shared switch keeps it.
     #[test]
     fn the_legacy_switch_seeds_the_shared_one_once() {
         let mut settings = Settings::default();
@@ -5975,8 +4538,6 @@ mod tests {
         );
     }
 
-    /// The look round-trips through its own file, the other half of the
-    /// split: what `workspace.json` holds comes back whole.
     #[test]
     fn look_file_roundtrips() {
         let mut src = dressed().look;
@@ -6004,13 +4565,8 @@ mod tests {
         );
     }
 
-    /// A pre-split settings file held the look flat beside the machine
-    /// state. Reading one has to find every piece of it, or an upgrade loses
-    /// the user's layouts, palette, and appearance in one go.
     #[test]
     fn legacy_settings_yields_its_look() {
-        // The shape the old single file wrote: look keys as top-level
-        // siblings of the machine state.
         let json = serde_json::json!({
             "volume": 0.8,
             "library_roots": ["/music"],
@@ -6046,7 +4602,6 @@ mod tests {
             look.bundle.palette_light.get("accent").map(String::as_str),
             Some("#663399")
         );
-        // The appearance knobs were flat too, so they need their own pass.
         let a = &look.bundle.appearance;
         assert_eq!(a.surface_opacity, 0.5);
         assert_eq!(a.frame.rounding, 12.0);
@@ -6055,13 +4610,9 @@ mod tests {
         assert!(a.rating_style == RatingStyle::Numeric);
         assert!(a.hide_menubar);
         assert!(!a.os_decorations);
-        // A pre-split file names no workspace: the look is whatever it was
-        // edited into, not one you can point at.
         assert!(look.bundle.name.is_empty());
     }
 
-    /// A fresh install has no settings file at all, which reads as the
-    /// default look rather than anything half-migrated.
     #[test]
     fn legacy_look_from_nothing_is_the_default() {
         let look = LookState::from_legacy(&serde_json::Value::Null);
@@ -6074,34 +4625,24 @@ mod tests {
         );
     }
 
-    /// Unknown fields drop and missing ones take defaults, so every file
-    /// tolerates version drift in both directions rather than failing to load.
     #[test]
     fn settings_deserialize_tolerates_drift() {
-        // A field the current build never wrote, plus a subset of real ones.
         let json = r#"{ "fold_case": true, "some_future_knob": 42, "quit_to_tray": true }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert!(s.fold_case);
         assert!(s.quit_to_tray);
-        // A field absent from the file falls back to its default.
         assert!(s.watch_library);
         assert!(s.theme == Theme::default());
-        // Design mode in particular: every settings file written before it
-        // existed is missing the key, and those installs must keep the
-        // editing controls they have always had rather than lose them to a
-        // default of off.
+        // Design mode defaults on: older files lack the key, and those
+        // installs keep the editing controls they had.
         assert!(s.design_mode);
 
-        // And the same for a shard, where a missing volume must not read as
-        // silence.
         let session: SessionState = serde_json::from_str(r#"{ "muted": true }"#).unwrap();
         assert!(session.muted);
         assert_eq!(session.volume, SessionState::default().volume);
         assert!(session.loop_mode() == LoopMode::Off);
     }
 
-    /// The loop mode is stored as a wire name, so the engine's enum stays
-    /// serde-free. An unrecognized value degrades rather than erroring.
     #[test]
     fn loop_mode_wire_names_round_trip() {
         let mut s = SessionState::default();
@@ -6118,10 +4659,6 @@ mod tests {
         assert!(s.loop_mode() == LoopMode::Off);
     }
 
-    /// A pre-split file held the windows, session, and accounts flat
-    /// alongside everything else. Each reads straight back out of that map
-    /// because every field kept its name, and the window fields that did get
-    /// renamed have an alias for the one they had.
     #[test]
     fn legacy_settings_yields_the_plain_shards() {
         let json = serde_json::json!({
@@ -6155,7 +4692,6 @@ mod tests {
         assert_eq!(accounts.lastfm.threshold, Some(0.8));
         assert!(accounts.discord.enabled);
 
-        // The renamed window fields come across on their aliases.
         let windows: WindowsState = from_legacy(&json);
         assert_eq!(windows.main.map(|w| w.width), Some(800.0));
         assert_eq!(windows.stats.map(|s| s.range), Some("year".to_string()));
@@ -6165,17 +4701,13 @@ mod tests {
         assert!(windows.queue_view.is_some());
     }
 
-    /// One sub-object short of a field must not cost the whole shard. An old
-    /// file written before a field existed is exactly what a migration reads,
-    /// and without a default on the nested type the miss fails the shard and
-    /// takes every unrelated value in it: volume, loop mode, last scan.
+    /// A missing nested field must not cost the whole shard.
     #[test]
     fn a_short_sub_object_costs_only_itself() {
         let json = serde_json::json!({
             "volume": 0.3,
             "shuffle": true,
             "last_scan": 12345,
-            // No "url": the shape an older build wrote.
             "update_cache": { "checked_at": 99, "latest": "1.9.0" },
         });
         let session: SessionState = from_legacy(&json);
@@ -6187,7 +4719,6 @@ mod tests {
             Some("1.9.0".to_string())
         );
 
-        // Same for a window frame missing the flag that came later.
         let json = serde_json::json!({
             "window": { "x": 1.0, "y": 2.0, "width": 800.0, "height": 600.0 },
         });
@@ -6195,16 +4726,12 @@ mod tests {
         assert_eq!(windows.main.map(|w| w.height), Some(600.0));
     }
 
-    /// One broken preset costs that preset. Without the lenient list it fails
-    /// the whole `layouts` array, which fails the look, which resets
-    /// `workspace.json` to defaults: every other preset, the palette, and the
-    /// appearance gone over one entry missing its dump.
+    /// Without the lenient list one bad preset resets all of `workspace.json`.
     #[test]
     fn a_broken_preset_costs_only_that_preset() {
         let json = serde_json::json!({
             "layouts": [
                 { "name": "good", "dump": { "k": "v" } },
-                // No dump: the shape a truncated write or a hand-edit leaves.
                 { "name": "broken" },
                 { "name": "also good", "dump": { "k": "v2" } },
             ],
@@ -6214,7 +4741,6 @@ mod tests {
         let bundle: WorkspaceBundle = serde_json::from_value(json).unwrap();
         let names: Vec<&str> = bundle.layouts.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["good", "also good"]);
-        // The rest of the look is untouched, which is the whole point.
         assert_eq!(bundle.primary_layout.as_deref(), Some("good"));
         assert_eq!(
             bundle.palette_dark.get("accent").map(String::as_str),
@@ -6222,8 +4748,6 @@ mod tests {
         );
     }
 
-    /// Same for the per-layout working copies, keyed by name rather than
-    /// ordered, and for the signal pool a look's routes point into.
     #[test]
     fn a_broken_working_copy_costs_only_that_copy() {
         let json = serde_json::json!({
@@ -6247,9 +4771,6 @@ mod tests {
         assert_eq!(look.active_layout.as_deref(), Some("good"));
     }
 
-    /// The approved shader hashes are stored in the session file:
-    /// machine-local, so a copied settings file holds none of them, and absent
-    /// from a file nobody has approved anything on.
     #[test]
     fn approved_shaders_ride_the_session_shard() {
         let mut session = SessionState::default();
@@ -6267,27 +4788,21 @@ mod tests {
         assert!(read.approved_shaders.contains("beef"));
         assert!(read.approved_shaders.contains("cafe"));
         assert_eq!(read.approved_shaders.len(), 2);
-        // A set, sorted, so two approvals in the other order don't rewrite
-        // the file and the diff stays readable.
+        // Sorted, so approval order doesn't rewrite the file.
         assert_eq!(
             written["approved_shaders"],
             serde_json::json!(["beef", "cafe"])
         );
 
-        // A file written before the gate existed loads clean, approving
-        // nothing.
         let older: SessionState =
             serde_json::from_value(serde_json::json!({ "volume": 0.4 })).expect("read");
         assert!(older.approved_shaders.is_empty());
 
-        // A shared look travels as the workspace bundle; the trust list
-        // isn't in it, and can't be.
+        // The trust list must never travel in a shared bundle.
         let bundle = serde_json::to_value(WorkspaceBundle::default()).expect("dump");
         assert!(bundle.get("approved_shaders").is_none());
     }
 
-    /// The live list and the file stay in step, and approving the same hash
-    /// twice is a no-op rather than a second write.
     #[test]
     fn the_approved_list_is_a_set() {
         let print = "0123456789abcdef-not-a-real-hash";
@@ -6302,9 +4817,8 @@ mod tests {
         assert!(!shader_approved(print));
     }
 
-    /// A queue that no longer parses reads as no queue, and takes nothing with
-    /// it. Dropping the bad entry instead would be worse than useless: the
-    /// cursor indexes the entries, so a short list resumes the wrong track.
+    /// The cursor indexes the entries, so a bad entry fails the whole queue
+    /// rather than resume the wrong track.
     #[test]
     fn a_broken_queue_costs_only_the_queue() {
         let json = serde_json::json!({
@@ -6316,17 +4830,12 @@ mod tests {
         });
         let session: SessionState = serde_json::from_value(json).unwrap();
         assert!(session.last_queue.is_none());
-        // Everything that has nothing to do with the queue still loads.
         assert_eq!(session.volume, 0.4);
         assert!(session.loop_mode() == LoopMode::All);
         assert!(session.shuffle);
         assert_eq!(session.last_scan, 12345);
     }
 
-    /// The saved queue stores each entry's subsong, so a whole-disc rip comes
-    /// back as its own tracks instead of the image over and over. A file
-    /// written before cue support has no `sub` at all and has to keep
-    /// reading, as every track in it was a plain file.
     #[test]
     fn a_saved_queue_round_trips_its_subs() {
         let state = SessionState {
@@ -6368,7 +4877,6 @@ mod tests {
         let last = back.last_track.expect("the single-track fallback too");
         assert_eq!((last.id, last.sub), (7, 3));
 
-        // An older file: no `sub` anywhere, on either shape.
         let json = serde_json::json!({
             "last_track": { "id": 7, "position_secs": 12.5 },
             "last_queue": {
@@ -6388,10 +4896,8 @@ mod tests {
         assert_eq!(old.last_track.map(|t| t.sub), Some(0));
     }
 
-    /// A shuffle mode this build has never heard of reads as Random and takes
-    /// nothing with it. Failing instead would cost the whole session shard: the
-    /// volume, the loop mode, the saved queue, and `last_scan`, which is a full
-    /// library rescan over one word a newer build wrote.
+    /// Failing instead would cost the whole session shard, `last_scan` and
+    /// so a full rescan included, over one word a newer build wrote.
     #[test]
     fn an_unknown_shuffle_mode_costs_only_the_mode() {
         let json = serde_json::json!({
@@ -6412,8 +4918,6 @@ mod tests {
         assert_eq!(session.last_scan, 12345);
         assert!(session.last_queue.is_some());
 
-        // A mode this build does know still reads as itself, and so does one
-        // written as something that was never a mode at all.
         let session: SessionState =
             serde_json::from_value(serde_json::json!({ "shuffle_mode": "similar" })).unwrap();
         assert_eq!(session.shuffle_mode, ShuffleMode::Similar);
@@ -6422,10 +4926,6 @@ mod tests {
         assert_eq!(session.shuffle_mode, ShuffleMode::Random);
     }
 
-    /// Every other closed set of words in the shards reads the same way, and
-    /// the blast radius is worse in each of them than in the session: the theme
-    /// is beside the library folders, the rating style beside the palette,
-    /// and the lyrics destination beside the Last.fm session key.
     #[test]
     fn an_unknown_enum_word_costs_only_its_field() {
         let settings: Settings = serde_json::from_value(serde_json::json!({
@@ -6454,8 +4954,6 @@ mod tests {
             accounts.lastfm.session("api-key").map(|s| s.key.as_str()),
             Some("a-real-secret")
         );
-        // An accounts file written before ListenBrainz existed reads as
-        // not connected.
         assert!(accounts.listenbrainz.token.is_empty());
         assert!(accounts.listenbrainz.username.is_none());
 
@@ -6474,9 +4972,6 @@ mod tests {
         );
     }
 
-    /// The AcoustID toggle and key survive a write and a read, and a
-    /// providers block written before either existed reads at the defaults
-    /// rather than failing the whole accounts shard.
     #[test]
     fn the_acoustid_provider_fields_round_trip_and_default() {
         let providers = Providers {
@@ -6488,7 +4983,6 @@ mod tests {
         let read: Providers = serde_json::from_str(&text).unwrap();
         assert!(!read.acoustid);
         assert_eq!(read.acoustid_key, "a-registered-application-key");
-        // The neighbours came through untouched.
         assert!(read.musicbrainz);
 
         let old: Providers = serde_json::from_value(serde_json::json!({
@@ -6501,10 +4995,6 @@ mod tests {
         assert!(!old.musicbrainz);
     }
 
-    /// The card's lines and the status pick round-trip, an accounts file
-    /// written before either existed reads at the defaults, and a word this
-    /// build doesn't know reads as the default pick rather than failing the
-    /// accounts shard.
     #[test]
     fn the_discord_card_lines_round_trip_and_default() {
         let discord = DiscordSettings {
@@ -6543,8 +5033,6 @@ mod tests {
         assert!(newer.enabled);
     }
 
-    /// A window shape that no longer parses costs that window's remembered
-    /// size, not every window's.
     #[test]
     fn a_broken_window_shape_costs_only_that_window() {
         let json = serde_json::json!({
@@ -6558,10 +5046,7 @@ mod tests {
         assert_eq!(windows.console.map(|s| s.width), Some(700.0));
     }
 
-    /// The stamp separates a weights file that was rewritten in place from one
-    /// that's only being picked again, so it has to move when the bytes do.
-    /// Without that, a retrained checkpoint's vectors are written under the id
-    /// the previous one was hashed to.
+    /// Without this, a retrained checkpoint's vectors land under the old id.
     #[test]
     fn a_rewritten_weights_file_stamps_differently() {
         let dir = std::env::temp_dir().join(format!("rox-stamp-{}", std::process::id()));
@@ -6571,28 +5056,23 @@ mod tests {
         let first = file_stamp(&path).unwrap();
         std::fs::write(&path, b"a different checkpoint").unwrap();
         assert_ne!(file_stamp(&path), Some(first));
-        // Neither a folder nor a path with nothing at it is a checkpoint.
         assert_eq!(file_stamp(&dir), None);
         assert_eq!(file_stamp(&dir.join("gone")), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A migrated load rewrites its files even though the edit moved nothing.
-    /// Skipping the write is right in steady state, and wrong exactly once:
-    /// the settings file is still in the pre-split shape, a no-op edit
-    /// serializes to the same bytes either way, and without the force the old
-    /// flat keys, credentials among them, would never be stripped.
+    /// Right once: a pre-split file serializes to the same bytes after a
+    /// no-op edit, and without the force its flat keys, credentials among
+    /// them, would never be stripped.
     #[test]
     fn a_migrated_load_rewrites_an_unmoved_file() {
         let dir = std::env::temp_dir().join(format!("rox-shard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("shard.json");
-        // The file on disk still holds the old shape.
         std::fs::write(&path, r#"{"stale": true}"#).unwrap();
         let print = serde_json::to_string(&SessionState::default()).ok();
 
-        // Unmoved and present: normally nothing to do.
         write_shard(
             path.clone(),
             "shard",
@@ -6603,7 +5083,6 @@ mod tests {
         );
         assert!(std::fs::read_to_string(&path).unwrap().contains("stale"));
 
-        // Same edit, but the load came out of a pre-split file.
         write_shard(
             path.clone(),
             "shard",
@@ -6619,9 +5098,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The Milkdrop backdrop's look fields never reach the machine file:
-    /// they're the workspace's, and a second copy would shadow the one a
-    /// workspace apply brings.
+    /// A second copy in the machine file would shadow what an apply brings.
     #[test]
     fn the_backdrop_visual_look_lives_in_the_bundle_not_the_machine_file() {
         let config = BackdropVisualConfig {
@@ -6642,7 +5119,6 @@ mod tests {
         assert_eq!(bundled["enabled"], true);
         assert_eq!(bundled["color"], "cover");
 
-        // Read back from the machine file, the look fills the gaps.
         let read: BackdropVisualConfig = serde_json::from_value(machine).expect("reads");
         assert!(!read.enabled, "the machine file says nothing about it");
         let merged = read.with_look(&look);

@@ -1,10 +1,6 @@
-//! The slide panel: a carousel of panels in one slot, one up at a time,
-//! arrows, dots, and a draggable rail gliding between them, shaded edges
-//! hinting where the neighbors are. For the surfaces that take turns
-//! rather than share space: visualizers to cycle through, a set of
-//! library views on rotation. Hosted through [`crate::composite`];
-//! only the slides touching the viewport render, so a long deck costs
-//! what a single panel does.
+//! The slide panel: a carousel of panels in one slot, one up at a time, with
+//! arrows, dots and a draggable rail. Hosted through [`crate::composite`]; only
+//! the slides touching the viewport render.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,35 +29,22 @@ use rox_panel_kit::ScrubState;
 pub struct SlideConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The slide showing (or being glided toward).
     pub active: usize,
 }
 
-/// The grab rail's height: the dots with breathing room around them, a
-/// strip wide enough to land a drag on without hunting.
 const RAIL_H: Pixels = px(24.);
 
-/// The edge hint scrims' width, wide enough to read as a shaded edge
-/// without eating into the slide.
 const SCRIM_W: Pixels = px(26.);
 
-/// The rail travel that turns a press into a drag, in viewport widths.
-/// Under it the press stays a click (a dot's jump), so a twitchy tap
-/// never half-drags the deck.
+/// Rail travel that turns a press into a drag, in viewport widths, so a twitchy
+/// tap never half-drags the deck.
 const DRAG_DEAD_ZONE: f32 = 0.015;
 
-/// A live rail drag: where it started, in rail fractions and slide
-/// positions, and where it has pulled the deck since.
 struct RailDrag {
-    /// The pointer's rail fraction at mouse down.
     start_frac: f32,
-    /// The deck position at mouse down; drag deltas apply against this.
     start_pos: f32,
-    /// The dragged position, what [`SlidePanel::pos`] reports while the
-    /// drag is live.
     pos: f32,
-    /// The drag left the dead zone, so the release snaps to the nearest
-    /// slide instead of leaving a click's glide alone.
+    /// Past the dead zone, so the release snaps; a click's glide is left alone.
     moved: bool,
 }
 
@@ -70,24 +53,15 @@ pub struct SlidePanel {
     workspace: WeakEntity<Workspace>,
     config: SlideConfig,
     slides: Vec<Arc<dyn PanelView>>,
-    /// Where the glide started from, in slide positions; with
-    /// `slide_at` this gives the animated position without per-frame
-    /// state.
     from: f32,
     slide_at: Instant,
-    /// The rail's painted bounds and drag flag, shared with the
-    /// window-level handlers the paint pass arms, the scrub strips' idiom.
     rail: ScrubState,
-    /// The live rail drag, None between drags.
     drag: Option<RailDrag>,
-    /// Wheel travel pooled over the rail, in lines; each notch's worth
-    /// steps one slide, so a trackpad's trickle adds up instead of firing
-    /// per event.
+    /// Wheel travel pooled in lines, so a trackpad's trickle steps one slide
+    /// per notch's worth.
     wheel: f32,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Whether the hosted children have been told which tab panel this
-    /// slide is under; see [`composite::introduce_slots`].
     introduced: bool,
 }
 
@@ -101,10 +75,8 @@ impl SlidePanel {
         Self::restore(state, workspace, config, Vec::new(), cx)
     }
 
-    /// Build with already-restored children, the layout-dump route in.
-    /// Slides have no holes, so empty sentinels (a hand-edited dump)
-    /// drop out; the active index re-clamps against what actually came
-    /// back.
+    /// Empty sentinels from a hand-edited dump drop out, and the active index
+    /// re-clamps.
     pub fn restore(
         state: AppState,
         workspace: WeakEntity<Workspace>,
@@ -131,14 +103,10 @@ impl SlidePanel {
         }
     }
 
-    /// The deck in slide order, for the settings window's layout tree.
     pub fn slides(&self) -> &[Arc<dyn PanelView>] {
         &self.slides
     }
 
-    /// The animated position in slide units: eased from `from` toward
-    /// the active index, settled once the glide's window passes. A live
-    /// rail drag overrides the glide and pins the deck to the pointer.
     fn pos(&self) -> f32 {
         if let Some(drag) = &self.drag {
             return drag.pos;
@@ -148,12 +116,8 @@ impl SlidePanel {
         self.from + (self.config.active as f32 - self.from) * u
     }
 
-    /// A press landed on the rail: remember where, in rail fraction and
-    /// deck position, so the moves can pull the deck by the delta. A dot
-    /// under the press has already fired its jump (children bubble
-    /// first); staying inside the dead zone leaves that jump alone. The
-    /// notify matters even though nothing moved: the paint pass arms the
-    /// window-level drag handlers.
+    /// A dot under the press has already jumped (children bubble first). The
+    /// notify arms the window-level drag handlers on the next paint.
     fn begin_rail_drag(&mut self, x: Pixels, cx: &mut Context<Self>) {
         let Some(frac) = self.rail.fraction(x) else {
             return;
@@ -169,9 +133,6 @@ impl SlidePanel {
         cx.notify();
     }
 
-    /// Follow a rail drag to `frac`: the deck moves opposite the pointer
-    /// (pulling left brings the next slide in), one viewport width per
-    /// rail width, clamped at the deck's ends.
     fn rail_drag_to(&mut self, frac: f32, cx: &mut Context<Self>) {
         let count = self.slides.len();
         let Some(drag) = &mut self.drag else {
@@ -181,7 +142,6 @@ impl SlidePanel {
         if delta.abs() > DRAG_DEAD_ZONE {
             drag.moved = true;
         }
-        // Hold still inside the dead zone so a click never jitters the deck.
         if !drag.moved {
             return;
         }
@@ -189,10 +149,7 @@ impl SlidePanel {
         cx.notify();
     }
 
-    /// The rail drag's release: snap to the nearest slide from wherever
-    /// the drag left the deck, handing the active toggle over like `go`.
-    /// A release inside the dead zone was a click; whatever glide it
-    /// started (a dot's jump) keeps running untouched.
+    /// A release inside the dead zone was a click; its glide keeps running.
     fn end_rail_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rail.end();
         let Some(drag) = self.drag.take() else {
@@ -203,8 +160,8 @@ impl SlidePanel {
             return;
         }
         let target = (drag.pos.round() as usize).min(self.slides.len().saturating_sub(1));
-        // Not go(): a same-slide target still needs the glide re-based on
-        // the dragged position so the deck settles home from there.
+        // Not go(): a same-slide target still needs the glide re-based on the
+        // dragged position.
         if target != self.config.active {
             if let Some(child) = self.slides.get(self.config.active) {
                 child.set_active(false, window, cx);
@@ -219,18 +176,14 @@ impl SlidePanel {
         cx.notify();
     }
 
-    /// Glide to `target`; out-of-range targets clamp, so the arrows never
-    /// need their own guards.
     fn go(&mut self, target: usize, window: &mut Window, cx: &mut Context<Self>) {
         let target = target.min(self.slides.len().saturating_sub(1));
         if target == self.config.active {
             return;
         }
-        // Hand the active toggle from the slide leaving the viewport to the one
-        // gliding in, so a visualizer that scrolls off stops working and the
-        // arriving one starts. The panel's own set_active only forwards to the
-        // shown slide, so a manual navigation never touches the children on its
-        // own. Only visible UI drives this, so the panel is active here.
+        // Hand the active toggle to the arriving slide, so a visualizer that
+        // scrolls off stops working. The panel's own set_active only reaches
+        // the shown slide.
         if let Some(child) = self.slides.get(self.config.active) {
             child.set_active(false, window, cx);
         }
@@ -243,8 +196,6 @@ impl SlidePanel {
         cx.notify();
     }
 
-    /// Pin the position to the active slide with no glide, for the edits
-    /// that reorder the deck under it.
     fn snap(&mut self, cx: &mut Context<Self>) {
         self.from = self.config.active as f32;
         self.slide_at = Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS);
@@ -256,8 +207,6 @@ impl SlidePanel {
         self.introduced = false;
         if self.slides.len() == 1 {
             self.snap(cx);
-            // First slide on a visible panel: wake it, since there's no
-            // previous slide for `go` to hand the active toggle over from.
             if let Some(child) = self.slides.get(self.config.active) {
                 child.set_active(true, window, cx);
             }
@@ -284,8 +233,6 @@ impl SlidePanel {
         cx.notify();
     }
 
-    /// Move slide `ix` one step left or right, following it with the
-    /// view when it was the active one.
     fn shift(&mut self, ix: usize, right: bool, cx: &mut Context<Self>) {
         let other = if right { ix + 1 } else { ix.wrapping_sub(1) };
         if ix >= self.slides.len() || other >= self.slides.len() {
@@ -301,8 +248,8 @@ impl SlidePanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // Let the slides open this host from their own menus; the dock
-        // never sees a hosted panel, so nothing else offers it.
+        // The dock never sees a hosted panel, so the slides offer this host
+        // from their own menus.
         let slide_title = rox_i18n::t!("slide-title");
         composite::report_hosted(
             self.slides.iter(),
@@ -339,15 +286,11 @@ impl SlidePanel {
                 .child(composite::parent_controls().child(parent));
         }
 
-        // Frames only while a glide is actually running; a rail drag
-        // repaints off its own mouse moves instead.
         let pos = self.pos();
         if self.drag.is_none() && (pos - active as f32).abs() > f32::EPSILON {
             window.request_animation_frame();
         }
 
-        // Only the slides touching the viewport mount; the rest of the
-        // deck stays idle entities.
         let strip = self.slides.iter().enumerate().filter_map(|(i, child)| {
             let offset = i as f32 - pos;
             if offset.abs() >= 1.0 {
@@ -365,11 +308,6 @@ impl SlidePanel {
         });
         let root = root.children(strip);
 
-        // The edge arrows and hint scrims, only where a neighbor exists.
-        // The scrim is a soft shaded edge that reads as "more this way",
-        // darker under the pointer; it has no listeners, so like the bare
-        // full-height wrapper it never blocks the slide under it. Only
-        // the button catches clicks.
         let root = root.when(active > 0, |d| {
             let weak = cx.entity().downgrade();
             d.child(edge_scrim(false)).child(
@@ -423,13 +361,8 @@ impl SlidePanel {
             )
         });
 
-        // The rail, once there's something to move between: the dots
-        // over a full-width grab strip. Drag anywhere on it to pull the
-        // deck by hand; the release snaps to the nearest slide. A press
-        // on a dot still jumps (children bubble first), and the dead
-        // zone keeps that click from half-dragging the deck. The canvas
-        // behind the dots keeps the strip's bounds fresh and re-arms the
-        // window-level drag handlers each paint, the scrub strips' idiom.
+        // The canvas behind the dots keeps the rail's bounds fresh and re-arms
+        // the window-level drag handlers each paint.
         let root = root.when(count > 1, |d| {
             let weak = cx.entity().downgrade();
             let dragging = self.rail.is_dragging();
@@ -447,11 +380,7 @@ impl SlidePanel {
                     .cursor_grab()
                     .when(dragging, |d| d.cursor_grabbing())
                     .hover(|d| d.bg(palette::alpha(palette::bg_control(), 0x30)))
-                    // Scrolling on the rail steps the deck: down or right
-                    // for the next slide, up or left back. Travel pools
-                    // until a notch's worth adds up, so a trackpad steps
-                    // one slide per flick instead of flying through the
-                    // deck.
+                    // Down or right steps forward, up or left back.
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                         let lines = match event.delta {
                             ScrollDelta::Lines(lines) => lines.y + lines.x,
@@ -516,16 +445,12 @@ impl SlidePanel {
             )
         });
 
-        // A layout that ships as finished furniture drops the builder's
-        // buttons; its slides are still managed from the tree on the
-        // Workspace settings page. The rail and dots stay either way, since
-        // those are how the deck is read rather than how it's built.
+        // Finished layouts hide the builder's buttons; the Workspace page's
+        // tree still manages slides. The rail and dots stay.
         if self.config.chrome.controls_hidden() {
             return root;
         }
 
-        // The corner controls: add a slide, and the active slide's menu
-        // with its reorder moves ahead of the shared rows.
         let add_weak = cx.entity().downgrade();
         let controls = composite::corner_controls()
             .child(
@@ -596,15 +521,11 @@ impl SlidePanel {
     }
 }
 
-/// One edge's hint scrim: a soft gradient fading in from the edge with a
-/// neighbor behind it, darker while the pointer is on it. Hover styling
-/// alone adds no listeners, so clicks fall through to the slide.
 fn edge_scrim(right: bool) -> Div {
     let shade = |alpha: u8| {
         let edge = linear_color_stop(palette::alpha(palette::bg_root_opaque(), alpha), 0.0);
         let fade = linear_color_stop(palette::alpha(palette::bg_root_opaque(), 0x00), 1.0);
-        // Angle 90 runs 0% at the left; the right scrim flips the stops
-        // so the shade is always against its edge.
+        // Angle 90 runs 0% at the left, so the right scrim flips the stops.
         if right {
             linear_gradient(90., fade, edge)
         } else {
@@ -621,10 +542,8 @@ fn edge_scrim(right: bool) -> Div {
         .hover(move |d| d.bg(shade(0x78)))
 }
 
-/// Keep a live rail drag following the pointer: pull the deck on every
-/// move, snap on release. Called from the rail's paint pass: window
-/// handlers only last one frame, the [`rox_panel_kit::scrub_on_paint`]
-/// idiom; the drag's notify repaints and re-arms them.
+/// Called from the rail's paint pass, since window handlers only last one
+/// frame.
 fn rail_on_paint(rail: &ScrubState, weak: &WeakEntity<SlidePanel>, window: &mut Window) {
     if !rail.is_dragging() {
         return;
@@ -639,8 +558,8 @@ fn rail_on_paint(rail: &ScrubState, weak: &WeakEntity<SlidePanel>, window: &mut 
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            // A release outside the window never reaches the up handler;
-            // a move without the button still held snaps the drag home.
+            // A release outside the window never reaches the up handler, so a
+            // move without the button held ends the drag.
             if event.pressed_button != Some(MouseButton::Left) {
                 this.update(cx, |this, cx| this.end_rail_drag(window, cx));
                 return;
@@ -701,8 +620,6 @@ impl Panel for SlidePanel {
         "slide"
     }
 
-    /// The chord acts on the slide you're standing in, not the deck
-    /// around it; focus on the deck itself falls back to its own.
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let slots: Vec<composite::Slot> = self.slides.iter().cloned().map(Some).collect();
         composite::open_slot_settings(&slots, window, cx);

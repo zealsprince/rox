@@ -1,55 +1,39 @@
 //! The Integrations settings page: the scrobble destinations (Last.fm,
-//! ListenBrainz, Libre.fm) in their shared shape, Discord Rich Presence, the
-//! Icecast sink, and the ffmpeg check Convert runs. The Last.fm history
-//! imports sit here with their destination.
+//! ListenBrainz, Libre.fm) in one shared shape, the Last.fm imports, Discord
+//! Rich Presence, the Icecast sink, and the ffmpeg check Convert runs.
 
 use super::*;
 
-/// The verbs a connection that authorizes in the browser answers to.
-/// Last.fm and Libre.fm both connect this way, so one strip serves them
-/// and only where the presses land differs.
+/// Last.fm and Libre.fm both authorize in the browser, so one strip serves
+/// both.
 struct BrowserAuth {
     phase: AuthPhase,
     connected: bool,
     username: String,
     /// A session under another build's api key, which only Last.fm files
-    /// sessions by: the fix is a connect here, and saying so beats a bare
-    /// "not connected" for someone who knows they already did this.
+    /// sessions by. The fix is a connect here.
     elsewhere: bool,
-    /// Whether Connect can go at all: a Last.fm build without its own api
-    /// identity waits for the user's pair.
+    /// A Last.fm build without its own api identity waits for the user's pair.
     ready: bool,
     begin: fn(&mut SettingsWindow, &mut Context<SettingsWindow>),
     finish: fn(&mut SettingsWindow, &mut Context<SettingsWindow>),
     disconnect: fn(&mut SettingsWindow, &mut Context<SettingsWindow>),
 }
 
-/// One scrobble destination as the Integrations page draws it. The three
-/// services connect differently (Last.fm and Libre.fm through the
-/// browser, ListenBrainz with a pasted token) and Last.fm alone carries
-/// hearts, but the section around that is the same for all of them:
-/// whatever the flow needs typed, then the connect row with the status,
-/// the intro under it and the actions that move it along. This is what
-/// each service hands [`SettingsWindow::destination_section`].
+/// What each service hands [`SettingsWindow::destination_section`]: the
+/// services connect differently, but the section around that is the same.
 struct Destination {
-    /// The service's name: the section label, and the `$service` every
-    /// shared line takes.
+    /// Also the `$service` every shared line takes.
     name: SharedString,
     icon: &'static str,
-    /// Search terms beyond the name: what else someone might call it.
     keywords: &'static [&'static str],
     intro: SharedString,
-    /// Rows above the connect strip: credentials the flow needs typed.
     fields: Vec<AnyElement>,
     status: SharedString,
-    /// The buttons on the strip's right, disconnect first where two show.
     actions: Vec<AnyElement>,
-    /// What the section header carries on its right, if anything.
     trailing: Option<AnyElement>,
 }
 
-/// The connect strip's status line for a browser flow that isn't
-/// connected, one wording per phase. Only the refusal names the service.
 fn connect_phase_line(phase: &AuthPhase, service: &SharedString) -> SharedString {
     match phase {
         AuthPhase::Idle => rox_i18n::t!("settings-integrations-scrobble-status-not-connected"),
@@ -96,12 +80,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Favourites section's header control: start the loved-tracks
-    /// import, or stop the one that's running. The ReplayGain section's
-    /// control in every respect but the work, since it's the same shape of
-    /// thing: a job started from a page that doesn't have to stay open for
-    /// it. Inert with its reason on the line below, so a disconnected
-    /// account reads as a state rather than a dead button.
+    /// Inert with its reason on the line below, so a disconnected account reads
+    /// as a state rather than a dead button.
     fn import_control(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(job) = import::progress(cx) {
             let stopping = job.stopping();
@@ -128,8 +108,6 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// The Play Counts row's control: start the Last.fm play-count backfill,
-    /// or stop the one that's running.
     fn plays_import_control(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(job) = plays_import::progress(cx) {
             let stopping = job.stopping();
@@ -156,11 +134,6 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// The Integrations page: everything rox talks to that isn't the
-    /// library or the audio device. The switch and threshold every
-    /// scrobble destination shares, then the destinations one section
-    /// each in the same shape, Discord Rich Presence, the icecast sink,
-    /// and the ffmpeg binary Convert runs.
     pub(super) fn integrations_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let (scrobbling, threshold) = {
             let s = self.scrobbler.read(cx);
@@ -185,8 +158,7 @@ impl SettingsWindow {
                             cx,
                         ),
                     )
-                    // The threshold is when a listen counts, and with
-                    // nothing counting it's a number about nothing.
+                    // The threshold only shows while scrobbling is on.
                     .when(scrobbling, |rows| {
                         rows.keyed(
                             "settings-integrations-scrobble-threshold",
@@ -220,8 +192,6 @@ impl SettingsWindow {
                         &["status", "now playing"],
                         panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
                     )
-                    // The card's own contents live on a presence that's
-                    // being shown.
                     .when(self.discord_enabled, |rows| {
                         let first = self.discord_first_line.clone();
                         let second = self.discord_second_line.clone();
@@ -335,8 +305,8 @@ impl SettingsWindow {
                 },
             ))
             .section(self.icecast_section(q, cx))
-            // This row stays put when ffmpeg is missing, unlike every other
-            // Convert surface: it's the one place that can fix the absence.
+            // Stays put when ffmpeg is missing, unlike every other Convert
+            // surface: it's the one place that can fix it.
             .section(Section::new(
                 q,
                 icons::AUDIO_LINES,
@@ -360,9 +330,6 @@ impl SettingsWindow {
                                 cx.listener(|this, _, _, cx| this.test_ffmpeg(cx)),
                             )),
                     )
-                    // The callout the test produces, in the output status
-                    // block's register: what the binary returned, and
-                    // whether that's fine, readable before any of it is.
                     .when_some(self.ffmpeg_test.as_ref(), |rows, answer| {
                         rows.custom(&["ffmpeg", "convert", "test", "version"], || {
                             match answer {
@@ -383,18 +350,14 @@ impl SettingsWindow {
                             .into_any_element()
                         })
                     })
-                    // The passive note keeps covering the case where nothing
-                    // was pressed, in the same banner dress as the test's
-                    // result; once a test has run, its result says it better.
-                    // Warn rather than Bad: nothing failed, a capability is
-                    // just absent.
+                    // The passive note covers the case where nothing was
+                    // tested. Warn rather than Bad: nothing failed.
                     .when(
                         !convert::available() && self.ffmpeg_test.is_none(),
                         |rows| {
-                            // Inside a Flatpak "install ffmpeg" is the wrong
-                            // advice: the host's binary can't run in the
-                            // sandbox. That note points at the data folder
-                            // instead, which convert::binary() checks.
+                            // Inside a Flatpak the host's binary can't run, so the
+                            // note points at the data folder, which
+                            // `convert::binary()` checks.
                             let note = if flatpak {
                                 rox_i18n::t!("settings-integrations-ffmpeg-missing-note-flatpak")
                             } else {
@@ -410,11 +373,9 @@ impl SettingsWindow {
                             })
                         },
                     )
-                    // The folder a static build goes into, opened from here
-                    // so nobody has to find ~/.var/app by hand. Only in a
-                    // Flatpak: everywhere else PATH is the answer, and the
-                    // folder is a detail. gpui's Linux reveal goes through
-                    // the OpenURI portal, so it works from inside the sandbox.
+                    // Flatpak only: elsewhere PATH is the answer. gpui's Linux
+                    // reveal goes through the OpenURI portal, so it works from
+                    // the sandbox.
                     .when(flatpak, |rows| {
                         rows.custom(
                             &["ffmpeg", "convert", "flatpak", "data", "folder", "reveal"],
@@ -439,9 +400,6 @@ impl SettingsWindow {
             ))
     }
 
-    /// One scrobble destination's section, the shape all three share: the
-    /// fields the flow needs, the connect row, and whatever rows the
-    /// service adds below that.
     fn destination_section(
         &self,
         q: &Query,
@@ -458,10 +416,8 @@ impl SettingsWindow {
             actions,
             trailing,
         } = destination;
-        // The connect row reads like the rows under it: the status stands
-        // as its label, the intro sits beneath as its description, and the
-        // actions take the control's place. Fields come first, so a token
-        // or an api pair is above the line that says what pasting it does.
+        // Fields come first, so a token or api pair sits above the line that
+        // says what pasting it does.
         let account = div()
             .flex()
             .flex_col()
@@ -485,9 +441,6 @@ impl SettingsWindow {
         })
     }
 
-    /// The connect strip for a service that authorizes in the browser: the
-    /// status follows the phase, and the one button offers the step that
-    /// moves it along.
     fn browser_auth_strip(
         &self,
         service: &SharedString,
@@ -529,8 +482,7 @@ impl SettingsWindow {
                         cx.listener(move |this, _, _, cx| finish(this, cx)),
                     )
                 }
-                // Reconnect where a session was lost rather than never
-                // held: the button reads as picking something back up.
+                // Reconnect where a session was lost rather than never held.
                 phase => {
                     let begin = auth.begin;
                     small_button(
@@ -549,8 +501,6 @@ impl SettingsWindow {
         (status, vec![action.into_any_element()])
     }
 
-    /// Last.fm: the browser flow, the api pair on a build that ships none,
-    /// and the hearts mirror no other destination has.
     fn lastfm_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let name: SharedString = rox_i18n::t!("settings-integrations-section-lastfm");
         let (config, phase, connected, username, elsewhere, loves_pending, love_error) = {
@@ -565,8 +515,7 @@ impl SettingsWindow {
                 s.love_error(),
             )
         };
-        // A build with its own api identity connects in one click; only
-        // one without needs the user's pair.
+        // A build with its own api identity needs no pair from the user.
         let builtin = has_builtin_keys();
         let (status, actions) = self.browser_auth_strip(
             &name,
@@ -601,10 +550,8 @@ impl SettingsWindow {
             ]
         };
 
-        // What the love sync has left to do, and why it stopped if it did.
-        // A love that failed into a log file is two sides out of sync with
-        // nothing on screen to say so, so this line is why the queue keeps
-        // its reason.
+        // A failed love leaves both sides out of sync, so the queue keeps its
+        // reason for this line.
         let hearts = |n: usize| {
             rox_i18n::t!("settings-integrations-lastfm-hearts", n = n as u64).to_string()
         };
@@ -691,9 +638,6 @@ impl SettingsWindow {
         )
     }
 
-    /// ListenBrainz: a token pasted from the site is the whole connection,
-    /// so Connect checks the token rather than opening a browser, and the
-    /// status line names the account it belongs to.
     fn listenbrainz_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let name: SharedString = rox_i18n::t!("settings-integrations-section-listenbrainz");
         let lb_status = self.listenbrainz.read(cx).status().clone();
@@ -718,8 +662,7 @@ impl SettingsWindow {
                 error = reason
             ),
         };
-        // Connect with an empty field would only ever say "not connected"
-        // back, so it's inert until there's something to check.
+        // Inert until there's a token to check.
         let token_empty = self.listenbrainz_token.read(cx).value().trim().is_empty();
         let mut actions = Vec::with_capacity(2);
         if connected {
@@ -758,9 +701,8 @@ impl SettingsWindow {
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_MD)
-                // The token only exists on the ListenBrainz settings page,
-                // and fetching it comes before pasting it, so the link
-                // sits ahead of the field in reading order.
+                // The link to fetch the token sits ahead of the field in
+                // reading order.
                 .child(
                     div()
                         .id("listenbrainz-get-token")
@@ -798,8 +740,6 @@ impl SettingsWindow {
         )
     }
 
-    /// Libre.fm: Last.fm's browser dance against its own entity, with no
-    /// api pair to ask for since the service takes the one rox ships.
     fn librefm_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let name: SharedString = rox_i18n::t!("settings-integrations-section-librefm");
         let (phase, connected, username) = {
@@ -841,15 +781,9 @@ impl SettingsWindow {
         )
     }
 
-    /// The Icecast section (ADR 22): the source client, which is the audio
-    /// half of the refused web server. The switch connects and
-    /// disconnects; the fields write through as they're typed and the sink
-    /// re-applies when one is left.
-    ///
-    /// Everything under the switch only appears once it's on. A mount, a
-    /// source login and a bitrate are four rows of setup for something most
-    /// people never turn on, and with the switch off they'd only be a
-    /// question nobody asked.
+    /// The Icecast section (ADR 22): the source client, the audio half of the
+    /// refused web server. Everything under the switch only appears once it's
+    /// on.
     fn icecast_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         Section::new(
             q,
@@ -904,9 +838,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The Icecast half of the same idea: re-dial the sink on whatever the
-    /// fields now say. Gated on the flag so a blur that passed through an
-    /// untouched field doesn't drop a live connection and build it again.
+    /// Gated on the dirty flag so a blur through an untouched field doesn't
+    /// drop a live connection.
     pub(super) fn broadcast_moved(&mut self) {
         if !self.broadcast_dirty {
             return;
@@ -919,9 +852,6 @@ impl SettingsWindow {
         }
     }
 
-    /// The broadcast switch. Applying reads the file the field edits were
-    /// written to, so the sink comes up on whatever the rows say; off tears
-    /// the connection down, which releases the mount.
     fn set_broadcast_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.broadcast_enabled = on;
         Settings::update(move |s| s.broadcast.enabled = on);
@@ -929,8 +859,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The encoder bitrate, the steps LAME takes. A change while streaming
-    /// reconnects, since one stream can't change bitrate under a listener.
+    /// A change while streaming reconnects: a stream can't change bitrate under
+    /// a listener.
     fn broadcast_bitrate_row(&self, cx: &mut Context<Self>) -> Div {
         let options: Vec<(u32, SharedString)> = [96u32, 112, 128, 160, 192, 224, 256, 320]
             .into_iter()
@@ -962,10 +892,8 @@ impl SettingsWindow {
         )
     }
 
-    /// Run the version probe against whatever the input holds, off the UI
-    /// thread since it spawns a process, and keep the result for the
-    /// callout. The probe cache records it too, so a pass flips the
-    /// Convert surfaces on right here.
+    /// Off the UI thread since it spawns a process. The probe cache records the
+    /// result too, so a pass flips the Convert surfaces on.
     fn test_ffmpeg(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let answer = cx
@@ -982,13 +910,9 @@ impl SettingsWindow {
     }
 }
 
-/// What the line under a Discord card line's input says: the line the
-/// card will show, a note where the pattern renders nothing, or what's
-/// wrong with the pattern.
 fn presence_line_note(preview: Result<String, String>) -> PatternNote {
     match preview {
-        // A line that renders to nothing isn't an error, but it does need
-        // saying: the card goes out without it.
+        // Not an error, but the card goes out without the line.
         Ok(line) if line.is_empty() => {
             PatternNote::Quiet(rox_i18n::t!("settings-integrations-discord-line-off"))
         }
@@ -1002,8 +926,6 @@ fn presence_line_note(preview: Result<String, String>) -> PatternNote {
     }
 }
 
-/// One Discord card line's block: the label, and the pattern box every
-/// other pattern in the app is typed into.
 fn presence_line_block(
     id: &'static str,
     title: SharedString,
@@ -1022,8 +944,7 @@ fn presence_line_block(
             Vec::new(),
             Some(note),
         )
-        // Fill the block rather than shrinking to the input's own width,
-        // the same as the capture pattern's column.
+        // Fill the block, like the capture pattern's column.
         .flex_1()
         .min_w_0(),
     )

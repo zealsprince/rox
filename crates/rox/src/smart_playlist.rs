@@ -1,21 +1,9 @@
-//! The smart playlist editor: a window over one saved query. The
-//! definition is in the left column (a name, the query itself in a search
-//! box that uses the same syntax and offers the same completions as the
-//! library's, an optional sort and cap), and what that definition
-//! currently takes fills the right.
+//! The smart playlist editor: a window over one saved query, the definition on
+//! the left and a live preview of what it takes on the right. The preview
+//! re-evaluates on every change, one projection pass, never per frame.
 //!
-//! The preview is the point of the window. A saved query is a promise
-//! about rows nobody can see yet, so the editor evaluates on every change
-//! and shows the tracks before anything is saved. Evaluation is one
-//! projection pass, the same one the panel runs on refresh, and it keeps
-//! the rows rather than the tracks: row text resolves through
-//! the projection per visible row, so a query that takes the whole
-//! library costs one pass and nothing per row after it. Nothing here runs
-//! a pass per frame.
-//!
-//! The structured filter is passed through untouched: it has no controls here
-//! (the filter panel builds those), and an edit that dropped it silently
-//! would lose work the query text can't express.
+//! The structured filter passes through untouched: the filter panel builds its
+//! controls, and dropping it would lose work the query text can't express.
 
 use gpui::{
     App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, MouseButton,
@@ -38,26 +26,16 @@ use rox_panel_api::suggest;
 use rox_panel_kit::ui::{self as settings_ui, Seg, checkbox, kbd_line, section, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
-/// The definition column's width: room for a label and its field, and no
-/// more, so every pixel the window grows by goes to the preview.
+/// Fixed, so every pixel the window grows by goes to the preview.
 const CONTROLS_W: Pixels = px(340.);
 
-/// The label column inside a field row, and the indent a note under one
-/// takes to line up with the control rather than the label.
+/// Also the indent that lines a note up under the control.
 const LABEL_W: Pixels = px(64.);
 
-/// One preview row's height. The list is a `uniform_list`, so every row
-/// has to agree on it.
 const ROW_H: Pixels = px(22.);
 
-/// The sorts a smart playlist can ask for, in the order the dropdown lists
-/// them. Its own list rather than the library table's columns: a saved
-/// query orders by the handful of fields people build lists around, not
-/// every column a table can show.
-///
-/// A function rather than a `const`: the labels resolve through `t!`,
-/// which isn't const-evaluable, so the list gets rebuilt each call rather
-/// than baked in for one locale.
+/// A handful of fields people build lists around, not every table column.
+/// Rebuilt per call since `t!` isn't const.
 fn sorts() -> Vec<(SharedString, Option<SortKey>)> {
     vec![
         (rox_i18n::t!("smart-playlist-sort-default"), None),
@@ -76,7 +54,6 @@ fn sorts() -> Vec<(SharedString, Option<SortKey>)> {
     ]
 }
 
-/// The label a sort key reads as in the dropdown.
 fn sort_label(sort: Option<SortKey>) -> SharedString {
     sorts()
         .into_iter()
@@ -87,38 +64,27 @@ fn sort_label(sort: Option<SortKey>) -> SharedString {
 
 actions!(smart_playlist, [Save]);
 
-/// The key context the window's own bindings scope to.
 const CONTEXT: &str = "SmartPlaylist";
 
-/// The editor's save binding; call once at startup. It's bound on the
-/// window root, so Enter saves wherever focus is (a dropdown, the
-/// checkbox, the preview) and not only in the field that happens to hold
-/// it. The inputs still see the key first, since their own binding is
-/// deeper along the focus path: a single-line input propagates it up to
-/// here, and an open suggestion menu swallows it, so Enter takes the
-/// suggestion first and saves on the next press.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Save, Some(CONTEXT))]);
+/// Bound on the window root so Enter saves from anywhere. An open suggestion
+/// menu swallows Enter first, so it takes the suggestion and saves on the next
+/// press.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("enter", Save, Some(CONTEXT))]
 }
 
-/// What's off about the query, when something is. The query language
-/// never fails to parse: an unknown `foo:` prefix quietly falls back to a
-/// plain text term (the rule [`rox_library::projection::parse_query`]
-/// follows), which is exactly the mistake worth catching before somebody
-/// saves a playlist that matches nothing.
+/// The query never fails to parse: an unknown `foo:` prefix falls back to a
+/// text term (see [`rox_library::projection::parse_query`]), which is worth
+/// catching before saving a playlist that matches nothing.
 fn query_note(query: &str) -> Option<SharedString> {
     let unknown = query
         .split_whitespace()
-        // A quoted value is a value, not a prefix. `artist:"ac:dc"`
-        // arrives split across tokens, and neither half is a claim about
-        // a field.
+        // A quoted value arrives split across tokens; neither half names a
+        // field.
         .filter(|token| !token.contains('"'))
         .find_map(|token| {
             let (name, _) = token.split_once(':')?;
-            // A leading hyphen negates the term, so the field name is
-            // what follows it: `-genre:rock` is a genre pin like any
-            // other and shouldn't read as an unknown "-genre". The note
-            // still quotes the token as typed.
+            // A leading hyphen negates: `-genre:rock` names genre.
             let name = name.to_lowercase();
             let bare = name.strip_prefix('-').unwrap_or(&name);
             let known = QUERY_FIELDS.iter().any(|(field, _)| *field == bare);
@@ -130,8 +96,6 @@ fn query_note(query: &str) -> Option<SharedString> {
     ))
 }
 
-/// Open the editor. `id` names an existing smart playlist to edit; None
-/// starts a new one.
 pub fn open(state: AppState, id: Option<i64>, cx: &mut App) {
     let verb = if id.is_some() {
         rox_i18n::t!("smart-playlist-edit-title")
@@ -144,9 +108,8 @@ pub fn open(state: AppState, id: Option<i64>, cx: &mut App) {
         cx,
         title,
         bounds,
-        // The floor keeps the two columns apart: the definition holds its
-        // width, so a shrinking window eats into the preview and stops
-        // before either is unusable.
+        // The definition column holds its width, so shrinking eats the preview
+        // and stops before either is unusable.
         Some(settings_ui::MIN_SIZE),
         move |window, cx| cx.new(|cx| SmartPlaylistWindow::new(state, id, window, cx)),
     );
@@ -154,38 +117,29 @@ pub fn open(state: AppState, id: Option<i64>, cx: &mut App) {
 
 struct SmartPlaylistWindow {
     state: AppState,
-    /// The playlist being edited, None while making a new one.
     id: Option<i64>,
     name: Entity<InputState>,
     query: Entity<SearchBox>,
     limit: Entity<InputState>,
     sort: Option<SortKey>,
     descending: bool,
-    /// The filter the loaded definition held, passed straight back
-    /// through on save. Nothing here edits it.
+    /// Passed straight back through on save.
     filter: rox_library::projection::FilterSet,
-    /// The projection rows the current definition takes, re-evaluated on
-    /// every change and never on a frame. Rows rather than tracks: the
-    /// preview resolves the few it draws off these.
+    /// Rows rather than tracks: the preview resolves only the few it draws.
     matched: Vec<u32>,
-    /// The save already ran. One Enter press can reach [`Self::commit`]
-    /// twice (the focused input's binding and the window's, which the
-    /// input propagates to), and a second save would file a second
-    /// playlist.
+    /// One Enter can reach [`Self::commit`] twice (the input's binding and the
+    /// window's), and a second save would file a second playlist.
     saved: bool,
     scroll: UniformListScrollHandle,
     backdrop: WindowBackdrop,
     _query_events: Subscription,
     _name_events: Subscription,
     _limit_events: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own wake
-    /// on a new bake.
     _backdrop_changed: Subscription,
 }
 
 impl SmartPlaylistWindow {
     fn new(state: AppState, id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Editing loads what's saved; a new one opens empty.
         let existing = id.and_then(|id| state.library.read(cx).playlist_definition(id));
         let current_name = id
             .and_then(|id| {
@@ -214,8 +168,7 @@ impl SmartPlaylistWindow {
             )
             .small()
         });
-        // The same completions the library's box gets, so the syntax is
-        // learnable in the one place it's saved for good.
+        // The library box's completions, so the syntax is learnable here.
         let provider = suggest::query_provider(&state.library, cx);
         query.update(cx, |query, cx| query.set_completions(provider, cx));
         let limit = cx.new(|cx| {
@@ -229,8 +182,6 @@ impl SmartPlaylistWindow {
             window,
             |this: &mut Self, _, event: &SearchEvent, window, cx| match event {
                 SearchEvent::Changed => this.requery(cx),
-                // Enter in the query field saves, the way it does in the
-                // name field.
                 SearchEvent::Submitted => this.commit(window, cx),
                 _ => {}
             },
@@ -239,8 +190,6 @@ impl SmartPlaylistWindow {
             &name,
             window,
             |this: &mut Self, _, event: &InputEvent, window, cx| match event {
-                // The name gates the save, so the button follows it
-                // keystroke by keystroke.
                 InputEvent::Change => cx.notify(),
                 InputEvent::PressEnter { .. } => this.commit(window, cx),
                 _ => {}
@@ -280,20 +229,17 @@ impl SmartPlaylistWindow {
         this
     }
 
-    /// The definition the fields currently spell out.
     fn definition(&self, cx: &App) -> SmartDef {
         let limit = self.limit.read(cx).value().trim().parse::<u32>().ok();
         SmartDef {
             query: self.query.read(cx).query().to_string(),
             filter: self.filter.clone(),
             sort: self.sort.map(|key| (key, self.descending)),
-            // A zero cap is nobody's intent, so it reads as no cap at all.
+            // A zero cap reads as no cap.
             limit: limit.filter(|&n| n > 0),
         }
     }
 
-    /// Re-evaluate against the catalog and repaint the preview. One
-    /// projection pass, run on a change rather than on a frame.
     fn requery(&mut self, cx: &mut Context<Self>) {
         let def = self.definition(cx);
         self.matched = self.state.library.read(cx).smart_rows(&def);
@@ -310,15 +256,12 @@ impl SmartPlaylistWindow {
         self.requery(cx);
     }
 
-    /// Whether the definition can be saved as it stands. A blank name is
-    /// the only thing that blocks it: the query syntax has no invalid
-    /// state, and a query that takes nothing is a real thing to save.
+    /// Only a blank name blocks the save; a query that takes nothing is a real
+    /// thing to save.
     fn savable(&self, cx: &App) -> bool {
         !self.name.read(cx).value().trim().is_empty()
     }
 
-    /// Save and close. A blank name does nothing, which the footer shows
-    /// in place of the shortcut so the block isn't silent.
     fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().trim().to_string();
         if self.saved || name.is_empty() {
@@ -339,7 +282,6 @@ impl SmartPlaylistWindow {
         window.remove_window();
     }
 
-    /// One labeled row of the form.
     fn field(label: impl Into<SharedString>, control: impl IntoElement) -> gpui::Div {
         div()
             .flex()
@@ -356,8 +298,6 @@ impl SmartPlaylistWindow {
             .child(div().flex_1().min_w_0().child(control))
     }
 
-    /// The definition column: the fields, and what's off about the query
-    /// under the field it's about.
     fn controls(&mut self, cx: &mut Context<Self>) -> Div {
         let weak = cx.entity().downgrade();
         let sort = self.sort;
@@ -385,8 +325,6 @@ impl SmartPlaylistWindow {
             .when_some(note, |d, note| {
                 d.child(
                     div()
-                        // Indented past the label column, so the note is
-                        // under the box it's about.
                         .pl(LABEL_W + tokens::SPACE_SM)
                         .text_xs()
                         .text_color(palette::tone_warn())
@@ -398,8 +336,8 @@ impl SmartPlaylistWindow {
                 div()
                     .flex()
                     .flex_row()
-                    // The direction drops to its own line rather than
-                    // pushing out of the column when a sort name runs long.
+                    // Wraps the direction onto its own line when a sort name
+                    // runs long.
                     .flex_wrap()
                     .items_center()
                     .gap(tokens::SPACE_SM)
@@ -426,7 +364,6 @@ impl SmartPlaylistWindow {
                                 menu
                             }),
                     )
-                    // Direction only means something once a sort is picked.
                     .when(sort.is_some(), |d| {
                         d.child(
                             div()
@@ -465,7 +402,6 @@ impl SmartPlaylistWindow {
             .child(section(heading, None, fields))
     }
 
-    /// The preview column: the count over the tracks the definition takes.
     fn preview(&mut self, cx: &mut Context<Self>) -> Div {
         let count = rox_i18n::t!(
             "smart-playlist-match-count",
@@ -524,9 +460,6 @@ impl SmartPlaylistWindow {
             )
     }
 
-    /// The visible slice of the preview. Row text resolves through the
-    /// projection per visible row, so a query that takes the whole library
-    /// costs only what shows.
     fn preview_rows(&self, range: std::ops::Range<usize>, cx: &App) -> Vec<Div> {
         let library = self.state.library.read(cx);
         let Some(projection) = library.projection() else {
@@ -535,10 +468,8 @@ impl SmartPlaylistWindow {
         range
             .filter_map(|i| {
                 let row = *self.matched.get(i)? as usize;
-                // A scan swaps the projection under an open window, which
-                // leaves the rows this one kept pointing past the end of
-                // the new one. A stale row draws as nothing rather than
-                // reading off the end.
+                // A scan swaps the projection under an open window, so a stale
+                // row draws as nothing.
                 if row >= projection.len() || projection.is_dead(row as u32) {
                     return None;
                 }
@@ -548,7 +479,6 @@ impl SmartPlaylistWindow {
             .collect()
     }
 
-    /// The window's own actions: the save, and the shortcut for it.
     fn footer(&self, savable: bool, cx: &mut Context<Self>) -> Div {
         let hint = if savable {
             kbd_line([
@@ -599,7 +529,6 @@ impl SmartPlaylistWindow {
     }
 }
 
-/// One preview row: a track the query took, the title beside who made it.
 fn preview_row(title: &str, artist: &str) -> Div {
     div()
         .h(ROW_H)
@@ -644,9 +573,6 @@ impl Render for SmartPlaylistWindow {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    // The body's own surface, a second elevated layer over the
-                    // window's, the same as the settings page. The backdrop
-                    // reads through two layers everywhere.
                     .bg(palette::bg_elevated())
                     .child(self.controls(cx))
                     .child(self.preview(cx)),
@@ -670,7 +596,6 @@ mod tests {
         assert!(query_note("").is_none());
         assert!(query_note("stronger").is_none());
         assert!(query_note("year:1997 rating:>=4 added:<90d folder:live").is_none());
-        // A quoted value is a value, never a claim about a field.
         assert!(query_note("artist:\"ac:dc\"").is_none());
     }
 }

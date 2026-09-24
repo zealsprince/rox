@@ -1,13 +1,7 @@
-//! The release facts store: the metadata panel's MusicBrainz rows. What
-//! MusicBrainz records about a track's release (label, catalog number,
-//! country, dates, ISRC), fetched once and kept as one JSON per track
-//! under the artists folder's `releases` subfolder, so a shown track
-//! reads offline from then on and the artist cache's clear takes these
-//! with it. Keyed on a stable hash of the folded artist, title, and
-//! album; an entry refreshes once it ages past [`TTL_SECS`], and a fetch
-//! that fails with a copy on disk serves the copy rather than nothing.
-//! Blocking, background executor only, like the provider it calls, and
-//! the provider's one-a-second throttle applies: a lookup is two calls.
+//! The metadata panel's MusicBrainz release facts, cached as one JSON per
+//! track under the artists folder's `releases/`, so the artist cache's clear
+//! takes them too. A failed fetch serves the stale copy. Blocking, and the
+//! provider's one-a-second throttle applies: a lookup is two calls.
 
 use std::fs;
 use std::path::PathBuf;
@@ -19,13 +13,9 @@ use rox_core::settings::artists_dir;
 use rox_net::providers::musicbrainz::ReleaseFacts;
 use rox_net::providers::{self, TrackQuery};
 
-/// How long a cached entry serves before a fetch refreshes it. Release
-/// facts barely move, so the artist store's month.
 const TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
-/// The cache file's shape: when the fetch happened and what it found.
-/// None inside records MusicBrainz having no such recording, so a miss
-/// doesn't re-query on every panel open.
+/// `facts: None` records a miss, so it doesn't re-query on every open.
 #[derive(Serialize, Deserialize)]
 struct Entry {
     fetched: u64,
@@ -52,11 +42,7 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// The release facts for a track, cache first: a fresh entry is served
-/// from disk, a stale or missing one fetches and rewrites it, and with
-/// the metadata provider off the cache is served at any age. Ok(None) is
-/// a clean miss: MusicBrainz has no such recording, or nothing is cached
-/// to serve offline. Blocking, background executor only.
+/// With the metadata provider off, the cache serves at any age. Blocking.
 pub fn get(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String> {
     if query.artist.trim().is_empty() || query.title.trim().is_empty() {
         return Ok(None);
@@ -85,8 +71,6 @@ pub fn get(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String> {
             }
             Ok(entry.facts)
         }
-        // The network failing with a copy on disk serves the copy; its
-        // age beats an empty row.
         Err(e) => match cached.and_then(|entry| entry.facts) {
             Some(facts) => Ok(Some(facts)),
             None => Err(e),

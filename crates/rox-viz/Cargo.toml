@@ -6,11 +6,8 @@ license.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-# Signals and routes ride the workspace bundle, whose JSON Schema is
-# derived from the types (ADR 22).
+# Signals and routes ride the workspace bundle's derived JSON Schema (ADR 22).
 schemars = "1"
 
 [dev-dependencies]
-# Routes and signals are only ever read back off disk as JSON, so the
-# back-compat tests have to speak it.
 serde_json = "1"

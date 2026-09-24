@@ -1,24 +1,15 @@
 //! How often the genre vote would have guessed right.
 //!
-//! `genre_suggest` argues from three sources: the rest of the album, the rest
-//! of the artist, and the acoustic neighbours. Each of those is obviously
-//! worth something, which is exactly why the weights between them can't be
-//! argued into place. So this hides the genre on tracks that already have one
-//! and asks the vote what it would have said. A tagged track is its own
-//! answer key, and a real library has tens of thousands of them.
+//! Hides the genre on tagged tracks and asks `genre_suggest` what it would
+//! have said, so the weights between album, artist and acoustic neighbours
+//! can be measured instead of argued (the external lookup is left out). The
+//! seed's own row never votes, so hiding the tag is just not looking at it.
+//! Each sample runs each source alone and all three together. Hit rates share
+//! the coverage denominator, so a source that only speaks when sure shows as
+//! low coverage.
 //!
-//! The seed's own row never votes (`vote` skips it), so hiding the tag is
-//! nothing more than not looking at it. Each sample runs four ways: the three
-//! sources alone, then all three together, so the table says both how far
-//! each one reaches on its own and whether combining them helps or just
-//! averages. Coverage is the share of seeds the way had anything at all to
-//! say about; the hit rates are shares of the same denominator, so a way that
-//! only speaks when it's sure is visible as low coverage rather than as a
-//! high score.
-//!
-//! The sample is random with a fixed seed, so two runs over the same library
-//! compare, and a weight change shows up as a difference rather than as
-//! noise. Run it against a copy of a library, never the live one.
+//! Fixed-seed sampling, so a weight change shows up as a difference. Run it
+//! against a copy of a library, never the live one.
 //!
 //! ```sh
 //! cp ~/.local/share/rox/library.db /tmp/genreprobe.db
@@ -34,12 +25,10 @@ use rox_library::genre_suggest::{self, NEIGHBOURS, Weights};
 use rox_library::projection::Projection;
 use rox_library::{embeddings, genre, genre_meta, store};
 
-/// How many suggestions to ask for. Three, because top-3 is the deepest
-/// number reported and a longer list would cost sorting nobody reads.
+/// Top-3 is the deepest number reported.
 const CAP: usize = 3;
 
-/// SplitMix64, so the sample is reproducible without a dependency. Any
-/// decent 64-bit generator would do; this one is four lines.
+/// SplitMix64, so the sample is reproducible without a dependency.
 struct Rng(u64);
 
 impl Rng {
@@ -51,8 +40,7 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// A partial Fisher-Yates: the first `n` of a shuffle, which is a sample
-    /// without replacement that never allocates a rejection loop.
+    /// Partial Fisher-Yates: the first `n` of a shuffle.
     fn sample(&mut self, mut pool: Vec<u32>, n: usize) -> Vec<u32> {
         let n = n.min(pool.len());
         for i in 0..n {
@@ -64,11 +52,9 @@ impl Rng {
     }
 }
 
-/// One way of voting and what it got right.
 struct Way {
     name: &'static str,
     weights: Weights,
-    /// Seeds this way said anything at all about.
     covered: u64,
     top1: u64,
     top3: u64,
@@ -136,13 +122,10 @@ fn main() {
 
     let started = Instant::now();
     let conn = store::open(&db).expect("open the database");
-    // The side tables the projection joins are created by the app's open
-    // path, not by opening the file, and a library copied out from under a
-    // build that hadn't made one yet would fail the load. Cheap and
-    // idempotent, and the probe is pointed at a copy.
+    // The app's open path creates the side tables, and an older copy may lack
+    // them. Idempotent.
     store::init_schema(&conn).expect("bring the schema up");
-    // The app installs these before it loads a projection, so resolution
-    // here folds the same values the user's library folds.
+    // Installed as the app does, so resolution folds the same values.
     genre::set_aliases(genre_meta::aliases(&conn).expect("read the alias map"));
     let projection = Projection::load_serial(&conn, false).expect("load the projection");
     println!(
@@ -166,9 +149,6 @@ fn main() {
         None => println!("model {model:?} has no vectors: the acoustic ways will be empty"),
     }
 
-    // The answer key: every live row that already carries a genre. The
-    // untagged rows are what the feature is for, and they have nothing to
-    // check an answer against.
     let blank: HashSet<u32> = genre_suggest::untagged(&projection).into_iter().collect();
     let pool: Vec<u32> = (0..projection.len() as u32)
         .filter(|&row| !projection.is_dead(row) && !blank.contains(&row))
@@ -222,8 +202,7 @@ fn main() {
             truth.insert(genre::resolve(part).to_lowercase());
         }
 
-        // Fetched once and reused across the ways: it's the expensive half
-        // of the probe, and it doesn't depend on the weights.
+        // Fetched once: the expensive half, and independent of the weights.
         let at = Instant::now();
         let neighbours = embeddings::ranked(&conn, projection.db_id[row as usize], &model)
             .map(|scored| genre_suggest::nearest(scored, NEIGHBOURS))

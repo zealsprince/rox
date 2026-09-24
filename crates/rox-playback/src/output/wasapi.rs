@@ -1,47 +1,29 @@
-//! Exclusive output on Windows: WASAPI opened in
-//! `AUDCLNT_SHAREMODE_EXCLUSIVE`, which hands the endpoint to rox alone and
-//! takes the sample rate and format the file actually has instead of the one
-//! the audio engine already mixes at. That's the whole point of the mode:
-//! shared WASAPI resamples everything to the endpoint's format, so a 96 kHz
-//! file never reaches the converter as 96 kHz. cpal has no exclusive path,
-//! which is why this talks to the API directly.
+//! Exclusive output on Windows: WASAPI in `AUDCLNT_SHAREMODE_EXCLUSIVE`, at the
+//! file's own rate and format. Shared WASAPI resamples everything, and cpal
+//! has no exclusive path, so this talks to the API directly.
 //!
-//! The shape matches `alsa.rs`: a device list, an `open` that
-//! either claims or hands back a reason, a `Claim` whose Drop joins the
-//! writer, and a writer that calls the shared `fill` per period. What
-//! differs is forced by COM. Interfaces are apartment-bound and not `Send`,
-//! so everything from the enumerator to the render client is created, used,
-//! and released on one thread we own. `open` starts that thread first and
-//! waits for it to report what it negotiated, rather than negotiating on the
-//! caller's thread and shipping the handles across.
+//! Same shape as `alsa.rs`. COM interfaces are apartment-bound and not `Send`,
+//! so everything is created, used, and released on one writer thread; `open`
+//! waits for it to report what it negotiated.
 //!
-//! The negotiation math is plain Rust and is above the FFI, so it compiles
-//! and gets tested on every platform, not only where the backend runs.
+//! The negotiation math sits above the FFI so it's tested on every platform.
 
 #[cfg(target_os = "windows")]
 pub use platform::{devices, open};
 
-/// Reference time, the unit every WASAPI duration is in: 100 ns ticks, so ten
-/// million to the second.
+/// 100 ns ticks.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const HNS_PER_SEC: f64 = 10_000_000.0;
 
-/// The rate to ask for when the caller doesn't name one, which is every
-/// session that opens before a file has been decoded. The pump reopens at the
-/// file's own rate once it knows it.
+/// Before a file is decoded; the pump reopens at the file's rate.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const DEFAULT_RATE: u32 = 48000;
 
-/// The longest period we'll ask a device for, 100 ms. Two things push down on
-/// this. The buffer is [`PERIODS`] of them and the sample ring in front of the
-/// writer holds 500 ms, so a longer period asks for a device buffer the decode
-/// thread can't keep stocked. And the writer only notices the stop flag once a
-/// wake, so a huge period turns toggling exclusive off into a visible stall.
+/// 100 ms. [`PERIODS`] of them must stay under what the 500 ms ring keeps
+/// stocked, and the writer only sees the stop flag once per wake.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const MAX_PERIOD_HNS: i64 = 1_000_000;
 
-/// Which Rust sample type a negotiated format writes as. The writer thread is
-/// generic over it, so this picks the instantiation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 enum Sample {
@@ -50,32 +32,21 @@ enum Sample {
     I16,
 }
 
-/// One rung of the format ladder: what goes into the `WAVEFORMATEXTENSIBLE`
-/// and what rox writes into the buffer.
+/// One rung of the format ladder.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct Candidate {
     sample: Sample,
-    /// The container width, `wBitsPerSample`.
     bits: u16,
-    /// How many of those bits the device actually uses, `wValidBitsPerSample`.
     valid_bits: u16,
-    /// True for `KSDATAFORMAT_SUBTYPE_IEEE_FLOAT`, false for the PCM subtype.
     float: bool,
-    /// The name the settings page pins and [`Negotiated`] reports, spelled the
-    /// same way the ALSA backend spells it so one setting means one thing on
-    /// both platforms.
+    /// Spelled like the ALSA backend's, so one setting means one thing everywhere.
     ///
     /// [`Negotiated`]: super::Negotiated
     name: &'static str,
 }
 
-/// Formats we'll take, best first. Float straight through where the endpoint
-/// has it, then 24 bits carried in a 32-bit container, then 16. The middle
-/// rung is what "24-bit" means on Windows: drivers advertise a 32-bit
-/// container with 24 valid bits, and rox writes a plain `i32` whose top 24
-/// bits are the sample, so it's reported as `s32` rather than inventing a
-/// name for a layout that has no Rust type of its own. Packed 24-bit is
-/// absent for the same reason it is in the ALSA backend.
+/// Best first. "24-bit" on Windows is 24 valid bits in a 32-bit container,
+/// written as a plain `i32` and reported as `s32`. No packed 24-bit.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const FORMATS: &[Candidate] = &[
     Candidate {
@@ -101,11 +72,7 @@ const FORMATS: &[Candidate] = &[
     },
 ];
 
-/// Step through the ladder against whatever the device accepts. A named
-/// format the device takes wins; anything else, including a name for a format
-/// this device doesn't have, falls to the best it does. Reporting the result
-/// keeps that honest, so a pick the hardware refused reads as the format
-/// actually running.
+/// A named format the device takes wins; otherwise the best it has.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn pick_format(
     want: Option<&str>,
@@ -119,17 +86,12 @@ fn pick_format(
     FORMATS.iter().find(|c| supported(c))
 }
 
-/// Periods in the endpoint buffer. Only event-driven exclusive mode forces the
-/// buffer to be exactly one period; a push-mode client like this one asks for
-/// a deeper buffer and leaves the periodicity at a single period. Four is what
-/// the ALSA backend takes and it's the same reasoning: the writer wakes on a
-/// timer, and a buffer one period deep is dry the moment a wake comes late.
+/// Push mode takes a buffer deeper than its period; four, like ALSA, so a
+/// late timer wake doesn't run it dry.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const PERIODS: i64 = 4;
 
-/// The device period to ask for, in reference time. `default_hns` and
-/// `min_hns` come from `GetDevicePeriod`, and the driver's own minimum is a
-/// hard floor because asking below it fails the claim outright.
+/// The driver minimum is a hard floor: asking below it fails the claim.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn period_hns(want_ms: Option<f64>, default_hns: i64, min_hns: i64) -> i64 {
     let want = want_ms
@@ -138,28 +100,21 @@ fn period_hns(want_ms: Option<f64>, default_hns: i64, min_hns: i64) -> i64 {
     want.clamp(min_hns.max(1), MAX_PERIOD_HNS.max(min_hns.max(1)))
 }
 
-/// The buffer duration that goes with a period: [`PERIODS`] of them. The
-/// capped period puts the ceiling at 400 ms, the same depth ALSA's four
-/// periods give, which the 500 ms ring in front can still keep stocked.
+/// Capped at 400 ms, which the 500 ms ring can keep stocked.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn buffer_hns(period: i64) -> i64 {
     period.saturating_mul(PERIODS)
 }
 
-/// How long the writer sleeps between top-ups, in frames: half a period.
-/// Taken off the buffer the driver actually handed back rather than the
-/// duration we asked for, so an alignment retry or a driver clamp is followed
-/// instead of guessed at.
+/// Half a period, off the buffer the driver actually granted.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn wake_frames(buffer_frames: u32) -> u32 {
     (buffer_frames / (PERIODS as u32 * 2)).max(1)
 }
 
-/// The other half of the alignment dance: a driver that rejects a duration
-/// tells us the frame count it needs through `GetBufferSize`, and this turns
-/// that count back into the duration to re-initialize with. The half-tick is
-/// the rounding Microsoft's own sample does, and it matters: rounding down
-/// comes out one frame short and the driver refuses again.
+/// Turns `GetBufferSize`'s aligned frame count back into a duration. The
+/// half-tick rounding is Microsoft's sample's; rounding down comes out a
+/// frame short and the driver refuses again.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn aligned_hns(frames: u32, rate: u32) -> i64 {
     (HNS_PER_SEC / rate as f64 * frames as f64 + 0.5) as i64
@@ -209,18 +164,11 @@ mod platform {
     };
     use crate::shared::Shared;
 
-    /// How many write faults in a row before the device counts as gone. An
-    /// endpoint can hiccup once and carry on; one that won't take a buffer
-    /// after a few tries isn't coming back, and the app's reopen path takes
-    /// it from there.
+    /// Consecutive write faults before the device counts as gone.
     const MAX_FAULTS: u32 = 4;
 
-    /// COM initialized for as long as this lives. Every caller here owns the
-    /// thread it runs on, so nothing has put that thread in an apartment yet
-    /// and the multithreaded one always takes. Doing it this way rather than
-    /// borrowing the caller's apartment is the point: rox's UI thread is an
-    /// STA on Windows, and an interface created there couldn't legally be
-    /// touched from the writer thread.
+    /// MTA COM for this thread's lifetime. Every caller owns its thread; never
+    /// borrow the caller's apartment, since the UI thread is an STA.
     struct Com;
 
     impl Com {
@@ -238,13 +186,9 @@ mod platform {
         }
     }
 
-    /// A periodic wake for the writer thread. `thread::sleep` won't do: the
-    /// Windows timer tick is about 15.6 ms unless something in the process
-    /// raised it, so a sleep asked for half of a 10 ms period comes back
-    /// three periods late. A high-resolution waitable timer (Windows 10 1803
-    /// and up) fires on time. Where one can't be created we fall back to
-    /// sleeping, and the spare periods in the buffer keep that from being a
-    /// dropout on every wake.
+    /// `thread::sleep` rides the ~15.6 ms system tick, three periods late at
+    /// 10 ms. A high-resolution waitable timer (Windows 10 1803+) fires on time;
+    /// without one we sleep and lean on the buffer's spare periods.
     enum Ticker {
         Timer(HANDLE),
         Sleep(Duration),
@@ -261,9 +205,8 @@ mod platform {
                 )
             };
             if let Ok(handle) = handle {
-                // A negative due time is relative and in reference time; the
-                // period is milliseconds and has to be at least 1, or the
-                // timer fires once and never again.
+                // Negative due time is relative, in reference time; the period must be at
+                // least 1 ms or the timer fires once.
                 let due = -((interval.as_nanos() / 100) as i64);
                 let period = (interval.as_millis() as i32).max(1);
                 if unsafe { SetWaitableTimer(handle, &due, period, None, None, false) }.is_ok() {
@@ -278,10 +221,7 @@ mod platform {
 
         fn wait(&self) {
             match self {
-                // Nothing to check on the way out: the timer is periodic, so
-                // the only ways this returns are a tick and an abandon, and
-                // both lead to the same next move, which is to look at the
-                // endpoint's padding.
+                // Periodic timer: a tick or an abandon both mean check the padding.
                 Ticker::Timer(handle) => unsafe {
                     WaitForSingleObject(*handle, INFINITE);
                 },
@@ -300,9 +240,7 @@ mod platform {
         }
     }
 
-    /// The claim on the endpoint: the writer thread plus its stop flag.
-    /// Dropping it stops audio and hands the device back, so toggling
-    /// exclusive off actually releases it.
+    /// Dropping it stops audio and hands the device back.
     struct Claim {
         stop: Arc<AtomicBool>,
         writer: Option<JoinHandle<()>>,
@@ -313,55 +251,40 @@ mod platform {
     impl Drop for Claim {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
-            // The thread checks the flag once per wake and blocks on the
-            // timer in between, so this waits half a period at worst.
-            // Joining rather than detaching matters: every COM interface
-            // is owned by that thread, and a detached thread would still hold
-            // the endpoint while the next session tried to claim it.
+            // Waits half a period at worst. Join, don't detach: the thread owns every
+            // COM interface and would still hold the endpoint.
             if let Some(writer) = self.writer.take() {
                 let _ = writer.join();
             }
         }
     }
 
-    /// What the writer thread reports back once the device has accepted
-    /// something, so `open` can size the rings and return to its caller.
+    /// Reported once negotiated, so `open` can size the rings.
     struct Ready {
         negotiated: Negotiated,
         rate: u32,
     }
 
-    /// The rings, handed to the writer thread after `open` has allocated them
-    /// at the negotiated rate.
     struct Feed {
         ring: Consumer<f32>,
         tap: Producer<f32>,
     }
 
-    /// Everything the writer thread holds on the device side. All of it is
-    /// COM and none of it leaves the thread.
+    /// All COM; none of it leaves the thread.
     struct Claimed {
         client: IAudioClient,
         render: IAudioRenderClient,
-        /// Frames the endpoint buffer holds, read back from the device rather
-        /// than remembered: it's the writer's fill target, and guessing it
-        /// wrong means writing past what the driver asked for.
+        /// Read back from the device: the writer's fill target.
         buffer_frames: u32,
         channels: u16,
         rate: u32,
         sample: Sample,
-        /// The ladder rung's name, stored rather than looked back up, so the
-        /// UI reads the rung the device actually took.
         format: &'static str,
     }
 
-    /// Every active render endpoint, by the name the sound control panel
-    /// shows. The id is the endpoint id string, which persists across a
-    /// reboot and a rename, unlike the friendly name.
+    /// The id is the endpoint id string, stable across reboots and renames.
     pub fn devices() -> Vec<Device> {
-        // COM is thread-bound, so the enumeration runs on a thread of our own
-        // instead of initializing an apartment on whichever thread the
-        // settings page happened to call from.
+        // On a thread of our own, not whichever apartment the caller is in.
         std::thread::Builder::new()
             .name("wasapi-devices".into())
             .spawn(enumerate)
@@ -399,14 +322,11 @@ mod platform {
         }
     }
 
-    /// Claim a device and start the writer thread. Every error here is one
-    /// the seam turns into a fallback to shared output, so they say what
-    /// failed rather than just that something did.
+    /// Errors here become a fallback to shared, so they say what failed.
     pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, String> {
         let stop = Arc::new(AtomicBool::new(false));
-        // Two channels because the handshake goes both ways: the thread has
-        // to negotiate before anyone knows the rate to size the rings at, and
-        // the rings have to exist before the thread can write a frame.
+        // Two channels: the thread negotiates before the rings can be sized, and
+        // the rings must exist before it writes.
         let (ready_tx, ready_rx) = mpsc::channel::<Result<Ready, String>>();
         let (feed_tx, feed_rx) = mpsc::channel::<Feed>();
 
@@ -449,8 +369,6 @@ mod platform {
         })
     }
 
-    /// The writer thread from end to end: initialize COM, claim and settle
-    /// the device, report it, take the rings, then run until stopped.
     fn claim(
         request: &Request,
         shared: Arc<Shared>,
@@ -458,9 +376,8 @@ mod platform {
         ready: Sender<Result<Ready, String>>,
         feed: Receiver<Feed>,
     ) {
-        // Declared first so it outlives every interface below; locals drop in
-        // reverse, and calling CoUninitialize with a live interface still
-        // held would leave the endpoint claimed.
+        // Declared first so it drops last: CoUninitialize with a live interface
+        // would leave the endpoint claimed.
         let _com = match Com::new() {
             Ok(com) => com,
             Err(e) => {
@@ -492,8 +409,7 @@ mod platform {
             return;
         }
 
-        // `open` allocates the rings once it knows the rate. A send error
-        // here means it gave up in between, so drop the claim and go.
+        // A send error means `open` gave up; drop the claim.
         let Ok(feed) = feed.recv() else {
             return;
         };
@@ -507,117 +423,107 @@ mod platform {
         }
     }
 
-    /// Pick the endpoint, settle a format on it, and initialize the client.
     /// Returns the claim and the device's friendly name.
     unsafe fn negotiate(request: &Request) -> Result<(Claimed, String), String> {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("opening the device enumerator: {e}"))?;
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                    .map_err(|e| format!("opening the device enumerator: {e}"))?;
 
-        // A named endpoint that's gone (unplugged, disabled, a driver
-        // reinstall that changed the id) takes the default one rather than
-        // failing the open, matching what the shared backend does with a
-        // stale cpal name.
-        let device = request
-            .device
-            .as_deref()
-            .and_then(|want| {
-                let wide: Vec<u16> = want.encode_utf16().chain(std::iter::once(0)).collect();
-                enumerator.GetDevice(PCWSTR(wide.as_ptr())).ok()
-            })
-            .map(Ok)
-            .unwrap_or_else(|| {
-                enumerator
-                    .GetDefaultAudioEndpoint(eRender, eConsole)
-                    .map_err(|e| format!("no default render endpoint: {e}"))
-            })?;
-        let name = friendly_name(&device).unwrap_or_else(|| "unknown endpoint".into());
+            // A named endpoint that's gone takes the default, like the shared backend.
+            let device = request
+                .device
+                .as_deref()
+                .and_then(|want| {
+                    let wide: Vec<u16> = want.encode_utf16().chain(std::iter::once(0)).collect();
+                    enumerator.GetDevice(PCWSTR(wide.as_ptr())).ok()
+                })
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    enumerator
+                        .GetDefaultAudioEndpoint(eRender, eConsole)
+                        .map_err(|e| format!("no default render endpoint: {e}"))
+                })?;
+            let name = friendly_name(&device).unwrap_or_else(|| "unknown endpoint".into());
 
-        let client: IAudioClient = device
-            .Activate(CLSCTX_ALL, None)
-            .map_err(|e| format!("activating {name}: {e}"))?;
+            let client: IAudioClient = device
+                .Activate(CLSCTX_ALL, None)
+                .map_err(|e| format!("activating {name}: {e}"))?;
 
-        let (mut default_hns, mut min_hns) = (0i64, 0i64);
-        client
-            .GetDevicePeriod(Some(&mut default_hns), Some(&mut min_hns))
-            .map_err(|e| format!("device period: {e}"))?;
+            let (mut default_hns, mut min_hns) = (0i64, 0i64);
+            client
+                .GetDevicePeriod(Some(&mut default_hns), Some(&mut min_hns))
+                .map_err(|e| format!("device period: {e}"))?;
 
-        // Exclusive mode means exactly this rate or nothing. There's no
-        // nearest-match to fall to the way ALSA has: the endpoint either
-        // opens at the file's rate or the claim fails and the seam reports
-        // why, which beats silently converting behind a bit-perfect toggle.
-        let rate = request.rate.unwrap_or(DEFAULT_RATE);
+            // Exactly this rate or the claim fails and the seam says why; no silent
+            // conversion behind a bit-perfect toggle.
+            let rate = request.rate.unwrap_or(DEFAULT_RATE);
 
-        // Stereo first because that's what the ring holds; the mix format's
-        // own count is the fallback for an endpoint that only offers its
-        // surround layout, and `fill` folds onto whatever comes back the same
-        // way it does for cpal.
-        let mut layouts = vec![2u16];
-        if let Ok(mix) = client.GetMixFormat() {
-            if !mix.is_null() {
+            // Stereo first, then the mix format's own count for surround-only endpoints.
+            let mut layouts = vec![2u16];
+            if let Ok(mix) = client.GetMixFormat()
+                && !mix.is_null()
+            {
                 let channels = (*mix).nChannels;
                 if channels != 2 && channels != 0 {
                     layouts.push(channels);
                 }
                 CoTaskMemFree(Some(mix.cast()));
             }
-        }
 
-        let want_format = request.format.as_deref();
-        let picked = layouts.iter().find_map(|&channels| {
-            pick_format(want_format, |candidate| {
-                supports(&client, candidate, rate, channels)
-            })
-            .map(|candidate| (candidate, channels))
-        });
-        let Some((candidate, channels)) = picked else {
-            return Err(format!(
-                "{name} takes no format rox can write at {rate} Hz in exclusive mode"
-            ));
-        };
+            let want_format = request.format.as_deref();
+            let picked = layouts.iter().find_map(|&channels| {
+                pick_format(want_format, |candidate| {
+                    supports(&client, candidate, rate, channels)
+                })
+                .map(|candidate| (candidate, channels))
+            });
+            let Some((candidate, channels)) = picked else {
+                return Err(format!(
+                    "{name} takes no format rox can write at {rate} Hz in exclusive mode"
+                ));
+            };
 
-        let period = period_hns(request.period_ms, default_hns, min_hns);
-        let client = initialize(
-            &device,
-            client,
-            candidate,
-            rate,
-            channels,
-            buffer_hns(period),
-            period,
-        )
-        .map_err(|e| format!("claiming {name} exclusively: {e}"))?;
-
-        let buffer_frames = client
-            .GetBufferSize()
-            .map_err(|e| format!("buffer size: {e}"))?;
-        if buffer_frames == 0 {
-            return Err(format!("{name} reported an empty buffer"));
-        }
-        let render: IAudioRenderClient = client
-            .GetService()
-            .map_err(|e| format!("render client: {e}"))?;
-
-        Ok((
-            Claimed {
+            let period = period_hns(request.period_ms, default_hns, min_hns);
+            let client = initialize(
+                &device,
                 client,
-                render,
-                buffer_frames,
-                channels,
+                candidate,
                 rate,
-                sample: candidate.sample,
-                format: candidate.name,
-            },
-            name,
-        ))
+                channels,
+                buffer_hns(period),
+                period,
+            )
+            .map_err(|e| format!("claiming {name} exclusively: {e}"))?;
+
+            let buffer_frames = client
+                .GetBufferSize()
+                .map_err(|e| format!("buffer size: {e}"))?;
+            if buffer_frames == 0 {
+                return Err(format!("{name} reported an empty buffer"));
+            }
+            let render: IAudioRenderClient = client
+                .GetService()
+                .map_err(|e| format!("render client: {e}"))?;
+
+            Ok((
+                Claimed {
+                    client,
+                    render,
+                    buffer_frames,
+                    channels,
+                    rate,
+                    sample: candidate.sample,
+                    format: candidate.name,
+                },
+                name,
+            ))
+        }
     }
 
-    /// `IAudioClient::Initialize` plus the alignment dance. A driver whose
-    /// buffer has to fall on a frame boundary rejects the first duration with
-    /// `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` and then tells us, through
-    /// `GetBufferSize`, the count it wanted. The documented recovery is to
-    /// throw the client away and activate a fresh one: an `IAudioClient` that
-    /// failed Initialize can't be initialized again.
+    /// `Initialize` plus the alignment retry: after
+    /// `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED`, `GetBufferSize` gives the wanted count,
+    /// and a failed client can't be initialized again, so a fresh one is activated.
     unsafe fn initialize(
         device: &IMMDevice,
         client: IAudioClient,
@@ -627,74 +533,62 @@ mod platform {
         buffer: i64,
         period: i64,
     ) -> Result<IAudioClient, Error> {
-        let format = wave_format(candidate, rate, channels);
-        // The two durations differ: the buffer holds several
-        // periods so a late wake still has frames to play, while the
-        // periodicity stays at the one period the device schedules on. That's
-        // legal for a push-mode client; only the event-driven flag forces the
-        // two to be equal.
-        match client.Initialize(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            0,
-            buffer,
-            period,
-            format_ptr(&format),
-            None,
-        ) {
-            Ok(()) => Ok(client),
-            Err(e) if e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED => {
-                let frames = client.GetBufferSize()?;
-                // The frame count the driver hands back is the whole buffer,
-                // so that's the duration that gets re-asked for. The period
-                // is left unchanged unless the aligned buffer came back
-                // shorter than it, which would be a periodicity the buffer
-                // can't hold.
-                let aligned = aligned_hns(frames, rate);
-                drop(client);
-                let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-                client.Initialize(
-                    AUDCLNT_SHAREMODE_EXCLUSIVE,
-                    0,
-                    aligned,
-                    period.min(aligned),
-                    format_ptr(&format),
-                    None,
-                )?;
-                Ok(client)
+        unsafe {
+            let format = wave_format(candidate, rate, channels);
+            // Buffer several periods deep, periodicity one period: legal in push mode.
+            match client.Initialize(
+                AUDCLNT_SHAREMODE_EXCLUSIVE,
+                0,
+                buffer,
+                period,
+                format_ptr(&format),
+                None,
+            ) {
+                Ok(()) => Ok(client),
+                Err(e) if e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED => {
+                    let frames = client.GetBufferSize()?;
+                    // Re-ask for the whole aligned buffer; the period only shrinks if it would
+                    // no longer fit.
+                    let aligned = aligned_hns(frames, rate);
+                    drop(client);
+                    let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+                    client.Initialize(
+                        AUDCLNT_SHAREMODE_EXCLUSIVE,
+                        0,
+                        aligned,
+                        period.min(aligned),
+                        format_ptr(&format),
+                        None,
+                    )?;
+                    Ok(client)
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
         }
     }
 
-    /// Ask the endpoint whether it takes one rung of the ladder. Exclusive
-    /// mode returns yes or no and nothing else: the closest-match out
-    /// parameter is only filled in for shared mode, so there's nothing to ask
-    /// for here.
+    /// Exclusive mode answers yes or no; there's no closest match.
     unsafe fn supports(
         client: &IAudioClient,
         candidate: &Candidate,
         rate: u32,
         channels: u16,
     ) -> bool {
-        let format = wave_format(candidate, rate, channels);
-        // S_OK exactly, not "not an error": S_FALSE is the shared-mode return
-        // meaning a near miss is on offer, and taking that as a yes here is
-        // how a format the endpoint never accepted ends up in Initialize.
-        client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, format_ptr(&format), None) == S_OK
+        unsafe {
+            let format = wave_format(candidate, rate, channels);
+            // S_OK exactly: S_FALSE offers a near miss, which Initialize would then reject.
+            client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, format_ptr(&format), None) == S_OK
+        }
     }
 
-    /// `WAVEFORMATEXTENSIBLE` is packed, so a reference to its `Format` field
-    /// would be an unaligned borrow. The extensible struct starts with that
-    /// field, so casting the whole struct's address is the same pointer and
-    /// is always aligned.
+    /// The struct is packed; the whole struct's address is the `Format` field's,
+    /// aligned.
     fn format_ptr(format: &WAVEFORMATEXTENSIBLE) -> *const WAVEFORMATEX {
         (format as *const WAVEFORMATEXTENSIBLE).cast()
     }
 
-    /// Spell one ladder rung as a format the driver can be queried with.
-    /// Always extensible rather than plain `WAVEFORMATEX`: valid-bits and the
-    /// channel mask are the two things an exclusive-mode driver checks, and
-    /// only the extensible form has them.
+    /// Always extensible: valid bits and the channel mask are what exclusive
+    /// drivers check.
     fn wave_format(candidate: &Candidate, rate: u32, channels: u16) -> WAVEFORMATEXTENSIBLE {
         let block_align = channels * candidate.bits / 8;
         WAVEFORMATEXTENSIBLE {
@@ -705,8 +599,7 @@ mod platform {
                 nAvgBytesPerSec: rate * block_align as u32,
                 nBlockAlign: block_align,
                 wBitsPerSample: candidate.bits,
-                // The bytes past WAVEFORMATEX: valid bits, channel mask,
-                // subformat guid.
+                // Bytes past WAVEFORMATEX: valid bits, channel mask, subformat guid.
                 cbSize: 22,
             },
             Samples: WAVEFORMATEXTENSIBLE_0 {
@@ -721,13 +614,9 @@ mod platform {
         }
     }
 
-    /// The speaker layout a format claims. Every count a consumer endpoint
-    /// actually offers gets the canonical mask the driver checks for, because
-    /// an exclusive-mode driver compares the mask and refuses a layout it
-    /// doesn't publish. Filling the low bits instead would spell four channels
-    /// as front left, right, centre and LFE, which no quad card has, so the
-    /// claim would fail and the mode would quietly fall back to shared. Odd
-    /// counts nobody ships keep the low-bit fill.
+    /// The canonical mask per channel count: exclusive drivers refuse a layout
+    /// they don't publish, and a low-bit fill spells quad as FL/FR/C/LFE, which
+    /// no quad card has. Odd counts keep the low-bit fill.
     fn channel_mask(channels: u16) -> u32 {
         match channels {
             0 | 1 => SPEAKER_FRONT_CENTER,
@@ -743,9 +632,8 @@ mod platform {
                     | SPEAKER_BACK_LEFT
                     | SPEAKER_BACK_RIGHT
             }
-            // KSAUDIO_SPEAKER_7POINT1_SURROUND, 0x63f. The side pair rather
-            // than the front-of-centre pair: the old 7.1 layout predates side
-            // speakers and Windows has spelled 7.1 this way since Vista.
+            // KSAUDIO_SPEAKER_7POINT1_SURROUND, 0x63f: the side pair, as Windows has
+            // spelled 7.1 since Vista.
             8 => {
                 SPEAKER_FRONT_LEFT
                     | SPEAKER_FRONT_RIGHT
@@ -760,102 +648,88 @@ mod platform {
         }
     }
 
-    /// The endpoint id string, the one identifier that persists across a rename.
-    /// `GetId` hands back memory COM allocated, so it's freed here rather
-    /// than leaked once per device per settings visit.
+    /// Stable across renames. COM allocated it, so free it here.
     unsafe fn endpoint_id(device: &IMMDevice) -> Option<String> {
-        let id = device.GetId().ok()?;
-        if id.is_null() {
-            return None;
+        unsafe {
+            let id = device.GetId().ok()?;
+            if id.is_null() {
+                return None;
+            }
+            let out = id.to_string().ok();
+            CoTaskMemFree(Some(id.as_ptr().cast()));
+            out
         }
-        let out = id.to_string().ok();
-        CoTaskMemFree(Some(id.as_ptr().cast()));
-        out
     }
 
-    /// The name a human reads, out of the endpoint's property store. Anything
-    /// that isn't a string is treated as absent; the caller falls back to the
-    /// id, which is ugly but never blank.
+    /// Non-strings read as absent; the caller falls back to the id.
     unsafe fn friendly_name(device: &IMMDevice) -> Option<String> {
-        let store = device.OpenPropertyStore(STGM_READ).ok()?;
-        let mut value = store.GetValue(&PKEY_Device_FriendlyName).ok()?;
-        let name = if value.Anonymous.Anonymous.vt == VT_LPWSTR {
-            value.Anonymous.Anonymous.Anonymous.pwszVal.to_string().ok()
-        } else {
-            None
-        };
-        let _ = PropVariantClear(&mut value);
-        name
+        unsafe {
+            let store = device.OpenPropertyStore(STGM_READ).ok()?;
+            let mut value = store.GetValue(&PKEY_Device_FriendlyName).ok()?;
+            let name = if value.Anonymous.Anonymous.vt == VT_LPWSTR {
+                value.Anonymous.Anonymous.Anonymous.pwszVal.to_string().ok()
+            } else {
+                None
+            };
+            let _ = PropVariantClear(&mut value);
+            name
+        }
     }
 
-    /// The writer thread's loop. The staging buffer is allocated once here
-    /// and refilled in place, so the loop itself allocates nothing, takes no
-    /// lock, and does no I/O beyond the two COM calls it exists for.
+    /// The staging buffer is allocated once, so the loop allocates nothing,
+    /// locks nothing, and does no I/O beyond its two COM calls.
     unsafe fn run<T>(claimed: Claimed, shared: Arc<Shared>, feed: Feed, stop: Arc<AtomicBool>)
     where
         T: SizedSample + FromSample<f32>,
     {
-        let Feed { mut ring, mut tap } = feed;
-        let mut staging = vec![
-            T::from_sample(0.0f32);
-            claimed.buffer_frames as usize * claimed.channels as usize
-        ];
+        unsafe {
+            let Feed { mut ring, mut tap } = feed;
+            let mut staging = vec![
+                T::from_sample(0.0f32);
+                claimed.buffer_frames as usize * claimed.channels as usize
+            ];
 
-        // Pre-roll before Start, because in exclusive mode the endpoint plays
-        // whatever is in the buffer the moment Start returns and an unfilled
-        // one is a click. It's the same cushion the ALSA backend buys with a
-        // start threshold of a whole buffer.
-        if let Err(e) = top_up(&claimed, &mut staging, &shared, &mut ring, &mut tap) {
-            return lost(&shared, format!("wasapi pre-roll: {e}"));
-        }
-        if let Err(e) = claimed.client.Start() {
-            return lost(&shared, format!("wasapi start: {e}"));
-        }
+            // Pre-roll: exclusive mode plays the buffer the moment Start returns, and an
+            // empty one clicks.
+            if let Err(e) = top_up(&claimed, &mut staging, &shared, &mut ring, &mut tap) {
+                return lost(&shared, format!("wasapi pre-roll: {e}"));
+            }
+            if let Err(e) = claimed.client.Start() {
+                return lost(&shared, format!("wasapi start: {e}"));
+            }
 
-        // Half a period per wake, against a buffer several periods deep. Two
-        // wakes per period is enough to keep it topped up, and the periods
-        // behind the one playing are the slack a late wake spends: miss one
-        // entirely and the device still has frames. Anything longer than that
-        // comes out of the 500 ms ring in front.
-        let interval = Duration::from_secs_f64(
-            wake_frames(claimed.buffer_frames) as f64 / claimed.rate as f64,
-        )
-        .max(Duration::from_millis(1));
-        let ticker = Ticker::new(interval);
+            // Two wakes per period against a buffer several periods deep, so a missed
+            // wake still leaves frames.
+            let interval = Duration::from_secs_f64(
+                wake_frames(claimed.buffer_frames) as f64 / claimed.rate as f64,
+            )
+            .max(Duration::from_millis(1));
+            let ticker = Ticker::new(interval);
 
-        let mut faults = 0;
-        while !stop.load(Ordering::Acquire) {
-            ticker.wait();
-            match top_up(&claimed, &mut staging, &shared, &mut ring, &mut tap) {
-                Ok(()) => faults = 0,
-                Err(e) => {
-                    // A glitch the driver can shrug off gets retried on the
-                    // next wake rather than dropping the stream. Nothing is
-                    // lost by waiting: the failures that can happen before
-                    // the fill leave the ring untouched, and the one that
-                    // can happen after it is out-of-order, which is fatal
-                    // here anyway. A device that won't take a buffer after a
-                    // run of tries is gone, and the app's reopen path takes
-                    // it from there.
-                    faults += 1;
-                    if fatal(&e) || faults > MAX_FAULTS {
-                        let _ = claimed.client.Stop();
-                        return lost(&shared, format!("wasapi write: {e}"));
+            let mut faults = 0;
+            while !stop.load(Ordering::Acquire) {
+                ticker.wait();
+                match top_up(&claimed, &mut staging, &shared, &mut ring, &mut tap) {
+                    Ok(()) => faults = 0,
+                    Err(e) => {
+                        // Retry on the next wake; failures before the fill leave the ring
+                        // untouched. Fatal errors or a run of faults hand off to the app's reopen.
+                        faults += 1;
+                        if fatal(&e) || faults > MAX_FAULTS {
+                            let _ = claimed.client.Stop();
+                            return lost(&shared, format!("wasapi write: {e}"));
+                        }
                     }
                 }
             }
-        }
 
-        // Stop before the client drops so the endpoint goes idle instead of
-        // playing out a stale buffer while the next session tries to claim
-        // it. Not drained first: every path here is a teardown
-        // and the caller is blocked in join waiting for it.
-        let _ = claimed.client.Stop();
+            // Stop before the client drops so a stale buffer doesn't play out. No
+            // drain: this is always a teardown.
+            let _ = claimed.client.Stop();
+        }
     }
 
-    /// One pass over the endpoint buffer: take what's free, fill it, hand it
-    /// back. `GetCurrentPadding` is the frames still queued, so the rest of
-    /// the buffer is ours.
+    /// `GetCurrentPadding` is what's still queued; the rest is ours to fill.
     unsafe fn top_up<T>(
         claimed: &Claimed,
         staging: &mut [T],
@@ -866,38 +740,35 @@ mod platform {
     where
         T: SizedSample + FromSample<f32>,
     {
-        let padding = claimed.client.GetCurrentPadding()?;
-        let free = claimed.buffer_frames.saturating_sub(padding);
-        if free == 0 {
-            return Ok(());
+        unsafe {
+            let padding = claimed.client.GetCurrentPadding()?;
+            let free = claimed.buffer_frames.saturating_sub(padding);
+            if free == 0 {
+                return Ok(());
+            }
+            let samples = free as usize * claimed.channels as usize;
+            // Before the fill, so a refusal leaves the ring and clock untouched.
+            let buffer = claimed.render.GetBuffer(free)?;
+            fill(
+                &mut staging[..samples],
+                claimed.channels as usize,
+                shared,
+                ring,
+                tap,
+            );
+            // Through staging: nothing promises the driver's pointer is aligned for the
+            // sample type, and an unaligned write is undefined.
+            std::ptr::copy_nonoverlapping(
+                staging.as_ptr().cast::<u8>(),
+                buffer,
+                samples * std::mem::size_of::<T>(),
+            );
+            claimed.render.ReleaseBuffer(free, 0)
         }
-        let samples = free as usize * claimed.channels as usize;
-        // Asked for before the fill, so a refusal costs nothing: the ring
-        // still holds its frames and the clock hasn't moved.
-        let buffer = claimed.render.GetBuffer(free)?;
-        fill(
-            &mut staging[..samples],
-            claimed.channels as usize,
-            shared,
-            ring,
-            tap,
-        );
-        // Through a staging buffer rather than writing the driver's memory
-        // directly, because nothing in the contract promises that pointer is
-        // aligned for the sample type and an unaligned write would be
-        // undefined. One memcpy per period is nothing next to that.
-        std::ptr::copy_nonoverlapping(
-            staging.as_ptr().cast::<u8>(),
-            buffer,
-            samples * std::mem::size_of::<T>(),
-        );
-        claimed.render.ReleaseBuffer(free, 0)
     }
 
-    /// Errors there's no point retrying: the endpoint went away, the session
-    /// lost its resources, or the audio service stopped. Out-of-order is in
-    /// here too, because it means a buffer we took never went back and no
-    /// number of retries releases it.
+    /// Not worth retrying. Out-of-order means a buffer never went back, which no
+    /// retry fixes.
     fn fatal(error: &Error) -> bool {
         const FATAL: &[HRESULT] = &[
             AUDCLNT_E_DEVICE_INVALIDATED,
@@ -909,9 +780,7 @@ mod platform {
         FATAL.contains(&error.code())
     }
 
-    /// Flag the device as gone the same way cpal's error callback does, so
-    /// the player's existing reopen path picks it up. Logging is fine here:
-    /// this is the last thing the writer thread does before it stops.
+    /// Picked up by the app's reopen path. Logging is fine: the thread is ending.
     fn lost(shared: &Shared, message: String) {
         log::error!("exclusive output: {message}");
         shared.device_lost.store(true, Ordering::Release);
@@ -922,7 +791,6 @@ mod platform {
 mod tests {
     use super::*;
 
-    /// The ladder as a device that takes everything sees it.
     fn all(_: &Candidate) -> bool {
         true
     }
@@ -963,7 +831,6 @@ mod tests {
 
     #[test]
     fn the_period_takes_the_device_default_when_nothing_is_asked_for() {
-        // 10 ms default, 3 ms minimum, the usual shape of a shared endpoint.
         assert_eq!(period_hns(None, 100_000, 30_000), 100_000);
     }
 
@@ -984,42 +851,32 @@ mod tests {
 
     #[test]
     fn a_device_minimum_past_the_cap_still_wins() {
-        // Nonsense hardware, but the floor is the one number that fails the
-        // claim outright, so it has to come through the cap intact.
+        // The driver floor has to survive the cap.
         let huge = MAX_PERIOD_HNS * 2;
         assert_eq!(period_hns(Some(5.0), huge, huge), huge);
     }
 
     #[test]
     fn the_buffer_holds_several_periods() {
-        // A 10 ms period gets a 40 ms buffer, and the capped period puts the
-        // deepest buffer at 400 ms.
         assert_eq!(buffer_hns(100_000), 400_000);
         assert_eq!(buffer_hns(MAX_PERIOD_HNS), 4_000_000);
     }
 
     #[test]
     fn the_writer_wakes_twice_a_period() {
-        // 1920 frames is four 10 ms periods at 48 kHz, so half a period is
-        // 240 of them.
         assert_eq!(wake_frames(1920), 240);
-        // Whatever the driver hands back, sleeping for no frames at all would
-        // be a spin.
+        // Zero would be a spin.
         assert_eq!(wake_frames(4), 1);
         assert_eq!(wake_frames(0), 1);
     }
 
     #[test]
     fn aligned_duration_round_trips_a_whole_number_of_frames() {
-        // 480 frames at 48 kHz is exactly 10 ms.
         assert_eq!(aligned_hns(480, 48000), 100_000);
     }
 
     #[test]
     fn aligned_duration_rounds_up_rather_than_landing_short() {
-        // 441 frames at 44.1 kHz is 100000 exactly; 448 is 101587.3, and
-        // rounding down there is the frame that makes the driver refuse
-        // again.
         assert_eq!(aligned_hns(441, 44100), 100_000);
         assert_eq!(aligned_hns(448, 44100), 101_587);
     }

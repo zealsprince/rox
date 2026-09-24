@@ -1,11 +1,10 @@
 //! The concrete panels the workspace hosts, each a view over the shared
-//! entities in [`rox_panel_api::panel::AppState`]. The panel framework
-//! itself, per ADR 7, is defined in rox-panel-api; this crate is just the
-//! panels.
+//! entities in [`rox_panel_api::panel::AppState`]. The panel framework (ADR
+//! 7) lives in rox-panel-api.
 //!
-//! Nothing in here depends on the binary. Where a panel opens a window, it goes
-//! through the openers table in [`rox_panel_api::openers`], which the app
-//! fills in at startup.
+//! Nothing here depends on the binary: a panel opens windows through the
+//! openers table in [`rox_panel_api::openers`], which the app fills in at
+//! startup.
 
 pub mod art;
 pub mod artist_grid;
@@ -45,9 +44,6 @@ pub mod waveform;
 
 mod settings;
 
-// The panels refer to their neighbours at the same module paths they always
-// did, so a file that moved down here reads unchanged. Everything below is
-// a name this crate borrows from a crate under it.
 pub(crate) use rox_design as design;
 pub(crate) use rox_design::assets;
 pub(crate) use rox_net::providers;
@@ -55,6 +51,6 @@ pub(crate) use rox_panel_api::{
     bookmark_ui, group_head, panel, panel_settings, query, rating_ui, signal_ui, source, track_ui,
 };
 pub(crate) use rox_playback::continuation;
-// The listen history is the one name that clashes: `history` here is the
-// panel, so the recorder behind it gets read at its own crate path.
+// Not `history`: that name is the panel here, so the listen recorder stays
+// at rox_services::history.
 pub(crate) use rox_services::{artists, catalog, peaks, player, selection, thumbs};

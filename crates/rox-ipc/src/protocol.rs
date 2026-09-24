@@ -1,20 +1,14 @@
-//! The wire shape: one JSON-RPC 2.0 object per line, LF-terminated, UTF-8.
-//! Requests carry `id`, `method`, and optional `params`; every request gets
-//! exactly one response frame, `result` or `error`, echoing the id. Pushed
-//! events are sent as id-less frames between responses on a connection that
-//! called `subscribe`, and the missing `id` is the whole discriminator, which
-//! is why responses always carry one even when the request forgot theirs.
+//! The wire shape: one JSON-RPC 2.0 object per line. Every request gets
+//! exactly one response echoing its id; pushed events are id-less frames, so
+//! the missing `id` is the whole discriminator.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The protocol generation the handshake agrees on. Bumped when a change
-/// breaks an existing consumer; additions (new methods, new response fields)
-/// don't move it.
+/// Bumped only for breaking changes; additions don't move it.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// One request frame as read off the wire. `jsonrpc` is accepted and
-/// ignored: the version that matters is the one the handshake carries.
+/// `jsonrpc` is ignored: the handshake carries the version that matters.
 #[derive(Deserialize)]
 pub(crate) struct RequestFrame {
     #[serde(default)]
@@ -24,7 +18,6 @@ pub(crate) struct RequestFrame {
     pub params: Value,
 }
 
-/// One response frame as written to the wire.
 #[derive(Serialize)]
 pub(crate) struct ResponseFrame {
     pub jsonrpc: &'static str,
@@ -55,9 +48,6 @@ impl ResponseFrame {
     }
 }
 
-/// One pushed event as written to the wire: a JSON-RPC notification. No id,
-/// no answer expected; `method` names the event and `params` carries its
-/// payload.
 #[derive(Serialize)]
 pub(crate) struct EventFrame<'a> {
     pub jsonrpc: &'static str,
@@ -65,8 +55,7 @@ pub(crate) struct EventFrame<'a> {
     pub params: &'a Value,
 }
 
-/// A method's failure, on the wire as JSON-RPC's error object. The reserved
-/// codes keep their standard meanings; the -32000 range is ours.
+/// Reserved JSON-RPC codes keep their meanings; the -32000 range is ours.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RpcError {
     pub code: i64,
@@ -102,8 +91,6 @@ impl RpcError {
         }
     }
 
-    /// The app looked and couldn't answer: a file that isn't there, a
-    /// library without a database, a track with no art.
     pub fn app(detail: impl std::fmt::Display) -> Self {
         RpcError {
             code: -32000,
@@ -111,7 +98,6 @@ impl RpcError {
         }
     }
 
-    /// A method call arrived before `hello` settled the protocol version.
     pub fn handshake_required() -> Self {
         RpcError {
             code: -32001,
@@ -119,7 +105,6 @@ impl RpcError {
         }
     }
 
-    /// The client asked for a protocol generation this build doesn't speak.
     pub fn unsupported_protocol(asked: Value) -> Self {
         RpcError {
             code: -32002,
@@ -127,8 +112,7 @@ impl RpcError {
         }
     }
 
-    /// The app didn't answer in time. The player is fine; the caller should
-    /// retry rather than assume the command landed.
+    /// The player is fine; the caller should retry rather than assume it landed.
     pub fn timeout() -> Self {
         RpcError {
             code: -32003,
@@ -136,10 +120,8 @@ impl RpcError {
         }
     }
 
-    /// Client-side only, never sent by the server: the connection itself
-    /// failed under a call. Its own code so a consumer holding a client
-    /// (the MCP proxy) can tell a dead socket worth reconnecting from a
-    /// method the app refused.
+    /// Client-side only: the connection failed under a call, worth
+    /// reconnecting.
     pub fn transport(detail: impl std::fmt::Display) -> Self {
         RpcError {
             code: -32004,

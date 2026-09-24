@@ -1,21 +1,15 @@
 //! The shader panel: a WGSL fragment stage that owns a panel's whole body,
-//! driven by the app's shared signal pool. The author writes one function,
-//! `fs_user(uv)`, against the uniform block gpui binds; rox fills the
-//! sixteen signal slots from routes and the eight `user_meta` floats from
-//! the player, so an unrouted shader still moves with the music.
+//! driven by the app's shared signal pool. The author writes
+//! `fs_user(uv)`; rox fills the sixteen signal slots from routes and the
+//! eight `user_meta` floats from the player.
 //!
-//! Two paint paths, picked by what the source turns out to reference. A
-//! shader reading nothing but its uniforms draws as an in-scene quad. One
-//! reading `screen` (what's under the panel) or `prev` (its own last
-//! frame) needs the region pass, keyed by this panel's entity id so two
-//! shader panels each get their own feedback texture. Registration works
-//! out which; getting it wrong paints nothing, since each call skips what
-//! it can't run.
+//! A shader reading only its uniforms draws as an in-scene quad; one that
+//! reads `screen`, `prev`, an image, or runs several passes needs the region
+//! pass, keyed by this panel's entity id. Getting the path wrong paints
+//! nothing.
 //!
-//! Distinct from [`crate::panel::shader`], which is the surface shader any
-//! panel can draw over its own body. That module owns the pieces both
-//! share: the slot targets, the `// @slot n: name` convention, and the meta
-//! floats. This one is the panel whose entire point is the shader.
+//! Distinct from [`crate::panel::shader`], the surface shader any panel can
+//! wear, which owns the pieces both share.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -34,9 +28,7 @@ use rox_viz::signal::Route;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-// The surface-shader module, whose helpers this panel shares. Aliased
-// because this file is `panels::shader` and that one is `panel::shader`,
-// one letter apart.
+// Aliased: this file is `panels::shader` and that one `panel::shader`.
 use crate::panel::shader::{self as surface, SlotTargets, SourceWatch};
 use crate::panel::{
     self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit, setting_row, toggle,
@@ -45,58 +37,37 @@ use crate::panel_settings;
 use crate::settings::ui::{self as settings_ui, SECTION_GAP, section};
 use crate::signal_ui::{self, routes::RouteEditState};
 
-/// The builtin shaders, so a fresh panel draws something before anyone has
-/// written a line of WGSL. They're defined beside the surface shader's
-/// pieces because the approval gate has to know them: what ships with the
-/// binary runs without anybody agreeing to it a second time.
+/// Defined beside the approval gate, which has to know them: what ships
+/// with the binary runs without a second agreement.
 use surface::{PLASMA, PRESETS};
 
-/// How much of a compile message the panel body shows. naga points at the
-/// offending span with a caret line, which is the useful part; the rest is
-/// context that would fill a small panel.
+/// naga's caret line is the useful part; the rest would fill a small
+/// panel.
 const ERROR_LINES: usize = 8;
 
-/// The shader panel's per-view config: what a saved layout restores and
-/// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShaderConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The switch, the same one a panel's surface shader has. Off keeps
-    /// the source, the bindings and the bookmark exactly where they are and
-    /// paints nothing, which is how saying no to an unread shader works:
-    /// parking a look isn't the same as throwing it away.
+    /// Off keeps the source, bindings, and bookmark and paints nothing: how
+    /// saying no to an unread shader parks it without throwing it away.
     pub enabled: bool,
-    /// The fragment stage itself, stored inline so a shader can travel
-    /// inside a workspace bundle: a config with only an absolute path
-    /// would import as a dead panel on anyone else's machine.
+    /// Stored inline so a shader travels inside a workspace bundle.
     pub source: String,
-    /// A name in the workspace's shader pool. Set, the pool's copy runs and
-    /// the inline source above goes unused, so one shader can dress
-    /// several panels and the bundle's author edits it once. The rule is
-    /// [`surface::resolve_source`]'s: a name the pool doesn't hold runs
-    /// nothing rather than falling back to the inline text.
+    /// A name in the workspace's shader pool; set, the pool's copy runs. A
+    /// name the pool doesn't hold runs nothing, never the inline text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Where the source was last read from. A bookmark for Reload and the
-    /// file watch, never the thing that runs.
+    /// A bookmark for Reload and the file watch, never the thing that runs.
     pub path: Option<PathBuf>,
-    /// Attachments of the app's shared signals onto the shader's slots. A
-    /// route whose signal is gone from the pool leaves its slot at zero.
+    /// A route whose signal is gone leaves its slot at zero.
     pub routes: Vec<Route>,
-    /// Hand-set slot values, from the Bindings page's slot rows: what a
-    /// slot reads with no route driving it, which is how a shader's named
-    /// parameters get tweaked without a signal in sight. A route on the
-    /// same slot wins while it's there; the hand-set value comes back when
-    /// it goes.
+    /// What a slot reads with no route driving it. A route on the same slot
+    /// wins while it's there.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manual: Vec<(u8, f32)>,
-    /// Keep asking for frames while the audio is silent. Off, the shader
-    /// parks where it stands and the panel costs nothing, the same
-    /// freeze-on-pause the other visualizers do.
+    /// Off, the shader parks while the audio is silent.
     pub run_when_idle: bool,
 }
 
@@ -115,29 +86,21 @@ impl Default for ShaderConfig {
     }
 }
 
-/// What the panel puts over its own body when there's no shader on screen,
-/// and the ways out of it. Every state that paints nothing goes through
-/// here, so an off, unread or broken shader reads as a panel waiting on a
-/// decision rather than as a black rectangle.
+/// Every state that paints nothing goes through here, so the panel reads
+/// as waiting on a decision rather than a black rectangle.
 struct BodyNote {
     lines: Vec<String>,
-    /// The buttons under the text, in the order they're drawn.
     actions: Vec<NoteAction>,
-    /// A compiler message, which is laid out as it came: left aligned at
-    /// the top, where its caret lines still mean something.
+    /// A compiler message: left aligned at the top, where its carets line up.
     raw: bool,
 }
 
-/// A button under the note.
 #[derive(Clone, Copy)]
 enum NoteAction {
-    /// Open the Source settings page, where the whole source is listed
-    /// with where it says it came from and its hash.
+    /// The Source settings page, with the full source, its origin, and hash.
     Inspect,
-    /// Run it: the approval an imported source is waiting on, the switch,
-    /// or both.
+    /// The approval an imported source waits on, the switch, or both.
     Enable,
-    /// The same page, for a panel with nothing to enable yet.
     Pick,
 }
 
@@ -159,34 +122,24 @@ impl NoteAction {
     }
 }
 
-/// What the last registration made of the current source. Shared with the
-/// paint closure, which is where registration happens: it needs the window,
-/// and the panel only has one while it's drawing.
+/// Shared with the paint closure, where registration happens: it needs
+/// the window.
 #[derive(Default)]
 struct Compiled {
-    /// The program this ran against, so a change re-registers and nothing
-    /// else does. See [`program_hash`] for what counts as a change: it's
-    /// more than the text, since a program's images can move under it.
+    /// Re-register only when this moves. See [`program_hash`]: images can
+    /// change under unchanged text.
     key: u64,
-    /// Whether an attempt has happened at all. A fresh panel and a panel
-    /// whose shader hashes to zero are otherwise the same thing.
+    /// Tells a fresh panel from one whose shader hashes to zero.
     ran: bool,
-    /// What paints: the current source's registration, or the last one that
-    /// compiled while a fresh edit is broken. An authoring loop saves
-    /// half-written files constantly, and a panel that blanks on each of
-    /// them is unusable.
+    /// The last good registration stays up while a fresh edit is broken; an
+    /// authoring loop saves half-written files constantly.
     shader: Option<UserShaderId>,
-    /// What registration said, verbatim from naga. None on a clean compile.
     error: Option<String>,
 }
 
-/// The last time the config's pool name was resolved: which name, at which
-/// pool generation, and what came back. Kept because this panel re-renders
-/// on every frame the audio moves, and resolution takes a lock and copies a
-/// page of WGSL; the generation is one atomic load to check instead. Shaped
-/// like [`Compiled`] above, down to the `ran` flag, since a name that
-/// resolves to nothing and a name nobody has looked up yet are otherwise
-/// the same thing.
+/// Cached because resolving takes a lock and copies a page of WGSL on a
+/// panel that re-renders every audio frame; the generation is one atomic
+/// load.
 #[derive(Default)]
 struct Resolved {
     name: String,
@@ -195,14 +148,9 @@ struct Resolved {
     ran: bool,
 }
 
-/// What a registration is memoized under: the source, where its images
-/// come from, and the pool's generation.
-///
-/// The generation is in there because a program can be wrong about its
-/// images rather than about its code, and replacing an image changes no
-/// source text at all. The pool watch pulls the new bytes in and bumps the
-/// generation, and that re-registers here. It's the same key
-/// [`surface`]'s own driver keeps, for the same reason.
+/// Includes the pool generation: replacing an image changes no source
+/// text, and the pool watch bumps the generation. [`surface`]'s driver
+/// keys the same way.
 fn program_hash(source: &str, ctx: &surface::ProgramCtx, cover: u64) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
 
@@ -219,29 +167,18 @@ pub struct ShaderPanel {
     state: AppState,
     config: ShaderConfig,
     compiled: Arc<Mutex<Compiled>>,
-    /// What the config's pool name last resolved to. A cell because every
-    /// reader of the running source is a `&self` render path, and the panel
-    /// is single-threaded like every other view.
+    /// A cell because every reader of the running source is a `&self` render
+    /// path.
     resolved: RefCell<Resolved>,
-    /// The hot-reload watch on the config's path, the same one a panel's
-    /// surface shader uses.
+    /// The same watch a panel's surface shader uses.
     watch: SourceWatch,
-    /// The Bindings page's route editor state: span sliders and which rows
-    /// stand open. Not config: the fold is where you are in the page.
+    /// Not config: which rows stand open is where you are in the page.
     routes_ui: RouteEditState,
-    /// One scrub per slot row, for the hand-set values on unrouted slots.
     slot_scrubs: Vec<ScrubState>,
-    /// The name a save into the workspace's shaders would use, while
-    /// it's being typed.
     shader_name: panel_settings::ShaderNameField,
-    /// The one readout being typed into across all the settings sliders.
     value_edit: ValueEdit,
     focus: FocusHandle,
-    /// The tab panel this panel is currently in, for duplicate and
-    /// pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Wakes the panel on every pump tick, so the shader's frames run on
-    /// the same clock the audio arrives on.
     _player_changed: Subscription,
 }
 
@@ -264,26 +201,18 @@ impl ShaderPanel {
         }
     }
 
-    /// Pick up edits to the file the source came from. This runs off the
-    /// render, which the player's pump drives, so the watch runs while
-    /// there's anything to watch it for; a parked panel reloads on the
-    /// button instead.
-    ///
-    /// A source still waiting on approval doesn't reload: the path arrived
-    /// with it, and reading a file a bundle chose would be trusting the
-    /// bundle by the back door.
+    /// Runs off the render, so a parked panel reloads on the button instead.
+    /// Never reload a source still waiting on approval: the path came with it,
+    /// and reading a file a bundle chose trusts the bundle by the back door.
     fn poll_reload(&mut self, cx: &mut Context<Self>) {
-        // The pool's watch first, since a named panel has no file of its own
-        // to poll and this is where its edits come from. It's throttled and
-        // app-wide, so several shader panels cost one sweep between them.
+        // The pool's watch is throttled and app-wide, so several panels cost one
+        // sweep.
         surface::poll_pool();
         let Some(path) = self.config.path.clone() else {
             return;
         };
-        // A named panel doesn't watch a file. Its text belongs to the
-        // workspace's pool, and the bookmark points at whatever was inlined
-        // before the name went on, so a reload would pull the pool's source
-        // out from under the panel. The pool entry does its own watching.
+        // A named panel doesn't watch a file: the bookmark points at the old
+        // inline text and would pull it over the pool's source.
         if self.config.name.is_some() {
             return;
         }
@@ -297,25 +226,14 @@ impl ShaderPanel {
         }
     }
 
-    /// Put a new source in place and forget everything about the last one:
-    /// its compile message was about text that just left, and its file
-    /// stamp would have the watch pull the old file back over it. The
-    /// registration stands until the new source compiles, so a save from an
-    /// editor mid-edit shows its error over the shader that was running
-    /// rather than a blank panel.
-    ///
-    /// Every caller is the user putting the source there (a preset, a file
-    /// they picked, a reload, an edit under a file they pointed rox at), so
-    /// this is where a source earns its approval.
-    ///
-    /// It's also where a panel comes off a pool shader. Choosing a source is
-    /// choosing it for this panel, and a name left on would keep running the
-    /// workspace's copy over the top of what was just picked.
+    /// Every caller is the user choosing the source, so this is where a
+    /// source earns its approval. The last registration stays up until the
+    /// new source compiles. Choosing a source also takes the panel off a pool
+    /// name.
     fn set_source(&mut self, source: String, path: Option<PathBuf>, cx: &mut Context<Self>) {
         surface::approve(&source);
         let cleared = source.trim().is_empty();
-        // Picking a source is asking to see it. A panel parked by an earlier
-        // Turn Off would otherwise take the new shader and stay dark.
+        // Picking a source is asking to see it, even after an earlier Turn Off.
         self.config.enabled = true;
         self.config.source = source;
         self.config.name = None;
@@ -323,8 +241,7 @@ impl ShaderPanel {
         self.watch = SourceWatch::seeded(path.as_deref());
         {
             let mut compiled = self.compiled.lock().unwrap();
-            // A cleared source leaves nothing to keep on screen; any other
-            // one holds the last good registration until it has its own.
+            // A cleared source leaves nothing to keep on screen.
             let keep = if cleared { None } else { compiled.shader };
             *compiled = Compiled {
                 shader: keep,
@@ -334,19 +251,15 @@ impl ShaderPanel {
         cx.notify();
     }
 
-    /// The WGSL this panel actually runs: the workspace pool's copy when the
-    /// config names one, its own inline source otherwise. Everything that
-    /// reasons about what's on screen goes through here, while the settings
-    /// pages keep editing `config.source`: a nameless panel runs it, and a
-    /// named one keeps it waiting for when the name comes off.
+    /// The pool's copy when the config names one, its inline source
+    /// otherwise. The settings pages keep editing `config.source`, which a
+    /// named panel holds for when the name comes off.
     fn running(&self) -> String {
         self.resolved().unwrap_or_default()
     }
 
-    /// [`running`](Self::running) before the missing case is flattened
-    /// away: None means the config names a shader this workspace's pool
-    /// doesn't hold, which is a different problem from an empty source and
-    /// gets its own line in the body.
+    /// None when the config names a shader the pool doesn't hold, which the
+    /// body reports separately from an empty source.
     fn resolved(&self) -> Option<String> {
         let Some(name) = self.config.name.as_deref() else {
             return Some(self.config.source.clone());
@@ -364,37 +277,22 @@ impl ShaderPanel {
         cache.source.clone()
     }
 
-    /// Whether the panel is using a pool shader the workspace doesn't
-    /// hold. Nothing paints in that state and no compile ever ran, so the
-    /// body has to be the one that says why.
     fn pool_missing(&self) -> bool {
         self.resolved().is_none()
     }
 
-    /// Whether the source is waiting on approval: it arrived inside a
-    /// layout or a workspace bundle and nobody on this machine has agreed
-    /// to run it yet. Asked of what runs rather than of the config, so a
-    /// shader pulled from the pool goes through the same gate an inline one
-    /// does instead of slipping in behind an empty `source`.
+    /// Asked of what runs rather than of the config, so a pool shader goes
+    /// through the same gate as an inline one.
     fn pending(&self) -> bool {
         !surface::approved(&self.running())
     }
 
-    /// Agree to run what the config holds. The one button that puts a
-    /// hash in the approved list without the source having come from a file
-    /// or a preset.
-    ///
-    /// The path goes: it named a file on whichever machine wrote the
-    /// bundle, and if this one happens to have something at that path, the
-    /// watch would pull it straight over the text just approved. Picking a
-    /// file again is how an imported shader gets a local one.
-    ///
-    /// It's the switch too: approving is saying run it, so a panel an
-    /// earlier Turn Off parked comes back on here rather than staying dark
-    /// with its approval quietly granted.
+    /// The one path that approves without a file or preset. The path goes:
+    /// it named a file on the bundle author's machine, and a file at that path
+    /// here would get pulled over the approved text. Approving also turns the
+    /// panel on.
     fn approve(&mut self, cx: &mut Context<Self>) {
-        // What runs, so a panel using a pool shader agrees to the text the
-        // pool holds rather than to the inline copy it isn't running.
+        // Approve the text the pool holds, not the inline copy.
         surface::approve(&self.running());
         self.config.enabled = true;
         self.config.path = None;
@@ -403,11 +301,8 @@ impl ShaderPanel {
         cx.notify();
     }
 
-    /// Turn the panel back on, from the button the body shows while it
-    /// isn't. An unread source needs its approval on the way, an approved
-    /// one just needs the switch: the path a bundle wrote is only worth
-    /// dropping on the approval, and a local file this machine picked should
-    /// keep hot reloading after a trip through the switch.
+    /// An approved local file keeps hot reloading through the switch; only
+    /// the approval drops a bundle's path.
     fn enable(&mut self, cx: &mut Context<Self>) {
         if self.pending() {
             self.approve(cx);
@@ -417,22 +312,14 @@ impl ShaderPanel {
         }
     }
 
-    /// Say no to the pending source: park it rather than delete it. The
-    /// source, the pool name, the bookmark and the routes all stay put with
-    /// the switch off, so the panel still says what it was given and turning
-    /// it back on is one toggle plus the approval.
+    /// Parks the pending source rather than deleting it.
     fn turn_off(&mut self, cx: &mut Context<Self>) {
         self.config.enabled = false;
         cx.notify();
     }
 
-    /// Write the shader out to a file and hand it to whatever opens `.wgsl`
-    /// on this machine. rox has no editor of its own, so this plus the file
-    /// watch is the authoring loop.
-    ///
-    /// An inline shader keeps the bookmark and watches its own file. A named
-    /// one ejects through its pool entry and the bookmark is recorded there,
-    /// since the source belongs to the workspace and so do the edits.
+    /// rox has no editor of its own, so this plus the file watch is the
+    /// authoring loop. A named shader ejects through its pool entry.
     fn eject(&mut self, cx: &mut Context<Self>) {
         let ejected = match self.config.name.as_deref() {
             Some(name) => surface::eject_pool_entry(name),
@@ -448,8 +335,7 @@ impl ShaderPanel {
             Ok(path) => {
                 if self.config.name.is_none() {
                     self.config.path = Some(path.clone());
-                    // Seeded: the file was just written from this source, so
-                    // only the next edit should wake the watch.
+                    // Seeded, so only the next edit wakes the watch.
                     self.watch = SourceWatch::seeded(Some(path.as_path()));
                 }
                 cx.open_with_system(&path);
@@ -467,9 +353,8 @@ impl ShaderPanel {
         }
     }
 
-    /// Open the in-app editor over what runs. A named panel edits the pool
-    /// entry, so every panel on the name follows an apply; an inline one
-    /// edits its own text through [`apply_edit`](Self::apply_edit).
+    /// A named panel edits the pool entry, so every panel on the name
+    /// follows.
     fn open_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         use surface::edit::{EditKey, ShaderEditTarget};
 
@@ -502,23 +387,17 @@ impl ShaderPanel {
         }
     }
 
-    /// Take an applied buffer from the editor. Unlike [`set_source`]
-    /// (Self::set_source) the bookmark stays: the editor wrote the file
-    /// from this same text, so the watch reseeds on it and only the next
-    /// outside edit wakes it. The approval already happened on the way in.
-    /// The registration re-runs on its own, since the program's hash moved.
+    /// Unlike [`set_source`](Self::set_source) the bookmark stays: the editor
+    /// wrote the file from this same text. The approval already happened.
     fn apply_edit(&mut self, source: String, cx: &mut Context<Self>) {
-        // Applying an edit is asking to see it.
         self.config.enabled = true;
         self.config.source = source;
         self.watch = SourceWatch::seeded(self.config.path.as_deref());
         cx.notify();
     }
 
-    /// Take a copy of the pool shader this panel is using and stop using
-    /// it. The text is the one that was already running, so its approval
-    /// still holds; no bookmark comes across, since the pool entry's file
-    /// belongs to the pool and a second watcher would drift the two apart.
+    /// The running text keeps its approval. No bookmark comes across: the
+    /// pool entry's file belongs to the pool.
     fn detach(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self
             .config
@@ -531,18 +410,10 @@ impl ShaderPanel {
         self.set_source(entry.source, None, cx);
     }
 
-    /// Point the panel at one of the workspace's shaders. The opposite of
-    /// [`detach`](Self::detach), and it clears the same fields for the same
-    /// reason: the inline source and the bookmark both go, because the
-    /// workspace holds what runs from here and a second copy on the panel
-    /// would only be the one that's wrong after the next edit to the
-    /// shared entry.
-    ///
-    /// Nothing is approved on the way through. A workspace shader that came
-    /// in with a bundle still has to be read before it runs, which is the
-    /// same gate a bundle-applied name goes through.
+    /// Clears the inline source and bookmark, since the pool holds what runs.
+    /// Nothing is approved on the way: a bundle's pool shader still has to be
+    /// read first.
     fn use_pool_name(&mut self, name: String, cx: &mut Context<Self>) {
-        // Same as picking any other source: choosing one is asking to see it.
         self.config.enabled = true;
         self.config.name = Some(name);
         self.config.source = String::new();
@@ -552,30 +423,24 @@ impl ShaderPanel {
         cx.notify();
     }
 
-    /// Promote the panel's source into the workspace's shaders and use it
-    /// by name from there. The inline copy goes: the pool holds the source
-    /// now, and a second copy on the panel would only be the one that's
-    /// wrong after the next pool edit.
+    /// The inline copy goes, since the pool holds the source now.
     fn save_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
         let name = name.trim().to_string();
         if name.is_empty() || self.config.source.trim().is_empty() {
             return;
         }
-        // The panel's own bookmark goes with it, so a shader that was being
-        // edited in a file goes on hot reloading through the pool's watch.
+        // The bookmark goes with it, so a file being edited keeps hot reloading
+        // through the pool's watch.
         surface::save_to_pool(&name, &self.config.source, self.config.path.clone());
         self.config.name = Some(name);
         self.config.source = String::new();
         self.config.path = None;
         self.watch = SourceWatch::default();
-        // The registration stands: the pool holds the same text that was
-        // running a moment ago, so there's nothing to recompile.
+        // The registration stands: the pool holds the same text.
         cx.notify();
     }
 
-    /// Snapshot a file into the panel's source. A file that won't read
-    /// shows in the same readout a failed compile does, since from the
-    /// panel's side they're the same problem.
+    /// A file that won't read shows in the compile readout.
     fn load_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(source) => self.set_source(source, Some(path), cx),
@@ -589,7 +454,6 @@ impl ShaderPanel {
         }
     }
 
-    /// Browse for a shader file.
     fn pick_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -609,26 +473,20 @@ impl ShaderPanel {
         .detach();
     }
 
-    /// Re-read the file the source came from, for an edit the watch hasn't
-    /// caught yet or a panel that's been parked.
     fn reload(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.config.path.clone() {
             self.load_file(path, cx);
         }
     }
 
-    /// Load one of the shipped examples. The path goes with it: an example
-    /// has no file behind it, and leaving the old one recorded would have
-    /// the watch overwrite it a second later.
+    /// The path goes: an example has no file, and the old one would be
+    /// reloaded over it.
     fn use_preset(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(preset) = PRESETS.get(index) {
             self.set_source(preset.source.to_string(), None, cx);
         }
     }
 
-    /// What the panel says instead of running: nothing loaded, a source
-    /// nobody has read yet, a switch that's off, or what registration made
-    /// of what's there. None while the shader draws.
     fn body_note(&self) -> Option<BodyNote> {
         let note = |lines: Vec<String>, actions: Vec<NoteAction>| {
             Some(BodyNote {
@@ -637,8 +495,8 @@ impl ShaderPanel {
                 raw: false,
             })
         };
-        // A name the workspace's pool doesn't hold. Nothing paints and
-        // nothing else in the app would say why, so the panel does.
+        // Nothing else in the app would say why a missing pool name paints
+        // nothing.
         if let Some(name) = self.config.name.as_deref().filter(|_| self.pool_missing()) {
             return note(
                 vec![
@@ -677,9 +535,8 @@ impl ShaderPanel {
             );
         }
         let error = self.compiled.lock().unwrap().error.clone()?;
-        // A backend with no shader pipeline turns every source down the same
-        // way, so it gets the plain note the other non-running states get
-        // rather than a compiler readout for a compile that never ran.
+        // A backend with no shader pipeline gets the plain note, not a compiler
+        // readout.
         if surface::unsupported(&error) {
             return note(
                 vec![
@@ -689,10 +546,8 @@ impl ShaderPanel {
                 vec![NoteAction::Inspect],
             );
         }
-        // naga's message runs several lines, with a caret under the span it
-        // is complaining about. They have to stay lines, and they stay left
-        // aligned at the top: centred, the carets point at the wrong
-        // columns and a long message clips at both ends.
+        // Keep naga's lines left aligned: centred, the carets point at the wrong
+        // columns.
         Some(BodyNote {
             lines: std::iter::once(rox_i18n::t!("shader-panel-compile-error").to_string())
                 .chain(error.lines().take(ERROR_LINES).map(str::to_string))
@@ -708,8 +563,7 @@ impl PanelSettings for ShaderPanel {
         self.state.clone()
     }
 
-    // The body already is a shader; offering a second one over it reads
-    // as a mistake.
+    // The body already is a shader.
     fn surface_shader(&self) -> bool {
         false
     }
@@ -730,8 +584,7 @@ impl PanelSettings for ShaderPanel {
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
         // No Signals page: the pool is app-global and edits in the Signals
-        // window, same as everywhere else. Bindings points there when the
-        // pool is empty.
+        // window.
         &[("Source", icons::BLEND), ("Bindings", icons::SLIDERS)]
     }
 
@@ -749,15 +602,10 @@ impl PanelSettings for ShaderPanel {
 }
 
 impl ShaderPanel {
-    /// The Source page: one picker for where the shader comes from, the
-    /// rows that selection needs under it, and what registration made of
-    /// the result.
     fn source_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let path = self.config.path.clone();
         let named = self.config.name.clone();
-        // What runs, which for a named panel is the workspace's copy. The
-        // approval block reads it too, so a shader that arrived in a bundle
-        // gets read before it runs whichever way it got here.
+        // What runs, so a bundle's pool shader gets read before it runs.
         let resolved = self.resolved();
         let running = resolved.clone().unwrap_or_default();
         let error = self.compiled.lock().unwrap().error.clone();
@@ -773,8 +621,7 @@ impl ShaderPanel {
             )
         });
 
-        // The name a save would use, read before the field goes out
-        // on loan to the picker block.
+        // Read before the field goes out on loan to the picker block.
         let fallback = {
             let label = self.config.chrome.title.clone().unwrap_or_default();
             surface::eject_name(&label, &self.config.source)
@@ -784,9 +631,7 @@ impl ShaderPanel {
             name: named.as_deref(),
             path: path.as_deref(),
             resolved: resolved.as_deref(),
-            // No None entry here: this panel's whole body is the shader, so
-            // an empty one is a mistake rather than a state to pick. And
-            // covering that body is the point, so every shader is offered.
+            // No None entry: this panel's whole body is the shader.
             clear: None,
             overlays_only: false,
             use_example: |this: &mut Self, index, cx| this.use_preset(index, cx),
@@ -809,9 +654,7 @@ impl ShaderPanel {
             .child(setting_row(
                 rox_i18n::t!("shader-panel-run-shader"),
                 Some(rox_i18n::t!("shader-panel-run-shader.description")),
-                // The switch and nothing else. An unread source still has
-                // the approval block above to get through, so flicking this
-                // on can't be the way past it.
+                // Just the switch; an unread source still has the approval block above.
                 toggle(
                     enabled,
                     |this: &mut Self, on, cx| {
@@ -823,10 +666,7 @@ impl ShaderPanel {
             ))
             .child(picked);
         if let Some(error) = error {
-            // The callout the app's Overlay Shader section uses, for the
-            // same reason: the switch right above reads as on, and a muted
-            // block under it isn't enough to say that nothing behind it is
-            // running.
+            // A callout, since the switch above reads as on while nothing runs.
             shader = shader.child(match surface::unsupported(&error) {
                 true => panel::banner(
                     panel::Tone::Bad,
@@ -871,13 +711,8 @@ impl ShaderPanel {
             .child(section(rox_i18n::t!("panel-section-shader"), None, shader))
     }
 
-    /// The Bindings page: the routes filling the shader's slots, in the
-    /// same editor the panel Shader page and the app's screen shader use,
-    /// over a live readout of all sixteen slots. The names come off the
-    /// source's `// @slot n: name` comments where it declares them.
     fn bindings_page(&mut self, cx: &mut Context<Self>) -> Div {
-        // Off what runs, so a panel using a pool shader reads the pool's
-        // slot names rather than the inline copy it left behind.
+        // Off what runs, so a pool shader's slot names show.
         let running = self.running();
         let labels = surface::slot_labels(&running);
         self.routes_ui.sync(self.config.routes.len());
@@ -975,8 +810,6 @@ impl Panel for ShaderPanel {
         panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config, source and all; the
-    /// builder registered in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -1007,9 +840,6 @@ impl Panel for ShaderPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // Icon on the row so it lines up with Rename and the rest of the tail
-        // and the tick shows on the right, the way every other top-level
-        // check row in the app reads. The icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
             rox_i18n::t!("panel-run-when-idle"),
             Some(icons::CLOCK),
@@ -1045,9 +875,6 @@ impl Panel for ShaderPanel {
 impl Render for ShaderPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
@@ -1058,18 +885,13 @@ impl ShaderPanel {
         self.poll_reload(cx);
         let note = self.body_note().map(|note| self.note_overlay(note, cx));
 
-        // A shader that's off or still waiting to be read never gets
-        // registered: the canvas paints nothing and the note above says
-        // what the panel is waiting on.
+        // Off or unread never registers; the note says why.
         let source = if self.pending() || !self.config.enabled {
             String::new()
         } else {
             self.running()
         };
-        // Where the images a program declares are read from. A named panel
-        // holds no path: its bookmark points at whatever was inlined before
-        // the name went on, and the pool entry keeps its own, which the
-        // resolve falls back to.
+        // A named panel holds no path; the pool entry keeps its own.
         let ctx = surface::ProgramCtx::of(
             self.config.name.as_deref(),
             match self.config.name {
@@ -1127,13 +949,8 @@ impl ShaderPanel {
             .gap(tokens::SPACE_SM);
         for action in note.actions {
             let click = cx.listener(move |this: &mut Self, _, _, cx| match action {
-                // The Source page is where the whole source is listed, with
-                // where it says it came from and its hash under it.
-                //
-                // Deferred: opening reads the panel for its name and its
-                // shared state, and this handler is running inside the
-                // panel's own update, which is a second read of a borrow
-                // that's already out.
+                // Deferred: opening reads the panel, and this handler runs inside the
+                // panel's own update.
                 NoteAction::Inspect | NoteAction::Pick => {
                     let panel = cx.entity();
                     cx.defer(move |cx| panel_settings::open_page(panel, "Source", cx));
@@ -1152,9 +969,7 @@ impl ShaderPanel {
             .flex()
             .flex_col()
             .gap(px(2.))
-            // A naga message wraps rather than running off both edges: the
-            // block is centred, so anything wider than the panel would lose
-            // its left end as readily as its right.
+            // Wraps rather than clipping, since the block is centred.
             .max_w_full()
             .when(!raw, |lines| lines.items_center().text_center())
             .children(note.lines);
@@ -1176,8 +991,6 @@ impl ShaderPanel {
     }
 }
 
-/// One frame of the shader: register what the config holds, resolve the
-/// routes, and record the right kind of pass.
 #[allow(clippy::too_many_arguments)]
 fn paint(
     bounds: gpui::Bounds<gpui::Pixels>,
@@ -1195,9 +1008,8 @@ fn paint(
     if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) || source.trim().is_empty() {
         return;
     }
-    // A program using the track's art follows the track: the poll moves
-    // the cover feed when the playing file turns over, and the moved rev
-    // re-registers the program below.
+    // A program using the cover re-registers when the poll moves the cover
+    // feed.
     let cover = if surface::uses_cover(source) {
         surface::poll_cover(window, cx)
     } else {
@@ -1207,18 +1019,13 @@ fn paint(
     let shader = {
         let mut compiled = compiled.lock().unwrap();
         if !compiled.ran || compiled.key != hash {
-            // Registration caches by content, but only what compiled: a
-            // rejection re-runs naga on every call, and this closure runs
-            // every frame. So a broken program is tried once and the result
-            // kept until something about it moves.
+            // Registration only caches what compiled, and this runs every frame, so
+            // a broken program is tried once and kept until something moves.
             let previous = compiled.error.take();
-            // What's on screen stays on screen through a failed compile:
-            // the message shows in the body over a shader that still runs,
-            // which makes saving from an editor bearable.
+            // The last good shader stays on screen through a failed compile.
             let good = compiled.shader;
-            // The whole program: the text splits into its passes here and
-            // its images are read from the pool entry or from beside the
-            // source, so a bad plate reads out like a bad line of WGSL.
+            // Images are read here too, so a bad plate reads out like a bad line of
+            // WGSL.
             *compiled = match surface::register_program(window, source, ctx) {
                 Ok(shader) => Compiled {
                     key: hash,
@@ -1234,59 +1041,45 @@ fn paint(
                 },
             };
             if previous != compiled.error {
-                // The body renders this message and was built before this
-                // ran, so the panel needs another pass to show it. Without
-                // the nudge a broken shader asks for no frames and the
-                // message never shows.
+                // The body was built before this ran; without the nudge a broken shader
+                // asks for no frames and the message never shows.
                 cx.notify(panel);
             }
         }
         compiled.shader
     };
-    // Nothing to draw, and the message is already on its way to the body.
     let Some(shader) = shader else {
         return;
     };
 
     let mut targets = SlotTargets::default();
     surface::seed_manual(&mut targets, manual);
-    // Reading the routes advances the hub, deduped to once per frame, so
-    // several panels on the same pool cost one.
+    // Reading advances the hub, deduped to once per frame.
     signal_ui::apply_routes(routes, hub, &mut targets);
     let meta = surface::meta_slots(window, cx);
-    // A shader that reads the pointer keeps asking for frames while the
-    // pointer counts for anything, so presence eases off on a panel that
-    // would otherwise be parked, and the watch wakes the panel when the
-    // hand comes back to a shader that already faded out.
+    // A pointer-reading shader keeps asking for frames while presence eases
+    // off, and the watch wakes it when the hand comes back.
     let cursor = surface::reads_cursor(source);
     if cursor {
         surface::watch_cursor(window);
     }
 
-    // Caps decide the path: a program that reads the screen under it, its
-    // own last frame, an image, or runs more than one pass needs the region
-    // pass, and one that draws from nothing but its uniforms is a plain
-    // in-scene quad. Getting this backwards paints nothing at all, since
-    // each call skips what it can't run.
+    // A program that reads the screen, its last frame, an image, or has
+    // several passes needs the region pass. Backwards paints nothing.
     let screen = window
         .user_shader_caps(shader)
         .is_some_and(|caps| caps.screen_pass_only());
     if screen {
-        // The entity id keys the feedback texture, so two shader panels
-        // running the same source each smear their own.
+        // The entity id keys the feedback texture, so two panels on one source
+        // each keep their own.
         window.paint_screen_shader(bounds, shader, panel.as_u64(), targets.slots, meta);
     } else {
         window.paint_user_shader(bounds, shader, targets.slots, meta);
     }
 
-    // A docked panel renders cached: a clean frame replays the recorded
-    // primitive with the values it was recorded with, so an animating
-    // shader needs this view dirtied every frame. `request_animation_frame`
-    // notifies exactly this view, which is the cheap wake: a window
-    // refresh would rebuild every view in the window uncached.
-    // Settling as well as live: the release runs on after the audio stops,
-    // and a panel that parks on the last live frame holds its fade halfway
-    // down instead of playing it out.
+    // A docked panel renders cached, so an animating shader needs this view
+    // dirtied every frame; `request_animation_frame` is the cheap wake.
+    // Settling counts too, or the release's fade would stop halfway.
     if hub.live() || hub.settling() || run_when_idle || (cursor && meta[6] > 0.0) {
         window.request_animation_frame();
     }
@@ -1295,17 +1088,12 @@ fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The other builtin, checked here for the paint path it covers. Both
-    // are defined with the gate now, since the gate has to know them.
     use surface::TRAILS;
 
-    /// The one thing a source has to define, in the shape the template
-    /// calls it by.
     const ENTRY: &str = "fn fs_user(uv: vec2<f32>) -> vec4<f32>";
 
-    /// The shader pool is app-global and the tests below swap it out from
-    /// under themselves, so anything that touches it takes this first.
-    /// Same guard the surface module keeps over its own pool tests.
+    /// The pool is app-global and these tests swap it, so anything touching
+    /// it takes this first.
     static POOL_GUARD: Mutex<()> = Mutex::new(());
 
     fn config_with_routes() -> ShaderConfig {
@@ -1350,8 +1138,7 @@ mod tests {
 
         assert_eq!(read.chrome.title.as_deref(), Some("Wall"));
         assert!(read.chrome.locked);
-        // The source is stored in the config, so a shader can travel
-        // inside a workspace bundle.
+        // Stored in the config, so a shader travels inside a bundle.
         assert_eq!(read.source, config.source);
         assert_eq!(read.path, config.path);
         assert!(read.run_when_idle);
@@ -1364,8 +1151,6 @@ mod tests {
         assert_eq!(read.manual, vec![(3, 0.5)]);
     }
 
-    /// The switch defaults on, and a dump written before it existed reads
-    /// back on rather than as a panel that silently stopped painting.
     #[test]
     fn a_config_without_the_switch_reads_as_on() {
         let mut dumped = serde_json::to_value(config_with_routes()).expect("dump");
@@ -1378,7 +1163,6 @@ mod tests {
             .expect("the switch was written");
         let read: ShaderConfig = serde_json::from_value(dumped).expect("read back");
         assert!(read.enabled);
-        // And the shader it held is still there to run.
         assert!(read.source.contains("fs_user"));
     }
 
@@ -1387,16 +1171,15 @@ mod tests {
         let mut manual = Vec::new();
         surface::set_manual_value(&mut manual, 3, 0.5);
         surface::set_manual_value(&mut manual, 0, 2.0);
-        // A second write replaces, and typed values clamp to the slot's
-        // 0..1.
+        // A second write replaces, and typed values clamp to 0..1.
         surface::set_manual_value(&mut manual, 3, 0.75);
         assert_eq!(surface::manual_value(&manual, 3), Some(0.75));
         assert_eq!(surface::manual_value(&manual, 0), Some(1.0));
         assert_eq!(surface::manual_value(&manual, 5), None);
 
-        // Seeded under the routes: a live route writes over its slot, the
-        // hand-set value holds the ones no route drives.
-        let hub = rox_viz::signal::SignalHub::new(Vec::new());
+        // Seeded under the routes: a live route writes over its slot.
+        let hub =
+            rox_viz::signal::SignalHub::with_feed(Vec::new(), Arc::new(rox_viz::AudioFeed::new()));
         let routes = vec![Route {
             enabled: true,
             signal: 1,
@@ -1407,16 +1190,12 @@ mod tests {
         let mut targets = SlotTargets::default();
         surface::seed_manual(&mut targets, &manual);
         signal_ui::apply_routes(&routes, &hub, &mut targets);
-        // The route's signal is gone from the pool, so it contributes
-        // nothing and the seed is kept even on the routed slot.
+        // The route's signal is gone, so the seed stays.
         assert_eq!(targets.slots[0], 1.0);
         assert_eq!(targets.slots[3], 0.75);
         assert_eq!(targets.slots[5], 0.0);
     }
 
-    /// A panel pointing into the workspace's pool writes the name, and one
-    /// with a source of its own writes no key, so no layout dump written
-    /// before the pool existed grows a line.
     #[test]
     fn a_pool_name_rides_the_panel_config() {
         let config = ShaderConfig {
@@ -1435,10 +1214,8 @@ mod tests {
         );
     }
 
-    /// The panel runs what the pool holds under its name, and a name the
-    /// pool doesn't hold runs nothing rather than the inline copy it still
-    /// has. The gate reads the resolved text too, so a shader that
-    /// arrived in a bundle can't slip past it behind an empty `source`.
+    /// The gate reads the resolved text, so a bundle's shader can't slip
+    /// past it behind an empty `source`.
     #[test]
     fn a_named_panel_runs_the_pools_copy() {
         let _pool = POOL_GUARD.lock().unwrap_or_else(|held| held.into_inner());
@@ -1459,17 +1236,12 @@ mod tests {
             "a shader out of a bundle waits for this machine to agree"
         );
 
-        // Nothing under that name is nothing to run, whatever the config
-        // still has inline.
+        // Nothing under that name runs nothing, whatever is inline.
         rox_core::settings::note_shader_pool(Vec::new());
         assert_eq!(surface::resolve_source(Some("Grain"), &pool_source), None);
     }
 
-    /// What a registration is kept under. A program's images can be
-    /// replaced without a character of its source changing, so a key made
-    /// of the text alone would leave a panel painting the plate it just
-    /// swapped out. Where the source came from and the pool's generation
-    /// are part of the key for that reason.
+    /// Images can be replaced without a character of source changing.
     #[test]
     fn the_program_key_moves_with_the_origin_and_the_pool() {
         let _pool = POOL_GUARD.lock().unwrap_or_else(|held| held.into_inner());
@@ -1492,8 +1264,7 @@ mod tests {
             "a moved cover feed is a different program, or the art never follows the track"
         );
 
-        // A new plate under the same name bumps the pool and edits no
-        // source at all, which is the case the text alone can't see.
+        // A new plate bumps the pool and edits no source.
         rox_core::settings::note_shader_pool(vec![rox_core::settings::NamedShader {
             name: "Grain".to_string(),
             source: source.clone(),
@@ -1508,22 +1279,18 @@ mod tests {
         rox_core::settings::note_shader_pool(Vec::new());
     }
 
-    /// The export scrub traverses layout dumps as raw JSON, well below the
-    /// crate that knows what a panel config looks like, so it gets checked
-    /// against a dump the real serialization produces rather than one
-    /// written by hand to match it.
+    /// Checked against a real dump, since the scrub walks raw JSON far from
+    /// the types.
     #[test]
     fn the_export_scrub_finds_both_bookmarks_in_a_real_dump() {
         use rox_core::settings::{NamedLayout, WorkspaceBundle};
         use rox_dock::{PanelInfo, PanelState};
 
-        // The Shader panel, whose own config is the shader.
         let shader_panel = ShaderConfig {
             source: "// the panel's own".to_string(),
             path: Some("/home/someone/panel.wgsl".into()),
             ..ShaderConfig::default()
         };
-        // Any other panel, with a surface shader as chrome.
         let folder = crate::folder_tree::FolderTreeConfig {
             chrome: PanelChrome {
                 shader: Some(surface::PanelShader {
@@ -1553,8 +1320,7 @@ mod tests {
             info: PanelInfo::stack(Vec::new(), gpui::Axis::Vertical),
         })
         .expect("dump the dock state");
-        // The bookmarks are really in there, or the assertions below would
-        // pass over a dump shaped nothing like the walk expects.
+        // Guard that the fixture really holds the bookmarks.
         assert!(dump.to_string().contains("/home/someone/panel.wgsl"));
         assert!(dump.to_string().contains("/home/someone/surface.wgsl"));
 
@@ -1573,11 +1339,9 @@ mod tests {
             !scrubbed.contains("/home/someone/"),
             "no bookmark should have survived: {scrubbed}"
         );
-        // The sources are the half that has to travel.
         assert!(scrubbed.contains("// the panel's own"));
         assert!(scrubbed.contains("// the surface one"));
 
-        // And they read back as configs, with the bookmarks gone.
         let read: PanelState =
             serde_json::from_value(bundle.layouts[0].dump.clone()).expect("read the dock state");
         let PanelInfo::Panel(shader_config) = &read.children[0].info else {
@@ -1603,9 +1367,7 @@ mod tests {
 
     #[test]
     fn an_empty_dump_falls_back_to_the_preset() {
-        // A panel added from the catalog dumps nothing of its own until it
-        // is edited, and a config written before a field existed is the
-        // same shape.
+        // A panel added from the catalog dumps nothing until edited.
         let read: ShaderConfig = serde_json::from_value(serde_json::json!({})).expect("read");
         assert_eq!(read.source, PLASMA);
         assert!(read.path.is_none());
@@ -1616,18 +1378,15 @@ mod tests {
 
     #[test]
     fn an_emptied_source_is_respected() {
-        // Distinct from the case above: the key is there and empty, which
-        // is a panel someone cleared rather than one that never had a
-        // source. `serde(default)` fills only what's missing.
+        // The key present and empty is a cleared panel; `serde(default)` fills
+        // only what's missing.
         let read: ShaderConfig =
             serde_json::from_value(serde_json::json!({ "source": "" })).expect("read");
         assert!(read.source.is_empty());
     }
 
-    /// Registration composes the source into gpui's template, so a preset
-    /// has to obey the contract's rules. The compose-and-validate path
-    /// itself is inside the vendored crate and can't be reached from
-    /// here; only the shape is checkable from this side.
+    /// The compose-and-validate path lives in the vendored crate, so only the
+    /// shape is checkable here.
     #[test]
     fn presets_are_shaped_like_the_contract() {
         for surface::Preset { label, source, .. } in PRESETS {
@@ -1635,16 +1394,13 @@ mod tests {
                 source.contains(ENTRY),
                 "{label} has to define the entry point the template calls"
             );
-            // `meta` is a reserved word in naga 25, hence `user_meta` on
-            // the WGSL side. A preset written against the Rust argument
-            // name would be rejected at registration.
+            // `meta` is a reserved word in naga 25, hence `user_meta` in WGSL.
             assert!(
                 !source.contains("params.meta"),
                 "{label} reads params.meta; the WGSL field is user_meta"
             );
             for line in source.lines() {
-                // Module scope is column zero here: everything the presets
-                // declare of their own is a function.
+                // Module scope is column zero: the presets declare only functions.
                 let declaration = !line.starts_with(char::is_whitespace);
                 let binding = line.starts_with("var")
                     || line.starts_with("@group")
@@ -1657,16 +1413,9 @@ mod tests {
         }
     }
 
-    /// The picker groups the examples under a Scenes label and an Overlays
-    /// label, so each side has to hold something or a heading sits over an
-    /// empty run.
-    ///
-    /// The split is also the app's one guard against handing a whole window
-    /// to something that hides it, so the two shapes that claim it are
-    /// pinned by name here: Sheen leaves the frame visible by being
-    /// transparent, Tube by reading `screen` and printing it back. A preset
-    /// that quietly stopped declaring itself would move into Scenes and
-    /// warn about a coverage it doesn't cause.
+    /// Each group needs something, or a heading sits over an empty run. The
+    /// split is also the guard against a preset hiding a whole window, so
+    /// the overlay shapes are pinned by name.
     #[test]
     fn the_examples_offer_scenes_and_overlays() {
         let named = |label: &str| {
@@ -1689,8 +1438,6 @@ mod tests {
         }
     }
 
-    /// The directive reads like the others: a bare marker, and prose that
-    /// merely starts with the same letters isn't one.
     #[test]
     fn the_overlay_directive_isnt_fooled_by_prose() {
         assert!(surface::overlay("// @overlay\nfn fs_user() {}"));
@@ -1700,10 +1447,7 @@ mod tests {
         assert!(!surface::overlay(""));
     }
 
-    /// One of each kind, which is the point of shipping two: the pure one
-    /// exercises the in-scene quad and the other the region pass. The fork
-    /// itself is `screen_pass_only`, so the caps each preset's shape earns
-    /// are checked against it here.
+    /// The pure one exercises the in-scene quad, the other the region pass.
     #[test]
     fn the_presets_cover_both_paint_paths() {
         assert!(
@@ -1735,11 +1479,8 @@ mod tests {
         );
     }
 
-    /// The fork is what registration made of the program, not what the
-    /// text looks like. A chain that reads neither the screen nor its own
-    /// last frame still needs the region pass, since intermediate targets
-    /// and image bindings only exist there, and a shader panel taking the
-    /// quad path for one of those paints nothing at all.
+    /// A chain that reads neither the screen nor its last frame still needs
+    /// the region pass: intermediate targets and images only exist there.
     #[test]
     fn a_multi_pass_program_takes_the_screen_path() {
         let source = format!("// @pass half: 0.5\n{PLASMA}\n// @pass out\n{PLASMA}");
@@ -1773,9 +1514,7 @@ mod tests {
         );
     }
 
-    /// The `// @slot n: name` convention gives the Bindings page something
-    /// to call a slot, so a preset that ships without names is a preset
-    /// nobody can read the bindings of.
+    /// A preset without slot names leaves the Bindings page unreadable.
     #[test]
     fn presets_name_their_slots() {
         for surface::Preset { label, source, .. } in PRESETS {
@@ -1789,8 +1528,6 @@ mod tests {
         }
     }
 
-    /// Where a slot maps into the uniform block, the mapping the Bindings
-    /// page prints beside each row.
     #[test]
     fn slot_accessors_walk_the_uniform_block() {
         assert_eq!(surface::slot_accessor(0), "params.signals[0].x");

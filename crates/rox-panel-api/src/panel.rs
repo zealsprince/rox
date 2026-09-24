@@ -1,9 +1,8 @@
-//! The app's own panel layer per ADR 7: the dock, tabs, splits, and resize
-//! come from gpui-component, and the two behaviors it doesn't give us are
-//! here. Panels are views over the shared entities in [`AppState`], so a
-//! duplicate is a second view with its own config over the same state, and a
-//! popped-out panel is the same entity rehosted in its own OS window, no
-//! cross-window messaging needed.
+//! The app's own panel layer per ADR 7. The dock, tabs, splits and resize
+//! come from gpui-component. Panels are views over the shared entities in
+//! [`AppState`], so a duplicate is a second view with its own config over
+//! the same state, and a popped-out panel is the same entity rehosted in
+//! its own OS window.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -49,9 +48,7 @@ pub use arrange::*;
 pub mod shader;
 pub use shader::PanelShader;
 
-// The widget layer is in rox-panel-kit now. Panels reach it through
-// crate::panel the way they always have, so the split stays behind this
-// line.
+// Panels reach the rox-panel-kit widget layer through crate::panel.
 pub use rox_panel_kit::{
     Align, FlickState, ModeSpec, PANEL_NAV_CONTEXT, PatternNote, ResumeIdle, SLIDER_STEP,
     ScrubState, SliderWidth, TYPE_AHEAD_CYCLE_CONTEXT, Tip, Tone, TrackedImage, VAlign, ValueEdit,
@@ -67,61 +64,41 @@ pub use rox_panel_kit::{
     workspace_body,
 };
 
-/// The shared entities every panel renders over: one player, one catalog,
-/// and one selection per workspace. Cloning shares the handles, not the
-/// state.
+/// The shared entities every panel renders over. Cloning shares the
+/// handles, not the state.
 #[derive(Clone)]
 pub struct AppState {
     pub library: Entity<Library>,
     pub player: Entity<Player>,
     pub selection: Entity<Selection>,
-    /// This run's cue points, per track and never written down. One per
-    /// workspace so a strip, a duplicate of it, and the key commands all
-    /// mark the same song.
+    /// This run's cue points, never written down. One per workspace so a strip,
+    /// its duplicate and the key commands all mark the same song.
     pub cues: Entity<Cues>,
-    /// The app-wide search query the global-following panels share.
     pub query: Entity<SharedQuery>,
     pub tab_hosts: Entity<TabHosts>,
-    /// The playing track's art baked into the window backdrop, one bake
-    /// shared by every window over this player.
+    /// One bake shared by every window over this player.
     pub now_art: Entity<NowPlayingArt>,
-    /// The artwork service's texture cache, shared by every view that
-    /// draws cover thumbnails.
     pub thumbs: Entity<Thumbs>,
-    /// The artist portrait cache, shared by every view that draws faces:
-    /// the artist wall and the stats page.
     pub portraits: Entity<Portraits>,
-    /// What the playing station says is on air. One per player: the
-    /// scrobbler files a listen off its turnovers and the backdrop goes
-    /// looking for the song's cover, and a second copy would mean both
-    /// signals fired twice per song.
+    /// One per player: a second copy would fire the scrobble and the cover
+    /// lookup twice per song.
     pub radio: Entity<Radio>,
-    /// The Last.fm scrobbler over this workspace's player; also where the
-    /// live scrobble config is stored, for the panels' threshold markers.
+    /// Also holds the live scrobble config, for the panels' threshold markers.
     pub scrobbler: Entity<Scrobbler>,
-    /// The ListenBrainz publisher riding the scrobbler's signals; also
-    /// where its live config is stored, for the settings page.
+    /// Also holds its live config, for the settings page.
     pub listenbrainz: Entity<ListenBrainz>,
-    /// The Libre.fm publisher, riding the same signals the same way.
     pub librefm: Entity<LibreFm>,
-    /// The listen recorder driven by the scrobbler's listen signal; history
-    /// views subscribe to it for the refresh when an event arrives.
     pub history: Entity<History>,
-    /// Discord Rich Presence publisher watching the player.
     pub discord: Entity<DiscordPresence>,
-    /// The shared signal pool and its engine: the app-wide modulation
-    /// sources any panel's parameters can be bound to. Panels tick it from their
-    /// paint and read values; edits persist through settings.
+    /// The shared modulation pool. Panels tick it from their paint and read
+    /// values; edits persist through settings.
     pub signals: Arc<rox_viz::signal::SignalHub>,
 }
 
 impl AppState {
     /// Where the scrobble threshold line goes, 0 to 1, or None while no
-    /// destination would send on it, so the panels never draw a line that
-    /// lies. The line itself is the scrobbler's, since it owns the clock;
-    /// whether it shows depends on the switch and all three accounts,
-    /// which is why the question is asked here rather than of any one of
-    /// them.
+    /// destination would send on it. It depends on the switch and all three
+    /// accounts, which is why it's asked here.
     pub fn scrobble_marker(&self, cx: &gpui::App) -> Option<f32> {
         let scrobbler = self.scrobbler.read(cx);
         let armed = scrobbler.scrobbling()
@@ -132,18 +109,16 @@ impl AppState {
     }
 }
 
-/// Every tab panel that has hosted one of our panels, reported from each
-/// panel's `on_added_to`. Dragging a tab into a split makes the dock create
-/// tab panels on its own and nothing announces them to the workspace, so
-/// this registry is how it finds them, to pick a live tab panel for
-/// Panels-menu additions.
+/// Every tab panel that has hosted one of our panels, reported from
+/// `on_added_to`. The dock creates tab panels on its own when a tab is
+/// dragged into a split and announces none of them, so this is how the
+/// Panels menu finds a live one.
 #[derive(Default)]
 pub struct TabHosts {
     hosts: Vec<WeakEntity<TabPanel>>,
 }
 
 impl TabHosts {
-    /// Record a hosting tab panel.
     pub fn report(&mut self, tabs: WeakEntity<TabPanel>) {
         if self.hosts.iter().any(|t| t.entity_id() == tabs.entity_id()) {
             return;
@@ -151,7 +126,6 @@ impl TabHosts {
         self.hosts.push(tabs);
     }
 
-    /// The newest recorded tab panel that is still alive and showing panels.
     pub fn last_live(&self, cx: &App) -> Option<Entity<TabPanel>> {
         self.hosts.iter().rev().find_map(|tabs| {
             let tabs = tabs.upgrade()?;
@@ -160,11 +134,8 @@ impl TabHosts {
     }
 }
 
-/// Jump to an open panel by its built-in name across every tab group that has
-/// hosted our panels: make the first live match the active, focused tab, and
-/// return whether one was found. The queue widget uses it to reach an open
-/// queue panel before falling back to a window. Popped-out panels are in
-/// their own windows rather than the dock, so they aren't matched here.
+/// Focus the first open panel with this built-in name across every tab
+/// group. Popped-out panels live in their own windows, so they never match.
 pub fn focus_panel_named(
     hosts: &Entity<TabHosts>,
     name: &str,
@@ -188,12 +159,9 @@ pub fn focus_panel_named(
     false
 }
 
-/// [`icon_control`] that shows a crossfade running through it: while two
-/// tracks overlap, an accent wash sweeps across the button in the direction
-/// the skip went, its soft edge at wherever the fade has got to. The
-/// control that started the overlap is the one that shows it, so the
-/// animation shows which way the queue moved as well as how much is left.
-/// None is the plain button.
+/// [`icon_control`] with a crossfade running through it: an accent wash
+/// sweeps across in the skip's direction, its soft edge at the fade's
+/// progress. None is the plain button.
 pub fn icon_control_fading<V: 'static>(
     icon: &'static str,
     color: Rgba,
@@ -205,25 +173,19 @@ pub fn icon_control_fading<V: 'static>(
 ) -> Stateful<Div> {
     icon_control_sized(icon, px(16.), color, tip, on_click, cx)
         .when_some(fade, |d, fade| {
-            // Soft-edged rather than a hard wipe: the thing being drawn is a
-            // fade, and an edge that blurs across the button reads as one where
-            // a moving hard line reads as a progress bar.
+            // Soft-edged, since a moving hard line reads as a progress bar.
             let wash = palette::alpha(palette::accent(), 0x66);
             let clear = palette::alpha(palette::accent(), 0x00);
             let at = fade.progress();
             d.bg(linear_gradient(
-                // 90 runs left to right, 270 the other way, so a Previous
-                // sweeps back the way it sent the queue.
+                // 270 runs right to left, so a Previous sweeps back.
                 if fade.back { 270. } else { 90. },
                 linear_color_stop(wash, (at - EDGE).max(0.0)),
                 linear_color_stop(clear, (at + EDGE).min(1.0)),
             ))
         })
-        // The sweep's exit: a completed fade leaves the whole button washed,
-        // and cutting that to nothing reads as a glitch. Instead it starts
-        // one notch brighter than the sweep it ends (the flash) and
-        // dissolves. Flat rather than the gradient, since the sweep already
-        // arrived; this is the settle, not more motion.
+        // A completed fade leaves the button washed, and cutting that to nothing
+        // reads as a glitch, so it flashes one notch brighter and dissolves.
         .when_some(outro, |d, strength| {
             d.bg(palette::alpha(
                 palette::accent(),
@@ -232,13 +194,11 @@ pub fn icon_control_fading<V: 'static>(
         })
 }
 
-/// How far either side of the fade's position the sweep's edge blurs, as a
-/// fraction of the button.
+/// The sweep edge's blur either side of the fade position, as a fraction of the button.
 const EDGE: f32 = 0.2;
 
-/// The A-B section as a strip draws it: A's fraction of the track, and
-/// B's once it's marked. `None` when nothing is marked or the duration
-/// hasn't resolved, since a fraction of an unknown length points nowhere.
+/// A's fraction of the track, and B's once marked. None while nothing is
+/// marked or the duration hasn't resolved.
 pub fn ab_fractions(ab: AbState, duration_secs: Option<f64>) -> Option<(f32, Option<f32>)> {
     let duration = duration_secs.filter(|d| *d > 0.0)?;
     let frac = |secs: f64| (secs / duration) as f32;
@@ -249,12 +209,9 @@ pub fn ab_fractions(ab: AbState, duration_secs: Option<f64>) -> Option<(f32, Opt
     }
 }
 
-/// Paint the A-B section over a strip, the seek strip's and the waveform's
-/// shared look: a full-height line at each end and a wash between them,
-/// all in the accent so it reads as part of the played side rather than a
-/// second marker. With only A down the line stands alone, which is the
-/// waiting state the button's dot also shows. `weight` scales every alpha,
-/// for a strip fading its shape in or out.
+/// Paint the A-B section over a strip: a line at each end and an accent
+/// wash between them. With only A down the line stands alone. `weight`
+/// scales every alpha, for a strip fading its shape in or out.
 pub fn paint_ab(
     ab: Option<(f32, Option<f32>)>,
     weight: f32,
@@ -302,17 +259,12 @@ pub fn paint_ab(
     }
 }
 
-/// The section wash's alpha at full weight, light enough that the played
-/// side's own fill still reads through it.
+/// Light enough that the played side's own fill reads through.
 const AB_WASH: u8 = 0x30;
-/// The end lines' alpha at full weight.
 const AB_LINE: u8 = 0xcc;
-/// The end lines' width, a touch under the playhead so the head still
-/// stands out when it crosses one.
+/// A touch under the playhead, so the head stands out when it crosses one.
 const AB_LINE_W: f32 = 1.5;
 
-/// Map a strip fraction to an absolute seek on the playing track, the
-/// seek strip's and the waveform's shared apply.
 pub fn seek_fraction(player: &Entity<Player>, fraction: f32, cx: &App) {
     let player = player.read(cx);
     let Some(now) = player.now_playing() else {
@@ -324,12 +276,9 @@ pub fn seek_fraction(player: &Entity<Player>, fraction: f32, cx: &App) {
     player.seek_to(fraction as f64 * duration);
 }
 
-/// A seek preview for a scrub strip: the time under the pointer as a small
-/// pill that follows the cursor while hovering. Tracks the pointer across
-/// `scrub`'s painted bounds and maps it against `duration`. Drop it as a
-/// child over the strip's relative container. It covers the strip to catch
-/// every move, and a click through it bubbles to the strip's own seek
-/// handler underneath.
+/// The time under the pointer as a pill that follows the cursor. Drop it
+/// over the strip's relative container: it covers the strip to catch every
+/// move, and a click bubbles through to the strip's own seek handler.
 pub fn seek_hover<V: 'static>(
     scrub: &ScrubState,
     duration: f64,
@@ -339,8 +288,6 @@ pub fn seek_hover<V: 'static>(
     let left = scrub.clone();
     let hover = scrub.hover();
     div()
-        // The id makes the element stateful, which the hover-leave catch
-        // below needs.
         .id("seek-hover")
         .absolute()
         .inset_0()
@@ -351,8 +298,6 @@ pub fn seek_hover<V: 'static>(
             }
         }))
         .on_hover(cx.listener(move |_, hovered: &bool, _, cx| {
-            // The pointer left the strip: no more move events fire, so the
-            // leave has to clear the readout itself.
             if !hovered && left.set_hover(None) {
                 cx.notify();
             }
@@ -360,9 +305,7 @@ pub fn seek_hover<V: 'static>(
         .when_some(hover, |d, fraction| d.child(seek_pill(fraction, duration)))
 }
 
-/// The seek preview label: the time at `fraction` along the track, a pill
-/// centered over that point near the top of the strip. A zero-width column
-/// at the fraction centers the pill on the cursor line.
+/// A zero-width column at the fraction centers the pill on the cursor.
 fn seek_pill(fraction: f32, duration: f64) -> Div {
     div()
         .absolute()
@@ -375,9 +318,7 @@ fn seek_pill(fraction: f32, duration: f64) -> Div {
         .child(
             div()
                 .flex_none()
-                // The zero-width column above gives the text no room, so a
-                // multi-digit time would wrap to one glyph per line without
-                // this.
+                // The zero-width column gives the text no room, so a time would wrap per glyph.
                 .whitespace_nowrap()
                 .px(tokens::SPACE_SM)
                 .py(px(2.))
@@ -391,17 +332,14 @@ fn seek_pill(fraction: f32, duration: f64) -> Div {
         )
 }
 
-/// Repaint the tab panel hosting a renamed panel. The tab bar draws the
-/// title, and that row only repaints when the tab panel itself is
-/// notified; the panel's own notify never reaches it.
+/// Repaint the tab panel hosting a renamed panel. The tab bar only repaints
+/// when the tab panel itself is notified.
 pub fn refresh_tab_panel(tab_panel: &Option<WeakEntity<TabPanel>>, cx: &mut App) {
     if let Some(tabs) = tab_panel.as_ref().and_then(|tabs| tabs.upgrade()) {
         tabs.update(cx, |_, cx| cx.notify());
     }
 }
 
-/// Read a panel's config back out of a dumped panel state; anything
-/// missing or malformed falls back to defaults.
 pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelInfo) -> C {
     match info {
         PanelInfo::Panel(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
@@ -409,25 +347,10 @@ pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelIn
     }
 }
 
-/// The Pop Out and Close tail of a panel's dropdown menu: out of the dock
-/// into an OS window, or out of the layout entirely. Pass the tab panel
-/// the panel is currently in (from `on_added_to`); Dock Back later reaches
-/// the workspace through the state.
-///
-/// Close is on this tail rather than the dock's menus so every panel has
-/// it everywhere its menu shows. For a solo content panel (no tab chrome,
-/// and its content's own context menu replaces the dock's body menu) this
-/// is the only close there is, and the empty window it can leave behind
-/// offers the way back in. Popped out there is no Close: closing the OS
-/// window is the close. On a pinned panel the click puts up a confirm and
-/// closes from there, so the pin costs a second click rather than eating
-/// the first.
-/// The Dock Back entry: the popped-out counterpart of Pop Out. Moves the
-/// panel into the workspace's newest live tab group and closes the window it
-/// was hosted in (harmless if there is none). Cross-window drags can't bring
-/// a panel home (a held button pins pointer events to its window and Wayland
-/// hides window positions), so this menu is the way back. It no-ops when the
-/// layout has no live tab group to move it into.
+/// The Dock Back entry: moves a popped-out panel into the newest live tab
+/// group and closes its window. Cross-window drags can't bring a panel home
+/// (a held button pins pointer events to its window, and Wayland hides
+/// window positions), so this menu is the way back.
 pub fn dock_back_item(menu: PopupMenu, panel: Arc<dyn PanelView>, state: AppState) -> PopupMenu {
     let hosts = state.tab_hosts.clone();
     menu.item(
@@ -445,6 +368,10 @@ pub fn dock_back_item(menu: PopupMenu, panel: Arc<dyn PanelView>, state: AppStat
     )
 }
 
+/// The Pop Out and Close tail of a panel's menu. Pass the tab panel it's
+/// in, from `on_added_to`. Close lives here so every panel has it wherever
+/// its menu shows; for a solo content panel it's the only close there is.
+/// Popped out there's no Close, since closing the window is the close.
 pub fn popout_item<P: Panel>(
     menu: PopupMenu,
     panel: &Entity<P>,
@@ -452,19 +379,14 @@ pub fn popout_item<P: Panel>(
     state: AppState,
     window: &Window,
 ) -> PopupMenu {
-    // No tab strip means the panel is either in a window of its own or
-    // hosted in a composite's slot. In a window it popped out into, the item
-    // that belongs here is the way home rather than another Pop Out;
-    // anywhere else there's no home to name, so the tail ends here.
+    // No tab strip: either popped out, where the way home belongs, or in a
+    // composite's slot, where the tail ends.
     let Some(tabs) = tab_panel.clone() else {
         if !dock_back_offered(window) {
             return menu;
         }
-        // Kept out of design mode, unlike the two rows below: a panel in a
-        // window of its own has no other menu and no menubar behind it, so
-        // dropping this would leave it with no way back into the layout at
-        // all. It's the exit from a stranded window rather than a way to
-        // rearrange a finished one.
+        // Kept out of design mode, unlike the rows below: a popped-out window has
+        // no other way back into the layout.
         return dock_back_item(menu, Arc::new(panel.clone()), state);
     };
     if !settings::design_mode() {
@@ -491,10 +413,8 @@ pub fn popout_item<P: Panel>(
             .icon(Icon::default().path(icons::CLOSE))
             .on_click(move |_, window, cx| {
                 if panel.read(cx).locked(cx) {
-                    // The pin exists to absorb a stray click, so route the
-                    // click to a confirm rather than dropping it. Without a
-                    // workspace behind the window there's nowhere to float
-                    // the dialog, and the pin holds as it did before.
+                    // The pin absorbs a stray click, so route it to a confirm. With no
+                    // workspace behind the window, the pin just holds.
                     let view: Arc<dyn PanelView> = Arc::new(panel.clone());
                     crate::openers::confirm_close_locked(view, tabs.clone(), window, cx);
                     return;
@@ -509,15 +429,9 @@ pub fn popout_item<P: Panel>(
     )
 }
 
-/// The Duplicate entry for a panel's dropdown menu: drops a second panel of
-/// the same type into this one's tab strip, copying the config along so the
-/// copy opens configured the same. Each panel's `new` takes a different
-/// shape, so `make` reconstructs the copy from the source panel, typically
-/// cloning its state and config, then calling the panel's own constructor.
-///
-/// A panel with no tab strip (popped out into a window, or hosted in a
-/// composite's slot) has nowhere to put the copy, so it gets no entry at
-/// all. The row used to draw there and do nothing on click.
+/// The Duplicate entry: a second panel of the same type in this one's tab
+/// strip, config copied. `make` builds the copy from the source, since each
+/// panel's `new` takes a different shape. No tab strip, no entry.
 pub fn duplicate_item<P: Panel>(
     menu: PopupMenu,
     panel: &Entity<P>,
@@ -542,11 +456,8 @@ pub fn duplicate_item<P: Panel>(
     )
 }
 
-/// The Reveal in File Browser entry for a track context menu: shows the
-/// track's file in the platform file manager, which opens on its album
-/// folder. The id resolves to its path at click time, so the reveal
-/// follows a file the library has since re-scanned elsewhere; None (an
-/// empty selection) appends nothing.
+/// Reveal a track's file in the platform file manager. The id resolves to
+/// its path at click time, so a re-scanned file is still found.
 pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMenu {
     let Some(id) = id else {
         return menu;
@@ -568,10 +479,8 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
     )
 }
 
-/// What the Copy submenu can put on the clipboard for one track: the file
-/// and the three tags a person types elsewhere. Resolved at click time by
-/// the surface that opened the menu, so a copy after a rescan reads the
-/// file where it is now.
+/// What the Copy submenu can put on the clipboard for one track. Resolved
+/// at click time, so a copy after a rescan reads the file where it is now.
 pub struct CopyText {
     pub path: PathBuf,
     pub title: String,
@@ -580,17 +489,13 @@ pub struct CopyText {
 }
 
 impl CopyText {
-    /// A track's copy fields from its key and the tags the library holds
-    /// for it; a file the library doesn't know still copies its path.
+    /// A file the library doesn't know still copies its path.
     pub fn from_key(key: &rox_library::cue::TrackKey, library: &Library) -> Self {
         CopyText::from_tags(key, library.meta_for_key(key).as_ref())
     }
 
-    /// The playing track's copy fields: [`from_key`](Self::from_key) with
-    /// a station's current song laid over the row. A copy taken off a
-    /// transport surface should put the song on the clipboard rather than
-    /// the name of the station that has been on all evening. None while
-    /// nothing plays.
+    /// The playing track's fields, with a station's current song laid over the
+    /// row so a copy gets the song rather than the station. None while idle.
     pub fn playing(state: &AppState, cx: &App) -> Option<Self> {
         let player = state.player.read(cx);
         let key = player.now_playing()?.key;
@@ -599,9 +504,6 @@ impl CopyText {
         Some(CopyText::from_tags(&key, meta.as_ref()))
     }
 
-    /// The fields off a key and tags already in hand, which is the whole
-    /// of both constructors above once each has decided where its tags
-    /// come from.
     fn from_tags(
         key: &rox_library::cue::TrackKey,
         meta: Option<&rox_library::store::TrackMeta>,
@@ -618,16 +520,11 @@ impl CopyText {
 /// Names the tracks a Copy entry acts on, run at click time.
 pub type CopyResolver = Rc<dyn Fn(&App) -> Vec<CopyText>>;
 
-/// The Copy submenu shared by every track surface: the title, artist,
-/// album, filename, or full path onto the clipboard as text. `resolve`
-/// runs when an entry is clicked and names the tracks the menu was opened
-/// over; a multi-row selection copies one line per track, in the order
-/// given, with empty fields dropped. Nothing is written when no track has
-/// the field, so an untagged selection doesn't blank the clipboard.
-///
-/// The clipboard only takes text here: gpui's clipboard item carries
-/// strings and images, so there's no way to hand a file manager the file
-/// itself without a platform patch. The path is the nearest thing.
+/// The Copy submenu shared by every track surface. `resolve` runs on click.
+/// A multi-row selection copies one line per track with empty fields
+/// dropped, and nothing is written when no track has the field. Text only:
+/// gpui's clipboard carries strings and images, so handing a file manager
+/// the file itself would take a platform patch.
 pub fn copy_submenu(
     menu: PopupMenu,
     window: &mut Window,
@@ -681,10 +578,8 @@ pub fn copy_submenu(
     )
 }
 
-/// [`copy_submenu`] over library ids, for the surfaces that hand
-/// `track_actions` a selection. The ids resolve to keys and tags at click
-/// time; ids the library has since dropped fall out. Empty ids appends
-/// nothing.
+/// [`copy_submenu`] over library ids, resolved at click time. Ids the
+/// library has since dropped fall out.
 pub fn copy_ids_submenu(
     menu: PopupMenu,
     state: AppState,
@@ -711,9 +606,7 @@ pub fn copy_ids_submenu(
     )
 }
 
-/// Resolve track ids to keys and hand them to the player: after the playing
-/// track when `next`, at the tail otherwise. Shared by the context-menu
-/// actions across every song surface.
+/// Queue tracks after the playing one when `next`, at the tail otherwise.
 pub fn queue_tracks(state: &AppState, ids: &[i64], next: bool, cx: &mut App) {
     let keys = match state.library.read(cx).keys_for(ids) {
         Ok(keys) if !keys.is_empty() => keys,
@@ -728,11 +621,9 @@ pub fn queue_tracks(state: &AppState, ids: &[i64], next: bool, cx: &mut App) {
     });
 }
 
-/// Add to Playlist as one flyout: Create New at the top, then every static
-/// list. Built at open time, so it reflects playlists made this session.
-/// Split out of [`track_actions`] because a surface can want this one entry
-/// without the rest of the track menu: a station has a row in the library
-/// and can join a list, but nothing to tag, rename or convert.
+/// Add to Playlist: Create New, then every static list, built at open time.
+/// Split out of [`track_actions`] because a station can join a list but has
+/// nothing to tag, rename or convert.
 pub fn playlist_item(
     menu: PopupMenu,
     state: AppState,
@@ -750,8 +641,7 @@ pub fn playlist_item(
                     crate::openers::playlist_create(new_state.clone(), new_ids.clone(), cx);
                 }),
         );
-        // Static lists only: a smart playlist holds what its query returns,
-        // so there's nothing here for a track to be added to.
+        // Static lists only: a smart playlist holds what its query returns.
         let playlists: Vec<_> = state
             .library
             .read(cx)
@@ -784,17 +674,12 @@ pub fn playlist_item(
     )
 }
 
-/// The track actions every song surface's right-click shares: Play under
-/// the caller's label, the selection into the tag and cover editors, the
-/// Copy submenu, and Reveal in File Browser. What playing queues differs per panel (the
-/// view from a row, the highlighted set, whole albums), so the caller
-/// hands the click over; everything after acts on the ids, resolved at
-/// build time so the editors get this set even if another panel
-/// publishes over the shared selection before the click lands. The
-/// actions that work on files (the editors, rename, convert, reveal) take
-/// only the ids that are files and hide when there are none, so a server's
-/// song or a station never lands in an editor that can't open it. Reveal
-/// follows the first of those.
+/// The track actions every song surface's right-click shares. Play differs
+/// per panel, so the caller hands the click over. The ids resolve at build
+/// time, so the editors get this set even if another panel publishes over
+/// the shared selection first. File actions (the editors, rename, convert,
+/// reveal) take only the ids that are files and hide when there are none,
+/// so a server's song or a station never reaches an editor.
 pub fn track_actions(
     menu: PopupMenu,
     state: AppState,
@@ -828,9 +713,6 @@ pub fn track_actions(
                 .icon(Icon::default().path(icons::PLAY))
                 .on_click(move |_, window, cx| on_play(window, cx)),
         )
-        // Queue the selection right after the playing track, or start it when
-        // nothing plays. Paths resolve here so the queue holds the same set
-        // even if the selection moves before the click lands.
         .item(
             PopupMenuItem::new(rox_i18n::t!("panel-play-next"))
                 .icon(Icon::default().path(icons::SKIP_FORWARD))
@@ -845,9 +727,6 @@ pub fn track_actions(
                     queue_tracks(&queue_state, &queue_ids, false, cx);
                 }),
         );
-    // The favourites toggle: off to on when any of the set is not favourited,
-    // on to off only when the whole set already is, so a mixed selection puts
-    // everything in favourites first. Reads its state at open time.
     let favourites = state.library.read(cx).favourite_ids();
     let all_fav = !ids.is_empty() && ids.iter().all(|id| favourites.contains(id));
     let fav_state = state.clone();
@@ -868,9 +747,6 @@ pub fn track_actions(
             }),
     );
     let menu = playlist_item(menu, playlist_state, playlist_ids, window, cx);
-    // Clearing bookmarks only offers itself where there are some to clear:
-    // a row for every track would be noise on a library where most have
-    // none.
     let marks = mark_state.library.read(cx).bookmark_count_for(&mark_ids);
     let menu = menu.when(marks > 0, |menu| {
         menu.item(
@@ -887,8 +763,8 @@ pub fn track_actions(
     let has_files = !files.is_empty();
     let menu = menu.when(has_files, |menu| {
         menu
-            // The primary editing flow: the selection into the tag editor
-            // window; the metadata panel's inline pencil stays the quick path.
+            // The tag editor is the primary editing flow; the metadata
+            // panel's inline pencil stays the quick path.
             .item(
                 PopupMenuItem::new(rox_i18n::t!("panel-edit-tags"))
                     .icon(Icon::default().path(icons::PENCIL))
@@ -896,8 +772,6 @@ pub fn track_actions(
                         crate::openers::tags_editor(tag_state.clone(), tag_ids.clone(), cx);
                     }),
             )
-            // Covers get their own window: the tag editor edits text per
-            // track, this stamps one image across the selection.
             .item(
                 PopupMenuItem::new(rox_i18n::t!("panel-edit-cover"))
                     .icon(Icon::default().path(icons::IMAGE))
@@ -905,9 +779,6 @@ pub fn track_actions(
                         crate::openers::cover_editor(cover_state.clone(), cover_ids.clone(), cx);
                     }),
             )
-            // The other direction: tags into filenames. Renaming is a disk
-            // change rather than a tag edit, so it gets its own dialog with
-            // the whole plan on screen before anything moves.
             .item(
                 PopupMenuItem::new(rox_i18n::t!("panel-rename-files"))
                     .icon(Icon::default().path(icons::FOLDER))
@@ -916,8 +787,6 @@ pub fn track_actions(
                     }),
             )
     });
-    // Converting writes new files somewhere else entirely, so it only shows
-    // up where the encoder to write them exists. No ffmpeg, no row.
     let menu = if has_files && crate::openers::convert_available() {
         menu.item(
             PopupMenuItem::new(rox_i18n::t!("panel-convert"))
@@ -933,8 +802,8 @@ pub fn track_actions(
     reveal_item(menu, state, reveal)
 }
 
-/// Move a docked panel into its own OS window. The panel entity itself moves,
-/// so it keeps rendering the same shared state; closing the window drops it.
+/// Move a docked panel into its own OS window. The entity itself moves, so
+/// it keeps rendering the same shared state.
 pub fn pop_out<P: Panel>(
     panel: Entity<P>,
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -942,8 +811,6 @@ pub fn pop_out<P: Panel>(
     window: &mut Window,
     cx: &mut App,
 ) {
-    // Detach from the dock first; the new window's host keeps the entity
-    // alive from here on.
     if let Some(tabs) = tab_panel.and_then(|tabs| tabs.upgrade()) {
         tabs.update(cx, |tabs, cx| {
             tabs.remove_panel(Arc::new(panel.clone()), window, cx);
@@ -952,34 +819,25 @@ pub fn pop_out<P: Panel>(
     pop_out_view(Arc::new(panel), state, cx);
 }
 
-/// Open an OS window hosting an already-detached panel. Also the dock's
-/// middle-drag-out hook: dragging a panel out of the window lands here.
-/// The window title comes from the panel's rename when one is set, its
-/// built-in name otherwise.
+/// Open an OS window hosting a detached panel. Also the dock's drag-out hook.
 pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
     panel_window(panel, state, false, cx);
 }
 
-/// Open a panel straight into a window of its own, never having been in a
-/// layout: the Window menu's New Window from Panel. The same window as a
-/// pop-out apart from the way back, which this one has no use for: the
-/// panel didn't come out of a dock, so there's nowhere to send it back to.
+/// Open a panel straight into a window of its own (New Window from Panel).
+/// It never came out of a dock, so it gets no way back.
 pub fn open_panel_window(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
     panel_window(panel, state, true, cx);
 }
 
-/// The windows hosting a single panel, and whether that panel came out of a
-/// dock: true for a pop-out, false for one opened straight into a window.
-/// Only the first has somewhere to go back to. Read from menu builders that
-/// have a window and no `App`, which is why it's a static rather than a gpui
-/// global; entries go when the window's host drops.
+/// Single-panel windows: true for a pop-out, false for one opened straight
+/// into a window. A static rather than a gpui global because menu builders
+/// read it with a window and no `App`.
 static PANEL_WINDOWS: RwLock<BTreeMap<u64, bool>> = RwLock::new(BTreeMap::new());
 
-/// Whether a menu built in `window` should offer the way back into a dock:
-/// only in a panel window, and only one the panel was popped out into. A
-/// panel with no tab strip that isn't in one of these is a composite's
-/// hosted child in a window full of other panels. Dock Back there would
-/// close the window out from under all of them.
+/// Only a window a panel popped out into offers Dock Back. Anywhere else, a
+/// panel with no tab strip is a composite's child, and Dock Back would close
+/// the window out from under its siblings.
 fn dock_back_offered(window: &Window) -> bool {
     PANEL_WINDOWS
         .read()
@@ -997,25 +855,22 @@ fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mu
     let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.clone()),
-            ..Default::default()
-        }),
+        window_decorations: Some(rox_core::settings::child_window_decorations()),
+        titlebar: Some(child_titlebar(title.clone())),
         app_id: Some(rox_core::APP_ID.into()),
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
-        // The Wayland backend ignores the creation-time titlebar title;
-        // only set_window_title gets through to the compositor.
+        // Wayland ignores the creation-time title; only set_window_title gets through.
         crate::windows::set_window_title(window, &title);
-        // A popped-out panel keeps its surface shader, so this window needs
-        // the hub and player its slots read from.
+        settle_child_chrome(window, cx);
+        // A popped-out panel keeps its surface shader, so this window needs the hub
+        // and player its slots read from.
         shader::note_window(window, &state, cx);
         let window_id = window.window_handle().window_id().as_u64();
         PANEL_WINDOWS.write().unwrap().insert(window_id, !fresh);
         let host = cx.new(|cx| {
-            // A popped-out window pumps its own frames, so the backdrop
-            // needs its own wake on a new bake.
+            // A popped-out window pumps its own frames, so the backdrop needs its own wake.
             let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
             PopoutHost {
                 panel_view: panel,
@@ -1027,25 +882,16 @@ fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mu
                 _backdrop_changed,
             }
         });
-        // Anchor the window on the fallback focus so the Workspace-scoped
-        // playback bindings have a dispatch path before the panel grabs
-        // focus, same as the main workspace's fallback.
         host.read(cx).focus.clone().focus(window);
-        // A popped-out panel is a child window like any other, so it takes
-        // the same fallback titlebar when the compositor withholds one.
         let framed = crate::fallback_chrome::wrap(host, cx);
         cx.new(|cx| Root::new(framed, window, cx))
     })
     .expect("failed to open the panel window");
 }
 
-/// Open a child window titled `title`, sized to `bounds`, hosting the view
-/// `build` returns wrapped in a Root. Carries the app id so the compositor
-/// groups it with the main window, and re-sets the title after creation
-/// because the Wayland backend ignores the creation-time titlebar title,
-/// the same workaround `panel_window` and the main window use. `min_size`
-/// floors an interactive resize; None leaves a fixed-size modal free. The
-/// caller keeps its own singleton bookkeeping and stores the returned handle.
+/// Open a child window hosting `build`'s view in a Root, with the app id so
+/// the compositor groups it with the main window. `min_size` floors an
+/// interactive resize. The caller keeps its own singleton bookkeeping.
 pub fn open_child_window<V: 'static + Render>(
     cx: &mut App,
     title: impl Into<SharedString>,
@@ -1056,10 +902,7 @@ pub fn open_child_window<V: 'static + Render>(
     open_window(cx, title, bounds, min_size, true, build)
 }
 
-/// Like [`open_child_window`] but fixed: the user can't resize it, so it
-/// holds the bounds it opened at and its min size is that same size. For
-/// dialogs whose layout is one set size, like About, where a resize would
-/// only strand the content in empty space.
+/// [`open_child_window`] the user can't resize, for a dialog with one set layout.
 pub fn open_fixed_window<V: 'static + Render>(
     cx: &mut App,
     title: impl Into<SharedString>,
@@ -1082,117 +925,112 @@ fn open_window<V: 'static + Render>(
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: min_size,
         is_resizable: resizable,
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.clone()),
-            ..Default::default()
-        }),
+        window_decorations: Some(rox_core::settings::child_window_decorations()),
+        titlebar: Some(child_titlebar(title.clone())),
         app_id: Some(rox_core::APP_ID.into()),
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
         crate::windows::set_window_title(window, &title);
-        // `WindowOptions::focus` is already the default true, but that's a
-        // creation-time request some window managers grant a plain map and
-        // deny a raise: the window comes up on top but the keys keep going
-        // to whatever had them a moment ago, so Tab and every other key
-        // reach nothing until a click claims the window by hand. Settings'
-        // own reopen path (activating a window that was merely hidden
-        // behind another) already makes this same explicit ask; a fresh
-        // window needs it too.
+        settle_child_chrome(window, cx);
+        // `WindowOptions::focus` is already true, but some window managers grant
+        // the map and deny the raise, so keys keep going to the old window until a
+        // click. Ask explicitly.
         window.activate_window();
         let view = build(window, cx);
-        // Under a compositor that won't decorate the window, this is the
-        // only close button it gets; everywhere else the wrapper renders
-        // its child and nothing more. See `fallback_chrome`.
         let framed = crate::fallback_chrome::wrap(view, cx);
         cx.new(|cx| Root::new(framed, window, cx))
     })
     .expect("failed to open child window")
 }
 
-/// The frame-level config every panel stores, flattened into each
-/// panel's own config struct with `#[serde(flatten)]`. These are the
-/// knobs that mean the same thing on any panel: the rename, the palette
-/// override, and the two placement locks. Panel-specific fields (a
-/// grid's tile size, a spectrum's bands) stay on the panel's own config;
-/// `align` is there too since only some panels lay out along a row.
+/// On Windows and macOS the caption follows `appears_transparent`, not
+/// `window_decorations`, so a bare child window asks here too and never
+/// flashes the OS frame.
+fn child_titlebar(title: SharedString) -> TitlebarOptions {
+    let bare = matches!(
+        rox_core::settings::child_window_decorations(),
+        gpui::WindowDecorations::Client
+    );
+
+    TitlebarOptions {
+        title: Some(title),
+        appears_transparent: cfg!(any(target_os = "windows", target_os = "macos")) && bare,
+        ..Default::default()
+    }
+}
+
+/// The frame settings a child window can only take once it's open.
+fn settle_child_chrome(window: &mut Window, cx: &mut App) {
+    // No WindowOptions field for this one. It only bites on a bare window.
+    window.set_resize_border(rox_core::settings::resize_border());
+
+    // macOS still shows native traffic lights under a transparent titlebar, so
+    // a bare window asks again to hide them. Deferred: the style mask change
+    // can fire a resize back into the window this closure is building.
+    let mode = rox_core::settings::child_window_decorations();
+    if cfg!(target_os = "macos") && matches!(mode, gpui::WindowDecorations::Client) {
+        let handle = window.window_handle();
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, _| window.request_decorations(mode))
+                .ok();
+        });
+    }
+}
+
+/// The frame-level config every panel stores, flattened into its own config
+/// with `#[serde(flatten)]`: the knobs that mean the same thing on any
+/// panel. Panel-specific fields stay on the panel's config.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct PanelChrome {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
+    /// The tab and title rename; None shows the built-in name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The panel's palette and frame override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
-    /// Pin the panel in place: the dock won't let it be dragged to
-    /// another spot or rearranged. Off by default. Resizing is a separate
-    /// concern the dock handles at the split level.
+    /// Pin the panel so the dock won't drag or rearrange it. Resizing is
+    /// handled at the split level.
     #[serde(default, skip_serializing_if = "is_false")]
     pub locked: bool,
-    /// Turn the panel body into a window-move handle: a drag anywhere on
-    /// it moves the OS window, so a decorations-off layout can be moved by
-    /// a toolbar strip. Off by default; meant for the quiet panels, since
-    /// on an interactive one it competes with the controls.
+    /// Make the body a window-move handle, so a decorations-off layout can be
+    /// moved by a toolbar strip. Meant for quiet panels.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anchor: bool,
-    /// Drop the in-panel controls a panel floats over its content: a
-    /// composition host's corner slot buttons and grip, the metadata
-    /// panel's edit toolbar. Off by default, so a panel stays editable
-    /// in place. On, it reads as finished furniture instead of a
-    /// builder's frame, the look a shipped workspace needs; the layout is
-    /// still edited from the Workspace page's tree in Settings.
+    /// Drop the controls a panel floats over its content (a composition host's
+    /// slot buttons, the metadata panel's edit toolbar) for a finished look.
     #[serde(default, skip_serializing_if = "is_false")]
     pub hide_controls: bool,
-    /// Cap the panel's width in px. Set, the dock won't grow the panel wider
-    /// than this, and a growing window hands the extra room to its
-    /// neighbors instead, so a toolbar pinned narrow stays narrow. None
-    /// leaves the width free.
+    /// Width cap in px. A growing window hands the extra room to neighbors, so
+    /// a toolbar pinned narrow stays narrow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_width: Option<f32>,
-    /// Cap the panel's height in px, the vertical twin of
-    /// [`max_width`](Self::max_width), which keeps a menu bar or footer from
-    /// stretching when the window gets taller.
+    /// Height cap in px, which keeps a menu bar or footer from stretching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_height: Option<f32>,
-    /// Hold the panel's width to at least this many px, so a resize can't
-    /// squeeze it narrower. Taken as written, under the panel's built-in
-    /// floor included. None leaves the width at that floor.
+    /// Width floor in px, taken as written even under the panel's built-in floor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_width: Option<f32>,
-    /// Hold the panel's height to at least this many px, the vertical twin of
-    /// [`min_width`](Self::min_width).
+    /// The vertical twin of [`min_width`](Self::min_width).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_height: Option<f32>,
-    /// A WGSL shader over the panel's own surface, run after its body
-    /// paints. None on every panel that has never been given one, which
-    /// keeps older layout dumps loading clean.
+    /// A WGSL shader over the panel's surface, run after its body paints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shader: Option<PanelShader>,
 }
 
 impl PanelChrome {
-    /// Whether the panel's in-place editing controls stay off this frame:
-    /// its own [`hide_controls`](Self::hide_controls), or design mode being
-    /// off, which does the same for every panel at once. A panel calls this
-    /// rather than reading the field; the metadata panel's edit toolbar is
-    /// the deliberate exception.
+    /// Its own [`hide_controls`](Self::hide_controls), or design mode off.
+    /// Panels call this rather than reading the field; the metadata panel's
+    /// edit toolbar is the deliberate exception.
     pub fn controls_hidden(&self) -> bool {
         self.hide_controls || !settings::design_mode()
     }
 }
 
-/// The panel's size cap as a [`Size`], reading the chrome's optional
-/// width/height limits over the panel's own minimum, so a cap can never
-/// drop below what the panel needs. An unset axis stays unbounded. Every
-/// panel returns this from its `Panel::max_size`, so the cap is a generic
-/// panel setting rather than a per-panel opt-in.
-///
-/// The cap is floored against [`chrome_min_size`] rather than the raw
-/// `floor`, because nothing stops a settings file from asking for a min
-/// of 500 and a max of 300. The dock can't do anything sane with min >
-/// max, so the min wins, the same way the panel's built-in floor beats
-/// both.
+/// Every panel's `Panel::max_size`: the chrome's caps, floored at
+/// [`chrome_min_size`] because a settings file can ask for min > max and
+/// the dock can't do anything sane with that. An unset axis is unbounded.
 pub fn chrome_max_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let min = chrome_min_size(chrome, floor);
     let axis = |cap: Option<f32>, min: Pixels| match cap {
@@ -1205,17 +1043,10 @@ pub fn chrome_max_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui:
     )
 }
 
-/// The panel's minimum size as a [`Size`], the chrome's optional min
-/// width/height over `floor` (the panel's built-in minimum, what its
-/// controls need at a comfortable size). Every panel returns this from its
-/// `Panel::min_size`, the counterpart of [`chrome_max_size`].
-///
-/// The floor is the default, not a cap: an axis the chrome sets is taken
-/// as written, under the floor included. It used to clamp upward, which
-/// made the min knobs one-way and left compact layouts stuck at the 40px
-/// panel floor with no way down. A panel asked for 12px tall draws
-/// cramped, which is the point of asking. Zero is the bottom, since a
-/// negative min is a hand-edited file rather than an intent.
+/// Every panel's `Panel::min_size`: the chrome's floors over `floor`, the
+/// panel's built-in minimum. A set axis is taken as written, below the
+/// built-in floor included, so a compact layout can go smaller. Zero is
+/// the bottom.
 pub fn chrome_min_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let axis = |min: Option<f32>, floor: Pixels| match min {
         Some(px_value) => px(px_value.max(0.)),
@@ -1231,12 +1062,9 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// What the settings sidebar shows for a page name from
-/// [`PanelSettings::pages`]. The names are a small closed set shared
-/// across every panel, so they resolve here rather than at each of the
-/// thirty-odd declarations, and the panels keep handing back plain
-/// identifiers they can dispatch on. A name nobody has a message for
-/// shows as written, which suits a panel outside this crate.
+/// What the settings sidebar shows for a [`PanelSettings::pages`] name. The
+/// names are a small closed set, so they resolve here rather than at each
+/// declaration. An unknown name shows as written.
 pub fn page_label(name: &str) -> SharedString {
     let key = match name {
         "Layout" => "panel-page-layout",
@@ -1252,20 +1080,10 @@ pub fn page_label(name: &str) -> SharedString {
     rox_i18n::t!(key)
 }
 
-/// Whether a name gets its reading drawn beside it: the switch is on, the
-/// value has a sort name, that name says something the display name
-/// doesn't, and the display name is one a reader of this alphabet can't
-/// sound out.
-///
-/// The last test is the fold, not a bare `is_ascii`, because Beyoncé and
-/// Straße are Latin names that happen to carry non-ASCII bytes; folding
-/// takes them back to letters and they never get a reading. An ASCII name
-/// always folds to ASCII, so the cheap check in front of it decides the
-/// whole Latin library without allocating.
-///
-/// The order is the cost order: the common row pays one `is_empty` and
-/// stops, since a library with no sort names anywhere has nothing to draw
-/// however the switch is set.
+/// Whether a name gets its reading drawn beside it. The last test is the
+/// fold rather than `is_ascii`, because Beyoncé and Straße fold back to
+/// Latin letters and never get a reading; the `is_ascii` in front spares
+/// the Latin library the fold's allocation. The tests run in cost order.
 pub fn shows_reading(name: &str, reading: &str, show: bool) -> bool {
     show && !reading.is_empty()
         && reading != name
@@ -1273,20 +1091,9 @@ pub fn shows_reading(name: &str, reading: &str, show: bool) -> bool {
         && !rox_library::fold::fold(name).is_ascii()
 }
 
-/// A name with its reading after it, "秋ノ風 (Aki no kaze)", for every cell
-/// that draws a title, artist, album or album artist. The reading is the
-/// sort name the row already carries, from the file's tag, MusicBrainz, or
-/// the romanization pass.
-///
-/// One text element rather than two elements side by side, so the pair
-/// truncates as the single line it reads as, and so the parenthesis can't
-/// end up on its own row. The muted stretch is a highlight over the
-/// trailing span; everything else about the text (size, weight, the colour
-/// the cell set) comes from the cell it's dropped into.
-///
-/// A name with nothing to add draws as the bare string, which is what the
-/// call sites handed over before this existed. No formatting, no second
-/// allocation.
+/// A name with its reading after it, "秋ノ風 (Aki no kaze)". One text
+/// element, so the pair truncates as one line and the parenthesis can't
+/// wrap alone; the reading is a faint highlight over the trailing span.
 pub fn named(name: &str, reading: &str, show: bool) -> impl IntoElement + use<> {
     if !shows_reading(name, reading, show) {
         return StyledText::new(SharedString::from(name.to_owned()));
@@ -1296,8 +1103,7 @@ pub fn named(name: &str, reading: &str, show: bool) -> impl IntoElement + use<> 
     text.push_str(" (");
     text.push_str(reading);
     text.push(')');
-    // One step below muted: at muted the reading still reads as part of
-    // the title, and the point is that it isn't.
+    // One step below muted: at muted the reading still reads as part of the title.
     let faint = name.len()..text.len();
     StyledText::new(SharedString::from(text)).with_highlights([(
         faint,
@@ -1308,36 +1114,26 @@ pub fn named(name: &str, reading: &str, show: bool) -> impl IntoElement + use<> 
     )])
 }
 
-/// A panel whose per-view config is edited in its own settings window
-/// (see the panel settings window): the panel's own pages of control
-/// rows, then the shared Appearance page editing the panel's palette
-/// override. New knobs go on the panel's config struct and get a row on
-/// one of its pages.
+/// A panel whose per-view config is edited in the panel settings window:
+/// the shared Appearance, Behavior and Shader pages, then its own pages.
 pub trait PanelSettings: Panel {
-    /// The shared state, so the settings window can back itself with
-    /// the playing track's art like every other window.
+    /// So the settings window can back itself with the playing track's art.
     fn state(&self) -> AppState;
 
-    /// The panel's own pages as name and sidebar icon pairs, listed
-    /// above the shared Appearance page. Empty means the panel has no
-    /// knobs beyond its appearance.
-    ///
-    /// The name is an identifier, not display copy: [`page`](Self::page)
-    /// dispatches on it and a locale switch doesn't change it. What the sidebar
-    /// shows is [`page_label`] of it.
+    /// The panel's own pages as (name, sidebar icon), below the shared ones.
+    /// The name is an identifier [`page`](Self::page) dispatches on; the
+    /// sidebar shows [`page_label`] of it.
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }
 
-    /// Whether the settings window offers the shared surface-shader page.
-    /// On for every panel by default; a panel whose body already is a
-    /// shader opts out rather than running two.
+    /// Whether the shared surface-shader page shows. A panel whose body
+    /// already is a shader opts out.
     fn surface_shader(&self) -> bool {
         true
     }
 
-    /// One of the panel's own pages: control rows editing the config in
-    /// place. Changes apply live; the layout dump persists them.
+    /// One of the panel's own pages. Changes apply live; the layout dump persists them.
     fn page(
         &mut self,
         page: &'static str,
@@ -1348,145 +1144,109 @@ pub trait PanelSettings: Panel {
         div().into_any_element()
     }
 
-    /// The panel's frame-level config. Every panel stores a
-    /// [`PanelChrome`] on its own config (flattened into the layout dump),
-    /// so the shared knobs (rename, theme, the placement locks) read and
-    /// write through here rather than a method per field.
+    /// The shared knobs read and write through here rather than a method per field.
     fn chrome(&self) -> &PanelChrome;
 
-    /// The mutable frame config, so the settings window and quick toggles
-    /// edit the shared knobs in place.
     fn chrome_mut(&mut self) -> &mut PanelChrome;
 
-    /// The rename override, shown as the tab and title text in place of
-    /// the panel's built-in name.
     fn custom_title(&self) -> Option<&str> {
         self.chrome().title.as_deref()
     }
 
-    /// Store an edited rename: the next render shows it, the layout dump
-    /// persists it. None goes back to the built-in name. Implementations
-    /// must repaint their hosting tab panel ([`refresh_tab_panel`]), which
-    /// draws the title, so this stays panel-provided.
+    /// None goes back to the built-in name. Implementations must repaint their
+    /// hosting tab panel ([`refresh_tab_panel`]), which draws the title.
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>);
 
-    /// Whether the panel draws its own font control on its pages, so the
-    /// shared Appearance page leaves off the generic theme-font row rather
-    /// than showing a second family picker. The lyrics panel does, pairing
-    /// the family with its own weight and size knobs.
+    /// Whether the panel draws its own font control, so the Appearance page
+    /// leaves off the generic font row. The lyrics panel does.
     fn has_own_font(&self) -> bool {
         false
     }
 
-    /// The panel's palette override, the Appearance page's subject.
     fn theme(&self) -> PanelTheme {
         self.chrome().theme.clone()
     }
 
-    /// Store an edited override: the next render picks it up, the layout
-    /// dump persists it.
     fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
         self.chrome_mut().theme = theme;
         cx.notify();
     }
 
-    /// Pin or unpin the panel in the dock (no drag or rearrange). The dock
-    /// reads the flag through [`Panel::locked`] on its next paint, so a
-    /// repaint settles the toggle. The current value reads off
-    /// `chrome().locked` directly, which also sidesteps the name clash
-    /// with the dock trait's own `locked`.
+    /// The dock reads the flag through [`Panel::locked`] on its next paint.
+    /// Read the current value off `chrome().locked`, which sidesteps the name
+    /// clash with the dock trait's `locked`.
     fn set_locked(&mut self, on: bool, cx: &mut Context<Self>) {
         self.chrome_mut().locked = on;
         cx.notify();
     }
 
-    /// Turn the window-move handle on or off; `chrome().anchor` reads it.
     fn set_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
         self.chrome_mut().anchor = on;
         cx.notify();
     }
 
-    /// Whether this panel hosts others and so draws the corner slot
-    /// controls. Only the composition hosts override it; it gates the
-    /// setting row that hides them, which would be a dead switch anywhere
-    /// else.
+    /// Whether this panel hosts others and so draws corner slot controls. It
+    /// gates the row that hides them.
     fn composite(&self) -> bool {
         false
     }
 
-    /// Show or hide the composition host's corner controls.
     fn set_hide_controls(&mut self, on: bool, cx: &mut Context<Self>) {
         self.chrome_mut().hide_controls = on;
         cx.notify();
     }
 
-    /// Store the panel's width cap in px (None clears it). Repainting the
-    /// dock re-reads the cap when it rebuilds the split's size range, so a
-    /// repaint settles the change.
+    /// The dock re-reads the cap when it rebuilds the split's size range, so a
+    /// repaint settles it. The other size setters work the same way.
     fn set_max_width(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
         self.chrome_mut().max_width = px;
         cx.notify();
     }
 
-    /// Store the panel's height cap in px (None clears it), the twin of
-    /// [`set_max_width`](Self::set_max_width).
     fn set_max_height(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
         self.chrome_mut().max_height = px;
         cx.notify();
     }
 
-    /// Store the panel's minimum width in px (None clears it), the floor a
-    /// resize can't squeeze it below. Same repaint-settles-it path as the
-    /// caps.
     fn set_min_width(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
         self.chrome_mut().min_width = px;
         cx.notify();
     }
 
-    /// Store the panel's minimum height in px (None clears it), the twin of
-    /// [`set_min_width`](Self::set_min_width).
     fn set_min_height(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
         self.chrome_mut().min_height = px;
         cx.notify();
     }
 
-    /// The panel's own rows for the shared Appearance page, rendered as
-    /// a section between the frame and the colors: looks stored on
-    /// the panel's config rather than its theme, like the grid's art
-    /// rounding. None keeps the page to the shared knobs.
+    /// The panel's own rows for the shared Appearance page, between the frame
+    /// and the colors: looks stored on its config rather than its theme.
     fn appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let _ = (window, cx);
         None
     }
 
-    /// The panel's own rows for the shared Behavior page, rendered under
-    /// the shared lock and anchor toggles: knobs about how the panel acts
-    /// rather than how it looks, like the grid's follow-playing. None
-    /// keeps the page to the shared knobs.
+    /// The panel's own rows for the shared Behavior page, under the placement and size rows.
     fn behavior(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let _ = (window, cx);
         None
     }
 }
 
-/// How far a press drags before an anchored panel hands the window to the
-/// compositor. Under the slop the press stays a click for whatever control
-/// is in the panel, so an anchor over a search box or a button row works
-/// like a hidden macOS titlebar: click to use, drag to move.
+/// How far a press drags before an anchored panel starts a window move.
+/// Under it the press stays a click, so an anchor over controls works like
+/// a hidden macOS titlebar.
 const ANCHOR_SLOP: Pixels = px(6.);
 
 thread_local! {
-    /// The pending anchor drag: which window took the press and where it
-    /// landed. One pointer means at most one pending drag, and events
-    /// dispatch on the UI thread, so a thread local holds it.
+    /// The pending anchor drag's window and press point. One pointer and one
+    /// UI thread, so a thread local holds it.
     static ANCHOR_ARM: std::cell::Cell<Option<(gpui::WindowId, Point<Pixels>)>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// Make a panel root a window-move surface. The press itself passes
-/// through untouched, in capture phase, so the click still lands on the
-/// control under it; the move starts only once the pointer clears
-/// [`ANCHOR_SLOP`], and the arm dies on release.
+/// The press passes through in capture phase, so the click still lands on
+/// the control under it. The move starts once the pointer clears
+/// [`ANCHOR_SLOP`].
 fn arm_window_move(root: Div) -> Div {
     root.cursor_grab()
         .capture_any_mouse_down(|event, window, _| {
@@ -1498,9 +1258,8 @@ fn arm_window_move(root: Div) -> Div {
             let Some((id, start)) = ANCHOR_ARM.get() else {
                 return;
             };
-            // An arm from another window, or one whose release this panel
-            // never saw, dies here instead of hijacking an unrelated drag
-            // passing over.
+            // An arm from another window, or one whose release this panel never saw,
+            // dies here instead of hijacking a passing drag.
             if id != window.window_handle().window_id()
                 || event.pressed_button != Some(MouseButton::Left)
             {
@@ -1513,8 +1272,7 @@ fn arm_window_move(root: Div) -> Div {
                 return;
             }
             ANCHOR_ARM.set(None);
-            // The compositor owns the pointer from here; keep this move
-            // from doubling as a text-selection drag underneath.
+            // Keep the move from doubling as a text-selection drag underneath.
             cx.stop_propagation();
             window.start_window_move();
         })
@@ -1523,30 +1281,20 @@ fn arm_window_move(root: Div) -> Div {
 }
 
 /// Build a panel body under its palette override and keep the override
-/// active through every element phase. Building under the scope covers
-/// the style reads that resolve eagerly (`.bg(palette::x())` runs as the
-/// div chain is built); the wrapper element re-enters it for layout,
-/// prepaint, and paint, which is when hover styles and canvas paint
-/// closures actually read the palette. The theme's frame knobs apply
-/// here too, each of them side by side: padding, rounding, and border
-/// style the body's root div, while margin wraps outside it so the
-/// backdrop shows through that gap. The radius has to be on the body's
-/// own background quad, since gpui content masks stay rectangular and a
-/// wrapper's corners would be painted over, and padding on the body keeps
-/// the gap in the panel's own background. Each knob the theme leaves unset
-/// falls back to the app-wide default; an app with no frame set draws
-/// none, the look an unthemed panel had before the knobs were lifted.
+/// active through every element phase. Building under the scope covers the
+/// eager style reads (`.bg(palette::x())`); the wrapper re-enters it for
+/// layout, prepaint and paint, when hover styles and canvas closures read
+/// the palette. Padding, rounding and border style the body's root div,
+/// and margin wraps outside it so the backdrop shows through. The radius
+/// sits on the body's own quad because gpui content masks stay rectangular.
 pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
     let theme = &chrome.theme;
     let anchor = chrome.anchor;
-    // The panel's own knob wins where it sets one; unset, the panel
-    // takes the app-wide default. Zero reads as no knob either way, so
-    // an explicit zero over a rounded app default squares this one
-    // panel back off, the same as rounding's absence.
+    // Zero reads as no knob, so an explicit zero squares one panel off a
+    // rounded app default.
     let app = rox_core::settings::app_frame();
-    // Every knob comes through `positive`: the app frame is clamped on
-    // load, but a panel's own knobs come out of a layout dump nobody sanitizes,
-    // and a negative inset here would push the panel out of its cell.
+    // Every knob goes through `positive`: a panel's knobs come from a layout
+    // dump nobody sanitizes, and a negative inset would push it out of its cell.
     let margin = theme.margin.unwrap_or(app.margin).positive();
     let frame = {
         let padding = theme.padding.unwrap_or(app.padding).positive();
@@ -1556,8 +1304,6 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
         let font = theme.font.clone();
         move || {
             let mut body = build();
-            // The panel's own font layers over the app font the window root
-            // cascades in; unset leaves the app font showing through.
             if let Some(font) = font {
                 body = body.font_family(font);
             }
@@ -1585,9 +1331,6 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
                 }
                 body = body.border_color(palette::border());
             }
-            // The outer element takes layout and, when the panel is an
-            // anchor, the window-move drag. A margin wraps the body in an
-            // outer cell; without one the body itself is the root.
             let mut root = if margin.any() {
                 div()
                     .size_full()
@@ -1606,22 +1349,19 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
         }
     };
     let scope = theme.scope();
-    // A stored 1.0 (or anything that rounds to no change) reads as
-    // follow-app, so the wrapper only turns on for a real override.
+    // Anything that rounds to no change reads as follow-app.
     let rem_scale = theme
         .font_scale
         .map(|s| s.clamp(palette::PANEL_FONT_SCALE_MIN, palette::PANEL_FONT_SCALE_MAX))
         .filter(|s| (s - 1.0).abs() > 0.001);
-    // A surface shader uses the same wrapper: it needs the element's
-    // bounds and a paint hook after the body, which is exactly what
-    // `Themed` already is.
+    // A surface shader rides the same wrapper: it needs the element's bounds
+    // and a paint hook after the body.
     let surface = shader::PanelSurface::build(chrome, margin);
     if scope.is_none() && rem_scale.is_none() && surface.is_none() {
         return frame();
     }
-    // Build the element under both channels, so a scoped color and a
-    // hand-rolled row's `scaled_px` bake in at construction; the wrapper
-    // re-applies them through each render phase below.
+    // Build under both channels so scoped colors and `scaled_px` bake in at
+    // construction; the wrapper re-applies them in each render phase.
     let child = panel_env(scope.as_ref(), rem_scale, frame);
     Themed {
         scope,
@@ -1632,9 +1372,8 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
     .into_any_element()
 }
 
-/// Run `f` under a panel's palette scope and rem scale, whichever are set.
-/// Both the build and the three render phases go through here so a scope
-/// color and a `scaled_px` row read the same values every time.
+/// Run `f` under a panel's palette scope and rem scale. The build and all
+/// three render phases go through here so they read the same values.
 fn panel_env<R>(
     scope: Option<&palette::Scope>,
     rem_scale: Option<f32>,
@@ -1650,17 +1389,14 @@ fn panel_env<R>(
     }
 }
 
-/// The element that keeps a panel's palette scope and font scale active
-/// through the render phases. A pure pass-through for layout; the scope
-/// re-applies through the thread-local channel while the font scale goes
-/// down two rails at once: the window rem (for text and the vendored table,
-/// which read it) and the [`palette::rem_scaled`] thread-local (for the
-/// hand-rolled rows built without a `Window`). The two stay in step because
-/// both derive from the same panel multiplier.
+/// Keeps a panel's palette scope and font scale active through the render
+/// phases. The scope re-applies through its thread-local channel. The font
+/// scale goes down two rails: the window rem (text and the vendored table)
+/// and [`palette::rem_scaled`] (hand-rolled rows built without a `Window`),
+/// both off the same multiplier so they stay in step.
 struct Themed {
     scope: Option<palette::Scope>,
     rem_scale: Option<f32>,
-    /// The panel's surface shader, recorded after the body paints.
     surface: Option<shader::PanelSurface>,
     child: AnyElement,
 }
@@ -1684,10 +1420,9 @@ impl Element for Themed {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        // Layout is where `.text_xs` and the table's row height resolve the
-        // rem, but `with_rem_size` is paint-only, so override the base the
-        // way the window root does and put it back after the subtree lays
-        // out. No override is active here, so the base is the app size.
+        // Layout resolves the rem, but `with_rem_size` is paint-only, so override
+        // the base the way the window root does and put it back after. No override
+        // is active here, so the base is the app size.
         let base = window.rem_size();
         if let Some(scale) = self.rem_scale {
             window.set_rem_size(base * scale);
@@ -1736,10 +1471,9 @@ impl Element for Themed {
         let rem_scale = self.rem_scale;
         let child = &mut self.child;
         let rem = rem_scale.map(|scale| window.rem_size() * scale);
-        // A surface that reads `mask` gets the body's paint bracketed as its
-        // span, keyed the same way the region itself is (the panel entity),
-        // so the renderer can replay exactly what this panel drew. Everyone
-        // else skips the brackets and paints as before.
+        // A surface that reads `mask` gets the body's paint bracketed as its span,
+        // keyed by the panel entity like the region, so the renderer replays exactly
+        // what this panel drew.
         if self
             .surface
             .as_ref()
@@ -1756,10 +1490,8 @@ impl Element for Themed {
                 panel_env(scope, rem_scale, || child.paint(window, cx));
             });
         }
-        // Post-order: the body is in the scene before the shader records,
-        // so a screen pass samples what this panel drew. A shaded panel
-        // nested in a shaded host composes child first, the host reading
-        // the finished result.
+        // Post-order: the body is in the scene before the shader records, so a
+        // screen pass samples it. A shaded child in a shaded host composes first.
         if let Some(surface) = &self.surface {
             surface.paint(bounds, window, cx);
         }
@@ -1774,29 +1506,18 @@ impl IntoElement for Themed {
     }
 }
 
-/// How far the nudges jump. Longer than the transport panel's ten, since
-/// this strip is worked while listening for a change rather than while
-/// looking for a spot in a track: fifteen is about how long it takes to
-/// hear whether a band or a curve did what was wanted.
+/// Longer than the transport panel's ten: fifteen is about how long it
+/// takes to hear whether a band or a curve did what was wanted.
 const STRIP_SEEK: f64 = 15.0;
 
-/// Back fifteen, play/pause, forward fifteen, random. For the windows that
-/// aren't the workspace but still need playback within reach: judging an EQ
-/// curve, a signal's band or an output setting means starting and stopping
-/// music, and going back to the main window for every pause gets old fast.
-/// Four verbs only; the full transport is a panel.
+/// Back fifteen, play/pause, forward fifteen, random, for the windows that
+/// aren't the workspace but still need playback in reach (EQ, signals,
+/// output). Nudges replace the track buttons because a skip would throw
+/// away the passage being judged. No title either: one that grows with the
+/// track would shift the buttons out from under the pointer.
 ///
-/// The nudges take the track buttons' place because of what these windows
-/// are for: hearing the same passage again with a knob moved is the loop,
-/// and a skip would throw away the passage being judged.
-///
-/// Nothing shows what's playing here. The strip sits centered under a plot
-/// in two of its three homes, and a title that grows with the track would
-/// shift the buttons out from under the pointer every time one ended.
-///
-/// The caller has to keep the view awake, since this reads the player every
-/// frame and the play/pause face goes stale the moment a track ends on its
-/// own. An `cx.observe(&player, ...)` held somewhere does it.
+/// The caller has to keep the view awake with a `cx.observe(&player, ...)`,
+/// or the play/pause face goes stale when a track ends on its own.
 pub fn transport_strip<P: 'static>(
     player: &Entity<Player>,
     library: &Entity<Library>,
@@ -1809,15 +1530,11 @@ pub fn transport_strip<P: 'static>(
             player.update(cx, |player, cx| player.play_random(&library, cx));
         })
     };
-    // Random draws through the scope the continuation system tracks, so
-    // it stays inside a playlist the way the transport panel's does.
     transport_nudges(player, cx).child(random)
 }
 
-/// The strip without the die: back fifteen, play/pause, forward fifteen.
-/// For a window that has already chosen what plays, like the genre tagger
-/// walking its own list, where a random draw would swap the track out from
-/// under the question being asked about it.
+/// The strip without the die, for a window that already chose what plays
+/// (the genre tagger), where a random draw would swap the track out.
 pub fn transport_nudges<P: 'static>(player: &Entity<Player>, cx: &mut Context<P>) -> Div {
     let playing = player.read(cx).is_playing();
     let button = |icon: &'static str,
@@ -1843,24 +1560,17 @@ pub fn transport_nudges<P: 'static>(player: &Entity<Player>, cx: &mut Context<P>
         }))
 }
 
-/// A panel in a window of its own: the panel view, full-size, on the same
-/// base styling the workspace root applies. Right-click serves the panel's
-/// own menu, the one its tab would drop down in the dock.
+/// A panel in a window of its own. Right-click serves the panel's own menu,
+/// the one its tab drops down in the dock.
 struct PopoutHost {
     panel_view: Arc<dyn PanelView>,
     state: AppState,
-    /// This window's slice of the backdrop: what it painted last, for
-    /// retiring the texture on a new bake.
     backdrop: WindowBackdrop,
-    /// The open right-click menu: its anchor position, the menu, and the
-    /// dismiss subscription that clears it.
+    /// The anchor, the menu, and the dismiss subscription that clears it.
     context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
-    /// Fallback focus so the Workspace-scoped playback bindings keep a
-    /// dispatch path in this window even before the hosted panel takes
-    /// focus. Matches the main workspace's fallback focus.
+    /// Fallback focus, so the Workspace-scoped playback bindings have a
+    /// dispatch path before the panel takes focus.
     focus: FocusHandle,
-    /// The window this host fills, so closing it can drop the window's entry
-    /// from [`PANEL_WINDOWS`].
     window_id: u64,
     _backdrop_changed: Subscription,
 }
@@ -1872,13 +1582,7 @@ impl Drop for PopoutHost {
 }
 
 impl PopoutHost {
-    /// Open the right-click menu: the panel's own dropdown, everything its
-    /// tab would offer in the dock (its content entries, Save As Preset,
-    /// Rename, Panel Settings) ending in Dock Back, which moves the panel
-    /// into the workspace's newest live tab group and closes this window.
-    /// Cross-window drags can't work (a held button pins pointer events to
-    /// its window, and Wayland hides window positions), so that row is the
-    /// way home; a window the panel was opened straight into leaves it out.
+    /// The panel's own dropdown, everything its tab offers in the dock.
     fn open_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.panel_view.clone();
         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
@@ -1896,9 +1600,8 @@ impl PopoutHost {
 
 impl Render for PopoutHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A popped-out window shares its parent's player, so it renders
-        // under that playback's tint, and claims the widget theme while it
-        // holds focus.
+        // Renders under the parent player's tint, and claims the widget theme
+        // while it holds focus.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         window_body(player, || {
@@ -1906,10 +1609,8 @@ impl Render for PopoutHost {
                 .flex()
                 .flex_col()
                 .size_full()
-                // Same Workspace context and playback actions as the main
-                // window, so space and the seek arrows work in a popout too.
-                // The panel's own SearchInput context still carves the keys
-                // back for its search box.
+                // Same Workspace context and playback actions as the main window. The
+                // panel's own SearchInput context still carves the keys back.
                 .track_focus(&self.focus)
                 .key_context("Workspace")
                 .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
@@ -1927,19 +1628,15 @@ impl Render for PopoutHost {
                         .player
                         .update(cx, |player, _| player.seek_by(5.0));
                 }))
-                // A popped-out panel has no tab group to answer the Panel
-                // Settings chord, so the host answers for the one panel it
-                // holds.
+                // No tab group here to answer the Panel Settings chord, so the host does.
                 .on_action(cx.listener(|this, _: &OpenPanelSettings, window, cx| {
                     this.panel_view.open_settings(window, cx);
                 }))
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                // A panel that serves its own content menu already ends it
-                // with the same panel tail this one would show, so the
-                // window's own right-click would only stack a second menu on
-                // top. Install it only for panels with no content menu.
+                // A panel with its own content menu already ends it with the panel tail,
+                // so only panels without one get the window's right-click.
                 .when(!self.panel_view.content_context_menu(cx), |body| {
                     body.on_mouse_down(
                         MouseButton::Right,
@@ -1948,13 +1645,11 @@ impl Render for PopoutHost {
                         }),
                     )
                 })
-                // The backdrop paints first, under the panel; how much shows
-                // through is the surfaces' call (ADR 10's strength scalar).
+                // Under the panel; how much shows through is the surfaces' call (ADR 10).
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
                 .child(self.panel_view.view())
-                // Same overlay structure as the dock's context menu: an
-                // occluding layer swallows the dismissing click, the anchored
-                // child pins the menu to the pointer.
+                // Same overlay as the dock's context menu: an occluding layer swallows the
+                // dismissing click.
                 .when_some(self.context_menu.as_ref(), |this, (position, menu, _)| {
                     this.child(
                         deferred(
@@ -1983,8 +1678,6 @@ impl Render for PopoutHost {
 mod chrome_tests {
     use super::*;
 
-    /// A panel config the way every real one is shaped: its own fields
-    /// beside the flattened chrome.
     #[derive(Default, Serialize, Deserialize)]
     struct StubConfig {
         #[serde(default)]
@@ -2031,8 +1724,6 @@ mod chrome_tests {
         assert!(shader.source.contains("fs_user"));
         assert_eq!(shader.routes.len(), 1);
         assert_eq!(shader.routes[0].target, "slot1");
-        // The hand-set knobs are stored in the dump beside the routes, so a
-        // panel with a tuned shader comes back tuned.
         assert_eq!(shader::manual_value(&shader.manual, 4), Some(0.25));
     }
 
@@ -2048,8 +1739,7 @@ mod chrome_tests {
 
     #[test]
     fn an_old_dump_loads_clean() {
-        // A layout written before panel shaders existed: chrome fields and
-        // the panel's own, no shader key anywhere.
+        // A layout written before panel shaders existed.
         let dumped = serde_json::json!({
             "tile": 120.0,
             "title": "Grid",
@@ -2064,8 +1754,6 @@ mod chrome_tests {
         assert!(read.chrome.shader.is_none());
     }
 
-    /// A min set above the max is a settings file the user typed, not a
-    /// state the dock can lay out. The min wins on both axes.
     #[test]
     fn a_min_over_the_max_raises_the_cap() {
         let floor = gpui::size(px(120.), px(80.));
@@ -2083,8 +1771,7 @@ mod chrome_tests {
         assert_eq!(max.width, px(500.));
         assert_eq!(max.height, px(400.));
 
-        // A sane pair is left exactly as written, and an unset cap stays
-        // unbounded however high the min goes.
+        // A sane pair is left as written, and an unset cap stays unbounded.
         let sane = PanelChrome {
             min_width: Some(200.),
             max_width: Some(600.),
@@ -2095,10 +1782,6 @@ mod chrome_tests {
         assert_eq!(chrome_max_size(&sane, floor).height, Pixels::MAX);
     }
 
-    /// The floor is the default, not a cap. A min typed under the panel's
-    /// own floor is what the panel gets, so a compact strip can be built
-    /// tighter than stock; the cap follows it down rather than being held
-    /// at a floor the min already left.
     #[test]
     fn an_explicit_min_goes_under_the_floor() {
         let floor = gpui::size(px(120.), px(80.));
@@ -2112,15 +1795,11 @@ mod chrome_tests {
         assert_eq!(chrome_min_size(&compact, floor).height, px(12.));
         assert_eq!(chrome_max_size(&compact, floor).width, px(60.));
 
-        // An unset axis is still the floor, which leaves every panel
-        // nobody has touched exactly where it was.
         assert_eq!(
             chrome_min_size(&PanelChrome::default(), floor),
             gpui::size(px(120.), px(80.))
         );
 
-        // A negative is a hand-edited file rather than an intent, and
-        // bottoms out at zero rather than laying out backwards.
         let negative = PanelChrome {
             min_height: Some(-20.),
             ..PanelChrome::default()
@@ -2133,9 +1812,6 @@ mod chrome_tests {
 mod naming_tests {
     use super::shows_reading;
 
-    /// The rule, which is the whole feature: everything else is where the
-    /// string lands. A name a Latin reader can sound out never gets one,
-    /// however good the sort name is.
     #[test]
     fn a_latin_name_never_takes_a_reading() {
         assert!(!shows_reading("USAO", "USAO", true));
@@ -2151,8 +1827,6 @@ mod naming_tests {
         assert!(shows_reading("Мельница", "Melnitsa", true));
     }
 
-    /// A sort name that only repeats the name says nothing, and neither
-    /// does an absent one.
     #[test]
     fn a_reading_that_adds_nothing_is_dropped() {
         assert!(!shows_reading("秋ノ風", "秋ノ風", true));

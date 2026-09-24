@@ -1,22 +1,15 @@
-//! The genre metadata table: the library's own opinions about its genre
-//! values, laid over the tags without ever rewriting a file. One row per
-//! folded genre name with an alias target ("DnB" counts as
-//! "Drum & Bass"), a display override, and a custom art path. The alias
-//! is the shipped feature; the other two columns are schema headroom for
-//! the panel's later knobs.
+//! The genre metadata table: aliases ("DnB" counts as "Drum & Bass") laid
+//! over the tags without rewriting a file. The display and art columns are
+//! unused headroom.
 //!
 //! Aliases apply at the [`crate::genre`] choke point, so every consumer
-//! of genre values (the projection's matching, the filter panel, the
-//! stats rollups, the genre grid) agrees without knowing the table
-//! exists. The app loads the flattened map after opening the library and
-//! after every edit here, then reloads the projection.
+//! agrees without knowing the table exists.
 
 use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-/// The table beside the tracks it describes. Keyed by the folded name so
-/// "DnB" and "dnb" share a row no matter the library's case setting.
+/// Keyed by the folded name, whatever the library's case setting.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS genre_meta (
@@ -28,11 +21,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Point one genre at another: rows tagged `from` count under `into`
-/// everywhere. `from` folds to the row key; `into` keeps its casing, since
-/// it's the display the merged value shows. A merge into itself (or into
-/// something that already resolves back to `from`) is refused rather
-/// than written, so the table never holds a cycle.
+/// Point `from` at `into` everywhere. A merge that would close a cycle is
+/// refused, so the table never holds one.
 pub fn set_alias(conn: &Connection, from: &str, into: &str) -> rusqlite::Result<()> {
     let key = from.trim().to_lowercase();
     let into = into.trim();
@@ -52,9 +42,7 @@ pub fn set_alias(conn: &Connection, from: &str, into: &str) -> rusqlite::Result<
          ON CONFLICT(name) DO UPDATE SET fold_into = excluded.fold_into",
         rusqlite::params![key, resolved],
     )?;
-    // Rows that pointed at the value being merged away follow it to the
-    // new end, so the table stays flat and the unmerge menu sees every
-    // name under its real target.
+    // Keep the table flat: rows pointing at the merged-away value follow it.
     conn.execute(
         "UPDATE genre_meta SET fold_into = ?2 WHERE LOWER(fold_into) = ?1",
         rusqlite::params![key, resolved],
@@ -62,8 +50,6 @@ pub fn set_alias(conn: &Connection, from: &str, into: &str) -> rusqlite::Result<
     Ok(())
 }
 
-/// Drop every alias pointing at `target`, the unmerge: the folded-away
-/// values come back as their own genres on the next reload.
 pub fn clear_aliases_into(conn: &Connection, target: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE genre_meta SET fold_into = '' WHERE LOWER(fold_into) = LOWER(?1)",
@@ -71,7 +57,6 @@ pub fn clear_aliases_into(conn: &Connection, target: &str) -> rusqlite::Result<u
     )
 }
 
-/// The alias names folding into `target`, for the unmerge menu's tally.
 pub fn aliases_into(conn: &Connection, target: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare_cached(
         "SELECT name FROM genre_meta WHERE LOWER(fold_into) = LOWER(?1) ORDER BY name",
@@ -80,10 +65,8 @@ pub fn aliases_into(conn: &Connection, target: &str) -> rusqlite::Result<Vec<Str
     rows.collect()
 }
 
-/// The flattened alias map, folded name -> canonical display: chains
-/// resolve to their end ("DnB" -> "D&B" -> "Drum & Bass" reads straight
-/// through), with a depth cap standing guard against a cycle an older
-/// write may have left.
+/// The flattened alias map, folded name -> canonical display, with a depth
+/// cap against a cycle an older write may have left.
 pub fn aliases(conn: &Connection) -> rusqlite::Result<HashMap<String, String>> {
     let mut stmt =
         conn.prepare_cached("SELECT name, fold_into FROM genre_meta WHERE fold_into <> ''")?;
@@ -117,15 +100,12 @@ mod tests {
     fn aliases_flatten_chains_and_refuse_cycles() {
         let conn = conn();
         set_alias(&conn, "DnB", "D&B").unwrap();
-        // Merging the middle onto a new end rewrites the chain flat.
         set_alias(&conn, "D&B", "Drum & Bass").unwrap();
         let map = aliases(&conn).unwrap();
         assert_eq!(map["dnb"], "Drum & Bass");
         assert_eq!(map["d&b"], "Drum & Bass");
-        // A merge that would close the loop writes nothing.
         set_alias(&conn, "Drum & Bass", "dnb").unwrap();
         assert!(!aliases(&conn).unwrap().contains_key("drum & bass"));
-        // The unmerge frees everything pointing at the target.
         assert_eq!(
             aliases_into(&conn, "Drum & Bass").unwrap(),
             ["d&b", "dnb"],

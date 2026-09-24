@@ -2,10 +2,7 @@
 //! randomized per run, so anything that names a cache file or a scratch
 //! path by content needs a hash that stays put between runs.
 
-/// FNV-1a over the bytes, stable across runs. The waveform peak cache, the
-/// media-control cover scratch files, and the artist cache all key their
-/// files on this, so the same track or name keeps its filename between
-/// launches.
+/// FNV-1a over the bytes.
 pub fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
@@ -15,11 +12,8 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// The queue group id for an album: a stable hash of the (album artist,
-/// album) pair, the same pair the queue panel groups its headings by. Only
-/// equality ever matters; the engine treats matching ids as tracks that
-/// belong together (ADR 17). None when the album tag is empty, so untagged
-/// tracks stay ungrouped instead of all merging into one giant group.
+/// The queue group id for an album (ADR 17): a hash of (album artist,
+/// album). None for an empty album, so untagged tracks don't merge.
 pub fn album_group(album_artist: &str, album: &str) -> Option<u64> {
     if album.is_empty() {
         return None;

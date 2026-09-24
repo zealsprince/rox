@@ -1,29 +1,14 @@
-//! The album metadata table: sort names for album titles.
+//! The album metadata table: sort names for album titles, sharing
+//! [`crate::artist_meta`]'s ranking. MusicBrainz has no release sort name, so
+//! rows here are nearly all `romanized`.
 //!
-//! [`crate::artist_meta`]'s twin, one row per album title, and it exists
-//! for the half of the problem MusicBrainz can't answer. The service
-//! models a sort name for an artist and nothing at all for a release, so
-//! an album called 打上花火 had no source for a Latin spelling until the
-//! romanization pass got one by reading the characters. That's why the
-//! rows here are almost all `romanized` where the artist table's are
-//! almost all `musicbrainz`; the ranking is shared all the same, so a
-//! hand-typed sort name still wins and a later pass can correct its own
-//! guess.
-//!
-//! Keyed by the album title as the tags spell it, which is the string the
-//! projection interned and the string the pass looked up. Not by (album
-//! artist, album): two different albums with the same title share a
-//! symbol in the projection already, so keying finer here would produce
-//! rows the merge could never find.
-//!
-//! [`crate::projection`] reads the flattened map once per build and lays
-//! it over the album symbol table, the same move it makes for artists.
+//! Keyed by title alone, not (album artist, album): same-titled albums
+//! already share a projection symbol, so a finer key could never be found.
 
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
-/// The table beside the tracks it describes.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS album_meta (
@@ -35,13 +20,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Record an album's sort name. `source` is one of
-/// [`crate::artist_meta::USER`] or [`crate::artist_meta::ROMANIZED`] in
-/// practice, and the write only lands over a row whose source ranks no
-/// higher.
-///
-/// An empty name or sort name writes nothing, for the reason
-/// [`crate::artist_meta::set`] gives.
+/// Record an album's sort name, landing only over a source that ranks no
+/// higher. An empty name or sort name writes nothing.
 pub fn set(conn: &Connection, name: &str, sort_name: &str, source: &str) -> rusqlite::Result<()> {
     let name = name.trim();
     let sort_name = sort_name.trim();
@@ -68,15 +48,11 @@ pub fn set(conn: &Connection, name: &str, sort_name: &str, source: &str) -> rusq
     Ok(())
 }
 
-/// Forget an album's sort name, whoever wrote it.
 pub fn clear(conn: &Connection, name: &str) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM album_meta WHERE name = ?1", [name.trim()])
 }
 
-/// The whole table as a name -> sort name map, one query per projection
-/// build. A row per album title rather than per track, so it stays small.
-/// The album names the romanization pass wrote under a marker other than
-/// `current`; see [`crate::artist_meta::stale_romanized`].
+/// See [`crate::artist_meta::stale_romanized`].
 pub fn stale_romanized(conn: &Connection, current: &str) -> rusqlite::Result<HashSet<String>> {
     let mut stmt = conn.prepare_cached(
         "SELECT name FROM album_meta

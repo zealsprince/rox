@@ -1,24 +1,10 @@
 //! rox-mcp: the MCP face of the control socket (ADR 22). MCP clients spawn
-//! stdio servers as child processes, which a long-running GUI can't be, so
-//! this thin binary sits between: MCP over stdio on one side, the socket on
-//! the other. Every tool proxies a socket method, so the tool surface can't
-//! drift ahead of what the socket serves.
+//! stdio servers, which a GUI can't be, so this thin binary proxies MCP over
+//! stdio to the socket. Every tool is one socket method.
 //!
-//! Two toggles gate the surface: "Enable AI Features" on the Application
-//! page, and "Enable MCP Server" on the MCP page it reveals. Each tool call
-//! asks the running rox first and turns a switched-off toggle into a clear
-//! refusal rather than a hang. The socket missing entirely (no rox running)
-//! reads the same way, as a tool error with the reason in it.
-//!
-//! MCP is JSON-RPC 2.0, one object per line on stdio, same framing as the
-//! socket itself. This covers the subset tools need: initialize, ping,
-//! tools/list, and tools/call; notifications are read and dropped.
-//!
-//! `--dev` widens the surface with the ui_ drive tools, proxies of the
-//! socket's debug scope, so an agent working on rox can list windows,
-//! dispatch actions, and send synthetic input through its MCP client. The
-//! flag goes on the config line spawning this binary, which keeps a user's
-//! music-facing MCP config from carrying UI-driving tools by accident.
+//! Gated by "Enable AI Features" and "Enable MCP Server", checked on every
+//! call. `--dev` adds the ui_ drive tools over the socket's debug scope; it's a
+//! flag on the spawning config so a music-facing setup never carries them.
 
 use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
@@ -27,13 +13,10 @@ use serde_json::{Value, json};
 
 use rox_ipc::client::Client;
 
-/// The newest MCP revision this proxy knows it satisfies, offered when the
-/// client asks for one we don't recognize.
+/// Offered when the client asks for a revision we don't recognize.
 const MCP_VERSION: &str = "2025-06-18";
 
-/// The revisions we answer verbatim: the tools surface is unchanged across
-/// them, so agreeing to the client's own dialect beats forcing a downgrade
-/// dance on it.
+/// Answered verbatim: the tools surface is unchanged across them.
 const MCP_KNOWN: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 
 fn main() {
@@ -78,7 +61,6 @@ fn main() {
             }));
             continue;
         };
-        // A notification carries no id and takes no response.
         let Some(id) = frame.get("id").filter(|id| !id.is_null()).cloned() else {
             continue;
         };
@@ -124,11 +106,6 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
-/// The tool surface: now-playing, transport, A-B repeat, library search, the
-/// queue, the rescan kick, and the long analysis passes, each a straight
-/// proxy of one socket method. `--dev` adds the drive tools over the socket's
-/// debug scope, for agents working on rox itself; a user-facing MCP config
-/// leaves them out.
 fn tools(dev: bool) -> Value {
     let mut tools = base_tools();
     if dev && let (Value::Array(all), Value::Array(extra)) = (&mut tools, dev_tools()) {
@@ -286,11 +263,8 @@ fn base_tools() -> Value {
     ])
 }
 
-/// The drive tools `--dev` turns on: synthetic input and action dispatch
-/// against a live rox, platform-free because everything lands in gpui's
-/// own event pipeline. Coordinates are window-local logical pixels; every
-/// tool takes an optional window id from ui_windows and defaults to the
-/// active window.
+/// Coordinates are window-local logical pixels; every tool takes an optional
+/// window id and defaults to the active window.
 fn dev_tools() -> Value {
     let window = json!({ "type": "integer", "description": "Window id from ui_windows; defaults to the active window." });
     let coord = json!({ "type": "number", "description": "Window-local logical pixels." });
@@ -401,15 +375,12 @@ fn dev_tools() -> Value {
     ])
 }
 
-/// One tool call against the running rox. Tool-level failures (no rox, the
-/// AI toggle off, a refused method) come back as isError results with the
-/// reason in the text, which is where MCP expects them; only malformed
-/// requests earn protocol errors.
+/// Tool-level failures come back as isError results, where MCP expects them;
+/// only malformed requests earn protocol errors.
 fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev: bool) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    // The drive tools pass their arguments through whole: the socket method
-    // validates, and its errors already read as sentences.
+    // The socket method validates the drive tools' arguments.
     if let Some(rest) = name.strip_prefix("ui_") {
         if !dev {
             return refusal(&format!(
@@ -476,10 +447,8 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
             ("library.search", params)
         }
         "get_queue" => ("queue.list", json!({})),
-        // The items go through as typed. An MCP client has no working
-        // directory in common with the running rox, so a relative path
-        // would be resolved against the wrong folder either way; the
-        // socket's own refusal says so in a sentence.
+        // Items go through as typed: an MCP client shares no working directory
+        // with rox, and the socket's refusal explains a relative path.
         "add_to_queue" => {
             let Some(items) = args.get("items").and_then(Value::as_array) else {
                 return refusal(
@@ -499,8 +468,6 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
         }
         "rescan_library" => ("library.rescan", json!({})),
         "get_tasks" => ("tasks.status", json!({})),
-        // The pass argument goes through whole: the socket method validates
-        // it and its error already reads as a sentence.
         "start_task" => ("tasks.start", args),
         "stop_task" => ("tasks.stop", args),
         other => return refusal(&format!("no such tool: {other}")),
@@ -517,18 +484,14 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
     }
 }
 
-/// Ask the running rox, connecting or reconnecting as needed, with the AI
-/// gate checked first on every call so a toggle flipped mid-session
-/// applies to the next tool use.
+/// The gates are checked on every call, so a toggle flipped mid-session applies at once.
 fn proxy(
     rox: &mut Option<Client>,
     socket: &std::path::Path,
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    // One reconnect attempt per call: a rox restarted since the last tool
-    // use left a dead client behind, and the second try is against the
-    // fresh socket.
+    // One reconnect per call, for a rox restarted since the last tool use.
     for _ in 0..2 {
         if rox.is_none() {
             *rox =
@@ -546,8 +509,6 @@ fn proxy(
                 status.get("mcp").and_then(Value::as_bool).unwrap_or(false),
             ),
             Err(err) if err.is_transport() => {
-                // The connection died under us; drop it and let the retry
-                // reconnect.
                 *rox = None;
                 continue;
             }
@@ -579,8 +540,6 @@ fn proxy(
     Err("rox stopped answering; is it still running?".into())
 }
 
-/// A tool-level failure the way MCP expects it: an isError result whose text
-/// says why, so the model can read the reason instead of a bare code.
 fn refusal(reason: &str) -> Value {
     json!({
         "isError": true,

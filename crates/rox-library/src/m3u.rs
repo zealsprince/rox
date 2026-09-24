@@ -1,18 +1,11 @@
-//! M3U8 read and write, the interop surface for playlists (ADR 16). Export
-//! writes extended M3U (`#EXTM3U` with an `#EXTINF` per track) so a rox
-//! playlist opens in VLC, foobar, MPD, and the like. Import reads the same
-//! shape back, or any bare list of paths, and hands the caller the entries in
-//! order; resolving those paths to catalog tracks is the library's job.
-//!
-//! The store is still the source of truth, files are a snapshot you generate
-//! and re-read, never where playlists are kept.
+//! M3U8 read and write for playlist interop (ADR 16). Export writes extended
+//! M3U; import takes that or any bare path list. The store stays the source
+//! of truth, files are snapshots.
 
 use crate::playlists::ExportTrack;
 
-/// Serialize playable rows to an extended M3U8 document. Each track gets an
-/// `#EXTINF:<secs>,<artist> - <title>` line then its absolute path; a missing
-/// artist collapses to just the title, an unknown duration writes `-1` the way
-/// the format expects.
+/// Extended M3U8: `#EXTINF:<secs>,<artist> - <title>` then the path, `-1` for
+/// an unknown duration.
 pub fn to_m3u8(rows: &[ExportTrack]) -> String {
     let mut out = String::from("#EXTM3U\n");
     for row in rows {
@@ -33,14 +26,9 @@ pub fn to_m3u8(rows: &[ExportTrack]) -> String {
     out
 }
 
-/// Pull the path entries out of an M3U document in order. Comment and
-/// directive lines (`#EXTM3U`, `#EXTINF`, ...) and blanks fall away, so what
-/// is left is the file references, whether the input was extended M3U or a
-/// bare path list.
+/// The path entries in order, directives and blanks dropped.
 pub fn parse(text: &str) -> Vec<String> {
-    // Editors and Windows tools save UTF-8 with a leading BOM. Left on, it
-    // clings to the first line so `#EXTM3U` no longer starts with `#`, slips
-    // past the comment filter as a bogus entry, and the real first track drops.
+    // A leading BOM would hide `#EXTM3U` from the comment filter.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines()
         .map(str::trim)

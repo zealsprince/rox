@@ -1,20 +1,10 @@
-//! MusicBrainz (musicbrainz.org): keyless release metadata, matched by a
-//! recording search over the track's artist and title. Each recording
-//! has the tags a tagger fills (title, artist, and, through its best
-//! matching release, album, album artist, year, track, and disc), so the
-//! compare has real candidates to set from. Both credits also carry a
-//! Latin sort name, which is where a Japanese-tagged track gets its
-//! `ARTISTSORT` from; there is no title or album sort in the model, so
-//! those two stay hand-typed in the editor.
+//! MusicBrainz (musicbrainz.org): keyless recording search for tag
+//! candidates, by-id lookups for the fingerprint identify, and the artist
+//! search behind the sort-name pass. Both credits carry a Latin sort name,
+//! which is where a Japanese-tagged track gets its `ARTISTSORT`.
 //!
-//! The same recordings are also reachable one id at a time, which is what
-//! the fingerprint identify wants: AcoustID hands back recording MBIDs, and
-//! the tags behind them come from here.
-//!
-//! The service caps clients at one request a second and rejects anything
-//! without a contactable User-Agent (ADR 14: the shared agent sends
-//! it). The throttle is here so callers never see it, the rate limit
-//! held process-wide against the next request.
+//! The service allows one request a second and needs a contactable
+//! User-Agent (ADR 14); the throttle here is process-wide.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,64 +15,39 @@ use super::{
 
 const API: &str = "https://musicbrainz.org/ws/2/recording";
 
-/// The artist search, the other half of the same web service. Asked by
-/// name alone, which is all the sort-name pass has: it's working from
-/// library values rather than from a track.
 const ARTIST_API: &str = "https://musicbrainz.org/ws/2/artist";
 
-/// The release lookup, for the label and the ISRCs a recording search
-/// leaves out.
+/// For the label and ISRCs a recording search leaves out.
 const RELEASE_API: &str = "https://musicbrainz.org/ws/2/release";
 
-/// MusicBrainz's rate limit: one request a second, sustained. A single
-/// lookup never hits it, but a batch would, so the gate is here rather
-/// than trusted to the caller.
+/// One request a second, sustained, with some room.
 const MIN_INTERVAL: Duration = Duration::from_millis(1100);
 
-/// How many times a request is re-sent after the server says it's busy.
-/// A 503 from MusicBrainz is load shedding on its side, sent with the
-/// client's quota untouched, and it comes and goes within seconds, so one
-/// or two more tries recover nearly all of them.
+/// A 503 is MusicBrainz shedding load with the client's quota untouched,
+/// and it clears within seconds.
 const BUSY_RETRIES: u32 = 3;
 
-/// The pause before a retry when the server names no Retry-After of its
-/// own (it sends 0 while shedding). Long enough to land outside the burst
-/// that shed us, short enough that a batch barely notices.
+/// Used when Retry-After is 0, which it is while shedding.
 const BUSY_BACKOFF: Duration = Duration::from_secs(2);
 
-/// The longest a single retry will wait, whatever Retry-After says.
-/// MusicBrainz has been seen naming minutes while it sheds, and a bulk
-/// pass that parks for that long looks hung. Past this the run is better
-/// off giving up on the name and asking again next time.
+/// MusicBrainz has been seen naming minutes while it sheds; a bulk pass
+/// parked that long looks hung, so give up on the name instead.
 const BUSY_CEILING: Duration = Duration::from_secs(30);
 
-/// How long a wait sleeps before it looks at the cancel flag again. Short
-/// enough that a stop click lands as one, long enough that the check
-/// costs nothing.
 const CANCEL_SLICE: Duration = Duration::from_millis(100);
 
-/// A predicate the caller hands in to interrupt a wait, which is what the
-/// bulk pass's stop button is. None means nothing can cancel, the right
-/// answer for a single interactive lookup that's over in a second.
+/// The bulk pass's stop button. None for a single interactive lookup.
 pub type Cancel<'a> = Option<&'a dyn Fn() -> bool>;
 
-/// Why a lookup came back empty-handed, told apart because the sort-name
-/// pass counts them differently: a wire failure repeated enough times
-/// means the network is gone and the run should stop, while a busy
-/// server is MusicBrainz's problem and says nothing about the next name.
+/// Told apart because the sort-name pass stops on repeated wire failures
+/// but not on a busy server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LookupError {
-    /// The server shed the request with a 503 every time it was tried.
     Busy,
-    /// The caller's cancel predicate went true while a retry waited out
-    /// the server's Retry-After. Nothing went wrong; the run is stopping
-    /// and this name goes back in the pile.
+    /// Cancelled while waiting out a Retry-After; the name goes back in the pile.
     Cancelled,
-    /// The server has no such entity. Only the by-id lookups ever see it:
-    /// a search answers 200 with an empty list, so nothing the sort-name
-    /// pass asks can produce this.
+    /// Only by-id lookups see this; a search answers 200 with an empty list.
     NotFound,
-    /// Anything else, already folded through [`net_reason`].
     Other(String),
 }
 
@@ -111,10 +76,7 @@ impl MetadataProvider for MusicBrainz {
     }
 
     fn search(&self, query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String> {
-        // The Lucene query the search endpoint takes: the title and artist
-        // as quoted phrases, so punctuation in a title does not read as
-        // query syntax. Either field alone still searches, so a hand-edited
-        // query with just a title works; both empty is a clean no-match.
+        // Quoted phrases, so punctuation in a title doesn't read as query syntax.
         let mut parts = Vec::new();
         if !query.title.is_empty() {
             parts.push(format!("recording:\"{}\"", escape(&query.title)));
@@ -146,36 +108,23 @@ impl MetadataProvider for MusicBrainz {
     }
 }
 
-/// One recording by its MBID, with the credits and releases a compare
-/// needs, scored against `query` the way a searched candidate is.
-/// Ok(None) is an id MusicBrainz has no entry for, which is what an
-/// AcoustID hit pointing at a merged or deleted recording looks like.
-///
-/// The other way into the same data: the fingerprint identify already
-/// knows which recording it wants, so there is nothing to search on and
-/// nothing to rank. It goes through the same throttled fetch as the rest
-/// of the module, so a run of ids queues behind the one-a-second limit
-/// rather than tripping it.
-///
-/// Blocking, background executor only.
+/// One recording by MBID, scored against `query` like a searched candidate.
+/// Ok(None) is what an AcoustID hit on a merged or deleted recording looks
+/// like.
 pub fn recording_by_id(
     mbid: &str,
     query: &TrackQuery,
 ) -> Result<Option<MetadataCandidate>, String> {
     let mbid = mbid.trim();
-    // The id lands in the path, so anything that isn't the shape of an
-    // MBID is refused here instead of being sent as a URL of its own
-    // making. A hit that carries a malformed id is a miss, not an error.
+    // The id lands in the URL path, so refuse anything not shaped like an
+    // MBID. A malformed id is a miss, not an error.
     if mbid.is_empty() || !mbid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Ok(None);
     }
     let text = match fetch(
         agent()
             .get(&format!("{API}/{mbid}"))
-            // artist-credits for the recording's and the release's names
-            // and sort names, releases and media for the album, the year,
-            // and the two numbers off the medium the recording sits on.
-            // The same fields `candidate` reads out of a search result.
+            // The same fields `candidate` reads from a search result.
             .query("inc", "artist-credits+releases+media")
             .query("fmt", "json"),
         None,
@@ -188,14 +137,7 @@ pub fn recording_by_id(
     Ok(recording_candidate(query, &recording))
 }
 
-/// The by-id body into a scored candidate, its own function so the fixtures
-/// below run the real response shape without the wire.
-///
-/// A body with no title is not a recording, whatever else it is: the
-/// candidate off it would be a row of empty fields, which reads in the
-/// compare as a service that answered and knew nothing. That's None, the
-/// same answer an unknown id gets, rather than an error, since neither one
-/// is anything the caller can act on differently.
+/// A body with no title isn't a recording: None, same as an unknown id.
 fn recording_candidate(
     query: &TrackQuery,
     recording: &serde_json::Value,
@@ -214,10 +156,8 @@ fn recording_candidate(
     Some(candidate)
 }
 
-/// One recording into a candidate: its title and artist, plus the release
-/// among its releases that best matches the query album, so a track
-/// tagged with a specific album surfaces that release's numbers rather
-/// than a random compilation's.
+/// The recording plus its release best matching the query album, so a track
+/// gets that release's numbers rather than a compilation's.
 fn candidate(
     provider: &'static str,
     query: &TrackQuery,
@@ -246,9 +186,6 @@ fn candidate(
                 .next()
                 .unwrap_or("")
                 .to_string();
-            // The disc and track come off the media block the recording
-            // appears in: the disc is the medium's position, the track its
-            // number in that medium.
             let medium = release
                 .get("media")
                 .and_then(|v| v.as_array())
@@ -259,11 +196,8 @@ fn candidate(
                 .filter(|&n| n > 0)
                 .map(|n| n.to_string())
                 .unwrap_or_default();
-            // Two spellings for one field: the search endpoint names the
-            // array "track" and the by-id lookup names it "tracks". Both
-            // hold only the tracks that are this recording, so reading
-            // either and taking the first is the same answer. Verified
-            // against live responses from both endpoints.
+            // The search endpoint names this array "track" and the by-id
+            // lookup "tracks" (verified against both).
             let track_no = medium
                 .and_then(|m| m.get("tracks").or_else(|| m.get("track")))
                 .and_then(|v| v.as_array())
@@ -305,45 +239,34 @@ fn candidate(
     }
 }
 
-/// What MusicBrainz records about a track's release, the metadata panel's
-/// release rows: the label and catalog number, where and when the release
-/// came out, when the recording first did, and the ISRC. Any field can be
-/// empty. Serialized as the release facts store's cache file; missing
-/// fields default, so an old entry still loads after the shape drifts.
+/// The metadata panel's release rows, serialized as the release facts
+/// store's cache; missing fields default so old entries still load.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ReleaseFacts {
     pub recording_mbid: String,
     pub release_mbid: String,
-    /// The release's title, which may differ from the tag's album.
+    /// May differ from the tag's album.
     pub release_title: String,
     /// The recording's earliest release date, "YYYY", "YYYY-MM", or full.
     pub first_release_date: String,
-    /// The chosen release's date, the same shapes.
     pub release_date: String,
-    /// The release's ISO 3166 country code, "XW" for worldwide.
+    /// ISO 3166, "XW" for worldwide.
     pub country: String,
     pub label: String,
     pub catalog_number: String,
     pub barcode: String,
-    /// The recording's first ISRC.
     pub isrc: String,
 }
 
-/// How many recordings the release lookup searches through for the best
-/// match; the top hit is usually right, the rest cover a cover version
-/// outscoring the original on a partial title.
+/// Enough to catch a cover version outscoring the original on a partial title.
 const FACTS_CANDIDATES: usize = 5;
 
-/// How sure the compare must be before a recording's facts are shown:
-/// below this the search matched a different song, and the wrong label
-/// under a track is worse than none.
+/// Below this the search matched a different song; a wrong label is worse than none.
 const FACTS_MIN_CONFIDENCE: f32 = 0.6;
 
-/// The release facts for a track: two throttled calls, the recording
-/// search that picks the recording and its release, then the release
-/// lookup for the label and the ISRC. Ok(None) is MusicBrainz having no
-/// recording that reads as the track. Blocking, background executor only.
+/// Two throttled calls: the recording search, then the release lookup for
+/// label and ISRC.
 pub fn release_facts(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String> {
     let mut parts = Vec::new();
     if !query.title.is_empty() {
@@ -367,8 +290,6 @@ pub fn release_facts(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String>
     let Some(recordings) = body.get("recordings").and_then(|v| v.as_array()) else {
         return Ok(None);
     };
-    // The recording the compare is surest of, the same score the tag
-    // lookup ranks its candidates by.
     let best = recordings
         .iter()
         .map(|recording| {
@@ -407,8 +328,7 @@ pub fn release_facts(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String>
     if facts.release_mbid.is_empty() {
         return Ok(Some(facts));
     }
-    // The label and the ISRC only come off the release itself. A failure
-    // here keeps what the search gave, since half the facts beat none.
+    // A failed release lookup keeps what the search gave.
     let text = match fetch(
         agent()
             .get(&format!("{RELEASE_API}/{}", facts.release_mbid))
@@ -426,9 +346,8 @@ pub fn release_facts(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String>
     Ok(Some(facts))
 }
 
-/// The release lookup's body into the facts: the first label with a real
-/// catalog number (MusicBrainz writes "[none]" for a known absence), the
-/// barcode, and the ISRC off the track that is this recording.
+/// The first label with a real catalog number (MusicBrainz writes "[none]"
+/// for a known absence), the barcode, and this recording's ISRC.
 fn read_release(facts: &mut ReleaseFacts, release: &serde_json::Value) {
     let labels = release
         .get("label-info")
@@ -487,10 +406,8 @@ fn read_release(facts: &mut ReleaseFacts, release: &serde_json::Value) {
     }
 }
 
-/// The release to read the facts off: an official one over a bootleg or
-/// promo, the one titled like the tag's album over the rest, and the
-/// earliest of what's left, so a track on a classic album gets that
-/// album's label rather than a later compilation's.
+/// Official over bootleg or promo, then titled like the tag's album, then
+/// earliest: a classic album's label, not a later compilation's.
 fn facts_release<'a>(
     query: &TrackQuery,
     releases: &'a [serde_json::Value],
@@ -503,7 +420,6 @@ fn facts_release<'a>(
             } else {
                 super::similarity(&query.album, &string(r.get("title")))
             };
-            // Earlier dates rank higher; an empty date ranks last.
             let date = string(r.get("date"));
             let earliness = if date.is_empty() {
                 0.0
@@ -524,9 +440,6 @@ fn facts_release<'a>(
     })
 }
 
-/// The release whose title best matches the query album, so the candidate
-/// has the numbers for the album the track claims. Falls back to the
-/// first release when the query has no album to match on.
 fn best_release<'a>(
     query: &TrackQuery,
     releases: &'a [serde_json::Value],
@@ -543,13 +456,8 @@ fn best_release<'a>(
     })
 }
 
-/// An artist-credit array folded to one display string, joining each name
-/// with its own join phrase ("Artist feat. Guest"), the shape a tag
-/// stores.
-///
-/// Shared with the AcoustID module, which serves the same credit out of its
-/// own MusicBrainz mirror in the same order with the same two keys, so the
-/// two providers' artist strings read alike in a compare.
+/// Names joined by their join phrases ("Artist feat. Guest"). AcoustID serves
+/// the same credit shape, so both providers share this.
 pub(super) fn artist_credit(credit: Option<&serde_json::Value>) -> String {
     let Some(array) = credit.and_then(|v| v.as_array()) else {
         return String::new();
@@ -566,13 +474,8 @@ pub(super) fn artist_credit(credit: Option<&serde_json::Value>) -> String {
     out.trim().to_string()
 }
 
-/// The Latin sort name of the first credited artist, the inverted form
-/// ("Yonezu, Kenshi") that `ARTISTSORT` wants. It rides along in the
-/// response rox already asks for, no `inc=` and no second request. Only
-/// the first credit: the sort tag names the artist the row files under,
-/// not the whole "feat." chain. Empty when the credit or the sort name is
-/// missing, which is normal and leaves the compare row with nothing to
-/// apply.
+/// The first credited artist's sort name ("Yonezu, Kenshi"): the sort tag
+/// names the artist a row files under, not the whole "feat." chain.
 fn credit_sort_name(credit: Option<&serde_json::Value>) -> String {
     credit
         .and_then(|v| v.as_array())
@@ -582,24 +485,10 @@ fn credit_sort_name(credit: Option<&serde_json::Value>) -> String {
         .unwrap_or_default()
 }
 
-/// Look one artist name up and return the Latin sort name MusicBrainz
-/// files them under, or None when nothing there is confidently the same
-/// artist.
-///
-/// This is the bulk pass's whole wire surface. It's a name in and a name
-/// out rather than a `MetadataProvider` call, because the pass is working
-/// through library values with no track behind them: there's no title to
-/// search a recording by, no candidate list to rank, and nothing for the
-/// confirmed picker ADR 14 asks for to show. What it writes is a row in
-/// rox's own table, never a file, which is what makes a bulk run of it
-/// legitimate at all.
-///
-/// Ok(None) is the ordinary answer for an artist MusicBrainz doesn't
-/// know, and the caller stores nothing for it, so the next run asks
-/// again. An Err is the wire failing, which is worth telling apart.
-///
-/// `cancel` is polled while a busy-server retry waits, so a bulk pass can
-/// be stopped without sitting through the server's Retry-After first.
+/// The Latin sort name MusicBrainz files an artist under, or None when
+/// nothing is confidently the same artist. The bulk sort-name pass's whole
+/// wire surface: it writes rox's own table, never a file, which is what makes
+/// a bulk run legitimate under ADR 14.
 pub fn artist_sort_name(name: &str, cancel: Cancel<'_>) -> Result<Option<String>, LookupError> {
     let name = name.trim();
     if name.is_empty() {
@@ -610,9 +499,7 @@ pub fn artist_sort_name(name: &str, cancel: Cancel<'_>) -> Result<Option<String>
             .get(ARTIST_API)
             .query("query", &format!("artist:\"{}\"", escape(name)))
             .query("fmt", "json")
-            // Three, not one: the top hit for a common name is often a
-            // different act with the same spelling, and `pick_sort_name`
-            // wants a couple of rows to find the exact name among.
+            // Three: the top hit for a common name is often a different act.
             .query("limit", "3"),
         cancel,
     )?;
@@ -621,15 +508,8 @@ pub fn artist_sort_name(name: &str, cancel: Cancel<'_>) -> Result<Option<String>
     Ok(pick_sort_name(name, &body))
 }
 
-/// Send one request under the throttle and hand back its body, re-sending
-/// it when the server says it's busy.
-///
-/// MusicBrainz answers a 503 with "the web server is currently busy" from
-/// a global shedding zone, with the client's own quota untouched and a
-/// Retry-After of 0, and a request a couple of seconds later usually goes
-/// through. Retrying here keeps every caller from having to know that.
-/// Any other status or a transport failure is handed back on the first
-/// try, since repeating those wouldn't change the answer.
+/// One throttled request, retried on a 503 (load shedding that usually
+/// clears in seconds). Anything else fails on the first try.
 fn fetch(request: ureq::Request, cancel: Cancel<'_>) -> Result<String, LookupError> {
     let mut attempt = 0;
     loop {
@@ -648,10 +528,8 @@ fn fetch(request: ureq::Request, cancel: Cancel<'_>) -> Result<String, LookupErr
                     return Err(LookupError::Busy);
                 }
                 attempt += 1;
-                // Clamped both ways: the header is a hint from a server
-                // under load, not an instruction worth handing a bulk
-                // pass's whole afternoon to, and a one-second hint would
-                // land us back inside the burst that shed us.
+                // Clamped both ways: a long hint would park a bulk pass, and
+                // a short one lands back inside the burst that shed us.
                 let wait = response
                     .header("retry-after")
                     .and_then(|v| v.trim().parse::<u64>().ok())
@@ -661,23 +539,16 @@ fn fetch(request: ureq::Request, cancel: Cancel<'_>) -> Result<String, LookupErr
                     .clamp(BUSY_BACKOFF, BUSY_CEILING);
                 wait_out(wait, cancel)?;
             }
-            // Told apart from the rest because a by-id lookup treats it as
-            // a clean miss, and "service returned 404" is not a string
-            // worth matching on to find that out.
             Err(ureq::Error::Status(404, _)) => return Err(LookupError::NotFound),
             Err(e) => return Err(LookupError::Other(net_reason(&e))),
         }
     }
 }
 
-/// Whether the caller wants out. No predicate is no cancel.
 fn cancelled(cancel: Cancel<'_>) -> bool {
     cancel.is_some_and(|stop| stop())
 }
 
-/// Sleep `total`, in slices, giving up as soon as the caller cancels. A
-/// plain `sleep` here would hold a stopped pass for the length of whatever
-/// the server asked for, which is the whole reason the wait is sliced.
 fn wait_out(total: Duration, cancel: Cancel<'_>) -> Result<(), LookupError> {
     let deadline = Instant::now() + total;
     loop {
@@ -692,24 +563,13 @@ fn wait_out(total: Duration, cancel: Cancel<'_>) -> Result<(), LookupError> {
     }
 }
 
-/// Which of the returned artists is the one that was asked for, and what
-/// it files under.
+/// The artist whose name, or an alias, matches once folded. Aliases count
+/// because MusicBrainz files many Japanese acts under a Latin name with the
+/// native spelling as an alias.
 ///
-/// The name has to match, compared through [`normalize_folded`] so casing,
-/// punctuation and accents don't decide it, against the artist's own name
-/// or any alias the response carries. An alias counts because MusicBrainz
-/// files plenty of Japanese acts under a Latin primary name with the
-/// native spelling as an alias, which is the exact pair the library has.
-///
-/// Nothing else counts. The score used to be a fallback, on the theory
-/// that MusicBrainz's own 100 means "this is the name you typed", and it
-/// doesn't: the search scores relevance, and a compilation credit like
-/// Various Artists takes 100 at the top of a result set for a real
-/// artist. Filing every one of that artist's rows under Various Artists
-/// is worse than the empty column it replaced, and there's no recovering
-/// from it without knowing which rows the pass wrote. No name match is no
-/// answer, and the next run asks again. An empty sort name on the winner
-/// is a miss too.
+/// Never fall back to the search score: it's relevance, not identity, and
+/// Various Artists scores 100 at the top of a real artist's results. Filing
+/// their rows under it can't be undone.
 fn pick_sort_name(name: &str, body: &serde_json::Value) -> Option<String> {
     let artists = body.get("artists")?.as_array()?;
     let wanted = normalize_folded(name);
@@ -720,9 +580,6 @@ fn pick_sort_name(name: &str, body: &serde_json::Value) -> Option<String> {
     (!sort.is_empty()).then_some(sort)
 }
 
-/// Whether one of the artist's aliases is the name that was asked for,
-/// folded the same way. Absent aliases are the common case (the search
-/// only carries them for artists that have them) and read as no match.
 fn has_alias(artist: &serde_json::Value, wanted: &str) -> bool {
     let Some(aliases) = artist.get("aliases").and_then(|v| v.as_array()) else {
         return false;
@@ -732,15 +589,14 @@ fn has_alias(artist: &serde_json::Value, wanted: &str) -> bool {
         .any(|alias| normalize_folded(&string(alias.get("name"))) == wanted)
 }
 
-/// Escape the Lucene specials that would otherwise steer the query, the
-/// quote and backslash a title can hold.
+/// Escape the quote and backslash a title can hold, so tag text can't steer
+/// the Lucene query.
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Hold the process to one request a second: if the last one was under
-/// the interval ago, sleep the remainder. Blocking, background executor
-/// only, never the audio path.
+/// Blocks until [`MIN_INTERVAL`] has passed: background executor only, never
+/// the audio path.
 fn throttle() {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
@@ -803,10 +659,7 @@ mod tests {
         assert_eq!(facts.country, "GB");
     }
 
-    /// A trimmed capture of the real response for the query rox builds,
-    /// cut to the keys `candidate` reads. The sort names ride on the
-    /// recording's credit and on the release's, which is what lets one
-    /// request fill both fields.
+    /// A trimmed live capture, cut to the keys `candidate` reads.
     const RECORDING: &str = r#"{
         "title": "Lemon",
         "length": 255000,
@@ -825,8 +678,6 @@ mod tests {
         ]
     }"#;
 
-    /// The same shape with both `sort-name` keys gone, which is how plenty
-    /// of real MusicBrainz entries come back.
     const NO_SORT: &str = r#"{
         "title": "Lemon",
         "artist-credit": [{ "name": "米津玄師", "artist": { "name": "米津玄師" } }],
@@ -868,10 +719,7 @@ mod tests {
         assert!(candidate.album_artist_sort.is_empty());
     }
 
-    /// A trimmed capture of the artist search for 米津玄師, cut to the
-    /// keys `pick_sort_name` reads. The second entry is the shape that
-    /// makes the exact-name check worth having: a high-scoring hit that
-    /// isn't the artist asked for.
+    /// A trimmed live capture; the second entry scores high but isn't the artist.
     const ARTIST_SEARCH: &str = r#"{
         "artists": [
             { "score": 100, "name": "米津玄師", "sort-name": "Yonezu, Kenshi" },
@@ -879,8 +727,6 @@ mod tests {
         ]
     }"#;
 
-    /// The artist named second, which is how MusicBrainz orders a search
-    /// where a compilation credit outscores the person.
     const ARTIST_SECOND: &str = r#"{
         "artists": [
             { "score": 100, "name": "Various Artists", "sort-name": "Various Artists" },
@@ -888,17 +734,13 @@ mod tests {
         ]
     }"#;
 
-    /// Nothing there is the artist asked for, so the pass writes nothing
-    /// and tries again next run.
     const ARTIST_NO_MATCH: &str = r#"{
         "artists": [
             { "score": 62, "name": "Someone Else", "sort-name": "Else, Someone" }
         ]
     }"#;
 
-    /// The shape that made the score fallback dangerous: MusicBrainz hands
-    /// back a perfect score for a name nobody asked for, and nothing else
-    /// in the set matches either.
+    /// A perfect score on a name nobody asked for.
     const ARTIST_SCORED_STRANGER: &str = r#"{
         "artists": [
             { "score": 100, "name": "Various Artists", "sort-name": "Various Artists" },
@@ -906,9 +748,6 @@ mod tests {
         ]
     }"#;
 
-    /// A Latin primary name with the native spelling filed as an alias,
-    /// which is how MusicBrainz carries a good part of its Japanese
-    /// catalogue.
     const ARTIST_ALIAS: &str = r#"{
         "artists": [
             {
@@ -931,13 +770,10 @@ mod tests {
             sort_name_from(ARTIST_SEARCH, "米津玄師"),
             Some("Yonezu, Kenshi".to_string())
         );
-        // Position doesn't decide it; the name does.
         assert_eq!(
             sort_name_from(ARTIST_SECOND, "崎山蒼志"),
             Some("Sakiyama, Soushi".to_string())
         );
-        // Casing and punctuation are normalized off both sides, so the
-        // exact-name check lands without a perfect score behind it.
         assert_eq!(
             sort_name_from(
                 r#"{ "artists": [{ "score": 71, "name": "AC/DC", "sort-name": "AC/DC" }] }"#,
@@ -950,9 +786,6 @@ mod tests {
     #[test]
     fn a_search_with_nothing_matching_comes_back_empty() {
         assert_eq!(sort_name_from(ARTIST_NO_MATCH, "米津玄師"), None);
-        // The accents come off both sides, so a tag spelling and a
-        // MusicBrainz spelling of the same name meet in the middle. No
-        // perfect score behind it, and it doesn't need one.
         assert_eq!(
             sort_name_from(
                 r#"{ "artists": [{ "score": 71, "name": "Beyonce", "sort-name": "Beyonce" }] }"#,
@@ -960,7 +793,6 @@ mod tests {
             ),
             Some("Beyonce".to_string())
         );
-        // No artists at all, and an artist carrying no sort name.
         assert_eq!(sort_name_from(r#"{ "artists": [] }"#, "Nobody"), None);
         assert_eq!(sort_name_from(r#"{ "count": 0 }"#, "Nobody"), None);
         assert_eq!(
@@ -969,9 +801,6 @@ mod tests {
         );
     }
 
-    /// The regression the score fallback was: a perfect score on somebody
-    /// else's name buys nothing, because the score is relevance and not
-    /// identity.
     #[test]
     fn a_perfect_score_on_another_name_is_not_an_answer() {
         assert_eq!(sort_name_from(ARTIST_SCORED_STRANGER, "崎山蒼志"), None);
@@ -983,13 +812,9 @@ mod tests {
             sort_name_from(ARTIST_ALIAS, "椎名林檎"),
             Some("Ringo, Sheena".to_string())
         );
-        // An artist whose aliases are all somebody else's is still a miss.
         assert_eq!(sort_name_from(ARTIST_ALIAS, "中島みゆき"), None);
     }
 
-    /// A cancel that's already up ends the wait immediately rather than
-    /// sitting out the server's Retry-After. The whole point of slicing
-    /// the sleep.
     #[test]
     fn a_cancelled_wait_returns_at_once() {
         let stop = || true;
@@ -999,16 +824,11 @@ mod tests {
             Err(LookupError::Cancelled)
         );
         assert!(started.elapsed() < Duration::from_secs(1));
-        // No predicate is no cancel, and a zero wait is over before it
-        // starts either way.
         assert_eq!(wait_out(Duration::from_millis(0), None), Ok(()));
     }
 
-    /// A trimmed capture of the real by-id response for
-    /// aed95205-f79f-4181-b2f7-2c2cb226f5bc with
-    /// `inc=artist-credits+releases+media`, cut to the keys `candidate`
-    /// reads. The one shape that differs from the search endpoint is the
-    /// medium's track array: "tracks" here, "track" there.
+    /// A trimmed live capture of aed95205-f79f-4181-b2f7-2c2cb226f5bc with
+    /// `inc=artist-credits+releases+media`.
     const BY_ID: &str = r#"{
         "id": "aed95205-f79f-4181-b2f7-2c2cb226f5bc",
         "title": "One More Time",
@@ -1036,9 +856,6 @@ mod tests {
         ]
     }"#;
 
-    /// The by-id lookup fills the same fields the search does, the plural
-    /// "tracks" spelling included, so an identify's candidates sit in the
-    /// compare table next to a searched one without a gap.
     #[test]
     fn the_by_id_shape_fills_the_release_numbers() {
         let query = TrackQuery {
@@ -1058,13 +875,9 @@ mod tests {
         assert_eq!(candidate.track_no, "4");
         assert_eq!(candidate.disc_no, "1");
         assert_eq!(candidate.duration_secs, Some(320.0));
-        // Scored like a searched candidate, which the identify then
-        // replaces with the fingerprint's own score.
         assert!(candidate.confidence > 0.9);
     }
 
-    /// A body that came back 200 and isn't a recording reads as no answer,
-    /// the same as an id MusicBrainz has no entry for.
     #[test]
     fn a_body_that_is_not_a_recording_is_no_answer() {
         let query = query();

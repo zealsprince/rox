@@ -1,30 +1,13 @@
-//! One definition of "completely tagged", for everything that wants to put a
-//! number on a library.
+//! One definition of "completely tagged", shared by the health window, the
+//! overview ring and the widget so they can't drift apart.
 //!
-//! The health window grew its own walk over the projection first, and then the
-//! overview ring and the widget wanted the same answer; three walks with three
-//! slightly different ideas of what counts would drift within a release. So
-//! the walk lives here, next to the projection it reads, as a pure function
-//! over a snapshot: no settings, no i18n, no entities.
-//!
-//! What counts is the five tags a track needs before the library can file it
-//! the way its owner would look for it: title, artist, album, genre, year.
-//! Rating is deliberately out. An unrated track isn't an untagged one, and
-//! folding a taste judgement into a coverage number makes the number mean two
-//! things at once. There's no weighting either: the headline is the plain
-//! share of live rows missing none of the five, so a user can check it by
-//! hand.
-//!
-//! Dead rows are skipped throughout. A tombstone is a file the library has
-//! already let go of, and counting it would let a rescan of deleted music move
-//! a coverage number.
+//! The five tags are title, artist, album, genre, year. Rating is out: unrated
+//! isn't untagged. The headline is the plain share of live rows missing none
+//! of the five, and tombstones never count.
 
 use crate::projection::Projection;
 
-/// One of the five tags a complete track carries.
-///
-/// Ordered the way a tag editor lists them, which is also the order the
-/// overview draws its rows in.
+/// Ordered the way a tag editor lists them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Check {
     Title,
@@ -35,7 +18,6 @@ pub enum Check {
 }
 
 impl Check {
-    /// Every check, in listing order.
     pub const ALL: [Check; 5] = [
         Check::Title,
         Check::Artist,
@@ -44,8 +26,6 @@ impl Check {
         Check::Year,
     ];
 
-    /// This check's bit in the per-row missing mask [`Completeness::add_row`]
-    /// takes.
     pub fn bit(self) -> u8 {
         match self {
             Check::Title => 1,
@@ -57,45 +37,31 @@ impl Check {
     }
 }
 
-/// Every combination of the five checks a row can be missing: 2^5 buckets,
-/// which is what lets a caller ask "complete over these three" without a
-/// second walk.
+/// 2^5 missing-mask buckets, so a caller can ask "complete over these three"
+/// without a second walk.
 const COMBOS: usize = 32;
 
-/// One check's result: how many live rows are missing it, and enough of their
-/// database ids to open a drill-down with.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct Missing {
-    /// Every live row missing this tag, uncapped.
     pub count: u64,
-    /// The first `cap` of their ids, for a caller that pins them into a
-    /// filter. Empty when the caller asked for no cap.
+    /// The first `cap` of their ids, for a drill-down filter.
     pub ids: Vec<i64>,
 }
 
-/// What one walk of the projection says about how well the library is tagged.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct Completeness {
-    /// Live rows: the denominator every share here reads against.
     pub tracks: u64,
     pub title: Missing,
     pub artist: Missing,
     pub album: Missing,
     pub genre: Missing,
     pub year: Missing,
-    /// How many live rows fall in each missing-mask bucket, indexed by the
-    /// OR of the missing checks' bits. Bucket zero is the rows missing
-    /// nothing.
-    ///
-    /// This exists so a caller can count "complete over an arbitrary subset"
-    /// exactly, which the per-check counts can't answer: a row missing both
-    /// genre and year appears in two of them, and adding them double-counts
-    /// it. Thirty-two counters is a rounding error next to the walk itself.
+    /// Live rows per missing-mask bucket. Needed for exact subset counts: a row
+    /// missing two checks is in both per-check counts.
     combos: [u64; COMBOS],
 }
 
 impl Completeness {
-    /// One check's missing rows.
     pub fn missing(&self, check: Check) -> &Missing {
         match check {
             Check::Title => &self.title,
@@ -116,14 +82,8 @@ impl Completeness {
         }
     }
 
-    /// Fold one live row in by the mask of checks it's missing, the OR of
-    /// their [`Check::bit`]s.
-    ///
-    /// The walk's own step, and public so anything counting rows from
-    /// somewhere other than a projection walk goes through the same
-    /// arithmetic rather than reaching into the buckets, where it would be
-    /// one forgotten increment away from a number that disagrees with the
-    /// per-check counts beside it.
+    /// Public so any other counter goes through the same arithmetic instead of
+    /// touching the buckets.
     pub fn add_row(&mut self, missing: u8) {
         self.tracks += 1;
         self.combos[(missing & 0b1_1111) as usize] += 1;
@@ -134,14 +94,10 @@ impl Completeness {
         }
     }
 
-    /// Live rows missing none of the five: the headline number.
     pub fn complete(&self) -> u64 {
         self.combos[0]
     }
 
-    /// Live rows missing none of `checks`, ignoring the rest. An empty list
-    /// counts every live row, which is the honest answer to "complete over
-    /// nothing".
     pub fn complete_within(&self, checks: &[Check]) -> u64 {
         let wanted = checks.iter().fold(0u8, |mask, check| mask | check.bit());
         self.combos
@@ -152,8 +108,7 @@ impl Completeness {
             .sum()
     }
 
-    /// The share of live rows missing none of `checks`, 0.0 to 1.0. An empty
-    /// library reads as 1.0: nothing is untagged when there's nothing.
+    /// An empty library reads as 1.0.
     pub fn share_within(&self, checks: &[Check]) -> f32 {
         if self.tracks == 0 {
             return 1.0;
@@ -161,13 +116,10 @@ impl Completeness {
         self.complete_within(checks) as f32 / self.tracks as f32
     }
 
-    /// The share of live rows missing none of the five.
     pub fn share(&self) -> f32 {
         self.share_within(&Check::ALL)
     }
 
-    /// The share of live rows that carry `check`, 0.0 to 1.0, which is what a
-    /// coverage bar fills to.
     pub fn coverage(&self, check: Check) -> f32 {
         if self.tracks == 0 {
             return 1.0;
@@ -177,27 +129,11 @@ impl Completeness {
     }
 }
 
-/// Walk one projection snapshot and count the five checks.
-///
-/// `drill_cap` bounds the ids kept per check: a caller that pins them into a
-/// filter matches row by row, so an uncapped set on a large library would be
-/// quadratic. The counts stay exact either way, so a capped list is a sample
-/// and the caller can say so.
-///
-/// Sequential rather than split across cores: it's a handful of bytes a row
-/// against a per-file probe, and it runs on a projection swap, not per frame.
+/// `drill_cap` bounds the ids kept per check, since a filter pinning them
+/// matches row by row. Counts stay exact.
 pub fn completeness(projection: &Projection, drill_cap: usize) -> Completeness {
-    // Asked once per distinct value rather than once per row: an untagged
-    // artist, album or genre is the interned empty string, and a library
-    // holds far fewer names than tracks.
-    //
-    // A tag holding nothing but spaces is as untagged as a blank one, so all
-    // three test the trimmed value; the genre goes through the splitter the
-    // rest of the library files genres with, which makes a lone "; " the
-    // empty list it reads as everywhere else. Suggestions come off the same
-    // predicate (see [`crate::genre_suggest::untagged`]), and a tile saying
-    // a library is fully tagged while the suggester offers rows to tag would
-    // be one of the two lying.
+    // Per distinct value, not per row. Blank-looking tags count as missing, on
+    // the same predicate as `genre_suggest::untagged`, so the two agree.
     let artist_missing: Vec<bool> = projection
         .artists
         .strings
@@ -223,12 +159,8 @@ pub fn completeness(projection: &Projection, drill_cap: usize) -> Completeness {
             continue;
         }
         let mut mask = 0u8;
-        // Scanned rows almost never fail this one: an untitled file gets the
-        // filename stem as its title (see the scanner's `fallback_row`), so
-        // the honest test is "the title is only the filename", which needs a
-        // per-row filename the projection doesn't carry. Until it does, this
-        // catches the empty titles a cue sheet and a patched row can still
-        // produce and nothing else.
+        // An untitled file gets its stem as title, so this mostly catches cue and
+        // patched rows. Catching filename-only titles needs a filename column.
         if projection.title.get(row).trim().is_empty() {
             mask |= Check::Title.bit();
         }
@@ -267,8 +199,6 @@ mod tests {
     use crate::rusqlite::Connection;
     use crate::{TrackRow, store};
 
-    /// A row with everything the five checks read filled in; a test blanks
-    /// whichever fields it wants missing.
     fn track(path: &str) -> TrackRow {
         TrackRow {
             remote_url: String::new(),
@@ -308,10 +238,6 @@ mod tests {
         Projection::load_serial(&conn, false).unwrap()
     }
 
-    /// Three rows: one complete, one missing genre and year, one the library
-    /// has let go of. The dead row is in no count at all, the half-tagged one
-    /// is in two, and it's counted once against the headline rather than
-    /// twice.
     #[test]
     fn a_dead_row_is_in_nothing_and_a_half_tagged_one_is_counted_once() {
         let complete = track("/m/a/1.mp3");
@@ -320,7 +246,6 @@ mod tests {
         bare.year = 0;
         let doomed = track("/m/a/3.mp3");
         let mut p = projection(&[complete, bare, doomed]);
-        // The third row's file is gone: tombstone it the way a rescan does.
         let index: std::collections::HashMap<i64, u32> = p
             .db_id
             .iter()
@@ -338,14 +263,10 @@ mod tests {
         assert_eq!(health.title.count, 0);
         assert_eq!(health.artist.count, 0);
         assert_eq!(health.album.count, 0);
-        // Genre and year are missing on the same row, so the two per-check
-        // counts add up to more rows than there are incomplete ones.
         assert_eq!(health.genre.ids, health.year.ids);
         assert_eq!(health.share(), 0.5);
     }
 
-    /// The subset knob: dropping the checks a row fails makes it complete,
-    /// and the arithmetic never double-counts the row failing two of them.
     #[test]
     fn a_subset_counts_only_the_checks_it_names() {
         let complete = track("/m/a/1.mp3");
@@ -368,8 +289,6 @@ mod tests {
         assert_eq!(health.complete_within(&[]), 3, "nothing to fail");
     }
 
-    /// The cap bounds the drill-down list without touching the count, so a
-    /// tile can say "showing 2 of 3".
     #[test]
     fn the_cap_bounds_the_ids_and_not_the_count() {
         let rows: Vec<TrackRow> = (0..3)
@@ -386,9 +305,6 @@ mod tests {
         assert_eq!(health.year.ids.len(), 2);
     }
 
-    /// A tag holding only separators and spaces counts as missing, the same
-    /// way the genre suggester counts it, so the coverage number and the
-    /// list of rows to fix agree on which rows are untagged.
     #[test]
     fn blank_looking_tags_count_as_missing() {
         let mut spaced = track("/m/a/1.mp3");
@@ -405,12 +321,9 @@ mod tests {
         assert_eq!(health.album.count, 1);
         assert_eq!(health.title.count, 1);
         assert_eq!(health.complete(), 0);
-        // The same rows the suggester would offer, off the same predicate.
         assert_eq!(crate::genre_suggest::untagged(&p), [0]);
     }
 
-    /// An empty library is fully tagged, not zero percent tagged: there's
-    /// nothing to fix, and a ring reading 0% would send a user looking.
     #[test]
     fn an_empty_library_reads_as_complete() {
         let p = projection(&[]);

@@ -1,22 +1,15 @@
-//! Every chord rox binds, in one list, so the Keymap settings page has
-//! something to draw and the settings file has something to override.
+//! Every chord rox binds, in one list, for the Keymap page to draw and the
+//! settings file to override. The file only holds what someone changed, so a
+//! default that moves in a later build reaches everyone who left it alone.
 //!
-//! Bindings used to be a `bind_keys` call at startup with the platform
-//! forks inline. They still are, except the call is built from
-//! [`COMMANDS`] rather than written out, and each command's chords come
-//! from the settings file when it has an opinion and from the command's
-//! own defaults when it doesn't. That split is the whole design: the file
-//! only ever holds what someone changed, so a default that moves in a
-//! later build applies to everyone who left it alone.
+//! gpui offers add and clear but no remove, so a rebind rebuilds the whole
+//! keymap in layers, later winning at equal depth: the widget library's
+//! bindings (snapshotted by [`init`]), then the windows' fixed chords
+//! ([`fixed`]), then the commands.
 //!
-//! Rebinding at runtime means rebuilding the keymap, because gpui only
-//! offers add and clear: there's no remove. Clearing takes the widget
-//! library's bindings with it (every text input's editing keys are in
-//! there), so [`init`] snapshots what was already registered before rox
-//! adds its own, and every rebuild lays that snapshot back down first.
-//! Anything binding keys after [`init`] runs would be lost on the first
-//! rebind; today nothing does, and this is the note explaining why the
-//! init order in `main` matters.
+//! This is the only module that calls `bind_keys`. A window that wants a
+//! chord joins [`fixed`]. Anything bound behind its back is carried forward
+//! on the next rebuild with a warning.
 
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, PoisonError, RwLock};
@@ -48,53 +41,29 @@ use crate::workspace::{
     VolumeUp,
 };
 
-/// Bindings match key contexts along the focus path, so this scope holds
-/// anywhere inside a workspace window except while the library search box
-/// is focused, a browsing panel's type-ahead phrase is mid-flight, the
-/// menubar is taking keys, or a button or slider has been tabbed to:
-/// there space and arrows keep typing into the query or the phrase, walk
-/// the menus, or press the control, instead. Bindings win over key
-/// listeners, so the exclusion hands the keys back.
-///
-/// The exclusion is for bare chords only. A command rebound onto a
-/// modified chord widens to [`WORKSPACE`] at build time, since ctrl-f
-/// isn't anything the search box needs and losing the binding while you
-/// type is the whole complaint. See [`Command::binding`].
+/// Workspace-wide except while the search box, a type-ahead phrase, the
+/// menubar, or a tabbed-to control holds focus, so space and arrows go to
+/// them. Bindings beat key listeners, so the exclusion hands the keys back.
+/// A modified chord widens to [`WORKSPACE`]; see [`Command::scope`].
 const PLAYBACK: Option<&str> =
     Some("Workspace && !SearchInput && !TypeAhead && !MenuNav && !FocusedControl");
 
-/// [`PLAYBACK`] minus the panels whose own left and right mean something:
-/// a tile wall moving its cursor across a row, a folder tree folding a
-/// branch. The seek pair is the only bare chord that actually collides;
-/// the step pair rides along with it, for the reason noted where it's
-/// bound. Space stays on [`PLAYBACK`] so play/pause still works with a
-/// wall focused.
+/// [`PLAYBACK`] minus panels whose own left and right mean something (a tile
+/// wall, a folder tree). Only the seek and step pairs use it.
 const SEEK: Option<&str> =
     Some("Workspace && !SearchInput && !TypeAhead && !MenuNav && !PanelNav && !FocusedControl");
 
-/// The plain workspace scope: anywhere in a workspace window, the search
-/// box included, since everything bound here has a modifier.
 const WORKSPACE: Option<&str> = Some("Workspace");
 
-/// The lyrics editor's own scope, deeper along the focus path than the
-/// window root.
 const LYRICS: Option<&str> = Some("LyricsEdit");
 
-/// Where the type-ahead cycle binds: a panel carries this only while it
-/// holds a phrase, so tab steps matches then and goes back to walking
-/// panels the rest of the time.
+/// Only present while a panel holds a phrase, so tab walks panels otherwise.
 const TYPE_AHEAD: Option<&str> = Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT);
 
-/// Which part of the app a command belongs to. The Keymap page draws one
-/// section per group, in this order.
+/// The Keymap page draws one section per group, in this order.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Playback,
-    /// The library's own operations: the scan, the five analysis passes,
-    /// the duplicate finder, the genre tagger, and the health report and
-    /// the two searches they feed. Everything the Library menu holds, with
-    /// the report and the searches last here rather than leading. Tasks and
-    /// Stats stay in Windows, since neither is only about the library.
     Library,
     Windows,
     Browsing,
@@ -103,7 +72,6 @@ pub enum Group {
 }
 
 impl Group {
-    /// The groups the page steps through, in the order it draws them.
     pub const ALL: &'static [Group] = &[
         Group::Playback,
         Group::Library,
@@ -137,65 +105,39 @@ impl Group {
     }
 }
 
-/// How a command can be fired by something other than a keystroke. The
-/// existing `context` field is a key-context predicate for binding
-/// resolution and says nothing about handler reach.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Reach {
-    /// Handled by an app-level `cx.on_action` registration, so a click
-    /// fires it whatever holds focus. The default, and what the button
-    /// picker offers.
+    /// Handled by an app-level `cx.on_action`, so a click fires it whatever holds focus.
     Global,
-    /// Handled by an element-level `.on_action()` on a panel, so firing it
-    /// needs a target. Not offered to buttons in v1.
+    /// Handled on a panel, so firing it needs a target. Not offered to buttons.
     Panel,
 }
 
-/// One rebindable thing rox can do.
 pub struct Command {
-    /// The settings file's key for this command. Stable forever: renaming
-    /// one silently resets everyone who had rebound it, so a label change
-    /// must not touch this.
+    /// The settings key. Never rename it: that silently resets everyone's rebinds.
     pub id: &'static str,
     pub label: &'static str,
     pub description: &'static str,
     pub group: Group,
-    /// Where the chord is live. `None` is everywhere, including the
-    /// settings and about windows and popped-out panels.
+    /// `None` is everywhere, including the settings window and popped-out panels.
     pub context: Option<&'static str>,
-    /// The chords this command ships with, in gpui's own syntax
-    /// ("ctrl-shift-s"). More than one is an alias, not a sequence. Empty
-    /// is a real choice: a command nobody expects a chord for ships
-    /// unbound, so it's there to record onto without taking a key from
-    /// anything.
+    /// gpui syntax. Several are aliases, not a sequence; empty ships unbound.
     pub defaults: &'static [&'static str],
-    /// Whether something other than a keystroke can fire this. See [`Reach`].
     pub reach: Reach,
-    /// gpui's registered name for the action, "rox::TogglePlayback", which
-    /// is what [`dispatch`] has to hand `build_action`. Read off the action
-    /// itself when the list is built, since [`Command::id`] is rox's own
-    /// settings key and the two are deliberately spelled differently.
+    /// gpui's registered name ("rox::TogglePlayback"), for [`dispatch`].
     action_name: &'static str,
-    /// Builds the binding for one chord. Each command names a distinct
-    /// action type, so the type has to be baked in here rather than
-    /// stored as data.
+    /// The action type can't be stored as data, so it's baked into this fn.
     build: fn(&str, Option<&'static str>) -> KeyBinding,
 }
 
 impl Command {
-    /// The binding for one chord, or `None` when the chord doesn't parse.
-    /// A file edited by hand is the way that happens, and dropping the
-    /// one bad line beats refusing to bind anything.
+    /// None for a chord that doesn't parse, so one bad hand edit doesn't block the rest.
     fn binding(&self, chord: &str) -> Option<KeyBinding> {
         parses(chord).then(|| (self.build)(chord, self.scope(chord)))
     }
 
-    /// The context this chord binds under. Everything binds under the
-    /// command's own scope except a modified chord on one of the narrowed
-    /// workspace scopes, which widens to the whole workspace: the
-    /// exclusions are there so space and the arrows keep reaching the query,
-    /// the phrase and the cursor, and a chord holding ctrl, alt or cmd was
-    /// never going to reach any of them anyway.
+    /// A modified chord on a narrowed scope widens to the whole workspace: the
+    /// exclusions only exist for keys a focused input would eat.
     fn scope(&self, chord: &str) -> Option<&'static str> {
         if narrowed(self.context) && modified(chord) {
             WORKSPACE
@@ -205,15 +147,9 @@ impl Command {
     }
 }
 
-/// Build `id`'s action and dispatch it at the window, the way a keybinding
-/// would, without moving focus. False when the id is unknown or its reach
-/// isn't [`Reach::Global`], so a caller can refuse rather than fire into
-/// nothing.
-///
-/// This is how a custom button presses a command: the picker only offers
-/// what [`global_commands`] yields, and the reach check here is the second
-/// gate for a saved layout naming something the picker would no longer
-/// offer.
+/// Dispatch `id` at the window like a keybinding, for custom buttons. False
+/// for an unknown id or a non-global reach, which also guards a saved layout
+/// naming a command the picker no longer offers.
 pub fn dispatch(id: &str, window: &mut Window, cx: &mut App) -> bool {
     let Some(command) = COMMANDS.iter().find(|command| command.id == id) else {
         return false;
@@ -223,9 +159,6 @@ pub fn dispatch(id: &str, window: &mut Window, cx: &mut App) -> bool {
         return false;
     }
 
-    // Same two steps the debug socket's `action` verb takes: build the
-    // registered action by name, then hand it to the window's own dispatch.
-    // `None` is the payload, and every command here names a unit action.
     let Ok(action) = cx.build_action(command.action_name, None) else {
         return false;
     };
@@ -234,24 +167,18 @@ pub fn dispatch(id: &str, window: &mut Window, cx: &mut App) -> bool {
     true
 }
 
-/// Every command a button may fire, in [`COMMANDS`] order within each
-/// group. An iterator rather than a built `Vec`, since the only consumer
-/// groups it into its own list anyway.
 pub fn global_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
         .filter(|command| command.reach == Reach::Global)
 }
 
-/// Whether a scope is [`WORKSPACE`] with exclusions carved out of it, the
-/// scopes a modified chord widens back out of.
 fn narrowed(scope: Option<&'static str>) -> bool {
     scope == PLAYBACK || scope == SEEK
 }
 
-/// Whether a chord opens on a modified keystroke. Shift doesn't count:
-/// shift-letter is typing, and a text box needs it. The first keystroke
-/// decides, since that's the one a focused input would otherwise eat.
+/// Shift doesn't count: shift-letter is typing. Only the first keystroke
+/// matters, since that's what a focused input would eat.
 fn modified(chord: &str) -> bool {
     chord
         .split_whitespace()
@@ -264,9 +191,7 @@ fn modified(chord: &str) -> bool {
 }
 
 macro_rules! command {
-    // The panel-scoped form, spelled out where it applies. This arm has to
-    // come first, or the shorter one below matches greedily and the reach
-    // argument lands nowhere.
+    // Must come first, or the shorter arm matches and swallows the reach.
     ($id:literal, $label:expr, $group:expr, $ctx:expr, $keys:expr, $action:expr, $desc:expr, $reach:expr) => {
         Command {
             id: $id,
@@ -281,7 +206,6 @@ macro_rules! command {
         }
     };
 
-    // The common form. Global is the default because 58 of the 66 are.
     ($id:literal, $label:expr, $group:expr, $ctx:expr, $keys:expr, $action:expr, $desc:expr) => {
         command!(
             $id,
@@ -296,9 +220,7 @@ macro_rules! command {
     };
 }
 
-// The platform forks, pulled out of the list below so each command reads
-// as one line. macOS puts app-level chords on Cmd; everywhere else
-// they're on Ctrl.
+// macOS puts app-level chords on Cmd; everywhere else they're on Ctrl.
 #[cfg(target_os = "macos")]
 mod defaults {
     pub const SETTINGS: &[&str] = &["cmd-,", "ctrl-i"];
@@ -369,15 +291,9 @@ mod defaults {
     pub const THEME: &[&str] = &["ctrl-shift-t"];
 }
 
-/// Everything rox binds. The page draws this in order within each group,
-/// so related rows sit together.
-///
-/// A `Vec` behind [`LazyLock`] rather than a `const` slice, because the
-/// label and description strings resolve through the locale bundles at
-/// first use, and that lookup isn't `const fn`. Every `.iter()` call site
-/// goes through [`LazyLock`]'s deref to the built `Vec`; a bare
-/// `for command in COMMANDS` needs `.iter()` added, since deref coercion
-/// doesn't apply to `IntoIterator`.
+/// Page order within each group. A `LazyLock` because the labels resolve
+/// through the locale bundles; iterate with `.iter()`, since deref coercion
+/// doesn't reach `IntoIterator`.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     vec![
         command!(
@@ -407,11 +323,8 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             SeekForward,
             rox_i18n::t_static("keymap-seek-forward.description")
         ),
-        // Comma and dot, the video editor's frame keys, at the size the
-        // Playback settings hold. Bare like the seek pair, and on the same
-        // narrowed scope so a tile wall's own arrows stay its own; these two
-        // don't collide there, but the pair reads as one control and a
-        // rebind onto arrows shouldn't split it.
+        // Comma and dot, the video editor's frame keys. On the seek scope so the
+        // pair stays one control if rebound onto arrows.
         command!(
             "step_backward",
             rox_i18n::t_static("keymap-step-backward"),
@@ -448,10 +361,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             StopPlayback,
             rox_i18n::t_static("keymap-stop-playback.description")
         ),
-        // Bare l is mpv's ab-loop key, and the same three-press cycle, so
-        // the muscle memory carries over. It sits on the playback scope
-        // like space: out of the search box, widened when rebound onto a
-        // modified chord.
+        // Bare l is mpv's ab-loop key, with the same three-press cycle.
         command!(
             "ab_repeat",
             rox_i18n::t_static("keymap-ab-repeat"),
@@ -461,8 +371,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             AbRepeat,
             rox_i18n::t_static("keymap-ab-repeat.description")
         ),
-        // Drop the section outright, without stepping the cycle round to its
-        // third press to get there.
         command!(
             "ab_clear",
             rox_i18n::t_static("keymap-ab-clear"),
@@ -472,9 +380,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             AbClear,
             rox_i18n::t_static("keymap-ab-clear.description")
         ),
-        // Bare m beside l: a bookmark at the playing position, and the
-        // shifted one asks for a name first. Same playback scope, so a
-        // search box keeps its m.
         command!(
             "bookmark",
             rox_i18n::t_static("keymap-bookmark"),
@@ -493,8 +398,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             AddNamedBookmark,
             rox_i18n::t_static("keymap-bookmark-named.description")
         ),
-        // Stepping between marks rides the track keys' arrows with both
-        // modifiers, and the plain workspace scope like every modified chord.
         command!(
             "prev_bookmark",
             rox_i18n::t_static("keymap-prev-bookmark"),
@@ -513,9 +416,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             NextBookmark,
             rox_i18n::t_static("keymap-next-bookmark.description")
         ),
-        // Bare n beside m: the throwaway mark next to the kept one, on the
-        // same playback scope so a search box keeps its n. There is no
-        // shifted twin, because a cue has nothing to name.
         command!(
             "cue",
             rox_i18n::t_static("keymap-cue"),
@@ -525,10 +425,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             Cue,
             rox_i18n::t_static("keymap-cue.description")
         ),
-        // Stepping cues ships unbound. The bookmark pair already holds the
-        // arrows with both modifiers, and there is no second pair that
-        // reads as obviously as those do; the keymap page is one click
-        // away for anyone who wants them.
         command!(
             "cue_prev",
             rox_i18n::t_static("keymap-cue-prev"),
@@ -547,9 +443,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             CueNext,
             rox_i18n::t_static("keymap-cue-next.description")
         ),
-        // Unbound for the same reason as the two above, and with one more:
-        // this one throws away work, so it should cost a deliberate trip to
-        // the Keymap page rather than sit under a key someone brushes.
+        // Unbound on purpose: it throws away work.
         command!(
             "cue_clear",
             rox_i18n::t_static("keymap-cue-clear"),
@@ -586,8 +480,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             PlayRandom,
             rox_i18n::t_static("keymap-play-random.description")
         ),
-        // The other half of the draw button: a track that sounds like the one
-        // playing, rather than one from anywhere.
         command!(
             "play_similar",
             rox_i18n::t_static("keymap-play-similar"),
@@ -615,8 +507,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleShuffle,
             rox_i18n::t_static("keymap-toggle-shuffle.description")
         ),
-        // The order shuffle puts the queue in, the shuffle button's hold menu
-        // as a single step.
         command!(
             "cycle_shuffle_mode",
             rox_i18n::t_static("keymap-cycle-shuffle-mode"),
@@ -644,9 +534,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleStopAfter,
             rox_i18n::t_static("keymap-toggle-stop-after.description")
         ),
-        // Continuation and the sleep timer, the two other ways playback ends
-        // itself. Sleep only gets its cancel: every other row on that menu
-        // carries a length, and a command can't hold one.
+        // Sleep gets only its cancel: every other sleep row carries a length.
         command!(
             "toggle_continuation",
             rox_i18n::t_static("keymap-toggle-continuation"),
@@ -665,8 +553,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             SleepOff,
             rox_i18n::t_static("keymap-sleep-off.description")
         ),
-        // Empty the up-next queue. The playing track and the context around
-        // it stay, the same as the queue panel's own clear.
         command!(
             "clear_queue",
             rox_i18n::t_static("keymap-clear-queue"),
@@ -676,7 +562,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ClearQueue,
             rox_i18n::t_static("keymap-clear-queue.description")
         ),
-        // The transport strip's heart, on the playing track.
         command!(
             "toggle_favourite",
             rox_i18n::t_static("keymap-toggle-favourite"),
@@ -704,8 +589,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             VolumeDown,
             rox_i18n::t_static("keymap-volume-down.description")
         ),
-        // The crossfade pair: off and back on at its last length, and whether
-        // the fade takes album-contiguous boundaries too.
         command!(
             "toggle_crossfade",
             rox_i18n::t_static("keymap-toggle-crossfade"),
@@ -724,7 +607,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleCrossfadeAlbums,
             rox_i18n::t_static("keymap-toggle-crossfade-albums.description")
         ),
-        // Step the levelling rule: off, track, album (ADR 19).
         command!(
             "cycle_replaygain_mode",
             rox_i18n::t_static("keymap-cycle-replaygain-mode"),
@@ -734,8 +616,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             CycleReplayGainMode,
             rox_i18n::t_static("keymap-cycle-replaygain-mode.description")
         ),
-        // Claim the device for rox alone, or give it back. The running
-        // session rebuilds either way, so this is not a quiet switch.
+        // Rebuilds the running session either way; not a quiet switch.
         command!(
             "toggle_exclusive_output",
             rox_i18n::t_static("keymap-toggle-exclusive-output"),
@@ -745,7 +626,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleExclusiveOutput,
             rox_i18n::t_static("keymap-toggle-exclusive-output.description")
         ),
-        // The equalizer's two buttons: the on switch and the flatten.
         command!(
             "toggle_eq",
             rox_i18n::t_static("keymap-toggle-eq"),
@@ -764,13 +644,8 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             FlattenEq,
             rox_i18n::t_static("keymap-flatten-eq.description")
         ),
-        // The library's operations: the scan, then the five passes, then
-        // the duplicate finder and the genre tagger, then the health report
-        // and the power search they feed. Everything here ships unbound
-        // except those last two, which keep the chords they had in the
-        // Windows group: an operation that costs an afternoon is not
-        // something to reach by accident, and there's no chord a user
-        // expects for it either.
+        // Library operations ship unbound except health and power search: an
+        // afternoon-long pass shouldn't be reachable by accident.
         command!(
             "rescan_library",
             rox_i18n::t_static("keymap-rescan-library"),
@@ -780,7 +655,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             RescanLibrary,
             rox_i18n::t_static("keymap-rescan-library.description")
         ),
-        // Stop a running scan at the next file. What it already indexed stays.
         command!(
             "abort_scan",
             rox_i18n::t_static("keymap-abort-scan"),
@@ -993,7 +867,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             OpenAbout,
             rox_i18n::t_static("keymap-open-about.description")
         ),
-        // The Application menu's three links out, each opening in the browser.
         command!(
             "report_issue",
             rox_i18n::t_static("keymap-report-issue"),
@@ -1076,8 +949,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ImportWorkspace,
             rox_i18n::t_static("keymap-import-workspace.description")
         ),
-        // The two save dialogs the Layout and Workspace menus open: a name
-        // field that Enter commits.
         command!(
             "save_layout",
             rox_i18n::t_static("keymap-save-layout"),
@@ -1232,8 +1103,6 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleArtTheming,
             rox_i18n::t_static("keymap-toggle-art-theming.description")
         ),
-        // Two of the appearance switches the settings pages own, reachable
-        // without the trip: the panel dividers and the reading names.
         command!(
             "toggle_seams",
             rox_i18n::t_static("keymap-toggle-seams"),
@@ -1252,8 +1121,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleReadings,
             rox_i18n::t_static("keymap-toggle-readings.description")
         ),
-        // Swap between the mini layout and the primary, the window strip's
-        // own toggle. A window with neither preset named stays put.
+        // A window with neither the mini nor the primary preset named stays put.
         command!(
             "toggle_mini",
             rox_i18n::t_static("keymap-toggle-mini"),
@@ -1276,30 +1144,19 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     ]
 });
 
-/// The command with this id, if the registry still has one. A settings
-/// file written by an older or newer build can name commands this one
-/// doesn't know; those entries stay in the file untouched and just aren't
-/// bound.
+/// Entries from another build that this one doesn't know stay in the file,
+/// unbound.
 pub fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|command| command.id == id)
 }
 
-/// Whether a chord is one gpui can bind. Whitespace separates the
-/// keystrokes of a sequence, so every part has to parse on its own.
-///
-/// This is a shape check, and a loose one, because gpui's own parse is
-/// loose: any word that isn't a modifier is taken as a key name, so
-/// "ctrl-nonsense" binds cleanly and never fires, and a bare "ctrl" is a
-/// real binding on a modifier tap. That leaves only the empty chord to
-/// reject, which is what an emptied field in a hand-edited file leaves
-/// behind.
+/// Only rejects the empty chord: gpui's own parse takes any word as a key,
+/// so "ctrl-nonsense" binds and never fires.
 pub fn parses(chord: &str) -> bool {
     let mut keystrokes = chord.split_whitespace().peekable();
     keystrokes.peek().is_some() && keystrokes.all(|key| Keystroke::parse(key).is_ok())
 }
 
-/// The chords a command is running: the file's when it has an opinion,
-/// the command's own defaults when it doesn't.
 pub fn chords(command: &Command, overrides: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     match overrides.get(command.id) {
         Some(chords) => chords.clone(),
@@ -1307,8 +1164,6 @@ pub fn chords(command: &Command, overrides: &BTreeMap<String, Vec<String>>) -> V
     }
 }
 
-/// Whether a command still has exactly what it ships with, which decides
-/// if the page offers a reset.
 pub fn is_default(command: &Command, overrides: &BTreeMap<String, Vec<String>>) -> bool {
     match overrides.get(command.id) {
         Some(chords) => chords.as_slice() == command.defaults,
@@ -1316,22 +1171,14 @@ pub fn is_default(command: &Command, overrides: &BTreeMap<String, Vec<String>>) 
     }
 }
 
-/// Whether two scopes can both be live at one moment. Unscoped is live
-/// everywhere and so overlaps anything. [`PLAYBACK`] and [`SEEK`] are
-/// [`WORKSPACE`] with exclusions carved out, subsets rather than
-/// neighbours, so they overlap it and each other wherever a workspace
-/// window has focus. Everything else here is a distinct window or editor
-/// and only overlaps itself.
+/// [`PLAYBACK`] and [`SEEK`] are subsets of [`WORKSPACE`], so they overlap it
+/// and each other. Unscoped overlaps everything.
 fn overlaps(a: Option<&'static str>, b: Option<&'static str>) -> bool {
     let widen = |scope| if narrowed(scope) { WORKSPACE } else { scope };
     a.is_none() || b.is_none() || widen(a) == widen(b)
 }
 
-/// Another command holding the same chord somewhere this one is also
-/// live, if there is one. Both sides resolve through
-/// [`Command::scope`] first, so a playback command rebound onto a
-/// modified chord is checked where it actually binds rather than where it
-/// was declared.
+/// Both sides resolve through [`Command::scope`], so widening is accounted for.
 pub fn clash(
     command: &Command,
     chord: &str,
@@ -1349,32 +1196,64 @@ pub fn clash(
         .map(|other| other.label)
 }
 
-/// The bindings that were already registered when rox's keymap took over:
-/// the widget library's text editing keys, the dock's, the tag editor's
-/// tab. A rebind clears the keymap wholesale, so these have to be laid
-/// back down with it or the app loses the ability to type.
-struct Foreign(Vec<KeyBinding>);
+struct Layers {
+    /// The widget library's bindings as [`init`] found them. Losing these costs typing.
+    library: Vec<KeyBinding>,
+    strays: Vec<KeyBinding>,
+    /// Anything past this in the live keymap was bound behind this module's back.
+    laid: usize,
+}
 
-impl Global for Foreign {}
+impl Global for Layers {}
 
-/// Snapshot what's already bound, then bind rox's own set. Call once at
-/// startup, after everything else that binds keys.
+/// The windows' own chords the Keymap page doesn't offer. Above the widget
+/// layer, which lets the shader editor's apply take ctrl-enter from its input.
+fn fixed() -> Vec<KeyBinding> {
+    [
+        crate::tags::editor::bindings(),
+        crate::tags::rename::bindings(),
+        crate::tags::repair::bindings(),
+        crate::smart_playlist::bindings(),
+        crate::playlist_create::bindings(),
+        crate::bookmark_dialog::bindings(),
+        crate::bake_dialog::bindings(),
+        crate::convert_dialog::bindings(),
+        crate::lyrics::edit::bindings(),
+        crate::lyrics::matcher::bindings(),
+        crate::shader_editor::bindings(),
+        crate::cover::editor::bindings(),
+        crate::settings::shader_confirm::bindings(),
+        rox_panel_api::panel_settings::bindings(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Call after the widget library's init, so its bindings land in the bottom layer.
 pub fn init(cx: &mut App) {
-    let foreign = cx.key_bindings().borrow().bindings().cloned().collect();
-    cx.set_global(Foreign(foreign));
+    seed(cx);
     apply(cx);
 }
 
-/// Each command's leading chord, written out the way a person reads it,
-/// keyed by command id. The menus trail their rows with this, and they
-/// rebuild every frame the dropdown is up, where a settings-file load has
-/// no place. [`apply`] refills it, so a rebind moves the menu label with
-/// the binding instead of leaving the two disagreeing.
+/// Apart from the settings read so a test can seed a keymap.
+fn seed(cx: &mut App) {
+    let library: Vec<KeyBinding> = cx.key_bindings().borrow().bindings().cloned().collect();
+
+    // Still live until the first rebuild clears them, so they count as laid.
+    let laid = library.len();
+
+    cx.set_global(Layers {
+        library,
+        strays: Vec::new(),
+        laid,
+    });
+}
+
+/// Each command's first chord for display, refilled by [`apply`]. Menus read
+/// it every frame, where a settings load has no place.
 static SHORTCUTS: RwLock<BTreeMap<&'static str, String>> = RwLock::new(BTreeMap::new());
 
-/// What `id` is bound to, for a label beside the thing it runs. Only the
-/// first chord: aliases are real but a row has one slot, and the first is
-/// the one the defaults lead with.
 pub fn shortcut(id: &str) -> Option<String> {
     SHORTCUTS
         .read()
@@ -1383,26 +1262,60 @@ pub fn shortcut(id: &str) -> Option<String> {
         .cloned()
 }
 
-/// Rebuild the keymap from the file. Every edit below ends here.
 pub fn apply(cx: &mut App) {
     let overrides = Settings::load().keymap;
-    let mut bindings = cx.global::<Foreign>().0.clone();
+    rebuild(&overrides, cx);
+}
+
+fn rebuild(overrides: &BTreeMap<String, Vec<String>>, cx: &mut App) {
+    adopt_strays(cx);
+
+    let layers = cx.global::<Layers>();
+    let mut bindings = layers.library.clone();
+    bindings.extend(fixed());
+
     let mut shortcuts = BTreeMap::new();
     for command in COMMANDS.iter() {
-        let chords = chords(command, &overrides);
+        let chords = chords(command, overrides);
         if let Some(chord) = chords.first() {
             shortcuts.insert(command.id, display(chord));
         }
         bindings.extend(chords.iter().filter_map(|chord| command.binding(chord)));
     }
     *SHORTCUTS.write().unwrap_or_else(PoisonError::into_inner) = shortcuts;
+
+    // Strays go back on top so a shared chord's winner doesn't change.
+    bindings.extend(layers.strays.iter().cloned());
+
+    cx.global_mut::<Layers>().laid = bindings.len();
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
 }
 
-/// Give `id` another chord on top of what it already has. A chord the
-/// command already holds is dropped, so pressing the same keys twice
-/// doesn't bind it twice.
+/// gpui only appends, so anything past the last rebuild's count arrived after it.
+fn adopt_strays(cx: &mut App) {
+    let laid = cx.global::<Layers>().laid;
+    let strays: Vec<KeyBinding> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .skip(laid)
+        .cloned()
+        .collect();
+
+    if strays.is_empty() {
+        return;
+    }
+
+    for stray in &strays {
+        log::warn!(
+            "keymap: {stray:?} was bound outside keymap.rs after keymap::init; \
+             carried through the rebind, but it belongs in keymap::fixed"
+        );
+    }
+    cx.global_mut::<Layers>().strays.extend(strays);
+}
+
 pub fn add(id: &str, chord: String, cx: &mut App) {
     edit(id, cx, move |chords| {
         if !chords.contains(&chord) {
@@ -1411,14 +1324,11 @@ pub fn add(id: &str, chord: String, cx: &mut App) {
     });
 }
 
-/// Take one chord off `id`, leaving the rest. Taking the last one leaves
-/// the command bound to nothing, which is a state the file records.
 pub fn remove(id: &str, chord: &str, cx: &mut App) {
     let chord = chord.to_string();
     edit(id, cx, move |chords| chords.retain(|held| *held != chord));
 }
 
-/// Put `id` back on the chords it ships with.
 pub fn reset(id: &str, cx: &mut App) {
     let id = id.to_string();
     Settings::update(move |settings| {
@@ -1427,26 +1337,19 @@ pub fn reset(id: &str, cx: &mut App) {
     apply(cx);
 }
 
-/// Put every command back, including any the registry no longer knows:
-/// this is the page's escape hatch, so it clears the whole map rather
-/// than the rows that happen to be on screen.
+/// Clears the whole map, including commands this build doesn't know.
 pub fn reset_all(cx: &mut App) {
     Settings::update(|settings| settings.keymap.clear());
     apply(cx);
 }
 
-/// Put a whole override map back, the undo for a reset: the page snapshots
-/// the map before it clears, and this writes the snapshot over whatever
-/// the file holds now.
+/// The undo for a reset.
 pub fn restore(map: BTreeMap<String, Vec<String>>, cx: &mut App) {
     Settings::update(move |settings| settings.keymap = map);
     apply(cx);
 }
 
-/// Read a command's chords, change them, write them back, rebind. The
-/// read seeds from the defaults when the file has nothing yet, so the
-/// first edit to a command keeps its other chords instead of dropping
-/// them.
+/// Seeds from the defaults, so a first edit keeps the other chords.
 fn edit(id: &str, cx: &mut App, change: impl FnOnce(&mut Vec<String>) + Send + 'static) {
     let id = id.to_string();
     let defaults: Vec<String> = command(&id)
@@ -1459,16 +1362,12 @@ fn edit(id: &str, cx: &mut App, change: impl FnOnce(&mut Vec<String>) + Send + '
     apply(cx);
 }
 
-/// A chord as a person reads it: "ctrl-shift-s" comes back "Ctrl+Shift+S".
-/// The parts of a sequence stay separated by a space, the way gpui writes
-/// them and the way a chord like "g g" has to read.
+/// "ctrl-shift-s" reads "Ctrl+Shift+S"; sequence parts stay space-separated.
 pub fn display(chord: &str) -> String {
     chord
         .split_whitespace()
         .map(|key| match Keystroke::parse(key) {
             Ok(keystroke) => display_keystroke(&keystroke),
-            // Only reachable through a hand-edited file, where showing the
-            // raw text is more use than showing nothing.
             Err(_) => key.to_string(),
         })
         .collect::<Vec<_>>()
@@ -1506,9 +1405,6 @@ fn display_keystroke(keystroke: &Keystroke) -> String {
     parts.join("+")
 }
 
-/// One key's printed name. Single characters go up so `s` reads as the
-/// cap it's printed on; the named keys get their usual spelling, with the
-/// function row left uppercase whole.
 fn key_label(key: &str) -> String {
     match key {
         "escape" => rox_i18n::t!("keymap-key-esc").to_string(),
@@ -1541,13 +1437,54 @@ fn key_label(key: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The commands whose handler needs a target: the tab step pair, close
-    /// panel and panel settings on the tab group, zoom through the dock's
-    /// active group, the type-ahead pair on whichever browsing panel holds
-    /// a phrase, and the stamp on the lyrics edit window, which isn't even
-    /// the same OS window. Everything else answers from the app or the
-    /// workspace root, and the workspace root is an ancestor of every panel
-    /// a button can sit in, so a click reaches it.
+    use gpui::{TestAppContext, actions};
+
+    actions!(keymap_test, [LibraryKey, StrayKey]);
+
+    fn position(cx: &App, action: &dyn Action) -> Option<usize> {
+        cx.key_bindings()
+            .borrow()
+            .bindings()
+            .position(|binding| binding.action().partial_eq(action))
+    }
+
+    /// Two rebuilds, so a stray adopted on the first survives the second undoubled.
+    #[gpui::test]
+    fn a_rebind_keeps_every_layer(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.bind_keys([KeyBinding::new("ctrl-y", LibraryKey, None)]);
+            seed(cx);
+            rebuild(&BTreeMap::new(), cx);
+
+            cx.bind_keys([KeyBinding::new("ctrl-u", StrayKey, None)]);
+            rebuild(&BTreeMap::new(), cx);
+            rebuild(&BTreeMap::new(), cx);
+
+            let library = position(cx, &LibraryKey).expect("the library layer survived");
+            let window =
+                position(cx, &crate::bake_dialog::Embed).expect("a window's fixed chord survived");
+            let command = position(cx, &TogglePlayback).expect("the commands survived");
+            let stray = position(cx, &StrayKey).expect("the stray was carried forward");
+
+            assert!(
+                library < window,
+                "the widget library sits under rox's windows"
+            );
+            assert!(window < command, "the fixed chords sit under the commands");
+            assert!(command < stray, "a stray stays on top, where it was bound");
+
+            let strays = cx
+                .key_bindings()
+                .borrow()
+                .bindings()
+                .filter(|binding| binding.action().partial_eq(&StrayKey))
+                .count();
+            assert_eq!(strays, 1, "a second rebuild adopted the stray again");
+        });
+    }
+
+    /// Commands handled on a panel or another window. Everything else answers
+    /// from the app or the workspace root, which every button sits under.
     const PANEL_SCOPED: &[&str] = &[
         "type_ahead_next",
         "type_ahead_prev",
@@ -1559,9 +1496,7 @@ mod tests {
         "stamp_line",
     ];
 
-    /// The guard on the reach table. A command marked Global whose handler
-    /// actually lives on a panel gives a button that quietly does nothing,
-    /// which is the one failure this tier exists to prevent.
+    /// A Global command handled on a panel gives a button that silently does nothing.
     #[test]
     fn every_command_declares_a_reach() {
         for command in COMMANDS.iter() {
@@ -1579,9 +1514,6 @@ mod tests {
         }
     }
 
-    /// Dispatch's first gate. The window half needs a gpui context and
-    /// nothing in this crate sets one up, so the lookup is what's covered
-    /// here.
     #[test]
     fn dispatch_refuses_an_unknown_id() {
         assert!(
@@ -1618,8 +1550,6 @@ mod tests {
         }
     }
 
-    /// Two commands sharing a chord in one scope means one of them can
-    /// never fire, so the shipped set must not have any.
     #[test]
     fn defaults_do_not_clash() {
         let overrides = BTreeMap::new();
@@ -1665,10 +1595,6 @@ mod tests {
         assert!(!parses("   "));
     }
 
-    /// gpui takes a bare modifier as a binding on that modifier's tap,
-    /// and takes an unknown word as a key that never fires. Both
-    /// are things a hand-edited file can hold, and neither should cost
-    /// the file the rest of its bindings.
     #[test]
     fn loose_chords_still_bind() {
         assert!(parses("ctrl"));
@@ -1686,17 +1612,12 @@ mod tests {
         assert!(modified("cmd-space"));
     }
 
-    /// The first keystroke of a sequence is the one a focused input would
-    /// eat, so it's the one that decides.
     #[test]
     fn sequences_read_their_opening_chord() {
         assert!(modified("ctrl-k left"));
         assert!(!modified("g ctrl-f"));
     }
 
-    /// The point of the split: a playback command left on its bare default
-    /// keeps handing the key back to the search box, and the same command
-    /// rebound onto a modified chord fires while you type.
     #[test]
     fn modified_playback_chords_reach_the_search_box() {
         let seek = COMMANDS
@@ -1708,9 +1629,6 @@ mod tests {
         assert_eq!(seek.scope("ctrl-f"), WORKSPACE);
     }
 
-    /// Rebinding a playback command onto a chord the workspace already
-    /// holds is a real collision once it widens, so the page has to say so
-    /// rather than let the loser bind and never fire.
     #[test]
     fn widened_chords_clash_with_the_workspace() {
         let seek = COMMANDS
@@ -1730,9 +1648,6 @@ mod tests {
         );
     }
 
-    /// Widening is scoped to the carved-out workspace scopes. A command
-    /// already on the plain workspace scope, or on the lyrics editor's,
-    /// stays put no matter what it's bound to.
     #[test]
     fn other_scopes_do_not_widen() {
         for command in COMMANDS.iter().filter(|c| !narrowed(c.context)) {

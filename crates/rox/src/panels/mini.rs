@@ -1,9 +1,5 @@
-//! The mini toggle panel: a single button that swaps the workspace between
-//! its mini and primary layouts, the menubar toggle and the window
-//! controls' lead button as a panel of its own. The glyph follows the
-//! workspace, minimize while on the primary layout, maximize while on the
-//! mini one. With no mini layout assigned it's drawn faint and inert, the
-//! same gate every mini toggle shows behind.
+//! The mini toggle panel: one button that swaps the workspace between its mini
+//! and primary layouts. Faint and inert with no mini layout assigned.
 
 use gpui::{
     AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels,
@@ -20,12 +16,8 @@ use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::{Align, align_row, justify};
 
-/// The mini toggle panel's per-view config: what a saved layout restores,
-/// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct MiniToggleConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
@@ -35,13 +27,9 @@ pub struct MiniToggleConfig {
 pub struct MiniTogglePanel {
     state: AppState,
     config: MiniToggleConfig,
-    /// The workspace this panel toggles; gone in a popped-out window whose
-    /// workspace has closed, where the button is just inert.
     workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
-    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The glyph follows the workspace's mini state.
     _workspace_changed: Option<Subscription>,
 }
 
@@ -66,9 +54,6 @@ impl MiniTogglePanel {
     }
 
     fn body(&self, cx: &mut Context<Self>) -> Div {
-        // Assigned and live: the interactive toggle. Otherwise a faint,
-        // inert glyph so the panel isn't blank, the same gate the menubar
-        // and window controls toggles show behind.
         let assigned = self
             .workspace
             .upgrade()
@@ -82,8 +67,6 @@ impl MiniTogglePanel {
         } else {
             icons::MINIMIZE
         };
-        // The inert glyph says nothing about why it's inert, so its tip
-        // names the missing piece rather than the click it won't take.
         let tip = match (assigned, on_mini) {
             (false, _) => rox_i18n::t!("mini-tip-none"),
             (true, true) => rox_i18n::t!("mini-tip-back"),
@@ -108,10 +91,8 @@ impl MiniTogglePanel {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
-                                // Deferred out of this panel's update: the toggle
-                                // stashes a dock dump, and dumping reads every
-                                // panel, this one included. A read inside its own
-                                // update panics.
+                                // Deferred: the toggle dumps the dock, which reads this
+                                // panel, and a read inside its own update panics.
                                 let ws = this.workspace.clone();
                                 window.defer(cx, move |window, cx| {
                                     let Some(ws) = ws.upgrade() else { return };
@@ -224,7 +205,6 @@ impl Panel for MiniTogglePanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-        // The button plus the strip's padding, raised by any user floor.
         rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(px(40.), rox_dock::resizable::PANEL_MIN_SIZE),
@@ -235,8 +215,6 @@ impl Panel for MiniTogglePanel {
         rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(

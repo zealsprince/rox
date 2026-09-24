@@ -1,23 +1,13 @@
-//! The Milkdrop preset browser: the preset library as a folder tree with a
-//! filter box, a favorites switch, and a star on every row. One view, two
-//! homes: the Milkdrop panel's Presets page draws it inline, and the
-//! preset picker window draws it as its whole body, over the backdrop or
-//! over a panel.
+//! The Milkdrop preset browser: the preset library as a folder tree or a
+//! thumbnail grid, with a filter box, a favorites switch, and a star on every
+//! row. The Milkdrop panel's Presets page draws it inline, and the preset
+//! picker window draws it as its whole body.
 //!
-//! The browser owns the browsing state (what's typed, what's unfolded,
-//! whether it's showing starred presets only) and nothing else. Which
-//! presets exist and which one is up come from the host through
-//! [`PresetBrowser::set_presets`] and [`PresetBrowser::set_current`]; a
-//! click on a row goes back out as [`BrowserEvent::Pick`], and the host
-//! decides what a pick means. The favorites and nesting switches go out
-//! as [`BrowserEvent::Switched`] for a host that remembers them across
-//! opens. Stars are the one write the browser makes
-//! itself, straight to the app-wide favorites list, since a star means the
-//! same thing whoever's looking.
-//!
-//! [`PresetHost`] is the other half of the picker window: what the window
-//! needs from the thing it's picking for, as a trait so the window, which
-//! lives up in the app, can serve a panel it can't name.
+//! The browser owns the browsing state and nothing else. The host supplies
+//! the presets and the current one, and decides what a [`BrowserEvent::Pick`]
+//! means. Stars are the one write the browser makes itself, straight to the
+//! app-wide favorites list. [`PresetHost`] is the picker window's side, a
+//! trait so the window can serve a panel it can't name.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -43,31 +33,25 @@ use rox_design::{palette, tokens};
 use rox_library::folders::{Node, build_roots, sum_counts};
 use rox_panel_kit::ui as settings_ui;
 
-/// A row cap for the tests: the walk takes one so a caller drawing
-/// every row it gets can bound the work, and the browser itself passes
-/// no bound, since its list only draws the rows on screen.
+/// The tests' row cap. The browser passes no bound, since its list only draws
+/// the rows on screen.
 #[cfg(test)]
 const PRESET_ROWS: usize = 200;
 
-/// How far each level of the preset tree steps in, matching the folder
-/// tree panel's own indent so the two read as one idiom.
+/// Matches the folder tree panel's indent.
 const PRESET_INDENT: f32 = 14.;
 
-/// One list row's height, folder or preset: the folder tree panel's,
-/// so the two read as one family.
+/// The folder tree panel's row height, folder or preset.
 const ROW_H: Pixels = px(26.);
 
-/// A grid cell: the thumbnail, 16:9 like the render behind it, with one
-/// line of name under it. The row of cells is the list's unit. Cells
-/// share the measured width out between them, so this is the narrowest
-/// a cell gets before the row loses a column.
+/// The narrowest a 16:9 grid cell gets before the row loses a column. Cells
+/// share the measured width out between them.
 const CELL_MIN_W: Pixels = px(136.);
 const CELL_GAP: Pixels = px(8.);
 /// The cell's own inset, and the name line under the thumbnail.
 const CELL_PAD: Pixels = px(4.);
 const CELL_LABEL_H: Pixels = px(18.);
 
-/// A grid cell's measurements for one width: what the row shares out.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CellSize {
     columns: usize,
@@ -77,9 +61,7 @@ struct CellSize {
 }
 
 impl CellSize {
-    /// Share `width` between as many columns as fit at the minimum, then
-    /// widen the cells to take the rest, so the grid fills its box at
-    /// any size rather than leaving a stripe at the right.
+    /// As many columns as fit at the minimum, widened to fill the box.
     fn fit(width: Pixels) -> CellSize {
         let gap = f32::from(CELL_GAP);
         let width = f32::from(width).max(f32::from(CELL_MIN_W));
@@ -99,36 +81,29 @@ impl CellSize {
     }
 }
 
-/// How the list is drawn: rows of names, or a grid of thumbnails.
-/// Thumbnails are only asked for in the grid, so the list costs no
-/// rendering. Either can be nested under folders or flat.
+/// Thumbnails are only asked for in the grid, so the list costs no rendering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Tree,
     Grid,
 }
 
-/// How often the browser looks for thumbnails that landed while it was
-/// up. Only while some are pending; a list of finished rows polls nothing.
+/// Polls only while thumbnails are pending.
 const THUMB_POLL: Duration = Duration::from_millis(300);
 
-/// How many decoded thumbnails the grid keeps on the GPU. A window's own
-/// image cache keeps everything it ever loaded, and a grid scrolled
-/// through a hundred-thousand-preset pack would keep every thumbnail it
-/// passed, which is how the app runs out of texture memory. A few
-/// screens' worth is what scrolling back and forth reuses.
+/// Decoded thumbnails the grid keeps on the GPU. A window's own image cache
+/// keeps everything it loaded, and scrolling a hundred-thousand-preset pack
+/// through it runs the app out of texture memory.
 const THUMB_CACHE: usize = 240;
 
-/// The grid's image cache: the thumbnails on and near the screen,
-/// decoded, and the rest let go of. Least recently drawn goes first.
+/// The grid's image cache, evicting the least recently drawn.
 struct ThumbCache {
     me: WeakEntity<ThumbCache>,
     loaded: HashMap<u64, Arc<RenderImage>>,
-    /// When each loaded image was last asked for, for the eviction.
     used: HashMap<u64, u64>,
     tick: u64,
-    /// What's being decoded, and what failed to: neither is asked for
-    /// again, so a broken file doesn't decode on every frame.
+    /// Decoding or failed. Neither is asked for again, so a broken file
+    /// doesn't decode on every frame.
     pending: HashSet<u64>,
 }
 
@@ -143,8 +118,6 @@ impl ThumbCache {
         }
     }
 
-    /// Drop the least recently drawn images until the cache is back
-    /// under its cap, freeing their textures in every window.
     fn evict(&mut self, cx: &mut App) {
         while self.loaded.len() > THUMB_CACHE {
             let Some(oldest) = self
@@ -193,8 +166,8 @@ impl ImageCache for ThumbCache {
                     cache.loaded.insert(key, image);
                     cache.evict(cx);
                 }
-                // The view that drew the slot, not the cache: the cache
-                // has no element of its own to repaint.
+                // Notify the view that drew the slot; the cache has no
+                // element of its own to repaint.
                 App::notify(cx, view);
             })
             .ok();
@@ -204,62 +177,50 @@ impl ImageCache for ThumbCache {
     }
 }
 
-/// What's known about one preset's thumbnail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Thumb {
-    /// A PNG at this path.
     Ready(PathBuf),
-    /// Not rendered yet.
     Pending,
-    /// Won't render, and why. Shown as a mark with the reason on hover
-    /// rather than asked for again.
+    /// Shown as a mark with the reason on hover, never asked for again.
     Failed(String),
 }
 
-/// The thumbnail service the browser draws from. Defined here and
-/// implemented above, over the Milkdrop engine, for the same reason the
-/// host is a trait: this crate draws the rows and never names a renderer.
+/// Implemented over the Milkdrop engine elsewhere, so this crate never names
+/// a renderer.
 pub trait Thumbnails: 'static {
-    /// What's known about a preset's thumbnail. Cheap: a set lookup.
+    /// Cheap: a set lookup.
     fn thumb(&self, preset: &Path) -> Thumb;
     /// Which presets are on screen, in order. Replaces the last ask.
     fn want(&self, presets: Vec<PathBuf>);
     /// Moves when a thumbnail lands.
     fn generation(&self) -> u64;
-    /// A preset loaded and ran on a real engine, so a failure held
-    /// against it no longer stands: forget it and let the grid ask again.
+    /// The preset ran on a real engine, so forget a failure held against it.
     fn loaded(&self, preset: &Path);
 }
 
-/// What the banner and the preset list call a preset: its file stem, which
-/// is the name every pack writes into the filename and nowhere else.
+/// The file stem, the one place every pack writes a preset's name.
 pub fn preset_label(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-/// What the rotation picker calls a folder: its path under whichever root
-/// it was found in. A pack lives several directories down inside a home
-/// folder, and the absolute path is mostly the part every option shares.
-///
-/// Falls back to the absolute path when nothing matches, which only
-/// happens if a root was edited out from under a saved pick.
+/// A folder's path under whichever root holds it, since the absolute path is
+/// mostly the part every option shares. Falls back to the absolute path when
+/// a root was edited out from under a saved pick.
 pub fn folder_label(folder: &Path, roots: &[PathBuf]) -> String {
     roots
         .iter()
         .filter_map(|root| folder.strip_prefix(root).ok())
         .map(|relative| relative.to_string_lossy().into_owned())
         .filter(|relative| !relative.is_empty())
-        // Overlapping roots can both match; the shortest is the one that
-        // strips the most, which is the whole point of the label.
+        // Overlapping roots can both match; the shortest strips the most.
         .min_by_key(String::len)
         .unwrap_or_else(|| folder.to_string_lossy().into_owned())
 }
 
-/// A preset's path under whichever root it was found in, as a string with
-/// forward slashes whatever the platform, so the same value matches on
-/// the machine the workspace lands on. None for a path under no root.
+/// Forward slashes on every platform, so the value matches on whichever
+/// machine the workspace lands on. None for a path under no root.
 pub fn relative_to_roots(path: &Path, roots: &[PathBuf]) -> Option<String> {
     roots
         .iter()
@@ -299,29 +260,21 @@ pub fn find_folder_by_relative(
         .cloned()
 }
 
-/// What the picker window needs from whatever it's picking a preset for.
-///
-/// The backdrop and a Milkdrop panel both answer this. The window holds
-/// one boxed, so it never names either: the backdrop is a static in the
-/// app and a panel is an entity in a crate the app depends on, and the
-/// window has to serve both without a type for either.
+/// What the picker window needs from what it's picking for. The backdrop and
+/// a Milkdrop panel both answer this, and the window serves both without
+/// naming either.
 pub trait PresetHost: 'static {
-    /// What the window calls the host in its header: the backdrop, or a
-    /// panel's title.
+    /// The window header's name for the host.
     fn title(&self, cx: &App) -> SharedString;
-    /// Every preset the host's library holds. Asked on open and whenever
-    /// the favorites or folder lists move, not per frame.
+    /// Asked on open and when the favorites or folder lists move, not per frame.
     fn presets(&self, cx: &mut App) -> Vec<PathBuf>;
-    /// The preset the host is showing, if it has one up.
     fn current(&self, cx: &App) -> Option<PathBuf>;
-    /// Put a preset up. The host writes whatever it keeps of the choice.
+    /// The host writes whatever it keeps of the choice.
     fn pick(&self, path: PathBuf, cx: &mut App);
-    /// Put a random preset from the host's rotation up.
     fn random(&self, cx: &mut App);
-    /// Hook the window up to the host's own changes. `wake` is for a
-    /// change worth repainting for, the preset switching on its own;
-    /// `gone` is for the host going away, which closes the window. A host
-    /// that wakes every window itself, the backdrop, hooks nothing.
+    /// `wake` repaints for a change like the preset switching on its own;
+    /// `gone` closes the window when the host goes away. The backdrop wakes
+    /// every window itself and hooks nothing.
     fn watch(
         &self,
         wake: Rc<dyn Fn(&mut App)>,
@@ -333,48 +286,32 @@ pub trait PresetHost: 'static {
     }
 }
 
-/// One preset as the list needs it, worked out once per scan.
 pub struct PresetEntry {
     pub path: PathBuf,
     pub label: SharedString,
-    /// The label case-folded once. A keystroke is then ten thousand
-    /// substring searches over borrowed strings and not one allocation,
-    /// which is the difference between the box feeling live and feeling
-    /// like it's thinking.
+    /// Folded once, so a keystroke is substring searches over borrowed
+    /// strings with no allocation.
     folded: String,
 }
 
-/// The preset list as a tree: the folders the presets sit in, the presets
-/// themselves, and the index that makes filtering cheap.
-///
-/// Built on a rescan rather than per render. The page rebuilds on every
-/// keystroke, and walking ten thousand paths to re-derive a hierarchy that
-/// can't have changed is the kind of work that turns a filter box into a
-/// stutter.
-///
-/// The hierarchy comes from [`rox_library::folders`], the same trie the
-/// folder tree panel draws the music library with: it collapses the dead
-/// prefix above the pack, sorts naturally, and folds subtree counts up.
-/// Presets aren't tracks, but a path is a path.
+/// The preset list as a tree, built on a rescan rather than per render,
+/// since the page rebuilds on every keystroke. The hierarchy is
+/// [`rox_library::folders`], the trie the folder tree panel uses.
 #[derive(Default)]
 pub struct PresetTree {
     pub entries: Vec<PresetEntry>,
-    /// The top folders after the shared prefix collapses away. Mutated in
-    /// place by [`sum_counts`] on every query, which is what the counts on
-    /// the folder rows read.
+    /// Mutated in place by [`sum_counts`] on every query; the folder rows
+    /// read those counts.
     pub roots: Vec<Node>,
-    /// Which entries each folder holds, in list order.
     by_folder: HashMap<String, Vec<usize>>,
 }
 
-/// One row the preset list draws.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PresetRow {
     Folder {
         path: String,
         label: SharedString,
-        /// Presets under here that the query matched, which is the whole
-        /// subtree count when nothing's typed.
+        /// The whole subtree count when nothing's typed.
         matched: u32,
         depth: usize,
         open: bool,
@@ -387,8 +324,7 @@ pub enum PresetRow {
     },
 }
 
-/// What one pass over a query leaves the page: the rows to draw, how many
-/// presets matched in the whole library, and how many of those got a row.
+/// `matched` counts the whole library, `shown` the matches that got a row.
 #[derive(Debug, PartialEq)]
 pub struct PresetRows {
     pub rows: Vec<PresetRow>,
@@ -397,7 +333,6 @@ pub struct PresetRows {
 }
 
 impl PresetTree {
-    /// Index a scan: fold the labels, group by folder, build the trie.
     pub fn build(presets: &[PathBuf]) -> PresetTree {
         let mut entries = Vec::with_capacity(presets.len());
         let mut by_folder: HashMap<String, Vec<usize>> = HashMap::new();
@@ -427,21 +362,10 @@ impl PresetTree {
         }
     }
 
-    /// The rows for a query, matched-first: every preset in the library is
-    /// tested, folders with nothing left are dropped, and the cap decides
-    /// how many of the survivors get drawn.
-    ///
-    /// `query` arrives already trimmed and case-folded. An empty one
-    /// matches everything, which is how the unfiltered tree comes out of
-    /// the same path as a search. `only` narrows the field further to the
-    /// paths in it, the favorites switch's doing; None is the whole
-    /// library.
-    ///
-    /// A query opens every folder it left standing, whatever the expand
-    /// set says. Searching a collapsed tree and being shown folder names
-    /// is the complaint, not the feature. The favorites switch opens them
-    /// the same way: a few starred presets spread over a pack's folders
-    /// are the whole list, and a list of closed folders isn't one.
+    /// `query` arrives trimmed and case-folded, and empty matches everything.
+    /// `only` narrows to the favorites. A query or the favorites switch opens
+    /// every folder left standing, whatever the expand set says: searching a
+    /// collapsed tree and getting folder names back is the complaint.
     pub fn rows(
         &mut self,
         query: &str,
@@ -463,9 +387,7 @@ impl PresetTree {
         }
         impl Walk<'_> {
             fn folder(&mut self, node: &Node, depth: usize) {
-                // Nothing under here survived the query, so neither does
-                // the branch. Nor once the cap is full: a folder row with
-                // no rows left to hold is just a dead end on the page.
+                // Drop a branch with no matches, or once the cap is full.
                 if node.matched == 0 || self.shown >= self.cap {
                     return;
                 }
@@ -517,9 +439,8 @@ impl PresetTree {
         }
     }
 
-    /// Every preset a query keeps, in library order and without the
-    /// folders: what the grid draws. `matched` is the whole count, `cap`
-    /// how many of them come back.
+    /// Every preset a query keeps, flat, for the grid. Returns the capped hits
+    /// and the whole count.
     pub fn flat(
         &self,
         query: &str,
@@ -542,10 +463,8 @@ impl PresetTree {
         (hits, matched)
     }
 
-    /// Test every preset against the query and the favorites set, fold
-    /// the counts up the folders, and hand back how many matched in all
-    /// and which entries matched per folder. What every walk starts
-    /// with: after this, each node's `matched` is current.
+    /// Test every preset and fold the counts up the folders. After this, each
+    /// node's `matched` is current.
     fn count(
         &mut self,
         query: &str,
@@ -558,8 +477,7 @@ impl PresetTree {
         } = self;
         let mut matched_total = 0usize;
         let mut counts: HashMap<&str, (u32, u32)> = HashMap::with_capacity(by_folder.len());
-        // Per-folder rather than per-entry so a walk can slice the
-        // folder's own list without re-testing anything.
+        // Per-folder so a walk slices a folder's list without re-testing.
         let mut hits: HashMap<String, Vec<usize>> = HashMap::with_capacity(by_folder.len());
         for (folder, list) in by_folder.iter() {
             let matching: Vec<usize> = list
@@ -578,7 +496,6 @@ impl PresetTree {
         (matched_total, hits)
     }
 
-    /// The node at `path`, if the trie holds one.
     fn node(&self, path: &str) -> Option<&Node> {
         fn find<'a>(node: &'a Node, path: &str) -> Option<&'a Node> {
             if node.path == path {
@@ -595,9 +512,8 @@ impl PresetTree {
         self.roots.iter().find_map(|root| find(root, path))
     }
 
-    /// What one folder holds for the grid to step through: its child
-    /// folders and the presets sitting directly in it. None is the top,
-    /// whose folders are the roots.
+    /// A folder's child folders and its own presets. None is the top, whose
+    /// folders are the roots.
     fn contents(&self, folder: Option<&str>) -> (Vec<&Node>, Vec<usize>) {
         match folder {
             None => (self.roots.iter().collect(), Vec::new()),
@@ -611,8 +527,8 @@ impl PresetTree {
         }
     }
 
-    /// The folder rows on the way down to `folder`: every node whose path
-    /// is a prefix of it. What opening the tree onto one preset unfolds.
+    /// Every node on the way down to `folder`, for opening the tree onto one
+    /// preset.
     fn ancestors(&self, folder: &str) -> Vec<String> {
         fn walk(node: &Node, folder: &str, out: &mut Vec<String>) {
             let under = folder == node.path
@@ -635,16 +551,13 @@ impl PresetTree {
     }
 }
 
-/// What the browser tells its host.
 pub enum BrowserEvent {
     /// A row was clicked: put this preset up.
     Pick(PathBuf),
-    /// A switch flipped: where the favorites and nesting switches stand
-    /// now, for a host that brings them back on the next open.
+    /// For a host that brings the switches back on the next open.
     Switched { favorites_only: bool, nested: bool },
 }
 
-/// One grid cell: a folder to step into, or a preset.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Cell {
     Folder {
@@ -655,15 +568,14 @@ enum Cell {
     Preset(usize),
 }
 
-/// What a right click landed on, for the menu that opens over it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuTarget {
     Preset(PathBuf),
     Folder(String),
 }
 
-/// What the walk was made for, so a render that changed none of it
-/// keeps the last walk instead of redoing a hundred thousand rows.
+/// A render that changed none of this keeps the last walk instead of redoing
+/// a hundred thousand rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WalkKey {
     query: String,
@@ -676,79 +588,57 @@ struct WalkKey {
     presets_gen: u64,
 }
 
-/// The preset browser: a filter box, the favorites and nesting switches,
-/// the view toggle, and the list under them. See the module docs for
-/// what it owns and what it asks for.
-///
-/// The list is a `uniform_list` with the folder tree panel's mechanics:
-/// one row per item at one height, a scroll handle that can be told to
-/// bring an item up, and the scrollbar laid over it. In the list view
-/// the item is a row; in the grid it's a row of cells, all one height,
-/// which is what lets a grid of a hundred thousand presets scroll like a
-/// list of them.
+/// The list is a `uniform_list` with the folder tree panel's mechanics. In
+/// the grid each item is a row of cells at one height, which lets a hundred
+/// thousand presets scroll like a list.
 pub struct PresetBrowser {
-    /// A fixed height for the list, for a host that lays the browser out
-    /// on a page of its own; None fills the host's box.
+    /// For a host that lays the browser out on its own page. None fills the
+    /// host's box.
     height: Option<Pixels>,
     view: View,
-    /// Whether folders show. In the list that's the tree against one
-    /// flat run; in the grid it's stepping through folders with the
-    /// crumbs above against every preset at once.
+    /// In the list, the tree against one flat run. In the grid, stepping
+    /// through folders against every preset at once.
     nested: bool,
-    /// The folder the nested grid is in, by its node path. None is the
-    /// top, where the roots sit.
+    /// The nested grid's folder by node path. None is the top.
     folder: Option<String>,
-    /// The list's measured width, from the last frame's layout. None
-    /// until one has run, when the window's width stands in.
+    /// From the last frame's layout. None until one has run, when the
+    /// window's width stands in.
     width: Option<Pixels>,
     /// The grid cell for that width. The arrows step by its columns.
     cell: CellSize,
-    /// The presets as last handed in, kept so a hand-in that changed
-    /// nothing doesn't rebuild the tree.
+    /// Kept so a hand-in that changed nothing doesn't rebuild the tree.
     presets: Vec<PathBuf>,
     presets_gen: u64,
     tree: PresetTree,
     expanded: HashSet<String>,
     expanded_gen: u64,
-    /// Whether the top folders were opened once. The tree lands on the
-    /// pack's categories rather than one closed row; after that the set
-    /// is the user's.
+    /// Whether the top folders were opened once, so the tree lands on the
+    /// pack's categories. After that the set is the user's.
     seeded: bool,
     favorites_only: bool,
     current: Option<PathBuf>,
-    /// Bring the current preset into view on the next render. Set by the
-    /// things that ask for it (the first hand-in, Go to Active, a change
-    /// of view) and never by the preset merely changing: the rotation
-    /// moves on its own every half minute, and a browser that jumped to
-    /// a new folder each time would be impossible to browse.
+    /// Bring the current preset into view on the next render. Never set by the
+    /// preset merely changing: the rotation moves every half minute, and a
+    /// browser that jumped each time would be impossible to browse.
     reveal: bool,
-    /// Whether a current preset has been shown once. The first one the
-    /// host hands in is where the browser opens; later ones stay put.
+    /// The first current preset the host hands in is where the browser opens.
     shown_once: bool,
     filter: Entity<InputState>,
     _filter_events: Subscription,
-    /// The last walk: its key, the favorites it read, and how many
-    /// presets it matched.
     walk: Option<WalkKey>,
     favorites: HashSet<PathBuf>,
     matched: usize,
-    /// The list view's rows, one per item.
     listed: Vec<PresetRow>,
     /// The grid's cells, `cell.columns` per item.
     cells: Vec<Cell>,
-    /// The row or cell the arrow keys are on. None until a key or a
-    /// reveal lands on one; the mouse never sets it.
+    /// None until a key or a reveal lands on one; the mouse never sets it.
     cursor: Option<usize>,
-    /// What the last right click landed on, for the context menu. None
-    /// off the rows, where the menu has nothing to act on.
+    /// None off the rows, where the menu has nothing to act on.
     menu_target: Option<MenuTarget>,
-    /// Where the thumbnails come from, if the host gave it one. None
-    /// draws the cells without them.
+    /// None draws the cells without thumbnails.
     thumbs: Option<Arc<dyn Thumbnails>>,
-    /// The service's edit the cells were last drawn at, so the poll only
-    /// repaints when something landed.
+    /// So the poll only repaints when something landed.
     thumbs_gen: u64,
-    /// The decoded thumbnails, bounded. See [`ThumbCache`].
     cache: Entity<ThumbCache>,
     scroll: UniformListScrollHandle,
 }
@@ -798,9 +688,8 @@ impl PresetBrowser {
         }
     }
 
-    /// Draw thumbnails from `thumbs`. Starts the poll that repaints the
-    /// cells as they land; it runs while the browser lives and costs one
-    /// atomic read per tick when nothing's pending.
+    /// Starts the poll that repaints the cells as thumbnails land. It costs
+    /// one atomic read per tick when nothing's pending.
     pub fn set_thumbs(&mut self, thumbs: Arc<dyn Thumbnails>, cx: &mut Context<Self>) {
         self.thumbs_gen = thumbs.generation();
         self.thumbs = Some(thumbs);
@@ -825,15 +714,14 @@ impl PresetBrowser {
         cx.notify();
     }
 
-    /// Hand in the library. A list that matches the last one is a no-op,
-    /// so a host can hand it in on every render it has one.
+    /// A list that matches the last one is a no-op, so a host can hand it in
+    /// on every render.
     pub fn set_presets(&mut self, presets: &[PathBuf], cx: &mut Context<Self>) {
         if self.presets.as_slice() == presets {
             return;
         }
-        // The first list is where the browser opens, on the current
-        // preset; a later one (a folder added, a favorite folded in) is
-        // no reason to leave where the user is.
+        // Only the first list reveals the current preset. A later one is no
+        // reason to leave where the user is.
         let first = self.presets.is_empty();
         self.presets = presets.to_vec();
         self.presets_gen += 1;
@@ -844,7 +732,6 @@ impl PresetBrowser {
                 .extend(self.tree.roots.iter().map(|root| root.path.clone()));
             self.expanded_gen += 1;
         }
-        // A folder the new scan doesn't hold is nowhere to be.
         if self
             .folder
             .as_deref()
@@ -858,8 +745,8 @@ impl PresetBrowser {
         cx.notify();
     }
 
-    /// Hand in the preset that's up. The highlight follows it; the view
-    /// only goes to it the first time, and after that on Go to Active.
+    /// The highlight follows it. The view only goes to it the first time and
+    /// on Go to Active.
     pub fn set_current(&mut self, current: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.current == current {
             return;
@@ -888,9 +775,8 @@ impl PresetBrowser {
         self.view
     }
 
-    /// Switch between the list and the grid. Leaving the grid empties the
-    /// thumbnail queue, so nothing renders for a list nobody's looking
-    /// at; the cursor moves to the current preset in the new layout.
+    /// Leaving the grid empties the thumbnail queue, so nothing renders for a
+    /// list nobody's looking at.
     pub fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
         if self.view == view {
             return;
@@ -918,7 +804,6 @@ impl PresetBrowser {
         }
     }
 
-    /// Tell the host where the switches stand.
     fn switched(&self, cx: &mut Context<Self>) {
         cx.emit(BrowserEvent::Switched {
             favorites_only: self.favorites_only,
@@ -926,12 +811,10 @@ impl PresetBrowser {
         });
     }
 
-    /// How many presets the tree holds.
     pub fn total(&self) -> usize {
         self.tree.entries.len()
     }
 
-    /// Step the grid into a folder, or back out to the top with None.
     fn enter_folder(&mut self, folder: Option<String>, cx: &mut Context<Self>) {
         if self.folder != folder {
             self.folder = folder;
@@ -941,7 +824,6 @@ impl PresetBrowser {
         }
     }
 
-    /// Fold a tree folder open or closed.
     fn toggle_folder(&mut self, path: String, cx: &mut Context<Self>) {
         if !self.expanded.remove(&path) {
             self.expanded.insert(path);
@@ -950,15 +832,13 @@ impl PresetBrowser {
         cx.notify();
     }
 
-    /// Star or unstar a preset. The write goes to the app-wide list; every
-    /// host follows the list's generation on its own.
+    /// Writes the app-wide list; every host follows its generation.
     fn toggle_favorite(&mut self, path: &Path, cx: &mut Context<Self>) {
         let on = !core_settings::is_milkdrop_favorite(path);
         core_settings::set_milkdrop_favorite(path, on);
         cx.notify();
     }
 
-    /// How many rows or cells the cursor walks.
     fn len(&self) -> usize {
         match self.view {
             View::Tree => self.listed.len(),
@@ -966,8 +846,7 @@ impl PresetBrowser {
         }
     }
 
-    /// The list item a row or cell is drawn in: itself in the list, the
-    /// row of cells holding it in the grid.
+    /// The list item holding a cursor position: a row of cells in the grid.
     fn item_of(&self, index: usize) -> usize {
         match self.view {
             View::Tree => index,
@@ -975,7 +854,6 @@ impl PresetBrowser {
         }
     }
 
-    /// The preset at a cursor position, if it's one.
     fn preset_at(&self, index: usize) -> Option<&PathBuf> {
         let entry = match self.view {
             View::Tree => match self.listed.get(index)? {
@@ -990,11 +868,8 @@ impl PresetBrowser {
         Some(&self.tree.entries[entry].path)
     }
 
-    /// Step the arrow cursor by `delta` items, stopping at either end. In
-    /// the grid a step is a row of cells, so the cursor keeps its column.
-    /// A preset it lands on goes up straight away: the arrows are for
-    /// flipping through presets and watching them, and a pick per step
-    /// is what makes that flipping rather than pointing.
+    /// In the grid a step is a row of cells. A preset the cursor lands on
+    /// goes up straight away, so the arrows flip through presets.
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         let len = self.len();
         if len == 0 {
@@ -1006,8 +881,7 @@ impl PresetBrowser {
         };
         let from = match self.cursor {
             Some(at) => at as isize,
-            // The first press starts from the preset that's up, so a
-            // Down goes to the one after it rather than to the top.
+            // The first press starts from the preset that's up.
             None => self.current_index().map(|at| at as isize).unwrap_or(-1),
         };
         let next = (from + delta).clamp(0, len as isize - 1) as usize;
@@ -1023,8 +897,6 @@ impl PresetBrowser {
         cx.notify();
     }
 
-    /// Enter on the cursor: a preset goes up, a tree folder folds, a
-    /// grid folder is stepped into.
     fn enter(&mut self, cx: &mut Context<Self>) {
         let Some(at) = self.cursor else {
             return;
@@ -1049,15 +921,12 @@ impl PresetBrowser {
         }
     }
 
-    /// Where the current preset sits in the walk, if it got a row or a
-    /// cell.
     fn current_index(&self) -> Option<usize> {
         let current = self.current.as_ref()?;
         (0..self.len()).find(|&index| self.preset_at(index) == Some(current))
     }
 
-    /// Open the way down to the current preset: the tree's folders
-    /// unfolded to it, or the grid stepped into its folder.
+    /// Unfold the tree to the current preset, or step the grid into its folder.
     fn open_to_current(&mut self) {
         let Some(folder) = self
             .current
@@ -1083,16 +952,13 @@ impl PresetBrowser {
         }
     }
 
-    /// Bring the current preset into view and put the cursor on it. What
-    /// the Scroll to Current button does.
+    /// The Go to Active button.
     fn locate(&mut self, cx: &mut Context<Self>) {
         self.reveal = true;
         cx.notify();
     }
 
-    /// Note the width the list laid out at. A change repaints so the
-    /// cells share the new width out; the layout that measured it is
-    /// already drawn.
+    /// A change repaints, since the layout that measured it is already drawn.
     fn measured(&mut self, width: Pixels, cx: &mut Context<Self>) {
         let moved = self
             .width
@@ -1103,10 +969,8 @@ impl PresetBrowser {
         }
     }
 
-    /// The element that measures the list's width: a canvas under the
-    /// rows that reads its own bounds at layout and hands the width back
-    /// through a deferred update, since the view can't be touched from
-    /// inside its own frame.
+    /// A canvas that reads its own bounds at layout and hands the width back
+    /// deferred, since the view can't be touched inside its own frame.
     fn ruler(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let view = cx.entity().downgrade();
         canvas(
@@ -1122,8 +986,7 @@ impl PresetBrowser {
         .inset_0()
     }
 
-    /// Redo the walk if anything it depends on moved. A walk that's still
-    /// good is kept, scroll position and all.
+    /// A walk that's still good is kept, scroll position and all.
     fn rewalk(&mut self, query: &str) {
         let key = WalkKey {
             query: query.to_string(),
@@ -1140,11 +1003,8 @@ impl PresetBrowser {
         }
         self.favorites = core_settings::milkdrop_favorites().into_iter().collect();
         let only = self.favorites_only.then_some(&self.favorites);
-        // Matching on the file stem rather than the whole path: a pack's
-        // folder name is in every one of its paths, so a query would
-        // match the whole pack instead of narrowing inside it. Every
-        // preset in the library is tested and every match gets a row;
-        // the list only ever draws the ones on screen.
+        // Matching the file stem, not the path: a pack's folder name is in
+        // every one of its paths, so a query would match the whole pack.
         match self.view {
             View::Tree => {
                 let listed = if self.nested {
@@ -1165,14 +1025,11 @@ impl PresetBrowser {
                 self.cells.clear();
             }
             View::Grid => {
-                // A query searches the whole library whatever folder the
-                // grid is in, the way a search opens the whole tree: the
-                // thing being looked for is rarely in the folder that
-                // happens to be open.
+                // A query searches the whole library whatever folder the grid
+                // is in, the way a search opens the whole tree.
                 if self.nested && query.is_empty() {
-                    // The counts on the folder cells read the favorites
-                    // switch, the way the tree's do, and a folder with
-                    // nothing left under it drops out the same way.
+                    // Folder counts read the favorites switch, and an empty
+                    // folder drops out, like the tree.
                     let (matched, hits) = self.tree.count(query, only);
                     self.matched = matched;
                     let (folders, _) = self.tree.contents(self.folder.as_deref());
@@ -1205,9 +1062,6 @@ impl PresetBrowser {
         }
     }
 
-    /// The row shape both kinds share: indented to their depth, one line
-    /// tall, lit under the pointer, and telling the menu what it is on a
-    /// right click.
     fn row_base(
         id: SharedString,
         depth: usize,
@@ -1232,10 +1086,8 @@ impl PresetBrowser {
             .hover(|row| row.bg(palette::bg_control()))
     }
 
-    /// The star every row and cell carries: it takes the press before the
-    /// click sees it, so starring a preset doesn't also load it. The list
-    /// is for browsing, and a click that swaps the visual out from under
-    /// you to mark a favorite would make people stop marking them.
+    /// Takes the press before the click, so starring a preset doesn't also
+    /// load it.
     fn star(&self, path: &Path, cx: &mut Context<Self>) -> Div {
         let starred = self.favorites.contains(path);
         let star = path.to_path_buf();
@@ -1265,8 +1117,6 @@ impl PresetBrowser {
             )
     }
 
-    /// One list row: a folder with its chevron and count, or a preset
-    /// with its star.
     fn row(&self, index: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let selected = self.cursor == Some(index);
         match self.listed.get(index) {
@@ -1334,9 +1184,6 @@ impl PresetBrowser {
         }
     }
 
-    /// The thumbnail slot: the picture when it's there, a dim block of
-    /// the same size while it isn't or there's no service to ask, and a
-    /// mark with the reason under the pointer when it won't be.
     fn thumb(&self, index: usize, preset: &Path) -> Stateful<Div> {
         let slot = div()
             .id(("milkdrop-thumb", index))
@@ -1370,8 +1217,6 @@ impl PresetBrowser {
         }
     }
 
-    /// The cell shape both kinds share, telling the menu what it is on a
-    /// right click.
     fn cell_base(
         &self,
         id: SharedString,
@@ -1398,10 +1243,6 @@ impl PresetBrowser {
             .hover(|cell| cell.bg(palette::bg_menu_hover()))
     }
 
-    /// One grid cell: a folder to step into, drawn as its name over a
-    /// folder mark with the count of presets under it, or a preset's
-    /// thumbnail over its name and star, lit when it's the preset that's
-    /// up or the one the arrows are on.
     fn grid_cell(&self, index: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let selected = self.cursor == Some(index);
         match self.cells.get(index) {
@@ -1498,7 +1339,6 @@ impl PresetBrowser {
         }
     }
 
-    /// One grid row: the cells from `row * columns` on, as many as fit.
     fn grid_row(&self, row: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let columns = self.cell.columns.max(1);
         let first = row * columns;
@@ -1517,9 +1357,8 @@ impl PresetBrowser {
         line
     }
 
-    /// Ask the service for the thumbnails the cells in `range` lack, in
-    /// order. What the list does for the rows it's about to draw, which
-    /// are the ones on screen.
+    /// Ask for the missing thumbnails of the grid rows in `range`, the ones
+    /// about to draw.
     fn want_thumbs(&self, range: std::ops::Range<usize>) {
         let Some(thumbs) = self.thumbs.as_ref() else {
             return;
@@ -1537,8 +1376,7 @@ impl PresetBrowser {
         thumbs.want(wanted);
     }
 
-    /// The crumbs over the nested grid: the top, then every folder down
-    /// to the one open, each a step back out.
+    /// The crumbs over the nested grid, each a step back out.
     fn crumbs(&self, cx: &mut Context<Self>) -> Div {
         let mut chain: Vec<(Option<String>, SharedString)> =
             vec![(None, rox_i18n::t!("milkdrop-presets"))];
@@ -1593,8 +1431,6 @@ impl PresetBrowser {
         row
     }
 
-    /// One head switch: a tick box with its label beside it, the
-    /// console's toggle.
     fn switch(
         &self,
         id: &'static str,
@@ -1625,9 +1461,8 @@ impl Render for PresetBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.filter.read(cx).value().trim().to_lowercase();
 
-        // The width the grid has: measured last frame, or until then the
-        // window's less what the host wraps it in. The estimate only
-        // ever draws the first frame.
+        // Measured last frame. Until then, the window's width less the host's
+        // inset stands in.
         let width = self.width.unwrap_or_else(|| {
             let inset = match self.height {
                 None => tokens::SPACE_MD * 2.,
@@ -1637,16 +1472,14 @@ impl Render for PresetBrowser {
         });
         self.cell = CellSize::fit(width);
 
-        // A change of preset opens the way to it before the walk, so it
-        // gets a row this render and not the next.
+        // Open the way before the walk so the current preset gets a row now.
         let reveal = std::mem::take(&mut self.reveal);
         if reveal && self.nested {
             self.open_to_current();
         }
         self.rewalk(&query);
 
-        // A change of preset brings its row up and parks the cursor on
-        // it, so the arrows carry on from there.
+        // Park the cursor on the revealed preset so the arrows carry on.
         if reveal && let Some(index) = self.current_index() {
             self.cursor = Some(index);
             self.scroll
@@ -1716,11 +1549,9 @@ impl Render for PresetBrowser {
                     .child(count),
             );
 
-        // The list in its own box with the ruler under it and the
-        // scrollbar over it, both in the box's bounds rather than beside
-        // the rows: the folder tree panel's shape. The rows are built for
-        // the range the list is about to draw, which is where the grid
-        // asks for its thumbnails.
+        // The folder tree panel's shape: the ruler under the list and the
+        // scrollbar over it. The grid asks for thumbnails for the range the
+        // list is about to draw.
         let view = self.view;
         let columns = self.cell.columns.max(1);
         let items = match view {
@@ -1742,8 +1573,7 @@ impl Render for PresetBrowser {
         )
         .track_scroll(self.scroll.clone())
         .size_full();
-        // The rows draw their thumbnails through the bounded cache rather
-        // than the window's, which never lets go of an image.
+        // The bounded cache, since the window's never lets go of an image.
         let rows = image_cache(self.cache.clone()).size_full().child(rows);
         let list = div()
             .id("milkdrop-browser-list")
@@ -1761,8 +1591,7 @@ impl Render for PresetBrowser {
             None => list.flex_1().min_h_0(),
             Some(height) => list.h(height),
         };
-        // A right press off the rows leaves no target, and the menu
-        // then has nothing to say.
+        // A right press off the rows clears the target, so the menu stays empty.
         let list = list
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
                 if event.button == MouseButton::Right {
@@ -1829,10 +1658,8 @@ impl Render for PresetBrowser {
                 }
             });
 
-        // The box only wires its own arrow handlers on a multi-line
-        // input, so on this one nothing would ever hand the arrows to
-        // the list. Take them on the way down instead, the search
-        // picker's move.
+        // The input only wires its arrow handlers on a multi-line box, so take
+        // them on the way down to reach the list.
         div()
             .flex()
             .flex_col()
@@ -1878,8 +1705,7 @@ mod tests {
             .collect()
     }
 
-    /// A closed tree is folders only, and each one counts its whole
-    /// subtree rather than the files sitting directly in it.
+    /// Each folder counts its whole subtree, not just the files directly in it.
     #[test]
     fn the_tree_groups_presets_under_their_folders() {
         let mut tree = PresetTree::build(&preset_paths(&[
@@ -1889,8 +1715,7 @@ mod tests {
         ]));
 
         let listed = tree.rows("", &HashSet::new(), None, PRESET_ROWS);
-        // The chain above the pack collapses, so the one top row is the
-        // pack itself and not four rows of empty parents.
+        // The chain above the pack collapses into one top row.
         assert_eq!(
             folder_rows(&listed.rows),
             vec![("cream".into(), 3, 0, false)]
@@ -1914,8 +1739,7 @@ mod tests {
         );
     }
 
-    /// The complaint this exists for: a query reaches every preset in the
-    /// library, not just the ones a folder happened to be showing.
+    /// A query reaches every preset, not just the ones an open folder shows.
     #[test]
     fn a_query_reaches_presets_inside_closed_folders() {
         let mut tree = PresetTree::build(&preset_paths(&[
@@ -1924,8 +1748,6 @@ mod tests {
             "/packs/cream/Waveform/Rovastar - Spiral Cage.milk",
         ]));
 
-        // Nothing open, and the search still finds both spirals and opens
-        // the folders they're in.
         let listed = tree.rows("spiral", &HashSet::new(), None, PRESET_ROWS);
         assert_eq!(listed.matched, 2);
         assert_eq!(listed.shown, 2);
@@ -1943,16 +1765,14 @@ mod tests {
             "the counts read the matches, and a search opens what it left"
         );
 
-        // A folder with nothing left drops out entirely rather than
-        // sitting there at zero.
+        // A folder with nothing left drops out rather than sitting at zero.
         let listed = tree.rows("bloom", &HashSet::new(), None, PRESET_ROWS);
         assert_eq!(
             folder_rows(&listed.rows),
             vec![("cream".into(), 1, 0, true), ("Fractal".into(), 1, 1, true)]
         );
 
-        // The labels are folded at index time, so a mixed-case preset
-        // still matches the folded query the box hands down.
+        // Labels are folded at index time, so "Bloom" matches the folded query.
         assert_eq!(
             tree.rows("bloom", &HashSet::new(), None, PRESET_ROWS)
                 .matched,
@@ -1960,14 +1780,11 @@ mod tests {
             "Bloom was indexed with a capital"
         );
 
-        // A miss is an empty page rather than the whole library.
         let listed = tree.rows("nothing here", &HashSet::new(), None, PRESET_ROWS);
         assert_eq!(listed.matched, 0);
         assert!(listed.rows.is_empty());
     }
 
-    /// The favorites switch narrows the same way a query does, and opens
-    /// the folders it leaves standing the same way too.
     #[test]
     fn the_favorites_switch_keeps_only_the_starred_and_opens_to_them() {
         let mut tree = PresetTree::build(&preset_paths(&[
@@ -1994,13 +1811,11 @@ mod tests {
             ]
         );
 
-        // Both narrow at once: a query over the starred set.
         let listed = tree.rows("bloom", &HashSet::new(), Some(&starred), PRESET_ROWS);
         assert_eq!(listed.matched, 0);
     }
 
-    /// The cap is a limit on rows drawn, never on rows searched. What it
-    /// cuts, the count line is told about.
+    /// The cap limits rows drawn, never rows searched.
     #[test]
     fn the_row_cap_limits_the_drawing_and_not_the_search() {
         let paths: Vec<String> = (0..50)
@@ -2013,14 +1828,11 @@ mod tests {
         assert_eq!(listed.shown, 10, "ten of them got a row");
         assert_eq!(preset_labels(&tree, &listed.rows).len(), 10);
 
-        // Under the cap, shown and matched agree, which is what silences
-        // the extra line on the page.
         let listed = tree.rows("preset 0", &HashSet::new(), None, 10);
         assert_eq!(listed.matched, 10);
         assert_eq!(listed.shown, 10);
     }
 
-    /// Two roots that share nothing both come out as top rows.
     #[test]
     fn separate_roots_each_get_a_top_row() {
         let mut tree = PresetTree::build(&preset_paths(&[
@@ -2038,8 +1850,6 @@ mod tests {
         assert_eq!(listed.matched, 2);
     }
 
-    /// Opening the tree onto a preset unfolds every folder above it and
-    /// nothing beside it.
     #[test]
     fn the_way_down_to_a_preset_is_its_folder_chain() {
         let tree = PresetTree::build(&preset_paths(&[
@@ -2060,9 +1870,6 @@ mod tests {
         assert!(tree.ancestors("/packs/creamy").is_empty());
     }
 
-    /// Stepping through the grid: the top holds the roots, a folder holds
-    /// its child folders and its own presets, and a path the trie doesn't
-    /// hold is empty rather than a panic.
     #[test]
     fn a_folder_hands_the_grid_its_children_and_its_own_presets() {
         let tree = PresetTree::build(&preset_paths(&[
@@ -2100,16 +1907,12 @@ mod tests {
         assert!(folders.is_empty() && presets.is_empty());
     }
 
-    /// A preset is named by its file stem: the pack's author-and-title
-    /// convention lives in the filename and nowhere else.
     #[test]
     fn a_preset_is_named_by_its_file_stem() {
         assert_eq!(
             preset_label(Path::new("/packs/cream/Geiss - Spiral Artifact.milk")),
             "Geiss - Spiral Artifact"
         );
-        // A path with no stem falls back to the whole thing rather than
-        // an empty label.
         assert_eq!(preset_label(Path::new("/packs/cream/")), "cream");
     }
 }

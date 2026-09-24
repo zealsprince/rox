@@ -1,15 +1,7 @@
-//! The acoustic analysis pass, as the app sees it.
-//!
-//! Both extractors, the model catalog, and the pass itself are defined in
-//! [`rox_acoustic`], which took candle with it. This module holds the
-//! app-global bookkeeping around a running pass: the `Arc<Progress>` the
-//! tasks window and the settings page sample on a timer, the failure the
-//! last pass left behind, and the spawn that keeps the blocking half off the
-//! main thread. Everything else goes through [`rox_acoustic`] directly.
-//!
-//! The shape is the ReplayGain measurement's ([`crate::replaygain_job`]):
-//! app-global rather than owned by a window, blocking work on the background
-//! executor, progress polled rather than pushed.
+//! The acoustic analysis pass, as the app sees it: the app-global progress,
+//! the last failure, and the spawn. The extractors, the model catalog, and
+//! the pass itself are [`rox_acoustic`]. Same shape as
+//! [`crate::replaygain_job`].
 
 pub mod models;
 
@@ -21,81 +13,58 @@ use rox_acoustic::Progress;
 use rox_core::settings::Settings;
 use rox_services::catalog::{Library, LibraryJob};
 
-/// The running pass, or nothing. App-global so it outlives the settings
-/// window that started it.
+/// App-global so it outlives the settings window that started it.
 #[derive(Default)]
 struct Running(Option<Arc<Progress>>);
 
 impl Global for Running {}
 
-/// The last pass's failure, kept after the pass is gone so the settings
-/// page can still explain why nothing happened. A model whose weights won't
-/// load is the case this exists for: without it the button would flash and
-/// the coverage line would be unchanged, with the reason only in the log.
+/// Kept after the pass is gone so the settings page can say why nothing
+/// happened, as when a model's weights won't load.
 #[derive(Default)]
 struct LastFailure(Option<String>);
 
 impl Global for LastFailure {}
 
-/// The running pass's progress, for any UI that shows it. None when
-/// nothing is analyzing.
 pub fn progress(cx: &App) -> Option<Arc<Progress>> {
     cx.try_global::<Running>().and_then(|r| r.0.clone())
 }
 
-/// Why the last pass stopped early, if it did.
 pub fn last_failure(cx: &App) -> Option<String> {
     cx.try_global::<LastFailure>().and_then(|f| f.0.clone())
 }
 
-/// Signal the running pass to stop at the next file. What it already wrote
-/// stays; a no-op when nothing is running.
 pub fn stop(cx: &mut App) {
     if let Some(progress) = progress(cx) {
         progress.cancel();
     }
 }
 
-/// Analyze every track with no vector for the selected model. A no-op while
-/// a pass is already running, and while the feature is switched off.
+/// Analyze every track with no vector for the selected model.
 ///
-/// Which model runs is [`rox_services::acoustic::acoustic_source`], resolved here
-/// rather than passed in: it's the same pick the similarity queries read, and
-/// a caller that could hand in a different one would be able to fill the
-/// table under a name nothing reads.
+/// The model is resolved here, never passed in: the similarity queries read
+/// the same pick, and any other would fill rows nothing reads.
 ///
-/// The library entity comes in rather than its database path, which it used
-/// to and which was the lighter thing to pass. In tags mode the pass writes
-/// audio files, and rox watches the folders those files are in, so every
-/// write comes straight back through the watcher as a change to reindex
-/// unless the library is told the writes were its own. That's
-/// [`Library::reindex_written`], and calling it needs the entity. Database
-/// mode returns an empty list and only the readouts refresh.
-///
-/// Safe to call from inside the library's own update, which the watch sync
-/// does: the entity isn't read until the spawned task, by which time the
-/// lease is gone. Reading a leased entity panics, so the `db_path` read
-/// happens down there rather than up here.
+/// Takes the library entity so tags-mode writes can be claimed through
+/// [`Library::reindex_written`] before the watcher reindexes them. Safe to
+/// call inside the library's own update: the entity isn't read until the
+/// spawned task, since reading a leased entity panics.
 pub fn start(library: Entity<Library>, cx: &mut App) {
     let settings = Settings::load();
     if progress(cx).is_some() || !settings.acoustic_analysis {
         return;
     }
-    // Read once here rather than inside the pass: a pass keeps the worker
-    // count it started with, and the next one picks up a changed setting.
-    // Where the vectors go is read the same way, so a mid-pass flip can't
-    // leave one album's tracks split between two destinations.
+    // Read once so a mid-pass settings flip can't split one album's vectors
+    // between two destinations.
     let workers = settings.acoustic_workers.max(1);
     let save = settings.acoustic_save;
     let source = rox_services::acoustic::acoustic_source();
     let progress = Arc::new(Progress::new(source.id()));
     cx.set_global(Running(Some(progress.clone())));
     cx.set_global(LastFailure(None));
-    // Keeps the menubar chip and the tasks window ticking; nothing observes
-    // an app-global pass on its own.
+    // Nothing observes an app-global pass on its own.
     crate::tasks_window::repaint_while_running(cx);
-    // Quitting mid-pass raises the same flag the stop button does, so the
-    // workers stop on a batch boundary instead of being killed mid-write.
+    // Quit stops the workers on a batch boundary, not mid-write.
     cx.on_app_quit({
         let progress = progress.clone();
         move |_| {
@@ -106,9 +75,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     .detach();
     cx.spawn(async move |cx| {
         let name = source.id().to_string();
-        // The library holds its own database path, and reading it here
-        // rather than up top keeps a caller inside its update safe. The
-        // read only fails with the app already on its way out.
+        // Read here, not up top, so a caller inside the library's update is safe.
         let Ok(db_path) = cx.update(|cx| library.read(cx).db_path()) else {
             return;
         };
@@ -121,10 +88,8 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
             .await;
         cx.update(|cx| {
             cx.set_global(Running(None));
-            // What this machine can do, remembered for the next estimate.
-            // Worker-seconds per track, so the Library page can price any
-            // worker setting against it. Only off a decent stretch: a pass
-            // over a handful of files measures its own startup, not the rate.
+            // Worker-seconds per track, for the Library page's estimates. Only off a
+            // decent stretch: a short pass measures its own startup.
             if progress.done() >= rox_acoustic::PACE_FLOOR
                 && let Some(per) = progress.secs_per_track()
             {
@@ -136,8 +101,6 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
             }
             match result {
                 Ok(analyzed) => {
-                    // The surfaces that offer ordering by sound are gated on
-                    // there being vectors, and this is the moment there are.
                     if analyzed.described > 0 {
                         rox_core::settings::set_acoustic_described(true, cx);
                     }
@@ -146,8 +109,6 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
                         analyzed.described,
                         analyzed.tagged.len()
                     );
-                    // The files this pass rewrote, claimed as the app's own
-                    // before the watcher brings them back as changes.
                     library.update(cx, |library, cx| {
                         library.reindex_written(analyzed.tagged, cx)
                     });
@@ -163,19 +124,10 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     .detach();
 }
 
-/// Follow a library's watch syncs, so a library with the auto switch on
-/// stays described as it grows instead of waiting for someone to open the
-/// settings and press a button.
-///
-/// The switch is read here rather than inside [`start`], the ReplayGain
-/// follow's stance: the button has to keep working with the switch off, and
-/// this is the only caller the setting applies to. Off by default, so
-/// turning analysis on doesn't also start a pass on every watch settle.
-///
-/// Only what the watcher brought in. A full scan is an import
-/// or a manual rescan, and a library's worth of decoding is an afternoon that
-/// should be asked for; the catalog draws that line and only emits for the
-/// watch case.
+/// Analyze what each watch sync brings in, while the auto switch is on. The
+/// switch is read here rather than in [`start`] so the button still works
+/// with it off. Full scans don't trigger this; the catalog only emits for
+/// the watch case.
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
     App::subscribe(cx, library, |library, event, cx| {
         if matches!(event, LibraryJob::WatchSettled) && Settings::load().acoustic_auto {

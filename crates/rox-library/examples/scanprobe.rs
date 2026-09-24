@@ -1,18 +1,12 @@
 //! What a scan of an already-indexed library costs in memory before it reads
 //! a single tag.
 //!
-//! `scanner::scan` opens by pulling every local row's path into a HashMap and
-//! walking the tree into a `Vec<PathBuf>`, then works off that one list: the
-//! unclaimed subset is borrowed out of it, and the prune searches it rather
-//! than copying it into a set. It used to build both of those as full owned
-//! copies of every path, which nobody notices at a hundred thousand tracks
-//! and is two gigabytes at ten million. This probe rebuilds the sequence
-//! against a real database, with no filesystem walk, and prints the resident
-//! high water mark after each step, so a change to the scanner's opening has
-//! a before and an after instead of an argument.
+//! Rebuilds `scanner::scan`'s opening sequence against a real database, with
+//! no filesystem walk, and prints the resident high water mark after each
+//! step. Owned copies of every path go unnoticed at a hundred thousand tracks
+//! and cost two gigabytes at ten million.
 //!
-//! Linux only, deliberately: it reads VmHWM out of `/proc/self/status`, and
-//! the machine this is measured on is the machine CI runs on.
+//! Linux only: it reads VmHWM out of `/proc/self/status`.
 //!
 //! ```sh
 //! cargo run --release -p rox-library --example scanprobe -- \
@@ -23,8 +17,7 @@ use std::path::{Path, PathBuf};
 
 use rox_library::store;
 
-/// One field out of `/proc/self/status`, in bytes. None off Linux, or when
-/// the kernel doesn't publish it.
+/// In bytes. None off Linux.
 fn status_bytes(field: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with(field))?;
@@ -68,22 +61,17 @@ fn main() {
     report("start");
     let conn = store::open(&db).expect("open the database");
 
-    // Step one of scan(): every indexed local file's (mtime, size), keyed by
-    // path. One String key and one heap allocation per track.
+    // Step one of scan(): every indexed local file's (mtime, size), keyed by path.
     let known = store::local_files(&conn).expect("read the local files");
     report(&format!("local_files ({})", known.len()));
 
-    // Step two, standing in for the filesystem walk: the same paths as owned
-    // PathBufs, sorted the way the scanner sorts them (by the string form,
-    // which is what the prune's search compares on). Synthesized from the
-    // store rather than walked, so the probe measures the scanner's
-    // structures and not the disk.
+    // Step two, standing in for the walk: the same paths as PathBufs, sorted by
+    // string form like the scanner's.
     let mut audio: Vec<PathBuf> = known.keys().map(PathBuf::from).collect();
     audio.sort_unstable_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
     report("walk vec");
 
-    // Step three: the unclaimed subset the batch loop runs over, borrowed
-    // out of the walk vector. One pointer per file, not a path.
+    // Step three: the unclaimed subset, borrowed out of the walk vector.
     let claimed: std::collections::HashMap<PathBuf, ()> = std::collections::HashMap::new();
     let files: Vec<&PathBuf> = audio
         .iter()
@@ -91,8 +79,7 @@ fn main() {
         .collect();
     report(&format!("files vec ({})", files.len()));
 
-    // Nothing above may be dropped early, or the peak this prints isn't the
-    // peak the scanner reaches.
+    // Nothing above may drop early, or this isn't the scanner's peak.
     println!(
         "held: {} known, {} walked, {} to scan",
         known.len(),

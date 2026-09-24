@@ -1,10 +1,8 @@
-//! The play queue panel (ADR 16): the explicit up-next queue, what Play Next
-//! and Add to Queue put ahead of the playing track. The album or library you
-//! started from plays on as the context and is not listed here, so the queue
-//! stays what you hand-picked; a now-playing strip heads the numbered rows
-//! so the panel says where the queue picks up from. Rows play now on double
-//! click, drop from the right-click menu, and drag to reorder. Its own
-//! panel, never a mode of the library.
+//! The play queue panel (ADR 16): the explicit up-next queue, what Play
+//! Next and Add to Queue put ahead of the playing track. The context you
+//! started from plays on and is not listed, so the queue stays what you
+//! hand-picked. A now-playing strip heads the rows. Its own panel, never a
+//! mode of the library.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -39,17 +37,9 @@ use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
 use crate::track_ui::track_drag::PlayDrag;
 
-/// One row's height; the list is a uniform_list, so every row is the same.
 const ROW_H: f32 = 30.;
 
-/// The track columns, in render order. Number here is the queue position.
-/// Every key is one the shared [`track_columns::cell`] draws.
-///
-/// A function rather than a `const`: `t_static` isn't const-evaluable, and
-/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
-/// this rebuilds and leaks once per active locale, the same fix already
-/// applied in `metadata.rs`/`history.rs`/`playlists.rs`. See
-/// `.i18n-work/widen-content-panels.md`.
+/// Number here is the queue position.
 fn columns() -> Vec<Column> {
     vec![
         Column {
@@ -110,42 +100,31 @@ fn columns() -> Vec<Column> {
     ]
 }
 
-/// The queue panel's config: the shared chrome, the album heading mode, and
-/// which per-track columns show.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The album heading mode over the queue; Off by default.
     pub headers: Headers,
-    /// The shown column keys; defaults to the registry's default-on set.
     pub columns: Vec<String>,
-    /// Whether the search box shows; the query only filters while it does.
     #[serde(default)]
     pub search: bool,
-    /// Follow the shared query, or filter by this panel's own box.
     #[serde(default)]
     pub query_source: QuerySource,
-    /// The panel's own query, kept while following the shared one so the
-    /// switch back to own has something to restore.
+    /// Kept while following the shared query, for the switch back.
     #[serde(default)]
     pub query: String,
 }
 
-/// Where a queue panel's view edits (columns, headings) are saved. A docked
-/// panel's config is part of the layout dump, nudged through its host tab panel;
-/// the modal and popped-out queue the widget opens have no layout behind
-/// them, so they keep their view in settings instead and read it back on the
-/// next open.
+/// A docked panel's view lives in the layout dump. The modal and
+/// popped-out queue have no layout, so they keep their view in settings.
 #[derive(Clone, Copy, PartialEq)]
 enum Persist {
     Layout,
     Settings,
 }
 
-// Hand-written so the columns default to the registry set for a new panel
-// and a pre-columns layout alike.
+// Hand-written so the columns default to the registry set.
 impl Default for QueueConfig {
     fn default() -> Self {
         QueueConfig {
@@ -159,32 +138,23 @@ impl Default for QueueConfig {
     }
 }
 
-/// A flattened display row: an album heading, or a queue entry at its index
-/// into `tracks`.
 enum QRow {
     Album(u32),
     AlbumMeta(u32),
     Track(u32),
 }
 
-/// One resolved queue entry: the entry's stable id (what edits and the
-/// selection address), its track id for the editors and rating, its position,
-/// and the tags to draw. A queued file that has left the library resolves to
-/// just its file name.
 struct TrackRow {
     entry_id: u64,
     track_id: Option<i64>,
     pos: u32,
-    /// Where the entry came from, for the mark the row wears in place of
-    /// its number. Off the key rather than the path, which for a remote
-    /// track is the source's own id and says nothing about the source.
+    /// Off the key, not the path: a remote track's path is the source's own
+    /// id and says nothing about the source.
     origin: Origin,
     title: String,
     artist: String,
     album: String,
-    /// The three sort names, off the projection by track id. All empty
-    /// for a queued file the library doesn't know, which has no row to
-    /// read them from.
+    /// Empty for a queued file the library doesn't know.
     title_reading: String,
     artist_reading: String,
     album_reading: String,
@@ -199,9 +169,7 @@ struct TrackRow {
     rating: u8,
     plays: u32,
     path: PathBuf,
-    /// Where the entry comes from, for the `source:` pin and the source
-    /// filter: the key's own, so a file dropped straight on the queue reads
-    /// as local like any other file.
+    /// The key's own, so a file dropped on the queue reads as local.
     source: SourceId,
 }
 
@@ -222,24 +190,18 @@ impl Filterable for TrackRow {
     }
 }
 
-/// The mark a row wears where its number would go: a station or a server
-/// for a track that didn't come off disk, nothing for one that did, which
-/// is most of them.
 fn origin_glyph(origin: Origin) -> Option<&'static str> {
     match origin {
         Origin::Local => None,
 
         Origin::Radio => Some(icons::RADIO),
 
-        // The closest thing the icon set has to a server, and the same
-        // glyph the settings sidebar uses for the library itself.
+        // The closest the icon set has to a server, the settings sidebar's
+        // library glyph.
         Origin::Subsonic => Some(icons::DATABASE),
     }
 }
 
-/// The number column's slot with a glyph in it instead of a number, the
-/// width and alignment the playing strip has always given its play mark so
-/// every title down the list stays on one edge.
 fn mark_slot(path: &'static str, color: gpui::Rgba) -> Div {
     div()
         .flex_none()
@@ -250,9 +212,8 @@ fn mark_slot(path: &'static str, color: gpui::Rgba) -> Div {
         .child(svg().path(path).size(px(12.)).text_color(color))
 }
 
-/// A queue entry's grouping inputs, borrowed for the album run aggregate. A
-/// track id of 0 stands in for a queued file the library does not know, so it
-/// never matches a real album's art.
+/// Track id 0 stands in for a file the library doesn't know, so it never
+/// matches a real album's art.
 fn group_track(t: &TrackRow) -> GroupTrack<'_> {
     GroupTrack {
         album: &t.album,
@@ -269,17 +230,13 @@ fn group_track(t: &TrackRow) -> GroupTrack<'_> {
     }
 }
 
-/// The playing track's display data, for the now-playing strip that heads
-/// the queue. Not a queue entry (the playing song plays on as context), so
-/// it resolves apart from the rows, but through the same columns so the strip
-/// lines up with them.
+/// The playing song isn't a queue entry, so it resolves apart from the
+/// rows, but through the same columns so the strip lines up.
 struct Playing {
     track_id: Option<i64>,
     title: String,
     artist: String,
     album: String,
-    /// The three sort names, like the queue rows'. Empty for a playing
-    /// file the library doesn't know.
     title_reading: String,
     artist_reading: String,
     album_reading: String,
@@ -291,17 +248,14 @@ struct Playing {
     path: PathBuf,
 }
 
-/// The value passed through a row drag: the entries being moved, in queue
-/// order, and the grabbed row's title for the drag preview. Dragging a row
-/// inside a multi-selection takes the whole set; outside it, just that row.
+/// Inside a multi-selection a drag takes the whole set; outside it, just
+/// that row.
 #[derive(Clone)]
 struct QueueDrag {
     ids: Arc<[u64]>,
     title: SharedString,
 }
 
-/// The label that floats under the pointer while a queue row is dragged. A
-/// multi-row drag shows the grabbed title with a count of the rest.
 struct QueueDragPreview {
     title: SharedString,
     extra: usize,
@@ -327,62 +281,39 @@ impl Render for QueueDragPreview {
 pub struct QueuePanel {
     state: AppState,
     config: QueueConfig,
-    /// Where view edits are saved: the layout dump for a docked panel, or settings
-    /// for the widget's windowed queue.
+    /// The layout dump for a docked panel, settings for the widget's windowed
+    /// queue.
     persist: Persist,
-    /// The resolved queue entries in order.
     tracks: Vec<TrackRow>,
-    /// The search box, shared by every searching view; shown per config.
     search: Entity<SearchBox>,
-    /// A pending box reset from a source toggle or a shared-query change,
-    /// applied on the next render where a window exists to set the input.
+    /// Applied on the next render, where a window exists to set the input.
     resync_box: bool,
-    /// The tracks this panel is pinned to while following the selection.
     /// Runtime only: a restore re-pins from whatever is picked then.
     selection_ids: Vec<i64>,
-    /// The query and filter the rows are built for, snapshotted whenever the
-    /// query changes so `rebuild_rows` filters without a `cx`.
+    /// Snapshotted on query change, so `rebuild_rows` filters without a `cx`.
     applied_query: String,
     applied_filter: FilterSet,
-    /// The display rows over `tracks`: the matching entries flat, or broken
-    /// by album headings.
     rows: Vec<QRow>,
-    /// The album runs the heading rows index, rebuilt with `rows`.
     albums: Vec<track_columns::AlbumGroup>,
-    /// The favourited track ids, what each row's heart checks against.
     favourites: HashSet<i64>,
-    /// Loose tags for queued files the library does not know, read off the
-    /// file with `read_one` and cached per path so each is read at most once.
-    /// None marks a file that could not even be stat'd, so it is not retried;
-    /// the rebuild that resolves the rows runs off the pump, not per frame, so
-    /// this IO stays off the render path. Rev-keyed rebuilds reuse it.
+    /// Read with `read_one` at most once per path. None marks a file that
+    /// couldn't be stat'd, so it isn't retried.
     loose_tags: HashMap<PathBuf, Option<rox_library::TrackRow>>,
-    /// The playing track's title and artist, for the now-playing strip
-    /// heading the list. Follows whatever plays, queued or context, so the
-    /// panel always says where the queue picks up from.
+    /// Follows whatever plays, queued or context.
     playing: Option<Playing>,
-    /// The last queue revision the rows were built from; with the playing path,
-    /// the cheap change detector so the per-pump observe only re-reads the
-    /// queue when an edit happens or a track advances (which shrinks the queue).
+    /// With the playing key, the change detector: the per-pump observe only
+    /// re-reads the queue on an edit or a track advance.
     rev: Option<u64>,
     playing_key: Option<TrackKey>,
-    /// The station-title revision the rows were built at. A stream turns
-    /// its song over without the key or the queue moving, so without this
-    /// the strip would hold the station's own name all evening.
+    /// A stream turns its song over without the key or the queue moving.
     live_rev: Option<u64>,
-    /// The selected entries, by entry id, so a rebuild or a regroup keeps the
-    /// highlight on the same entries wherever they end up. Shift extends, cmd
-    /// (ctrl elsewhere) toggles, Ctrl+A takes the lot, the library's rules.
+    /// By entry id, so a rebuild or a regroup keeps the highlight.
     selected: HashSet<u64>,
-    /// Bumped whenever the selection or the row order changes, keying the
-    /// drag-set cache so a grab inside a big selection shares one Arc across
-    /// every visible selected row instead of rescanning the rows per row.
+    /// Bumped on a selection or row-order change, keying the drag-set cache
+    /// so every visible selected row shares one Arc.
     drag_gen: u64,
     drag_set: Option<(u64, Arc<[u64]>)>,
-    /// Where the next shift-click extends from: the last plain or toggle
-    /// pick, held as an entry id so it persists across a rebuild too.
     anchor: Option<u64>,
-    /// The entry under the last right press, for the context menu.
     menu_row: Option<u64>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
@@ -403,12 +334,9 @@ impl QueuePanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| this.sync(cx));
-        // A newly loaded cover repaints the heading tiles and the cover column.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
-        // A retag or rescan changes the tags a row draws, a favourite change
-        // moves that column; force a rebuild. A rating click only moved one
-        // cell through the shared projection, so patch it in place: a full
-        // sync here would rebuild every row on each star click.
+        // A rating click patches in place; a full sync would rebuild every row
+        // per star.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -416,8 +344,7 @@ impl QueuePanel {
                     this.patch_ratings(cx);
                     return;
                 }
-                // Same deal for a bulk play-count import: it moves the plays
-                // column and nothing else the rows show.
+                // A play-count import only moves the plays column.
                 if matches!(event, LibraryEvent::PlaysReloaded) {
                     this.patch_plays(cx);
                     return;
@@ -431,8 +358,6 @@ impl QueuePanel {
                 }
             },
         );
-        // A panel restored as global opens showing the shared query; a local
-        // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
@@ -440,16 +365,11 @@ impl QueuePanel {
         let search =
             cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // Follow the shared query while global: re-filter and reset the box
-        // to it on the next render.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| this.on_shared_query_changed(cx),
         );
-        // Restored as selection-following, it opens on whatever is picked
-        // now, rather than blank until the next pick.
         let selection_ids = state.selection.read(cx).tracks().to_vec();
-        // Follow the app-wide selection while pinned to it.
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, event: &SelectionEvent, cx| {
@@ -493,10 +413,8 @@ impl QueuePanel {
         this
     }
 
-    /// The widget's queue window: the modal and the popped-out queue, which
-    /// have no dock layout behind them. Reads its view from settings and
-    /// writes edits back there, so its columns and headings persist across a
-    /// close and a relaunch the way a docked panel's do through the layout dump.
+    /// The widget's modal and popped-out queue: no dock layout, so the view
+    /// reads from and writes to settings.
     pub fn windowed(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = Settings::load()
             .windows
@@ -508,12 +426,9 @@ impl QueuePanel {
         this
     }
 
-    /// Save a view edit. A docked panel nudges its host tab panel so the
-    /// workspace's debounced layout save picks the change up; the panel's own
-    /// events never get to the dock, but the tab panel's do. The windowed
-    /// queue writes its config to settings instead. Without this a column or
-    /// heading flip only gets to disk on a clean close, so a relaunch can lose
-    /// it.
+    /// A docked panel emits LayoutChanged through its host tab panel, since
+    /// the panel's own events never reach the dock. Without this an edit only
+    /// lands on a clean close.
     fn save_config(&self, cx: &mut Context<Self>) {
         match self.persist {
             Persist::Layout => {
@@ -528,10 +443,8 @@ impl QueuePanel {
         }
     }
 
-    /// Re-read the explicit queue. Bails on the cheap revision and playing-path
-    /// compare, so a steady queue costs two reads per tick and nothing else;
-    /// rebuilds the rows only when an edit bumps the revision or a track
-    /// advance drops a played item off the front.
+    /// Bails on the revision and playing-key compare, so a steady queue costs
+    /// two reads a tick.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let rev = self.state.player.read(cx).queue_rev();
         let live_rev = self.state.player.read(cx).title_rev();
@@ -543,31 +456,24 @@ impl QueuePanel {
         self.live_rev = live_rev;
         self.playing_key = playing_key;
         let queued = self.state.player.read(cx).queued();
-        // Every entry's key, through the pool mirror: the engine's own
-        // entries hold a bare path, so two cue tracks of one image would
-        // otherwise resolve to the same row and draw the same title twice.
+        // Through the pool mirror: the engine's entries hold a bare path, so two
+        // cue tracks of one image would resolve to the same row.
         let keys: Vec<TrackKey> = {
             let player = self.state.player.read(cx);
             queued.iter().map(|e| player.key_for(e)).collect()
         };
         let library = self.state.library.read(cx);
-        // Resolve every queued and playing file to its id and tags once, in a
-        // single query each. The plays, loose-tag, and row passes below all read
-        // from this instead of hitting id_for and meta_for twice apiece per
-        // entry, which was four round trips a row on every rebuild.
+        // One resolve per key, shared by the passes below.
         let resolved: Vec<Option<(i64, TrackMeta)>> =
             keys.iter().map(|key| library.resolve_key(key)).collect();
-        // The strip's tags with a station's current song over them: the
-        // row names the station and the song under it only ever arrives in
-        // band, so the strip would otherwise read the station's name for
-        // however long it played.
+        // The station's current song over the strip's tags; it only arrives in
+        // band.
         let playing_resolved: Option<(i64, TrackMeta)> = self
             .playing_key
             .as_ref()
             .and_then(|key| library.resolve_key(key))
             .and_then(|(id, meta)| Some((id, self.state.player.read(cx).live_over(Some(meta))?)));
-        // Total play counts for the queue's tracks and the playing one, one
-        // projection pass, for the plays column.
+        // One projection pass for the plays column.
         let plays = {
             let mut ids: Vec<i64> = resolved
                 .iter()
@@ -578,10 +484,8 @@ impl QueuePanel {
             }
             library.plays_for(&ids)
         };
-        // Read loose tags for every queued or playing file the library does
-        // not know, once, before the resolve passes read the cache. Each
-        // read_one hits the disk, so it is gated on a rev-change rebuild here
-        // and cached per path; a steady queue reads nothing.
+        // `read_one` hits the disk, so it only runs on a rev-change rebuild and is
+        // cached per path.
         for (path, meta) in keys.iter().map(|key| &key.path).zip(resolved.iter()).chain(
             self.playing_key
                 .as_ref()
@@ -592,8 +496,6 @@ impl QueuePanel {
                     .insert(path.clone(), rox_library::scanner::read_one(path));
             }
         }
-        // The playing track's readings, off the same id its tags came
-        // from. One lookup per rebuild, not per paint.
         let playing_sort = playing_resolved
             .as_ref()
             .map(|(id, _)| library.sort_names_for_id(*id))
@@ -618,8 +520,6 @@ impl QueuePanel {
                     plays: count,
                     path: path.clone(),
                 },
-                // Out of library: the playing file's own tags, read and
-                // cached above; the file name alone when it could not be stat'd.
                 None => match self.loose_tags.get(path).and_then(Option::as_ref) {
                     Some(r) => Playing {
                         track_id,
@@ -693,9 +593,6 @@ impl QueuePanel {
                         path: key.path.clone(),
                         source: key.source.clone(),
                     },
-                    // Out of library: draw the file's own tags, read off the
-                    // disk and cached above. Fall back to just the file name
-                    // only when the file could not be stat'd.
                     None => match self.loose_tags.get(&key.path).and_then(Option::as_ref) {
                         Some(r) => TrackRow {
                             entry_id: entry.id,
@@ -749,9 +646,8 @@ impl QueuePanel {
                 }
             })
             .collect();
-        // Selection and anchor are keyed by entry id, so a reorder's dragged set
-        // (kept selected in `reorder`) stays lit at its new spot; prune only
-        // what left the queue.
+        // Keyed by entry id, so a reordered set stays lit; prune only what left
+        // the queue.
         let live: HashSet<u64> = self.tracks.iter().map(|t| t.entry_id).collect();
         self.selected.retain(|id| live.contains(id));
         if self.anchor.is_some_and(|id| !live.contains(&id)) {
@@ -763,10 +659,8 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// Re-read ratings for the rows in place after a star click, instead of a
-    /// full sync. The rating moved through the shared projection already, and
-    /// the display rows index into `tracks` by position, so nothing rebuilds -
-    /// the changed cell just repaints. The playing strip caches its rating too.
+    /// In place: the rows index `tracks` by position, so nothing rebuilds. The
+    /// playing strip caches its rating too.
     fn patch_ratings(&mut self, cx: &mut Context<Self>) {
         let mut ids: Vec<i64> = self.tracks.iter().filter_map(|t| t.track_id).collect();
         if let Some(id) = self.playing.as_ref().and_then(|p| p.track_id) {
@@ -786,10 +680,7 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// The plays column re-read off the projection and written onto the rows
-    /// in place, [`Self::patch_ratings`]'s move for a play-count import. A
-    /// full sync here would rebuild every row and take the selection with it,
-    /// for one column's numbers.
+    /// In place: a full sync would rebuild every row and drop the selection.
     fn patch_plays(&mut self, cx: &mut Context<Self>) {
         let mut ids: Vec<i64> = self.tracks.iter().filter_map(|t| t.track_id).collect();
         if let Some(id) = self.playing.as_ref().and_then(|p| p.track_id) {
@@ -809,26 +700,18 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// Snapshot the active query and filter, so `rebuild_rows` filters the
-    /// entries without a `cx`. The shared query while following it, the box's
-    /// own text otherwise.
     fn refresh_query(&mut self, cx: &Context<Self>) {
         self.applied_query = self.effective_query(cx);
         self.applied_filter = self.effective_filter(cx);
     }
 
-    /// Whether a queue entry passes the active query and filter.
     fn matches(&self, terms: &[rox_library::projection::Term], t: &TrackRow) -> bool {
         t.passes(terms, &self.applied_filter, crate::settings::fold_case())
     }
 
-    /// Lay the display rows over the entries that pass the active query:
-    /// flat, or broken into album runs with a heading over each. A headings,
-    /// column, or query flip that leaves the queue itself alone calls this,
-    /// not `sync`.
+    /// A headings, column, or query flip calls this, not `sync`.
     fn rebuild_rows(&mut self) {
-        // The row order drives drag order, so a rebuild invalidates the cached
-        // drag set even when the selected ids are unchanged.
+        // Row order drives drag order, so a rebuild invalidates the drag set.
         self.drag_gen += 1;
         let terms = parse_query(&self.applied_query);
         let visible: Vec<u32> = (0..self.tracks.len() as u32)
@@ -869,8 +752,6 @@ impl QueuePanel {
         self.albums = albums;
     }
 
-    /// Map the shared box's events onto the queue: a changed query re-filters,
-    /// and a focus or dismiss repaints the tab title row that holds the box.
     fn on_search_event(
         &mut self,
         _search: &Entity<SearchBox>,
@@ -893,7 +774,6 @@ impl QueuePanel {
         }
     }
 
-    /// Show or hide the panel's own search box, re-filtering and persisting.
     fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
         self.config.search = on;
         self.save_config(cx);
@@ -901,7 +781,6 @@ impl QueuePanel {
         panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
-    /// The entry id at a display row, if it is a track row.
     fn entry_at(&self, ix: usize) -> Option<u64> {
         match self.rows.get(ix)? {
             QRow::Track(ti) => self.tracks.get(*ti as usize).map(|t| t.entry_id),
@@ -909,7 +788,6 @@ impl QueuePanel {
         }
     }
 
-    /// The display row index of an entry, if it is on screen.
     fn index_of(&self, entry: u64) -> Option<usize> {
         self.rows.iter().position(|row| {
             matches!(row, QRow::Track(ti)
@@ -917,8 +795,6 @@ impl QueuePanel {
         })
     }
 
-    /// The selected entries in view order, so a drag or remove keeps the
-    /// order you see rather than a set's arbitrary one.
     fn selected_ids(&self) -> Vec<u64> {
         self.rows
             .iter()
@@ -932,8 +808,6 @@ impl QueuePanel {
             .collect()
     }
 
-    /// The multi-selection drag set as a shared Arc, resolved through
-    /// `selected_ids` once per selection or row change and cached after.
     fn drag_ids(&mut self) -> Arc<[u64]> {
         if self.drag_set.as_ref().map(|(generation, _)| *generation) != Some(self.drag_gen) {
             let ids: Arc<[u64]> = self.selected_ids().into();
@@ -945,9 +819,6 @@ impl QueuePanel {
             .unwrap_or_else(|| Arc::from([]))
     }
 
-    /// Put a click on a track row: plain selects just it, shift extends from
-    /// the anchor over the tracks between, cmd (ctrl elsewhere) toggles, the
-    /// library's rules, keyed on the entry id so a rebuild keeps the mark.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
         let Some(entry) = self.entry_at(ix) else {
             return;
@@ -962,8 +833,7 @@ impl QueuePanel {
                     _ => None,
                 })
                 .collect();
-            // Ctrl+Shift stacks the range onto the selection so you can
-            // skip a run and grab a second block; plain shift replaces.
+            // Ctrl+Shift stacks the range; plain shift replaces.
             if modifiers.secondary() {
                 self.selected.extend(range);
             } else {
@@ -986,9 +856,7 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// Ctrl+A: take every visible entry, the filter's rows, so selection
-    /// matches what Delete removes. Anchors at the first so a follow-up
-    /// shift-click narrows from the top.
+    /// The visible rows only, so the selection matches what Delete removes.
     fn select_all(&mut self, cx: &mut Context<Self>) {
         let entries = self
             .rows
@@ -1008,8 +876,6 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// Resolve the selected entries to track ids in queue order and publish
-    /// them on the shared selection for the panels that display it.
     fn publish_selection(&self, cx: &mut Context<Self>) {
         let ids: Vec<i64> = self
             .tracks
@@ -1026,9 +892,8 @@ impl QueuePanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// A double click plays that entry now. Through the player's
-    /// move-then-jump, so the entries above it stay queued instead of falling
-    /// behind the cursor as history and vanishing from the panel.
+    /// Through the player's move-then-jump, so the entries above stay queued
+    /// instead of becoming history.
     fn jump(&self, ix: usize, cx: &mut Context<Self>) {
         let Some(id) = self.entry_at(ix) else {
             return;
@@ -1036,18 +901,13 @@ impl QueuePanel {
         self.state.player.read(cx).play_queued(id);
     }
 
-    /// Clear Queue: drop every entry. Through `remove_ids`, so the panel
-    /// empties right away even while paused.
     fn clear(&mut self, cx: &mut Context<Self>) {
         let ids: Vec<u64> = self.tracks.iter().map(|t| t.entry_id).collect();
         self.remove_ids(&ids, cx);
     }
 
-    /// Drop a set of queued entries by id, from our own tracks right away too,
-    /// so the change shows even while paused, when the player's pump is quiet
-    /// and the sync that would rebuild from the engine does not run; the next
-    /// sync reconciles against the engine either way. The lowest removed spot
-    /// keeps the mark, so a run of deletes stays put.
+    /// Drops from our own rows right away too, since the pump is quiet while
+    /// paused and the sync won't run. The lowest removed spot keeps the mark.
     fn remove_ids(&mut self, ids: &[u64], cx: &mut Context<Self>) {
         if ids.is_empty() {
             return;
@@ -1056,8 +916,7 @@ impl QueuePanel {
             .player
             .read(cx)
             .remove_many_from_queue(ids.to_vec());
-        // Set membership, not a linear scan per track: a full clear runs this
-        // over every row, so `contains` on a slice would be O(n^2).
+        // A set, not a slice: a full clear runs this over every row.
         let drop: HashSet<u64> = ids.iter().copied().collect();
         let landing = self.tracks.iter().position(|t| drop.contains(&t.entry_id));
         self.tracks.retain(|t| !drop.contains(&t.entry_id));
@@ -1078,8 +937,6 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// The context menu's remove: the whole selection when the clicked entry
-    /// is part of it, else just that entry.
     fn remove(&mut self, entry: u64, cx: &mut Context<Self>) {
         let ids = if self.selected.contains(&entry) {
             self.selected_ids()
@@ -1089,8 +946,6 @@ impl QueuePanel {
         self.remove_ids(&ids, cx);
     }
 
-    /// Delete or Backspace drops the selected rows. Ctrl+A takes the whole
-    /// queue; Escape drops the selection.
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
@@ -1108,9 +963,6 @@ impl QueuePanel {
         }
     }
 
-    /// Escape drops the selection and the shared scope with it. The local
-    /// publish skips empty sets, so the clear goes to the selection
-    /// entity directly.
     fn deselect(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             return;
@@ -1125,19 +977,14 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// Rows dropped onto position `target`: move them to just before that row,
-    /// i.e. right after the nearest queued entry above it that isn't one of the
-    /// dragged ones. At the top of the queue there's none, so anchor to the
-    /// playing track, which puts the group at the front of the queue rather
-    /// than the front of the whole timeline. A multi-row drag chains each entry
-    /// after the last, so the group keeps its queue order and ends up as one
-    /// contiguous run.
+    /// Moves the rows to just after the nearest undragged entry above
+    /// `target`, or after the playing track at the top. Each entry chains
+    /// after the last, so the group stays one run in queue order.
     fn reorder(&mut self, dragged: &[u64], target: usize, cx: &mut Context<Self>) {
         if dragged.is_empty() {
             return;
         }
-        // The nearest entry above the target display row that is not itself
-        // dragged; heading rows have no entry, so they're skipped.
+        // Heading rows have no entry, so they're skipped.
         let above = self.rows[..target.min(self.rows.len())]
             .iter()
             .rev()
@@ -1155,18 +1002,13 @@ impl QueuePanel {
             player.move_in_queue(id, after);
             after = Some(id);
         }
-        // Keep the moved group lit once the reordered queue rebuilds; the
-        // entry-id selection persists across the rebuild on its own.
+        // Keep the moved group lit across the rebuild.
         self.selected = dragged.iter().copied().collect();
         self.anchor = dragged.first().copied();
         self.drag_gen += 1;
     }
 
-    /// A track dragged in from the library (or another play-drag source)
-    /// enqueues on drop, appended after the queue, the Add to Queue
-    /// semantics. Enqueue, not Play Next, so a drop puts the tracks at the
-    /// back rather than jumping them ahead of what's already queued. The
-    /// paths pass through the player bare, which handles out-of-library files.
+    /// Enqueue, not Play Next, so a drop goes to the back.
     fn enqueue_dropped(&mut self, drag: &PlayDrag, cx: &mut Context<Self>) {
         if drag.is_empty() {
             return;
@@ -1177,12 +1019,10 @@ impl QueuePanel {
             .update(cx, |player, cx| player.enqueue(keys, cx));
     }
 
-    /// An OS file dropped onto the queue panel enqueues, same as a track
-    /// dragged in from the library. The window body plays drops now, so the
-    /// queue panel stays the one surface that adds without interrupting.
+    /// The window body plays drops, so the queue stays the one surface that
+    /// adds without interrupting.
     fn enqueue_external(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
-        // Loose files off the desktop, so they queue as whole files: nothing
-        // out here names a subsong.
+        // Whole files: nothing off the desktop names a subsong.
         let keys: Vec<TrackKey> =
             rox_library::open_files::resolve_audio_paths(paths.paths().to_vec())
                 .into_iter()
@@ -1196,16 +1036,12 @@ impl QueuePanel {
             .update(cx, |player, cx| player.enqueue(keys, cx));
     }
 
-    /// The visible slice of the list: album headings and queue entries, drawn
-    /// through the shared column surface.
     fn list_rows(
         &mut self,
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
-        // The whole multi-selection drag set, resolved once per frame (and
-        // cached across frames until the selection or rows move) so a grab
-        // inside it hands every selected row one shared Arc, not a rescan each.
+        // Resolved once per frame and cached until the selection or rows move.
         let multi_drag = (self.selected.len() > 1).then(|| self.drag_ids());
         range
             .filter_map(|ix| {
@@ -1247,9 +1083,6 @@ impl QueuePanel {
             .collect()
     }
 
-    /// One queue entry row: reorder-drag, multi-select, and remove keyed on
-    /// the entry id, its cells the shown columns. A queued file the library
-    /// does not know shows no rating or favourite.
     fn track_row(
         &self,
         ix: usize,
@@ -1265,9 +1098,7 @@ impl QueuePanel {
             .map(|id| self.favourites.contains(&id))
             .unwrap_or(false);
         let selected = self.selected.contains(&entry);
-        // Dragging a row inside a multi-selection takes the whole set in
-        // queue order, the shared Arc `list_rows` resolved once; outside it,
-        // just this entry.
+        // The shared Arc from `list_rows` when inside the selection.
         let ids: Arc<[u64]> = match multi_drag {
             Some(set) if selected => set.clone(),
             _ => Arc::from([entry]),
@@ -1278,7 +1109,6 @@ impl QueuePanel {
         };
         let mut row = div()
             .id(("queue-row", ix))
-            // The hover group the rating and favourite cells reveal on.
             .group(track_cells::ROW_GROUP)
             .w_full()
             .h(palette::scaled_px(ROW_H))
@@ -1305,33 +1135,28 @@ impl QueuePanel {
             .on_drop(cx.listener(move |this, drag: &QueueDrag, _, cx| {
                 this.reorder(&drag.ids, ix, cx);
             }))
-            // A track dragged in from the library (or elsewhere) enqueues on
-            // drop. gpui dispatches on_drop by payload type, so this goes
-            // alongside the reorder drop above rather than replacing it.
+            // gpui dispatches on_drop by payload type, so this sits beside the
+            // reorder drop.
             .on_drop(cx.listener(move |this, drag: &PlayDrag, _, cx| {
                 this.enqueue_dropped(drag, cx);
             }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    // Take focus so Delete on the selection gets to the panel's
-                    // key handler.
                     window.focus(&this.focus);
                     if event.click_count > 1 {
                         this.jump(ix, cx);
                     } else if event.modifiers.shift || event.modifiers.secondary() {
                         this.select(ix, event.modifiers, cx);
                     } else if !this.selected.contains(&entry) {
-                        // A plain press on an unselected row picks it now, so a
-                        // drag from here takes it. A press on an already-lit
-                        // row keeps the set for a whole-group drag.
+                        // A press on an unselected row picks it now so a drag takes it; on a lit
+                        // row it keeps the set for a group drag.
                         this.select(ix, event.modifiers, cx);
                     }
                 }),
             )
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                // A plain click that never became a drag collapses a
-                // multi-selection down to the row clicked.
+                // A click that never became a drag collapses the selection to this row.
                 let mods = event.modifiers();
                 if event.click_count() == 1
                     && !mods.shift
@@ -1346,8 +1171,7 @@ impl QueuePanel {
                 MouseButton::Right,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     this.menu_row = Some(entry);
-                    // A right click outside the set reselects just that row, so
-                    // the menu acts on what is lit.
+                    // A right click outside the set reselects just that row.
                     if !this.selected.contains(&entry) {
                         this.select(ix, Modifiers::default(), cx);
                     }
@@ -1377,9 +1201,7 @@ impl QueuePanel {
             plays: t.plays,
             cover,
         };
-        // The source mark stands in for the number on a row that didn't
-        // come off disk. The number is a position in a list you can already
-        // count, where the source is the thing you can't tell by looking.
+        // The source mark replaces the number on a row that didn't come off disk.
         let mark = origin_glyph(t.origin);
         for col in columns() {
             if !self.column_shown(col.key) {
@@ -1422,8 +1244,7 @@ impl HeadingHost for QueuePanel {
         self.config.headers
     }
 
-    /// Set the heading mode and relay out the rows; the queue is unchanged,
-    /// so no re-read, just a fresh row plan.
+    /// The queue is unchanged, so only the row plan rebuilds.
     fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>) {
         if self.config.headers == headers {
             return;
@@ -1505,7 +1326,6 @@ impl PanelSettings for QueuePanel {
         &[("View", icons::ROWS_3)]
     }
 
-    /// The View page: the column checklist and the album heading mode.
     fn page(
         &mut self,
         _page: &'static str,
@@ -1539,8 +1359,6 @@ impl PanelSettings for QueuePanel {
             .into_any_element()
     }
 
-    /// The Behavior page's search section: show the box, and follow the
-    /// shared query or filter by the panel's own, the searching views' knob.
     fn behavior(
         &mut self,
         _window: &mut Window,
@@ -1574,8 +1392,6 @@ impl Panel for QueuePanel {
 
     rox_panel_api::opens_settings!();
 
-    /// The body enqueues a library drag and an OS file drop alike, so the
-    /// workspace's drop zones stand down over this panel.
     fn accepts_drop(&self, cx: &App) -> bool {
         cx.active_drag_is::<PlayDrag>() || cx.active_drag_is::<ExternalPaths>()
     }
@@ -1591,8 +1407,6 @@ impl Panel for QueuePanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The search box shares the title bar row while the panel is in a
-    /// group; solo or popped out the body hosts it instead.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
@@ -1675,8 +1489,6 @@ impl Panel for QueuePanel {
                     }
                 }),
         );
-        // Display section: the view knobs under their own label, ahead of the
-        // Panel section, the library's shape.
         let menu = menu
             .label(rox_i18n::t!("panel-menu-display"))
             .item(PopupMenuItem::submenu(
@@ -1687,7 +1499,6 @@ impl Panel for QueuePanel {
                 rox_i18n::t!("panel-headings"),
                 track_columns::headings_submenu(window, cx),
             ));
-        // Follow the shared search query, or filter by this panel's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
@@ -1735,8 +1546,6 @@ impl Render for QueuePanel {
 
 impl QueuePanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset (a source toggle or a shared-query change)
-        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -1748,10 +1557,7 @@ impl QueuePanel {
             .bg(palette::bg_root())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)));
-        // The now-playing strip heading the list: display only, the marker
-        // the numbered rows queue up behind. Drawn through the same columns as
-        // the rows so it lines up with them, with a play icon standing in for
-        // the number and the playing track's own cover.
+        // The now-playing strip, drawn through the same columns as the rows.
         let root = if let Some(p) = self.playing.as_ref() {
             let has_track = p.track_id.is_some();
             let favourite = p
@@ -1800,8 +1606,7 @@ impl QueuePanel {
                     continue;
                 }
                 let c = if col.key == "number" {
-                    // The play icon takes the number's slot, right-aligned in
-                    // the same width so the title lines up with the rows'.
+                    // Right-aligned in the number's width, so the titles line up.
                     mark_slot(icons::PLAY, palette::accent())
                 } else {
                     match track_columns::cell(col.key, &cell, &self.state, ROW_H, false) {
@@ -1816,7 +1621,6 @@ impl QueuePanel {
             root
         };
         let content = if self.rows.is_empty() {
-            // Entries hidden by the query read differently from an empty queue.
             let message = if !self.tracks.is_empty() {
                 rox_i18n::t!("picker-no-matches")
             } else {
@@ -1855,9 +1659,8 @@ impl QueuePanel {
                         .child(Scrollbar::vertical(&self.scroll)),
                 )
         };
-        // A drop over the body, including the empty-queue message and the
-        // space below the rows, enqueues too, so a drag need not land on a
-        // row. A drop on a row is caught by the row's own handler first.
+        // A drop anywhere on the body enqueues; a row's own handler catches its
+        // drop first.
         let content = content
             .drag_over::<PlayDrag>(|style, _, _, _| {
                 style.bg(palette::alpha(palette::accent(), 0x0f))
@@ -1882,8 +1685,7 @@ impl QueuePanel {
             let Some(this) = weak.upgrade() else {
                 return menu;
             };
-            // The clicked entry plus the selection it acts on. The right press
-            // already pulled the entry into the set, so this is the lit set.
+            // The right press already pulled the entry into the set.
             let target = {
                 let panel = this.read(cx);
                 let entry = panel
@@ -1926,7 +1728,6 @@ impl QueuePanel {
                             }
                         }),
                 );
-            // The shared edit/reveal actions when the entries are known tracks.
             if !track_ids.is_empty() {
                 let state = this.read(cx).state.clone();
                 menu = panel::track_actions(
@@ -1955,8 +1756,6 @@ impl QueuePanel {
     }
 }
 
-/// A queued file's last path component as a fallback label, when the track
-/// is not in the library to give a title.
 fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())

@@ -1,16 +1,10 @@
-//! The album grid panel: the catalog as a wall of cover tiles, NekoRoX's
-//! grid gallery. One tile per album in the library's canonical order,
-//! square, the lanes splitting the panel's cross extent evenly so the wall
-//! runs edge to edge, textures through the shared artwork service. It scrolls
-//! vertically by default, rows filling the width, or horizontally by a
-//! setting, columns filling the height.
-//! Lines virtualize through a virtual_list, so a huge library costs only
-//! the tiles on screen. Clicking a tile publishes the album's tracks on
-//! the shared selection; a double click queues the album on the player.
-//! A per-view query narrows the wall to albums containing a matching
-//! track, so two duplicates scope to different filters. Deliberately not
-//! the library's table: per the workspace rule, browsing surfaces are
-//! panels of their own, never library view modes.
+//! The album grid panel: the catalog as a wall of square cover tiles in the
+//! library's canonical order, the lanes splitting the panel's cross extent
+//! evenly. Scrolls vertically by default, horizontally by a setting. Lines
+//! virtualize through a virtual_list, so a huge library costs only the tiles
+//! on screen.
+//! Deliberately not the library's table: per the workspace rule, browsing
+//! surfaces are panels of their own, never library view modes.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -52,16 +46,12 @@ use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
-/// The tile size knob's range: the preferred tile width, in px. The
-/// actual edge divides the panel width evenly so the grid runs edge to
-/// edge with no slack column. The strip's top is the stored
-/// thumbnail's long side, so scrubbing never upscales past what the store
-/// keeps; a typed size can, and goes soft for it.
+/// The tile size knob's range, in px. The top is the stored thumbnail's long
+/// side, so scrubbing never upscales past what the store keeps.
 const TILE_MIN: f32 = 96.;
 const TILE_MAX: f32 = 256.;
 
-/// The tile rounding knob's ceiling, in percent of circular: 100 rounds
-/// a square tile all the way into a circle.
+/// The tile rounding knob's ceiling, in percent of circular.
 const TILE_ROUNDING_MAX: f32 = 100.;
 
 /// The tile gap knob's ceiling, the panel frame sliders' scale.
@@ -71,17 +61,12 @@ fn default_tile() -> f32 {
     192.
 }
 
-/// Height of the album title header box under the tile art.
-/// Fits `tokens::SPACE_XS` (4px) top padding plus `CAPTION_ALBUM_H` (18px).
 const CAPTION_HEADER_H: f32 = 24.;
 
-/// Height of the album title text line.
 const CAPTION_ALBUM_H: f32 = 18.;
 
-/// Height of each active metadata row below the album title.
 const CAPTION_ROW_H: f32 = 16.;
 
-/// Helper to build a uniform 16px metadata row under the album caption.
 fn caption_row(child: impl IntoElement) -> Div {
     div()
         .h(px(CAPTION_ROW_H))
@@ -91,7 +76,6 @@ fn caption_row(child: impl IntoElement) -> Div {
         .child(child)
 }
 
-/// How the always-on caption lines up under its cover.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TitleAlign {
@@ -101,9 +85,8 @@ pub enum TitleAlign {
     Right,
 }
 
-/// Which edge of the wall the letter rail's gutter hangs on: the near
-/// edge (top for a row, left for a column) or the far one (bottom for a
-/// row, right for a column). Far by default, the rail's long-standing spot.
+/// Which edge the letter rail's gutter hangs on: Start is top or left, End is
+/// bottom or right.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LetterSide {
@@ -112,9 +95,8 @@ pub enum LetterSide {
     End,
 }
 
-/// What order the album tiles read in. Artist is the library's canonical
-/// browse order; the rest reorder whole albums by one key and keep that
-/// canonical order as the tie-break, so equal keys never shuffle.
+/// Tile order. Every sort but Artist breaks ties by canonical artist order, so
+/// equal keys never shuffle.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GridSort {
@@ -129,118 +111,80 @@ pub enum GridSort {
     Plays,
 }
 
-/// The grid panel's per-view config: what a saved layout restores, and
-/// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GridConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
     pub query: String,
-    /// Show the search box; the query only applies while it shows. Off by
-    /// default; the per-view filter is opt-in, not always on.
+    /// Show the search box; the query only applies while it shows.
     #[serde(default)]
     pub search: bool,
-    /// Whether this wall filters by its own query or follows the shared
-    /// app-wide one. Shared by default; switch a duplicated grid to its own
-    /// query for an independent filter.
     #[serde(default)]
     pub query_source: QuerySource,
-    /// Scroll the wall vertically, rows filling the width; off scrolls it
-    /// horizontally, columns filling the height. On by default, the wall's
-    /// long-standing shape.
     #[serde(default = "default_true")]
     pub vertical: bool,
-    /// What order the tiles read in. Canonical artist order by default.
     #[serde(default)]
     pub sort: GridSort,
-    /// A letter index rail in its own gutter along the wall's edge, each
-    /// initial a click that jumps to its first album. Follows the sort
-    /// key's initials, so it only shows under the artist and album sorts.
+    /// The letter index rail. Only shows under the artist and album sorts.
     #[serde(default)]
     pub letters: bool,
-    /// Keep the rail to one line that scrolls instead of wrapping, for
-    /// libraries whose scripts spill past one row of initials.
+    /// Keep the rail to one scrolling line instead of wrapping.
     #[serde(default)]
     pub letters_compact: bool,
-    /// Which edge of the wall the rail's gutter hangs on. The far edge by
-    /// default.
     #[serde(default)]
     pub letters_side: LetterSide,
     /// The preferred tile edge in px. The strip picks inside
     /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size can go past the top.
     #[serde(default = "default_tile")]
     pub tile: f32,
-    /// Scroll to the playing album when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the wall goes untouched for a spell, slide back to the playing
-    /// album on its own. Off by default; a browse surface only chases the
-    /// player once you ask it to.
+    /// Slide back to the playing album once the wall sits idle.
     #[serde(default)]
     pub resume_playing: bool,
     /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
-    /// While a track plays, fade every cover but the playing album's;
-    /// hovering lights a tile back up.
+    /// Fade every cover but the playing album's while a track plays.
     #[serde(default)]
     pub dim_playing: bool,
-    /// The same focus effect in color: drain every cover but the playing
-    /// album's to grayscale while a track plays. Stacks with `dim_playing`
-    /// or stands on its own.
+    /// Drain every cover but the playing album's to grayscale while a track plays.
     #[serde(default)]
     pub desaturate_playing: bool,
-    /// Keep the dim and desaturate effects on all the time, not only while a
-    /// track plays: every cover but the one under the pointer recedes,
-    /// playing or not.
+    /// Keep the dim and desaturate effects on even when nothing plays.
     #[serde(default)]
     pub dim_always: bool,
     /// How far the dimmed covers fade, in percent of fully hidden.
     #[serde(default = "default_dim")]
     pub dim: f32,
-    /// Each cover tile's corner rounding, in percent of circular: zero
-    /// keeps the wall square, 100 rounds each cover into a circle.
+    /// Corner rounding, in percent of circular.
     #[serde(default)]
     pub rounding: f32,
-    /// The space between tiles, in px; zero packs the covers edge to edge.
+    /// Space between tiles, in px.
     #[serde(default)]
     pub gap: f32,
-    /// Show the album title and artist under every cover, iTunes style,
-    /// instead of only on hover. Off by default; the bare wall is the
-    /// grid's long-standing look.
+    /// Show the caption under every cover, not only on hover.
     #[serde(default)]
     pub labels: bool,
-    /// How those captions line up under their covers. Left by default.
     #[serde(default)]
     pub label_align: TitleAlign,
-    /// Show the artist under the cover. On by default.
     #[serde(default = "default_true")]
     pub label_artist: bool,
-    /// Show the genre under the cover.
     #[serde(default)]
     pub label_genre: bool,
-    /// Show the release year under the cover.
     #[serde(default)]
     pub label_year: bool,
-    /// Show the date added under the cover.
     #[serde(default)]
     pub label_added: bool,
-    /// Show the last played timestamp under the cover.
     #[serde(default)]
     pub label_last_played: bool,
-    /// Show the album duration under the cover.
     #[serde(default)]
     pub label_duration: bool,
-    /// Show the track count under the cover.
     #[serde(default)]
     pub label_tracks: bool,
-    /// The top-left album shown when the layout was saved, so a relaunch
-    /// reopens the wall where it was left. A cell index, not pixels or a
-    /// row: it persists across a tile-size or width change, coming back to
-    /// the same album whatever the column count works out to.
+    /// The top-left album at save time. A cell index, so it survives a tile
+    /// size or width change.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub scroll: usize,
 }
@@ -282,7 +226,6 @@ impl Default for GridConfig {
 }
 
 impl GridConfig {
-    /// Height of the caption area under a tile cover.
     pub fn caption_height(&self) -> f32 {
         if !self.labels {
             return 0.;
@@ -345,23 +288,18 @@ const METADATA_FIELDS: &[MetadataField] = &[
     },
 ];
 
-/// One album's run in the current view: where it starts, how many
-/// tracks it spans, and the first track's path once a paint resolved it
-/// (the inner None is a track the store no longer knows).
+/// One album's run in the current view. `art` is the first track's path once
+/// a paint resolved it; the inner None is a track the store no longer knows.
 struct Cell {
     start: usize,
     len: u32,
     art: Option<Option<PathBuf>>,
-    /// The tile's current opacity under the dim mode, easing toward its
-    /// target every frame. None until the tile's first paint, which
-    /// starts at the target directly: only changes fade, a tile scrolled
-    /// into a dimmed wall arrives already dimmed.
+    /// The eased opacity under the dim mode. None until first paint, which
+    /// starts at the target, so a tile scrolled into a dimmed wall arrives dimmed.
     dim: Option<f32>,
 }
 
-/// What a tile writes under its cover: the album and the artist, each
-/// with the sort name that draws after it as a reading, plus optional
-/// metadata rows (genre, year, date added, last played, duration, tracks).
+/// A tile's caption. The `_reading` fields are sort names drawn after each.
 #[derive(Default)]
 struct TileLabels {
     album: SharedString,
@@ -376,114 +314,70 @@ struct TileLabels {
     tracks: u32,
 }
 
-/// How many columns the grid falls back to before its first paint has
-/// measured a width.
+/// Columns to assume before the first paint has measured a width.
 const FALLBACK_COLS: usize = 4;
 
-/// Rows of covers asked for past each edge of the viewport, so a scroll
-/// reveals loaded tiles instead of placeholders.
+/// Rows of covers asked for past each viewport edge, so a scroll reveals loaded tiles.
 const PREFETCH_ROWS: usize = 2;
 
 pub struct GridPanel {
     state: AppState,
     config: GridConfig,
-    /// The rows the cells index into: the canonical order while the query
-    /// is empty, otherwise the search hits re-ordered canonically so an
-    /// album's tracks stay one contiguous run.
+    /// Canonical order while the query is empty, otherwise the hits re-ordered
+    /// canonically so an album's tracks stay one contiguous run.
     view: Arc<Vec<u32>>,
-    /// The albums of the current view, rebuilt on library updates and
-    /// query changes.
     cells: Vec<Cell>,
-    /// The letter rail's entries: each distinct initial under the active
-    /// sort and the first cell under it, rebuilt with the cells. Empty
-    /// under the sorts with no letters to index (year, added, plays).
+    /// Each initial under the active sort and its first cell. Empty under the
+    /// year, added, and plays sorts.
     letters: Vec<(SharedString, usize)>,
-    /// The query editor, the shared search box; `config.query` tracks
-    /// its value via change events.
     search: Entity<SearchBox>,
-    /// The clicked albums, the accent outlines and the published
-    /// selection; grows by the library's click rules, per tile.
     selected: HashSet<usize>,
     /// Where a shift-extend grows from: the last plain or toggle click.
     anchor: Option<usize>,
-    /// The tile the arrow keys move, the head a shift-extend runs to. A
-    /// click sets it too, so picking up the keyboard after a click carries
-    /// on from where the pointer left off.
+    /// The tile the arrow keys move and a shift-extend runs to. A click sets it too.
     cursor: Option<usize>,
-    /// The tile under the pointer, which shows the label overlay.
     hovered: Option<usize>,
-    /// The cross-axis extent the grid last laid out for: the width while it
-    /// scrolls vertically, the height while it scrolls horizontally. The
-    /// dock hosts panels cached, so a resize repaints without re-rendering;
-    /// the list closure compares the painted extent against this and
-    /// notifies on drift.
+    /// The cross extent last laid out for. The dock caches panels, so a resize
+    /// repaints without re-rendering; the list closure notifies on drift.
     cross: Pixels,
     scroll: VirtualListScrollHandle,
-    /// The drag-to-scroll state: press anywhere on the wall, drag to
-    /// scroll, release to coast. A drag past its dead zone swallows the
-    /// tile click.
+    /// Drag-to-scroll. A drag past its dead zone swallows the tile click.
     flick: FlickState,
-    /// The list row the follow-playing glide is headed to; stepped every
-    /// frame in `body` and cleared on arrival or on a user drag.
     glide_to: Option<usize>,
-    /// The saved top-left album waiting to be scrolled back into place on a
-    /// relaunch. A cell index, held until the wall has both albums and a
-    /// measured width, then applied once in `body` and cleared. A user drag
-    /// clears it too, so a hand on the wall wins over the restore.
+    /// The saved top-left cell, applied once in `body` when the wall has albums
+    /// and a measured width. A user drag clears it.
     restore: Option<usize>,
-    /// The letter rail's active entry, pinned to the one just clicked until
-    /// a real scroll gesture or another jump moves the wall. Without this
-    /// the active letter falls back to whatever `first_cell` reports, which
-    /// can name the letter above the one clicked when the target has only a
-    /// few albums and doesn't reach the top of the viewport on its own.
+    /// The just-clicked rail letter, held until a scroll or another jump.
+    /// `first_cell` alone can name the letter above when the target is too
+    /// short to reach the viewport top.
     letter_hold: Option<usize>,
-    /// The last animation tick, the coast's and the glide's dt.
     last_tick: Instant,
-    /// The idle-resume clock: stamped on every scroll or press, it wakes
-    /// the wall back to the playing album once `resume_playing` is on and
-    /// the user has stepped away.
     resume_idle: ResumeIdle,
-    /// The playing track's path, the change detector for follow-playing.
     playing_key: Option<TrackKey>,
-    /// The playing album's cell in the current view, kept fresh by
-    /// `sync_playing` and `rebuild` so per-frame dimming never rescans.
+    /// Kept fresh by `sync_playing` and `rebuild` so per-frame dimming never rescans.
     playing_ix: Option<usize>,
-    /// Whether audio is moving right now; pause lifts the dim.
     playing: bool,
-    /// A dim fade is in flight, so the per-frame ease loop should run. Set when
-    /// a dim target shifts (play state, playing album, or the dim knobs) and
-    /// cleared once every tile has settled, so idle renders skip the full-cell
-    /// scan the ease would otherwise do every frame.
+    /// A dim fade is in flight. Cleared once every tile settles, so idle
+    /// renders skip the per-frame cell scan.
     dim_fading: bool,
-    /// The tile size slider's scrub strip, for the settings window.
     tile_scrub: ScrubState,
-    /// The tile rounding slider's scrub strip, same window.
     rounding_scrub: ScrubState,
-    /// The tile gap slider's scrub strip, same window.
     gap_scrub: ScrubState,
-    /// The dim amount slider's scrub strip, the behavior page.
     dim_scrub: ScrubState,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// A failed play, shown in a strip until the next play succeeds.
     error: Option<SharedString>,
-    /// A pending box reset from a source toggle or a shared-query change;
-    /// applied on the next render, where a window exists to set the input.
+    /// A pending box reset, applied on the next render where a window exists.
     resync_box: bool,
-    /// The tracks this panel is pinned to while following the selection.
-    /// Runtime only: a restore re-pins from whatever is picked then.
+    /// The tracks pinned while following the selection. Runtime only.
     selection_ids: Vec<i64>,
-    /// The type-ahead phrase and when its last keystroke landed, so typing
-    /// while the wall has focus jumps to the album by prefix, and a quick
-    /// run of keys grows one phrase instead of restarting each stroke.
+    /// The type-ahead phrase and its last keystroke, so a quick run of keys
+    /// grows one phrase instead of restarting.
     type_ahead: String,
     type_ahead_at: Option<Instant>,
     focus: FocusHandle,
-    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Cached latest listen timestamp per track id; loaded on demand
-    /// outside the paint path when `config.label_last_played` is on and refreshed
-    /// when playback events arrive.
+    /// Latest listen per track id, loaded outside the paint path while the
+    /// last-played label is on.
     last_played: Option<HashMap<i64, i64>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
@@ -491,8 +385,7 @@ pub struct GridPanel {
     _query_changed: Subscription,
     _selection_changed: Subscription,
     _player_changed: Subscription,
-    /// Drops the phrase when focus leaves the panel, so tab goes back to
-    /// walking panels instead of cycling a phrase from a past visit.
+    /// Drops the phrase on blur, so tab goes back to walking panels.
     _type_ahead_blur: Subscription,
 }
 
@@ -503,8 +396,6 @@ impl GridPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // A rescan can rewrite the order, tags, and id -> path mappings;
-        // rebuild the albums over the new projection.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -516,9 +407,8 @@ impl GridPanel {
                             this.last_played = None;
                         }
                         this.rebuild(cx);
-                        // The catalog loads after a restored track starts, so the
-                        // launch's follow waits for this first rebuild; rescans
-                        // re-center on the playing album the same way.
+                        // The catalog loads after a restored track starts, so
+                        // the launch's follow waits for this first rebuild.
                         if this.config.follow_playing {
                             this.follow_playing(cx);
                         }
@@ -527,12 +417,8 @@ impl GridPanel {
                         this.warm_last_played(cx);
                         cx.notify();
                     }
-                    // A play-count import moves the wall's order when it is
-                    // keyed on plays, and every tile's last-played label.
-                    // Neither needs the view rebuilt: the rows and the album
-                    // runs over them are untouched, so re-sort the tiles in
-                    // place and carry the picks across instead of going
-                    // through `rebuild`, which clears them.
+                    // Plays move the order and labels but not the album runs:
+                    // re-sort in place and keep the picks, which `rebuild` clears.
                     LibraryEvent::PlaysReloaded => {
                         if this.config.labels && this.config.label_last_played {
                             this.warm_last_played(cx);
@@ -546,10 +432,7 @@ impl GridPanel {
                 }
             },
         );
-        // Arriving thumbnails notify the service; repaint so tiles fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
-        // A grid restored as global opens showing the shared query; a local
-        // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
@@ -557,18 +440,13 @@ impl GridPanel {
         let search =
             cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // Follow the shared query while global: rebuild the wall and reset
-        // the box to it on the next render.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| {
                 this.on_shared_query_changed(cx);
             },
         );
-        // A grid restored as selection-following opens on whatever is picked
-        // now, rather than blank until the next pick.
         let selection_ids = state.selection.read(cx).tracks().to_vec();
-        // Follow the app-wide selection while pinned to it.
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, event: &SelectionEvent, cx| {
@@ -578,12 +456,9 @@ impl GridPanel {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
-        // Follow-playing owns the position on launch, so it skips the saved
-        // scroll; every other panel restores where it was left.
+        // Follow-playing owns the launch position, so it skips the saved scroll.
         let restore = (!config.follow_playing && config.scroll > 0).then_some(config.scroll);
         let focus = cx.focus_handle().tab_stop(true);
-        // The phrase outlives its badge, so it needs an end: leaving the
-        // panel drops it, which is also what hands tab back to traversal.
         let panel = cx.weak_entity();
         let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
             panel
@@ -640,23 +515,18 @@ impl GridPanel {
             this.warm_last_played(cx);
         }
         this.rebuild(cx);
-        // A duplicate opens with a track already playing; pick it up now
-        // instead of waiting for the next track change.
+        // A duplicate opens with a track already playing.
         this.sync_playing(cx);
         this
     }
 
-    /// Follow the player: on a track change, head for the album it belongs
-    /// to, and keep the dim mode's facts fresh. The compares keep the
-    /// per-tick observer cheap, the player notifies every pump.
+    /// Cheap on purpose: the player notifies this observer every pump.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
             let player = self.state.player.read(cx);
             (player.is_playing(), player.now_playing().map(|now| now.key))
         };
         if playing != self.playing {
-            // Pause lifts the dim, resuming drops it back; render steps
-            // the fade, this kicks it off.
             self.playing = playing;
             self.dim_fading = true;
             cx.notify();
@@ -666,7 +536,6 @@ impl GridPanel {
         }
         self.playing_key = path;
         self.playing_ix = self.playing_cell(cx);
-        // The un-dimmed album moved, so the old and new tiles both ease.
         self.dim_fading = true;
         if self.config.follow_playing {
             self.follow_playing(cx);
@@ -674,7 +543,6 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// The playing track's album in the current view, when it holds one.
     fn playing_cell(&self, cx: &App) -> Option<usize> {
         let key = self.playing_key.as_ref()?;
         let library = self.state.library.read(cx);
@@ -684,8 +552,6 @@ impl GridPanel {
             .view
             .iter()
             .position(|&row| projection.db_id[row as usize] == id)?;
-        // Cells are contiguous runs over the view; the last one
-        // starting at or before the hit holds it.
         Some(
             self.cells
                 .partition_point(|cell| cell.start <= view_ix)
@@ -693,24 +559,18 @@ impl GridPanel {
         )
     }
 
-    /// Scroll the playing track's album into view: a glide when smooth is
-    /// on, a centered jump otherwise.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
         let Some(cell_ix) = self.playing_ix else {
             return;
         };
         self.letter_hold = None;
-        // Both modes head for the same line through the per-frame stepping
-        // in `body`: the line is the stable fact, its offset depends on a
-        // layout that may still be settling (a launch's first frames), so
-        // even the jump re-pins until the target holds still.
+        // Both modes step toward the line in `body`. Its offset can still be
+        // settling on launch, so even the jump re-pins until the target holds.
         self.glide_to = Some(cell_ix / self.lanes());
         cx.notify();
     }
 
-    /// The menu's jump: select the playing track's album and head there
-    /// with the panel's configured motion. The automatic follow never
-    /// touches the selection; this deliberate move does.
+    /// Unlike the automatic follow, the menu's jump also selects the album.
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
         let Some(cell_ix) = self.playing_ix else {
             return;
@@ -722,28 +582,18 @@ impl GridPanel {
         self.follow_playing(cx);
     }
 
-    /// A scroll, drag, or press: restart the idle clock and arm a wake, so
-    /// the wall drifts back to the playing album once the user steps away.
-    /// A no-op unless the resume behavior is on, so an off panel spends
-    /// nothing per gesture.
     fn touch_resume(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.resume_idle.touch(cx, Self::resume_to_playing);
         }
     }
 
-    /// What the idle wake does: slide back to the playing album, so long as
-    /// the resume is still on. The clock only fires this once the wall has
-    /// gone untouched a full window, a gesture in between having pushed it
-    /// out, so no extra idle check is needed here.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.follow_playing(cx);
         }
     }
 
-    /// The menu's follow toggle: flip the follow state and catch up right
-    /// away when turning it on, the same move as the settings switch.
     fn toggle_follow_playing(&mut self, cx: &mut Context<Self>) {
         self.config.follow_playing = !self.config.follow_playing;
         if self.config.follow_playing {
@@ -752,10 +602,8 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Flip the scroll axis, from the context menu or the settings toggle.
-    /// The lane count and tile edge both key off the cross extent, so drop
-    /// the measured one and let the next paint re-measure; any coast or
-    /// pending restore aimed at the old axis is stale, so clear them too.
+    /// Lanes and tile edge key off the cross extent, so drop the measured one
+    /// for the next paint to re-measure.
     fn set_orientation(&mut self, vertical: bool, cx: &mut Context<Self>) {
         if self.config.vertical == vertical {
             return;
@@ -767,13 +615,9 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Recompute the view and its album runs: the canonical order, cut to
-    /// the query's hits when one is set. Search hits come back in
-    /// projection row order, so they filter the canonical order rather
-    /// than being iterated directly. Otherwise an album's scattered rows
-    /// would split into duplicate tiles. Breaks on the album artist, not
-    /// the track artist, the library's grouping rule, so a compilation
-    /// stays one tile.
+    /// Search hits come back in row order, so they filter the canonical order;
+    /// iterated directly they'd split an album into duplicate tiles. Runs break
+    /// on the album artist so a compilation stays one tile.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.cells.clear();
         self.selected.clear();
@@ -834,10 +678,8 @@ impl GridPanel {
             }
         }
         self.sort_cells(cx);
-        // The rail's letters, one entry per distinct initial of the sort
-        // key. The artist and album sorts order by folded name, so the
-        // initials arrive grouped; the other keys have no letters to
-        // index and leave the rail empty.
+        // Only the artist and album sorts order by folded name, so only they
+        // have grouped initials to index.
         self.letters.clear();
         if let Some(projection) = self.state.library.read(cx).projection() {
             let table = match self.config.sort {
@@ -862,11 +704,7 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// The letter rail's gutter: its own strip beside the wall rather
-    /// than an overlay, so the letters never sit on top of the covers.
-    /// The lit letter follows the first visible tile, except right after a
-    /// rail click: `letter_hold` pins it to the letter clicked until a real
-    /// scroll or another jump lets the first-visible tile take over again.
+    /// A strip beside the wall rather than an overlay, so letters never cover art.
     fn letter_rail(&self, cx: &mut Context<Self>) -> Option<Div> {
         if !self.config.letters {
             return None;
@@ -921,11 +759,8 @@ impl GridPanel {
         })
     }
 
-    /// Reorder the album tiles by the configured key. The view's runs stay
-    /// canonical and each cell keeps pointing into them; only the tiles'
-    /// order moves, so an album never splits however its tracks scatter on
-    /// the key. Stable sorts throughout, so ties hold the canonical
-    /// artist-album order.
+    /// Reorder the tiles, not the view's runs, so an album never splits.
+    /// Stable sorts, so ties keep canonical order.
     fn sort_cells(&mut self, cx: &App) {
         if self.config.sort == GridSort::Artist || self.cells.is_empty() {
             return;
@@ -938,8 +773,7 @@ impl GridPanel {
         match self.config.sort {
             GridSort::Artist => {}
             GridSort::Album => {
-                // The interner's pre-lowered names, the type-ahead's own
-                // key, so no per-comparison allocation.
+                // The interner's pre-lowered names, so no per-comparison allocation.
                 let lower = &projection.albums.lower;
                 self.cells.sort_by(|a, b| {
                     let name = |cell: &Cell| {
@@ -952,7 +786,6 @@ impl GridPanel {
                 });
             }
             GridSort::Year => {
-                // Ascending, the tagless zero years pushed past the rest.
                 self.cells.sort_by_key(|cell| {
                     let year = projection.year[first(cell)];
                     (year == 0, year)
@@ -988,12 +821,8 @@ impl GridPanel {
         }
     }
 
-    /// Re-run [`Self::sort_cells`] over the tiles already built and carry the
-    /// selection, anchor, cursor and hover across the new order. The view and
-    /// its album runs never move here, only the tiles pointing into them, so
+    /// Re-sort the built tiles and carry the picks across. Only tiles move, so
     /// a cell's `start` is a stable identity to map the old indices through.
-    /// What a play-count reload uses so an import doesn't drop what was
-    /// picked on the way to fixing the order.
     fn resort_keeping_picks(&mut self, cx: &mut Context<Self>) {
         let start_of = |cells: &[Cell], ix: usize| cells.get(ix).map(|c| c.start);
         let selected: Vec<usize> = self
@@ -1007,8 +836,7 @@ impl GridPanel {
 
         self.sort_cells(cx);
 
-        // One pass to the new indices rather than a scan per pick: a wall
-        // with everything selected would be quadratic otherwise.
+        // One map rather than a scan per pick, which goes quadratic on select-all.
         let by_start: HashMap<usize, usize> = self
             .cells
             .iter()
@@ -1024,8 +852,6 @@ impl GridPanel {
         self.hovered = hovered.and_then(|start| by_start.get(&start).copied());
     }
 
-    /// Pick the wall's order from the menu. Any motion in flight aimed at
-    /// the old order, so clear it and rebuild.
     fn set_sort(&mut self, sort: GridSort, cx: &mut Context<Self>) {
         if self.config.sort == sort {
             return;
@@ -1036,9 +862,7 @@ impl GridPanel {
         self.rebuild(cx);
     }
 
-    /// Map the shared box's events onto the grid: a changed query rebuilds
-    /// the view, and every visual change also repaints the title row,
-    /// which only updates when the tab panel is notified.
+    /// The title row only repaints when the tab panel is notified.
     fn on_search_event(
         &mut self,
         _search: &Entity<SearchBox>,
@@ -1069,8 +893,6 @@ impl GridPanel {
         }
     }
 
-    /// An album's tracks as db ids in view order, capped for the player
-    /// queue.
     fn ids_for(&self, ix: usize, cx: &App) -> Vec<i64> {
         let Some(cell) = self.cells.get(ix) else {
             return Vec::new();
@@ -1086,8 +908,7 @@ impl GridPanel {
             .collect()
     }
 
-    /// The artist a tile filters by: its first track's, the album grid's
-    /// stand-in for the album's shelf. None off the end of the cells.
+    /// A tile's first track's artist, the grid's stand-in for the album's shelf.
     fn cell_artist(&self, ix: usize, cx: &App) -> Option<String> {
         let cell = self.cells.get(ix)?;
         let row = *self.view.get(cell.start)?;
@@ -1096,8 +917,6 @@ impl GridPanel {
         Some(projection.resolve(row).artist.to_string())
     }
 
-    /// The path a tile's thumbnail loads by: the album's first track,
-    /// resolved through the store once, on the tile's first paint.
     fn art_path(&mut self, ix: usize, cx: &Context<Self>) -> Option<PathBuf> {
         if let Some(art) = self.cells.get(ix).and_then(|cell| cell.art.clone()) {
             return art;
@@ -1107,9 +926,8 @@ impl GridPanel {
             let id = self.cells.get(ix).and_then(|cell| {
                 let projection = library.projection()?;
                 let row = *self.view.get(cell.start)?;
-                // No album tag means this is the unknown bucket, not a real
-                // album: keep the placeholder instead of whichever loose
-                // track's art comes back first.
+                // No album tag is the unknown bucket: keep the placeholder over
+                // whichever loose track's art comes back first.
                 if projection.resolve(row).album.is_empty() {
                     return None;
                 }
@@ -1124,18 +942,12 @@ impl GridPanel {
         path
     }
 
-    /// Put a click on an album tile: plain selects just it, shift extends
-    /// from the anchor, cmd (ctrl elsewhere) toggles. The library's
-    /// click rules, by tile. Publishes the selection either way.
+    /// The library's click rules, per tile.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
-        // The arrows pick up from the tile the pointer last put down on,
-        // whichever click rule applied.
         self.cursor = Some(ix);
         if modifiers.shift {
             let anchor = self.anchor.unwrap_or(ix);
             let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-            // Ctrl+Shift stacks the range onto the selection so you can
-            // skip a run and grab a second block; plain shift replaces.
             if modifiers.secondary() {
                 self.selected.extend(lo..=hi);
             } else {
@@ -1157,8 +969,6 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Resolve the selected albums to db ids in view order and publish
-    /// them on the shared selection.
     fn publish_selection(&mut self, cx: &mut Context<Self>) {
         let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
         ixs.sort_unstable();
@@ -1169,15 +979,11 @@ impl GridPanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// Browse from the keyboard while the wall is focused: plain typing
-    /// jumps to the album a word of whose caption starts with the phrase,
-    /// name or artist, `field:` narrowing to one. Modifiers pass
-    /// through so the workspace keeps its shortcuts, and a leading space
-    /// stays its play/pause instead of starting a phrase with a blank.
+    /// Modifiers pass through so the workspace keeps its shortcuts, and a
+    /// leading space stays play/pause.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        // Select-all uses the platform chord, so it goes before the
-        // modifier bail below; Escape drops the selection.
+        // Before the modifier bail, since select-all uses the platform chord.
         if keystroke.modifiers.secondary() && keystroke.key.as_str() == "a" {
             self.select_all(cx);
             return;
@@ -1185,21 +991,15 @@ impl GridPanel {
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
-        // Browsing by keyboard is browsing, so it restarts the idle clock
-        // the same as a scroll or a click.
         self.touch_resume(cx);
         let shift = keystroke.modifiers.shift;
         let key = keystroke.key.as_str();
-        // The arrows walk the wall in both directions: one tile along a
-        // line, a whole line across it, which way round depending on how
-        // the wall packs.
         if let Some(delta) = self.wall().step(key) {
             self.move_cursor(delta, shift, cx);
             return;
         }
         match key {
-            // The escape ladder: a phrase drops first, since it's holding
-            // tab, then the selection.
+            // A phrase drops first, since it's holding tab, then the selection.
             "escape" => {
                 if !self.clear_type_ahead(cx) {
                     self.deselect(cx);
@@ -1220,17 +1020,14 @@ impl GridPanel {
                 if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
                     return;
                 }
-                // Consumed as type-ahead text: stop it here so it doesn't
-                // also match the workspace's space-bound TogglePlayback
-                // binding, which the grid otherwise inherits unscoped.
+                // Stop here so the text doesn't also fire the workspace's
+                // space-bound TogglePlayback, which the grid inherits unscoped.
                 cx.stop_propagation();
                 self.type_to(text.clone(), cx);
             }
         }
     }
 
-    /// Enter: a multi-selection plays exactly itself, a lone cursor plays
-    /// just its album, the way a double click on the tile would.
     fn play_cursor(&mut self, cx: &mut Context<Self>) {
         let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
         ixs.sort_unstable();
@@ -1241,9 +1038,6 @@ impl GridPanel {
         }
     }
 
-    /// Put the cursor on a tile and take the selection with it: shift runs
-    /// a range back to the anchor, a plain move picks the one tile. Scrolls
-    /// it into view, so the cursor never walks off screen.
     fn set_cursor(&mut self, ix: usize, extend: bool, cx: &mut Context<Self>) {
         if ix >= self.cells.len() {
             return;
@@ -1262,10 +1056,7 @@ impl GridPanel {
         self.scroll_to_cell(ix, cx);
     }
 
-    /// Step the cursor by `delta` tiles, clamped to the wall. The first
-    /// press with no cursor lands on the edge the step heads toward, so an
-    /// arrow into a fresh panel picks something up rather than doing
-    /// nothing.
+    /// With no cursor, the first press lands on the edge the step heads toward.
     fn move_cursor(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
         let len = self.cells.len();
         if len == 0 {
@@ -1279,7 +1070,6 @@ impl GridPanel {
         self.set_cursor(target, extend, cx);
     }
 
-    /// Ctrl/Cmd+A: every tile on the wall, anchored at the first.
     fn select_all(&mut self, cx: &mut Context<Self>) {
         if self.cells.is_empty() {
             return;
@@ -1290,8 +1080,6 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Escape drops the selection, handing the shared scope back to the
-    /// whole catalog.
     fn deselect(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             return;
@@ -1303,10 +1091,8 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Split a leading `field:` pin off the phrase, the query syntax's
-    /// vocabulary: `album:` or `title:` for the album name, `artist:` or
-    /// `albumartist:` for the artist. True means the artist. Fields with
-    /// no text on a tile fall through and the phrase reads literally.
+    /// Split a leading `field:` pin off the phrase. True means the artist; a
+    /// field with no text on a tile gives None and the phrase reads literally.
     fn type_ahead_pin(phrase: &str) -> Option<(bool, &str)> {
         let (name, rest) = phrase.split_once(':')?;
         let (_, field) = QUERY_FIELDS
@@ -1319,16 +1105,11 @@ impl GridPanel {
         }
     }
 
-    /// Grow or restart the type-ahead phrase and jump to the album it names.
-    /// A fresh phrase starts past the current selection, so the same letter
-    /// steps to the next match; a grown one re-tests the current album so
-    /// refining a match stays put. The phrase matches the start of any word
-    /// in the caption's two texts, the album name and the artist; a
-    /// `field:` pin narrows it to one.
+    /// A fresh phrase starts past the selection so the same letter steps to the
+    /// next match; a grown one re-tests the current album so refining stays put.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when the window
-        // lapses; a miss below still updated it, so repaint either way.
+        // A miss still updated the badge, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let len = self.cells.len();
@@ -1336,11 +1117,7 @@ impl GridPanel {
             return;
         }
         let needle = self.type_ahead.to_lowercase();
-        // A typed `field:` pin narrows the sweep to one of the tile's two
-        // texts; a plain phrase matches a word start in either.
         let pin = Self::type_ahead_pin(&needle);
-        // A grown phrase re-tests the current album; a fresh one starts past
-        // it, so the same first letter steps to the next match.
         let anchor = self.selected.iter().copied().min().or(self.anchor);
         let start = match anchor {
             Some(ix) if grown => ix,
@@ -1364,8 +1141,7 @@ impl GridPanel {
         }
     }
 
-    /// Drop the phrase, handing tab back to Root's panel traversal. True
-    /// when there was one, for the escape ladder.
+    /// True when there was a phrase, for the escape ladder.
     fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
         if self.type_ahead.is_empty() {
             return false;
@@ -1376,10 +1152,8 @@ impl GridPanel {
         true
     }
 
-    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
-    /// off the cycle-scoped tab bindings. Deliberately leaves the window
-    /// stamp alone: the badge and the letter grouping belong to typing,
-    /// so a run of tabs steps silently rather than reviving them.
+    /// Tab's cycle. Leaves the window stamp alone so a run of tabs doesn't
+    /// revive the badge.
     fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
         if self.type_ahead.is_empty() {
             return;
@@ -1408,9 +1182,6 @@ impl GridPanel {
         }
     }
 
-    /// Whether one tile's caption matches the phrase, [`Self::type_to`]'s
-    /// rules: the pinned text alone when pinned, a word start in either
-    /// otherwise.
     fn type_hit(
         &self,
         projection: &Projection,
@@ -1440,21 +1211,13 @@ impl GridPanel {
         }
     }
 
-    /// Bring an album's tile into view, centered on the scroll axis. Clears
-    /// any pending glide or restore so the jump wins over an automatic move,
-    /// and releases a held rail letter since this jump didn't come from it.
     fn scroll_to_cell(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.letter_hold = None;
         self.scroll_to_cell_with(ix, ScrollStrategy::Center, cx);
     }
 
-    /// Bring a letter's first album to the top of the scroll axis rather
-    /// than centering it, and pin the rail's active letter to the one
-    /// clicked. A rail jump has to land the clicked letter where the click
-    /// landed; centering a letter with only a few albums leaves the previous
-    /// letter's tiles filling the top of the view, so the rail's active
-    /// highlight (driven by the first visible cell) would still point at the
-    /// letter above the one actually clicked until the hold takes over.
+    /// Top-aligned, since centering a short letter would leave the previous
+    /// letter's tiles filling the top.
     fn scroll_to_letter(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.letter_hold = Some(ix);
         self.scroll_to_cell_with(ix, ScrollStrategy::Top, cx);
@@ -1468,14 +1231,12 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Play the album on the shared player as the new context.
     fn play(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.play_many(vec![ix], cx);
     }
 
-    /// Play several albums on the shared player as one context, in view
-    /// order under the queue cap. Context like every other track list, so
-    /// the queue keeps what was hand-picked (ADR 16).
+    /// Plays as context like every other track list, so the queue keeps what
+    /// was hand-picked (ADR 16).
     fn play_many(&mut self, ixs: Vec<usize>, cx: &mut Context<Self>) {
         let ids: Vec<i64> = ixs
             .iter()
@@ -1497,18 +1258,14 @@ impl GridPanel {
         }
     }
 
-    /// Height of the caption block under a tile, based on the enabled metadata rows.
     fn caption_height(&self) -> f32 {
         self.config.caption_height()
     }
 
-    /// Refresh the cached last-played map from the library outside of layout and paint.
     fn warm_last_played(&mut self, cx: &App) {
         self.last_played = Some(self.state.library.read(cx).last_played());
     }
 
-    /// The wall geometry and focus state this panel draws under, the packing
-    /// math shared with the other tile walls.
     fn wall(&self) -> WallLayout {
         WallLayout {
             cross: self.cross,
@@ -1560,13 +1317,9 @@ impl GridPanel {
         self.wall().desaturated(ix)
     }
 
-    /// One album tile: the cover filling a square, the label overlay while
-    /// hovered, the accent outline while selected. Pending and missing art
-    /// use the same quiet placeholder, so an arriving cover fills the tile
-    /// without a flash.
+    /// Pending and missing art share one placeholder, so an arriving cover
+    /// fills the tile without a flash.
     fn tile(&mut self, ix: usize, side: Pixels, cx: &mut Context<Self>) -> AnyElement {
-        // The first paint starts at the target directly; from then on the
-        // stepping in `body` owns the value.
         let dim = match self.cells.get(ix).and_then(|cell| cell.dim) {
             Some(dim) => dim,
             None => {
@@ -1585,11 +1338,8 @@ impl GridPanel {
                 .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
             None => Thumb::Missing,
         };
-        // The knob is percent of circular, so the radius scales with the
-        // tile: 100 turns the square into a circle. It clips the cover
-        // itself, not just the tile's background: gpui content masks stay
-        // rectangular, so a rounded tile under a square image would paint
-        // over its own corners.
+        // Round the image itself, not just the tile: gpui content masks stay
+        // rectangular, so a square image would paint over rounded corners.
         let radius = side * (self.config.rounding / 200.);
         let desaturated = self.desaturated(ix);
         let content: AnyElement = match thumb {
@@ -1614,9 +1364,6 @@ impl GridPanel {
                 .into_any_element(),
         };
         let labels = self.config.labels;
-        // The cover square: the art, its hover overlay while captions are
-        // off, and the selection outline. The caption, when on, goes below
-        // it in the tile wrapper rather than over the art.
         let cover = div()
             .w(side)
             .h(side)
@@ -1649,8 +1396,7 @@ impl GridPanel {
                 let target = hovered.then_some(ix);
                 if this.hovered != target && (this.hovered == Some(ix) || *hovered) {
                     this.hovered = target;
-                    // Hovering lights a receded tile back up, so re-arm the
-                    // ease loop to fade the dim off and back on.
+                    // Re-arm the ease loop so the hovered tile fades back up.
                     this.dim_fading = true;
                     cx.notify();
                 }
@@ -1676,9 +1422,6 @@ impl GridPanel {
             .into_any_element()
     }
 
-    /// A tile's album and artist strings plus optional metadata: the first track's,
-    /// with the album artist standing in when the row has one. Empty off the
-    /// end of the cells or before a projection loads.
     fn cell_labels(&self, ix: usize, cx: &App) -> TileLabels {
         let library = self.state.library.read(cx);
         match (self.cells.get(ix), library.projection()) {
@@ -1763,8 +1506,6 @@ impl GridPanel {
         }
     }
 
-    /// The hover overlay: album over artist on a translucent strip along
-    /// the tile's bottom edge.
     fn label(&self, ix: usize, cx: &App) -> Div {
         let TileLabels {
             album,
@@ -1803,9 +1544,7 @@ impl GridPanel {
             })
     }
 
-    /// The always-on caption under a cover: album over artist and metadata in a fixed
-    /// block, so the tile's total height stays predictable for the virtual
-    /// list. Widths match the cover so long titles truncate at its edge.
+    /// A fixed-height block, so tile height stays predictable for the virtual list.
     fn caption(&self, ix: usize, side: Pixels, cx: &App) -> Div {
         let TileLabels {
             album,
@@ -1827,8 +1566,6 @@ impl GridPanel {
             .flex()
             .flex_col()
             .overflow_hidden();
-        // The text alignment cascades to both lines; each line truncates at
-        // the cover's edge, so a centered or right title stays under its art.
         base = match self.config.label_align {
             TitleAlign::Left => base.text_left(),
             TitleAlign::Center => base.text_center(),
@@ -1889,8 +1626,8 @@ impl GridPanel {
         base
     }
 
-    /// Solo or popped out there is no title bar to host the search, so it
-    /// renders as a toolbar row above the wall instead, the library's move.
+    /// Solo or popped out there's no title bar to host the search, so it gets
+    /// a toolbar row.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex_none()
@@ -1909,10 +1646,8 @@ impl GridPanel {
             )
     }
 
-    /// The visible rows of the grid, each a run of tiles. Also where the
-    /// painted width reconciles: the dock hosts panels cached, so a resize
-    /// repaints this closure without re-running render, and a notify here
-    /// recomputes the column count next frame.
+    /// Also where the painted extent reconciles with `cross`, since a cached
+    /// panel's resize repaints this closure without re-running render.
     fn lines(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
         let axis = self.axis();
         let measured = self.scroll.base_handle().bounds().size.along(axis.invert());
@@ -1927,10 +1662,8 @@ impl GridPanel {
         let lines = range
             .clone()
             .map(|line| {
-                // A line is a row of tiles filling the width while vertical,
-                // a column filling the height otherwise; the cross gap goes
-                // between the tiles, the scroll gap between the lines through
-                // the list's own spacing.
+                // The cross gap goes between tiles; the list's own spacing
+                // puts the scroll gap between lines.
                 let mut lane = if vertical {
                     div().flex().flex_row().gap(gap)
                 } else {
@@ -1942,9 +1675,8 @@ impl GridPanel {
                 lane
             })
             .collect();
-        // Warm the margin: ask for the covers just past both edges so a
-        // scroll reveals loaded tiles. Asked after the visible tiles, which
-        // keeps those first in line for the load pool's slots.
+        // Prefetch past both edges. Asked after the visible tiles, which keeps
+        // those first in line for the load pool.
         let above =
             (range.start * lanes).saturating_sub(PREFETCH_ROWS * lanes)..range.start * lanes;
         let below = range.end * lanes..((range.end + PREFETCH_ROWS) * lanes).min(self.cells.len());
@@ -2016,9 +1748,8 @@ impl PanelSettings for GridPanel {
                     self.config.search,
                     |this: &mut Self, on, cx| {
                         this.config.search = on;
-                        // The box keeps its text; the view snaps to the
-                        // full catalog while hidden. Rebuild notifies, the
-                        // tab panel repaints the vanishing suffix.
+                        // The box keeps its text; the view snaps to the full
+                        // catalog while hidden.
                         this.rebuild(cx);
                         this.refresh_title_bar(cx);
                     },
@@ -2031,8 +1762,6 @@ impl PanelSettings for GridPanel {
                     rox_i18n::t!("grid-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
-                        // Catch up right away instead of waiting for
-                        // the next track change.
                         if on {
                             this.follow_playing(cx);
                         }
@@ -2125,10 +1854,8 @@ impl PanelSettings for GridPanel {
         )
     }
 
-    /// The grid's own appearance rows on the shared page: the tiles'
-    /// size, gap, and art rounding, look knobs stored on the config
-    /// rather than the theme because they shape the covers, not the
-    /// panel frame.
+    /// Tile knobs live on the config rather than the theme because they shape
+    /// the covers, not the panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.config.rounding;
         Some(
@@ -2372,7 +2099,6 @@ impl Panel for GridPanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The search box shares the title bar row, the library's move.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
@@ -2396,15 +2122,11 @@ impl Panel for GridPanel {
         false
     }
 
-    /// The wall serves tile context menus over the whole body, so the
-    /// tab panel's body right-click stays out; the panel dropdown is
-    /// appended after the play items, the library's arrangement.
+    /// The wall serves its own context menus over the whole body.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -2454,8 +2176,8 @@ impl Panel for GridPanel {
         let weak = cx.entity().downgrade();
         let weak_f = cx.entity().downgrade();
         let follow = self.config.follow_playing;
-        // Checks on the right so the orientation pair keeps its icons; the
-        // default left side would swap them out for the checkmark.
+        // Checks on the right, or the orientation pair's icons get swapped out
+        // for the checkmark.
         let menu = menu
             .check_side(Side::Right)
             .item(
@@ -2478,11 +2200,7 @@ impl Panel for GridPanel {
                     }),
             );
 
-        // Display section: the view knobs group under flyouts so the menu
-        // stays short, the same shape as the library's.
         let menu = menu.separator().label(rox_i18n::t!("library-menu-display"));
-        // The scroll direction, a checked pair so the current axis reads at
-        // a glance.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -2513,9 +2231,6 @@ impl Panel for GridPanel {
             rox_i18n::t!("grid-menu-scroll"),
             submenu,
         ));
-        // The wall's order, a checked list so the active key reads at a
-        // glance. Artist is the canonical browse order the wall has always
-        // had; the rest reorder whole albums by one key.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -2541,8 +2256,7 @@ impl Panel for GridPanel {
             rox_i18n::t!("grid-menu-sort"),
             submenu,
         ));
-        // The letter rail, icon on the row so the tick lands on the right
-        // like every other top-level check row.
+        // The icon puts the tick on the right, like every other top-level check row.
         let menu = menu.item(panel::check_row(
             rox_i18n::t!("grid-letter-rail"),
             Some(icons::PANEL_RIGHT),
@@ -2603,7 +2317,6 @@ impl Panel for GridPanel {
         } else {
             menu
         };
-        // Follow the shared search query, or filter by this wall's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
@@ -2612,9 +2325,6 @@ impl Panel for GridPanel {
             |this, source, cx| this.pick_query_source(source, cx),
             |this, on, cx| {
                 this.config.search = on;
-                // The box keeps its text; the view snaps to the full catalog
-                // while hidden. Rebuild notifies, the tab panel repaints the
-                // vanishing suffix.
                 this.rebuild(cx);
                 this.refresh_title_bar(cx);
             },
@@ -2655,8 +2365,6 @@ impl Render for GridPanel {
 
 impl GridPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset (a source toggle or a shared-query change)
-        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -2666,10 +2374,8 @@ impl GridPanel {
         let line_count = self.cells.len().div_ceil(lanes);
         let side = self.tile_side();
 
-        // The frame-by-frame motion: a released flick coasts on, a follow
-        // glide eases toward its line. Both step here in render (the cover
-        // panel's fade idiom) and request the next frame only while
-        // something still moves.
+        // The flick coast and follow glide step here in render, requesting a
+        // frame only while something still moves.
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.05);
         self.last_tick = Instant::now();
         if let Some(d) = self.flick.coast(dt) {
@@ -2694,11 +2400,9 @@ impl GridPanel {
                 window.request_animation_frame();
             }
         }
-        // Restore the saved scroll once the wall has albums and a measured
-        // extent: the lane count is only known after the first paint, and the
-        // cell -> line map depends on it, so restoring any earlier would aim
-        // at the fallback grid. Skipped while a follow glide runs, which owns
-        // the position.
+        // Restore only once the lanes are measured: the cell -> line map
+        // depends on them, so any earlier aims at the fallback grid. A running
+        // glide owns the position.
         if let Some(cell) = self.restore
             && self.glide_to.is_none()
             && !self.cells.is_empty()
@@ -2708,10 +2412,8 @@ impl GridPanel {
             self.scroll.scroll_to_item(line, ScrollStrategy::Top);
             self.restore = None;
         }
-        // The dim fade: every painted tile's opacity eases toward its target,
-        // the glide's exponential approach. Gated on `dim_fading` so a settled
-        // wall skips the full-cell scan on the idle renders hover and scroll
-        // trigger; a target shift re-arms it.
+        // Gated on `dim_fading` so a settled wall skips the full-cell scan on
+        // idle renders.
         if self.dim_fading {
             let step = 1.0 - (0.08_f32).powf(dt * 10.0);
             let mut fading = false;
@@ -2734,9 +2436,6 @@ impl GridPanel {
             }
         }
 
-        // The search shows in the tab bar via title_suffix while the panel
-        // shares a group; solo or popped out there's no header at all, so
-        // it renders as a toolbar in the body instead.
         let headerless = self
             .tab_panel
             .as_ref()
@@ -2748,33 +2447,23 @@ impl GridPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Bindings win over key listeners and an action stops
-            // propagation by default, so a key the workspace binds never
-            // reaches on_panel_key unless a context scopes the binding out.
-            // PanelNav is always on and takes back left and right from
-            // seek; the type-ahead pair joins it while a phrase is up, to
-            // take back space (only while the phrase is still absorbing
-            // keystrokes) and tab (for as long as there's a phrase to
-            // cycle).
+            // Bindings win over key listeners, so a workspace-bound key never
+            // reaches on_panel_key unless a context scopes it out. PanelNav takes
+            // back left and right from seek; the type-ahead pair takes back space
+            // while the phrase absorbs keystrokes, and tab while there's a phrase.
             .key_context(panel::panel_nav_context(
                 &self.type_ahead,
                 self.type_ahead_at,
             ))
-            // A press anywhere in the panel ends the phrase: the cursor
-            // has moved by hand, so the cycle it was stepping is stale,
-            // and tab belongs back with panel traversal. Capture phase,
-            // so rows and tiles that stop the press can't hide it.
+            // Any press ends the phrase. Capture phase, so rows and tiles that
+            // stop the press can't hide it.
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 this.clear_type_ahead(cx);
             }))
-            // Tab cycles the live phrase's matches, off the bindings the
-            // TypeAhead context above scopes in; with no phrase up, tab
-            // stays Root's focus traversal.
             .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
             .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
-            // Type-to-jump while the wall itself holds focus. The guard keeps
-            // it off while the search box is focused, whose keys bubble up
-            // through the toolbar child.
+            // The guard keeps it off while the search box is focused, whose
+            // keys bubble up through the toolbar child.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.focus.is_focused(window) {
                     this.on_panel_key(event, cx);
@@ -2783,11 +2472,8 @@ impl GridPanel {
             .when(headerless && self.config.search, |d| {
                 d.child(self.toolbar(cx))
             });
-        // The "open a folder" call-to-action means the catalog itself holds no
-        // tracks, so it keys off the loaded projection, never the view (the
-        // library panel's rule): off the cells it would wrongly show when a
-        // query hides every album, and `is_some_and` keeps it off until the
-        // projection loads.
+        // Keyed off the loaded projection, never the view: a query hiding every
+        // album isn't an empty catalog.
         let busy = self.state.library.read(cx).busy().is_some();
         let catalog_empty = self
             .state
@@ -2836,10 +2522,8 @@ impl GridPanel {
                 .into_any_element()
         } else {
             let entity = cx.entity();
-            // Each line spans the cover plus, on a vertical wall, the caption
-            // that trails it into the scroll; a horizontal wall stacks the
-            // caption inside the cross extent, so its scroll pitch stays the
-            // bare cover width.
+            // A vertical wall's caption trails into the scroll; a horizontal one
+            // stacks it in the cross extent, so its pitch stays the bare cover.
             let line_extent = if self.config.vertical {
                 side + px(self.label_height())
             } else {
@@ -2871,14 +2555,9 @@ impl GridPanel {
                 .min_h_0()
                 .min_w_0()
                 .relative()
-                // Any press on the wall might be a drag-scroll; the tiles'
-                // own actions moved to release so both can tell. It also
-                // interrupts a running glide, the user wins.
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        // Take focus so the type-to-jump keys go to the wall
-                        // rather than whatever held focus before the press.
                         window.focus(&this.focus);
                         this.glide_to = None;
                         this.restore = None;
@@ -2888,19 +2567,15 @@ impl GridPanel {
                         cx.notify();
                     }),
                 )
-                // Every wheel over the wall, whichever axis the list scrolls,
-                // counts as browsing; this stamp only restarts the idle clock
-                // and leaves the scroll itself to the list and the gap-filler
-                // below, so nothing scrolls twice.
+                // Only restarts the idle clock. The list and the gap-filler
+                // below do the scrolling, so nothing scrolls twice.
                 .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                     this.letter_hold = None;
                     this.touch_resume(cx);
                 }))
-                // A plain wheel only sends a vertical delta, and the list
-                // ignores it while it scrolls horizontally: both its overflow
-                // axes are Scroll, so gpui never cross-maps y onto x. Fill
-                // exactly that gap here; a trackpad's real x deltas stay with
-                // the list's own handler, so nothing applies twice.
+                // A plain wheel only sends y, and gpui never cross-maps y onto x
+                // while both overflow axes are Scroll. Fill that gap; a trackpad's
+                // real x deltas stay with the list's own handler.
                 .when(axis == Axis::Horizontal, |d| {
                     d.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(window.line_height());
@@ -2917,10 +2592,9 @@ impl GridPanel {
                     }))
                 })
                 .child(list)
-                // A live drag-scroll follows the pointer through window
-                // handlers armed in a paint pass, the scrub strips' idiom.
-                // The canvas exists for that paint hook; the list's lines
-                // closure can't arm them, it also runs during layout.
+                // The drag-scroll's window handlers arm in a paint pass, and
+                // this canvas is the paint hook. The lines closure can't arm
+                // them, since it also runs during layout.
                 .child(
                     canvas(|_, _, _| (), {
                         let flick = self.flick.clone();
@@ -2947,12 +2621,8 @@ impl GridPanel {
                     &self.type_ahead,
                     self.type_ahead_at,
                 ))
-                // The wall's right-click menu, keyed off the hovered tile
-                // since the builder gets no position: a click inside the
-                // selection acts on the whole set, outside it the click
-                // reselects just that tile first, so the menu always acts
-                // on what's highlighted, the library's rule. Off any
-                // tile the panel menu stands alone.
+                // Keyed off the hovered tile since the builder gets no position.
+                // A click outside the selection reselects that tile first.
                 .context_menu({
                     let weak = cx.entity().downgrade();
                     move |menu, window, cx| {
@@ -2980,8 +2650,6 @@ impl GridPanel {
                         } else {
                             rox_i18n::t!("library-play").to_string()
                         };
-                        // The selected albums' tracks as db ids, resolved
-                        // now for the editor, the library rows' move.
                         let ids: Vec<i64> = this.update(cx, |this, cx| {
                             ixs.iter().flat_map(|&ix| this.ids_for(ix, cx)).collect()
                         });
@@ -3000,8 +2668,6 @@ impl GridPanel {
                                 }
                             },
                         );
-                        // Faceted browse: pin the search to the tile's artist,
-                        // the album grid's stand-in for the artist's shelf.
                         // Only a single tile has one artist to pin.
                         let menu = match this
                             .read(cx)
@@ -3034,8 +2700,6 @@ impl GridPanel {
                 })
                 .into_any_element()
         };
-        // The rail rides in its own gutter beside the wall, so the wall
-        // shrinks to make room instead of the letters overlaying covers.
         let content = match self.letter_rail(cx) {
             Some(gutter) => {
                 let row = self.axis() == Axis::Vertical;

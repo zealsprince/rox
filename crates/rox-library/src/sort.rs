@@ -1,15 +1,11 @@
-//! The file-manager sort order. Lives here rather than up with the other
-//! formatters because the folder trie sorts its children with it, and the
-//! library can't reach up into the app's crates.
+//! The file-manager sort order. Lives in the library because the folder
+//! trie sorts with it.
 
 use std::cmp::Ordering;
 
-/// Compare two names the way a file manager lists them: runs of digits
-/// compare as numbers, so "2" sorts before "10" and padded "02" ties "2"
-/// on magnitude before the padding breaks it apart, and the rest byte by
-/// byte. Inputs come lowercased.
+/// Compare names the way a file manager does: digit runs compare as
+/// numbers. Inputs come lowercased.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    /// Drop leading zeros but keep one digit, so "007" compares as "7".
     fn magnitude(digits: &[u8]) -> &[u8] {
         let mut k = 0;
         while k + 1 < digits.len() && digits[k] == b'0' {
@@ -55,9 +51,6 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 mod tests {
     use super::*;
 
-    /// Filenames sort the file-manager way: digit runs compare as numbers,
-    /// so padded and unpadded track numbers both order 1, 2, ... 10, 11 and
-    /// never 1, 10, 11, 2.
     #[test]
     fn natural_sort_orders_track_numbers() {
         let mut names = vec![
@@ -76,8 +69,6 @@ mod tests {
                 "12 emerald.mp3"
             ]
         );
-        // Zero-padding reads as the same value, so "02" and "2" tie on
-        // magnitude and only the padding breaks it.
         assert_eq!(natural_cmp("02 x.mp3", "2 x.mp3"), Ordering::Greater);
         assert_eq!(natural_cmp("03 a.mp3", "10 a.mp3"), Ordering::Less);
     }

@@ -13,10 +13,14 @@
 //! and takes the files. `rox --new-instance` skips the guard when you
 //! actually want a second process.
 //!
-//! Windows has no backend here yet, so a second launch there starts its own
-//! process the way it always did.
+//! Windows gets the same handoff over a named pipe, through the guard half
+//! of `rox_ipc::instance`. The pipe needs none of the socket's bind
+//! discipline: it isn't a file, so a crash leaves nothing stale behind, and
+//! the first process to create it owns it outright, so two launches in the
+//! same instant can't both come up as the owner. Everything past the
+//! transport (the payload, the adopt) is shared with Unix.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::App;
 use rox_library::open_files::LaunchMode;
@@ -33,6 +37,30 @@ struct Launch {
     files: Vec<PathBuf>,
 }
 
+impl Launch {
+    fn new(mode: LaunchMode, files: &[PathBuf]) -> Launch {
+        Launch {
+            enqueue: mode == LaunchMode::Enqueue,
+            files: files.iter().map(|p| absolute(p)).collect(),
+        }
+    }
+}
+
+/// A launch path made absolute for the running instance. Unix resolves it
+/// through the filesystem. Windows only joins it onto the working
+/// directory, because canonicalize there hands back the `\\?\` verbatim
+/// form, which would reach the queue as a different path from the one the
+/// library holds for the same file.
+#[cfg(unix)]
+fn absolute(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(windows)]
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// The listening end of the guard, passed from [`claim`] (before the app
 /// boots) to [`serve`] (once there's a `cx` to drain onto). Empty when this
 /// run has no guard: `--new-instance`, a platform without a backend, or a
@@ -44,6 +72,12 @@ pub struct Server {
     /// tell our socket from one a racing launch put there since.
     #[cfg(unix)]
     inode: Option<u64>,
+    #[cfg(windows)]
+    listener: Option<rox_ipc::instance::Listener>,
+    /// Why this run has no guard when it wanted one. [`claim`] runs before
+    /// the logger does, so the reason waits here for [`serve`] to report.
+    #[cfg(windows)]
+    unguarded: Option<String>,
 }
 
 /// Whether this process is the rox for its data directory. `Some` means run
@@ -66,13 +100,7 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
         return unguarded();
     }
     let path = socket_path();
-    let launch = Launch {
-        enqueue: mode == LaunchMode::Enqueue,
-        files: files
-            .iter()
-            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
-            .collect(),
-    };
+    let launch = Launch::new(mode, files);
     if let Ok(mut stream) = UnixStream::connect(&path) {
         let payload = serde_json::to_vec(&launch).unwrap_or_default();
         // The write is the whole handoff; closing our end is the EOF the
@@ -110,7 +138,34 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
+    use rox_ipc::instance::Claim;
+
+    let unguarded = |reason: Option<String>| {
+        Some(Server {
+            listener: None,
+            unguarded: reason,
+        })
+    };
+    if std::env::args().any(|arg| arg == "--new-instance") {
+        return unguarded(None);
+    }
+
+    let payload = serde_json::to_vec(&Launch::new(mode, files)).unwrap_or_default();
+    match rox_ipc::instance::claim(&rox_core::settings::data_dir(), &payload) {
+        Claim::Owner(listener) => Some(Server {
+            listener: Some(listener),
+            unguarded: None,
+        }),
+        Claim::HandedOff => None,
+        // Same call as a Unix bind that didn't take: a second process is
+        // better than refusing to start.
+        Claim::Unguarded(reason) => unguarded(Some(reason)),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn claim(_mode: LaunchMode, _files: &[PathBuf]) -> Option<Server> {
     Some(Server {})
 }
@@ -172,13 +227,43 @@ pub fn serve(server: Server, cx: &mut App) {
     .detach();
 }
 
-#[cfg(not(unix))]
+/// The pipe's twin of the Unix serve. The guard's own threads hand over raw
+/// bytes, so parsing moves onto the drain, and there's no quit hook: the
+/// pipe closes with the process and leaves nothing to clean.
+#[cfg(windows)]
+pub fn serve(server: Server, cx: &mut App) {
+    if let Some(reason) = server.unguarded {
+        log::warn!("single instance: running without the guard: {reason}");
+    }
+    let Some(listener) = server.listener else {
+        return;
+    };
+
+    let handoffs = listener.spawn();
+    cx.spawn(async move |cx| {
+        while let Ok(payload) = handoffs.recv().await {
+            let launch = match serde_json::from_slice::<Launch>(&payload) {
+                Ok(launch) => launch,
+                Err(err) => {
+                    log::warn!("single instance: unreadable handoff: {err}");
+                    continue;
+                }
+            };
+            if cx.update(|cx| adopt(launch, cx)).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn serve(_server: Server, _cx: &mut App) {}
 
 /// A second launch, applied to this one. The window comes back first, out of
 /// the tray when residency swallowed it or raised when it's only buried, then
 /// the files go to whatever workspace is now front.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn adopt(launch: Launch, cx: &mut App) {
     let mode = if launch.enqueue {
         LaunchMode::Enqueue

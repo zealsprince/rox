@@ -32,6 +32,10 @@ log = "0.4"
 notify-debouncer-full = "0.7"
 # Carries the watcher's batches off the debouncer's thread without a poll.
 async-channel = "2"
+# The user's exclusion patterns (src/exclude.rs): one compiled set matched per
+# walked entry. Already in the lockfile through gpui_util, so this adds a
+# dependency edge for a leaf crate but no crate to the build.
+globset = "0.4"
 # A smart playlist stores its query, filter, sort, and limit as one JSON
 # blob on the playlist row, so the definition types need derives.
 serde = { version = "1", features = ["derive"] }

@@ -1,80 +1,48 @@
-//! ReplayGain as a file stores it: how far off the reference loudness an
-//! analysis pass measured the track and its album, in dB, each beside the
-//! peak sample it found. rox reads these, stores them beside the rest of a
-//! row, and hands them to the engine at play time (ADR 19).
+//! ReplayGain as a file stores it: track and album gain in dB, each with its
+//! peak. rox reads these and hands them to the engine at play time (ADR 19).
+//! Files without them get rox's own measurement, written through
+//! [`crate::store::set_measured_replaygain`] marked [`Source::Measured`].
 //!
-//! Reading tags is all this module does. A file with none gets its
-//! numbers from rox's own measurement pass instead: the EBU R128 analyzer is
-//! `rox_playback::analysis`, the app drives it from `rox/src/replaygain_job.rs`
-//! over the files [`crate::store::albums_missing_replaygain`] hands back, and
-//! the result is written through [`crate::store::set_measured_replaygain`]
-//! marked [`Source::Measured`] so a later rescan can tell it apart from what
-//! a tagger wrote. The same pass writes the numbers into the files through
-//! [`crate::writer::commit_replay_gain`] when the setting asks for it.
+//! lofty maps the four `REPLAYGAIN_*` names on every indexed format but
+//! Opus. Opus levels by RFC 7845's `R128_*_GAIN` instead (Q7.8 dB against
+//! -23 LUFS, no peaks), unmapped Vorbis keys the scanner reads off its native
+//! parse through [`read_r128`]. The writer doesn't write Opus, so measured
+//! Opus gains stay in the database.
 //!
-//! The tags use the same four names everywhere lofty looks
-//! (`REPLAYGAIN_TRACK_GAIN` and friends, as TXXX frames in ID3v2, Vorbis
-//! comments in FLAC, freeform atoms in MP4) so one generic read covers every
-//! format the scanner indexes but one.
-//!
-//! That one is Opus, which levels by RFC 7845's `R128_TRACK_GAIN` and
-//! `R128_ALBUM_GAIN` instead: a Q7.8 fixed-point number of dB relative to
-//! -23 LUFS, so a ReplayGain figure is that number over 256 plus 5 dB for the
-//! reference difference against RG's -18. [`read_r128`] does the conversion
-//! and the scanner calls it off its native Opus parse, because those keys are
-//! unmapped Vorbis comments the generic tag drops on the way to a `Tag`. The
-//! scheme has no peak fields, so an Opus file comes back with gains and no
-//! peaks and the engine's clamp falls back to its no-peak behaviour.
-//!
-//! Nothing rox measures goes back into an Opus file, either: the writer admits
-//! MP3, FLAC and MP4 only, so the R128 pass stores Opus results in the
-//! database and stops there, the same as every other format rox reads but
-//! doesn't write.
-//!
-//! iTunes' own `iTunNORM` atom is out of scope entirely, since nothing else
-//! writes it and its per-channel millwatt figures are not a dB gain.
+//! iTunes' `iTunNORM` is out of scope: per-channel milliwatts, not a dB gain.
 
 use lofty::ogg::VorbisComments;
 use lofty::tag::{ItemKey, Tag};
 
-/// One file's four ReplayGain numbers. None per field: a file can hold any
-/// mix of the four, and plenty hold none at all.
+/// One file's four ReplayGain numbers. Any mix may be missing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReplayGain {
-    /// The track's gain in dB, negative for a loud master.
     pub track_db: Option<f32>,
-    /// The loudest sample in the track, 1.0 being full scale. What clamps
-    /// a boost at playback so a quiet track turned up cannot clip.
+    /// 1.0 is full scale. Clamps a boost so a quiet track can't clip.
     pub track_peak: Option<f32>,
     pub album_db: Option<f32>,
     pub album_peak: Option<f32>,
 }
 
 impl ReplayGain {
-    /// Whether the file has anything to level by. The peaks alone don't
-    /// count: they bound a gain, they aren't one.
+    /// Whether the file has a gain to level by. Peaks alone don't count.
     pub fn any(self) -> bool {
         self.track_db.is_some() || self.album_db.is_some()
     }
 }
 
-/// Where a stored row's ReplayGain came from. The store keeps this in its
-/// `rg_source` column so a rescan knows which numbers are the file's to
-/// clear and which are rox's own.
+/// Where a stored row's ReplayGain came from, so a rescan knows which
+/// numbers are the file's to clear and which are rox's own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
-    /// Read off the file's tags. The default, and what every row written
-    /// before the measurement pass existed reads as.
+    /// Read off the file's tags. Also what pre-column rows read as.
     #[default]
     Tags,
-    /// Measured by rox from the audio, for a file whose tags carried no
-    /// gain (ADR 19).
     Measured,
 }
 
 impl Source {
-    /// The integer the store writes. A NULL column reads back as `Tags`,
-    /// so rows from before the column need no backfill.
+    /// A NULL column reads back as `Tags`, so old rows need no backfill.
     pub fn code(self) -> i64 {
         match self {
             Source::Tags => 0,
@@ -82,9 +50,8 @@ impl Source {
         }
     }
 
-    /// The column back. Anything unexpected, NULL included, reads as `Tags`:
-    /// an older binary's row is tag-sourced until proven otherwise, and
-    /// guessing `Measured` would let a rescan keep numbers nobody measured.
+    /// Anything unexpected reads as `Tags`: guessing `Measured` would let a
+    /// rescan keep numbers nobody measured.
     pub fn from_code(code: Option<i64>) -> Self {
         match code {
             Some(1) => Source::Measured,
@@ -93,9 +60,8 @@ impl Source {
     }
 }
 
-/// Read the four values off a parsed tag. Anything missing or unparseable
-/// comes back None, which plays as untagged rather than as zero: a wrong
-/// number here is a track at the wrong volume for its whole length.
+/// Anything missing or unparseable is None, which plays as untagged rather
+/// than as zero.
 pub fn read(tag: &Tag) -> ReplayGain {
     let gain = |key| tag.get_string(key).and_then(parse_gain);
     let peak = |key| tag.get_string(key).and_then(parse_peak);
@@ -107,9 +73,7 @@ pub fn read(tag: &Tag) -> ReplayGain {
     }
 }
 
-/// The R128 pair off an Opus file's Vorbis comments, converted to ReplayGain.
-/// None when neither key is there, so a caller can tell "no levelling" from
-/// "levelled to exactly 0 dB". No peaks come back: the scheme has none.
+/// None when neither key is there, so "no levelling" differs from 0 dB.
 pub fn read_r128(comments: &VorbisComments) -> Option<ReplayGain> {
     let rg = ReplayGain {
         track_db: comments.get("R128_TRACK_GAIN").and_then(parse_r128),
@@ -120,28 +84,16 @@ pub fn read_r128(comments: &VorbisComments) -> Option<ReplayGain> {
     rg.any().then_some(rg)
 }
 
-/// An R128 field: a whole number of Q7.8 dB against -23 LUFS. Divide by 256
-/// for the dB, add 5 for the distance to ReplayGain's -18 LUFS reference. So
-/// -1280 is -5 dB against R128, which is 0 dB of ReplayGain.
-///
-/// Strict about the parse on purpose, unlike [`parse_gain`]: this field is
-/// written by machines and always an integer, so anything else is a file lying
-/// about its format rather than a tagger being loose with a unit suffix.
+/// Q7.8 dB against -23 LUFS: divide by 256, add 5 for ReplayGain's -18 LUFS
+/// reference. Strict, unlike [`parse_gain`]: machines write this field.
 pub fn parse_r128(value: &str) -> Option<f32> {
     let q78: i32 = value.trim().parse().ok()?;
     let db = q78 as f32 / 256.0 + 5.0;
     db.is_finite().then_some(db)
 }
 
-/// A gain field: a signed decibel figure, conventionally written with its
-/// unit (`-7.35 dB`) but not always, and sometimes with a leading `+`.
-/// Everything after the number is dropped, so a stray unit or a trailing
-/// comment costs nothing.
-///
-/// A comma cutting the number short is the exception and reads as untagged.
-/// Some taggers write the decimal separator by locale, and `-3,5 dB` truncated
-/// to -3 is a track playing half a dB off for its whole length with nothing to
-/// show anything went wrong. No gain at all is the safer wrong answer.
+/// A signed dB figure, unit optional. A decimal comma reads as untagged:
+/// `-3,5 dB` truncated to -3 would level half a dB off, silently.
 pub fn parse_gain(value: &str) -> Option<f32> {
     let value = value.trim();
     let end = value
@@ -154,16 +106,13 @@ pub fn parse_gain(value: &str) -> Option<f32> {
     db.is_finite().then_some(db)
 }
 
-/// A peak field: a linear sample value, 1.0 full scale. Values above 1 are
-/// real (a clipped master measures over), zero and below are not: a peak of
-/// zero would clamp the track to silence, so it reads as no peak at all.
+/// Values above 1 are real (a clipped master); zero or below reads as no
+/// peak, since it would clamp the track to silence.
 pub fn parse_peak(value: &str) -> Option<f32> {
     let peak: f32 = value.trim().parse().ok()?;
     (peak.is_finite() && peak > 0.0).then_some(peak)
 }
 
-/// A gain back in the form a tag holds it, which is also how the tag editor
-/// shows it.
 pub fn format_gain(db: f32) -> String {
     format!("{db:+.2} dB")
 }
@@ -178,7 +127,6 @@ mod tests {
         assert_eq!(parse_gain("-7.35dB"), Some(-7.35));
         assert_eq!(parse_gain("+2.10 dB"), Some(2.10));
         assert_eq!(parse_gain("  0.00  "), Some(0.0));
-        // A gain of exactly zero is a measurement, not an absence.
         assert_eq!(parse_gain("0 dB"), Some(0.0));
     }
 
@@ -188,8 +136,6 @@ mod tests {
         assert_eq!(parse_gain("dB"), None);
         assert_eq!(parse_gain("loud"), None);
         assert_eq!(parse_gain("inf dB"), None);
-        // A locale decimal comma, which used to truncate to -3 and level the
-        // track half a dB off without a word.
         assert_eq!(parse_gain("-3,5 dB"), None);
         assert_eq!(parse_gain("0,00"), None);
     }
@@ -197,8 +143,6 @@ mod tests {
     #[test]
     fn peaks_keep_overs_and_drop_the_impossible() {
         assert_eq!(parse_peak("0.987654"), Some(0.987654));
-        // A clipped master measures over full scale, which is worth
-        // knowing rather than rounding away.
         assert_eq!(parse_peak("1.023"), Some(1.023));
         assert_eq!(parse_peak("0"), None);
         assert_eq!(parse_peak("-0.5"), None);

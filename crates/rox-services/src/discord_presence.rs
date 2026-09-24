@@ -1,8 +1,5 @@
-//! Discord Rich Presence integration: publishes the now-playing track,
-//! playback status (playing/paused), and elapsed timestamps over Discord IPC.
-//!
-//! Socket communication and reconnects run on a background thread to prevent
-//! stalling the main GPUI thread or audio path.
+//! Discord Rich Presence: the now-playing card over Discord IPC. The socket
+//! and its reconnects run on a background task, off the UI thread.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,14 +19,12 @@ use rox_core::settings::{
 use crate::catalog::Library;
 use crate::player::Player;
 
-/// The score below which no online cover is close enough to show. A right
-/// album with a reissue suffix or a lightly renamed artist clears it; a
-/// different album by the same artist does not.
+/// Clears a reissue suffix or a lightly renamed artist, not a different
+/// album by the same artist.
 const ART_MATCH_BAR: f32 = 0.5;
 
-/// What a card line fills. Every placeholder in the app-wide vocabulary
-/// parses here; what a playing track can't answer for renders as nothing
-/// and takes its separator with it.
+/// Every placeholder in the app-wide vocabulary parses; what the track
+/// can't answer renders as nothing.
 #[derive(Clone, PartialEq)]
 pub enum PresenceField {
     Artist,
@@ -39,15 +34,11 @@ pub enum PresenceField {
     Track,
     Year,
     Genre,
-    /// The station's own name, while a station is what's playing.
     Station,
-    /// Where what's playing came from, "Radio" or "Subsonic".
     Source,
-    /// The codec and bitrate as one phrase, "FLAC Lossless".
     Format,
-    /// A placeholder the card can't fill: a comment, a disc number. It
-    /// parses and renders nothing rather than refusing a pattern the
-    /// rename dialog would have accepted.
+    /// A placeholder the card can't fill: it renders nothing rather than
+    /// refusing a pattern the rename dialog would accept.
     Unfilled,
 }
 
@@ -59,8 +50,6 @@ impl PatternField for PresenceField {
             Name::Album => PresenceField::Album,
             Name::Title => PresenceField::Title,
             Name::Track => PresenceField::Track,
-            // A track's only date is its release year, the renamer's
-            // reading of both names.
             Name::Year | Name::Date => PresenceField::Year,
             Name::Genre => PresenceField::Genre,
             Name::Station => PresenceField::Station,
@@ -71,38 +60,29 @@ impl PatternField for PresenceField {
         })
     }
 
-    /// Every field here is allowed to vanish, which is the opposite of
-    /// the renamer's rule: a file still needs a name, and a card line is
-    /// read at a glance, where "Unknown Album" on every untagged track is
-    /// worse than the line not being there at all.
+    /// Every field may vanish, unlike the renamer's: "Unknown Album" on every
+    /// untagged track is worse than no line.
     fn fallback(&self) -> &'static str {
         ""
     }
 }
 
-/// The values a card line renders against: what's playing, with the
-/// fills the card has always shown for a track nobody has tagged.
 pub struct PresenceSample {
     pub title: String,
     pub artist: String,
     pub album: String,
     pub album_artist: String,
     pub genre: String,
-    /// Both numbers as text, empty when the track carries neither, so a
-    /// pattern that names one closes its own hole.
+    /// Empty when the track carries none, so the pattern closes its hole.
     pub year: String,
     pub track: String,
-    /// The station's name, empty unless a station is playing.
     pub station: String,
-    /// The kind of source behind the track, "Radio" or "Subsonic".
     pub source: String,
     pub codec: String,
     pub bitrate_kbps: u16,
 }
 
-/// The stand-in the settings rows preview against with nothing playing,
-/// in the capture row's register: a real record, fully tagged, so every
-/// placeholder shows what it does.
+/// The fully tagged stand-in the settings rows preview against.
 impl Default for PresenceSample {
     fn default() -> Self {
         PresenceSample {
@@ -122,17 +102,11 @@ impl Default for PresenceSample {
 }
 
 impl PresenceSample {
-    /// What's playing, or None with nothing on.
     pub fn playing(player: &Player, library: &Library) -> Option<Self> {
         let now = player.now_playing()?;
-        // Through the player's accessor, so a station's presence shows
-        // the song it just announced rather than the station row's own
-        // title for the whole evening.
+        // Through the player, so a station shows the song it announced.
         let meta = player.live_over(library.meta_for_key(&now.key));
 
-        // Untagged and unknown to the library: the file name is the only
-        // name there is, and a remote track doesn't even have that, so it
-        // shows as unknown until the source fills it in.
         let file_name = || {
             now.path()
                 .and_then(|path| path.file_name())
@@ -189,7 +163,6 @@ impl PresenceSample {
         })
     }
 
-    /// The sample as a pattern's values.
     fn values(&self) -> Vec<(PresenceField, String)> {
         vec![
             (PresenceField::Artist, self.artist.clone()),
@@ -210,18 +183,14 @@ impl PresenceSample {
     }
 }
 
-/// What `text` would put on the card, or what's wrong with it. Runs the
-/// same parse and render an update takes, so the line under the settings
-/// input can't drift from the line Discord shows.
+/// Runs the same parse and render an update takes, so the settings preview
+/// can't drift from the card.
 pub fn preview(text: &str, sample: &PresenceSample) -> Result<String, String> {
     Ok(pattern::parse_line::<PresenceField>(text)?.render_line(&sample.values()))
 }
 
-/// The pattern a line is configured with, or the default when what's in
-/// settings no longer parses. A hand-edited file or a placeholder retired
-/// from under it can't be allowed to blank the card, and the default is
-/// always right. Blank text is not a failure: it parses to a pattern that
-/// renders nothing, which is how a line is turned off.
+/// A pattern that no longer parses falls back to the default rather than
+/// blanking the card. Blank text parses fine and turns the line off.
 fn line(text: &str, default: &str) -> Pattern<PresenceField> {
     match pattern::parse_line(text) {
         Ok(parsed) => parsed,
@@ -232,15 +201,12 @@ fn line(text: &str, default: &str) -> Pattern<PresenceField> {
     }
 }
 
-/// Commands sent from the GPUI main thread to the background IPC worker loop.
 pub enum DiscordCommand {
     UpdatePresence(Option<DiscordTrackState>),
     ClearPresence,
 }
 
-/// Snapshot of the currently playing track state sent over channel.
-/// The two card lines arrive rendered: the patterns are the main
-/// thread's, and the worker publishes text.
+/// The card lines arrive rendered: the worker only publishes text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiscordTrackState {
     pub first_line: String,
@@ -260,7 +226,7 @@ pub struct DiscordTrackState {
 }
 
 impl DiscordTrackState {
-    /// Compare all track metadata fields except position_secs (which updates continuously).
+    /// Everything but `position_secs`, which moves continuously.
     pub fn same_metadata(&self, other: &Self) -> bool {
         self.first_line == other.first_line
             && self.second_line == other.second_line
@@ -282,14 +248,11 @@ pub struct DiscordPresence {
     player: Entity<Player>,
     library: Entity<Library>,
     config: DiscordSettings,
-    /// The card's two lines, parsed when the config is read so a tick
-    /// renders rather than re-parses.
     first_line: Pattern<PresenceField>,
     second_line: Pattern<PresenceField>,
     hover_line: Pattern<PresenceField>,
-    /// What the last tick read off the playing track, kept for the
-    /// settings rows' preview. Reading it again from there would put a
-    /// library lookup in a render pass, and the values are the same ones.
+    /// Kept for the settings preview, so it needs no library lookup in a
+    /// render pass.
     last_sample: Option<PresenceSample>,
     sender: async_channel::Sender<DiscordCommand>,
     last_sent_track: Option<DiscordTrackState>,
@@ -302,14 +265,12 @@ impl DiscordPresence {
     pub fn new(player: &Entity<Player>, library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
         let (tx, rx) = async_channel::bounded::<DiscordCommand>(16);
 
-        // Spawn background task to manage IPC client connection and event loop
         cx.background_executor()
             .spawn(async move {
                 Self::run_ipc_loop(rx).await;
             })
             .detach();
 
-        // Observe player ticks on GPUI main thread
         let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
             this.tick(&player, cx);
         });
@@ -334,7 +295,6 @@ impl DiscordPresence {
         }
     }
 
-    /// Refresh settings from the active configuration and force immediate presence update.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
         self.config = Settings::load().accounts.discord;
         self.first_line = line(&self.config.first_line, DEFAULT_PRESENCE_FIRST_LINE);
@@ -355,9 +315,7 @@ impl DiscordPresence {
         self.tick(&player, cx);
     }
 
-    /// What `text` would put on the card, for the settings rows that type
-    /// the two lines. Against the playing track when there is one and the
-    /// stand-in otherwise, so a line can be dialed in with nothing on.
+    /// Against the playing track, or the stand-in with nothing on.
     pub fn preview_line(&self, text: &str) -> Result<String, String> {
         match self.last_sample.as_ref() {
             Some(sample) => preview(text, sample),
@@ -365,7 +323,6 @@ impl DiscordPresence {
         }
     }
 
-    /// React to player pump notifications on the main thread.
     fn tick(&mut self, player: &Entity<Player>, cx: &mut Context<Self>) {
         if !self.config.enabled {
             if self.last_sent_track.is_some() {
@@ -382,8 +339,6 @@ impl DiscordPresence {
         let is_playing = player.is_playing();
         let sample = PresenceSample::playing(player, self.library.read(cx));
 
-        // Both are Some or both None: the sample is read off the same
-        // now-playing row.
         let current_state = match (now_playing, &sample) {
             (Some(now), Some(sample)) => {
                 let values = sample.values();
@@ -392,10 +347,8 @@ impl DiscordPresence {
                     first_line: self.first_line.render_line(&values),
                     second_line: self.second_line.render_line(&values),
                     hover_line: self.hover_line.render_line(&values),
-                    // The raw tags ride along beside the rendered lines:
-                    // the cover art search and the two buttons want the
-                    // artist and title as tags rather than as whatever
-                    // the pattern made of them.
+                    // Raw tags beside the rendered lines: the art search
+                    // and the buttons want them unformatted.
                     title: sample.title.clone(),
                     artist: sample.artist.clone(),
                     album: sample.album.clone(),
@@ -423,7 +376,7 @@ impl DiscordPresence {
                 if !prev.same_metadata(curr) {
                     true
                 } else if curr.is_playing {
-                    // Detect manual user seek (> 3s drift from elapsed clock)
+                    // A manual seek shows as more than 3s drift from the clock.
                     let elapsed_real = self
                         .last_sent_time
                         .and_then(|t| now_time.duration_since(t).ok())
@@ -458,7 +411,6 @@ impl DiscordPresence {
         }
     }
 
-    /// Background task managing socket lifecycle and activity updates.
     async fn run_ipc_loop(rx: async_channel::Receiver<DiscordCommand>) {
         if !rox_net::discord::has_builtin_application_id() {
             info!("Discord presence disabled: no application id baked into this build");
@@ -471,7 +423,7 @@ impl DiscordPresence {
         while let Ok(cmd) = rx.recv().await {
             match cmd {
                 DiscordCommand::UpdatePresence(Some(state)) => {
-                    // Rate-limit connect retries (5 seconds minimum backoff if client is disconnected)
+                    // At most one connect attempt every 5 seconds.
                     if client.is_none() {
                         let now = SystemTime::now();
                         let time_since_last = now
@@ -504,10 +456,8 @@ impl DiscordPresence {
                             .activity_type(ActivityType::Listening)
                             .status_display_type(status_display);
 
-                        // A line that rendered to nothing is left off the
-                        // card rather than sent empty: an empty string is a
-                        // blank row on the card, and no field at all closes
-                        // the gap.
+                        // Leave an empty line off: an empty string is a
+                        // blank row on the card.
                         if !state.first_line.is_empty() {
                             activity = activity.details(&state.first_line);
                         }
@@ -515,15 +465,10 @@ impl DiscordPresence {
                             activity = activity.state(&state.second_line);
                         }
 
-                        // Timestamps only while playing. A start stamp is an anchor, not a
-                        // clock Discord ever stops: it counts on from there client-side and
-                        // nothing goes out while paused, so a track left paused for twenty
-                        // minutes would read 21:00 into a four-minute song. Off means no
-                        // running counter at all, which is accurate for a pause.
-                        // Discord draws the progress bar from the end stamp, so that
-                        // goes out too.
-                        // Resume re-anchors on the position we're actually at, since
-                        // same_metadata counts is_playing and both transitions re-send.
+                        // Timestamps only while playing: Discord counts on
+                        // from the start stamp client-side, so a paused track
+                        // would keep counting. Resume re-anchors, since
+                        // same_metadata counts is_playing.
                         if state.is_playing {
                             let now_millis = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
@@ -539,7 +484,6 @@ impl DiscordPresence {
                             activity = activity.timestamps(timestamps);
                         }
 
-                        // Attempt to resolve cover art URL online via iTunes / Deezer / Last.fm providers
                         let mut cover_url: Option<String> = None;
                         if !state.artist.is_empty() || !state.album.is_empty() {
                             let query = rox_net::providers::TrackQuery {
@@ -550,12 +494,9 @@ impl DiscordPresence {
                             };
                             match rox_net::providers::search_art(&query) {
                                 Ok(candidates) => {
-                                    // The art searches are fuzzy, and trusting provider order
-                                    // picked the first Deezer hit even when it was a different
-                                    // album entirely (issue #79). Score every candidate against
-                                    // the track and take the closest, provider preference only
-                                    // breaking ties. Below the bar nothing came close enough,
-                                    // and the app icon beats someone else's cover.
+                                    // Provider order can put a different album's cover
+                                    // first (issue #79), so score every candidate and
+                                    // take the closest; provider rank only breaks ties.
                                     let rank = |provider: &str| match provider {
                                         "deezer" => 0,
                                         "lastfm" => 1,
@@ -607,17 +548,14 @@ impl DiscordPresence {
                             .small_image(small_key)
                             .small_text(small_text);
 
-                        // No hover text rather than an empty one, the same
-                        // rule the two lines follow: Discord draws a
-                        // tooltip for a string it was given, so an empty
-                        // one is a blank box under the pointer.
+                        // No hover text rather than an empty one, which
+                        // Discord draws as a blank tooltip.
                         if !state.hover_line.is_empty() {
                             assets = assets.large_text(&state.hover_line);
                         }
 
                         activity = activity.assets(assets);
 
-                        // Add clickable buttons if enabled and artist/title available
                         let mut buttons = Vec::new();
                         let lastfm_url = format!(
                             "https://www.Last.fm/music/{}/_/{}",
@@ -670,12 +608,10 @@ impl DiscordPresence {
     }
 }
 
-/// Standard UTF-8 percent-encoding for URLs.
 fn url_encode(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
 }
 
-/// Format audio quality text based on codec and bitrate.
 fn format_quality(codec: &str, bitrate_kbps: u16) -> String {
     if codec.is_empty() {
         return String::new();
@@ -706,8 +642,6 @@ fn format_quality(codec: &str, bitrate_kbps: u16) -> String {
 mod tests {
     use super::*;
 
-    /// The shipped lines against a fully tagged track: the card a fresh
-    /// install publishes, and the line the member list repeats.
     #[test]
     fn the_default_lines_name_the_track_and_its_album() {
         let sample = PresenceSample::default();
@@ -722,10 +656,8 @@ mod tests {
         );
     }
 
-    /// A tag the track doesn't carry takes its separator with it, and a
-    /// line with nothing left in it comes out empty so the card leaves it
-    /// off. Stations are the common case: plenty send a title and nothing
-    /// else, and " - " under the name is worse than one line.
+    /// Stations often send a title and nothing else, and " - " under the
+    /// name is worse than one line.
     #[test]
     fn a_missing_tag_closes_its_own_hole() {
         let bare = PresenceSample {
@@ -738,9 +670,6 @@ mod tests {
         assert_eq!(preview("%album% (%year%)", &bare).unwrap(), "");
     }
 
-    /// The artwork's hover text is the third pattern, and it ships as the
-    /// quality: the album has a line of its own now, so saying it under
-    /// the cover as well said it twice.
     #[test]
     fn the_hover_text_ships_as_the_quality() {
         let sample = PresenceSample::default();
@@ -755,9 +684,6 @@ mod tests {
         );
     }
 
-    /// The names that aren't tags: where what's playing came from, and
-    /// the station when one is. Both are the card's own, and a pattern
-    /// can put them on either line.
     #[test]
     fn a_line_can_name_the_station_and_the_source() {
         let sample = PresenceSample::default();
@@ -766,7 +692,6 @@ mod tests {
             preview("%station% (%source%)", &sample).unwrap(),
             "Noise FM (Library)"
         );
-        // Off a file there's no station, and the line closes around it.
         let file = PresenceSample {
             station: String::new(),
             ..PresenceSample::default()
@@ -774,8 +699,6 @@ mod tests {
         assert_eq!(preview("%station% - %title%", &file).unwrap(), "Xtal");
     }
 
-    /// A typo is refused rather than published as literal text, and the
-    /// card falls back to the default line instead of blanking.
     #[test]
     fn a_typoed_placeholder_is_refused_and_falls_back() {
         assert!(preview("%tittle%", &PresenceSample::default()).is_err());
@@ -786,8 +709,6 @@ mod tests {
         );
     }
 
-    /// A blank line is how a line is turned off: it parses, renders
-    /// nothing, and the card goes out without the field.
     #[test]
     fn a_blank_line_renders_nothing() {
         assert_eq!(preview("", &PresenceSample::default()).unwrap(), "");

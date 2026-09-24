@@ -1,48 +1,31 @@
-//! AutoEq database client and profile parser.
-//!
-//! AutoEq (https://github.com/jaakkopasanen/AutoEq) provides thousands of
-//! headphone and in-ear monitor frequency response corrections measured by
-//! oratory1990, Crinacle, Rtings, Super Review, and squig.link reviewers.
-//!
-//! Each profile in the repository includes a precomputed `FixedBandEQ.txt`
-//! specifically optimized for 10-band graphic equalizers on the standard
-//! ISO octave bands (31/32, 62/64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz).
-//!
-//! This module parses the master index (`INDEX.md`), parses EQ formats
-//! (FixedBandEQ, ParametricEQ, GraphicEQ, and CSV), and provides live
-//! search and fetching routines.
+//! AutoEq client and profile parser: the master index, search over it, and
+//! the EQ text formats (FixedBandEQ, ParametricEQ, GraphicEQ, CSV) folded onto
+//! the ten ISO octave bands.
 
 use std::cmp::Ordering;
 
 use crate::providers::{agent, net_reason};
 
-/// The 10 standard ISO octave center frequencies in Hz used by graphic equalizers.
 pub const BAND_HZ: [f32; 10] = [
     32.0, 64.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-/// How many bands there are in the graphic equalizer.
 pub const BANDS: usize = BAND_HZ.len();
 
-/// The maximum cut or boost in dB supported by the equalizer.
 pub const GAIN_MAX_DB: f32 = 12.0;
 
-/// The raw GitHub URL for the AutoEq master results index.
 pub const INDEX_URL: &str =
     "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/INDEX.md";
 
-/// An entry in the AutoEq index representing a headphone model measurement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutoEqEntry {
-    /// The headphone or IEM model name, e.g. "Sennheiser HD 600".
     pub name: String,
-    /// The relative path in the results repository, e.g. "oratory1990/over-ear/Sennheiser HD 600".
+    /// Relative to `results/`, percent-encoding kept, e.g. "oratory1990/over-ear/Sennheiser%20HD%20600".
     pub path: String,
-    /// The measurement source / rig, e.g. "oratory1990" or "crinacle on 711".
+    /// The measurement rig, e.g. "crinacle on 711".
     pub source: String,
 }
 
-/// A parsed equalizer profile with 10 band gains and optional preamp.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoEqProfile {
     pub name: String,
@@ -50,17 +33,12 @@ pub struct AutoEqProfile {
     pub gains_db: [f32; BANDS],
 }
 
-/// The width a band takes when the text it came from doesn't say: one
-/// octave, where `rox_playback::eq::Q_DEFAULT` sits and what the ISO octave
-/// layout means. Mirrored here rather than imported, the way [`BAND_HZ`] is;
-/// this module is the file format and knows nothing of the engine.
+/// One octave, matching `rox_playback::eq::Q_DEFAULT`. Mirrored rather than
+/// imported: this module is the file format and knows nothing of the engine.
 pub const Q_OCTAVE: f32 = std::f32::consts::SQRT_2;
 
-/// One band of a curve as the player holds it: where it's centered, how hard
-/// it pushes, and how wide it is. An [`AutoEqProfile`] is the flattened case
-/// of this, ten gains welded to the ISO octaves, which is all a headphone
-/// correction ever needs; a curve the user shaped by hand needs all three
-/// numbers or a save throws away most of what they did.
+/// A hand-shaped band needs all three numbers; [`AutoEqProfile`] is the
+/// flattened gains-only case.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BandSetting {
     pub hz: f32,
@@ -68,14 +46,9 @@ pub struct BandSetting {
     pub q: f32,
 }
 
-/// Read the run that ends at the delimiter matching the one already open,
-/// counting nested pairs on the way. `text` begins one byte past the opener.
-/// Answers the run and the byte offset just past its closer, or nothing if
-/// the line never closes it.
-///
-/// The delimiters are ASCII, so the byte offsets a byte scan produces are
-/// char boundaries and the slices are safe on the accented model names in
-/// the index.
+/// The run up to the delimiter that closes the one already open, counting
+/// nested pairs; `text` starts one byte past the opener. Byte offsets are safe
+/// because the delimiters are ASCII.
 fn balanced_run(text: &str, open: u8, close: u8) -> Option<(&str, usize)> {
     let mut depth = 1usize;
 
@@ -94,18 +67,9 @@ fn balanced_run(text: &str, open: u8, close: u8) -> Option<(&str, usize)> {
     None
 }
 
-/// Parse the AutoEq `INDEX.md` content into a list of [`AutoEqEntry`].
-///
-/// A line is a markdown link plus the rig the measurement came off:
-/// `- [1MORE Aero (ANC Off)](./HypetheSonics/GRAS%20RA0045%20in-ear/1MORE%20Aero%20(ANC%20Off)) by HypetheSonics on GRAS RA0045`.
-/// Both halves carry parentheses of their own: AutoEq marks the variant of a
-/// measurement in the model name, and the directory is named after the
-/// model. The index percent-encodes spaces but leaves parentheses literal,
-/// so roughly a third of the file has them in the link target. Stopping at
-/// the first `)` cuts that path at "1MORE Aero (ANC" and hands the rest to
-/// the source column, which is how a row ends up reading
-/// ") by HypetheSonics on GRAS RA0045" and Apply fetches a URL that 404s.
-/// Both halves are scanned by counting pairs instead.
+/// Lines look like `- [Name (Variant)](./rig/Name%20(Variant)) by rig`. The
+/// index leaves parentheses literal in paths, so both halves are scanned by
+/// counting pairs: stopping at the first `)` fetches a path that 404s.
 pub fn parse_index(text: &str) -> Vec<AutoEqEntry> {
     let mut entries = Vec::new();
 
@@ -115,8 +79,6 @@ pub fn parse_index(text: &str) -> Vec<AutoEqEntry> {
             continue;
         };
 
-        // The name, then the link target, each read to the delimiter that
-        // closes it rather than to the first one that turns up.
         let Some((name, after_name)) = balanced_run(rest, b'[', b']') else {
             continue;
         };
@@ -127,12 +89,10 @@ pub fn parse_index(text: &str) -> Vec<AutoEqEntry> {
             continue;
         };
 
-        // The path stays exactly as the index wrote it, encoding and all,
-        // since it goes straight back out as a URL.
+        // Kept exactly as written, encoding and all: it goes back out as a URL.
         let path = raw_path.strip_prefix("./").unwrap_or(raw_path);
-        // Two lines in today's index close one parenthesis more than they
-        // open, a stray ")" upstream typed into the model name. The path
-        // still reads right; this keeps the leftover out of the source.
+        // A few upstream lines carry a stray extra ")"; keep it out of the
+        // source.
         let trailing = link[after_link..].trim().trim_start_matches(')').trim();
         let source = trailing.strip_prefix("by ").unwrap_or(trailing);
 
@@ -148,7 +108,6 @@ pub fn parse_index(text: &str) -> Vec<AutoEqEntry> {
     entries
 }
 
-/// Filter and rank entries matching a multi-word search query.
 pub fn filter_entries<'a>(
     entries: &'a [AutoEqEntry],
     query: &str,
@@ -167,7 +126,6 @@ pub fn filter_entries<'a>(
             let name_lower = entry.name.to_lowercase();
             let source_lower = entry.source.to_lowercase();
 
-            // All terms must appear in either name or source.
             let all_match = terms
                 .iter()
                 .all(|t| name_lower.contains(t) || source_lower.contains(t));
@@ -176,7 +134,7 @@ pub fn filter_entries<'a>(
                 return None;
             }
 
-            // Score: lower is better.
+            // Lower is better.
             let full_lower = query.to_lowercase();
             let score = if name_lower == full_lower {
                 0
@@ -196,7 +154,6 @@ pub fn filter_entries<'a>(
     matches.into_iter().take(limit).map(|(e, _)| e).collect()
 }
 
-/// The raw GitHub URL for a profile's `FixedBandEQ.txt`.
 pub fn fixed_band_url(path: &str) -> String {
     let clean = path.trim_start_matches("./").trim_matches('/');
     let folder = clean.rsplit('/').next().unwrap_or(clean);
@@ -205,7 +162,6 @@ pub fn fixed_band_url(path: &str) -> String {
     )
 }
 
-/// The raw GitHub URL for a profile's `ParametricEQ.txt` as fallback.
 pub fn parametric_url(path: &str) -> String {
     let clean = path.trim_start_matches("./").trim_matches('/');
     let folder = clean.rsplit('/').next().unwrap_or(clean);
@@ -214,7 +170,6 @@ pub fn parametric_url(path: &str) -> String {
     )
 }
 
-/// Fetch the index content from GitHub. Blocking; run on background executor.
 pub fn fetch_index() -> Result<String, String> {
     agent()
         .get(INDEX_URL)
@@ -224,7 +179,6 @@ pub fn fetch_index() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Fetch and parse a profile from GitHub. Blocking; run on background executor.
 pub fn fetch_profile(path: &str, name: &str) -> Result<AutoEqProfile, String> {
     let url = fixed_band_url(path);
     let response = agent().get(&url).call();
@@ -232,7 +186,6 @@ pub fn fetch_profile(path: &str, name: &str) -> Result<AutoEqProfile, String> {
     let body = match response {
         Ok(res) => res.into_string().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(404, _)) => {
-            // Fallback to ParametricEQ.txt if FixedBandEQ.txt is not found
             let fallback_url = parametric_url(path);
             agent()
                 .get(&fallback_url)
@@ -247,7 +200,6 @@ pub fn fetch_profile(path: &str, name: &str) -> Result<AutoEqProfile, String> {
     parse_profile(name, &body)
 }
 
-/// Find which band index in [`BAND_HZ`] a frequency is closest to (log scale).
 fn closest_band(hz: f32) -> usize {
     if hz <= 0.0 {
         return 0;
@@ -265,12 +217,8 @@ fn closest_band(hz: f32) -> usize {
         .unwrap_or(0)
 }
 
-/// Parse an equalizer profile from text.
-///
-/// Supports:
-/// - AutoEq / Equalizer APO `FixedBandEQ.txt` & `ParametricEQ.txt`
-/// - AutoEq / Wavelet / squig.link `GraphicEQ: ...` format
-/// - Comma/space-separated CSV frequency response points
+/// Reads FixedBandEQ/ParametricEQ filter lines, `GraphicEQ:` lines, and
+/// CSV response points.
 pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
     let mut gains_db = [0.0f32; BANDS];
     let mut preamp_db = None;
@@ -283,7 +231,6 @@ pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
             continue;
         }
 
-        // 1. Preamp line: e.g. "Preamp: -7.5 dB"
         if line.to_lowercase().starts_with("preamp:") {
             if let Some(val_str) = line.split(':').nth(1) {
                 let clean = val_str.to_lowercase().replace("db", "").trim().to_string();
@@ -294,7 +241,6 @@ pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
             continue;
         }
 
-        // 2. GraphicEQ format: e.g. "GraphicEQ: 20 -0.3; 25 -0.4; 32 -1.1; ..."
         if line.to_lowercase().starts_with("graphiceq:") {
             let data = line.split(':').nth(1).unwrap_or("");
             for pair in data.split(';') {
@@ -308,7 +254,6 @@ pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
             continue;
         }
 
-        // 3. Filter line: e.g. "Filter 1: ON PK Fc 31 Hz Gain 6.9 dB Q 1.41"
         if line.to_lowercase().starts_with("filter") {
             if let Some(band) = filter_band(line) {
                 gains_db[closest_band(band.hz)] = band.gain_db.clamp(-GAIN_MAX_DB, GAIN_MAX_DB);
@@ -317,7 +262,6 @@ pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
             continue;
         }
 
-        // 4. Fallback line: CSV / space-separated "freq gain"
         let parts: Vec<&str> = line
             .split(&[',', ' ', '\t'][..])
             .filter(|s| !s.is_empty())
@@ -329,11 +273,9 @@ pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
         }
     }
 
-    // If GraphicEQ or CSV points were found and no discrete filters parsed:
     if !has_filters && !graphic_points.is_empty() {
         graphic_points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
         for (i, &band_hz) in BAND_HZ.iter().enumerate() {
-            // Interpolate gain at band_hz
             let gain = interpolate_gain(&graphic_points, band_hz);
             gains_db[i] = gain.clamp(-GAIN_MAX_DB, GAIN_MAX_DB);
         }
@@ -351,19 +293,10 @@ pub fn parse_profile(name: &str, text: &str) -> Result<AutoEqProfile, String> {
     })
 }
 
-/// Write a curve as Equalizer APO parametric text: a preamp line when there
-/// is one, then a peaking filter per band. The format AutoEq itself
-/// publishes, so a preset rox writes drops into Equalizer APO or anything
-/// else that reads one, and the round trip keeps what a graphic curve would
-/// drop on the floor: a `GraphicEQ:` line carries gains against fixed
-/// frequencies, and the bands in this window move and narrow.
-///
-/// Written at the precision the window can be set to rather than AutoEq's
-/// one decimal, so saving a preset and loading it back is a no-op instead of
-/// a nudge.
+/// Equalizer APO parametric text, the format AutoEq publishes. Parametric
+/// rather than GraphicEQ because bands here move and narrow; written at the
+/// window's precision so a save and reload is a no-op.
 pub fn format_bands(name: &str, bands: &[BandSetting], preamp_db: Option<f32>) -> String {
-    // The name is the file's stem, so this line is for whoever opens the
-    // file in an editor rather than for the reader below.
     let mut out = format!("# {name}\n");
 
     if let Some(db) = preamp_db {
@@ -383,11 +316,8 @@ pub fn format_bands(name: &str, bands: &[BandSetting], preamp_db: Option<f32>) -
     out
 }
 
-/// Read a curve back out of parametric text, one band per enabled filter in
-/// file order. None when the text holds no filter lines at all, which is a
-/// graphic curve or a response table and belongs to [`parse_profile`]:
-/// those only answer in gains, and the caller wants every number it can get
-/// before it falls back to that.
+/// One band per enabled filter line. None when there are none, so the caller
+/// falls back to [`parse_profile`].
 pub fn parse_bands(text: &str) -> Option<Vec<BandSetting>> {
     let bands: Vec<BandSetting> = text
         .lines()
@@ -399,14 +329,9 @@ pub fn parse_bands(text: &str) -> Option<Vec<BandSetting>> {
     (!bands.is_empty()).then_some(bands)
 }
 
-/// One `Filter 1: ON PK Fc 31 Hz Gain 6.9 dB Q 1.41` line as a band. None
-/// for a filter that's switched off, or one missing its center or its gain.
-/// A line with no Q reads at one octave, which is what the fixed-band files
-/// mean when they leave it out.
+/// A line with no Q reads at one octave, which is what fixed-band files mean.
 fn filter_band(line: &str) -> Option<BandSetting> {
     let lower = line.to_lowercase();
-    // Only enabled filters count; a disabled one is a band the profile's
-    // author took out.
     if !lower.contains(" on ") && !lower.contains(": on ") {
         return None;
     }
@@ -415,16 +340,13 @@ fn filter_band(line: &str) -> Option<BandSetting> {
     let mut gain_db: Option<f32> = None;
     let mut q: Option<f32> = None;
 
-    // The fields are named in the line rather than positional, and a shelf
-    // filter carries fewer of them than a peak, so each one is read off its
-    // own label instead of by counting tokens.
+    // Fields are labelled, and shelves carry fewer than peaks, so read by label.
     let tokens: Vec<&str> = line.split_whitespace().collect();
     for (index, token) in tokens.iter().enumerate() {
         let Some(value) = tokens.get(index + 1) else {
             continue;
         };
-        // The unit rides the number in some files ("Fc 31Hz") and stands as
-        // its own token in others, so the field's own unit comes off first.
+        // The unit is attached ("31Hz") in some files and separate in others.
         let number = |unit: &str| {
             let lower = value.to_lowercase();
             lower
@@ -449,7 +371,6 @@ fn filter_band(line: &str) -> Option<BandSetting> {
     })
 }
 
-/// Interpolate a gain value at `target_hz` from a sorted list of `(freq, gain)` points.
 fn interpolate_gain(points: &[(f32, f32)], target_hz: f32) -> f32 {
     if points.is_empty() {
         return 0.0;
@@ -468,7 +389,6 @@ fn interpolate_gain(points: &[(f32, f32)], target_hz: f32) -> f32 {
             if (f1 - f0).abs() < 1e-6 {
                 return g0;
             }
-            // Linear interpolation in log10 frequency space
             let t = (target_hz.log10() - f0.log10()) / (f1.log10() - f0.log10());
             return g0 + t * (g1 - g0);
         }
@@ -525,12 +445,8 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         assert_eq!(entries[1].source, "oratory1990");
     }
 
-    /// Real lines off `results/INDEX.md`: the three 1MORE Aero variants,
-    /// which carry parentheses in both the name and the path, a model whose
-    /// path holds two parenthesised runs back to back, and a plain entry for
-    /// company. Before the balanced scan the first four came back cut at
-    /// "1MORE Aero (ANC", with the rest of the path sitting in the source
-    /// column, and Apply on them fetched a path GitHub answers 404 to.
+    /// Real index lines with parentheses in name and path, including two
+    /// runs back to back.
     #[test]
     fn parentheses_in_a_name_and_a_path_survive() {
         const LINES: &str = r#"
@@ -558,7 +474,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         );
         assert_eq!(entries[2].source, "HypetheSonics on GRAS RA0045");
 
-        // Two runs in a row, neither of them nested in the other.
         assert_eq!(entries[3].name, "Audeze LCD-X (pre-2021) (worn earpads)");
         assert_eq!(
             entries[3].path,
@@ -566,7 +481,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         );
         assert_eq!(entries[3].source, "crinacle on GRAS 43AG-7");
 
-        // The plain case reads the same as it always did.
         assert_eq!(entries[4].name, "Sennheiser HD 600");
         assert_eq!(
             entries[4].path,
@@ -574,8 +488,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         );
         assert_eq!(entries[4].source, "oratory1990");
 
-        // Every path joins to a URL that keeps the whole folder name, which
-        // is the part that decides whether the fetch finds anything.
         assert!(
             fixed_band_url(&entries[0].path).ends_with(
                 "/1MORE%20Aero%20(ANC%20Off)/1MORE%20Aero%20(ANC%20Off)%20FixedBandEQ.txt"
@@ -583,9 +495,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         );
     }
 
-    /// Two lines upstream carry a stray ")" after the link, so the scan ends
-    /// with a leftover parenthesis where the source column starts. The path
-    /// is whole either way; the source shouldn't wear the typo.
     #[test]
     fn a_stray_closing_parenthesis_stays_out_of_the_source() {
         const LINES: &str = r#"
@@ -607,10 +516,8 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         assert_eq!(entries[1].source, "oratory1990");
     }
 
-    /// Today's index leaves parentheses literal in the link target, but
-    /// percent-encoded ones are just as valid a way to write the same path.
-    /// They carry no depth for the scan, so the run ends where it should
-    /// either way and the encoding goes back out to GitHub untouched.
+    /// Percent-encoded parentheses carry no depth for the scan and go back out
+    /// untouched.
     #[test]
     fn encoded_parentheses_in_a_path_are_left_alone() {
         const LINE: &str = "- [1MORE Aero (ANC Off)](./HypetheSonics/GRAS%20RA0045%20in-ear/1MORE%20Aero%20%28ANC%20Off%29) by HypetheSonics on GRAS RA0045";
@@ -625,8 +532,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         assert_eq!(entries[0].source, "HypetheSonics on GRAS RA0045");
     }
 
-    /// A line that opens a bracket or a parenthesis and never closes it is
-    /// skipped rather than swallowing the rest of the line.
     #[test]
     fn an_unclosed_link_is_skipped() {
         assert!(parse_index("- [1MORE Aero (ANC Off)(./x/y) by someone").is_empty());
@@ -686,11 +591,8 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         assert!((profile.gains_db[9] - -6.5).abs() < 0.05);
     }
 
-    /// A hand-shaped curve makes the whole trip through a preset file: every
-    /// band's center, gain and width come back where they were, including the
-    /// two that were dragged off their octave and narrowed. This is the
-    /// reason presets aren't written as a graphic curve, so it's the test
-    /// that would catch a change back to one.
+    /// Center, gain and width all survive a preset file, including bands
+    /// dragged off their octave. The reason presets aren't GraphicEQ.
     #[test]
     fn bands_round_trip_through_a_preset_file() {
         let shaped = vec![
@@ -719,7 +621,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
                 gain_db: 0.0,
                 q: Q_OCTAVE,
             },
-            // Off its octave and narrow, the shape a graphic curve loses.
             BandSetting {
                 hz: 1350.0,
                 gain_db: -6.75,
@@ -756,15 +657,11 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
             assert!((read.q - wrote.q).abs() < 0.005);
         }
 
-        // The same file is still a profile to anything that only speaks in
-        // gains, which is what keeps a saved preset usable elsewhere.
         let profile = parse_profile("Night Shift", &text).expect("and as a profile");
         assert!((profile.gains_db[0] - 4.25).abs() < 0.01);
         assert!((profile.gains_db[9] - -3.0).abs() < 0.01);
     }
 
-    /// A preamp survives the write, since a saved AutoEq profile carries one
-    /// and the file is what a user hands to another player.
     #[test]
     fn a_preamp_is_written_and_read_back() {
         let text = format_bands(
@@ -783,13 +680,9 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         );
     }
 
-    /// A graphic curve holds no bands to read, so it falls through to the
-    /// profile parser rather than coming back as an empty list.
     #[test]
     fn a_graphic_curve_holds_no_bands() {
         assert!(parse_bands(SAMPLE_GRAPHIC_EQ).is_none());
-        // A fixed-band file does, at one octave each, since those lines carry
-        // no Q of their own.
         let bands = parse_bands(SAMPLE_FIXED_BAND).expect("filter lines are bands");
         assert_eq!(bands.len(), 10);
         assert!((bands[0].hz - 31.0).abs() < 0.05);
@@ -797,8 +690,6 @@ GraphicEQ: 20 -0.3; 32 6.9; 64 3.3; 125 -1.1; 250 -1.6; 500 0.6; 1000 -0.8; 2000
         assert!((bands[0].q - 1.41).abs() < 0.005);
     }
 
-    /// A filter someone switched off isn't a band, and a line missing its
-    /// gain isn't either.
     #[test]
     fn off_and_half_written_filters_are_skipped() {
         let text = "Filter 1: OFF PK Fc 31 Hz Gain 6.9 dB Q 1.41\n\

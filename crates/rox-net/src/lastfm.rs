@@ -1,19 +1,7 @@
-//! The signed audioscrobbler API: request signing, the one call that
-//! sends them, and the connect flow's state. All of it blocks, so the
-//! app runs it on the background executor. The api key and secret come
-//! from the build's own identity ([`keys`]), with the settings file's
-//! pair as the override for builds that ship none. The scrobbler built
-//! on top of this, the part that tracks player state, is in rox-services.
-//!
-//! The protocol isn't Last.fm's alone: Libre.fm serves the same methods
-//! at its own host, so the call takes its root as an argument and
-//! [`crate::librefm`] points it there.
-//!
-//! Not everything an account needs is signed. Reading a public profile
-//! takes an api key and no session at all, so the account reads the
-//! imports run on live in [`user`] beside the signing rather than in the
-//! enrichment providers: they're the same identity asking about the same
-//! connected account.
+//! The signed audioscrobbler API: request signing, the one call that sends
+//! it, and the connect flow's state. Libre.fm serves the same protocol, so
+//! the call takes its root as an argument. The unsigned public-profile
+//! reads the imports use live in [`user`].
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,11 +9,9 @@ use std::fmt;
 pub mod keys;
 pub mod user;
 
-/// Whether this build has its own api identity; without one the
-/// settings page asks for the user's pair.
-// The pair are consts baked in at compile time, so clippy can const-eval
-// this and calls it a constant condition. That's exactly the question
-// being asked: which build am I?
+/// Whether this build has its own api identity.
+// Clippy const-evals the baked pair and calls this a constant condition.
+// That's the point: which build am I?
 #[allow(clippy::const_is_empty)]
 pub fn has_builtin_keys() -> bool {
     !keys::API_KEY.is_empty() && !keys::API_SECRET.is_empty()
@@ -33,12 +19,8 @@ pub fn has_builtin_keys() -> bool {
 
 const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 
-/// Where every call in this module and its children goes: the constant
-/// above, or whatever `ROX_LASTFM_API_ROOT` names in a debug build. The
-/// override exists for one job, pointing the import paths at a stand-in
-/// server so they can be exercised without anyone's real listening
-/// history, and a release build never reads the variable, so a shipped
-/// rox cannot be aimed at another host by its environment.
+/// `ROX_LASTFM_API_ROOT` overrides the root in debug builds only, for
+/// testing imports against a stand-in server. Release builds never read it.
 pub fn api_root() -> String {
     override_root().unwrap_or_else(|| API_ROOT.to_string())
 }
@@ -55,9 +37,7 @@ fn override_root() -> Option<String> {
     None
 }
 
-/// The api_sig the API requires on every signed call: the parameters
-/// sorted by name, concatenated as name-value, the secret appended, md5
-/// hex over the lot. `format` stays out of the signature per the docs.
+/// md5 over the params sorted by name, name-value concatenated, secret appended.
 fn sign(params: &BTreeMap<String, String>, secret: &str) -> String {
     let mut base = String::new();
     for (name, value) in params {
@@ -68,9 +48,6 @@ fn sign(params: &BTreeMap<String, String>, secret: &str) -> String {
     format!("{:x}", md5::compute(base.as_bytes()))
 }
 
-/// A failed call: Last.fm's own error code where the service answered,
-/// none where the request never got that far. The message is the part
-/// worth showing; the code tells a retry from a waste of time.
 pub struct ApiError {
     code: Option<i64>,
     message: String,
@@ -83,12 +60,8 @@ impl fmt::Display for ApiError {
 }
 
 impl ApiError {
-    /// Whether the same call could plausibly work later. A transport
-    /// failure is the offline case, always worth another go. Of Last.fm's
-    /// own codes only the service-side ones qualify: 8 operation failed,
-    /// 11 and 16 service down or busy, 29 rate limit. A rejected session
-    /// or a track it can't name comes back identical every time, so those
-    /// stop where they are rather than burning the backoff.
+    /// Transport failures and Last.fm's service-side codes (8 operation
+    /// failed, 11/16 down or busy, 29 rate limit) are worth retrying.
     pub fn retryable(&self) -> bool {
         match self.code {
             None => true,
@@ -96,19 +69,13 @@ impl ApiError {
         }
     }
 
-    /// Whether Last.fm refused the session itself (code 9), the one
-    /// failure that means the stored key is worth nothing to this build:
-    /// revoked on the site, or minted under a different api key. Every
-    /// call this build makes fails the same way until it reconnects, so
-    /// the answer is worth acting on rather than logging.
+    /// Code 9: the stored session is dead for this build (revoked, or minted
+    /// under another api key).
     pub fn session_rejected(&self) -> bool {
         self.code == Some(9)
     }
 }
 
-/// One signed Last.fm call, blocking: POST the parameters, parse the
-/// JSON, surface the API's own error message when it sends one. Runs on
-/// the background executor only.
 pub fn call(
     method: &str,
     secret: &str,
@@ -117,9 +84,7 @@ pub fn call(
     call_at(&api_root(), method, secret, params)
 }
 
-/// The same call against any host that speaks the protocol: Last.fm's
-/// own root above, Libre.fm's in its module. The signing and the error
-/// shape don't change with the host, only where the form goes.
+/// [`call`] against any host that speaks the protocol.
 pub fn call_at(
     root: &str,
     method: &str,
@@ -134,17 +99,13 @@ pub fn call_at(
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    // A request that never reached the service, or a body that won't read
-    // or parse, gets no code: the next try may well go through, so these
-    // count as retryable rather than as a rejection.
+    // No code means the request never landed, which is retryable.
     let transport = |message: String| ApiError {
         code: None,
         message,
     };
-    // An API error still has a JSON body worth reading, so a status
-    // failure parses like a success. Use the shared provider agent for its
-    // User-Agent and timeout; a bare ureq::post has neither, so a hung endpoint
-    // parks the connect flow in Confirming forever.
+    // A status failure still carries a JSON error body. The shared agent's
+    // timeout matters: a bare ureq::post can hang the connect flow forever.
     let text = match crate::providers::agent().post(root).send_form(&pairs) {
         Ok(response) => response
             .into_string()
@@ -169,22 +130,15 @@ pub fn call_at(
     Ok(value)
 }
 
-/// Where the connect flow stands, for the settings window's readout.
-/// Connected is not a phase: a session filed under this build's api key
-/// is.
+/// Where the connect flow stands. Connected isn't a phase: a session filed
+/// under this build's api key is.
 #[derive(Clone, PartialEq)]
 pub enum AuthPhase {
     Idle,
-    /// auth.getToken is in flight.
     Requesting,
-    /// The browser has the authorize page; the token waits for the user
-    /// to come back and finish.
     Waiting(String),
-    /// auth.getSession is in flight.
     Confirming,
-    /// Last.fm refused the session this build was holding, so it was
-    /// dropped. Its own phase rather than a `Failed`: nothing the user
-    /// did failed, and the fix is a plain reconnect.
+    /// Last.fm refused the held session. Not `Failed`: the fix is a reconnect.
     Rejected,
     Failed(String),
 }
@@ -199,8 +153,6 @@ mod tests {
             code: Some(code),
             message: "api said no".to_string(),
         };
-        // No code at all is the offline case: the request never reached
-        // the service.
         assert!(
             ApiError {
                 code: None,

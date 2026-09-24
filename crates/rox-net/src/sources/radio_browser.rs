@@ -1,18 +1,7 @@
-//! radio-browser.info, the community station directory, and the answer to
-//! "where do I even get a stream URL". It's keyless and public, with two
-//! asks from its maintainers that this module honours: send a real
-//! User-Agent (the shared agent does), and don't point every call at the
-//! `all.` round-robin name. So the first search fetches the mirror list
-//! off that name, picks one mirror for the rest of the session, and only
-//! falls back to the round-robin name when the list can't be had.
-//!
-//! What comes back is plain data for the stations panel to show. Nothing
-//! is written here and nothing is played; a hit becomes a station row only
-//! when someone adds it, through the same `stations::put` a typed URL goes
-//! through. Two kinds of hit are dropped before they're shown. Broken
-//! ones, since the directory checks every stream and says which failed.
-//! HLS ones, since a `.m3u8` is a playlist of segments and the engine's
-//! transport reads one byte stream.
+//! radio-browser.info, the community station directory. Its maintainers ask
+//! for a real User-Agent and that clients not hammer the `all.` round-robin
+//! name, so the first search picks one mirror for the session. Broken and HLS
+//! stations are dropped: the transport reads one byte stream.
 
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,34 +11,24 @@ use serde_json::Value;
 use super::{number, text};
 use crate::providers::{agent, net_reason};
 
-/// The round-robin name the directory publishes. Asked for the mirror list
-/// once; searches go to the mirror it named.
 const ANY_MIRROR: &str = "all.api.radio-browser.info";
 
-/// One station the directory knows about.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub name: String,
-    /// The stream itself, past any `.pls` the station's site hands out;
-    /// the directory resolves those on its side.
+    /// Past any `.pls`; the directory resolves those.
     pub url: String,
     pub homepage: String,
     pub favicon: String,
-    /// The directory's tags, comma joined the way it sends them.
     pub tags: String,
-    /// ISO country code, upper case, empty when the directory has none.
     pub country: String,
-    /// The codec as the directory last heard it ("MP3", "AAC"), empty when
-    /// it doesn't know.
     pub codec: String,
-    /// Zero when the directory doesn't know.
+    /// Zero when unknown.
     pub bitrate_kbps: u16,
     pub votes: u64,
 }
 
-/// Stations whose name matches `text`, most voted first, `limit` at most.
-/// Blocking, so it runs on the background executor like every other call
-/// in this crate.
+/// Most voted first.
 pub fn search(text: &str, limit: usize) -> Result<Vec<Found>, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -71,10 +50,7 @@ pub fn search(text: &str, limit: usize) -> Result<Vec<Found>, String> {
     parse(&body)
 }
 
-/// The mirror this session talks to. Picked once: the directory asks that
-/// clients spread themselves across mirrors rather than all leaning on the
-/// round-robin name, and the pick has to be per client, not per call, or
-/// a search pages against three different caches.
+/// Picked once per session, so paging doesn't hit three different caches.
 fn mirror() -> &'static str {
     static MIRROR: OnceLock<String> = OnceLock::new();
 
@@ -91,8 +67,7 @@ fn mirror() -> &'static str {
     })
 }
 
-/// The mirror names off a `/json/servers` reply, deduplicated. The list
-/// carries one entry per address, so a dual-stack mirror shows up twice.
+/// Deduplicated: a dual-stack mirror is listed once per address.
 fn mirrors(body: &str) -> Vec<String> {
     let Ok(Value::Array(servers)) = serde_json::from_str::<Value>(body) else {
         return Vec::new();
@@ -109,8 +84,7 @@ fn mirrors(body: &str) -> Vec<String> {
     names
 }
 
-/// One name off the list, spread by the clock rather than a random
-/// number generator this crate doesn't otherwise need.
+/// Spread by the clock, to avoid an RNG dependency.
 fn pick(names: &[String]) -> Option<String> {
     if names.is_empty() {
         return None;
@@ -124,9 +98,6 @@ fn pick(names: &[String]) -> Option<String> {
     names.get(nanos % names.len()).cloned()
 }
 
-/// The search reply as stations worth showing. The filters here are the
-/// module header's: nothing broken, nothing HLS, nothing without a stream
-/// the transport can open.
 fn parse(body: &str) -> Result<Vec<Found>, String> {
     let Value::Array(stations) = serde_json::from_str::<Value>(body).map_err(|e| e.to_string())?
     else {
@@ -141,9 +112,7 @@ fn found(station: &Value) -> Option<Found> {
         return None;
     }
 
-    // The resolved URL is the stream past a .pls; the plain one is what
-    // the station's site links, and it's the fallback when the directory
-    // hasn't resolved it yet.
+    // Fall back to the plain URL when the directory hasn't resolved it.
     let mut url = text(station, "url_resolved");
     if url.is_empty() {
         url = text(station, "url");
@@ -174,8 +143,6 @@ fn found(station: &Value) -> Option<Found> {
 mod tests {
     use super::*;
 
-    /// Three stations as the directory sends them: one good, one HLS, one
-    /// whose resolved URL is empty and falls back to the plain one.
     const REPLY: &str = r#"[
         {"name":"Adroit Jazz Underground","url":"https://icecast.walmradio.com:8443/jazz",
          "url_resolved":"https://icecast.walmradio.com:8443/jazz","homepage":"https://walmradio.com/",
@@ -206,7 +173,6 @@ mod tests {
         let found = parse(REPLY).unwrap();
 
         assert_eq!(found[1].url, "http://example.org/stream");
-        // Numbers sent as strings still read.
         assert_eq!(found[1].bitrate_kbps, 96);
         assert_eq!(found[1].votes, 2);
         assert_eq!(found[1].country, "");

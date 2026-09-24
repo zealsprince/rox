@@ -1,24 +1,13 @@
-//! Synthesize an N-track library database, no audio files involved.
+//! Synthesize an N-track library database, no audio files involved, for the
+//! scale numbers in `docs/0R-research/02-library-scale.md`. Rows go through
+//! [`store::insert_batch`], the scanner's path, so the benches load the shape
+//! the app produces.
 //!
-//! The scale numbers in `docs/0R-research/02-library-scale.md` came out of a
-//! prototype crate that no longer exists, so nothing in the tree could
-//! reproduce them and every claim about the projection at a million tracks
-//! was an assertion. This generator is the missing half: it writes rows
-//! straight through [`store::insert_batch`], the same path the scanner uses,
-//! so the database the benches load is the shape the app actually produces.
-//!
-//! Realistic shape matters here, realism doesn't. Nobody needs the titles to
-//! read well; what has to hold is the cardinality, because the projection's
-//! whole design rests on interned columns being a hundredth of the row count.
-//! The research doc measured 272k artists and 433k distinct album names at 10
-//! million tracks, so the pools scale at those ratios (2.72% and 4.33% of N)
-//! and the picks are Zipf-ish, giving a few artists a long tail of tracks the
-//! way a real collection does. Every column is deterministic from `--seed`,
-//! `added` included (insert_batch stamps that one with the clock, so the run
-//! rewrites it), which is what makes a before/after measurement compare like
-//! with like: two runs at the same N hold the same rows. Not the same bytes,
-//! though. The pages carry slack from the `added` rewrite, so the files
-//! differ where their contents don't.
+//! Cardinality is what has to be realistic: the pools scale at the research
+//! doc's 10M-track ratios (272k artists, 433k albums) with Zipf-ish picks.
+//! Every column is deterministic from `--seed`, `added` included, so two runs
+//! at the same N hold the same rows (not the same bytes: the `added` rewrite
+//! leaves page slack).
 //!
 //! ```sh
 //! cargo run --release -p rox-library --example genlib -- \
@@ -31,13 +20,11 @@ use std::time::Instant;
 use rox_library::replaygain::ReplayGain;
 use rox_library::{TrackRow, store};
 
-/// Distinct artists as a share of tracks, and distinct album names the same
-/// way. Straight off the research doc's 10M row: 272k artists, 433k albums.
+/// The research doc's 10M row: 272k artists, 433k albums.
 const ARTIST_SHARE: f64 = 0.0272;
 const ALBUM_SHARE: f64 = 0.0433;
 
-/// SplitMix64. Small enough to read, good enough for synthetic tags, and it
-/// keeps `rand` out of the crate for a generator nobody ships.
+/// SplitMix64, to keep `rand` out of the crate.
 struct Rng(u64);
 
 impl Rng {
@@ -61,10 +48,8 @@ impl Rng {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// A Zipf-ish index into `0..n`: `n^u` for uniform `u` has density
-    /// proportional to 1/x, so the low indices take most of the draws and
-    /// the tail still gets hit. Cheap, and the exact exponent doesn't
-    /// matter as long as the reuse is skewed rather than flat.
+    /// `n^u` for uniform `u` has density proportional to 1/x, so low indices take
+    /// most draws.
     fn zipf(&mut self, n: u64) -> u64 {
         if n <= 1 {
             return 0;
@@ -74,11 +59,9 @@ impl Rng {
     }
 }
 
-/// One shared vocabulary for artists, albums, and titles. 128 words gives
-/// 16k two-word names and 2.1M three-word ones, which covers the artist and
-/// album pools past 10 million tracks without a numeric suffix anywhere.
-/// "moon", "velvet" and "thunder" are in here on purpose: the research doc's
-/// search timings used those needles, so the benches can reuse them.
+/// 128 words give 16k two-word and 2.1M three-word names, enough past 10M
+/// tracks. "moon", "velvet" and "thunder" are the research doc's search
+/// needles.
 const WORDS: [&str; 128] = [
     "Moon", "Velvet", "Thunder", "Amber", "Hollow", "Silver", "Winter", "Ember", "Static", "Paper",
     "Glass", "Iron", "Neon", "Salt", "River", "Copper", "Marble", "Cinder", "Frost", "Harbor",
@@ -96,9 +79,7 @@ const WORDS: [&str; 128] = [
     "Saffron", "Tidal", "Vector", "Wharf", "Yield",
 ];
 
-/// A genre list with the usual long tail. The picks are Zipf-ish over this
-/// order, so rock and electronic carry most of the library and the bottom
-/// half stays rare, which is what the filter panel's value lists look like.
+/// Picked Zipf-ish in this order, so the bottom half stays rare.
 const GENRES: [&str; 40] = [
     "Rock",
     "Electronic",
@@ -142,9 +123,7 @@ const GENRES: [&str; 40] = [
     "Chiptune",
 ];
 
-/// The four containers with the numbers a scanner would read off them:
-/// extension, bitrate kbps, sample rate, bit depth, and bytes a second for
-/// the file size. Weights are the first field of the pick below.
+/// Extension, bitrate kbps, sample rate, bit depth, bytes a second.
 const CODECS: [(&str, u16, u32, u8, u64); 4] = [
     ("flac", 900, 44100, 16, 112_000),
     ("mp3", 320, 44100, 0, 40_000),
@@ -152,9 +131,8 @@ const CODECS: [(&str, u16, u32, u8, u64); 4] = [
     ("ogg", 192, 48000, 0, 24_000),
 ];
 
-/// A name from the shared vocabulary: two words below 16k, three above, so
-/// the map from index to name is injective across the whole pool and every
-/// generated pool entry is genuinely distinct.
+/// Two words below 16k, three above, so every pool index names a distinct
+/// value.
 fn name(index: u64) -> String {
     let n = WORDS.len() as u64;
     let (a, b) = ((index % n) as usize, ((index / n) % n) as usize);
@@ -166,11 +144,8 @@ fn name(index: u64) -> String {
     }
 }
 
-/// A stride that walks `0..n` without repeating, so a sequential pass over
-/// album entities touches every artist exactly once while the names it picks
-/// stay scattered. Without the scatter the first two thirds of the database
-/// would hold artists in index order, which flatters the sharded load's
-/// symbol merge.
+/// A non-repeating stride over `0..n`. Artists in index order would flatter the
+/// sharded load's symbol merge.
 fn stride(n: u64) -> u64 {
     fn gcd(a: u64, b: u64) -> u64 {
         if b == 0 { a } else { gcd(b, a % b) }
@@ -182,11 +157,8 @@ fn stride(n: u64) -> u64 {
     k
 }
 
-/// The artist and album name one album entity is filed under. Every artist
-/// gets an album of its own before any reuse starts, which pins the distinct
-/// count to the pool size instead of leaving it to how the Zipf tail happened
-/// to fall; past that the draws are skewed, so the artists that came up early
-/// keep coming up.
+/// Every artist gets an album before reuse starts, pinning the distinct count
+/// to the pool size.
 fn credits(
     rng: &mut Rng,
     entity: u64,
@@ -211,13 +183,10 @@ struct Args {
     force: bool,
 }
 
-/// The table genlib stamps its own output with, and the only thing that makes
-/// an existing `--out` safe to delete. A synthetic library and a real one are
-/// the same shape, so without a marker the difference between regenerating a
-/// bench database and wiping somebody's library is one mistyped path.
+/// The only thing that makes an existing `--out` safe to delete: a synthetic
+/// library and a real one are the same shape.
 const MARKER: &str = "genlib";
 
-/// Whether a file already at `--out` is a database genlib wrote.
 fn is_genlib_db(path: &std::path::Path) -> bool {
     use rox_library::rusqlite::{Connection, OpenFlags};
     let Ok(conn) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
@@ -237,10 +206,8 @@ fn parse_args() -> Result<Args, String> {
         tracks: 100_000,
         out: PathBuf::from("/tmp/rox-bench.db"),
         seed: 0x5EED,
-        // Big on purpose. insert_batch asks the whole table once a batch
-        // whether any row carries a measured gain, and there's no index
-        // behind that question, so a small batch turns the populate into a
-        // table scan per few thousand rows.
+        // Big on purpose: insert_batch scans the table once per batch for measured
+        // gains, with no index behind it.
         batch: 50_000,
         force: false,
     };
@@ -302,11 +269,8 @@ fn main() {
         }
     };
 
-    // A stale database would upsert onto its rows instead of writing fresh
-    // ones, which is a different measurement than the one this makes. Only
-    // genlib's own output gets deleted for that, though: --out points at a
-    // library-shaped file, and the one it points at by accident is somebody's
-    // real library.
+    // Only delete genlib's own output. A mistyped --out is somebody's real
+    // library.
     if args.out.exists() && !args.force && !is_genlib_db(&args.out) {
         eprintln!(
             "genlib: {} already exists and genlib did not write it; \
@@ -335,9 +299,7 @@ fn main() {
 
     let artists = ((args.tracks as f64 * ARTIST_SHARE).round() as u64).max(1);
     let albums = ((args.tracks as f64 * ALBUM_SHARE).round() as u64).max(1);
-    // Album length averages tracks-per-album so the entity count lands on
-    // the album pool size, which is what makes the distinct-name count come
-    // out at the target instead of near it.
+    // Lands the distinct album count on the pool size exactly.
     let per_album = (args.tracks as f64 / albums as f64).max(1.0);
     let len_span = ((2.0 * per_album).round() as u64).max(2) - 1;
     let strides = (stride(artists), stride(albums));
@@ -355,9 +317,7 @@ fn main() {
     let mut album_len: u64 = 1 + rng.below(len_span);
     let mut written: u64 = 0;
     let mut last_report = 0u64;
-    // Whose album this is and what it's called, drawn once when the entity
-    // advances. Per-track would give one directory a different artist every
-    // file, which is not a library, it's a folder of loose tracks.
+    // Drawn per entity, not per track, so a directory has one artist.
     let (mut artist, mut album) = credits(&mut rng, entity, artists, albums, strides);
 
     for _ in 0..args.tracks {
@@ -370,9 +330,7 @@ fn main() {
         let title = name(rng.next_u64() % (WORDS.len() as u64).pow(3));
 
         let (codec, bitrate, sample_rate, bit_depth, bytes_per_sec) = {
-            // Weighted 40/35/15/10 across the table above, which is roughly
-            // what a collection that has been re-ripped a few times looks
-            // like.
+            // Weighted 40/35/15/10 across the table above.
             let roll = rng.below(100);
             CODECS[match roll {
                 0..=39 => 0,
@@ -382,8 +340,7 @@ fn main() {
             }]
         };
         let duration_ms = 90_000 + rng.below(360_000) as u32;
-        // A tenth of the library carries a second genre, because the column
-        // holds "; " lists and the filter has to walk them.
+        // A tenth carry a second genre, so the filter walks "; " lists.
         let genre = {
             let first = GENRES[rng.zipf(GENRES.len() as u64) as usize];
             if rng.below(10) == 0 {
@@ -397,8 +354,6 @@ fn main() {
                 first.to_string()
             }
         };
-        // Untagged years are real and the projection has a symbol for them,
-        // so a few percent of the library has none.
         let year = if rng.below(100) < 3 {
             0
         } else {
@@ -415,10 +370,8 @@ fn main() {
         } else {
             0
         };
-        // Two fifths of files carry ReplayGain tags, all of them read off
-        // the file rather than measured by rox: a measured row makes
-        // insert_batch take its per-row re-meter branch, which is a
-        // different write path than the one a scan of tagged files walks.
+        // Tagged gains only: a measured row sends insert_batch down its re-meter
+        // branch, a different write path than a scan takes.
         let replay_gain = if rng.below(100) < 40 {
             ReplayGain {
                 track_db: Some(-12.0 + rng.unit() as f32 * 10.0),
@@ -434,8 +387,6 @@ fn main() {
         } else {
             None
         };
-        // A twentieth of the library has sort names, which is about what a
-        // collection with some Japanese and some classical in it carries.
         let sorted = rng.below(20) == 0;
         let sort_of = |s: &str| {
             if sorted {
@@ -498,11 +449,8 @@ fn main() {
         store::insert_batch(&mut conn, &rows).expect("insert the last batch");
     }
 
-    // insert_batch stamps `added` with the wall clock, the one column that
-    // would otherwise differ between two runs at the same seed. Rewrite it to
-    // a seed-derived spread over five years, so what a run produces depends
-    // on its arguments and nothing else, and a sort by date added still has
-    // something scattered to sort.
+    // insert_batch stamps `added` with the clock. Rewrite it to a seed-derived
+    // five-year spread so runs are reproducible.
     let step = (Rng::new(args.seed ^ 0xADDED).next_u64() % 100_003) as i64 | 1;
     conn.execute(
         "UPDATE tracks SET added = 1500000000 + (id * ?1) % 157680000",
@@ -510,8 +458,7 @@ fn main() {
     )
     .expect("stamp the added column");
 
-    // WAL checkpoint before the size report, or most of the database is
-    // still sitting in the -wal file and the number is a fiction.
+    // Checkpoint first, or most of the database is still in the -wal file.
     conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
         .expect("checkpoint the WAL");
     drop(conn);

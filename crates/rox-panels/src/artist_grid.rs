@@ -1,26 +1,19 @@
-//! The artist grid panel: the catalog's people as a wall of tiles, square,
-//! the lanes splitting the panel's cross extent evenly so the wall runs
-//! edge to edge, the album grid's shape one level up. Tiles show the
-//! artist's own portrait when the setting is on, otherwise the cover of
-//! the first album on their shelf.
+//! The artist grid panel: the catalog's people as a wall of square tiles,
+//! the album grid's shape one level up. Tiles show the artist's portrait
+//! when the setting is on, otherwise their first album's cover.
 //!
-//! One tile per credited album artist, the library's own grouping rule, so
-//! a record's guests stay on the act that released it rather than earning
-//! a tile per feature. A setting regroups on the track artist for when you
-//! want those guest spots findable; see [`ArtistGroup`].
+//! One tile per credited album artist, the library's grouping rule, so a
+//! record's guests stay on the act that released it. A setting regroups on
+//! the track artist; see [`ArtistGroup`].
 //!
-//! Its point is picking. Clicking a tile writes the artist onto the shared
-//! filter, the same field the filter panel's Artist column writes, so every
-//! global-following panel narrows to that artist at once: the album grid
-//! below shows their records, the library their tracks. The wall itself
-//! leaves that field out of its own mask, the filter panel's column rule,
-//! so picking never collapses the shelf you picked from. A double click
-//! plays the artist instead.
+//! Clicking a tile writes the artist onto the shared filter, the field the
+//! filter panel's Artist column writes, so every global-following panel
+//! narrows to them. The wall leaves that field out of its own mask, so
+//! picking never collapses the shelf you picked from. A double click plays
+//! the artist instead.
 //!
-//! A per-view query narrows the wall the usual way, and the artist tally
-//! under each name counts what the query left. Deliberately not a library
-//! view mode: per the workspace rule, browsing surfaces are panels of
-//! their own.
+//! Deliberately not a library view mode: per the workspace rule, browsing
+//! surfaces are panels of their own.
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -62,23 +55,15 @@ use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
-/// The tile size knob's range, in px, the album grid's scale. The strip's
-/// top is the stored thumbnail's long side, so scrubbing never
-/// upscales past what either store keeps; a typed size can, and goes soft
-/// for it.
+/// The tile size knob's range, in px. The top is the stored thumbnail's
+/// long side, so scrubbing never upscales.
 const TILE_MIN: f32 = 96.;
 const TILE_MAX: f32 = 256.;
 
-/// The tile rounding knob's ceiling, in percent of circular. Artists
-/// default to the full circle, which tells a face apart from a record
-/// sleeve at a glance.
 const TILE_ROUNDING_MAX: f32 = 100.;
 
-/// The tile gap knob's ceiling, the panel frame sliders' scale.
 const TILE_GAP_MAX: f32 = 24.;
 
-/// How many columns the wall falls back to before its first paint has
-/// measured a width.
 const FALLBACK_COLS: usize = 5;
 
 /// Rows of tiles asked for past each edge of the viewport, so a scroll
@@ -93,11 +78,8 @@ fn default_rounding() -> f32 {
     100.
 }
 
-/// Which name a tile stands for. The credited album artist by default, the
-/// library's own grouping rule: one shelf per act, guests and features
-/// folded onto the record they appear on. The track artist splits those
-/// back out, so every "feat." credit earns a tile of its own: a far
-/// longer wall, and the one to pick when you want a guest spot findable.
+/// The album artist folds guests onto the record they appear on. The track
+/// artist gives every "feat." credit a tile of its own.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtistGroup {
@@ -114,8 +96,6 @@ impl ArtistGroup {
         }
     }
 
-    /// The filter field a pick writes, the same values the filter panel's
-    /// matching column writes.
     fn field(self) -> FilterField {
         match self {
             ArtistGroup::AlbumArtist => FilterField::AlbumArtist,
@@ -123,8 +103,7 @@ impl ArtistGroup {
         }
     }
 
-    /// The projection column the runs break on and the table its symbols
-    /// name.
+    /// The column the runs break on and the table its symbols name.
     fn source(self, projection: &Projection) -> (&[u32], &SymTable) {
         match self {
             ArtistGroup::AlbumArtist => (&projection.album_artist, &projection.album_artists),
@@ -133,101 +112,67 @@ impl ArtistGroup {
     }
 }
 
-/// The artist grid's per-view config: what a saved layout restores, and
-/// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ArtistGridConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
     pub query: String,
-    /// Show the search box; the query only applies while it shows.
+    /// The query only applies while the search box shows.
     #[serde(default)]
     pub search: bool,
-    /// Whether this wall filters by its own query or follows the shared
-    /// app-wide one.
     #[serde(default)]
     pub query_source: QuerySource,
-    /// Which name a tile stands for: the credited album artist, or the
-    /// track artist with every feature split back out.
     #[serde(default)]
     pub group: ArtistGroup,
-    /// Scroll the wall vertically, rows filling the width; off scrolls it
-    /// horizontally, columns filling the height.
     #[serde(default = "default_true")]
     pub vertical: bool,
-    /// A letter index rail in its own gutter along the wall's edge, each
-    /// initial a click that jumps to the first artist starting with it.
     #[serde(default)]
     pub letters: bool,
-    /// Keep the rail to one line that scrolls instead of wrapping, for
-    /// libraries whose scripts spill past one row of initials.
     #[serde(default)]
     pub letters_compact: bool,
-    /// Which edge of the wall the rail's gutter hangs on. The far edge by
-    /// default.
     #[serde(default)]
     pub letters_side: LetterSide,
-    /// The preferred tile edge in px. The strip picks inside
-    /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size can go past the top.
+    /// Preferred tile edge in px. A typed size can go past [`TILE_MAX`].
     #[serde(default = "default_tile")]
     pub tile: f32,
-    /// Picking an artist writes them onto the shared filter, so every
-    /// panel following the shared query narrows to them. On by default,
-    /// since driving the rest of the workspace is the wall's job. Off
-    /// leaves the pick as a plain selection, the album grid's behavior.
+    /// Picking writes the shared filter. Off leaves the pick as a plain
+    /// selection.
     #[serde(default = "default_true")]
     pub pick_filters: bool,
-    /// Show the artist's own portrait instead of an album cover, fetched
-    /// once per name and cached. Off by default; a wall of a thousand
-    /// unknown names shouldn't reach for the network unasked.
+    /// Off by default, so a big wall doesn't reach for the network unasked.
     #[serde(default)]
     pub portraits: bool,
-    /// Scroll to the playing artist when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the wall goes untouched for a spell, slide back to the
-    /// playing artist on its own.
+    /// Slide back to the playing artist after the wall sits idle.
     #[serde(default)]
     pub resume_playing: bool,
-    /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
-    /// While a track plays, fade every tile but the playing artist's;
-    /// hovering lights a tile back up.
     #[serde(default)]
     pub dim_playing: bool,
-    /// The same focus effect in color: drain every tile but the playing
-    /// artist's to grayscale.
     #[serde(default)]
     pub desaturate_playing: bool,
-    /// Keep the dim and desaturate effects on all the time, not only while
-    /// a track plays.
+    /// Dim and desaturate even when nothing plays.
     #[serde(default)]
     pub dim_always: bool,
     /// How far the dimmed tiles fade, in percent of fully hidden.
     #[serde(default = "default_dim")]
     pub dim: f32,
-    /// Each tile's corner rounding, in percent of circular.
+    /// Corner rounding, in percent of circular.
     #[serde(default = "default_rounding")]
     pub rounding: f32,
-    /// The space between tiles, in px.
     #[serde(default = "default_gap")]
     pub gap: f32,
-    /// Print the artist's name under their tile.
     #[serde(default = "default_true")]
     pub labels: bool,
-    /// How those captions line up under their tiles.
     #[serde(default)]
     pub label_align: TitleAlign,
-    /// The album and track tally under the name.
     #[serde(default = "default_true")]
     pub counts: bool,
-    /// The top-left artist shown when the layout was saved, so a relaunch
-    /// reopens the wall where it was left. A cell index, so it persists
-    /// across a tile-size or width change.
+    /// The top-left cell index at save time. A cell index survives a tile
+    /// size or width change.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub scroll: usize,
 }
@@ -264,135 +209,87 @@ impl Default for ArtistGridConfig {
     }
 }
 
-/// One artist's run in the current view: which name, where it starts, how
-/// many tracks and albums it spans, and the cover path once a paint
-/// resolved it (the inner None is an artist with nothing to show).
+/// One artist's run in the current view. `art` resolves on first paint; the
+/// inner None is an artist with nothing to show.
 struct Cell {
-    /// The interned symbol in whichever table the wall groups by: the run's
-    /// key, and what the name and the filter value read off.
+    /// The symbol in whichever table the wall groups by.
     sym: u32,
     start: usize,
     len: u32,
-    /// Distinct albums in the run, the caption's tally.
     albums: u32,
     art: Option<Option<PathBuf>>,
-    /// The tile's current opacity under the dim mode, easing toward its
-    /// target every frame. None until the tile's first paint, which starts
-    /// at the target directly.
+    /// Eased opacity under the dim mode. None until first paint, which starts
+    /// at the target.
     dim: Option<f32>,
-    /// How far the artist's face has come in over the album cover: 0 is the
-    /// cover alone, 1 the portrait alone, in between the two crossfaded.
-    /// None until the tile's first paint, which starts at its target
-    /// directly, so a portrait already in hand arrives solid rather than
-    /// fading in again on every rebuild.
+    /// The portrait's crossfade over the cover, 0 to 1. None until first
+    /// paint, so a face already in hand arrives solid on a rebuild.
     face: Option<f32>,
-    /// Whether the artist's portrait is in hand, learned on the tile's own
-    /// paint. The fade loop reads this instead of re-probing the cache by
-    /// name every frame, which would fold a thousand names per frame on a
-    /// big wall.
+    /// Learned on paint, so the fade loop doesn't re-probe the cache by name
+    /// every frame.
     faced: bool,
 }
 
 pub struct ArtistGridPanel {
     state: AppState,
     config: ArtistGridConfig,
-    /// The rows the cells index into: the canonical order while nothing
-    /// narrows it, otherwise the hits re-ordered canonically so an
-    /// artist's tracks stay one contiguous run.
+    /// The canonical order while nothing narrows it, otherwise the hits
+    /// re-sorted canonically so an artist stays one contiguous run.
     view: Arc<Vec<u32>>,
-    /// The artists of the current view, rebuilt on library updates and
-    /// query changes.
     cells: Vec<Cell>,
-    /// The rail's letters, one entry per distinct initial, and the cell
-    /// index its group starts at.
     letters: Vec<(SharedString, usize)>,
-    /// A rail click's clicked letter, pinned until a real scroll or another
-    /// jump lets the first-visible tile take over the rail's highlight
-    /// again.
+    /// A rail click's letter, pinned until a real scroll or another jump
+    /// hands the highlight back to the first visible tile.
     letter_hold: Option<usize>,
-    /// The query editor, the shared search box; `config.query` tracks its
-    /// value via change events.
     search: Entity<SearchBox>,
-    /// The picked artists, the accent outlines and the shared filter's
-    /// values. While `pick_filters` is on this matches the filter, so a
-    /// chip cleared in the search bar lifts the outline here too.
+    /// While `pick_filters` is on this mirrors the shared filter, so a chip
+    /// cleared elsewhere lifts the outline here too.
     selected: HashSet<usize>,
     /// Where a shift-extend grows from: the last plain or toggle click.
     anchor: Option<usize>,
-    /// The tile the arrow keys move, the head a shift-extend runs to. A
-    /// click sets it too, so picking up the keyboard after a click carries
-    /// on from where the pointer left off.
+    /// A click sets it too, so the keyboard carries on from the pointer.
     cursor: Option<usize>,
-    /// The tile under the pointer, which shows the name overlay.
     hovered: Option<usize>,
-    /// The cross extent the wall last laid out for: the width while it
-    /// scrolls vertically, the height otherwise. The dock hosts panels
-    /// cached, so a resize repaints without re-rendering; the list closure
-    /// compares the painted extent against this and notifies on drift.
+    /// The width while scrolling vertically, the height otherwise. The dock
+    /// caches panels, so the list closure notifies when the painted extent
+    /// drifts from this.
     cross: Pixels,
     scroll: VirtualListScrollHandle,
-    /// The drag-to-scroll state: press anywhere on the wall, drag to
-    /// scroll, release to coast. A drag past its dead zone swallows the
-    /// tile click.
     flick: FlickState,
-    /// The list row the follow-playing glide is headed to.
     glide_to: Option<usize>,
-    /// The saved top-left artist waiting to be scrolled back into place on
-    /// a relaunch, held until the wall has both artists and a measured
-    /// width. A user drag clears it, so a hand on the wall wins.
+    /// The saved top-left cell, held until the wall has artists and a
+    /// measured width. A user drag clears it.
     restore: Option<usize>,
-    /// The last animation tick, the coast's and the glide's dt.
     last_tick: Instant,
-    /// The idle-resume clock, stamped on every scroll or press.
     resume_idle: ResumeIdle,
-    /// The playing track's path, the change detector for follow-playing.
     playing_key: Option<TrackKey>,
-    /// The playing artist's cell in the current view, kept fresh so
-    /// per-frame dimming never rescans.
+    /// Kept fresh so per-frame dimming never rescans.
     playing_ix: Option<usize>,
-    /// Whether audio is moving right now; pause lifts the dim.
     playing: bool,
-    /// A dim fade is in flight, so the per-frame ease loop should run.
     dim_fading: bool,
-    /// A portrait crossfade is in flight, the same gate for the same loop.
     /// Armed by the tile that first sees a face it hasn't faded in yet.
     face_fading: bool,
-    /// The tile size slider's scrub strip, for the settings window.
     tile_scrub: ScrubState,
-    /// The tile rounding slider's scrub strip, same window.
     rounding_scrub: ScrubState,
-    /// The tile gap slider's scrub strip, same window.
     gap_scrub: ScrubState,
-    /// The dim amount slider's scrub strip, the behavior page.
     dim_scrub: ScrubState,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// A failed play, shown in a strip until the next play succeeds.
     error: Option<SharedString>,
-    /// A pending box reset from a source toggle or a shared-query change;
-    /// applied on the next render, where a window exists to set the input.
+    /// Applied on the next render, where a window exists to set the input.
     resync_box: bool,
-    /// The tracks this panel is pinned to while following the selection.
     /// Runtime only: a restore re-pins from whatever is picked then.
     selection_ids: Vec<i64>,
-    /// The type-ahead phrase and when its last keystroke arrived, so typing
-    /// while the wall has focus jumps to the artist by prefix.
     type_ahead: String,
     type_ahead_at: Option<Instant>,
     focus: FocusHandle,
-    /// The tab panel this panel is currently in, for duplicate and
-    /// pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
-    /// Arriving faces notify the shared service; repaint so tiles fill in.
     _portraits_changed: Subscription,
     _search_events: Subscription,
     _query_changed: Subscription,
     _selection_changed: Subscription,
     _player_changed: Subscription,
-    /// Drops the phrase when focus leaves the panel, so tab goes back to
-    /// walking panels instead of cycling a phrase from a past visit.
+    /// Drops the phrase on blur so tab goes back to walking panels.
     _type_ahead_blur: Subscription,
 }
 
@@ -403,8 +300,6 @@ impl ArtistGridPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // A rescan can rewrite the order, tags, and id -> path mappings;
-        // rebuild the artists over the new projection.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -419,11 +314,8 @@ impl ArtistGridPanel {
                 }
             },
         );
-        // Arriving thumbnails notify the service; repaint so tiles fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
         let _portraits_changed = cx.observe(&state.portraits, |_, _, cx| cx.notify());
-        // A wall restored as global opens showing the shared query; a local
-        // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
@@ -431,19 +323,15 @@ impl ArtistGridPanel {
         let search =
             cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // The shared query and the shared filter both arrive here: our own
-        // picks come back around this way, which keeps the outlines honest
-        // when another surface clears them.
+        // Filter changes arrive here too, including our own picks, which
+        // keeps the outlines honest when another surface clears them.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| {
                 this.on_shared_query_changed(cx);
             },
         );
-        // Restored as selection-following, it opens on whatever is picked
-        // now, rather than blank until the next pick.
         let selection_ids = state.selection.read(cx).tracks().to_vec();
-        // Follow the app-wide selection while pinned to it.
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, event: &SelectionEvent, cx| {
@@ -454,11 +342,9 @@ impl ArtistGridPanel {
             this.sync_playing(cx)
         });
         // Follow-playing owns the position on launch, so it skips the saved
-        // scroll; every other panel restores where it was left.
+        // scroll.
         let restore = (!config.follow_playing && config.scroll > 0).then_some(config.scroll);
         let focus = cx.focus_handle().tab_stop(true);
-        // The phrase outlives its badge, so it needs an end: leaving the
-        // panel drops it, which is also what hands tab back to traversal.
         let panel = cx.weak_entity();
         let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
             panel
@@ -513,15 +399,12 @@ impl ArtistGridPanel {
             _type_ahead_blur,
         };
         this.rebuild(cx);
-        // A duplicate opens with a track already playing; pick it up now
-        // instead of waiting for the next track change.
+        // A duplicate opens with a track already playing.
         this.sync_playing(cx);
         this
     }
 
-    /// Follow the player: on a track change, head for the artist it's
-    /// filed under, and keep the dim mode's facts fresh. The compares keep
-    /// the per-tick observer cheap, the player notifies every pump.
+    /// The player notifies every pump, so the compares keep this cheap.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
             let player = self.state.player.read(cx);
@@ -537,7 +420,6 @@ impl ArtistGridPanel {
         }
         self.playing_key = path;
         self.playing_ix = self.playing_cell(cx);
-        // The un-dimmed artist moved, so the old and new tiles both ease.
         self.dim_fading = true;
         if self.config.follow_playing {
             self.follow_playing(cx);
@@ -545,7 +427,6 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// The playing track's artist in the current view, when it holds one.
     fn playing_cell(&self, cx: &App) -> Option<usize> {
         let key = self.playing_key.as_ref()?;
         let library = self.state.library.read(cx);
@@ -555,8 +436,6 @@ impl ArtistGridPanel {
             .view
             .iter()
             .position(|&row| projection.db_id[row as usize] == id)?;
-        // Cells are contiguous runs over the view; the last one starting
-        // at or before the hit holds it.
         Some(
             self.cells
                 .partition_point(|cell| cell.start <= view_ix)
@@ -564,23 +443,18 @@ impl ArtistGridPanel {
         )
     }
 
-    /// Scroll the playing artist into view: a glide when smooth is on, a
-    /// centered jump otherwise.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
         let Some(cell_ix) = self.playing_ix else {
             return;
         };
         self.letter_hold = None;
-        // Both modes head for the same line through the per-frame stepping
-        // in `body`: the line is the stable fact, its offset depends on a
-        // layout that may still be settling.
+        // Both modes head for a line, not an offset: the line is stable
+        // while the layout may still be settling.
         self.glide_to = Some(cell_ix / self.lanes());
         cx.notify();
     }
 
-    /// The menu's jump: pick the playing artist and head there with the
-    /// panel's configured motion. The automatic follow never touches the
-    /// picks; this deliberate move does.
+    /// The automatic follow never touches the picks; the menu's jump does.
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
         let Some(cell_ix) = self.playing_ix else {
             return;
@@ -592,24 +466,18 @@ impl ArtistGridPanel {
         self.follow_playing(cx);
     }
 
-    /// A scroll, drag, or press: restart the idle clock and arm a wake, so
-    /// the wall drifts back to the playing artist once the user steps away.
     fn touch_resume(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.resume_idle.touch(cx, Self::resume_to_playing);
         }
     }
 
-    /// What the idle wake does: slide back to the playing artist, so long
-    /// as the resume is still on.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.follow_playing(cx);
         }
     }
 
-    /// The menu's follow toggle: flip the follow state and catch up right
-    /// away when turning it on.
     fn toggle_follow_playing(&mut self, cx: &mut Context<Self>) {
         self.config.follow_playing = !self.config.follow_playing;
         if self.config.follow_playing {
@@ -618,9 +486,8 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// Flip the scroll axis, from the context menu or the settings toggle.
-    /// The lane count and tile edge both key off the cross extent, so drop
-    /// the measured one and let the next paint re-measure.
+    /// Lanes and tile edge key off the cross extent, so drop it and let the
+    /// next paint re-measure.
     fn set_orientation(&mut self, vertical: bool, cx: &mut Context<Self>) {
         if self.config.vertical == vertical {
             return;
@@ -632,19 +499,16 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// The filter the wall narrows itself by: the shared picks with its own
-    /// field taken out. The filter panel's column rule, and the reason
-    /// picking here works at all: a wall that honored its own pick would
-    /// collapse to the one tile you just clicked.
+    /// The shared filter minus the wall's own field, or a pick would collapse
+    /// the wall to the one tile you clicked.
     fn browse_filter(&self, cx: &App) -> FilterSet {
         let mut filter = self.effective_filter(cx);
         filter.clear(self.config.group.field());
         filter
     }
 
-    /// Switch which name a tile stands for. The picks name values in the
-    /// field the wall is leaving, so they go with it rather than leaving
-    /// the workspace narrowed by a shelf this wall no longer shows.
+    /// The picks name values in the field the wall is leaving, so they go
+    /// with it.
     fn set_group(&mut self, group: ArtistGroup, cx: &mut Context<Self>) {
         if self.config.group == group {
             return;
@@ -654,18 +518,10 @@ impl ArtistGridPanel {
         self.rebuild(cx);
     }
 
-    /// Recompute the view and its artist runs, cut to the query's hits and
-    /// the shared filter's other fields. Search hits come back in
-    /// projection row order, so they filter an ordered view rather than
-    /// being iterated directly. Otherwise an artist's scattered rows would
-    /// split into duplicate tiles.
-    ///
-    /// Which order depends on what a tile stands for. The canonical one
-    /// already groups by album artist, so its runs are the album-artist
-    /// wall's tiles for free. A track-artist wall needs its own: a guest
-    /// turns up under every act they recorded with, and those rows are a
-    /// shelf apart in the canonical order, so one name would scatter into a
-    /// tile per host album.
+    /// Hits filter an ordered view rather than being iterated, or an
+    /// artist's scattered rows would split into duplicate tiles. The
+    /// canonical order already groups by album artist; a track-artist wall
+    /// re-sorts, since a guest's rows sit a shelf apart.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.cells.clear();
         self.selected.clear();
@@ -701,8 +557,8 @@ impl ArtistGridPanel {
                     };
                     match self.config.group {
                         ArtistGroup::AlbumArtist => rows,
-                        // Ties fall back to the canonical order, so an
-                        // artist's own run still reads album by album.
+                        // Ties keep the canonical order, so a run still
+                        // reads album by album.
                         ArtistGroup::Artist => {
                             Arc::new(projection.sort_view(&rows, SortKey::Artist, false))
                         }
@@ -732,31 +588,25 @@ impl ArtistGridPanel {
                 }
                 let cell = self.cells.last_mut().unwrap();
                 cell.len += 1;
-                // The canonical order sorts album within artist, so a
-                // change of album symbol inside the run is a new record.
+                // Albums sort within artist, so a symbol change is a new
+                // record.
                 if last_album != Some(album) {
                     cell.albums += 1;
                     last_album = Some(album);
                 }
             }
         }
-        // A pick writes the shared filter, which comes back around as this
-        // very rebuild; keeping the anchor and the hover across it stops a
-        // click from breaking shift-extend or blinking the name overlay
-        // off. Both are clamped, so a query that shortened the wall
-        // can't leave them pointing off the end.
+        // A pick comes back around as this rebuild, so keep the anchor and
+        // hover (clamped) or a click breaks shift-extend.
         self.anchor = self.anchor.filter(|&ix| ix < self.cells.len());
         self.cursor = self.cursor.filter(|&ix| ix < self.cells.len());
         self.hovered = self.hovered.filter(|&ix| ix < self.cells.len());
-        // The rail's letters, one entry per distinct initial of the current
-        // grouping's names, in the same order the tiles already run.
         self.letters.clear();
         if let Some(projection) = self.state.library.read(cx).projection() {
             let (_, table) = self.config.group.source(projection);
             for (ix, cell) in self.cells.iter().enumerate() {
-                // The same key the ordering runs on, so the rail stays
-                // monotonic by construction: a sort-tagged 米津玄師 sorts
-                // under Y and the rail has to say Y too.
+                // The ordering's key, so the rail stays monotonic: a
+                // sort-tagged 米津玄師 sorts under Y and the rail says Y.
                 let name = table.sort_key(cell.sym as usize);
                 let letter = panel::letter_initial(name);
                 if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
@@ -769,11 +619,6 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// The letter rail's gutter: its own strip beside the wall rather
-    /// than an overlay, so the letters never sit on top of the tiles.
-    /// The lit letter follows the first visible tile, except right after a
-    /// rail click: `letter_hold` pins it to the letter clicked until a real
-    /// scroll or another jump lets the first-visible tile take over again.
     fn letter_rail(&self, cx: &mut Context<Self>) -> Option<Div> {
         if !self.config.letters {
             return None;
@@ -828,10 +673,8 @@ impl ArtistGridPanel {
         })
     }
 
-    /// Re-derive the outlined tiles from the shared filter's artist picks.
-    /// While the wall drives the filter that's the one source of truth, so
-    /// a chip cleared in the search bar or a value unticked in the filter
-    /// panel lifts the outline here without a word between the panels.
+    /// While the wall drives the filter, the filter is the one source of
+    /// truth for the outlines.
     fn sync_picks(&mut self, cx: &App) {
         if !self.config.pick_filters {
             return;
@@ -863,9 +706,7 @@ impl ArtistGridPanel {
             .collect();
     }
 
-    /// Map the shared box's events onto the wall: a changed query rebuilds
-    /// the view, and every visual change also repaints the title row, which
-    /// only updates when the tab panel is notified.
+    /// The title row only repaints when the tab panel is notified.
     fn on_search_event(
         &mut self,
         _search: &Entity<SearchBox>,
@@ -879,8 +720,6 @@ impl ArtistGridPanel {
                 cx.notify();
                 self.refresh_title_bar(cx);
             }
-            // Escape on an empty query leaves the box, which hands the
-            // playback keys back to the workspace.
             SearchEvent::Dismissed => {
                 window.focus(&self.focus);
                 cx.notify();
@@ -896,8 +735,6 @@ impl ArtistGridPanel {
         }
     }
 
-    /// An artist's name, the caption and the filter value both. Empty off
-    /// the end of the cells or before a projection loads.
     fn cell_name(&self, ix: usize, cx: &App) -> String {
         let Some(cell) = self.cells.get(ix) else {
             return String::new();
@@ -911,8 +748,6 @@ impl ArtistGridPanel {
         }
     }
 
-    /// An artist's tracks as db ids in view order, capped for the player
-    /// queue.
     fn ids_for(&self, ix: usize, cx: &App) -> Vec<i64> {
         let Some(cell) = self.cells.get(ix) else {
             return Vec::new();
@@ -928,10 +763,8 @@ impl ArtistGridPanel {
             .collect()
     }
 
-    /// The path a tile's cover loads by: the first track under the artist
-    /// that has an album tag, resolved through the store once, on the
-    /// tile's first paint. The untagged bucket has no record of its own, so
-    /// a loose track's art never stands in for a whole shelf.
+    /// The first track with an album tag, so a loose track's art never
+    /// stands in for a whole shelf.
     fn art_path(&mut self, ix: usize, cx: &Context<Self>) -> Option<PathBuf> {
         if let Some(art) = self.cells.get(ix).and_then(|cell| cell.art.clone()) {
             return art;
@@ -957,28 +790,22 @@ impl ArtistGridPanel {
         path
     }
 
-    /// An artist's portrait through the shared service, which owns the
-    /// cache, the lookup pool, and the eviction; None is a face still on
-    /// its way or one no service knows, and the tile falls back to an
-    /// album cover either way.
+    /// None is a face still on its way or one no service knows. The tile
+    /// shows an album cover either way.
     fn portrait(&mut self, ix: usize, cx: &mut Context<Self>) -> Option<Arc<Image>> {
         let name = self.cell_name(ix, cx);
         let portraits = self.state.portraits.clone();
         portraits.update(cx, |portraits, cx| portraits.get(&name, cx))
     }
 
-    /// Put a click on an artist tile: plain picks just them, shift extends
-    /// from the anchor, cmd (ctrl elsewhere) toggles. The library's click
-    /// rules, by tile. Publishes the picks either way.
+    /// The library's click rules, by tile.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
-        // The arrows pick up from the tile the pointer last put down on,
-        // whichever click rule applied.
         self.cursor = Some(ix);
         if modifiers.shift {
             let anchor = self.anchor.unwrap_or(ix);
             let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-            // Ctrl+Shift stacks the range onto the picks so you can skip a
-            // run and grab a second block; plain shift replaces.
+            // Ctrl+Shift stacks the range onto the picks; plain shift
+            // replaces.
             if modifiers.secondary() {
                 self.selected.extend(lo..=hi);
             } else {
@@ -993,8 +820,8 @@ impl ArtistGridPanel {
             }
             self.anchor = Some(ix);
         } else {
-            // A second plain click on the only picked artist drops the pick,
-            // so the wall is its own way back to the whole catalog.
+            // A second plain click on the lone pick drops it, so the wall is
+            // its own way back to the whole catalog.
             if self.selected.len() == 1 && self.selected.contains(&ix) {
                 self.selected.clear();
             } else {
@@ -1006,9 +833,6 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// Put the cursor on a tile and take the picks with it: shift runs a
-    /// range back to the anchor, a plain move picks the one tile. Scrolls
-    /// it into view, so the cursor never walks off screen.
     fn set_cursor(&mut self, ix: usize, extend: bool, cx: &mut Context<Self>) {
         if ix >= self.cells.len() {
             return;
@@ -1027,10 +851,8 @@ impl ArtistGridPanel {
         self.scroll_to_cell(ix, cx);
     }
 
-    /// Step the cursor by `delta` tiles, clamped to the wall. The first
-    /// press with no cursor lands on the edge the step heads toward, so an
-    /// arrow into a fresh panel picks something up rather than doing
-    /// nothing.
+    /// With no cursor, the first press lands on the edge the step heads
+    /// toward.
     fn move_cursor(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
         let len = self.cells.len();
         if len == 0 {
@@ -1044,16 +866,11 @@ impl ArtistGridPanel {
         self.set_cursor(target, extend, cx);
     }
 
-    /// Send the picks out: their tracks on the shared selection, and the
-    /// names themselves on the shared filter when this wall drives it.
     fn publish(&mut self, cx: &mut Context<Self>) {
         self.publish_selection(cx);
         self.publish_picks(cx);
     }
 
-    /// Resolve the picked artists to db ids in view order and publish them
-    /// on the shared selection, so the inspector panels follow a click here
-    /// the same as one in the library.
     fn publish_selection(&mut self, cx: &mut Context<Self>) {
         let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
         ixs.sort_unstable();
@@ -1068,10 +885,6 @@ impl ArtistGridPanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// Write the picked names onto the shared filter's artist field, the
-    /// same values the filter panel's Artist column writes. Every panel
-    /// following the shared query narrows to them; this wall doesn't,
-    /// having left the field out of its own mask.
     fn publish_picks(&mut self, cx: &mut Context<Self>) {
         if !self.config.pick_filters {
             return;
@@ -1090,8 +903,6 @@ impl ArtistGridPanel {
         });
     }
 
-    /// Drop every artist pick, the menu's reset: the outlines lift and
-    /// every following panel widens back to the whole catalog.
     fn clear_picks(&mut self, cx: &mut Context<Self>) {
         self.selected.clear();
         self.anchor = None;
@@ -1101,10 +912,8 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// Take the artist field off the shared filter. Unconditional, unlike
-    /// [`Self::publish_picks`]: switching the picking behavior off has to
-    /// lift a filter the wall can no longer reach, or the workspace stays
-    /// narrowed with nothing left to widen it.
+    /// Unconditional, unlike [`Self::publish_picks`]: turning picking off
+    /// has to lift a filter the wall can no longer reach.
     fn drop_artist_filter(&mut self, cx: &mut Context<Self>) {
         let field = self.config.group.field();
         self.state.query.clone().update(cx, |query, cx| {
@@ -1114,33 +923,23 @@ impl ArtistGridPanel {
         });
     }
 
-    /// Browse from the keyboard while the wall is focused: plain typing
-    /// jumps to the artist with a word starting with the phrase. Modifiers
-    /// pass through so the workspace keeps its shortcuts, and a leading
-    /// space stays its play/pause.
+    /// Modifiers pass through so the workspace keeps its shortcuts, and a
+    /// leading space stays its play/pause.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
-        // Escape drops the picks. No select-all here: every artist picked
-        // is the whole catalog anyway, and it would pour every name into
-        // the shared filter.
-        // Browsing by keyboard is browsing, so it restarts the idle clock
-        // the same as a scroll or a click.
+        // No select-all: it would pour every name into the shared filter.
         self.touch_resume(cx);
         let shift = keystroke.modifiers.shift;
         let key = keystroke.key.as_str();
-        // The arrows walk the wall in both directions: one tile along a
-        // line, a whole line across it, which way round depending on how
-        // the wall packs.
         if let Some(delta) = self.wall().step(key) {
             self.move_cursor(delta, shift, cx);
             return;
         }
         match key {
-            // The escape ladder: a phrase drops first, since it's holding
-            // tab, then the selection.
+            // A phrase drops first, since it's holding tab, then the picks.
             "escape" => {
                 if !self.clear_type_ahead(cx) {
                     self.deselect(cx);
@@ -1161,17 +960,14 @@ impl ArtistGridPanel {
                 if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
                     return;
                 }
-                // Consumed as type-ahead text: stop it here so it doesn't
-                // also match the workspace's space-bound TogglePlayback
-                // binding, which the wall otherwise inherits unscoped.
+                // Stop here so space doesn't also fire the workspace's
+                // TogglePlayback binding.
                 cx.stop_propagation();
                 self.type_to(text.clone(), cx);
             }
         }
     }
 
-    /// Enter: several picks play exactly themselves, a lone cursor plays
-    /// just its tile, the way a double click on it would.
     fn play_cursor(&mut self, cx: &mut Context<Self>) {
         let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
         ixs.sort_unstable();
@@ -1182,9 +978,6 @@ impl ArtistGridPanel {
         }
     }
 
-    /// Escape drops the picks: the shared selection empties and the
-    /// filter names clear with it, the same road the single-click
-    /// deselect takes.
     fn deselect(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             return;
@@ -1196,14 +989,11 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// Grow or restart the type-ahead phrase and jump to the artist it
-    /// names. A fresh phrase starts past the current pick, so the same
-    /// letter steps to the next match; a grown one re-tests the current
-    /// artist so refining a match stays put.
+    /// A fresh phrase starts past the current pick, so the same letter steps
+    /// to the next match. A grown one re-tests it so refining stays put.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when the window
-        // lapses; a miss below still updated it, so repaint either way.
+        // Repaint even on a miss: the badge changed.
         panel::type_ahead_fade(cx);
         cx.notify();
         let len = self.cells.len();
@@ -1237,8 +1027,7 @@ impl ArtistGridPanel {
         }
     }
 
-    /// Drop the phrase, handing tab back to Root's panel traversal. True
-    /// when there was one, for the escape ladder.
+    /// True when there was a phrase, for the escape ladder.
     fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
         if self.type_ahead.is_empty() {
             return false;
@@ -1249,10 +1038,8 @@ impl ArtistGridPanel {
         true
     }
 
-    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
-    /// off the cycle-scoped tab bindings. Deliberately leaves the window
-    /// stamp alone: the badge and the letter grouping belong to typing,
-    /// so a run of tabs steps silently rather than reviving them.
+    /// Tab's cycle. Leaves the window stamp alone so a run of tabs doesn't
+    /// revive the badge.
     fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
         if self.type_ahead.is_empty() {
             return;
@@ -1284,18 +1071,11 @@ impl ArtistGridPanel {
         }
     }
 
-    /// Bring an artist's tile into view, centered on the scroll axis.
-    /// Clears any pending glide or restore so the jump wins over an
-    /// automatic move, and releases a held rail letter since this jump
-    /// didn't come from it.
     fn scroll_to_cell(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.letter_hold = None;
         self.scroll_to_cell_with(ix, ScrollStrategy::Center, cx);
     }
 
-    /// Bring a letter's first artist to the top of the scroll axis rather
-    /// than centering it, and pin the rail's active letter to the one
-    /// clicked.
     fn scroll_to_letter(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.letter_hold = Some(ix);
         self.scroll_to_cell_with(ix, ScrollStrategy::Top, cx);
@@ -1309,14 +1089,12 @@ impl ArtistGridPanel {
         cx.notify();
     }
 
-    /// Play an artist on the shared player as the new context.
     fn play(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.play_many(vec![ix], cx);
     }
 
-    /// Play several artists on the shared player as one context, in view order
-    /// under the queue cap. Context like every other track list, so the
-    /// queue keeps what was hand-picked (ADR 16).
+    /// Plays as context, not queued entries, so the queue keeps what was
+    /// hand-picked (ADR 16).
     fn play_many(&mut self, ixs: Vec<usize>, cx: &mut Context<Self>) {
         let ids: Vec<i64> = ixs
             .iter()
@@ -1338,8 +1116,6 @@ impl ArtistGridPanel {
         }
     }
 
-    /// The wall geometry and focus state this panel draws under, the packing
-    /// math shared with the other tile walls.
     fn wall(&self) -> WallLayout {
         WallLayout {
             cross: self.cross,
@@ -1391,13 +1167,9 @@ impl ArtistGridPanel {
         self.wall().desaturated(ix)
     }
 
-    /// One artist tile: the portrait or cover filling a square, the name
-    /// overlay while hovered, the accent outline while picked. Pending and
-    /// missing art use the same quiet placeholder, so an arriving face fills
-    /// the tile without a flash.
+    /// Pending and missing art share the placeholder, so an arriving face
+    /// fills the tile without a flash.
     fn tile(&mut self, ix: usize, side: Pixels, cx: &mut Context<Self>) -> AnyElement {
-        // The first paint starts at the target directly; from then on the
-        // stepping in `body` owns the value.
         let dim = match self.cells.get(ix).and_then(|cell| cell.dim) {
             Some(dim) => dim,
             None => {
@@ -1408,16 +1180,12 @@ impl ArtistGridPanel {
                 target
             }
         };
-        // The artist's own face when there is one; an album cover fills
-        // the tile until it arrives, and stays for a name no service knows.
         let face = self
             .config
             .portraits
             .then(|| self.portrait(ix, cx))
             .flatten();
-        // The crossfade's progress, seeded on the tile's first paint and
-        // stepped by the loop in `body` after that. A face that was already
-        // in hand seeds at 1, so only one that actually arrives late fades.
+        // A face already in hand seeds at 1, so only a late arrival fades.
         let faced = face.is_some();
         let target = if faced { 1. } else { 0. };
         let faded = match self.cells.get(ix).and_then(|cell| cell.face) {
@@ -1429,11 +1197,8 @@ impl ArtistGridPanel {
                 target
             }
         };
-        // Tell the loop what this tile is holding, and wake it when the two
-        // disagree. The notify turns an arrived portrait into the next
-        // frame; from there `body` requests its own until the fade settles.
-        // The ease snaps the last hair onto its target, so the compare is
-        // exact rather than a float that never quite arrives.
+        // Wake the loop when progress and target disagree. The ease snaps
+        // onto its target, so the compare can be exact.
         if let Some(cell) = self.cells.get_mut(ix) {
             cell.faced = faced;
         }
@@ -1441,9 +1206,8 @@ impl ArtistGridPanel {
             self.face_fading = true;
             cx.notify();
         }
-        // The cover under the face: still wanted while it shows through, and
-        // dropped once the portrait covers it, so a settled wall of faces
-        // stops touching the thumbnail cache at all.
+        // Dropped once the portrait covers it, so a settled wall of faces
+        // stops touching the thumbnail cache.
         let show_cover = !faced || faded < 1.;
         let cover = show_cover
             .then(|| match self.art_path(ix, cx) {
@@ -1457,11 +1221,8 @@ impl ArtistGridPanel {
                 Thumb::Ready(image) => Some(image),
                 _ => None,
             });
-        // The knob is percent of circular, so the radius scales with the
-        // tile: 100 turns the square into a circle. It clips the image
-        // itself, not just the tile's background: gpui content masks stay
-        // rectangular, so a rounded tile under a square image would paint
-        // over its own corners.
+        // Round the image itself too: gpui content masks stay rectangular, so
+        // a square image would paint over the tile's rounded corners.
         let radius = side * (self.config.rounding / 200.);
         let desaturated = self.desaturated(ix);
         let layer = |image: Arc<Image>| {
@@ -1472,8 +1233,6 @@ impl ArtistGridPanel {
                 .grayscale(desaturated)
                 .rounded(radius)
         };
-        // The floor: the album cover, or the quiet placeholder when there is
-        // none yet. Skipped once the face has fully covered it.
         let mut content = div().size_full().relative();
         if show_cover {
             content = match cover {
@@ -1493,7 +1252,6 @@ impl ArtistGridPanel {
                 ),
             };
         }
-        // The face over it, its opacity the crossfade itself.
         if let Some(image) = face {
             content = content.child(
                 div()
@@ -1538,14 +1296,11 @@ impl ArtistGridPanel {
                 let target = hovered.then_some(ix);
                 if this.hovered != target && (this.hovered == Some(ix) || *hovered) {
                     this.hovered = target;
-                    // Hovering lights a receded tile back up, so re-arm the
-                    // ease loop to fade the dim off and back on.
                     this.dim_fading = true;
                     cx.notify();
                 }
             }))
-            // Actions run on release, not press: a press might be the
-            // start of a drag-scroll, and one that traveled isn't a click.
+            // On release: a press might start a drag-scroll.
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseUpEvent, window, cx| {
@@ -1565,16 +1320,13 @@ impl ArtistGridPanel {
             .into_any_element()
     }
 
-    /// A tile's name and tally: the artist over what the current view
-    /// holds of them.
     fn cell_labels(&self, ix: usize, cx: &App) -> (SharedString, SharedString, SharedString) {
         let Some(cell) = self.cells.get(ix) else {
             return Default::default();
         };
         let name = self.cell_name(ix, cx);
-        // The reading off the same symbol the name came from. An untagged
-        // shelf gets none: the word below is the app's, not the library's,
-        // and a sort name would be reading a name nobody wrote.
+        // An untagged shelf gets no reading: its Unknown label is the app's
+        // word, not a name anyone wrote.
         let reading = if name.is_empty() {
             String::new()
         } else {
@@ -1592,8 +1344,7 @@ impl ArtistGridPanel {
                 })
                 .unwrap_or_default()
         };
-        // An untagged shelf reads as Unknown, the filter panel's wording,
-        // while the pick it writes stays the real empty string.
+        // Display only: the pick it writes stays the real empty string.
         let name = if name.is_empty() {
             rox_i18n::t!("filter-unknown").to_string()
         } else {
@@ -1616,8 +1367,6 @@ impl ArtistGridPanel {
         )
     }
 
-    /// The hover overlay: name over tally on a translucent strip along the
-    /// tile's bottom edge.
     fn label(&self, ix: usize, cx: &App) -> Div {
         let (name, reading, tally) = self.cell_labels(ix, cx);
         let readings = crate::settings::show_readings();
@@ -1648,11 +1397,8 @@ impl ArtistGridPanel {
             })
     }
 
-    /// The always-on caption under a tile: name over tally in a fixed
-    /// block, so the tile's total height stays predictable for the virtual
-    /// list. Widths match the tile so long names truncate at its edge, and
-    /// a picked artist's name takes the accent color so the wall still reads
-    /// once the outline is off screen.
+    /// A fixed-height block, so the virtual list's line pitch stays
+    /// predictable.
     fn caption(&self, ix: usize, side: Pixels, picked: bool, cx: &App) -> Div {
         let (name, reading, tally) = self.cell_labels(ix, cx);
         let readings = crate::settings::show_readings();
@@ -1690,8 +1436,7 @@ impl ArtistGridPanel {
         })
     }
 
-    /// Solo or popped out there is no title bar to host the search, so it
-    /// renders as a toolbar row above the wall instead, the library's move.
+    /// Solo or popped out there's no title bar to host the search.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex_none()
@@ -1710,10 +1455,8 @@ impl ArtistGridPanel {
             )
     }
 
-    /// The visible rows of the wall, each a run of tiles. Also where the
-    /// painted extent reconciles: the dock hosts panels cached, so a resize
-    /// repaints this closure without re-running render, and a notify here
-    /// recomputes the lane count next frame.
+    /// Also where the painted extent reconciles, since a cached panel's
+    /// resize repaints this closure without re-running render.
     fn lines(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
         let axis = self.axis();
         let measured = self.scroll.base_handle().bounds().size.along(axis.invert());
@@ -1739,11 +1482,9 @@ impl ArtistGridPanel {
                 lane
             })
             .collect();
-        // Warm the margin: ask for the covers just past both edges so a
-        // scroll reveals loaded tiles. Asked after the visible tiles, which
-        // keeps those first in line for the load pool's slots. Portraits
-        // stay out of it: their pool is small and their fetches are
-        // somebody else's bandwidth, so they only load for what shows.
+        // Warm the covers past both edges, after the visible tiles so those
+        // keep first place in the load pool. Portraits only load for what
+        // shows: their fetches are somebody else's bandwidth.
         let above =
             (range.start * lanes).saturating_sub(PREFETCH_ROWS * lanes)..range.start * lanes;
         let below = range.end * lanes..((range.end + PREFETCH_ROWS) * lanes).min(self.cells.len());
@@ -1844,9 +1585,8 @@ impl PanelSettings for ArtistGridPanel {
                             self.config.pick_filters,
                             |this: &mut Self, on, cx| {
                                 this.config.pick_filters = on;
-                                // Turning it on hands the highlighted artists
-                                // straight over; turning it off takes back a
-                                // filter nothing here could lift any more.
+                                // Off takes back a filter nothing here could
+                                // lift any more.
                                 if on {
                                     this.publish_picks(cx);
                                 } else {
@@ -1966,10 +1706,6 @@ impl PanelSettings for ArtistGridPanel {
         )
     }
 
-    /// The wall's own appearance rows on the shared page: what the tiles
-    /// show and how they're shaped, look knobs stored on the config
-    /// rather than the theme because they shape the art, not the panel
-    /// frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.config.rounding;
         Some(
@@ -2208,7 +1944,6 @@ impl Panel for ArtistGridPanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The search box shares the title bar row, the library's move.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
@@ -2232,8 +1967,8 @@ impl Panel for ArtistGridPanel {
         false
     }
 
-    /// The wall serves tile context menus over the whole body, so the tab
-    /// panel's body right-click stays out.
+    /// The wall serves its own tile menus, so the tab panel's body
+    /// right-click stays out.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
@@ -2252,8 +1987,6 @@ impl Panel for ArtistGridPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         let mut config = self.config.clone();
@@ -2291,8 +2024,8 @@ impl Panel for ArtistGridPanel {
         let weak_c = cx.entity().downgrade();
         let follow = self.config.follow_playing;
         let picked = !self.selected.is_empty();
-        // Checks on the right so the orientation pair keeps its icons; the
-        // default left side would swap them out for the checkmark.
+        // Checks on the right, or the default left side swaps icons out for
+        // the checkmark.
         let menu = menu
             .check_side(Side::Right)
             .item(
@@ -2326,8 +2059,6 @@ impl Panel for ArtistGridPanel {
                     }),
             );
 
-        // Display section: the view knobs group under flyouts so the menu
-        // stays short, the same shape as the album grid's.
         let menu = menu.separator().label(rox_i18n::t!("library-menu-display"));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
@@ -2359,8 +2090,6 @@ impl Panel for ArtistGridPanel {
             rox_i18n::t!("grid-menu-scroll"),
             submenu,
         ));
-        // What a tile stands for, a checked pair so the current rule reads
-        // at a glance.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -2391,7 +2120,6 @@ impl Panel for ArtistGridPanel {
             },
             &panel,
         ));
-        // Follow the shared search query, or filter by this wall's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
@@ -2440,8 +2168,6 @@ impl Render for ArtistGridPanel {
 
 impl ArtistGridPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset (a source toggle or a shared-query change)
-        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -2451,9 +2177,7 @@ impl ArtistGridPanel {
         let line_count = self.cells.len().div_ceil(lanes);
         let side = self.tile_side();
 
-        // The frame-by-frame motion: a released flick coasts on, a follow
-        // glide eases toward its line. Both step here in render and request
-        // the next frame only while something still moves.
+        // Coast and glide step here and request frames only while moving.
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.05);
         self.last_tick = Instant::now();
         if let Some(d) = self.flick.coast(dt) {
@@ -2478,10 +2202,8 @@ impl ArtistGridPanel {
                 window.request_animation_frame();
             }
         }
-        // Restore the saved scroll once the wall has artists and a measured
-        // extent: the lane count is only known after the first paint, and the
-        // cell -> line map depends on it. Skipped while a follow glide runs,
-        // which owns the position.
+        // The lane count is only known after the first paint, so restore
+        // waits for it. A running follow glide owns the position.
         if let Some(cell) = self.restore
             && self.glide_to.is_none()
             && !self.cells.is_empty()
@@ -2491,17 +2213,13 @@ impl ArtistGridPanel {
             self.scroll.scroll_to_item(line, ScrollStrategy::Top);
             self.restore = None;
         }
-        // The two per-tile fades: the dim mode's opacity, and the crossfade
-        // that swaps an album cover for the artist's face once it arrives.
-        // They share one pass over the cells, and the pass is gated on both
-        // flags, so a settled wall skips it entirely on the idle renders
-        // hover and scroll trigger.
+        // The dim and portrait fades share one pass, gated so a settled wall
+        // skips it on idle renders.
         if self.dim_fading || self.face_fading {
             let step = 1.0 - (0.08_f32).powf(dt * 10.0);
             let (dim_on, face_on) = (self.dim_fading, self.face_fading);
             let (mut dimming, mut fading) = (false, false);
-            // An exponential approach never quite arrives, so anything
-            // inside this of its target snaps and stops asking for frames.
+            // An exponential approach never arrives, so snap when close.
             let settle = |current: f32, target: f32, moving: &mut bool| {
                 let diff = target - current;
                 if diff.abs() < 0.005 {
@@ -2528,9 +2246,6 @@ impl ArtistGridPanel {
             }
         }
 
-        // The search shows in the tab bar via title_suffix while the panel
-        // shares a group; solo or popped out there's no header at all, so
-        // it renders as a toolbar in the body instead.
         let headerless = self
             .tab_panel
             .as_ref()
@@ -2542,33 +2257,22 @@ impl ArtistGridPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Bindings win over key listeners and an action stops
-            // propagation by default, so a key the workspace binds never
-            // reaches on_panel_key unless a context scopes the binding out.
-            // PanelNav is always on and takes back left and right from
-            // seek; the type-ahead pair joins it while a phrase is up, to
-            // take back space (only while the phrase is still absorbing
-            // keystrokes) and tab (for as long as there's a phrase to
-            // cycle).
+            // Bindings beat key listeners, so a key the workspace binds never
+            // reaches on_panel_key unless a context scopes it out. PanelNav
+            // takes back left and right; TypeAhead adds space and tab while a
+            // phrase is up.
             .key_context(panel::panel_nav_context(
                 &self.type_ahead,
                 self.type_ahead_at,
             ))
-            // A press anywhere in the panel ends the phrase: the cursor
-            // has moved by hand, so the cycle it was stepping is stale,
-            // and tab belongs back with panel traversal. Capture phase,
-            // so rows and tiles that stop the press can't hide it.
+            // Any press ends the phrase. Capture phase, so tiles that stop
+            // the press can't hide it.
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 this.clear_type_ahead(cx);
             }))
-            // Tab cycles the live phrase's matches, off the bindings the
-            // TypeAhead context above scopes in; with no phrase up, tab
-            // stays Root's focus traversal.
             .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
             .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
-            // Type-to-jump while the wall itself holds focus. The guard
-            // keeps it off while the search box is focused, whose keys
-            // bubble up through the toolbar child.
+            // The guard skips the search box's keys, which bubble up here.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.focus.is_focused(window) {
                     this.on_panel_key(event, cx);
@@ -2577,8 +2281,7 @@ impl ArtistGridPanel {
             .when(headerless && self.config.search, |d| {
                 d.child(self.toolbar(cx))
             });
-        // The "open a folder" call-to-action means the catalog itself holds
-        // no tracks, so it keys off the loaded projection, never the view.
+        // The "open a folder" prompt keys off the projection, never the view.
         let busy = self.state.library.read(cx).busy().is_some();
         let catalog_empty = self
             .state
@@ -2627,10 +2330,8 @@ impl ArtistGridPanel {
                 .into_any_element()
         } else {
             let entity = cx.entity();
-            // Each line spans the tile plus, on a vertical wall, the caption
-            // that trails it into the scroll; a horizontal wall stacks the
-            // caption inside the cross extent, so its scroll pitch stays the
-            // bare tile width.
+            // A horizontal wall stacks the caption in the cross extent, so
+            // only a vertical one adds it to the scroll pitch.
             let line_extent = if self.config.vertical {
                 side + px(self.label_height())
             } else {
@@ -2662,9 +2363,6 @@ impl ArtistGridPanel {
                 .min_h_0()
                 .min_w_0()
                 .relative()
-                // Any press on the wall might be a drag-scroll; the tiles'
-                // own actions moved to release so both can tell. It also
-                // interrupts a running glide, the user wins.
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -2677,18 +2375,14 @@ impl ArtistGridPanel {
                         cx.notify();
                     }),
                 )
-                // Every wheel over the wall counts as browsing; this stamp
-                // only restarts the idle clock and leaves the scroll itself
-                // to the list and the gap-filler below.
+                // Only stamps the idle clock; the list does the scrolling.
                 .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                     this.letter_hold = None;
                     this.touch_resume(cx);
                 }))
-                // A plain wheel only sends a vertical delta, and the list
-                // ignores it while it scrolls horizontally: both its overflow
-                // axes are Scroll, so gpui never cross-maps y onto x. Fill
-                // exactly that gap here; a trackpad's real x deltas stay with
-                // the list's own handler, so nothing applies twice.
+                // gpui never cross-maps a plain wheel's y onto a horizontal
+                // list, so fill that gap. Trackpad x deltas stay with the
+                // list's handler, so nothing applies twice.
                 .when(axis == Axis::Horizontal, |d| {
                     d.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(window.line_height());
@@ -2705,10 +2399,8 @@ impl ArtistGridPanel {
                     }))
                 })
                 .child(list)
-                // A live drag-scroll follows the pointer through window
-                // handlers armed in a paint pass, the scrub strips' idiom.
-                // The canvas exists for that paint hook; the list's lines
-                // closure can't arm them, it also runs during layout.
+                // The drag-scroll's window handlers arm in a paint pass. The
+                // lines closure can't arm them since it also runs in layout.
                 .child(
                     canvas(|_, _, _| (), {
                         let flick = self.flick.clone();
@@ -2735,11 +2427,8 @@ impl ArtistGridPanel {
                     &self.type_ahead,
                     self.type_ahead_at,
                 ))
-                // The wall's right-click menu, keyed off the hovered tile
-                // since the builder gets no position: a click inside the
-                // picks acts on the whole set, outside it the click repicks
-                // just that tile first, so the menu always acts on what's
-                // highlighted, the library's rule.
+                // Keyed off the hovered tile, since the builder gets no
+                // position. Outside the picks it repicks that tile first.
                 .context_menu({
                     let weak = cx.entity().downgrade();
                     move |menu, window, cx| {
@@ -2767,8 +2456,6 @@ impl ArtistGridPanel {
                         } else {
                             rox_i18n::t!("library-play").to_string()
                         };
-                        // The picked artists' tracks as db ids, resolved now
-                        // for the editors, the library rows' move.
                         let ids: Vec<i64> = this.update(cx, |this, cx| {
                             ixs.iter()
                                 .flat_map(|&ix| this.ids_for(ix, cx))
@@ -2797,8 +2484,7 @@ impl ArtistGridPanel {
                 })
                 .into_any_element()
         };
-        // The rail rides in its own gutter beside the wall, so the wall
-        // shrinks to make room instead of the letters overlaying tiles.
+        // The rail gets its own gutter so the letters never overlay tiles.
         let content = match self.letter_rail(cx) {
             Some(gutter) => {
                 let row = self.axis() == Axis::Vertical;

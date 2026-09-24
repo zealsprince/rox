@@ -1,8 +1,6 @@
-//! Which acoustic model is live. The extractors, the catalog, and the
-//! download are all in [`rox_acoustic`]; what's here is the resolution
-//! between a stored id and something that can actually run, held in a
-//! process-global so the catalog, the player's similarity draws, and the
-//! settings page all read the same value.
+//! Which acoustic model is live: the resolution from a stored id to
+//! something that can run, held in a process-global so every reader agrees.
+//! The extractors and the catalog are in [`rox_acoustic`].
 
 use std::sync::{Arc, RwLock};
 
@@ -11,21 +9,16 @@ use gpui::App;
 use rox_acoustic::{Local, Source, models};
 use rox_core::settings::{LocalModel, Settings, file_stamp};
 
-/// The live model pick, the acoustic switch's other half: the Similar column
-/// reads it in the same render paths, and a query that used a different
-/// model from the one the pass filled would rank against an empty corpus.
+/// A query against a different model from the one the pass filled would rank
+/// against an empty corpus, so every reader goes through this.
 static ACOUSTIC_MODEL: RwLock<Option<Source>> = RwLock::new(None);
 
-/// Resolve a stored model id to something that can actually run: a catalog
-/// entry whose weights are installed, or the local file the user picked.
-/// None for a name from a newer build, one whose download has since been
-/// deleted, or a local file that has moved.
+/// None for a name from a newer build, a deleted download, or a moved local
+/// file.
 ///
-/// A local id names the bytes it was hashed from, so the file is stamped
-/// rather than only looked for: a checkpoint retrained in place is a different
-/// vector space under the same path, and writing its vectors under the old
-/// id is the mixing that hashed naming exists to prevent. The stat keeps that
-/// off the common path, so only a file that actually changed pays a re-read.
+/// A local file is stamped, not just looked for: a checkpoint retrained in
+/// place is a different vector space under the same path, and its vectors
+/// must never be written under the old id.
 pub fn resolve_acoustic(id: &str) -> Option<Source> {
     if let Some(model) = models::find(id).filter(|model| model.installed()) {
         return Some(Source::Catalog(model));
@@ -43,16 +36,8 @@ pub fn resolve_acoustic(id: &str) -> Option<Source> {
     })))
 }
 
-/// Whether a weights file that no longer matches its stamp still hashes to the
-/// id it's stored under, recording what it looks like now when it does: a
-/// stamp from before the pair was written, or an mtime a copy or a touch
-/// moved, then costs one read rather than one on every resolve.
-///
-/// A file that hashes to something else is a different checkpoint and gets
-/// nothing, which drops the pick to the built-in extractor rather than filling
-/// the old id with the new network's coordinates. Pointing rox at the file
-/// again adopts it under its own name, with the work already done under the
-/// old one still sitting there.
+/// A stale stamp costs one re-hash. A file that hashes to something else is a
+/// different checkpoint and drops the pick to the built-in extractor.
 fn rehashes_to_its_id(local: &LocalModel, stamp: (u64, i64)) -> bool {
     let Ok(digest) = models::hash_file(&local.path) else {
         return false;
@@ -77,12 +62,8 @@ fn rehashes_to_its_id(local: &LocalModel, stamp: (u64, i64)) -> bool {
     true
 }
 
-/// The model the pass runs and the similarity queries read.
-///
-/// Resolved once into the static rather than at every call site, so a name
-/// from a newer build, or one whose weights have gone missing since, falls
-/// back to the built-in extractor here instead of turning into an empty ranking
-/// somewhere downstream.
+/// Falls back to the built-in extractor here, not as an empty ranking
+/// downstream.
 pub fn acoustic_source() -> Source {
     ACOUSTIC_MODEL
         .read()
@@ -91,20 +72,12 @@ pub fn acoustic_source() -> Source {
         .unwrap_or_else(|| Source::Catalog(models::fallback()))
 }
 
-/// The model the ML Models page is offering, which the Library page's
-/// extractor switch turns on. Never the built-in extractor: that one is the
-/// other side of the switch rather than something the shelf offers.
-///
-/// Read from the file rather than the static above, because this is the pick
-/// the switch would turn on rather than the one running now, and the two are
-/// different whenever the switch is on Built-in.
+/// The model the ML Models page offers, never the built-in one. Read from
+/// the file, not the static: this is the pick the switch would turn on.
 pub fn acoustic_ml_source() -> Source {
     let id = Settings::load().acoustic_ml_model;
     resolve_acoustic(&id)
         .filter(|source| !source.is_builtin())
-        // An id that resolves to nothing still names a model the page can
-        // show as not-yet-downloaded, so fall back to the catalog entry
-        // before falling back to PANNs.
         .or_else(|| {
             models::find(&id)
                 .filter(|model| model.weights.is_some())
@@ -114,11 +87,8 @@ pub fn acoustic_ml_source() -> Source {
         .unwrap_or_else(|| Source::Catalog(models::fallback()))
 }
 
-/// Point the live pick at a model by id and repaint, so a switch moves the
-/// Similar column onto the other model's vectors without a relaunch. An
-/// unknown id resolves to nothing and the reader above falls back; it isn't
-/// rewritten in the settings file, since that would silently discard a pick
-/// made by a newer build. Persisting is the caller's.
+/// An unknown id isn't rewritten in the settings file: that would discard a
+/// pick made by a newer build. Persisting is the caller's.
 pub fn set_acoustic_model(id: &str, cx: &mut App) {
     *ACOUSTIC_MODEL.write().unwrap() = resolve_acoustic(id);
     for window in cx.windows() {

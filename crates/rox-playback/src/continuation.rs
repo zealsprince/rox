@@ -1,21 +1,12 @@
 //! Queue continuation (ADR 17): what plays when the queue runs dry.
 //!
-//! A provider is a selection strategy, not a source of audio. It answers one
-//! question, "what plays next", with an ordered batch of library ids, and the
-//! player appends that batch into the running engine through the ordinary
-//! queue commands (ADR 16). Nothing here opens a file, and nothing here knows
-//! the engine exists.
+//! A provider is a selection strategy: it returns an ordered batch of library
+//! ids, and the player appends it through the ordinary queue commands (ADR
+//! 16). Nothing here opens a file or knows the engine exists.
 //!
-//! Exactly one provider is active at a time. An empty batch means there's
-//! nothing left to continue with and playback ends; it never means "ask the
-//! next one". That's the difference from the online enrichment chain in
-//! rox's `providers/` (ADR 14), which races several services for the
-//! best answer to the same question. Continuation is a taste, and tastes don't
-//! fall back to each other.
-//!
-//! The calls are blocking store queries. The player runs them on the
-//! background executor, which is why every provider takes a plain
-//! `&Connection` and nothing in this module touches gpui.
+//! One provider at a time. An empty batch ends playback and never means "ask
+//! another one"; unlike the online providers (ADR 14), tastes don't fall back
+//! to each other. Blocking store queries, run on the background executor.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -27,56 +18,34 @@ use rox_library::{embeddings, listens, song, store};
 
 use crate::engine::{reservoir, shuffle_head, shuffle_slice};
 
-/// How many tracks a batch asks for. Big enough that a slow provider gets
-/// asked once an album rather than once a track, small enough that what
-/// continuation added stays a readable stretch of the queue rather than a
-/// wall the user has to clear.
+/// Big enough to ask once an album, small enough to stay a readable stretch
+/// of the queue.
 pub const BATCH: usize = 20;
 
-/// How close to the end of the upcoming portion the pump fires, in tracks.
-/// Two is the ADR's floor: one track of slack for the query, one for the
-/// gapless boundary the decode cursor has already opened.
+/// ADR 17's floor: one track of slack for the query, one for the gapless
+/// boundary already opened.
 pub const FLOOR: usize = 2;
 
-/// How much wider than the batch a strategy looks before it picks. The
-/// draw comes from this many times the requested count, shuffled among
-/// themselves, so two sessions off the same seed don't play the same list
-/// in the same order while the ranking behind the band still decides which
-/// tracks are in the running at all.
+/// Draws come from this many times the count, shuffled, so two sessions off
+/// one seed differ while the ranking still decides what's in the running.
 const BAND: usize = 4;
 
-/// Which strategy fills the queue when it runs dry.
-///
-/// A real enum rather than the wire string the loop mode uses, because the
-/// modes are a closed set the menus enumerate; the read below keeps that
-/// from making the settings file brittle.
+/// Which strategy fills the queue when it runs dry. Read leniently below.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// The queue ends when it ends, which is how rox behaved before any of
-    /// this existed.
     Off,
-    /// Carry on down the list play started in, then the rest of the library
-    /// behind it. The default: continuation is on out of the box (ADR 17), a
-    /// local player that goes silent mid-flow feels broken, and resuming the
-    /// browse order is the least surprising thing it can do.
+    /// The view play started in, then the rest of the library. The default (ADR 17).
     #[default]
     Continue,
-    /// Draw from the whole library, never-played first and recent listens
-    /// last. What the play history (ADR 11) is for.
+    /// Never-played first, recent listens last (ADR 11).
     Weighted,
 }
 
-/// Anything this doesn't recognize reads as the default rather than failing.
-/// A derived read would refuse a mode a newer build wrote, and a settings
-/// shard that won't parse is reset whole, so one unknown word here would cost
-/// the volume, the loop mode, and the saved queue with it. Written by hand
-/// rather than with `serde(other)`, which only covers tagged enums.
-///
-/// "radio" isn't listed. It was a mode of its own until the radio draw
-/// became what Similar shuffle does when it runs out (see [`provider`]), so
-/// a settings file that still names it reads as the default and the
-/// listener's radio comes back from the shuffle order instead.
+/// Unknown words read as the default: a settings shard that won't parse is
+/// reset whole, taking the volume and saved queue with it. "radio" lands here
+/// too; radio is what Similar shuffle does (see [`provider`]). By hand because
+/// `serde(other)` only covers tagged enums.
 impl<'de> Deserialize<'de> for Mode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Mode, D::Error> {
         let raw = serde_json::Value::deserialize(deserializer)?;
@@ -89,7 +58,6 @@ impl<'de> Deserialize<'de> for Mode {
 }
 
 impl Mode {
-    /// The label the mode menu shows.
     pub fn label(self) -> &'static str {
         match self {
             Mode::Off => "Off",
@@ -98,114 +66,75 @@ impl Mode {
         }
     }
 
-    /// Every mode in menu order.
     pub const ALL: [Mode; 3] = [Mode::Off, Mode::Continue, Mode::Weighted];
 }
 
-/// Where the playing context came from, so a provider can carry on from it
-/// rather than guess. Set when playback starts and held for the session.
+/// Where the playing context came from. Set when playback starts.
 #[derive(Clone, Default)]
 pub enum Scope {
-    /// Nothing named a list: an OS file open, a drop, a restored queue, the
-    /// random button. The library at large is the pool.
+    /// No list: a file open, a drop, a restored queue, the random button.
     #[default]
     Library,
-    /// A browse view's track ids in the order it was showing them. The
-    /// library panel windows a big view rather than queueing all of it, so
-    /// this is how continuation finds the rows below the window.
+    /// A browse view's ids in order. The library panel windows big views, so this
+    /// is how continuation finds the rows below the window.
     View(Arc<Vec<i64>>),
 }
 
-/// What the player hands a provider (ADR 17).
 pub struct Seed {
-    /// The track playing when the queue ran low. None when the file isn't in
-    /// the library, which is the case a radio has no answer for.
+    /// None when the file isn't in the library.
     pub track: Option<i64>,
-    /// The view play started in.
     pub scope: Scope,
-    /// Every track this session has held, oldest first: what already played,
-    /// what's still upcoming, and what was queued by hand. It's in the
-    /// contract for a reason: queue metal over a country context and the pool
-    /// should follow the metal, and nothing else in the seed would say so.
+    /// Every track this session has held, oldest first, queued by hand
+    /// included: queue metal over a country context and the pool should follow
+    /// the metal.
     pub recent: Vec<i64>,
-    /// How many tracks to return. A provider may return fewer.
     pub count: usize,
-    /// Which model's vectors an acoustic draw scores against, read off the
-    /// live pick when the batch was asked for. In the seed rather than read
-    /// again down here, because the queue this batch joins was ordered
-    /// against that same name: a radio drawing off the built-in sketch under
-    /// a queue sorted by somebody's own weights answers a different question
-    /// every refill, and a library described under one model has nothing at
-    /// all filed under the other one.
+    /// The model an acoustic draw scores against, fixed when the batch was asked
+    /// for so it matches the model the queue was ordered by.
     pub model: String,
 }
 
 impl Seed {
-    /// The recent plays as a set, which is how every provider reads them:
-    /// nothing in here comes back in a batch while the pool still holds
-    /// anything else.
+    /// Nothing in here comes back while the pool holds anything else.
     fn seen(&self) -> HashSet<i64> {
         self.recent.iter().copied().collect()
     }
 }
 
-/// One track a provider picked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pick {
     pub id: i64,
-    /// The album group on the entry, or None to let the player fill it in
-    /// from the library at insert time. A strategy whose picks should stand
-    /// alone rather than splice as an album says so here; the ones below all
-    /// leave it to the library, which is where album membership is actually
-    /// known.
+    /// None lets the player fill it from the library at insert time.
     pub group: Option<u64>,
 }
 
 impl Pick {
-    /// A pick that takes the library's own grouping.
     fn ungrouped(id: i64) -> Pick {
         Pick { id, group: None }
     }
 }
 
-/// The continuation seam. One implementation is active at a time; which one
-/// is [`Mode`], the user's pick.
+/// One implementation active at a time, per [`Mode`].
 pub trait Provider: Send {
-    /// The next batch, in play order. Blocking store queries: the player
-    /// calls this on the background executor.
+    /// Blocking; called on the background executor.
     fn next(&self, conn: &Connection, seed: &Seed) -> Vec<Pick>;
 }
 
-/// How the queue is ordered when a refill is asked for. The player reads it
-/// off the shuffle flag and mode on the tick that asks, and the landing
-/// checks it again, because a batch drawn for one order is the wrong twenty
-/// tracks for a queue that has since changed to another.
+/// How the queue is ordered when a refill is asked for. Checked again on
+/// landing: a batch drawn for one order is wrong for another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Order {
-    /// Shuffle off: the queue plays in the order it was built.
     Browse,
-    /// Shuffle on, in the Random mode: the upcoming portion is a permutation.
     Random,
-    /// Shuffle on, in the Similar mode: the upcoming portion is ranked by
-    /// how much it sounds like the playing track.
     Similar,
 }
 
-/// The strategy behind a mode's pick, None while continuation is off. Built
-/// on the background executor, at the point of use, so a mode switched during
-/// a query can't leave a live provider behind.
+/// The strategy for a mode, None while off. Built at the point of use so a
+/// mode switched mid-query can't leave a live provider behind.
 ///
-/// `order` is how the queue is being ordered, and it takes the draw over
-/// whatever mode is picked. Radio isn't a strategy the listener chooses any
-/// more: a queue ordered by what sounds alike and then refilled from browse
-/// order would answer two different questions in one session, so the refill
-/// follows the order. Turning on Similar shuffle is turning on radio, which
-/// is what it looked like it did anyway.
-///
-/// Random shuffle under Continue is the same call: the listener shuffled a
-/// list, and what plays on when it runs out is a shuffle of the rest, not
-/// the next album down the browse order with its tracks scrambled. Weighted
-/// is left alone, since its draw is already a shuffle over history.
+/// `order` takes the draw over the mode: Similar shuffle refills with radio,
+/// and Random shuffle under Continue refills with a shuffle of the rest.
+/// Weighted is already a shuffle and stays.
 pub fn provider(mode: Mode, order: Order) -> Option<Box<dyn Provider>> {
     match (mode, order) {
         (Mode::Off, _) => None,
@@ -216,14 +145,9 @@ pub fn provider(mode: Mode, order: Order) -> Option<Box<dyn Provider>> {
     }
 }
 
-/// Resume `order` past wherever the session got to: the last position any
-/// seen track occupies, and everything unseen after it. Nothing already seen
-/// comes back.
-///
-/// The resume point is the *last* seen position rather than the first,
-/// because a window that started mid-view and played to its end must carry on
-/// below it. Taking the first would go back up into the rows above the
-/// click, which the listener already skipped past on purpose.
+/// Resume `order` after the *last* seen position, skipping anything seen. The
+/// last, so a window that started mid-view carries on below it rather than
+/// back into rows the listener skipped.
 fn resume(order: &[i64], seen: &HashSet<i64>, count: usize) -> Vec<i64> {
     let from = order
         .iter()
@@ -238,13 +162,8 @@ fn resume(order: &[i64], seen: &HashSet<i64>, count: usize) -> Vec<i64> {
         .collect()
 }
 
-/// Resume the browse order (#37): the view play started in, then the rest of
-/// the library behind it.
-///
-/// Widening past the view is this provider's own pool growing, not a fallback
-/// to another strategy. The ADR's "an empty batch ends playback" rule is
-/// about not racing tastes against each other; a list that runs out and a
-/// library that runs out are the same taste asked twice.
+/// Resume the browse order (#37): the view, then the rest of the library.
+/// Widening past the view is the same taste asked twice, not a fallback.
 struct Browse;
 
 impl Provider for Browse {
@@ -260,15 +179,11 @@ impl Provider for Browse {
         let Ok(all) = store::all_ids(conn) else {
             return out.into_iter().map(Pick::ungrouped).collect();
         };
-        // The view's picks count as seen for the library pass, or a track
-        // in both lists would come back twice in one batch.
+        // The view's picks count as seen, or a track in both lists comes back twice.
         let mut seen = seen;
         seen.extend(out.iter().copied());
         out.extend(resume(&all, &seen, seed.count - out.len()));
-        // The library ran out too. Everything the session could play, it has
-        // played, so go round again from the top rather than fall silent:
-        // "no repeats until the library is exhausted" is the promise, and
-        // this is what exhausted looks like on a twelve-track library.
+        // The whole library played: go round again rather than fall silent.
         if out.is_empty() {
             out.extend(all.into_iter().take(seed.count));
         }
@@ -276,16 +191,9 @@ impl Provider for Browse {
     }
 }
 
-/// The browse order's shuffled twin: what Random shuffle plays on into once
-/// the shuffled seed runs out. Draws at random from what the view still has
-/// unplayed, then from the rest of the library, and nothing already heard
-/// comes back until both are exhausted.
-///
-/// The view goes first for the same reason Browse resumes it: a shuffle-on
-/// click in a filtered view seeds a sample of that list, and the rest of that
-/// list is what the listener asked to hear before the library at large is.
-/// Within each pool the draw is uniform, which is what makes this a library
-/// shuffle rather than a browse walk in twenty-track chunks.
+/// The browse order's shuffled twin, for Random shuffle: uniform draws from
+/// the view's unplayed rows, then the library, nothing heard until both are
+/// exhausted.
 struct Shuffled;
 
 impl Provider for Shuffled {
@@ -309,8 +217,7 @@ impl Provider for Shuffled {
             all.iter().copied().filter(|id| !seen.contains(id)),
             seed.count - out.len(),
         ));
-        // Everything has been heard. Go round again the way Browse does,
-        // shuffled, rather than fall silent.
+        // Everything heard: go round again, shuffled.
         if out.is_empty() {
             out = reservoir(all, seed.count);
         }
@@ -318,14 +225,8 @@ impl Provider for Shuffled {
     }
 }
 
-/// History-weighted draws (#38): never-played tracks tier first, then the
-/// longest unplayed, with recent listens sinking to the back.
-///
-/// The exact falloff is implementation detail and this is the crude
-/// version: two tiers, ordered inside the second by how long ago and how
-/// often. With no history at all every track falls into the first tier and the
-/// shuffle over it is plain uniform random, which is the degradation the
-/// issue asks for and not a special case in the code.
+/// History-weighted draws (#38): never-played first, then longest unplayed.
+/// With no history it's plain uniform random, not a special case.
 struct Weighted;
 
 impl Provider for Weighted {
@@ -337,8 +238,7 @@ impl Provider for Weighted {
     }
 }
 
-/// The weighted draw as bare ids, so the radio can top its own batch up with
-/// it without going through a second provider.
+/// Bare ids, so the radio can top up its own batch.
 fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64> {
     let Ok(all) = store::all_ids(conn) else {
         return Vec::new();
@@ -350,8 +250,7 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
         .copied()
         .filter(|id| !seen.contains(id))
         .collect();
-    // Everything's been heard this session. Same call the browse provider
-    // makes at the end of the library: play on rather than stop.
+    // Everything heard this session: play on rather than stop.
     if pool.is_empty() {
         pool = all;
     }
@@ -364,12 +263,10 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
             fresh.push(id);
         }
     }
-    // The tier is shuffled whole rather than windowed, because the ids
-    // arrive in browse order: taking the head of an unshuffled tier would
-    // mean every session starts at the same artist.
+    // Shuffled whole: the ids arrive in browse order, and the head of an
+    // unshuffled tier would start every session on the same artist.
     shuffle_slice(&mut fresh);
-    // Longest ago first, ties to the one played least. Both ascending, so
-    // the record from last year outranks the one from this morning.
+    // Longest ago first, ties to the one played least.
     played.sort_by_key(|id| {
         (
             last.get(id).copied().unwrap_or(0),
@@ -379,10 +276,8 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
     fresh.truncate(count.max(1) * BAND);
     let mut out = fresh;
     if out.len() < count {
-        // The unplayed tier ran short, so the rest of the batch comes off
-        // the front of the played ranking. Banded like the tier above it,
-        // so a thin library doesn't replay the same five tracks in the same
-        // order every time it wraps.
+        // The unplayed tier ran short; fill from the played ranking, banded so a
+        // thin library doesn't replay the same order every wrap.
         let want = (count - out.len()) * BAND;
         let mut rest: Vec<i64> = played.into_iter().take(want.max(1)).collect();
         shuffle_slice(&mut rest);
@@ -392,21 +287,11 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
     out
 }
 
-/// Radio (#39): keep drawing what sounds like the seed, library-wide.
+/// Radio (#39): keep drawing what sounds like the seed, library-wide, off
+/// `embeddings::ranked`, which also marks down tracks at another tempo.
 ///
-/// Off the acoustic vectors rather than the genre and artist strings the
-/// issue first proposed, because #40 shipped: `embeddings::ranked` answers the
-/// same question without trusting the least consistent field in any real
-/// library, and marks a track down for running at a tempo the seed doesn't
-/// share.
-///
-/// This is selection, and the Similar shuffle mode in the player is ordering:
-/// radio decides which tracks join the queue, Similar decides what order the
-/// upcoming portion plays them in. Neither does the other's job, which is why
-/// the two used to be separate picks in two separate menus. Nobody could tell
-/// them apart, and they were only ever wanted together, so this one lost its
-/// menu entry: [`provider`] hands the draw to radio whenever the queue is
-/// being ordered by sound.
+/// Selection only; Similar shuffle is the ordering. [`provider`] hands the
+/// draw to radio whenever the queue is ordered by sound.
 struct Radio;
 
 impl Provider for Radio {
@@ -414,11 +299,7 @@ impl Provider for Radio {
         let seen = seed.seen();
         let mut out = radio_ids(conn, seed, &seen);
         if out.len() < seed.count {
-            // A thin pool widens instead of ending playback: an unanalyzed
-            // library, a seed with no vector, or a neighbourhood the session
-            // has already played through. The weighted draw is the floor
-            // under every strategy, so the music keeps going while the
-            // analysis pass catches up.
+            // A thin pool widens into the weighted draw instead of ending playback.
             let mut seen = seen;
             seen.extend(out.iter().copied());
             out.extend(weighted_ids(conn, &seen, seed.count - out.len()));
@@ -427,14 +308,10 @@ impl Provider for Radio {
     }
 }
 
-/// How far down the ranking the song guard is allowed to look while it fills
-/// the band. A library holding one song a hundred times over would otherwise
-/// walk the whole ranking to find a band's worth of distinct songs, and the
-/// tracks that far down don't sound like the seed any more anyway.
+/// Bounds the song guard's walk down the ranking; that far down nothing
+/// sounds like the seed anyway.
 const LOOKAHEAD: usize = 8;
 
-/// The acoustic half of the radio draw, empty when there's nothing to score
-/// against.
 fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
     let Some(track) = seed.track else {
         return Vec::new();
@@ -442,8 +319,7 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
     let Ok(mut scored) = embeddings::ranked(conn, track, &seed.model) else {
         return Vec::new();
     };
-    // Nearest first, ties by id so the ranking is the same between calls;
-    // the variety comes from the band below, not from an unstable sort.
+    // Ties by id so the ranking is stable; the variety comes from the band.
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut ids: Vec<i64> = scored
         .into_iter()
@@ -452,9 +328,7 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
         .collect();
     let band = seed.count * BAND;
     let mut band_ids = one_per_song(conn, seed, &ids[..ids.len().min(band * LOOKAHEAD)], band);
-    // Nothing survived the guard, so the neighbourhood is one song and
-    // nothing else. Play it rather than hand back an empty batch and end the
-    // session over a library that only holds live records.
+    // The whole neighbourhood is one song: play it rather than end the session.
     if band_ids.is_empty() {
         ids.truncate(band);
         band_ids = ids;
@@ -464,14 +338,9 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
     band_ids
 }
 
-/// `candidates` thinned to one track per song (see [`rox_library::song`]),
-/// with every song the session has already played taken out.
-///
-/// This is what keeps a radio off a library's version pile: seventeen rips
-/// of one song all score as each other's nearest neighbour, so without it the
-/// band at the front of the ranking is that song and the batch plays it over
-/// and over. The tag identity does what the vectors can't, since by sound
-/// those really are the same track.
+/// One track per song (see [`rox_library::song`]), minus songs already
+/// played. Without it seventeen rips of one song fill the band, since by sound
+/// they really are the same track.
 fn one_per_song(conn: &Connection, seed: &Seed, candidates: &[i64], want: usize) -> Vec<i64> {
     let mut lookup: Vec<i64> = candidates.to_vec();
     lookup.extend(seed.recent.iter().copied());
@@ -486,18 +355,13 @@ fn one_per_song(conn: &Connection, seed: &Seed, candidates: &[i64], want: usize)
 mod tests {
     use super::*;
 
-    /// The name the fixtures file their vectors under, not the app's
-    /// built-in model. The draw has to follow the model the seed names, so a
-    /// provider that used the built-in one on its own would be scoring a
-    /// corpus that isn't there.
+    /// Not the built-in model: the draw must follow the model the seed names.
     const MODEL: &str = "test-vectors-1";
 
-    /// A second model describing the same library, the corpus a draw must
-    /// not wander into.
+    /// The same library under another model, which a draw must not wander into.
     const OTHER_MODEL: &str = "test-vectors-2";
 
-    /// A library of `n` tracks, one per album so the ids come back in a
-    /// predictable order, plus the tables the providers read.
+    /// One track per album, so the ids come back in a predictable order.
     fn library(n: usize) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
@@ -537,34 +401,25 @@ mod tests {
         picks.into_iter().map(|p| p.id).collect()
     }
 
-    /// The layer-one provider carries on down the view from where the
-    /// session got to, not from the top of it and not from the library.
     #[test]
     fn browse_resumes_the_view_below_the_window_that_played() {
         let conn = library(10);
         let all = ids(&conn);
         let view = Arc::new(all.clone());
-        // Play started at the third row and ran to the sixth.
         let played = all[2..6].to_vec();
         let batch = Browse.next(&conn, &seed(Scope::View(view), played, 3));
         assert_eq!(picked(batch), all[6..9].to_vec());
     }
 
-    /// A view that's been played through hands over to the library rather
-    /// than ending the session, and the handover skips what's already been
-    /// heard.
     #[test]
     fn browse_widens_past_a_view_it_has_finished() {
         let conn = library(10);
         let all = ids(&conn);
-        // The view is only the first four tracks, and all four have played.
         let view = Arc::new(all[..4].to_vec());
         let batch = Browse.next(&conn, &seed(Scope::View(view), all[..4].to_vec(), 3));
         assert_eq!(picked(batch), all[4..7].to_vec());
     }
 
-    /// With no view behind it (a drop, an OS file open, the random button)
-    /// the library itself is the order.
     #[test]
     fn browse_with_no_view_walks_the_library() {
         let conn = library(6);
@@ -573,8 +428,6 @@ mod tests {
         assert_eq!(picked(batch), all[2..4].to_vec());
     }
 
-    /// Every track played and the library still has to keep playing: it
-    /// wraps rather than returning the empty batch that ends the session.
     #[test]
     fn browse_goes_round_again_once_the_library_is_exhausted() {
         let conn = library(3);
@@ -583,7 +436,6 @@ mod tests {
         assert_eq!(picked(batch), all[..2].to_vec());
     }
 
-    /// Nothing to draw from is the one case that really does end playback.
     #[test]
     fn browse_on_an_empty_library_returns_nothing() {
         let conn = library(0);
@@ -594,13 +446,10 @@ mod tests {
         );
     }
 
-    /// A listen sinks its track behind everything never played, whatever
-    /// order the library holds them in.
     #[test]
     fn weighted_draws_the_unheard_before_the_heard() {
         let conn = library(8);
         let all = ids(&conn);
-        // Mark the first six played, leaving two the session has never heard.
         for id in &all[..6] {
             conn.execute(
                 "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)
@@ -616,8 +465,6 @@ mod tests {
         }
     }
 
-    /// With no listens at all every track is equally unheard, so the draw is
-    /// plain uniform random over the library rather than a special case.
     #[test]
     fn weighted_with_no_history_still_fills_a_batch() {
         let conn = library(12);
@@ -627,9 +474,7 @@ mod tests {
         assert_eq!(unique.len(), 5, "a batch never repeats a track");
     }
 
-    /// The session's own plays are excluded even when the history table has
-    /// never heard of them, which keeps a fresh library from stuttering on
-    /// the track it just played.
+    /// Excluded even when the history table has never heard of them.
     #[test]
     fn weighted_skips_what_the_session_already_holds() {
         let conn = library(6);
@@ -641,8 +486,6 @@ mod tests {
         }
     }
 
-    /// A library with no vectors is exactly the case radio can't answer, and
-    /// the answer is to keep playing off the weighted draw rather than stop.
     #[test]
     fn radio_falls_through_to_the_weighted_draw_unanalyzed() {
         let conn = library(8);
@@ -652,27 +495,19 @@ mod tests {
         assert!(!batch.contains(&all[0]));
     }
 
-    /// With vectors in the table the picks come off the acoustic ranking,
-    /// out of the band at the near end of it rather than from anywhere in
-    /// the library. And off the model the seed names: the same library is
-    /// described twice here, so a draw that went to the other name of its
-    /// own accord would pick out of a neighbourhood nobody asked for.
+    /// Picks come from the band nearest the seed, and from the model the seed
+    /// names: the library is described twice here.
     #[test]
     fn radio_picks_out_of_the_band_nearest_the_seed() {
         const N: usize = 40;
         let conn = library(N);
         let all = ids(&conn);
-        // Vectors around a circle, so the scoring has something real to
-        // rank: the standardization centres the corpus and normalizes it,
-        // which leaves the dot product reading as the angle between two
-        // tracks. Track 0 is the seed, and distance grows either way around
-        // until the opposite side of the circle.
+        // Vectors around a circle: after standardization the dot product reads as
+        // the angle. Track 0 is the seed.
         for (step, id) in all.iter().enumerate() {
             let angle = step as f32 / N as f32 * std::f32::consts::TAU;
             embeddings::upsert(&conn, *id, MODEL, &[angle.cos(), angle.sin()]).unwrap();
-            // The other model steps around the same circle seven at a time,
-            // which is a full lap of the library with every track's
-            // neighbours somewhere else entirely.
+            // The other model steps seven at a time, so every neighbour is elsewhere.
             let angle = (step * 7 % N) as f32 / N as f32 * std::f32::consts::TAU;
             embeddings::upsert(&conn, *id, OTHER_MODEL, &[angle.cos(), angle.sin()]).unwrap();
         }
@@ -683,8 +518,6 @@ mod tests {
             !batch.contains(&all[0]),
             "the seed came back as its own neighbour"
         );
-        // The band is BAND times the batch, so a pick has to be one of that
-        // many nearest: the four either side of the seed.
         let band = count * BAND;
         let near: HashSet<i64> = all[1..=band / 2]
             .iter()
@@ -696,15 +529,8 @@ mod tests {
         }
     }
 
-    /// The draw runs on `embeddings::ranked`, so a track the vectors put
-    /// closest to the seed loses its place in the band for running at a tempo
-    /// the seed doesn't share.
-    ///
-    /// Same circle as the test above, with the two tracks either side of the
-    /// seed measured half an octave off it, which is as far apart as two
-    /// tempos get. They stay in the ranking and they stay near the top of it,
-    /// they just no longer fall inside a band of one, and the draw hands back
-    /// the nearest pair that does share the seed's tempo.
+    /// The nearest tracks by vector sit half an octave off the seed's tempo, so
+    /// a band of one passes over them to the nearest pair at the seed's tempo.
     #[test]
     fn radio_passes_over_the_nearest_track_at_the_wrong_tempo() {
         const N: usize = 40;
@@ -724,15 +550,11 @@ mod tests {
         bpm(all[0], 140.0);
         bpm(all[1], 198.0);
         bpm(all[N - 1], 198.0);
-        // The four behind them run at the seed's tempo. Everything further
-        // out is unmeasured, which is its own mismatch under a seed that has
-        // one, so the band is these four and not the rest of the circle.
+        // Everything further out is unmeasured, itself a mismatch.
         for id in [all[2], all[3], all[N - 2], all[N - 3]] {
             bpm(id, 140.0);
         }
 
-        // A band of one batch: the two nearest by vector alone, which is
-        // exactly the pair being marked down.
         let nearest = [all[1], all[N - 1]];
         let compatible: HashSet<i64> = [all[2], all[3], all[N - 2], all[N - 3]]
             .into_iter()
@@ -751,15 +573,11 @@ mod tests {
         }
     }
 
-    /// The version pile: a library holding one song many times over scores
-    /// every copy as every other copy's nearest neighbour, so the band at the
-    /// front of the ranking is that one song. The draw takes one of them and
-    /// spends the rest of the batch on music that isn't the seed again.
+    /// The version pile: every copy is every other copy's nearest neighbour. The
+    /// draw takes none of them past the seed.
     #[test]
     fn radio_takes_one_copy_of_a_song_the_library_holds_many_times() {
         const N: usize = 40;
-        // The first twelve tracks are all one song, tagged the way a real
-        // library tags them; the rest are ordinary distinct tracks.
         const COPIES: usize = 12;
         let conn = library(N);
         let all = ids(&conn);
@@ -777,9 +595,6 @@ mod tests {
             )
             .unwrap();
         }
-        // Vectors that put the copies right on top of each other and the
-        // rest of the library further out, which is what the acoustic pass
-        // really does with a pile like this.
         for (step, id) in all.iter().enumerate() {
             let vec = match step < COPIES {
                 true => [1.0, step as f32 / 1000.0],
@@ -797,9 +612,7 @@ mod tests {
         assert_eq!(copies, 0, "the draw came back with the seed's own song");
     }
 
-    /// A library that holds nothing but versions of the playing song still
-    /// plays. The guard passes tracks over while there's anything else to
-    /// pick; it never ends the session over the last one.
+    /// A library of nothing but versions of one song still plays.
     #[test]
     fn radio_plays_a_library_of_one_song_rather_than_falling_silent() {
         let conn = library(6);
@@ -817,9 +630,7 @@ mod tests {
         assert!(!batch.contains(&all[0]));
     }
 
-    /// Every mode round-trips through the settings file, and anything the
-    /// file holds that this build doesn't know reads as the default instead
-    /// of taking the whole session shard down with it.
+    /// Unknown modes degrade to the default instead of taking the shard down.
     #[test]
     fn a_mode_the_build_doesnt_know_reads_as_the_default() {
         for mode in Mode::ALL {
@@ -835,12 +646,8 @@ mod tests {
         }
     }
 
-    /// Radio isn't a strategy the listener picks any more: it's what the
-    /// draw becomes when the queue is ordered by sound. So an old settings
-    /// file that names it degrades to the default, the Similar order takes
-    /// the draw off whatever mode is set, and Off still means off, since a
-    /// queue that was told to end must not start growing because shuffle
-    /// happens to be on.
+    /// "radio" degrades to the default, Similar takes the draw whatever the mode,
+    /// and Off still means off even with shuffle on.
     #[test]
     fn similar_order_takes_the_draw_rather_than_a_mode_of_its_own() {
         assert_eq!(
@@ -849,10 +656,8 @@ mod tests {
         );
         assert!(provider(Mode::Off, Order::Similar).is_none());
 
-        // The same mode, the same seed, the two orders: browse carries on
-        // down the view, radio leaves it. An unanalyzed library gives radio
-        // nothing to rank by and it falls through to the weighted draw, which
-        // is still not the view's next three.
+        // Same mode and seed, two orders: browse carries on down the view, radio
+        // (here the weighted fallback) doesn't.
         let conn = library(10);
         let all = ids(&conn);
         let view = Arc::new(all.clone());
@@ -869,9 +674,6 @@ mod tests {
         }
     }
 
-    /// Random shuffle refills from everything unheard rather than walking on
-    /// down the browse order: the view's remainder first, then the library,
-    /// and nothing the session already held until both run out.
     #[test]
     fn random_shuffle_draws_from_everything_unheard() {
         let conn = library(12);
@@ -879,8 +681,6 @@ mod tests {
         let view = Arc::new(all[..6].to_vec());
         let played = all[..4].to_vec();
         let shuffled = provider(Mode::Continue, Order::Random).expect("continuation is on");
-        // Two unheard in the view, so those two come first and the library
-        // fills the rest, with no repeats of the view's picks or the plays.
         let batch =
             picked(shuffled.next(&conn, &seed(Scope::View(view.clone()), played.clone(), 5)));
         assert_eq!(batch.len(), 5);
@@ -893,9 +693,8 @@ mod tests {
         }
         let distinct: HashSet<i64> = batch.iter().copied().collect();
         assert_eq!(distinct.len(), batch.len(), "a pick came back twice");
-        // A view still holding plenty stays inside it. Asked often enough
-        // the draw lands on more than the next rows down, which is the
-        // whole difference from the browse resume.
+        // Asked often enough, the draw covers the view's remainder, not just the
+        // next rows.
         let mut landed: HashSet<i64> = HashSet::new();
         for _ in 0..64 {
             landed.extend(picked(
@@ -903,14 +702,10 @@ mod tests {
             ));
         }
         assert_eq!(landed, [all[4], all[5]].into_iter().collect());
-        // Everything heard: the library goes round again instead of ending.
         let again = picked(shuffled.next(&conn, &seed(Scope::Library, all.clone(), 3)));
         assert_eq!(again.len(), 3);
     }
 
-    /// Resuming past the session's position is the whole of the browse
-    /// provider's cleverness, so it gets its own pass over the edges:
-    /// nothing seen, everything seen, and a seen track at the very end.
     #[test]
     fn resume_walks_from_the_last_seen_position() {
         let order = vec![1, 2, 3, 4, 5];
@@ -920,8 +715,7 @@ mod tests {
         assert_eq!(resume(&order, &mid, 9), vec![4, 5]);
         let last: HashSet<i64> = [5].into_iter().collect();
         assert!(resume(&order, &last, 3).is_empty());
-        // A gap in the middle is skipped rather than replayed: the resume
-        // point is the last seen, and the filter catches the rest.
+        // A gap in the middle is skipped, not replayed.
         let gappy: HashSet<i64> = [1, 4].into_iter().collect();
         assert_eq!(resume(&order, &gappy, 9), vec![5]);
     }

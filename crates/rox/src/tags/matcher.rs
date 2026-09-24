@@ -1,15 +1,8 @@
-//! The metadata match window: one OS window opened on a track with no
-//! good tags, so an online lookup is verified field by field before it
-//! writes. It reads the track's current tags, searches the providers off
-//! the UI thread, and lists the candidates best first with a confidence
-//! bar. The selected candidate shows as a compare table, each field's
-//! current value beside the fetched one, and a per-field toggle arms the
-//! ones to take. Apply writes only the armed fields through the same
-//! atomic commit the tag editor uses, then closes; the library reload
-//! refreshes every panel. Nothing is written until Apply.
-//!
-//! One window per track path and opening editor, registered like the
-//! cover editor.
+//! The metadata match window: an online lookup verified field by field
+//! before it writes. Candidates list best first; the selected one shows as a
+//! compare table where each field arms separately. Apply writes only the
+//! armed fields through the tag editor's atomic commit. One window per track
+//! and opening editor.
 
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, Div, Entity, EntityId, Global, ScrollHandle,
@@ -33,18 +26,12 @@ use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 use rox_services::player::fmt_time;
 
-/// What Apply does with the picked fields: write them to the file, or hand
-/// them to a tag editor's form. The fill keeps the editor the single
-/// writer, so the compare never writes tags behind an open editor's back
-/// and leaves its baselines stale.
+/// The fill keeps an open tag editor the single writer, so the compare never
+/// writes behind its back and leaves its baselines stale.
 enum Sink {
-    /// The metadata panel's lookup: commit straight to the track.
     Commit,
-    /// The tag editor's lookup: fill it, the editor saves. The window
-    /// handle is the editor's own, needed to set its inputs from this
-    /// window; both weak, so a closed editor drops the fill. `track`
-    /// names which of its tracks this ran on, so a fill from one of the
-    /// table's rows goes into that row rather than over the batch.
+    /// `track` names the editor row this ran on, so a fill lands in that row
+    /// rather than over the batch.
     Fill {
         editor: WeakEntity<TagEditor>,
         window: AnyWindowHandle,
@@ -52,12 +39,8 @@ enum Sink {
     },
 }
 
-/// The fields the compare shows, in tag-sheet order: the writer field, its
-/// label, and how to pull the value off a candidate. Rating and lyrics stay
-/// out, since a release lookup doesn't return them. Only two of the four
-/// sort fields are here for the same reason: MusicBrainz has sort names for
-/// artists, none for titles or releases, so title sort and album sort stay
-/// hand-typed in the editor.
+/// Rating and lyrics stay out: a release lookup doesn't return them. Nor do
+/// title and album sort, since MusicBrainz only has sort names for artists.
 type Pull = fn(&MetadataCandidate) -> String;
 const FIELDS: &[(Field, &str, Pull)] = &[
     (Field::Title, "Title", |c| c.title.clone()),
@@ -75,23 +58,15 @@ const FIELDS: &[(Field, &str, Pull)] = &[
     (Field::DiscNo, "Disc", |c| c.disc_no.clone()),
 ];
 
-/// The default window size: room for the candidate list beside the compare
-/// table without either crowding.
 const DEFAULT_SIZE: (f32, f32) = (760., 560.);
 
-/// How long the query rests before an edit fires a search, so a burst of
-/// typing spends one request, not one a keystroke.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// The registry key: the track, plus the opening editor for fills. A fill's
-/// window binds its Apply to the editor that opened it, so two editors on the
-/// same track need their own windows; the panel's commit lookup has no
-/// editor and shares one window per track. Keyed on the whole track, so two
-/// tracks of one cue image get a window each.
+/// A fill binds its Apply to the editor that opened it, so two editors on
+/// one track need their own windows. Keyed on the whole track, so cue
+/// subsongs get a window each.
 type MatchKey = (TrackKey, Option<EntityId>);
 
-/// The open match windows, keyed so a second request for the same track
-/// (and editor, for fills) focuses the first.
 #[derive(Default)]
 struct OpenMatchers(Vec<(MatchKey, WindowHandle<Root>)>);
 
@@ -104,16 +79,10 @@ impl WindowRegistry for OpenMatchers {
     }
 }
 
-/// Open a metadata compare that writes straight to the track on apply,
-/// the metadata panel's lookup.
 pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, key: TrackKey, cx: &mut App) {
     open_with(library, now_art, key, Sink::Commit, cx);
 }
 
-/// Open a metadata compare that fills a tag editor on apply rather than
-/// writing, so the editor stays the one writer. The editor and its window
-/// are both what the fill sets, and both weak, so a closed editor no-ops.
-/// `track` is the editor's index for the track this ran on.
 pub fn open_fill(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
@@ -131,7 +100,6 @@ pub fn open_fill(
     open_with(library, now_art, key, sink, cx);
 }
 
-/// Open a metadata compare on `key`, or focus the one already on it.
 fn open_with(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
@@ -163,43 +131,25 @@ fn open_with(
 
 struct TagMatch {
     library: Entity<Library>,
-    /// What Apply does with the picked fields.
     sink: Sink,
-    /// The track the tags write back to.
     key: TrackKey,
-    /// The track as the header shows it.
     line: SharedString,
-    /// The editable query fields, seeded from the track's tags: what the
-    /// search sends and what the confidence scores against, so fixing a
-    /// wrong tag both finds and ranks the right release.
+    /// Seeded from the tags; both the search and the score read them.
     artist_input: Entity<InputState>,
     title_input: Entity<InputState>,
-    /// The album and duration the query keeps from the tags, not editable
-    /// here: they steer the best-release pick and the score without a box
-    /// of their own.
     album: String,
     duration_secs: Option<f64>,
-    /// Whether the identify button draws: AcoustID on with a key from
-    /// either source, and a track with a file of its own. Read once here
-    /// because the availability check may load the settings file, which
-    /// has no place in a paint; a toggle flipped while this window is open
-    /// shows on the next one.
+    /// Read once at open: the availability check may load the settings file,
+    /// which has no place in a paint.
     can_identify: bool,
-    /// The pending debounced search; replacing it cancels the last timer
-    /// and any in-flight request, the workspace's save-debounce idiom.
+    /// Replacing it cancels the pending timer and any in-flight request.
     search_task: Option<Task<()>>,
-    /// The current tag values, one per [`FIELDS`], read off the file so
-    /// the compare shows what a write would replace.
     current: Vec<String>,
     phase: Phase<MetadataCandidate>,
-    /// The highlighted candidate, an index into the ready list.
     selected: Option<usize>,
-    /// Which fields to write, one per [`FIELDS`], reset when the selection
-    /// changes: on where the fetched value is non-empty and differs.
+    /// Reset on selection: on where the fetched value is non-empty and differs.
     armed: Vec<bool>,
-    /// A commit is in flight; the buttons hold still until it finishes.
     saving: bool,
-    /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
     scroll: ScrollHandle,
     now_art: Entity<NowPlayingArt>,
@@ -233,8 +183,6 @@ impl TagMatch {
         } else {
             format!("{title} - {artist}")
         };
-        // The query fields seed from the tags and drive both the search and
-        // the score, so an edit finds and ranks the right release.
         let artist_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(rox_i18n::t!("head-piece-artist"))
@@ -251,7 +199,6 @@ impl TagMatch {
                     input,
                     window,
                     |this, _, event: &InputEvent, _, cx| match event {
-                        // Debounce the typing; Enter searches at once.
                         InputEvent::Change => this.search_soon(true, cx),
                         InputEvent::PressEnter { .. } => this.search_soon(false, cx),
                         _ => {}
@@ -289,7 +236,6 @@ impl TagMatch {
         this
     }
 
-    /// The query as the boxes and the kept album and duration stand now.
     fn query(&self, cx: &App) -> TrackQuery {
         TrackQuery {
             artist: self.artist_input.read(cx).value().trim().to_string(),
@@ -299,9 +245,7 @@ impl TagMatch {
         }
     }
 
-    /// Read the track's current tags off the UI thread and fold them into
-    /// the compare's left column. A file that will not read leaves the
-    /// current values empty; the compare still shows what a write sets.
+    /// A file that won't read leaves the current values empty.
     fn read_current(&self, cx: &mut Context<Self>) {
         let path = self.key.path.clone();
         cx.spawn(async move |this, cx| {
@@ -327,10 +271,6 @@ impl TagMatch {
         .detach();
     }
 
-    /// Search the providers for the current query and fill the list when
-    /// it returns. With `debounce`, wait out a beat of quiet first so a burst
-    /// of typing fires one request; storing the task cancels the previous
-    /// timer and any request still in flight. Enter skips the wait.
     fn search_soon(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let query = self.query(cx);
         self.phase = Phase::Searching;
@@ -348,15 +288,9 @@ impl TagMatch {
         }));
     }
 
-    /// Identify the track by its sound rather than its tags: fingerprint
-    /// the file, ask AcoustID which recording that fingerprint is, and
-    /// land the answer in the same list a text search fills. Stored in
-    /// `search_task` like a search, so starting one cancels a pending
-    /// debounce instead of racing it to the list.
-    ///
-    /// AcoustID scores against a length, so a container that reports none
-    /// falls back to the duration the library already holds. With neither
-    /// there's nothing to send and the window says so.
+    /// Fingerprint the file and ask AcoustID which recording it is. Stored in
+    /// `search_task` so it cancels a pending debounce instead of racing it.
+    /// A container with no length falls back to the library's duration.
     fn identify(&mut self, cx: &mut Context<Self>) {
         let query = self.query(cx);
         let path = self.key.path.clone();
@@ -375,8 +309,7 @@ impl TagMatch {
                     let Some(duration_secs) = fingerprint.duration_secs.or(fallback) else {
                         return Err(no_duration);
                     };
-                    // The length only; a fingerprint in a log file is
-                    // noise nobody can read back.
+                    // Never log the fingerprint itself.
                     log::debug!("acoustid identify: {duration_secs}s");
                     providers::identify(&fingerprint.encoded, duration_secs, &query)
                 })
@@ -386,8 +319,6 @@ impl TagMatch {
         }));
     }
 
-    /// Fold a finished search into the list, the top score pre-selected,
-    /// or leave the failure for the header to show.
     fn apply_results(
         &mut self,
         result: Result<Vec<MetadataCandidate>, String>,
@@ -407,10 +338,6 @@ impl TagMatch {
         cx.notify();
     }
 
-    /// Arm every field the selected candidate would change: a non-empty
-    /// fetched value that differs from the current tag. Run whenever the
-    /// selection or the baselines move, so the default is "take what is
-    /// new" and the user pares back from there.
     fn rearm(&mut self) {
         let Phase::Ready(found) = &self.phase else {
             return;
@@ -424,9 +351,6 @@ impl TagMatch {
         }
     }
 
-    /// Apply the armed fields: the armed values that actually change,
-    /// gathered once, then either committed to the track or handed to a
-    /// tag editor's form depending on the sink.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -453,9 +377,6 @@ impl TagMatch {
             return;
         }
         match &self.sink {
-            // The tag editor's lookup: fill its form on its own window, so
-            // the editor's normal save writes them and its baselines never
-            // go stale behind an unseen commit. No file write here.
             Sink::Fill {
                 editor,
                 window: editor_window,
@@ -474,9 +395,6 @@ impl TagMatch {
                     .ok();
                 window.remove_window();
             }
-            // The metadata panel's lookup: commit off the UI thread, reload
-            // the library so every panel refreshes, and close; a failure
-            // keeps the window open with the error, the file untouched.
             Sink::Commit => {
                 let changes = fields
                     .into_iter()
@@ -499,9 +417,8 @@ impl TagMatch {
                     let (edit, result) = cx
                         .background_executor()
                         .spawn(async move {
-                            // Through the key, so a cue track's pick is
-                            // written to the library instead of stamping
-                            // the shared image.
+                            // Through the key, so a cue track's pick goes to the library instead of
+                            // stamping the shared image.
                             let result =
                                 writer::commit_key(&edit.path, sub, &edit.changes, &edit.pictures);
                             (edit, result)
@@ -530,9 +447,6 @@ impl TagMatch {
         }
     }
 
-    /// The candidate list: one row each, best first, the album and year so
-    /// releases tell apart, the confidence as a bar and a percent. Clicking
-    /// selects and re-arms the compare.
     fn candidate_list(&self, found: &[MetadataCandidate], cx: &mut Context<Self>) -> Div {
         let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
         for (ix, candidate) in found.iter().enumerate() {
@@ -582,8 +496,6 @@ impl TagMatch {
                                     .child(SharedString::from(candidate.title.clone())),
                             )
                             .child(
-                                // The service the row came from, so a later
-                                // second provider tells its matches apart.
                                 div()
                                     .flex_none()
                                     .text_xs()
@@ -607,10 +519,6 @@ impl TagMatch {
         body
     }
 
-    /// The compare: one row per field, the current tag beside the fetched
-    /// value with a toggle to arm it. A field the candidate doesn't have,
-    /// or already matches, shows dimmed and inert, since there's nothing
-    /// to take.
     fn compare(&self, candidate: &MetadataCandidate, cx: &mut Context<Self>) -> Div {
         let mut rows = div().flex().flex_col().gap(tokens::SPACE_XS);
         for (i, (_, label, pull)) in FIELDS.iter().enumerate() {
@@ -683,8 +591,7 @@ impl TagMatch {
     }
 }
 
-/// The track's duration in seconds off the projection, resolved from its
-/// id, so the score doesn't depend on the track being the one playing.
+/// Off the projection, so the score doesn't depend on what's playing.
 fn duration_secs_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<f64> {
     let library = library.read(cx);
     let projection = library.projection()?;
@@ -694,8 +601,6 @@ fn duration_secs_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<f64
     (ms > 0).then(|| ms as f64 / 1000.0)
 }
 
-/// A tag value, or a dash where it's empty, so an empty cell reads as
-/// "nothing here" rather than a gap.
 fn value_or_dash(value: &str) -> SharedString {
     if value.is_empty() {
         SharedString::from("-")
@@ -773,8 +678,6 @@ impl Render for TagMatch {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // The backdrop paints first, under the page, so translucent
-            // surfaces back with the playing track's art like every window.
             .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(
                 div()
@@ -784,9 +687,6 @@ impl Render for TagMatch {
                     .flex_col()
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    // The body's own surface, a second elevated layer over
-                    // the window's, the same as the settings page. The
-                    // backdrop reads through two layers everywhere.
                     .bg(palette::bg_elevated())
                     .child(section(
                         rox_i18n::t!("query-search"),
@@ -811,10 +711,7 @@ impl Render for TagMatch {
 }
 
 impl TagMatch {
-    /// What stands between the window and a write, when something does.
-    /// The clauses run in the order a lookup clears them, so the footer
-    /// names the one step that's actually next, and Apply is live exactly
-    /// when nothing is left.
+    /// Ordered the way a lookup clears them, so the footer names the next step.
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
@@ -834,10 +731,8 @@ impl TagMatch {
         None
     }
 
-    /// The window's actions, and what's in their way. No enter shortcut
-    /// here: the query boxes own the key as "search now", and a window
-    /// binding would fire on the same press and apply against
-    /// results the search is about to replace.
+    /// No enter shortcut: the query boxes own the key as "search now", and a
+    /// window binding would apply against results about to be replaced.
     fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
         let blocker = self.blocker();
         div()
@@ -879,11 +774,6 @@ impl TagMatch {
             )
     }
 
-    /// The search area: the track being tagged for context, then the
-    /// editable artist and title that drive the lookup. Editing either
-    /// re-searches after a beat; Enter searches at once. Beside them, on
-    /// a build and a setting that have AcoustID, the button that skips
-    /// the tags and asks what the audio is.
     fn search_fields(&self, cx: &mut Context<Self>) -> Div {
         let field = |label: SharedString, input: &Entity<InputState>| {
             div()
@@ -900,11 +790,8 @@ impl TagMatch {
                 )
                 .child(Input::new(input).small())
         };
-        // A fingerprint covers the file, so on a cue image it would
-        // identify the disc rather than the one subsong this window is
-        // tagging. The rename tool refuses cue tracks for the same
-        // reason: there's no file of their own behind them. That and the
-        // key check are settled at open, in `can_identify`.
+        // A fingerprint covers the whole file, so on a cue image it would identify
+        // the disc, not the subsong. Settled at open in `can_identify`.
         let can_identify = self.can_identify;
         let busy = self.saving || matches!(self.phase, Phase::Searching);
         div()
@@ -925,9 +812,6 @@ impl TagMatch {
                 div()
                     .flex()
                     .flex_row()
-                    // The boxes carry a label above them and the button
-                    // doesn't, so bottom alignment puts it on the same
-                    // line as the inputs.
                     .items_end()
                     .gap(tokens::SPACE_SM)
                     .child(field(rox_i18n::t!("head-piece-artist"), &self.artist_input))

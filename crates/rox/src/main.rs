@@ -1,14 +1,7 @@
-//! The rox app shell: the workspace's dock hosts the library panel over the
-//! promoted library service, the audio views (spectrum, waveform) fed from
-//! the player's PCM tap, and the transport panels (playback controls, seek
-//! strip, volume) over the promoted playback engine in the bottom dock.
-//! Panels duplicate with their own config and pop out into OS windows over
-//! the same shared entities. New Window stays in the menubar so
-//! multi-window on Wayland keeps getting exercised.
+//! The rox app shell: boots settings, theme, and integrations in order,
+//! then opens workspace windows.
 
-// On Windows a console-subsystem binary pops a terminal window next to the app.
-// Build release as a GUI (windows) subsystem so it doesn't; keep the console in
-// debug builds so stdout/stderr logging stays visible.
+// Release builds use the GUI subsystem so Windows opens no console next to the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autoeq_window;
@@ -68,11 +61,11 @@ use gpui_component::Root;
 use rox_core::settings::{
     MIN_WINDOW_SIZE, Settings, layouts, note_first_run, note_os_appearance, os_decorations,
     resize_border, seed_os_appearance, set_acoustic_analysis, set_app_font, set_app_frame,
-    set_chrome_side, set_chrome_style, set_design_mode, set_experimental, set_fold_case,
-    set_gain_mode, set_hide_menubar, set_language, set_menubar_buttons, set_os_decorations,
-    set_quit_to_tray, set_rating_dots, set_rating_style, set_resize_border, set_resize_lock,
-    set_seams, set_show_readings, set_tempo_analysis, set_theme, set_workspace_migrator,
-    window_decorations,
+    set_bare_child_windows, set_child_titlebar, set_chrome_side, set_chrome_style, set_design_mode,
+    set_experimental, set_fold_case, set_gain_mode, set_hide_menubar, set_language,
+    set_menubar_buttons, set_os_decorations, set_quit_to_tray, set_rating_dots, set_rating_style,
+    set_resize_border, set_resize_lock, set_seams, set_show_readings, set_tempo_analysis,
+    set_theme, set_workspace_migrator, window_decorations,
 };
 use rox_core::{APP_ID, logging};
 use rox_design::assets::Assets;
@@ -81,10 +74,9 @@ use rox_net::providers;
 use rox_services::acoustic::set_acoustic_model;
 use workspace::Workspace;
 
-/// The frame size pinned on the command line: `rox --window-size 1440x900`
-/// opens at exactly that and layout swaps leave it alone for the session. A
-/// dev flag for shooting the workspace previews at one consistent size; the
-/// window is a Wayland client, so nothing outside the process can size it.
+/// `rox --window-size 1440x900`: a dev flag pinning every window's size for
+/// the session, for shooting previews. Wayland gives nothing outside the
+/// process a way to size it.
 pub(crate) fn window_size_override() -> Option<gpui::Size<gpui::Pixels>> {
     static SIZE: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
     SIZE.get_or_init(|| {
@@ -110,17 +102,11 @@ pub fn open_workspace(cx: &mut App) {
     open_workspace_with(workspace::WorkspaceStart::Restore, cx);
 }
 
-/// Open a workspace window with a chosen starting layout: the Window menu's
-/// New Window (restore), Empty Window, and New Window from Layout all come
-/// through here.
 pub fn open_workspace_with(start: workspace::WorkspaceStart, cx: &mut App) {
     open_workspace_window(start, None, None, cx);
 }
 
-/// Reopen from the tray or the macOS dock: a window on the saved working
-/// layout over the state the last close handed to the hold, so playback
-/// continues straight through. The media service comes back with it where it
-/// stayed registered through the windowless stretch.
+/// Reopen from the tray or dock over the held state, so playback continues.
 pub fn open_workspace_adopting(adopt: workspace::Adopted, cx: &mut App) {
     open_workspace_window(workspace::WorkspaceStart::Restore, Some(adopt), None, cx);
 }
@@ -128,15 +114,10 @@ pub fn open_workspace_adopting(adopt: workspace::Adopted, cx: &mut App) {
 fn open_workspace_window(
     start: workspace::WorkspaceStart,
     adopt: Option<workspace::Adopted>,
-    // Audio files handed to us on the command line (`rox song.flac`, or the
-    // .desktop actions), with the mode the launch asked for. Play overrides
-    // the restore so double-clicking a file starts it; enqueue appends to the
-    // up-next queue. None on every other open.
+    // Command-line files and their launch mode. None on every other open.
     open: Option<(rox_library::open_files::LaunchMode, Vec<std::path::PathBuf>)>,
     cx: &mut App,
 ) {
-    // Windows open on the saved frame, so a restart, and every New Window,
-    // comes back where the last-closed window was.
     let mut window_bounds = match Settings::load().windows.main {
         Some(w) => {
             let bounds = Bounds {
@@ -149,14 +130,10 @@ fn open_workspace_window(
                 WindowBounds::Windowed(bounds)
             }
         }
-        // A hair larger than the welcome window (1240x660) it opens under on
-        // a first run, so that window nests inside it like a child. Sized to
-        // still fit a 1366x768 laptop with margin to spare.
+        // A hair larger than the first-run welcome window (1240x660), and still
+        // fits a 1366x768 laptop.
         None => WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(720.)), cx)),
     };
-    // A preset window opens at the preset's stored size when it has one,
-    // keeping the restored position; a preset without a size opens like any
-    // other window.
     if let workspace::WorkspaceStart::Preset(name) = &start
         && let Some(s) = layouts::resolve(&Settings::load(), name).and_then(|p| p.size)
     {
@@ -168,8 +145,6 @@ fn open_workspace_window(
             ),
         });
     }
-    // The pinned dev size beats both the saved frame and a preset's size, so
-    // every window this session comes up at exactly what the flag asked for.
     if let Some(s) = window_size_override() {
         window_bounds = WindowBounds::Windowed(Bounds {
             origin: window_bounds.get_bounds().origin,
@@ -182,12 +157,9 @@ fn open_workspace_window(
         window_decorations: Some(window_decorations()),
         titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("rox")),
-            // On Windows and macOS the caption is driven by this creation-time
-            // flag, not the window_decorations option below (a no-op on both
-            // until our gpui patches' request_decorations runs post-open).
-            // Opening in the right state avoids a chrome flash on a
-            // hidden-decorations window. Linux ignores appears_transparent, so
-            // scope the derived value to the two platforms that read it.
+            // Windows and macOS read the caption from this creation-time flag, not
+            // window_decorations (a no-op there until request_decorations runs), so
+            // opening right avoids a chrome flash. Linux ignores it.
             appears_transparent: cfg!(any(target_os = "windows", target_os = "macos"))
                 && !os_decorations(),
             ..Default::default()
@@ -196,25 +168,15 @@ fn open_workspace_window(
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
-        // The Wayland backend ignores the creation-time titlebar title;
-        // only set_window_title reaches the compositor.
+        // Wayland ignores the creation-time title.
         rox_panel_api::windows::set_window_title(window, "rox");
-        // `WindowOptions::focus` already asks for this at creation, but
-        // some window managers grant the map and deny the raise: the
-        // window comes up on top with the keyboard still on whatever had
-        // it a moment ago. Only matters for New Window and Empty Window,
-        // opened from a window that already holds focus; on launch there's
-        // nothing else to steal it from, so this is a no-op there.
+        // Some window managers grant the map and deny the raise, leaving focus on
+        // the window that opened this one.
         window.activate_window();
-        // No WindowOptions field for this one, so the fresh window starts
-        // with the platform default and takes the setting here.
         window.set_resize_border(resize_border());
-        // System-theme follow comes from the OS appearance events, which
-        // only reach us through a window. The window's own cached
-        // appearance supplies the settings cache, since the platform's read
-        // borrows the Wayland client, which is already borrowed here. The
-        // immediate note covers a flip that happened while no window was up
-        // (tray residency); the setter dedupes, so repeats cost nothing.
+        // OS appearance only reaches us through a window. The platform's own read
+        // borrows the Wayland client, which is already borrowed here, so use the
+        // window's cached value. The immediate note covers a flip while windowless.
         note_os_appearance(window.appearance(), cx);
         window
             .observe_window_appearance(|window, cx| {
@@ -222,22 +184,17 @@ fn open_workspace_window(
             })
             .detach();
         let workspace = cx.new(|cx| Workspace::new(start, adopt, window, cx));
-        // Command-line files route into the fresh window's player. The player
-        // is path-based, so this works for files outside the library.
+        // The player is path-based, so this works for files outside the library.
         if let Some((mode, paths)) = open {
             workspace.update(cx, |ws, cx| ws.open_paths(mode, paths, cx));
         }
-        // gpui-component windows layer sheets, dialogs, and dock drag
-        // overlays through a Root at the top of the window.
         cx.new(|cx| Root::new(workspace, window, cx))
     })
     .expect("failed to open the main window");
 }
 
-/// Hand rox-panel-api the windows it can't reach on its own. Panels and the
-/// shared helpers are a crate down and can't depend upward, so every call
-/// into a window (the tag editor, the stats page, the Add Panel flyout)
-/// goes through this table. Installed before anything can open a window.
+/// Panels are a crate down and can't depend upward, so every window they open
+/// goes through this table. Installed before any window can open.
 fn install_openers() {
     rox_panel_api::openers::install(rox_panel_api::openers::Openers {
         tags_editor: tags::editor::open,
@@ -270,9 +227,7 @@ fn install_openers() {
     });
 }
 
-/// The typed side of the lyrics watch: the panel comes down type-erased,
-/// since the registry can't name a concrete panel, and goes back into the
-/// watcher list as itself. A panel already dropped never registers.
+/// The registry can't name a concrete panel, so it arrives type-erased.
 fn watch_lyrics_panel(panel: gpui::AnyWeakEntity, cx: &mut App) {
     let Some(panel) = panel
         .upgrade()
@@ -283,9 +238,7 @@ fn watch_lyrics_panel(panel: gpui::AnyWeakEntity, cx: &mut App) {
     lyrics::watch(panel.downgrade(), cx);
 }
 
-/// The typed side of a pinned panel's Close: find the workspace behind the
-/// window and float the confirm there. A window with no workspace behind it
-/// has nowhere to put the dialog, and the pin holds as it did before.
+/// A window with no workspace behind it has nowhere for the dialog; the pin holds.
 fn confirm_close_locked(
     panel: std::sync::Arc<dyn rox_dock::PanelView>,
     tabs: gpui::WeakEntity<rox_dock::TabPanel>,
@@ -300,20 +253,11 @@ fn confirm_close_locked(
     });
 }
 
-/// Rein in glibc's malloc before the thread pools exist. Its default of one
-/// arena per contending thread (up to 8 x cores) had a dozen arenas each
-/// parking a few megabytes of freed-but-retained heap: about 50 MB of idle
-/// footprint on the measured library, and the reason applying a workspace
-/// looked like a leak - every rebuild's transient allocations spread across
-/// arenas that never give pages back. Four arenas keep the parallel paths
-/// out of each other's way while bounding that retention, and the megabyte
-/// thresholds hand freed panel trees and cover decodes back to the kernel
-/// instead of holding them against a rainy day. Measured: idle 234 -> 182 MB,
-/// and thirty same-workspace applies flatten at ~230 MB where they used to
-/// climb ~8 MB each, forever. Launch-to-ready stays sub-second.
-///
-/// glibc only; musl, macOS, and Windows allocators don't have these knobs
-/// (or the retention pattern).
+/// Rein in glibc's malloc before the thread pools exist. The default arena
+/// per contending thread left a dozen arenas holding freed heap, about 50 MB
+/// idle, and made workspace applies look like a leak. Four arenas and 1 MB
+/// trim/mmap thresholds measured idle 234 -> 182 MB, and thirty applies
+/// flatten at ~230 MB instead of climbing ~8 MB each. glibc only.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn tune_allocator() {
     unsafe {
@@ -326,18 +270,12 @@ fn tune_allocator() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn tune_allocator() {}
 
-/// A suspend/resume can take the Vulkan device down with it (#118: NVIDIA on
-/// X11), and a lost device can't draw another frame. The renderer detects it
-/// (a vendored gpui patch, z3) and hands the response to this handler:
-/// re-exec the binary in place. Same pid, same argv, so `--portable` and
-/// friends survive, and the launch restore brings the session back from its
-/// last persist. The single-instance socket file gets left behind, but the
-/// listener closes with the exec and the fresh claim treats an unanswered
-/// socket as stale and rebinds.
+/// A suspend/resume can lose the Vulkan device (#118: NVIDIA on X11). The
+/// renderer detects it (vendored gpui patch z3) and this re-execs in place:
+/// same pid and argv, and the launch restore brings the session back. The
+/// stale single-instance socket is treated as dead and rebound.
 ///
-/// The uptime gate keeps a GPU that's dead at boot from turning this into an
-/// exec loop: a device lost this early means restarting won't help, so the
-/// renderer's exit fallback takes it from there.
+/// The uptime gate stops a GPU that's dead at boot from becoming an exec loop.
 #[cfg(unix)]
 fn install_gpu_lost_restart() {
     let booted = std::time::Instant::now();
@@ -356,7 +294,6 @@ fn install_gpu_lost_restart() {
         let err = std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
             .exec();
-        // exec only returns on failure; the renderer's exit fallback runs.
         log::error!("restart failed: {err}");
     });
 }
@@ -365,64 +302,40 @@ fn install_gpu_lost_restart() {
 fn install_gpu_lost_restart() {}
 
 fn main() {
-    // Allocator knobs go first: mallopt decides arena policy lazily as
-    // threads first contend, so this has to beat every thread spawn.
+    // First: mallopt decides arena policy as threads first contend.
     tune_allocator();
-    // The lost-GPU restart goes in before any renderer exists to need it.
     install_gpu_lost_restart();
-    // The settings model can't reach up into the workspace files it has to
-    // drain on a pre-split launch, so it gets pointed at them first, before
-    // anything reads a setting.
+    // Before anything reads a setting: the settings model can't reach up into
+    // the workspace files a pre-split launch has to drain.
     set_workspace_migrator(workspaces::migrate_saved);
-    // The windows panels open are up here; the table goes in before any of
-    // them can be reached.
     install_openers();
-    // Files handed to us on the command line (`rox song.flac`, or the file
-    // manager's Open With). Collected before the app boots so a plausible-file
-    // filter runs off the real argv, not gpui's.
+    // Before the app boots, so the file filter reads the real argv, not gpui's.
     let (launch_mode, launch_files) = rox_library::open_files::from_args();
-    // One rox per data directory. A rox already running takes this launch
-    // (its window comes back out of the tray with our files in hand), and
-    // this process is done before it ever opens a compositor connection.
+    // One rox per data directory: a running one takes this launch, and this
+    // process exits before opening a compositor connection.
     let Some(instance) = startup::single_instance::claim(launch_mode, &launch_files) else {
         return;
     };
     let app = Application::new().with_assets(Assets);
-    // macOS: clicking the dock icon while the app runs with no windows
-    // brings a workspace back, the platform's own quit-to-tray. Only the
-    // mac backend ever fires this.
+    // macOS only: a dock click with no windows brings a workspace back.
     app.on_reopen(|cx| {
         if rox_panel_api::windows::front_workspace(cx).is_none() {
             integrations::tray::reopen(cx);
         }
     });
     app.run(move |cx: &mut App| {
-        // The logging backend goes up first, so anything the rest of startup
-        // reports is written to the file and the console ring from the first
-        // line.
         logging::init();
-        // The socket goes live next, so a launch that arrives mid-startup is
-        // already queued for the drain rather than bouncing off a closed
-        // door and starting its own rox.
+        // Early, so a launch arriving mid-startup queues instead of starting its own rox.
         startup::single_instance::serve(instance, cx);
-        // Whether this launch found a settings file decides the welcome
-        // window later; recorded before anything can write one.
+        // Recorded before anything can write a settings file.
         note_first_run();
-        // The shaders inside the shipped workspaces count as agreed to,
-        // since they came with the binary. Seeded before any window opens,
-        // or a shipped look's first frame paints its panels bare while the
-        // gate waits for an approval nobody should have to give.
+        // Before any window opens, or a shipped look's first frame paints bare while
+        // its shaders wait for approval.
         workspaces::trust_shipped_shaders();
-        // The backdrop layer's shade hook, wired before any window paints
-        // a bake so the look's backdrop shader is there from frame one.
         workspace::install_backdrop_shade();
-        // The backdrop's Milkdrop worker, told to stand down on the way out.
-        // Its engine lives in a process static, which is never dropped, so
-        // without this nothing ever tells that thread to stop and it is
-        // still issuing GL calls while glibc runs Mesa's exit handlers and
-        // frees the driver under it. The hang-up is synchronous here, the
-        // wait is in the future, and the panels' own hooks are the same
-        // shape, so the teardowns overlap rather than stack.
+        // The backdrop's engine lives in a never-dropped static, so without this its
+        // thread keeps issuing GL calls while glibc runs Mesa's exit handlers. Stop
+        // now and wait in the future, so the teardowns overlap with the panels'.
         cx.on_app_quit(|_| {
             let engine = backdrop_visual::take_engine();
             let at = std::time::Instant::now();
@@ -448,33 +361,13 @@ fn main() {
         rox_panel_kit::ui::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
-        tags::editor::init(cx);
-        tags::rename::init(cx);
-        tags::repair::init(cx);
-        smart_playlist::init(cx);
-        playlist_create::init(cx);
-        bookmark_dialog::init(cx);
-        bake_dialog::init(cx);
-        convert_dialog::init(cx);
-        lyrics::edit::init(cx);
-        lyrics::matcher::init(cx);
-        shader_editor::init(cx);
-        cover::editor::init(cx);
-        settings::shader_confirm::init(cx);
-        rox_panel_api::panel_settings::init(cx);
-        // Last of the inits, and it has to stay last: a rebind rebuilds the
-        // whole keymap, and this is where the bindings already registered
-        // above get snapshotted so they're preserved through one.
+        // After the widget library's init, whose bindings it snapshots as the bottom layer.
         keymap::init(cx);
-        // Startup theme wiring runs through the palette pipeline, the same
-        // choke point every later palette change goes through. The setters
-        // set the dark baseline and supply the widget theme tokens.
         let settings = Settings::load();
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
         seed_os_appearance(cx);
         set_theme(settings.theme, cx);
-        // Language next to theme: same statics-outside-gpui shape, and
-        // it has to happen before the first window title renders.
+        // Before the first window title renders.
         set_language(settings.language.as_deref(), cx);
         palette::set_scalars(
             settings.look.bundle.appearance.surface_opacity,
@@ -493,6 +386,8 @@ fn main() {
         set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
         set_menubar_buttons(settings.look.bundle.appearance.menubar_buttons, cx);
         set_os_decorations(settings.look.bundle.appearance.os_decorations);
+        set_bare_child_windows(settings.look.bundle.appearance.bare_child_windows);
+        set_child_titlebar(settings.look.bundle.appearance.child_titlebar);
         set_chrome_style(settings.look.bundle.appearance.chrome_style);
         set_chrome_side(settings.look.bundle.appearance.chrome_side);
         set_resize_border(settings.look.bundle.appearance.resize_border);
@@ -515,29 +410,16 @@ fn main() {
         providers::set_deezer_online(settings.accounts.providers.deezer);
         providers::set_lastfm_art_online(settings.accounts.providers.lastfm_art);
         providers::set_artist_online(settings.accounts.providers.artist);
-        // The source header table, filled before a window exists, so the
-        // first thing to resolve a remote row already has somewhere to ask
-        // how to authorize it.
         rox_services::sources::install_registry();
-        // An AppImage that moved since its menu entry was written has an
-        // entry pointing at nothing; point it at where the file is now.
+        // Repoint the menu entry of an AppImage that moved.
         startup::desktop_integration::heal();
-        // Sweep what a past update left behind: the rename-aside old exe
-        // Windows couldn't delete, a stranded stage. Inline rather than
-        // spawned, because the check below may start a download whose
-        // staging this sweep must not race; it's a handful of removes.
+        // Inline, not spawned: the update check below may start a download whose
+        // staging this sweep must not race.
         startup::updater::clean_leftovers();
-        // The daily update check, off the UI thread; the toggle and the
-        // one-day cache both gate it, so most launches do nothing here.
-        // Opted in, a hit rolls straight into the updater's download.
         startup::updates::check_on_launch(cx);
-        // Launch files go into the first window; a plain launch (no files)
-        // opens on the restored state as before.
         let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));
         open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
-        // The macOS system menu bar, once a workspace exists for its picks to
-        // act on. A no-op on every other platform, where the in-window bar
-        // is the only menu.
+        // The macOS menu bar needs a workspace to act on. A no-op elsewhere.
         workspace::native_menu::rebuild(cx);
         cx.activate(true);
     });

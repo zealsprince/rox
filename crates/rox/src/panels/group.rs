@@ -1,9 +1,6 @@
-//! The group panel: a run of panels sharing one dock slot as a resizable
-//! split, so several can fit in a single tab. The dock's own splits can't
-//! go inside a tab, so the group hosts its children itself through
-//! [`crate::composite`]; the divider drags are the group's own, not the
-//! dock's resize machinery. A fresh group opens as a pair, the menu grows
-//! it a slot at a time, and there's no cap.
+//! The group panel: several panels sharing one dock slot as a resizable split.
+//! The dock's own splits can't go inside a tab, so the group hosts its children
+//! through [`crate::composite`] and drags its own dividers.
 
 use gpui::{
     App, Axis, Context, Div, EventEmitter, FocusHandle, Focusable, SharedString, WeakEntity,
@@ -22,11 +19,10 @@ use rox_design::palette;
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
 
-/// The divider's hit strip, wide enough to grab without reading as a gap.
 const DIVIDER_W: f32 = 5.0;
 
-/// The closest a seam can get to its neighbor or the edge; keeps every
-/// slot grabbable.
+/// Closest a seam gets to its neighbor or the edge, so every slot stays
+/// grabbable.
 const SHARE_MIN: f32 = 0.05;
 
 fn default_ratio() -> f32 {
@@ -38,15 +34,11 @@ fn default_ratio() -> f32 {
 pub struct GroupConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Stacked (top over bottom) instead of side by side.
     pub stacked: bool,
-    /// The first seam's position, the whole story back when a group was a
-    /// fixed pair. Dumps from then have only this, and it shadows
-    /// `dividers[0]` on the way out so those builds still read ours.
+    /// The first seam, from when a group was a fixed pair. Kept in step with
+    /// `dividers[0]` so older builds still read the split.
     #[serde(default = "default_ratio")]
     pub ratio: f32,
-    /// The seam positions as fractions of the span, ascending, one per
-    /// divider; empty falls back to `ratio`.
     #[serde(default)]
     pub dividers: Vec<f32>,
 }
@@ -62,9 +54,9 @@ impl Default for GroupConfig {
     }
 }
 
-/// The seam positions for `count` slots: the stored list when it fits,
-/// the pair era's single ratio, an even spread otherwise. Ascending is
-/// enforced, so a hand-edited dump can't fold the split over itself.
+/// The stored seams when they fit the slot count, the pair-era ratio, or an
+/// even spread. Ascending is enforced, so a hand-edited dump can't fold the
+/// split over itself.
 fn normalized_dividers(config: &GroupConfig, count: usize) -> Vec<f32> {
     let seams = count.saturating_sub(1);
     let mut dividers = config.dividers.clone();
@@ -87,12 +79,9 @@ pub struct GroupPanel {
     workspace: WeakEntity<Workspace>,
     config: GroupConfig,
     slots: Vec<Slot>,
-    /// One drag state per seam, indices matching `config.dividers`.
     dividers: Vec<DividerState>,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Whether the hosted children have been told which tab panel this
-    /// group is under; see [`composite::introduce_slots`].
     introduced: bool,
 }
 
@@ -106,9 +95,7 @@ impl GroupPanel {
         Self::restore(state, workspace, config, Vec::new(), cx)
     }
 
-    /// Build with already-restored children, the layout-dump route in.
-    /// The dump's children set the slot count, floored at a pair for a
-    /// short or hand-edited one; seams that don't line up re-derive.
+    /// Floored at a pair; seams that don't match the slot count re-derive.
     pub fn restore(
         state: AppState,
         workspace: WeakEntity<Workspace>,
@@ -133,8 +120,6 @@ impl GroupPanel {
         }
     }
 
-    /// The hosted slots in split order, for the settings window's layout
-    /// tree.
     pub fn slots(&self) -> &[Slot] {
         &self.slots
     }
@@ -153,16 +138,12 @@ impl GroupPanel {
         cx.notify();
     }
 
-    /// Keep the pair era's `ratio` in sync with the first seam, so an older
-    /// build reading this dump still splits where it was left.
     fn sync_ratio(&mut self) {
         if let Some(first) = self.config.dividers.first() {
             self.config.ratio = *first;
         }
     }
 
-    /// Grow the split by an empty slot at the end, halving the last
-    /// share to make its room.
     fn add_slot(&mut self, cx: &mut Context<Self>) {
         let last = self.config.dividers.last().copied().unwrap_or(0.0);
         self.config.dividers.push((last + 1.0) / 2.0);
@@ -171,9 +152,7 @@ impl GroupPanel {
         cx.notify();
     }
 
-    /// Drop the empty slot at `ix`, its seam folding into a neighbor's
-    /// share. A pair is the floor, and a filled slot leaves through its
-    /// own menu first.
+    /// Only an empty slot leaves, and a pair is the floor.
     fn remove_slot(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.slots.len() <= 2 || ix >= self.slots.len() || self.slots[ix].is_some() {
             return;
@@ -186,8 +165,6 @@ impl GroupPanel {
         cx.notify();
     }
 
-    /// Move slot `ix` one step toward either end; the shares stay where
-    /// they are, the contents move.
     fn shift(&mut self, ix: usize, forward: bool, cx: &mut Context<Self>) {
         let other = if forward { ix + 1 } else { ix.wrapping_sub(1) };
         if ix >= self.slots.len() || other >= self.slots.len() {
@@ -197,9 +174,7 @@ impl GroupPanel {
         cx.notify();
     }
 
-    /// Pin seam `ix` to `fraction`, held off its neighbors so no slot
-    /// pinches shut. Crowd enough slots in and the seams have no room left
-    /// to move.
+    /// Held off its neighbors so no slot pinches shut.
     fn drag_seam(&mut self, ix: usize, fraction: f32, cx: &mut Context<Self>) {
         let seams = self.config.dividers.len();
         if ix >= seams {
@@ -220,15 +195,10 @@ impl GroupPanel {
         cx.notify();
     }
 
-    /// One cell of the split: the child's view, or the empty add
-    /// affordance, under the floating slot controls.
     fn cell(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let content = match &self.slots[ix] {
-            // A child that serves its own content menu keeps the
-            // right-click; for the rest the slot routes it to the hosting
-            // tab panel's fallback menu with the child as its subject,
-            // since the group opted the dock's own fallback out for its
-            // whole body.
+            // The group opted out of the dock's body menu, so the slot serves
+            // the right-click itself.
             Some(child) => composite::menu_routed_slot(child, &self.tab_panel, cx),
             None => {
                 let weak = cx.entity().downgrade();
@@ -244,9 +214,8 @@ impl GroupPanel {
                 )
             }
         };
-        // A layout that ships as finished furniture drops the builder's
-        // buttons; its slots are still swapped from the tree on the
-        // Workspace settings page.
+        // Finished layouts hide the builder's buttons; the Workspace page's
+        // tree still swaps slots.
         let controls = if self.config.chrome.controls_hidden() {
             None
         } else {
@@ -261,8 +230,6 @@ impl GroupPanel {
                         self.workspace.clone(),
                         move |this: &mut Self, panel, cx| this.set_slot(ix, Some(panel), cx),
                         move |this: &mut Self, cx| this.set_slot(ix, None, cx),
-                        // A pair swaps whole from the group's own menu; a longer
-                        // split reorders a slot at a time from here.
                         move |menu, weak| {
                             if count <= 2 {
                                 return menu;
@@ -306,8 +273,6 @@ impl GroupPanel {
                 }
                 _ => {
                     if self.slots.len() > 2 {
-                        // An empty slot on a grown split can leave: the x drops the
-                        // hole and hands its share back.
                         let weak = cx.entity().downgrade();
                         Some(
                             composite::corner_controls().child(
@@ -336,15 +301,12 @@ impl GroupPanel {
             .overflow_hidden()
             .child(content)
             .children(controls);
-        // The child's own size settings, applied where the split can still
-        // act on them: a capped cell keeps its size and the seams spend
-        // what's left on the other slots.
+        // A capped child keeps its size; the seams spend the rest on the other
+        // slots.
         composite::clamp_to_panel(cell, &self.slots[ix], cx)
     }
 
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
-        // Let the children open this host from their own menus; the
-        // dock never sees a hosted panel, so nothing else offers it.
         let group_title = rox_i18n::t!("group-panel-title");
         composite::report_hosted(
             self.slots.iter().flatten(),
@@ -356,12 +318,9 @@ impl GroupPanel {
         let seams = self.config.dividers.clone();
         let weak = cx.entity().downgrade();
 
-        // Every slot sizes off its share as a flex basis rather than hard
-        // shares of the span: a slot held to a size by its own settings
-        // then gives the space it can't use back to its neighbors instead
-        // of leaving a gap. A hosted child's own size cap applies along
-        // the split, so a card of fixed-height panels reads at those
-        // heights instead of stretching each to its share.
+        // Shares are flex bases, not hard spans, so a slot held to a size gives
+        // unused space back to its neighbors. A hosted child's size cap applies
+        // along the split.
         let share = |cell: Div, basis: f32, cap: Option<gpui::Size<gpui::Pixels>>| {
             cell.map(|d| match axis {
                 Axis::Horizontal => d.h_full(),
@@ -386,11 +345,8 @@ impl GroupPanel {
             .flex_shrink()
         };
 
-        // The seams draw at the panel's own frame border width, so a
-        // bordered group divides in the same stroke (and the same border
-        // role color, which the panel's theme can recolor). A border
-        // that differs side to side uses its widest side, since a divider
-        // is one line. Borderless groups keep the 1px hairline.
+        // Seams draw at the panel's frame border width, widest side for an
+        // uneven border, 1px when borderless.
         let split = self
             .config
             .chrome
@@ -398,15 +354,9 @@ impl GroupPanel {
             .border_sides(rox_core::settings::app_frame().border)
             .max()
             .clamp(1.0, DIVIDER_W);
-        // While the resize lock holds the dividers are only the lines: no
-        // resize cursor, no drag, the same lock the dock's own handles
-        // follow.
         let live = !rox_dock::resize_locked();
 
         let count = self.slots.len();
-        // Centered, for the run that can't use all its space: slots that
-        // fill make this a no-op, but a group of capped panels clusters in
-        // the middle of its span instead of packing toward the start.
         let mut row = div()
             .size_full()
             .flex()
@@ -445,9 +395,7 @@ impl GroupPanel {
                             }),
                         )
                     })
-                    // The line follows the app's seams toggle the way the
-                    // dock's handles do: off leaves the grab strip alone,
-                    // so a flush look loses the group's lines too.
+                    // Follows the app's seams toggle, like the dock's handles.
                     .child(
                         div()
                             .when(rox_core::settings::seams(), |d| d.bg(palette::border()))
@@ -471,10 +419,6 @@ impl GroupPanel {
             .relative()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // The drag layer: records where the slots span painted and,
-            // while a drag is live, keeps window-level handlers moving that
-            // seam. No hitbox of its own, so it never eats the slots'
-            // clicks.
             .child(
                 canvas(
                     {
@@ -551,8 +495,6 @@ impl Panel for GroupPanel {
         "group"
     }
 
-    /// The chord acts on the child you're standing in, not the container
-    /// around it; focus on the container itself falls back to its own.
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         composite::open_slot_settings(&self.slots, window, cx);
     }
@@ -636,8 +578,6 @@ impl Panel for GroupPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The toggle names the arrangement a click switches to, not the
-        // current one.
         let (flip_label, flip_icon) = if self.config.stacked {
             (
                 rox_i18n::t!("group-panel-split-side-by-side"),
@@ -673,8 +613,6 @@ impl Panel for GroupPanel {
                         }
                     }),
             );
-        // A pair swaps whole; a longer split reorders a slot at a time
-        // from the slot menus.
         let menu = if self.slots.len() == 2 {
             let swap = cx.entity().downgrade();
             menu.item(

@@ -1,62 +1,41 @@
-//! The public reads against a named account: the scrobble history behind
-//! the play-count import, and the registration date the import's fallback
-//! needs to know how far back an account's listening can possibly reach.
-//!
-//! Neither call is signed. They read a public profile, so they carry an
-//! api key and nothing else, the same terms [`crate::providers::lastfm`]
-//! reads an artist on. They ride the shared provider agent for its
-//! User-Agent and its timeout, and a ureq error folds through
-//! [`crate::providers::net_reason`] so the api key in the URL never
-//! reaches a log line.
+//! Unsigned public reads against a named account: the scrobble history
+//! behind the play-count import, and the registration date that floors its
+//! invented timestamps. Errors go through [`crate::providers::net_reason`]
+//! so the api key in the URL never reaches a log.
 //!
 //! `user.getRecentTracks` is the only Last.fm method that dates a play.
-//! The top-tracks and track-info calls report how often an account played
-//! something and never when, which is why an import built on counts alone
-//! has to invent its timestamps. This one hands over every scrobble with
-//! the unix second it happened at, newest first, 200 to a page.
-//!
-//! Two rows come back without a date: the track playing right now, marked
-//! `nowplaying`, and the very occasional entry Last.fm has no time for.
-//! They parse like any other and carry `played_at: None`, for the caller
-//! to fall back on rather than for this module to guess at.
+//! The now-playing row, and the odd entry Last.fm has no time for, come
+//! back with `played_at: None` for the caller to handle.
 
 use std::collections::BTreeMap;
 
 use super::api_root;
 use crate::providers::{agent, net_reason};
 
-/// One scrobble as Last.fm recorded it. No album: the import matches on
-/// artist and title the way the loved list does, and a scrobble's album
-/// field is whatever the submitting client happened to send.
+/// No album: the import matches on artist and title, and a scrobble's album
+/// is whatever the submitting client sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scrobble {
     pub artist: String,
     pub title: String,
-    /// When the play began, unix seconds. None for the now-playing row.
+    /// Unix seconds. None for the now-playing row.
     pub played_at: Option<i64>,
 }
 
-/// One page of history and what it said about the rest of it.
 #[derive(Debug, Default)]
 pub struct RecentPage {
     pub scrobbles: Vec<Scrobble>,
-    /// Pages behind this one at the requested page size, at least 1.
+    /// At least 1.
     pub pages: usize,
-    /// Scrobbles in the whole range the request asked for.
     pub total: usize,
 }
 
-/// The most scrobbles one request may ask for. The API's own ceiling;
-/// asking for more just gets this many back.
+/// The API's own page-size ceiling.
 pub const MAX_LIMIT: usize = 200;
 
-/// One page of an account's scrobble history, newest first.
-///
-/// `from` bounds the range at the bottom: with it the service only
-/// answers with scrobbles after that second, which is how a re-import
-/// pulls what arrived since the last one instead of the whole decade
-/// again. The page count comes back scoped to the same bound, so paging
-/// reads it from the response rather than from an earlier unbounded run.
+/// One page of scrobble history, newest first. `from` bounds the range at
+/// the bottom so a re-import only pulls what's new; the page count comes back
+/// scoped to that bound.
 pub fn recent_tracks(
     key: &str,
     user: &str,
@@ -78,9 +57,8 @@ pub fn recent_tracks(
     parse_recent(&get(&query)?)
 }
 
-/// When the account was registered, unix seconds, or None when the
-/// profile doesn't say. The floor for anything that has to place invented
-/// history somewhere: nobody scrobbled before they had an account.
+/// When the account was registered, unix seconds: the floor for invented
+/// history.
 pub fn registered_at(key: &str, user: &str) -> Result<Option<i64>, String> {
     let mut query: BTreeMap<&str, String> = BTreeMap::new();
     query.insert("method", "user.getinfo".into());
@@ -91,9 +69,7 @@ pub fn registered_at(key: &str, user: &str) -> Result<Option<i64>, String> {
     parse_info(&get(&query)?)
 }
 
-/// The shared half of both calls: send the query, hand back the body.
-/// An API error still answers with JSON worth reading, so a status
-/// failure reads out like a success and the parse finds the message.
+/// A status failure still carries a JSON error body, so it reads like a success.
 fn get(query: &BTreeMap<&str, String>) -> Result<String, String> {
     let mut request = agent().get(&api_root());
     for (name, value) in query {
@@ -107,9 +83,6 @@ fn get(query: &BTreeMap<&str, String>) -> Result<String, String> {
     }
 }
 
-/// A recent-tracks body to scrobbles and the shape of the history behind
-/// them. Split from the request so the parsing is testable without a
-/// network.
 fn parse_recent(text: &str) -> Result<RecentPage, String> {
     let body: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if let Some(message) = api_error(&body) {
@@ -122,8 +95,7 @@ fn parse_recent(text: &str) -> Result<RecentPage, String> {
     let attr = recent.get("@attr");
     let number =
         |field: &str| -> usize { attr.and_then(|a| a.get(field)).map(number_of).unwrap_or(0) };
-    // One scrobble comes back as a bare object where a list would be an
-    // array, the shape every Last.fm collection takes at length one.
+    // A single scrobble arrives as a bare object instead of an array.
     let rows: Vec<&serde_json::Value> = match recent.get("track") {
         Some(serde_json::Value::Array(rows)) => rows.iter().collect(),
         Some(one @ serde_json::Value::Object(_)) => vec![one],
@@ -139,14 +111,10 @@ fn parse_recent(text: &str) -> Result<RecentPage, String> {
     })
 }
 
-/// One row of the list. Neither name is optional: an entry missing one
-/// can't be matched against anything, so it never enters the count.
+/// An entry missing either name can't be matched, so it's dropped.
 fn scrobble(row: &serde_json::Value) -> Option<Scrobble> {
     let title = string(row.get("name"))?;
-    // Plain calls send the artist as an element with its mbid on it, so
-    // the name lands under "#text"; `extended=1` sends an object with a
-    // "name" instead. Read either, since which one arrives is a request
-    // flag away and this has to survive both.
+    // Plain calls put the name under "#text", `extended=1` under "name".
     let artist = row
         .get("artist")
         .and_then(|artist| match artist {
@@ -155,8 +123,6 @@ fn scrobble(row: &serde_json::Value) -> Option<Scrobble> {
         })
         .filter(|artist| !artist.is_empty())?;
 
-    // No date is the now-playing row, and it's a real entry with an
-    // unknowable time rather than a broken one.
     let played_at = row
         .get("date")
         .and_then(|date| date.get("uts"))
@@ -171,10 +137,8 @@ fn scrobble(row: &serde_json::Value) -> Option<Scrobble> {
     })
 }
 
-/// When the profile says the account was registered. The unix second
-/// lives on the attribute; the element's own text is the human date in
-/// one version of the API and the same number in another, so only the
-/// attribute is read.
+/// The unix second lives on the attribute; the element's text is a human
+/// date in some API versions.
 fn parse_info(text: &str) -> Result<Option<i64>, String> {
     let body: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if let Some(message) = api_error(&body) {
@@ -192,7 +156,6 @@ fn parse_info(text: &str) -> Result<Option<i64>, String> {
         .filter(|seconds| *seconds > 0))
 }
 
-/// The API's own error message where the body carries one.
 fn api_error(body: &serde_json::Value) -> Option<String> {
     body.get("error").map(|_| {
         body.get("message")
@@ -202,9 +165,7 @@ fn api_error(body: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// A count or a timestamp as Last.fm sends it. The numbers come back as
-/// strings, but a service that starts sending them as numbers shouldn't
-/// reset someone's import to zero.
+/// Last.fm sends numbers as strings; accept either.
 fn number_of(value: &serde_json::Value) -> usize {
     match value {
         serde_json::Value::String(s) => s.trim().parse().unwrap_or(0),
@@ -212,7 +173,6 @@ fn number_of(value: &serde_json::Value) -> usize {
     }
 }
 
-/// A trimmed string field, or None when it's missing or empty.
 fn string(value: Option<&serde_json::Value>) -> Option<String> {
     value
         .and_then(|v| v.as_str())

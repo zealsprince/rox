@@ -1,14 +1,11 @@
-//! The seam panels compile against. Everything a panel needs that isn't a
-//! widget: the shared state it renders over, the frame config it stores,
-//! the chrome helpers its menus are built from, the settings window behind
-//! its gear, and the shared surfaces (track rows, group heads, the query,
-//! the signal routes editor) that more than one panel draws.
+//! The seam panels compile against: the shared state they render over, the
+//! frame config, the chrome helpers, the settings window behind the gear,
+//! and the surfaces more than one panel draws (track rows, group heads, the
+//! query, the signal routes editor).
 //!
-//! The rule that keeps this crate a seam: nothing in here knows a concrete
-//! panel type, and nothing in here calls up into the binary directly. The
-//! windows a panel opens (the tag editor, the stats page, the signals
-//! window) are defined up in the app, so the calls go through [`openers`], a table
-//! of function pointers the binary installs once at startup.
+//! Nothing in here knows a concrete panel type or calls up into the binary
+//! directly. Windows defined in the app go through [`openers`], a table of
+//! function pointers the binary installs at startup.
 
 pub mod actions;
 pub mod bookmark_ui;

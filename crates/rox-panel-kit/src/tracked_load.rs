@@ -1,43 +1,29 @@
-//! A path-keyed background image load with a generation guard, the block
-//! several panels hand-rolled to fill a background off the file without
-//! blocking the UI thread. It reads the file on the background executor,
-//! discards a result whose track changed mid-read, and retires the previous
-//! decode when a new one swaps in and again when the panel is dropped, so a
-//! cover never lingers in gpui's process-wide, never-evicting asset cache.
+//! A path-keyed background image load with a generation guard, for panels
+//! that fill a background off the file without blocking the UI thread.
 //!
-//! Covers go to the renderer through `img`, which keeps every distinct
-//! decode in that cache and never evicts on its own, so without the retires
-//! a long session pins one full-size bitmap per album viewed and a closed
-//! panel leaks whatever it last showed.
+//! `img` keeps every distinct decode in gpui's process-wide asset cache and
+//! never evicts, so the previous decode is retired on swap and on drop.
+//! Without that a long session pins one full-size bitmap per album viewed.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, Context, Image};
 
-/// A single decoded image loaded for a track path, with the machinery to
-/// keep it in step: a pending marker so a render can tell "already fetching"
-/// from "needs a fetch", and a generation counter that discards a stale
-/// result when the track turns over mid-read. The held decode is `None`
-/// inside when the track has no art.
+/// One decoded image for a track path, with a generation guard against a
+/// track that turns over mid-read. The inner `None` is a track with no art.
 #[derive(Default)]
 pub struct TrackedImage {
-    /// The loaded decode keyed by the track it belongs to; None inside means
-    /// the track has no art. Kept so per-frame notifies never re-read the
-    /// file.
+    /// Kept so per-frame notifies never re-read the file.
     art: Option<(PathBuf, Option<Arc<Image>>)>,
-    /// The track a load is running for.
     pending: Option<PathBuf>,
-    /// Discards stale load results when the track changes mid-read.
     generation: u64,
-    /// Raised by [`TrackedImage::refresh`]: what's held still paints, and
-    /// the next `ensure` re-reads it behind that.
+    /// Set by [`TrackedImage::refresh`]: what's held still paints until the
+    /// next `ensure` re-reads it.
     stale: bool,
 }
 
 impl TrackedImage {
-    /// The decode held for `path`, or None while still loading or when the
-    /// track has none.
     pub fn get(&self, path: &Path) -> Option<Arc<Image>> {
         self.art
             .as_ref()
@@ -45,12 +31,9 @@ impl TrackedImage {
             .and_then(|(_, art)| art.clone())
     }
 
-    /// Make sure the art for `path` is cached or on its way: run `decode`
-    /// off the UI thread and swap the result in when it arrives, discarding
-    /// it if the track moved on. `decode` reads the file and returns the
-    /// decode, or None when the track has no art. `slot` finds this tracker
-    /// back inside the panel when the load returns; the tracker is a field
-    /// of the panel, so it can't swap itself in.
+    /// Load `path`'s art off the UI thread unless it's cached or in flight.
+    /// `slot` finds this tracker again inside the panel, since a field can't
+    /// swap itself in.
     pub fn ensure<T, S, F>(&mut self, path: &Path, slot: S, decode: F, cx: &mut Context<T>)
     where
         T: 'static,
@@ -88,30 +71,23 @@ impl TrackedImage {
         .detach();
     }
 
-    /// The catalog moved under the panel, and a rescan can rewrite art on
-    /// disc under the same path: keep painting what's held, but have the
-    /// next `ensure` re-read it. A load in flight read the file before the
-    /// change, so it's orphaned and the re-read takes its place. `retire`
-    /// keys on the decode's content id, so a re-read that comes back with
-    /// the same cover holds onto the bitmap it already has, and an update
-    /// that left this track's art alone never blanks the panel.
+    /// A rescan can rewrite art under the same path: keep painting what's held
+    /// and re-read on the next `ensure`. `retire` keys on the content id, so a
+    /// re-read of the same cover never blanks the panel.
     pub fn refresh(&mut self) {
         self.stale = true;
         self.pending = None;
         self.generation += 1;
     }
 
-    /// Forget the held load and retire its decode, the panel's drop path,
-    /// so a closed panel leaves nothing pinned in the asset cache. Takes the
-    /// slot first so the retire sees no current decode and always drops.
+    /// The panel's drop path. Takes the slot first so the retire always drops.
     pub fn invalidate(&mut self, cx: &mut App) {
         let old = self.art.take().and_then(|(_, art)| art);
         self.retire(old, cx);
     }
 
-    /// Drop a replaced decode from gpui's asset cache, unless the slot
-    /// holds that same bitmap now, which a re-read of the same bytes
-    /// reuses.
+    /// Unless the slot now holds this same bitmap, which a re-read of the same
+    /// bytes reuses.
     fn retire(&self, old: Option<Arc<Image>>, cx: &mut App) {
         let Some(old) = old else { return };
         if let Some((_, Some(current))) = &self.art

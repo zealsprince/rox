@@ -69,16 +69,22 @@ CREATE TABLE IF NOT EXISTS tracks (
   tags or rox's own measurement pass, and the upsert's `KEEPS_MEASURED_GAIN` condition
   is the precedence rule: tags win wherever a file has them, a measurement is kept
   through a rescan that still finds none.
-- `rating` and `added` are the app's own, never read from a tag, which is why they're
-  the two columns whose migrations don't reset `mtime`.
+- `rating` and `added` are the app's own, never read from a tag, so neither owes a
+  rescan.
 
-Schema changes go through `migrate::run`, an ordered slice of steps over SQLite's
-`PRAGMA user_version`, each in its own transaction. Step 1 is the baseline, the old
-idempotent init with its column probes, so a pre-ladder file converges to it and stamps
-1; every step after that is a clean forward one. Steps are additive by policy: an older
-binary pointed at a newer file runs nothing and works against the columns it knows.
-A step adding something the scanner reads out of tags resets every `mtime` with it, or
-the next scan skips unchanged files and the column stays empty forever.
+Schema changes go through the migration ladder in `migrate`, an ordered slice of steps
+over SQLite's `PRAGMA user_version`, each in its own transaction. Step 1 is the
+baseline, the old idempotent init with its column probes, so a pre-ladder file converges
+to it and stamps 1; every step after that is a clean forward one. Steps are additive by
+policy: an older binary pointed at a newer file runs nothing and works against the
+columns it knows.
+
+A step adding something the scanner reads out of tags sets `rescan: true`, or the next
+scan skips unchanged files and the column stays empty forever. The store runs its
+ladder with a hook that resets every `mtime`, and the runner calls it once per batch,
+inside the transaction of the first flagged step, so the reset commits with the step
+that owes it even if a later step fails. The thumbnail cache's ladder has no hook, and
+`migrate::run` panics on a flagged step there rather than let one go unhonoured.
 
 ## The projection
 

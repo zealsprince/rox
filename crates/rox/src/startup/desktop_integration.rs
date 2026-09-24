@@ -1,64 +1,48 @@
-//! The AppImage's menu entry. A distro package, a Flatpak, and the nix
-//! build all register themselves with the desktop when they install; an
-//! AppImage is one file that mounts itself to run, so nothing tells the
-//! app menu it exists, and "Open With" never lists it for an audio file.
-//! This module writes what a package would have: a launcher entry and the
-//! logo, into the user's own XDG data folder, and only there. Nothing
-//! under `/usr`, nothing beside the .AppImage, no `.desktop` in the
-//! autostart folder. Removing the entry takes the same two files away.
+//! The AppImage's menu entry. Packages register with the desktop when they
+//! install; an AppImage is one self-mounting file, so nothing tells the app
+//! menu it exists. This module writes the launcher entry and the logo into
+//! the user's XDG data folder and nowhere else, and removes the same two
+//! files.
 //!
-//! The entry has to name the .AppImage by absolute path, and people move
-//! that file: out of Downloads, onto another drive, into a folder with a
-//! space in its name. So the entry's own `Exec=` line is the record of
-//! where the file was, and [`heal`] compares it against `$APPIMAGE` at each
-//! launch and rewrites it when they differ. The user never re-integrates
-//! by hand; the entry follows the file. It also picks up the version field
-//! after an in-place update, since the updater replaces the file without
-//! touching the entry.
+//! The entry names the .AppImage by absolute path, and people move that
+//! file, so [`heal`] compares the entry's `Exec=` against `$APPIMAGE` at each
+//! launch and rewrites it when they differ. It also refreshes the version
+//! after an in-place update.
 //!
 //! The offer is made once, on the welcome window, and the answer lives in
-//! the session file: [`Status::NotOffered`] is a fresh install, and
-//! [`Status::Declined`] is someone who said no and shouldn't be asked
-//! again. Outside an AppImage every function here is a no-op that reports
-//! [`Status::Unavailable`], so the callers stay free of platform checks.
+//! the session file. Outside an AppImage everything here reports
+//! [`Status::Unavailable`], so callers need no platform checks.
 
 use std::path::{Path, PathBuf};
 
 use rox_core::install;
 use rox_core::settings::Settings;
 
-/// The entry as it ships in the source tree: the `Exec=` and `Icon=` lines
-/// are rewritten on the way out, the rest goes through as it is.
+/// The shipped entry; only its `Exec=` and `Icon=` lines are rewritten.
 const TEMPLATE: &str = include_str!("../../assets/app/rox.desktop");
 
-/// The file name both written files share, minus their extensions.
 const ENTRY_STEM: &str = install::APP_ID_RDNS;
 
-/// Where the menu entry stands, as the welcome window and the settings
-/// row need to know it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// Not an AppImage, or no data folder to write into; nothing to offer.
+    /// Not an AppImage, or no data folder to write into.
     Unavailable,
-    /// An AppImage with no entry and no answer yet: the welcome window asks.
+    /// No entry and no answer yet: the welcome window asks.
     NotOffered,
-    /// Asked and turned down; the settings row is the only way back.
+    /// Turned down; only the settings row offers it again.
     Declined,
     /// The entry exists and names this executable.
     Integrated { exec: PathBuf },
 }
 
-/// The two paths an integration needs: the data folder the files go into
-/// and the .AppImage the entry points at. Resolved from the process once
-/// per call and handed down, so the tests can point both at a temp dir
-/// without touching the environment.
+/// Resolved once per call and handed down, so tests can point both paths
+/// at a temp dir.
 struct Layout {
     data_home: PathBuf,
     appimage: PathBuf,
 }
 
 impl Layout {
-    /// `~/.local/share/applications`, where the menu reads entries from.
     fn applications(&self) -> PathBuf {
         self.data_home.join("applications")
     }
@@ -67,8 +51,7 @@ impl Layout {
         self.applications().join(format!("{ENTRY_STEM}.desktop"))
     }
 
-    /// The scalable slot in the hicolor theme, which every icon theme
-    /// falls back to.
+    /// The scalable hicolor slot, which every icon theme falls back to.
     fn icon(&self) -> PathBuf {
         self.data_home
             .join("icons/hicolor/scalable/apps")
@@ -76,7 +59,6 @@ impl Layout {
     }
 }
 
-/// This process's layout, or None when there's nothing to integrate.
 fn layout() -> Option<Layout> {
     let appimage = install::appimage()?;
     let data_home = dirs::data_dir()?;
@@ -87,7 +69,6 @@ fn layout() -> Option<Layout> {
     })
 }
 
-/// Where the entry stands for this process.
 pub fn status() -> Status {
     let Some(layout) = layout() else {
         return Status::Unavailable;
@@ -96,21 +77,17 @@ pub fn status() -> Status {
     status_in(&layout, Settings::load().session.appimage_menu_declined)
 }
 
-/// Write the entry and the icon for this process's .AppImage.
 pub fn install() -> Result<(), String> {
     let layout = layout().ok_or_else(|| "not running from an AppImage".to_string())?;
     install_in(&layout)
 }
 
-/// Take the entry and the icon away again.
 pub fn remove() -> Result<(), String> {
     let layout = layout().ok_or_else(|| "not running from an AppImage".to_string())?;
     remove_in(&layout)
 }
 
-/// Rewrite an entry that points at somewhere this .AppImage no longer is,
-/// or carries a version this build has moved past. Called once at launch;
-/// a miss just waits for the next one.
+/// Rewrite an entry whose path or version is stale. Called once at launch.
 pub fn heal() {
     let Some(layout) = layout() else {
         return;
@@ -126,7 +103,6 @@ pub fn heal() {
     }
 }
 
-/// The status over a layout, with the declined flag handed in.
 fn status_in(layout: &Layout, declined: bool) -> Status {
     let installed = std::fs::read_to_string(layout.entry())
         .ok()
@@ -140,8 +116,7 @@ fn status_in(layout: &Layout, declined: bool) -> Status {
 }
 
 fn install_in(layout: &Layout) -> Result<(), String> {
-    // The icon first: an entry whose icon is missing shows a blank tile
-    // for the moment between the two writes, the other order never does.
+    // Icon first, so the entry never shows a blank tile between the writes.
     let icon = rox_design::assets::Assets::get("app/rox-music.svg")
         .ok_or_else(|| "the logo is missing from the build".to_string())?;
     write_atomic(&layout.icon(), &icon.data)?;
@@ -159,8 +134,7 @@ fn remove_in(layout: &Layout) -> Result<(), String> {
     Ok(())
 }
 
-/// The heal proper: `Some(reason)` when the entry was rewritten, with what
-/// it said before, `None` when it was current or absent.
+/// `Some(previous)` when the entry was rewritten.
 fn heal_in(layout: &Layout) -> Result<Option<String>, String> {
     let Ok(text) = std::fs::read_to_string(layout.entry()) else {
         return Ok(None);
@@ -185,10 +159,7 @@ fn heal_in(layout: &Layout) -> Result<Option<String>, String> {
     Ok(Some(was))
 }
 
-/// The entry's text for an .AppImage at `appimage`. Both `Exec=` lines
-/// take the quoted path, the icon points at the file written beside it,
-/// and the main group gains `TryExec=` (so a menu hides the entry while
-/// the file is gone) and the version the AppImage convention records.
+/// `TryExec=` makes a menu hide the entry while the file is gone.
 fn entry_text(appimage: &Path) -> String {
     let exec = exec_arg(appimage);
     let mut out = String::new();
@@ -203,8 +174,8 @@ fn entry_text(appimage: &Path) -> String {
             out.push('\n');
         }
 
-        // `Type=` only appears in the main group, so the extras land there
-        // and never in the action group below.
+        // `Type=` only appears in the main group, so the extras never land in the
+        // action group.
         if line == "Type=Application" {
             out.push_str(&format!("TryExec={}\n", appimage.display()));
             out.push_str(concat!(
@@ -218,9 +189,8 @@ fn entry_text(appimage: &Path) -> String {
     out
 }
 
-/// A path as one quoted `Exec=` argument. The desktop entry spec reserves
-/// backslash, the double quote, the dollar sign, and the backtick inside a
-/// quoted argument, and `%` everywhere as a field code.
+/// The desktop entry spec reserves backslash, double quote, dollar and
+/// backtick inside a quoted argument, and `%` everywhere as a field code.
 fn exec_arg(path: &Path) -> String {
     let mut out = String::from("\"");
 
@@ -239,8 +209,8 @@ fn exec_arg(path: &Path) -> String {
     out
 }
 
-/// The first `Exec=` line's program, [`exec_arg`] run backwards. An
-/// unquoted line (a hand edit) reads up to its first space.
+/// [`exec_arg`] run backwards. An unquoted hand-edited line reads up to its
+/// first space.
 fn installed_exec(text: &str) -> Option<PathBuf> {
     let value = text.lines().find_map(|line| line.strip_prefix("Exec="))?;
 
@@ -262,14 +232,12 @@ fn installed_exec(text: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path.replace("%%", "%")))
 }
 
-/// The version the entry was written by, if it says.
 fn installed_version(text: &str) -> Option<&str> {
     text.lines()
         .find_map(|line| line.strip_prefix("X-AppImage-Version="))
 }
 
-/// Write through a sibling temp file and rename over, the way the settings
-/// file is written: the menu never reads a half-written entry.
+/// Temp file and rename, so the menu never reads a half-written entry.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path
         .parent()
@@ -287,7 +255,6 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Remove a file, treating one that's already gone as done.
 fn remove_if_present(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -296,9 +263,7 @@ fn remove_if_present(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Rebuild the folder's MIME cache, which is what "Open With" reads. Best
-/// effort: a desktop without the tool still shows the menu entry, it just
-/// learns the file associations on its own schedule.
+/// Rebuild the MIME cache "Open With" reads. Best effort.
 fn refresh_database(applications: &Path) {
     use std::process::{Command, Stdio};
 
@@ -314,8 +279,7 @@ fn refresh_database(applications: &Path) {
 mod tests {
     use super::*;
 
-    /// A layout under a fresh temp folder, so nothing here touches the
-    /// real data dir. The AppImage path carries a space on purpose.
+    /// The AppImage path carries a space on purpose.
     fn scratch(name: &str) -> Layout {
         let root =
             std::env::temp_dir().join(format!("rox-desktop-test-{}-{name}", std::process::id()));
@@ -358,7 +322,6 @@ mod tests {
             )),
             "{entry}"
         );
-        // The template's own lines ride through untouched.
         assert!(entry.contains("MimeType=audio/flac;"), "{entry}");
         assert!(entry.contains("[Desktop Action Enqueue]\n"), "{entry}");
         assert!(!entry.contains("Exec=rox"), "{entry}");
@@ -384,8 +347,7 @@ mod tests {
             exec: layout.appimage.clone(),
         };
         assert_eq!(status_in(&layout, false), integrated);
-        // An entry on disk outranks the flag: a declined offer that was
-        // later switched on in settings is integrated.
+        // An entry on disk outranks the declined flag.
         assert_eq!(status_in(&layout, true), integrated);
 
         cleanup(&layout);
@@ -414,7 +376,6 @@ mod tests {
             }
         );
 
-        // A stale version field is rewritten the same way.
         let entry = std::fs::read_to_string(moved.entry()).unwrap();
         let old = entry.replace(
             concat!("X-AppImage-Version=", env!("CARGO_PKG_VERSION")),
@@ -427,7 +388,6 @@ mod tests {
             Some(env!("CARGO_PKG_VERSION"))
         );
 
-        // No entry means nothing to heal, not an error.
         remove_in(&moved).unwrap();
         assert_eq!(heal_in(&moved).unwrap(), None);
 
@@ -451,14 +411,11 @@ mod tests {
         );
         assert_eq!(status_in(&layout, false), Status::NotOffered);
 
-        // Removing twice is fine: the files are already gone.
         remove_in(&layout).unwrap();
 
         cleanup(&layout);
     }
 
-    /// The characters the spec reserves survive a trip through the entry
-    /// and back, and a hand-edited unquoted line still parses.
     #[test]
     fn exec_quoting_round_trips_reserved_characters() {
         let awkward = Path::new("/mnt/Zeal/100% \"mine\" $HOME/`rox`\\.AppImage");
@@ -474,7 +431,6 @@ mod tests {
             Some(Path::new("/opt/rox.AppImage"))
         );
         assert_eq!(installed_exec("[Desktop Entry]\nName=rox\n"), None);
-        // An unterminated quote is not a path.
         assert_eq!(installed_exec("Exec=\"/opt/rox"), None);
     }
 }

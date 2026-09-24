@@ -1,9 +1,6 @@
 //! The per-track rating and favourite controls shared by the library table
-//! and the playlists tree. Both write straight into the catalog through the
-//! same [`Library`](rox_services::catalog::Library) methods, so a star or a
-//! heart set in one surface shows in the other. Each cell hides its empty
-//! affordance until the row is hovered, so a column of them stays quiet;
-//! that reveal keys off the row being tagged with [`ROW_GROUP`].
+//! and the track-list panels. Each cell hides its empty affordance until the
+//! row, tagged with [`ROW_GROUP`], is hovered.
 
 use gpui::{Div, MouseButton, div, prelude::*, px, svg};
 
@@ -11,33 +8,25 @@ use crate::panel::AppState;
 use rox_design::assets::icons;
 use rox_design::palette;
 
-/// The hover group set on a track row so its rating and favourite cells can
-/// reveal on hover. Both panels tag their track rows with this.
+/// Every track list tags its rows with this hover group.
 pub const ROW_GROUP: &str = "track-row";
 
-/// The rating control over a track's value, writing a click straight into
-/// the catalog by id. An unrated track keeps the cell invisible until its
-/// row is hovered, except when the unrated-dots setting marks the empty
-/// slots: then the dots are the point and the cell stays put. The control
-/// stops the mouse-down itself, so rating never reselects or plays the row.
+/// An unrated track hides the control until row hover, unless the
+/// unrated-dots setting is on.
 pub fn rating(state: AppState, id: i64, value: u8) -> Div {
     crate::rating_ui::control(id as u64, value, move |rating, _, cx| {
         state
             .library
             .update(cx, |library, cx| library.rate(id, rating, cx));
     })
-    // Fill the cell height so the control's own items_center puts the stars
-    // on the row centerline.
+    // Full height so the stars sit on the row centerline.
     .h_full()
     .when(value == 0 && !rox_core::settings::rating_dots(), |d| {
         d.opacity(0.).group_hover(ROW_GROUP, |s| s.opacity(1.))
     })
 }
 
-/// A heart that fills when the track is in the favourites playlist and
-/// toggles on click. An unfavourited track keeps the outline hidden until
-/// the row is hovered; the click stops its own mouse-down so it never
-/// reselects the row.
+/// An unfavourited track hides the outline until row hover.
 pub fn favourite(state: AppState, id: i64, on: bool) -> Div {
     div()
         .h_full()

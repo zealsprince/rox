@@ -1,28 +1,13 @@
-//! The station directory: radio-browser.info in a window of its own.
-//! Finding a station and keeping one are two different jobs. The stations
-//! panel holds the list you already have, and this is where that list
-//! grows from, a box with a few hundred thousand community-listed streams
-//! behind it.
+//! The station directory: radio-browser.info in a window of its own. The
+//! stations panel holds the list you keep; this is where it grows from.
 //!
-//! A window rather than a strip above the panel, because a search wants
-//! the room. Fifty hits carrying a name, a country and a codec each read
-//! as a list of their own, and while they're up the stations you keep are
-//! nowhere in the question. One window at a time: asking again raises the
-//! one that's open, the way every other page here behaves.
+//! A hit lands through [`rox_library::stations::put`], the same write a typed
+//! URL takes. The one extra is the hit's favicon, fetched best effort into
+//! the thumbs database under the station's URL, silently, since a dead logo
+//! link isn't a failed add.
 //!
-//! A hit lands through [`rox_library::stations::put`], the same write a
-//! typed URL takes, so the list never learns which way a row arrived. Add
-//! and play does that write and then hands the key to the player, which
-//! opens a station the way it opens a file. The one extra thing this
-//! window does is fetch the hit's favicon and file it in the thumbs
-//! database under the station's URL, so a station shows up carrying its
-//! logo rather than a blank tile. That fetch is best effort and silent:
-//! the station is already added by the time it runs, and a directory full
-//! of dead logo links shouldn't read as a failed add.
-//!
-//! Nothing here removes or edits. The directory is somebody else's
-//! database and this window only reads it; a station you already keep is
-//! the panel's business.
+//! Nothing here removes or edits: the directory is read-only, and a kept
+//! station is the panel's business.
 
 use std::collections::HashSet;
 
@@ -42,29 +27,20 @@ use rox_net::sources::radio_browser::{self, Found};
 use rox_panel_api::panel::{self, AppState};
 use rox_services::catalog::LibraryEvent;
 
-/// How many directory hits one search shows. The directory ranks by votes,
-/// so the head of the list is the well-known stations and a page past
-/// that is noise.
+/// The directory ranks by votes, so past the head of the list is noise.
 const RESULT_LIMIT: usize = 50;
 
-/// The window's opening size: tall rather than wide, since a hit is two
-/// short lines and what you want is more of them on screen at once.
 const DEFAULT_SIZE: (f32, f32) = (560., 680.);
 
-/// The narrowest the window goes before the rows are all truncation: the
-/// name line, the two actions beside it, and the search box above.
 const MIN: gpui::Size<gpui::Pixels> = gpui::Size {
     width: px(420.),
     height: px(320.),
 };
 
-/// The open directory window, if any: opening again raises it rather than
-/// stacking a second one, the health window's move.
 struct OpenDirectory(WindowHandle<Root>);
 
 impl Global for OpenDirectory {}
 
-/// Open the station directory, or bring the open one to the front.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenDirectory>() {
         let handle = open.0;
@@ -90,22 +66,14 @@ pub fn open(state: AppState, cx: &mut App) {
 
 struct StationDirectory {
     state: AppState,
-    /// The search box. It takes focus when the window opens, since there
-    /// is nothing else to do in here first.
     find: Entity<InputState>,
     found: Vec<Found>,
-    /// The text the results answer, so an empty result can name it. None
-    /// means no search has come back yet.
+    /// None until a search has come back.
     found_for: Option<String>,
     searching: bool,
-    /// Bumped per search, so a slow reply from an earlier one can't land
-    /// over a newer one.
+    /// Bumped per search, so a slow earlier reply can't land over a newer one.
     search_generation: u64,
-    /// Why the last search showed nothing, when the reason was the
-    /// directory rather than the query.
     failed: Option<SharedString>,
-    /// The URLs already in the station list, so a hit shows a check
-    /// instead of inviting the same stream in twice.
     held: HashSet<String>,
     focus: FocusHandle,
     _library_changed: Subscription,
@@ -129,9 +97,6 @@ impl StationDirectory {
             },
         );
 
-        // A station added or removed anywhere else moves the checks in
-        // this list, the same reason every library-backed view re-reads on
-        // this.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -158,8 +123,6 @@ impl StationDirectory {
         this
     }
 
-    /// Re-read which stations are already kept. At open and edit cadence,
-    /// never per frame.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.held = self
             .open_db(cx)
@@ -172,18 +135,13 @@ impl StationDirectory {
         cx.notify();
     }
 
-    /// This window's own connection to the library database, opened per
-    /// call rather than held: an add happens at human pace, and a held
-    /// connection would sit through every scan.
+    /// Opened per call rather than held, so it doesn't sit through every scan.
     fn open_db(&self, cx: &App) -> Option<rox_library::rusqlite::Connection> {
         let path = self.state.library.read(cx).db_path();
 
         rox_library::store::open(&path).ok()
     }
 
-    /// Ask the directory what matches the box. The call blocks, so it goes
-    /// to the background executor and the reply comes back through the
-    /// generation stamp.
     fn search(&mut self, cx: &mut Context<Self>) {
         let text = self.find.read(cx).value().trim().to_string();
         if text.is_empty() {
@@ -214,8 +172,6 @@ impl StationDirectory {
                         this.found = found;
                         this.found_for = Some(text);
                     }
-                    // A directory that's down says so where the hits would
-                    // have been. There's nothing else to show.
                     Err(reason) => {
                         this.found.clear();
                         this.found_for = None;
@@ -229,9 +185,6 @@ impl StationDirectory {
         .detach();
     }
 
-    /// One hit into the station list, and onto the deck when `play` is
-    /// set. The results stay up, so a search can be added from more than
-    /// once.
     fn add(&mut self, ix: usize, play: bool, cx: &mut Context<Self>) {
         let Some(hit) = self.found.get(ix).cloned() else {
             return;
@@ -252,8 +205,7 @@ impl StationDirectory {
         }
     }
 
-    /// Write the station, then have the library rebuild its projection so
-    /// the row shows up everywhere else too, not only in the panel's list.
+    /// Rebuild the projection so the row shows up everywhere, not just the panel.
     fn write(&mut self, station: &Station, cx: &mut Context<Self>) -> bool {
         let Some(mut conn) = self.open_db(cx) else {
             return false;
@@ -270,10 +222,6 @@ impl StationDirectory {
         true
     }
 
-    /// Fetch the hit's logo and file it under the station's URL, which is
-    /// the row's path and so the key everything else asks art by. Off the
-    /// UI thread, and quiet either way: a station with a dead favicon link
-    /// is still a station that was added.
     fn cache_favicon(&self, hit: &Found, cx: &mut Context<Self>) {
         let url = hit.favicon.trim().to_string();
         if url.is_empty() {
@@ -286,17 +234,12 @@ impl StationDirectory {
         let key = hit.url.clone();
         let thumbs = self.state.thumbs.clone();
 
-        // Back to the main thread once the logo is filed, because the row
-        // for this station may already be on screen: it painted before the
-        // fetch finished, was told there was no art, and that answer is
-        // cached as definitive. Without the nudge the tile stays blank
-        // until something else invalidates the whole cache.
+        // The row may already have painted and cached "no art" as definitive, so
+        // forget that answer once the logo is filed.
         cx.spawn(async move |_, cx| {
             let stored = cx
                 .background_executor()
                 .spawn(async move {
-                    // Only a store that took the image is worth waking
-                    // the cache for.
                     rox_services::station_art::fetch_and_store(&url, &key, &conn).then_some(key)
                 })
                 .await;
@@ -314,7 +257,6 @@ impl StationDirectory {
         .detach();
     }
 
-    /// The box and its button. Enter does the same thing the button does.
     fn search_row(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex_none()
@@ -333,10 +275,6 @@ impl StationDirectory {
             )
     }
 
-    /// What the last search turned up: a wait line, the reason it failed,
-    /// a no-match line naming the text, or the hits themselves. Before the
-    /// first search there's nothing to say that the box's own placeholder
-    /// doesn't already.
     fn results(&self, cx: &mut Context<Self>) -> Div {
         let centered = |line: SharedString| {
             div()
@@ -385,9 +323,6 @@ impl StationDirectory {
         )
     }
 
-    /// One hit: its name over what the directory knows about the stream,
-    /// and the two ways to take it. A station already kept says so instead
-    /// of offering the add again.
     fn result_row(&self, ix: usize, hit: &Found, cx: &mut Context<Self>) -> AnyElement {
         let actions: AnyElement = if self.held.contains(&hit.url) {
             div()
@@ -464,9 +399,6 @@ impl StationDirectory {
 
 impl Render for StationDirectory {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Tinted by the playing track and claiming the widget theme while
-        // it holds focus, like every other page that opens beside the
-        // workspace.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
 
@@ -479,8 +411,7 @@ impl Render for StationDirectory {
                 .text_color(palette::text_bright())
                 .text_sm()
                 .track_focus(&self.focus)
-                // The box passes an idle escape through, so this catches
-                // it wherever focus happens to be and closes the window.
+                // The box passes an idle escape through, so this catches it anywhere.
                 .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
                     if event.keystroke.key == "escape" {
                         window.remove_window();
@@ -493,9 +424,7 @@ impl Render for StationDirectory {
     }
 }
 
-/// A directory hit as the station list stores it. The first tag becomes
-/// the genre, which is the one the directory puts first and the only one
-/// a row has a column for.
+/// The first tag becomes the genre, the only one a row has a column for.
 fn station_from(hit: &Found) -> Station {
     Station {
         url: hit.url.clone(),
@@ -510,8 +439,6 @@ fn station_from(hit: &Found) -> Station {
     }
 }
 
-/// The line under a hit's name: country, codec and bitrate, whichever of
-/// them the directory knows.
 fn meta_line(hit: &Found) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -528,9 +455,8 @@ fn meta_line(hit: &Found) -> String {
     parts.join(", ")
 }
 
-/// The key a station plays under: the radio source, the stream URL as the
-/// path, and no subsong. The same shape [`rox_library::stations`] writes
-/// its rows with, which is what makes the resolve find them.
+/// The same shape [`rox_library::stations`] writes its rows with, which is
+/// what makes the resolve find them.
 fn key_for(url: &str) -> TrackKey {
     TrackKey {
         source: source_id(stations::SOURCE),
@@ -555,8 +481,6 @@ mod tests {
         }
     }
 
-    /// The first tag is the genre; a hit with no tags lands with none, the
-    /// same as a typed station.
     #[test]
     fn a_hit_becomes_a_station_with_its_first_tag_as_genre() {
         let station = station_from(&hit(" ambient, space, drone", "US", "AAC", 128));
@@ -567,8 +491,6 @@ mod tests {
         assert_eq!(station_from(&hit("", "", "", 0)).genre, "");
     }
 
-    /// The meta line only names what the directory knows, so a hit with
-    /// nothing known shows nothing rather than a row of blanks.
     #[test]
     fn the_meta_line_skips_what_the_directory_does_not_know() {
         assert_eq!(meta_line(&hit("", "US", "AAC", 128)), "US, AAC, 128 kbps");
@@ -576,9 +498,6 @@ mod tests {
         assert_eq!(meta_line(&hit("", "", "", 0)), "");
     }
 
-    /// A station's key names the radio source and carries the stream URL
-    /// where a file would carry its path. That's the whole play path: no
-    /// special verb, just a key the resolve knows how to look up.
     #[test]
     fn a_station_plays_under_the_radio_source() {
         let key = key_for("https://host/jazz");

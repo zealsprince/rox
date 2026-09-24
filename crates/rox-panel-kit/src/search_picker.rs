@@ -1,11 +1,8 @@
-//! The searchable dropdown the font and language pickers share: the
-//! shared [`select_field`](crate::ui::select_field) with a popover under
-//! it holding a search box and a filtered list, because a `PopupMenu`'s
-//! items are built once when it opens and can't be searched. The popover
-//! keeps rox's own menu chrome for the same reason the rest of the
-//! settings windows do: the widget library's dropdown paints on the
-//! structural background, which drops out entirely once surfaces go
-//! translucent, and a see-through list is unreadable.
+//! The searchable dropdown the font, language and icon pickers share: a
+//! [`select_field`](crate::ui::select_field) over a popover with a search box,
+//! since a `PopupMenu` is built once and can't be filtered. It keeps rox's own
+//! menu chrome: the library's dropdown paints on the structural background,
+//! which vanishes once surfaces go translucent.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,54 +20,33 @@ use rox_design::{palette, tokens};
 
 use crate::ui as settings_ui;
 
-/// The host's own handler, wrapped so the element can hold it: takes the
-/// value a row sets, None for the head row that clears back to default.
+/// Takes the value a row sets, None for the head row that clears to default.
 type Pick = Rc<dyn Fn(Option<String>, &mut App)>;
 
-/// A [`Pick`] that closes the list behind it, what a click or an Enter
-/// runs.
 type Commit = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 
-/// One row's height. The list is a `uniform_list`, so every row uses
-/// it.
 const ROW_H: Pixels = px(22.);
 
-/// How many rows show before the list scrolls.
 const ROWS: usize = 12;
 
-/// The list runs wider than the field it drops from: the field truncates
-/// a long label, so the whole label has to fit in the list.
+/// Wider than the field, which truncates a long label.
 const LIST_W: Pixels = px(240.);
 
-/// One row of the list: what it reads as, and the value it sets. None is
-/// the head row, the one that clears the override back to whatever the
-/// layer above sets, and the one an active query filters out since
-/// nothing about it is a value someone would be typing toward.
+/// A `None` value is the head row that clears the override; an active query
+/// filters it out.
 #[derive(Clone, PartialEq)]
 pub struct PickRow {
     pub label: SharedString,
     pub value: Option<SharedString>,
-    /// Hidden search terms the query matches besides the label,
-    /// expected lowercase: the language picker's country names and
-    /// exonyms, so "canadian" finds a row whose label only says
-    /// English. Empty for rows whose label is all there is to type
-    /// toward, the font list's case.
+    /// Extra search terms, lowercase by contract: "canadian" finds English.
     pub terms: Vec<SharedString>,
-    /// An asset path drawn at the row's leading edge, if the row wants a
-    /// glyph. The icon picker's rows carry one so a name can be read
-    /// against the thing it names; the font and language lists leave it
-    /// None.
     pub icon: Option<SharedString>,
 }
 
-/// A searchable dropdown over `rows`. `label` is what the closed field
-/// shows; `current` marks the row that's set. The strings are the
-/// caller's because the caller knows whether they translate: the
-/// language picker passes `t!` copy, the font picker its literals until
-/// the settings pages extract.
+/// The strings are the caller's because the caller knows whether they
+/// translate.
 // `use<..>` and the named `A` for the same reason as the crate root's
-// `picker`: only a weak handle comes off `cx` here, so the element never
-// needs the borrow.
+// `picker`.
 #[allow(clippy::too_many_arguments)]
 pub fn search_picker<P, A>(
     id: &'static str,
@@ -102,16 +78,12 @@ where
     }
 }
 
-/// What the picker keeps between frames: the search box, which rows the
-/// query left, and the row the arrows are on. It's kept in the
-/// element's own keyed state, so a host builds a picker the way it
-/// builds a toggle, by calling [`search_picker`], and owns nothing.
+/// Kept in the element's keyed state, so a host builds a picker with one
+/// call and owns nothing.
 struct Search {
     input: Entity<InputState>,
     all: Arc<Vec<PickRow>>,
-    /// Indices into `all`, in list order: what the query left.
     hits: Vec<usize>,
-    /// Which hit the arrows and Enter act on.
     selected: usize,
     scroll: UniformListScrollHandle,
     _events: Subscription,
@@ -142,9 +114,7 @@ impl Search {
         }
     }
 
-    /// Take a fresh row set and placeholder when they've actually
-    /// changed: the state outlives a locale switch, and this keeps a
-    /// reopened list in the new language.
+    /// The state outlives a locale switch, so take a changed row set.
     fn retarget(
         &mut self,
         all: &Arc<Vec<PickRow>>,
@@ -162,10 +132,6 @@ impl Search {
         self.filter("");
     }
 
-    /// The rows a query keeps: case-insensitive, matched anywhere in the
-    /// label or in a row's hidden terms, the way the library search
-    /// matches. The terms arrive lowercase by contract, so only the
-    /// label folds here.
     fn filter(&mut self, query: &str) {
         let query = query.trim().to_lowercase();
         self.hits = if query.is_empty() {
@@ -186,9 +152,7 @@ impl Search {
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
-    /// Opening starts clean: an empty box, the whole list, and the value
-    /// that's already set under the cursor, so the list opens showing
-    /// what it's about to replace.
+    /// Opens on an empty query with the current value under the cursor.
     fn reset(
         &mut self,
         current: &Option<SharedString>,
@@ -198,9 +162,6 @@ impl Search {
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.filter("");
-        // Through `hits`, like every other read of `selected`: an empty
-        // query leaves the two lined up, but nothing here should depend
-        // on that.
         self.selected = self
             .hits
             .iter()
@@ -211,7 +172,6 @@ impl Search {
         cx.notify();
     }
 
-    /// Step the list by `delta` rows, stopping at either end.
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.hits.is_empty() {
             return;
@@ -222,22 +182,17 @@ impl Search {
             return;
         }
         self.selected = next;
-        // Non-strict, so a row already in view doesn't jerk the list to
-        // the top under it.
+        // Non-strict, so a row already in view doesn't jerk to the top.
         self.scroll.scroll_to_item(next, ScrollStrategy::Top);
         cx.notify();
     }
 
-    /// The value the highlighted row sets, None when the query matched
-    /// nothing and there's no row to take.
     fn picked(&self) -> Option<Option<String>> {
         let row = self.all.get(*self.hits.get(self.selected)?)?;
         Some(row.value.as_ref().map(|value| value.to_string()))
     }
 }
 
-/// [`search_picker`]'s element. It builds its own state on first render,
-/// so the function stays a plain call in a settings row.
 #[derive(IntoElement)]
 struct SearchPicker {
     id: &'static str,
@@ -267,11 +222,8 @@ impl RenderOnce for SearchPicker {
         let empty = self.empty;
 
         Popover::new((self.id, 0usize))
-            // rox draws the surface itself, so the widget library's own
-            // popover chrome would only stack a second card behind it.
+            // rox draws the surface itself.
             .appearance(false)
-            // Opening hands focus to the box, so the list is searchable
-            // without a click first.
             .track_focus(&focus)
             .trigger(settings_ui::select_field(self.id, self.label, false))
             .on_open_change({
@@ -341,10 +293,8 @@ impl RenderOnce for SearchPicker {
                     .border_1()
                     .border_color(palette::border_light())
                     .shadow_md()
-                    // The box only wires its own arrow handlers on a
-                    // multi-line input, so on this one nothing would ever
-                    // hand the arrows to the list. Take them on the way
-                    // down instead.
+                    // A one-line input never hands the arrows on, so take
+                    // them on the way down.
                     .capture_action({
                         let search = search.clone();
                         cx.listener(move |_, _: &MoveUp, _, cx| {
@@ -360,10 +310,9 @@ impl RenderOnce for SearchPicker {
                     .capture_action({
                         let search = search.clone();
                         let pick = pick.clone();
-                        // Not through `commit`: this listener already runs
-                        // inside the popover's own update, and `commit`
-                        // dismisses through `popover.update`, which would
-                        // nest and panic. Dismiss on `this` instead.
+                        // Not through `commit`: this runs inside the popover's
+                        // update, and `commit`'s `popover.update` would nest
+                        // and panic.
                         cx.listener(move |this, _: &Enter, window, cx| {
                             if let Some(value) = search.read(cx).picked() {
                                 pick(value, cx);
@@ -394,10 +343,7 @@ impl RenderOnce for SearchPicker {
     }
 }
 
-/// One list row: the row's glyph if it has one, the label flush left, a
-/// tick on the right edge of the one that's set, and the menu hover
-/// behind whichever the arrows or the pointer are on. The tick trails
-/// rather than leads so unpicked rows don't all get its indent.
+/// The tick trails rather than leads so unpicked rows don't all get its indent.
 fn row_body(
     label: SharedString,
     icon: Option<SharedString>,
@@ -416,9 +362,7 @@ fn row_body(
         .cursor_pointer()
         .when(selected, |d| d.bg(palette::bg_menu_hover()))
         .hover(|d| d.bg(palette::bg_menu_hover()))
-        // Plain `Icon::default()`, the same size a panel settings menu
-        // item draws its glyph at, so a row here sits at menu scale
-        // rather than a size picked for this list alone.
+        // Menu-scale glyph, matching a panel settings menu item.
         .when_some(icon, |d, path| d.child(Icon::default().path(path)))
         .child(
             div()

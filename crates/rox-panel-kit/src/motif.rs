@@ -1,7 +1,5 @@
-//! One card's geometry, laid off a u64 seed: deterministic procedural tile
-//! art, quiet enough to sit under a label. The genre wall and the stats
-//! window both draw it, so a seed draws the same geometry wherever it
-//! turns up.
+//! Deterministic procedural tile art off a u64 seed, quiet enough to sit
+//! under a label, so a seed draws the same geometry wherever it turns up.
 
 use gpui::{
     AnyElement, BorderStyle, Bounds, Pixels, Window, canvas, point, prelude::*, px, quad, size,
@@ -9,17 +7,9 @@ use gpui::{
 };
 use rox_design::palette;
 
-/// Sixteen motifs built from quads alone (a circle is a full-corner quad,
-/// a ring a border-only one), one canvas layer painted under the caller's
-/// content.
-///
-/// Beyond the motif pick, the seed places the layout in a corner, scales
-/// it a touch, and picks a symmetry: the motif alone, its mirror twin
-/// across either axis, or all four reflections at once, which folds a
-/// single shape into a pattern. The ink thins as the reflections multiply,
-/// so a four-fold card shows more geometry without more weight.
-/// `ink` comes in solid; the alpha is this function's to set. The caller's
-/// overflow_hidden clips the bleed.
+/// Sixteen motifs from quads alone, painted under the caller's content. The
+/// seed also picks placement, scale, and a symmetry; the ink thins as the
+/// reflections multiply. The caller's overflow_hidden clips the bleed.
 pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
     canvas(
         |_, _, _| (),
@@ -28,19 +18,11 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
             if side <= 0. {
                 return;
             }
-            // The per-genre variation beyond the motif itself: mirror
-            // bits for each axis, a size jitter of 0.85 to 1.15, and the
-            // symmetry pick.
             let flip_x = (seed >> 33) & 1 == 0;
             let flip_y = (seed >> 34) & 1 == 0;
             let scale = 0.85 + ((seed >> 37) % 32) as f32 / 32.0 * 0.30;
-            // Which reflections paint: the base placement always, then
-            // per symmetry its twin across x, across y, or both plus the
-            // diagonal to close the pattern.
-            // Symmetry stays the exception: five of eight seeds paint
-            // the motif alone, the mirrored pairs and the four-fold
-            // each take one. A wall full of symmetric cards is itself
-            // a pattern, and the eye finds it.
+            // Five of eight seeds paint the motif alone: a wall full of
+            // symmetric cards reads as a pattern of its own.
             let passes: &[(bool, bool)] = match (seed >> 42) % 8 {
                 0..=4 => &[(false, false)],
                 5 => &[(false, false), (true, false)],
@@ -55,13 +37,11 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                     _ => 0x0F,
                 },
             );
+            // Bits 13-16, never `% 8` or `% 16` of the raw seed: both divide
+            // 360, so same-colored cards would always share a motif.
             let pick = (seed >> 13) % 16;
-            // The arrangement's rotation, in 15-degree steps around the
-            // tile center. Quads can't rotate, but circles don't care:
-            // every disc- and ring-built motif spins its center points,
-            // which frees those layouts from the four corners entirely.
-            // Edge-anchored compositions (pills, bars, rules, the big
-            // corner square) stay square to the tile they hang off.
+            // Rotation in 15-degree steps. Quads can't rotate, so only the
+            // disc- and ring-built motifs spin; edge-anchored ones stay square.
             let theta: f32 = match pick {
                 3 | 10 | 11 | 13 => 0.,
                 _ => ((seed >> 55) % 24) as f32 * std::f32::consts::PI / 12.,
@@ -74,8 +54,8 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                 let (dx, dy) = (cx - 0.5, cy - 0.5);
                 (0.5 + dx * cos - dy * sin, 0.5 + dx * sin + dy * cos)
             };
-            // A rounded rect centered at (cx, cy), everything in tile
-            // fractions; radius at half height makes discs and pills.
+            // Everything in tile fractions; radius at half height makes discs
+            // and pills.
             let shape = |cx: f32, cy: f32, w: f32, h: f32, r: f32, window: &mut Window| {
                 let (cx, cy) = spin(cx, cy);
                 let (w, h) = (side * w * scale, side * h * scale);
@@ -111,18 +91,12 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                     BorderStyle::default(),
                 ));
             };
-            // Each reflection re-paints the motif with the axes folded:
-            // the effective flips are the base placement XOR the pass's
-            // mirrors, so the twin ends up exactly opposite its original.
+            // The effective flips are the base placement XOR the pass's mirrors.
             for &(mx, my) in passes {
                 let ex = flip_x != mx;
                 let ey = flip_y != my;
                 let x = |f: f32| if ex { f } else { 1. - f };
                 let y = |f: f32| if ey { f } else { 1. - f };
-                // Bits 13-16, never a `% 8` or `% 16` of the raw seed:
-                // both divide 360, so that would be the hue's own low
-                // bits and same-colored cards would always share a motif,
-                // the stamped-twin look this field exists to prevent.
                 match pick {
                     // A disc bleeding past a corner.
                     0 => disc(x(0.9), y(0.86), 1.0, window),
@@ -146,11 +120,9 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                         pill(y(0.24), 0.75, window);
                         pill(y(0.78), 0.55, window);
                     }
-                    // One wide halo off a corner, a heavier stroke than
-                    // the ring pair so it reads at its size.
+                    // One wide halo off a corner.
                     4 => ring(x(0.94), y(0.12), 1.1, 0.05, window),
-                    // Two discs overlapping into a venn; the ink stacks
-                    // where they cross, which is the point.
+                    // Two discs overlapping into a venn.
                     5 => {
                         disc(x(0.62), y(0.76), 0.42, window);
                         disc(x(0.86), y(0.76), 0.42, window);
@@ -207,11 +179,9 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                         ring(x(0.76), y(0.7), 0.5, 0.018, window);
                         disc(x(0.76), y(0.7), 0.16, window);
                     }
-                    // One big rounded square bleeding past a corner, the
-                    // disc's blunter sibling.
+                    // One big rounded square bleeding past a corner.
                     13 => shape(x(0.88), y(0.84), 0.8, 0.8, 0.18, window),
-                    // Two rounded squares on opposite corners; four-fold
-                    // symmetry folds these into a checker.
+                    // Two rounded squares on opposite corners.
                     14 => {
                         shape(x(0.25), y(0.25), 0.28, 0.28, 0.2, window);
                         shape(x(0.75), y(0.75), 0.28, 0.28, 0.2, window);

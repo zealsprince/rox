@@ -1,30 +1,16 @@
-//! XSPF read and write, the third interop surface for playlists (ADR 16).
-//! XSPF is the XML one, and the only one of the three with a real
-//! specification behind it: locations are URIs, so a path with a space or a
-//! non-ASCII letter survives the trip instead of depending on the reader's
-//! guess about the file's encoding.
+//! XSPF read and write for playlist interop (ADR 16). Locations are URIs, so
+//! spaces and non-ASCII survive the trip. The writer is hand-rolled; the
+//! reader uses `roxmltree`.
 //!
-//! The writer is hand-rolled because the document has seven element types and
-//! no attributes worth the name; a serializer crate would earn nothing here.
-//! The reader uses `roxmltree`, a read-only tree over the whole document,
-//! which a playlist file is comfortably small enough for.
-//!
-//! Deliberately excluded: `<extension>` blocks, per-track `<image>` and
-//! `<info>`, and playlist-level metadata. rox stores all of that in the
-//! catalog, and a file is a snapshot, never where a playlist lives.
+//! Deliberately excluded: `<extension>`, per-track `<image>`/`<info>`, and
+//! playlist-level metadata. The catalog holds all of that.
 
 use std::path::Path;
 
 use crate::playlists::ExportTrack;
 
-/// Serialize playable rows to an XSPF document. Locations are `file:` URIs so
-/// spaces and non-ASCII survive; empty fields are left out entirely rather
-/// than written as empty elements, and an unknown duration is omitted the way
-/// the spec asks instead of getting M3U's `-1` sentinel.
-///
-/// A cue subsong's `path#N` is written as a URI fragment, which is what the
-/// fragment syntax is for. [`crate::cue::TrackKey::from_fragment`] reads it
-/// back on the other side.
+/// `file:` URIs, empty fields omitted, and no duration element when it's
+/// unknown. A cue subsong's `#N` rides as the URI fragment.
 pub fn to_xspf(rows: &[ExportTrack]) -> String {
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n");
@@ -57,16 +43,9 @@ pub fn to_xspf(rows: &[ExportTrack]) -> String {
     out
 }
 
-/// Pull the track locations out of an XSPF document in document order, each
-/// turned back into the path string the resolver takes. A `file:` URI is
-/// decoded to a native path, fragment reattached; anything else (an `http:`
-/// stream, or the bare relative path some writers emit instead of a URI)
-/// passes through verbatim so the resolver's relative-path rule gets a shot
-/// at it.
-///
-/// Matching is on local names only. Files in the wild drop the XSPF
-/// namespace often enough that requiring it would reject documents every
-/// other player reads.
+/// Track locations in document order. A `file:` URI decodes to a path;
+/// anything else passes through for the resolver. Matching ignores the
+/// namespace, which files in the wild often drop.
 pub fn parse(text: &str) -> Vec<String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let Ok(doc) = roxmltree::Document::parse(text) else {
@@ -86,10 +65,7 @@ pub fn parse(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A path (possibly carrying a `#N` cue fragment) as a `file:` URI. Falls
-/// back to the raw string for anything `Url` refuses, which is a relative
-/// path: those are legal in XSPF and the reader on the other end resolves
-/// them against the file's folder anyway.
+/// Falls back to the raw string for a relative path, which XSPF allows.
 fn location(path: &str) -> String {
     let (base, fragment) = split_fragment(path);
     match url::Url::from_file_path(Path::new(base)) {
@@ -101,8 +77,6 @@ fn location(path: &str) -> String {
     }
 }
 
-/// One location back to a path string. See [`parse`] for what passes through
-/// untouched.
 fn from_location(text: &str) -> String {
     let Ok(url) = url::Url::parse(text) else {
         return text.to_owned();
@@ -120,9 +94,8 @@ fn from_location(text: &str) -> String {
     }
 }
 
-/// Split a trailing `#N` cue fragment off a path. Only a positive integer
-/// counts, the same reading [`crate::cue::TrackKey::from_fragment`] uses, so
-/// a file whose name really ends in `#hits` keeps it.
+/// Only a positive integer counts as a fragment, so a name ending in `#hits`
+/// keeps it.
 fn split_fragment(path: &str) -> (&str, Option<u16>) {
     match path.rsplit_once('#') {
         Some((base, sub)) => match sub.parse::<u16>() {
@@ -133,8 +106,7 @@ fn split_fragment(path: &str) -> (&str, Option<u16>) {
     }
 }
 
-/// The three characters that cannot sit in XML text as themselves. Quotes are
-/// left alone: nothing here writes an attribute value.
+/// Quotes are left alone: nothing here writes an attribute.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {

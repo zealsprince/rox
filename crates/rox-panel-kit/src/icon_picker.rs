@@ -1,20 +1,8 @@
-//! The icon picker: the field a custom button's editor drops its glyph
-//! list from. The machinery is
-//! [`search_picker`](crate::search_picker::search_picker), the same one
-//! the font and language fields use; this file turns
-//! [`icons::CATALOG`](rox_design::assets::icons::CATALOG) into rows and
-//! nothing more.
+//! The icon picker for a custom button's editor: the icon catalog as rows of
+//! a [`search_picker`](crate::search_picker), each carrying its glyph.
 //!
-//! It's a search field rather than a dropdown because the catalog runs
-//! past a hundred entries, and a plain menu at that length is a scroll
-//! hunt. Every row carries its own glyph, since a list of icon names
-//! with no icons in it asks the reader to remember what "rows 2" looks
-//! like.
-//!
-//! The built-in catalog is the whole offerable set. Nothing here reads
-//! icon packs or anything else the user supplies: there's no path in the
-//! tree that renders arbitrary user bytes as a panel glyph, and giving
-//! one to a picker would be inventing it here.
+//! The built-in catalog is the whole offerable set. Never render user-supplied
+//! bytes as a glyph from here.
 
 use std::sync::{Arc, OnceLock};
 
@@ -24,15 +12,12 @@ use rox_design::assets::icons;
 
 use crate::search_picker::{PickRow, search_picker};
 
-/// What the closed field reads when nothing is set, or when the stored
-/// path isn't a catalog entry any more. Untranslated like the rest of
-/// this picker's copy, since the names it sits among are file stems.
+/// Untranslated like the rest of this picker's copy, since the names it sits
+/// among are file stems.
 const UNSET_LABEL: &str = "None";
 
-/// A searchable dropdown over every icon the app draws. `current` is the
-/// stored catalog path, empty for unset; a path the catalog no longer
-/// has reads as unset, the same thing a draw of it would come to. The
-/// apply hands back the picked path.
+/// `current` is a catalog path, empty for unset; a path the catalog no longer
+/// has reads as unset.
 // `use<..>` and the named `A` for the same reason as the crate root's
 // `picker`.
 pub fn icon_picker<P, A>(
@@ -66,8 +51,6 @@ where
         "Search icons".into(),
         "No matches".into(),
         move |this, value, cx| {
-            // Every row here carries a path, so the clear-to-default head
-            // the shared field allows never turns up on this list.
             if let Some(value) = value {
                 apply(this, value.into(), cx);
             }
@@ -76,9 +59,6 @@ where
     )
 }
 
-/// Every icon the app draws, built once and cached. Rebuilt never: the
-/// catalog is static for the life of the process, and this used to be a
-/// settings render's problem when the same list was rebuilt per frame.
 fn rows() -> Arc<Vec<PickRow>> {
     static ROWS: OnceLock<Arc<Vec<PickRow>>> = OnceLock::new();
 
@@ -86,17 +66,13 @@ fn rows() -> Arc<Vec<PickRow>> {
         .clone()
 }
 
-/// One catalog path as a row. The catalog holds paths and nothing in the
-/// tree holds display names for them, so the name is derived: the file
-/// stem with its hyphens opened out, which turns `icons/skip-back.svg`
-/// into "skip back".
+/// Nothing holds display names for the catalog, so the label is the file stem
+/// with its hyphens opened out: `icons/skip-back.svg` reads "skip back".
 fn row(path: &'static str) -> PickRow {
     let file = path.rsplit('/').next().unwrap_or(path);
     let stem = file.strip_suffix(".svg").unwrap_or(file);
 
-    // The whole stem plus each of its words, so "skip" and "back" both
-    // find skip-back. Folded on the way in because the filter matches
-    // terms raw.
+    // The stem plus each word, folded, since the filter matches terms raw.
     let mut terms: Vec<SharedString> = vec![stem.to_lowercase().into()];
     terms.extend(
         stem.split('-')
@@ -116,7 +92,6 @@ fn row(path: &'static str) -> PickRow {
 mod tests {
     use super::*;
 
-    /// The row for a known catalog path, by the value it stores.
     fn row_for(rows: &[PickRow], path: &'static str) -> PickRow {
         rows.iter()
             .find(|row| row.value == Some(SharedString::from(path)))

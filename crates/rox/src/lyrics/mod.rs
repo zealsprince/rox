@@ -1,6 +1,5 @@
-//! Lyrics windows: the editor for hand-writing or fixing a sheet and the
-//! online matcher that pulls synced lyrics from the providers, plus the
-//! app-wide save signal both of them ring.
+//! Lyrics windows: the sheet editor and the online matcher, plus the save
+//! signal both ring.
 
 pub mod edit;
 pub mod matcher;
@@ -10,18 +9,13 @@ use gpui::{App, Global, WeakEntity};
 use rox_library::lyrics::Subject;
 use rox_panels::lyrics::LyricsPanel;
 
-/// Every live lyrics panel. Lyrics aren't part of the library projection,
-/// so a sheet written by the editor or the matcher has no other way to
-/// reach the panels showing that track, duplicates in other tabs and
-/// windows included, which is why this is a registry rather than the
-/// opening panel's handle. Weak: a closed panel drops out on the next sweep.
+/// Every live lyrics panel. Lyrics aren't in the projection, so this
+/// registry is the only way a save reaches the panels.
 #[derive(Default)]
 struct Watchers(Vec<WeakEntity<LyricsPanel>>);
 
 impl Global for Watchers {}
 
-/// Register a panel to hear saves, sweeping the handles that have died
-/// since the last call so a long session doesn't grow the list.
 pub fn watch(panel: WeakEntity<LyricsPanel>, cx: &mut App) {
     let watchers = cx.default_global::<Watchers>();
     watchers.0.retain(|w| w.upgrade().is_some());
@@ -35,21 +29,16 @@ pub fn watch(panel: WeakEntity<LyricsPanel>, cx: &mut App) {
     watchers.0.push(panel);
 }
 
-/// A sheet for `subject` was written: every live panel drops its cache for
-/// it and re-reads on the next render.
 pub fn saved(subject: &Subject, cx: &mut App) {
     poke(cx, |panel, cx| panel.reload(subject, cx));
 }
 
-/// The edit window's draft for `subject` changed, or None when the window
-/// gave it back. Every panel showing that subject paints the draft instead
-/// of what is stored, which is what puts an offset nudge on screen at the
-/// press rather than at the save.
+/// Show the editor's unsaved draft for `subject` in every panel, or drop it
+/// with None.
 pub fn preview(subject: &Subject, text: Option<&str>, cx: &mut App) {
     poke(cx, |panel, cx| panel.set_preview(subject, text, cx));
 }
 
-/// Run `f` over every live panel, sweeping the handles that have died.
 fn poke(cx: &mut App, mut f: impl FnMut(&mut LyricsPanel, &mut gpui::Context<LyricsPanel>)) {
     let watchers = std::mem::take(&mut cx.default_global::<Watchers>().0);
     let mut alive = Vec::with_capacity(watchers.len());

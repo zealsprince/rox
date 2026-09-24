@@ -1,16 +1,10 @@
-//! Exclusive output on Linux: the card claimed directly as `hw:CARD=x,DEV=n`,
-//! which is the one ALSA name with no dmix, no plug, and no sound server in
-//! the path. ADR 19 left the PipeWire pro-audio route open as an
-//! alternative; `hw:` wins because it's the only one that refuses to
-//! silently resample, and a mode whose whole point is "the file's rate
-//! reaches the converter" can't be built on a device node that would paper
-//! over a mismatch.
+//! Exclusive output on Linux: the card claimed as `hw:CARD=x,DEV=n`, the one
+//! ALSA name with no dmix, plug, or sound server in the path, and the only
+//! route that refuses to silently resample (ADR 19).
 //!
-//! The shape matches the cpal backend. There, cpal owns a
-//! real-time thread and calls us per buffer; here we own the thread and
-//! block on `writei` per period. Both hand the same [`fill`] the same
-//! buffer, so the bypass rule holds identically in either mode, which is
-//! the part of the contract ADR 19 says both backends must keep.
+//! We own the writer thread and block on `writei` per period, handing the
+//! same [`fill`] the same buffer as cpal does, so the bypass rule holds in
+//! both modes.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,36 +20,23 @@ use rtrb::{Consumer, Producer};
 use super::{Device, Mode, Negotiated, OpenOutput, OutputStream, Request, fill, rings};
 use crate::shared::Shared;
 
-/// One period, in seconds. Ten milliseconds is short enough that a pause or
-/// a device drop is noticed promptly and long enough that the writer thread
-/// isn't waking a hundred times per buffer.
+/// Short enough that a pause or a device drop is noticed promptly.
 const PERIOD_SECS: f64 = 0.01;
-/// Periods in the device buffer. Four is the usual floor for a card that
-/// won't xrun on a scheduler hiccup, and the 500 ms sample ring in front of
-/// it absorbs everything longer.
+/// The usual floor against xruns; the 500 ms ring absorbs anything longer.
 const PERIODS: Frames = 4;
-/// The longest period a settings file can ask for. The buffer is [`PERIODS`]
-/// of them and the ring in front holds 500 ms, so a hand-edited 1000 asks for
-/// a device buffer the decode thread can't keep stocked. Same ceiling the
-/// WASAPI backend puts on its own period.
+/// Caps a hand-edited period: [`PERIODS`] of them has to stay under what the
+/// 500 ms ring can keep stocked. Same ceiling as WASAPI.
 const MAX_PERIOD_SECS: f64 = 0.1;
-/// The rate to ask for when the caller doesn't name one, which is every
-/// session that opens before a file has been decoded. The pump reopens at
-/// the file's own rate once it knows it.
+/// Before a file is decoded; the pump reopens at the file's rate.
 const DEFAULT_RATE: u32 = 48000;
 
-/// Formats we'll take, best first: float straight through, then the integer
-/// widths every card has. Packed 24-bit (`S24_3LE`) is absent. rox has no
-/// three-byte sample type, and the cards that offer it offer `S32_LE` too,
-/// which holds the same 24 bits in a type Rust already has.
+/// Best first. No packed 24-bit: cards that offer `S24_3LE` offer `S32_LE` too.
 const FORMATS: &[(Sample, Format, &str)] = &[
     (Sample::F32, Format::float(), "f32"),
     (Sample::I32, Format::s32(), "s32"),
     (Sample::I16, Format::s16(), "s16"),
 ];
 
-/// Which Rust sample type a negotiated ALSA format writes as. The writer
-/// thread is generic over it, so this picks the instantiation.
 #[derive(Clone, Copy)]
 enum Sample {
     F32,
@@ -63,9 +44,7 @@ enum Sample {
     I16,
 }
 
-/// The claim on the device: the writer thread plus its stop flag. Dropping
-/// it stops audio and hands the card back, so toggling exclusive off
-/// actually releases it.
+/// Dropping it stops audio and hands the card back.
 struct Claim {
     stop: Arc<AtomicBool>,
     writer: Option<JoinHandle<()>>,
@@ -76,21 +55,16 @@ impl OutputStream for Claim {}
 impl Drop for Claim {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // The thread checks the flag once per period and blocks in `writei`
-        // in between, so this waits a period at worst. Joining rather than
-        // detaching matters: the PCM handle is owned by the thread, and a
-        // detached thread would still hold the card while the next session
-        // tried to claim it.
+        // Waits a period at worst. Join, don't detach: the thread owns the PCM, and
+        // a detached one would still hold the card while the next session claims it.
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
     }
 }
 
-/// Every playback device the cards expose, as `aplay -l` lists them. Built
-/// off the card and pcm info rather than ALSA's name hints: hints are full
-/// of `default`, `sysdefault`, and plugin aliases, none of which is a claim
-/// on hardware.
+/// As `aplay -l` lists them, from card and pcm info. ALSA's name hints are
+/// aliases, not claims on hardware.
 pub fn devices() -> Vec<Device> {
     let mut out = Vec::new();
     for card in card::Iter::new().flatten() {
@@ -120,14 +94,10 @@ pub fn devices() -> Vec<Device> {
     out
 }
 
-/// Claim a device and start the writer thread. Every error here is one the
-/// seam turns into a fallback to shared output, so they say what failed
-/// rather than just that something did.
+/// Errors here become a fallback to shared, so they say what failed.
 pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, String> {
     let list = devices();
-    // A named device that's gone (card unplugged, renamed by a kernel
-    // update) takes the first card rather than failing the open, matching
-    // what the shared backend does with a stale cpal name.
+    // A named card that's gone takes the first card, like the shared backend.
     let picked = request
         .device
         .as_deref()
@@ -180,11 +150,8 @@ pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, Strin
     })
 }
 
-/// Settle the hardware parameters and report what the card took. The rate
-/// is asked for exactly through `set_rate_near`, which picks the closest
-/// the hardware has; whatever comes back is what gets reported, so a card
-/// that won't do 96 kHz reads as the rate it does instead of a rate rox
-/// wished for.
+/// The rate goes through `set_rate_near`, and whatever comes back is what's
+/// reported.
 fn negotiate(
     pcm: &PCM,
     want_rate: u32,
@@ -194,16 +161,12 @@ fn negotiate(
     let hwp = HwParams::any(pcm).map_err(|e| format!("hw params: {e}"))?;
     hwp.set_access(Access::RWInterleaved)
         .map_err(|e| format!("interleaved access: {e}"))?;
-    // The one line that makes this mode mean anything: with resampling off,
-    // a rate the card can't do fails here instead of getting quietly
-    // converted in the library.
+    // The line that makes this mode mean anything: with resampling off, an
+    // unsupported rate fails here instead of being converted.
     hwp.set_rate_resample(false)
         .map_err(|e| format!("disabling alsa resampling: {e}"))?;
 
-    // A named format the card takes wins; anything else, including a name
-    // for a format this card doesn't have, falls to the widest it does.
-    // Reporting the result keeps that honest, so a pick the hardware
-    // refused reads as the format actually running.
+    // A named format the card takes wins; otherwise the widest it has.
     let (sample, format, name) = want_format
         .and_then(|want| FORMATS.iter().find(|(_, _, name)| *name == want))
         .filter(|(_, format, _)| hwp.test_format(*format).is_ok())
@@ -217,8 +180,7 @@ fn negotiate(
     hwp.set_format(format)
         .map_err(|e| format!("format {name}: {e}"))?;
 
-    // Stereo where the card has it, nearest where it doesn't; fill folds
-    // onto whatever comes back the same way it does for cpal.
+    // Stereo where available; `fill` folds onto whatever comes back.
     let channels = hwp
         .set_channels_near(2)
         .map_err(|e| format!("channels: {e}"))?;
@@ -238,9 +200,7 @@ fn negotiate(
     let swp = pcm
         .sw_params_current()
         .map_err(|e| format!("sw params: {e}"))?;
-    // Start once the buffer is full rather than on the first period, so the
-    // stream comes up with its whole cushion instead of starting one period
-    // from an xrun.
+    // Start on a full buffer, not one period from an xrun.
     swp.set_start_threshold(buffer)
         .map_err(|e| format!("start threshold: {e}"))?;
     swp.set_avail_min(period)
@@ -251,9 +211,7 @@ fn negotiate(
     Ok((sample, rate, channels as u16, name))
 }
 
-/// The period the card settled on, read back rather than remembered: it's
-/// the writer thread's buffer length, and guessing it wrong means writing
-/// in chunks the device never asked for.
+/// Read back, not remembered: it's the writer's buffer length.
 fn period_frames(pcm: &PCM) -> Result<usize, String> {
     let hwp = pcm
         .hw_params_current()
@@ -264,7 +222,6 @@ fn period_frames(pcm: &PCM) -> Result<usize, String> {
     Ok(period.max(1) as usize)
 }
 
-/// Start the writer thread on the sample type the card took.
 #[allow(clippy::too_many_arguments)]
 fn spawn(
     sample: Sample,
@@ -287,10 +244,8 @@ fn spawn(
         .map_err(|e| format!("spawn alsa writer: {e}"))
 }
 
-/// The writer thread: cpal's real-time callback, inverted. The buffer is
-/// allocated once here and refilled in place, so the loop itself allocates
-/// nothing, takes no lock, and does no I/O beyond the write the whole thread
-/// exists for.
+/// cpal's callback, inverted. The buffer is allocated once here, so the loop
+/// allocates nothing, locks nothing, and does no I/O beyond the write.
 #[allow(clippy::too_many_arguments)]
 fn run<T>(
     pcm: PCM,
@@ -318,11 +273,8 @@ fn run<T>(
         let mut recoveries = 0;
         while written < period {
             match io.writei(&buf[written * channels..]) {
-                // A blocking write that took nothing. Nothing documented
-                // gets here, but dropping the rest of the period would put
-                // the position clock ahead of the card by frames `fill`
-                // already counted, so try again and only give up if the
-                // device keeps returning zero.
+                // Undocumented, but dropping the rest of the period would put the clock
+                // ahead of the card by frames `fill` already counted, so retry.
                 Ok(0) => {
                     recoveries += 1;
                     if recoveries > 4 {
@@ -331,12 +283,8 @@ fn run<T>(
                 }
                 Ok(n) => written += n,
                 Err(e) => {
-                    // An xrun or a suspend, both of which ALSA can put back
-                    // together. Retry the same frames rather than dropping
-                    // them, so the position clock doesn't quietly run ahead
-                    // of what the card played. A device that won't come
-                    // back after a few tries is gone, and the app's reopen
-                    // path takes it from there.
+                    // Xrun or suspend. Retry the same frames so the clock doesn't run ahead of
+                    // the card; a device that won't recover is gone and the app reopens.
                     recoveries += 1;
                     if recoveries > 4 || pcm.try_recover(e, true).is_err() {
                         return lost(&shared, format!("alsa write: {e}"));
@@ -345,15 +293,11 @@ fn run<T>(
             }
         }
     }
-    // Falling out of here closes the PCM, which stops the stream and hands
-    // the card back. Not drained first: every path to this
-    // point is a teardown, and the caller is blocked in join waiting for
-    // it, so playing out the last 40 ms would only be a hitch in the UI.
+    // Dropping the PCM releases the card. No drain: every path here is a
+    // teardown with the caller blocked in join.
 }
 
-/// Flag the device as gone the same way cpal's error callback does, so the
-/// player's existing reopen path picks it up. Logging is fine here: this is
-/// the last thing the writer thread does before it stops.
+/// Picked up by the app's reopen path. Logging is fine: the thread is ending.
 fn lost(shared: &Shared, message: String) {
     log::error!("exclusive output: {message}");
     shared.device_lost.store(true, Ordering::Release);

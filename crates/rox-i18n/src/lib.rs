@@ -1,13 +1,10 @@
 //! App-wide localization: Fluent messages resolved against the active
-//! locale, ICU4X behind number and date rendering. It follows the same
-//! shape as the theme system (one process-global the setter swaps, every
-//! read going through an accessor), because strings change for the same
-//! reason palettes do: a settings row flips and every window repaints.
+//! locale, ICU4X for numbers and dates. Shaped like the theme system: one
+//! process-global the setter swaps, read through accessors.
 //!
-//! en-CA is the source locale; its file has every key, and the
-//! resolution chain always ends there so a hole in a translation shows
-//! English rather than a bare key. Adding a locale is one row in
-//! [`LOCALES`] plus one ftl file; the parity test keeps the files honest.
+//! en-CA is the source locale with every key, and every chain ends there so a
+//! translation hole shows English, not a bare key. Adding a locale is one row
+//! in [`LOCALES`] plus one ftl file; the parity test keeps them honest.
 
 pub mod format;
 
@@ -20,34 +17,27 @@ use fluent_langneg::{NegotiationStrategy, negotiate_languages};
 use gpui::SharedString;
 use unic_langid::LanguageIdentifier;
 
-/// The concurrent bundle: translate is called from any thread that
-/// renders or logs, and the default memoizer is single-thread only.
+/// Concurrent because translate runs on any thread that renders or logs.
 type Bundle = fluent_bundle::concurrent::FluentBundle<FluentResource>;
 
-/// A shipped locale: what the language picker shows and which ftl file
-/// backs it. The struct stays unconstructable outside the crate so the
-/// registry below is the one list everything derives from.
+/// Unconstructable outside the crate, so the registry is the one list
+/// everything derives from.
 pub struct LocaleInfo {
     pub id: &'static str,
     pub flag: &'static str,
     pub native: &'static str,
-    /// What the picker's search matches besides the native name, all
-    /// lowercase: the language and its country as every shipped locale
-    /// says them, adjective forms, plain-ASCII spellings of the
-    /// accented ones, and the id. The whole point of the picker's
-    /// search is someone stranded in a language that isn't theirs
-    /// typing in their own, so each locale added here earns a row in
-    /// everyone else's aliases too.
+    /// Lowercase search terms besides the native name: the language and country
+    /// as every shipped locale says them, ASCII spellings, and the id. Someone
+    /// stranded in the wrong language types in their own, so each new locale
+    /// adds a row to everyone else's aliases.
     pub aliases: &'static [&'static str],
     ftl: &'static str,
 }
 
-/// The locale every key exists in and the end of every fallback chain.
 pub const SOURCE_LOCALE: &str = "en-CA";
 
-/// Registry order is picker order. Native names stay in their own
-/// language: a German speaker hunting for theirs scans for "Deutsch",
-/// not for whatever the current locale calls it.
+/// Registry order is picker order. Native names stay in their own language:
+/// a German speaker scans for "Deutsch".
 pub const LOCALES: &[LocaleInfo] = &[
     LocaleInfo {
         id: "en-CA",
@@ -360,13 +350,10 @@ pub const LOCALES: &[LocaleInfo] = &[
     },
 ];
 
-/// Bundles parse once and are kept for the process; locale switches only
-/// change which ones the chain visits.
 static BUNDLES: OnceLock<Vec<(LanguageIdentifier, Bundle)>> = OnceLock::new();
 
-/// The resolution chain as indices into [`BUNDLES`], most specific
-/// first, source last. Lazily seeded from the OS locale so translate
-/// works before init runs (tests, early logging).
+/// Indices into [`BUNDLES`], source last. Seeded lazily from the OS locale so
+/// translate works before init (tests, early logging).
 static ACTIVE: OnceLock<RwLock<Vec<usize>>> = OnceLock::new();
 
 fn bundles() -> &'static [(LanguageIdentifier, Bundle)] {
@@ -386,14 +373,10 @@ fn bundles() -> &'static [(LanguageIdentifier, Bundle)] {
                     }
                 };
                 let mut bundle = Bundle::new_concurrent(vec![lang.clone()]);
-                // Fluent wraps placeables in FSI/PDI bidi isolate marks by
-                // default. None of the shipped locales are bidi and the
-                // marks surface as tofu in width measuring, so they stay
-                // off until an RTL locale forces the question.
+                // Bidi isolate marks render as tofu in width measuring and no
+                // shipped locale is RTL.
                 bundle.set_use_isolating(false);
-                // Numbers in placeables render through ICU with the active
-                // locale's grouping and decimal mark; plural selection
-                // still sees the raw value.
+                // Plural selection still sees the raw value.
                 bundle.set_formatter(Some(format::fluent_number));
                 if let Err(errors) = bundle.add_resource(resource) {
                     for error in errors {
@@ -410,8 +393,7 @@ fn active() -> &'static RwLock<Vec<usize>> {
     ACTIVE.get_or_init(|| RwLock::new(negotiate(None)))
 }
 
-/// Resolve a preference to a chain of shipped locales. None asks the OS;
-/// either way the source locale caps the chain so lookups always resolve.
+/// None asks the OS. The source locale always caps the chain.
 fn negotiate(pref: Option<&str>) -> Vec<usize> {
     let requested: Vec<LanguageIdentifier> = match pref {
         Some(id) => id.parse().ok().into_iter().collect(),
@@ -436,9 +418,8 @@ fn negotiate(pref: Option<&str>) -> Vec<usize> {
     chain
 }
 
-/// Swap the active locale and retarget the ICU formatters. None follows
-/// the OS. Repainting is the caller's, same as the palette setter, since
-/// the statics are outside gpui's reactivity.
+/// None follows the OS. Repainting is the caller's: the statics are outside
+/// gpui's reactivity.
 pub fn set_locale(pref: Option<&str>) {
     let chain = negotiate(pref);
     let primary = LOCALES[chain[0]].id;
@@ -446,15 +427,13 @@ pub fn set_locale(pref: Option<&str>) {
     *active().write().unwrap() = chain;
 }
 
-/// The locale rendering right now, resolved: asking while set to System
-/// returns what System negotiated to.
+/// Resolved: while set to System, what System negotiated to.
 pub fn locale() -> &'static str {
     LOCALES[active().read().unwrap()[0]].id
 }
 
-/// Resolve a message, walking the chain until a locale has it. A `.`
-/// reaches into an attribute: `"settings-theme.description"` is the
-/// description attribute of `settings-theme`, mirroring ftl syntax.
+/// Walks the chain until a locale has the key. A `.` reaches into an
+/// attribute: `"settings-theme.description"`.
 pub fn translate(key: &str, args: Option<&FluentArgs>) -> SharedString {
     let (id, attr) = match key.split_once('.') {
         Some((id, attr)) => (id, Some(attr)),
@@ -483,12 +462,8 @@ pub fn translate(key: &str, args: Option<&FluentArgs>) -> SharedString {
     format!("⟦{key}⟧").into()
 }
 
-/// A message if some locale has it, None if none does.
-///
-/// [`translate`] returns the missing marker so a hole is visible on screen.
-/// This is for the callers asking whether an optional message exists at all:
-/// a row's description, or its extra search terms. Absent is a normal answer
-/// there, and rendering the marker would be wrong.
+/// None when no locale has the key, for optional messages where the missing
+/// marker [`translate`] shows would be wrong.
 pub fn try_translate(key: &str) -> Option<SharedString> {
     let (id, attr) = match key.split_once('.') {
         Some((id, attr)) => (id, Some(attr)),
@@ -516,8 +491,6 @@ pub fn try_translate(key: &str) -> Option<SharedString> {
     None
 }
 
-/// Message lookup. `t!("key")` for plain strings, `t!("key", count = n)`
-/// for placeables; args become Fluent variables under their own names.
 #[macro_export]
 macro_rules! t {
     ($key:expr) => {
@@ -530,12 +503,9 @@ macro_rules! t {
     }};
 }
 
-/// A translation for the APIs that demand `&'static str`: the settings
-/// row DSL, `panel::choices`, panel names. Resolves once per locale and
-/// key, leaks that, and returns from the map after; the leak is bounded
-/// by keys times locales visited, which is kilobytes. Every call site
-/// is also a marker, since the API behind it still needs widening to
-/// SharedString; once that happens the call site moves to [`t!`].
+/// For APIs that demand `&'static str`. Leaks once per locale and key, which
+/// is kilobytes. Each call site marks an API still to widen to SharedString,
+/// after which it moves to [`t!`].
 pub fn t_static(key: &str) -> &'static str {
     static INTERNED: Mutex<BTreeMap<(usize, String), &'static str>> = Mutex::new(BTreeMap::new());
     let primary = active().read().unwrap()[0];
@@ -548,14 +518,10 @@ pub fn t_static(key: &str) -> &'static str {
     text
 }
 
-/// The pseudo-locale pass, on when ROX_PSEUDOLOCALE is set: every
-/// resolved string gains brackets and a third of padding, so a
-/// hardcoded literal is the one thing on screen without brackets and a
-/// layout that can't absorb German-length text shows it before German
-/// does.
+/// With ROX_PSEUDOLOCALE set, every string gains brackets and a third of
+/// padding, exposing hardcoded literals and layouts that can't take German.
 fn decorate(text: String) -> String {
-    // Not under test: the suite asserts resolved content, and a pseudo
-    // var inherited from the dev shell shouldn't repaint the assertions.
+    // Never under test: a var inherited from the dev shell would break assertions.
     if cfg!(test) {
         return text;
     }
@@ -567,8 +533,7 @@ fn decorate(text: String) -> String {
     format!("⟦{text}{pad}⟧")
 }
 
-/// A key no locale defines, logged once: repeating it every frame would
-/// drown the log from inside a render loop.
+/// Logged once, since a render loop would repeat it every frame.
 fn missing(key: &str) {
     static SEEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     if SEEN.lock().unwrap().insert(key.to_string()) {
@@ -576,13 +541,8 @@ fn missing(key: &str) {
     }
 }
 
-/// Tests flip the global locale, so every test that does takes this
-/// lock; without it cargo's parallel runner interleaves locales.
-///
-/// Public because the locale is process-global and the crates that
-/// format through it are tested in their own binaries: rox-core's spans
-/// and paces read the same statics, so their tests have to serialize
-/// against the same lock rather than a private one per crate.
+/// Every test that flips the global locale takes this lock. Public because
+/// other crates (rox-core's spans and paces) format through the same statics.
 #[doc(hidden)]
 pub static LOCALE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -593,9 +553,7 @@ pub(crate) use LOCALE_TEST_LOCK as TEST_LOCK;
 mod tests {
     use super::*;
 
-    /// Every shipped locale defines exactly the keys and attributes the
-    /// source does: a hole falls back silently at runtime, so the test
-    /// is where holes surface.
+    /// A hole falls back silently at runtime, so the test is where it surfaces.
     #[test]
     fn locales_carry_every_source_key() {
         fn inventory(ftl: &str) -> BTreeSet<String> {
@@ -629,20 +587,10 @@ mod tests {
         }
     }
 
-    /// Every translation names the same variables the source does.
-    ///
-    /// This is the mistake that costs a translator the most and shows
-    /// the least. Fluent resolves a message with whatever arguments the
-    /// call site passed, so a translation that drops `{ $device }` just
-    /// renders without the device, and one that types `{ $coutn }` logs
-    /// a warning nobody is watching and renders the rest of the line.
-    /// Both look like ordinary text on screen, in a language the person
-    /// who wrote the call site probably can't read.
-    ///
-    /// Compared as a set across the whole message, selector and every
-    /// branch together, because the source itself doesn't use a variable
-    /// in every branch: `status-count-albums` spells the one case as
-    /// "1 album" and never places the count there.
+    /// Every translation names the same variables the source does. A dropped
+    /// or misspelled variable renders as ordinary text, in a language the call
+    /// site's author likely can't read. Compared as a set across the whole
+    /// message, since the source doesn't use every variable in every branch.
     #[test]
     fn translations_name_the_same_variables_as_the_source() {
         use fluent_syntax::ast;
@@ -681,8 +629,7 @@ mod tests {
                         in_inline(&named.value, out);
                     }
                 }
-                // A message reference resolves against the arguments the
-                // outer call already passed, so it names none of its own.
+                // A message reference inherits the outer call's arguments.
                 _ => {}
             }
         }
@@ -718,8 +665,7 @@ mod tests {
                 continue;
             }
             for (key, got) in inventory(loc.ftl) {
-                // A key the source doesn't define is the parity test's
-                // complaint, not this one's.
+                // Unknown keys are the parity test's complaint.
                 let Some(want) = want.get(&key) else { continue };
                 let dropped: Vec<_> = want.difference(&got).collect();
                 let invented: Vec<_> = got.difference(want).collect();
@@ -733,18 +679,9 @@ mod tests {
         }
     }
 
-    /// Every plural selector declares each category its own language
-    /// actually uses.
-    ///
-    /// The parity test above only proves a key exists, so a Russian
-    /// message written with English's two branches passes it while
-    /// rendering "2 секунда" to a reader. Russian needs four categories
-    /// and Japanese needs one; the only honest source for which is CLDR,
-    /// so this asks CLDR rather than trusting the file.
-    ///
-    /// Selectors that aren't about counting (a mode, a state) name their
-    /// own variants and are skipped: what marks a plural select is that
-    /// every variant it declares is a plural category.
+    /// Every plural selector declares each category its language uses, per
+    /// CLDR: a Russian message with English's two branches passes parity but
+    /// renders "2 секунда". Non-counting selectors are skipped.
     #[test]
     fn plural_selectors_cover_their_locales_categories() {
         use fluent_syntax::ast;
@@ -752,13 +689,9 @@ mod tests {
 
         const CATEGORIES: [&str; 6] = ["zero", "one", "two", "few", "many", "other"];
 
-        /// Which categories a locale can actually produce. Enumerated
-        /// rather than looked up: the rules are the authority and this
-        /// asks them the same question the formatter will at runtime.
+        /// Enumerated from the rules, the same question the formatter asks.
         fn needed(lang: &LanguageIdentifier) -> BTreeSet<String> {
-            // Plural rules are a property of the language, not the
-            // region or script: en-CA counts like en, zh-Hans like zh.
-            // The rules table is keyed that way and rejects the rest.
+            // The rules table is keyed by bare language: en-CA counts like en.
             let bare: LanguageIdentifier = lang
                 .language
                 .as_str()
@@ -786,12 +719,8 @@ mod tests {
                     }
                     declared(&variant.value, out);
                 }
-                // Two or more category branches means the message is
-                // inflecting for the number, and a message that inflects
-                // has to inflect completely. One branch is a message
-                // opting out (an exact-number special case, or wording
-                // that reads the same at every count), which is the
-                // translator's call to make and not a hole.
+                // Two or more category branches means the message inflects,
+                // and must do so completely. One branch is an opt-out.
                 if keys.len() >= 2 && keys.iter().all(|k| CATEGORIES.contains(&k.as_str())) {
                     out.push(keys);
                 }
@@ -833,9 +762,7 @@ mod tests {
         }
     }
 
-    /// The picker matches aliases without folding case, so the curation
-    /// contract is that they arrive lowercase; an uppercase alias would
-    /// silently never match.
+    /// The picker matches case-sensitively, so aliases must be lowercase.
     #[test]
     fn aliases_are_lowercase_and_present() {
         for loc in LOCALES {
@@ -858,11 +785,8 @@ mod tests {
         assert_eq!(locale(), SOURCE_LOCALE);
     }
 
-    /// What the OS hands us is rarely what the registry is keyed on: a
-    /// Chinese desktop reports zh-CN, a Brazilian one pt-BR, and neither
-    /// spelling is the one the ftl file is filed under. Negotiation has to
-    /// bridge that or the locale ships to nobody who didn't pick it by
-    /// hand.
+    /// The OS reports zh-CN or pt-BR, not the registry's spelling;
+    /// negotiation has to bridge that.
     #[test]
     fn os_spellings_reach_their_locale() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -891,10 +815,7 @@ mod tests {
         assert!(!label.contains('⟦'), "label resolved: {label}");
     }
 
-    /// The settings search adds each locale's own synonyms on top of the
-    /// English terms the call site declares. Without this the German build
-    /// is harder to search than the English one, since a translated label
-    /// contains none of the words an English keyword list did.
+    /// Each locale adds its own synonyms, or translated labels are unsearchable.
     #[test]
     fn keyword_lists_are_per_locale() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -905,12 +826,10 @@ mod tests {
         let german = try_translate("settings-audio-crossfade.keywords")
             .expect("German defines its own list");
         assert_ne!(english, german);
-        // Typed without the umlaut, which is how it gets typed.
         assert!(german.split_whitespace().any(|term| term == "uebergang"));
     }
 
-    /// A row with no synonyms beyond its copy is the common case, and it
-    /// has to read as absent rather than as the missing marker.
+    /// No synonyms reads as absent, not as the missing marker.
     #[test]
     fn a_row_without_keywords_answers_none() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -918,11 +837,8 @@ mod tests {
         assert!(try_translate("settings-audio-crossfade.nonesuch").is_none());
     }
 
-    /// The bracketed estimate wraps the bare one by reference instead of
-    /// repeating the phrase, so a reword happens in one place per locale.
-    /// Fluent hands the outer call's arguments down through a reference;
-    /// this pins that, because a reference that failed to resolve would
-    /// quietly render as the literal message name.
+    /// A message reference gets the outer call's arguments; a failed one would
+    /// render the literal message name.
     #[test]
     fn a_message_reference_carries_the_callers_args() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -934,10 +850,8 @@ mod tests {
         assert_eq!(wrapped, "(about 2 hours at 4 workers)");
     }
 
-    /// The same reference in every locale: whatever brackets a language
-    /// uses, both arguments have to come through intact. A locale that
-    /// mangled the reference would still define the key and so would pass
-    /// the parity test above, which is why this needs a test of its own.
+    /// A mangled reference still passes parity, so every locale is checked
+    /// here.
     #[test]
     fn every_locale_resolves_the_wrapped_estimate() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -971,25 +885,14 @@ mod tests {
     }
 }
 
-/// Case and accent folded, for matching typed text against UI copy.
-///
-/// Search was case-insensitive and nothing else while every string was
-/// English, which was enough because English rows have no diacritics to
-/// miss. They do now: a French row reading "Préréglages" was unfindable by
-/// someone typing "prereglages", and a German one under "Überblenden" by
-/// anyone typing "Uberblenden". People type without accents constantly,
-/// on keyboards that make them awkward and out of plain habit.
-///
-/// Decomposes to NFD and drops the combining marks, so an accented letter
-/// falls back to its base. The German sharp s is spelled out first, since
-/// it has no mark to strip and a keyboard without it produces "ss".
+/// Case and accent folded, so "prereglages" finds "Préréglages". NFD with
+/// combining marks dropped; the sharp s is spelled out first ("ss").
 pub fn fold(text: &str) -> String {
     static NFD: OnceLock<icu_normalizer::DecomposingNormalizerBorrowed<'static>> = OnceLock::new();
     let nfd = NFD.get_or_init(icu_normalizer::DecomposingNormalizerBorrowed::new_nfd);
     let lowered = text.to_lowercase().replace('ß', "ss");
     nfd.normalize(&lowered)
         .chars()
-        // Mn is the nonspacing-mark class every stripped accent falls into.
         .filter(|c| {
             !icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new()
                 .get(*c)
@@ -1009,8 +912,6 @@ mod fold_tests {
         assert_eq!(fold("Città"), "citta");
     }
 
-    /// The sharp s has no combining mark to strip, so it needs spelling
-    /// out or "Grosse" never finds "Größe".
     #[test]
     fn sharp_s_spells_itself_out() {
         assert_eq!(fold("Größe"), "grosse");

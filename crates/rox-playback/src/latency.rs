@@ -1,41 +1,25 @@
-//! The low-latency hold (ADR 19): while a parameter editor is open, the
-//! decode thread keeps the sample ring shallow so a knob takes effect sooner.
+//! The low-latency hold (ADR 19): while a parameter editor is open, the decode
+//! thread keeps the ring shallow so a knob is heard in [`LOW_LATENCY_MS`]
+//! instead of the ring's full 500 ms. The ring is never resized; only how
+//! full it's allowed to get changes.
 //!
-//! The chain runs pre-ring, so a parameter change is only audible once the
-//! samples ahead of it drain, up to the ring's full 500 ms. The ring itself
-//! is allocated once at stream open and never resized; what moves is how
-//! full the decode thread lets it get. Hold this and the fill gates at
-//! [`LOW_LATENCY_MS`], so the wait between slider and ear is that instead of
-//! the whole cushion.
-//!
-//! Process-global, like the EQ's parameter atomics: the editor windows are
-//! global too (one curve for every workspace), and the decode thread needs
-//! only one relaxed load per pass instead of a route through the command
-//! channel.
-//! Refcounted rather than a flag so a second editor surface can hold it
-//! alongside the first without either one's close cutting the other short.
+//! Process-global and refcounted, so any number of editor surfaces can hold it
+//! and the decode thread pays one relaxed load per pass.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// How much audio the ring may hold while a hold is out, in milliseconds.
-/// The floor is the device: a shared-mode period runs 10-40 ms on a typical
-/// desktop (PipeWire's 1024-frame quantum is 21 ms at 48 kHz), and the
-/// decode loop sleeps 3 ms between refills, so 120 ms is still several periods
-/// of cushion against a scheduling hiccup. The ceiling is the ear: past
-/// roughly 150 ms a slider stops feeling attached to what it's moving.
+/// Ring depth while a hold is out. Above a 10-40 ms shared-mode period plus
+/// the decode loop's 3 ms sleep; below the ~150 ms where a slider stops
+/// feeling attached.
 pub const LOW_LATENCY_MS: usize = 120;
 
-/// How many holds are out. Zero means the ring fills to the brim as always.
 static HOLDS: AtomicUsize = AtomicUsize::new(0);
 
-/// A live request for low parameter latency. Drop it to release; the decode
-/// thread refills to full depth again on its next pass.
+/// Drop it to release.
 pub struct LatencyHold {
     _private: (),
 }
 
-/// Ask the decode thread to keep the ring shallow until the returned guard
-/// drops. Cheap enough to take on a window open and forget about.
 pub fn hold() -> LatencyHold {
     HOLDS.fetch_add(1, Ordering::Relaxed);
     LatencyHold { _private: () }
@@ -47,16 +31,12 @@ impl Drop for LatencyHold {
     }
 }
 
-/// Whether anything is asking for low latency right now.
 pub fn held() -> bool {
     HOLDS.load(Ordering::Relaxed) > 0
 }
 
-/// How full the ring is allowed to get, in interleaved stereo samples, given
-/// its capacity and the device rate. The full capacity with no hold out, so
-/// the gate costs one atomic load on the normal path; the target otherwise,
-/// clamped to capacity in case a device ever opens with a ring shorter than
-/// the target.
+/// The ring's allowed fill in interleaved samples. Full capacity with no hold
+/// out, so the normal path costs one atomic load.
 pub fn fill_limit(capacity: usize, device_rate: u32) -> usize {
     if !held() {
         return capacity;
@@ -65,11 +45,8 @@ pub fn fill_limit(capacity: usize, device_rate: u32) -> usize {
     (frames * 2).min(capacity)
 }
 
-/// How many samples the decode thread may push right now, from the ring's
-/// capacity and its free slots. Every free slot with no hold out, the room
-/// left under the target otherwise, and zero once the ring already holds
-/// more than the target, so taking a hold mid-playback drains the excess
-/// instead of dropping it.
+/// Samples the decode thread may push now. Zero while the ring holds more
+/// than the target, so taking a hold drains the excess instead of dropping it.
 pub fn push_room(capacity: usize, free: usize, device_rate: u32) -> usize {
     fill_limit(capacity, device_rate).saturating_sub(capacity - free)
 }
@@ -79,10 +56,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// The refcount is process-global and the harness runs tests on parallel
-    /// threads, so without this one test's guards would show up in another's
-    /// `held`. Poison is ignored: a failed assertion in one shouldn't turn
-    /// the rest into unrelated failures.
+    /// The refcount is process-global and tests run in parallel. Poison is ignored
+    /// so one failure doesn't cascade.
     static HOLDS_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

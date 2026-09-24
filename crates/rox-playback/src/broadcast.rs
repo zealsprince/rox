@@ -1,22 +1,12 @@
-//! The icecast broadcast sink (ADR 22): rox connects out to an icecast
-//! server as a source client and pushes the processed stream, encoded to
-//! MP3, at the mount the config names. Everything downstream (the mount,
-//! the listeners, the network face) belongs to icecast; rox owns no HTTP
-//! surface, it only speaks the source protocol out of one thread here.
+//! The icecast broadcast sink (ADR 22): rox connects out as a source client
+//! and pushes the processed stream as MP3. rox owns no HTTP surface; icecast
+//! owns the mount and the listeners.
 //!
-//! The engine feeds this module on the decode thread, right after the
-//! chain, so the broadcast carries exactly what the speakers get (ADR 19).
-//! The feed never blocks and never waits on the network: chunks cross a
-//! bounded channel to the sink thread, and when the sink can't keep up
-//! (server unreachable, socket stalled) chunks drop on the floor and local
-//! playback never notices. The sink reconnects on its own clock for as
-//! long as the config stands, and tearing the config down closes the
-//! connection, which releases the mount.
+//! Fed on the decode thread after the chain (ADR 19), so the broadcast is what
+//! the speakers get before volume. The feed never blocks: chunks cross a
+//! bounded channel, and when the sink can't keep up they're dropped.
 //!
-//! What this doesn't do yet: synthesize silence while rox is
-//! paused. A paused deck starves the stream and listeners stall on their
-//! buffer; icecast keeps the mount either way, and audio resumes with
-//! playback.
+//! Not done: silence while paused. A paused deck starves the stream.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpStream;
@@ -27,68 +17,51 @@ use std::time::Duration;
 
 use base64::Engine as _;
 
-/// Where and how to broadcast, the playback-side copy of the settings
-/// shape. `None` in [`configure`] is the off switch.
+/// The playback-side copy of the settings shape. `None` in [`configure`] turns it off.
 #[derive(Clone, PartialEq)]
 pub struct Config {
-    /// The icecast server, host and port; no scheme, since the source
-    /// protocol runs over a plain socket.
+    /// Host and port, no scheme: the source protocol is a plain socket.
     pub host: String,
     pub port: u16,
-    /// The mount listeners tune to, with or without its leading slash.
+    /// Leading slash optional.
     pub mount: String,
-    /// Source credentials, icecast.xml's source user and password.
     pub user: String,
     pub password: String,
-    /// The stream name the mount advertises. Empty stays nameless.
     pub name: String,
-    /// Encoder bitrate in kbps, folded onto the nearest step LAME takes.
+    /// kbps, folded onto the nearest step LAME takes.
     pub bitrate: u32,
 }
 
-/// How many chunks may queue for the sink before the feed drops them. A
-/// chunk is one decode batch, a few hundred milliseconds at most, so this
-/// holds well over the ring's worth of lead the decoder runs at while an
-/// unreachable server costs bounded memory and zero waiting.
+/// Chunks queued before the feed drops them: well over the decoder's ring of
+/// lead, bounded memory against a dead server.
 const FEED_BUFFER: usize = 64;
 
-/// How long the sink waits between connection attempts.
 const RETRY: Duration = Duration::from_secs(5);
 
-/// Socket timeouts. A server that stops draining fails the write instead
-/// of parking the sink forever; the read timeout paces the shutdown check.
+/// A stalled server fails the write instead of parking the sink.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The engine's cheap gate: false is one relaxed load per chunk and
-/// nothing else, so a build with broadcast unconfigured pays nothing.
+/// Off is one relaxed load per chunk.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// The feed half of the running sink's channel. RwLock because the decode
-/// thread read-locks per chunk and only [`configure`] ever writes.
+/// RwLock: the decode thread read-locks per chunk; only [`configure`] writes.
 static FEED: RwLock<Option<SyncSender<Chunk>>> = RwLock::new(None);
 
-/// The running sink's stop flag, so a reconfigure or teardown can end the
-/// thread mid-retry rather than waiting a whole backoff out.
+/// Lets a reconfigure end the thread mid-retry.
 static STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 
-/// The stream metadata as "artist - title", plus the flag that tells the
-/// sink it changed. Shared state rather than a channel message so a burst
-/// of track changes folds to one update, the latest.
+/// "artist - title" plus a dirty flag, so a burst of track changes folds to one update.
 static SONG: Mutex<Option<String>> = Mutex::new(None);
 static SONG_DIRTY: AtomicBool = AtomicBool::new(false);
 
-/// One decode batch as the engine hands it over: interleaved stereo f32 at
-/// the device rate it was processed at. The rate is included because a
-/// device rebuild changes it, and the encoder has to follow.
+/// Carries its rate because a device rebuild changes it.
 struct Chunk {
     rate: u32,
     samples: Vec<f32>,
 }
 
-/// Hand one processed batch to the sink, from the decode thread. Never
-/// blocks: with broadcast off this is one atomic load, and with the sink
-/// behind it drops the chunk, because the stream skipping is the acceptable
-/// cost and playback waiting is not.
+/// From the decode thread. Never blocks: a full channel drops the chunk.
+/// Playback never waits on the stream.
 pub fn feed(samples: &[f32], rate: u32) {
     if !ACTIVE.load(Ordering::Relaxed) || samples.is_empty() {
         return;
@@ -103,21 +76,15 @@ pub fn feed(samples: &[f32], rate: u32) {
     }
 }
 
-/// Update the stream metadata on the next track. The sink pushes it to
-/// icecast's admin endpoint from its own thread once connected; with the
-/// sink down it just becomes the state the next connection announces.
+/// Pushed from the sink thread once connected, or announced on the next connect.
 pub fn set_song(song: String) {
     *SONG.lock().unwrap() = Some(song);
     SONG_DIRTY.store(true, Ordering::Release);
 }
 
-/// Start broadcasting with `config`, or stop with `None`. A reconfigure
-/// tears the old sink down first, which closes its connection and releases
-/// the mount; the new one connects on its own thread and keeps retrying
-/// for as long as the config stands.
+/// Start broadcasting, or stop with `None`. A reconfigure tears the old sink
+/// down first, which releases the mount.
 pub fn configure(config: Option<Config>) {
-    // End the running sink: gate the feed off, wake the thread out of
-    // whatever retry sleep it's in, and drop its channel.
     ACTIVE.store(false, Ordering::Relaxed);
     if let Some(stop) = STOP.lock().unwrap().take() {
         stop.store(true, Ordering::Relaxed);
@@ -138,26 +105,23 @@ pub fn configure(config: Option<Config>) {
     std::thread::spawn(move || sink(config, rx, stop));
 }
 
-/// The sink thread's whole life: connect, announce, encode and push chunks,
-/// and on any failure drop the connection, flush the backlog, and try again
-/// after a pause. Ends when the stop flag is set.
+/// Connect, encode, push; on failure drop the connection and backlog and retry
+/// after a pause, until stopped.
 fn sink(config: Config, rx: Receiver<Chunk>, stop: Arc<AtomicBool>) {
     let mount = normalized_mount(&config.mount);
     loop {
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        // The encoder is created per connection, at the rate of the first
-        // chunk through, so a device rebuild mid-broadcast reconnects
-        // rather than feeding one stream two rates.
+        // Encoder per connection at the first chunk's rate, so a device rate change
+        // reconnects instead of mixing rates.
         match serve_connection(&config, &mount, &rx, &stop) {
             Served::Stopped => return,
             Served::Failed(err) => {
                 log::warn!("broadcast: {err}; retrying in {}s", RETRY.as_secs());
             }
         }
-        // The backlog encoded for a dead connection is stale the moment a
-        // new one opens; drop it so the stream resumes at now.
+        // Drop the stale backlog so the stream resumes at now.
         while rx.try_recv().is_ok() {}
         let waited = std::time::Instant::now();
         while waited.elapsed() < RETRY {
@@ -169,24 +133,18 @@ fn sink(config: Config, rx: Receiver<Chunk>, stop: Arc<AtomicBool>) {
     }
 }
 
-/// Why one connection's serve loop ended.
 enum Served {
-    /// The stop flag was set; the thread is done.
     Stopped,
-    /// The connection or the encoder failed; the caller retries.
     Failed(String),
 }
 
-/// One connection: wait for audio, open the encoder at its rate, shake
-/// hands with icecast, then pump until something gives.
 fn serve_connection(
     config: &Config,
     mount: &str,
     rx: &Receiver<Chunk>,
     stop: &Arc<AtomicBool>,
 ) -> Served {
-    // Nothing to broadcast until the deck moves; don't hold a silent
-    // connection open before the first chunk ever arrives.
+    // Don't open a connection before there's audio to send.
     let first = loop {
         if stop.load(Ordering::Relaxed) {
             return Served::Stopped;
@@ -223,8 +181,7 @@ fn serve_connection(
             && let Some(song) = SONG.lock().unwrap().clone()
             && let Err(err) = push_metadata(config, mount, &song)
         {
-            // Metadata is decoration; a failed update never costs
-            // the stream itself.
+            // Metadata failures never cost the stream.
             log::debug!("broadcast: metadata update failed: {err}");
         }
         let Some(current) = chunk.take() else {
@@ -251,7 +208,6 @@ fn serve_connection(
     }
 }
 
-/// A mount with exactly one leading slash, whatever the config held.
 fn normalized_mount(mount: &str) -> String {
     let trimmed = mount.trim().trim_start_matches('/');
     if trimmed.is_empty() {
@@ -261,9 +217,7 @@ fn normalized_mount(mount: &str) -> String {
     }
 }
 
-/// Open the source connection: a PUT at the mount with Basic auth and the
-/// ice headers, answered by icecast before any audio flows. Anything but
-/// acceptance is an error sentence for the retry log.
+/// PUT at the mount with Basic auth and ice headers; anything but a 200 is an error.
 fn connect(config: &Config, mount: &str) -> Result<TcpStream, String> {
     let addr = (config.host.as_str(), config.port);
     let stream = TcpStream::connect(addr).map_err(|e| format!("{}: {e}", config.host))?;
@@ -297,8 +251,7 @@ fn connect(config: &Config, mount: &str) -> Result<TcpStream, String> {
         .write_all(request.as_bytes())
         .map_err(|e| format!("handshake: {e}"))?;
 
-    // icecast answers the headers before the body flows: a 100 first when
-    // the Expect was honored, then the 200 that accepts the source.
+    // A 100 first when the Expect was honored, then the 200.
     let mut reader = BufReader::new(stream.try_clone().map_err(|e| format!("handshake: {e}"))?);
     for _ in 0..2 {
         let status = read_response(&mut reader)?;
@@ -313,8 +266,6 @@ fn connect(config: &Config, mount: &str) -> Result<TcpStream, String> {
     Err("server never accepted the source".into())
 }
 
-/// One HTTP response off the wire: the status line kept, the headers read
-/// through to the blank line and dropped.
 fn read_response(reader: &mut BufReader<TcpStream>) -> Result<String, String> {
     let mut status = String::new();
     reader
@@ -334,9 +285,7 @@ fn read_response(reader: &mut BufReader<TcpStream>) -> Result<String, String> {
     }
 }
 
-/// Tell icecast what's playing: the admin updinfo call, one short-lived
-/// connection under the same source credentials, which icecast honors for
-/// the source's own mount.
+/// The admin updinfo call, under the same source credentials.
 fn push_metadata(config: &Config, mount: &str, song: &str) -> Result<(), String> {
     let addr = (config.host.as_str(), config.port);
     let mut stream = TcpStream::connect(addr).map_err(|e| e.to_string())?;
@@ -358,15 +307,13 @@ fn push_metadata(config: &Config, mount: &str, song: &str) -> Result<(), String>
     stream
         .write_all(request.as_bytes())
         .map_err(|e| e.to_string())?;
-    // Drain the response so the server sees a clean close; its contents
-    // don't change anything on our side.
+    // Drain so the server sees a clean close.
     let mut sink = Vec::new();
     let _ = stream.read_to_end(&mut sink);
     Ok(())
 }
 
-/// Query-string percent encoding, the unreserved set kept and everything
-/// else escaped, so a song title with an ampersand in it stays one value.
+/// Keeps an ampersand in a title from splitting the value.
 fn percent_encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
@@ -380,14 +327,11 @@ fn percent_encode(text: &str) -> String {
     out
 }
 
-/// LAME behind the two calls the sink makes: created at a rate and bitrate,
-/// fed interleaved stereo f32, handing back MP3 bytes from its own buffer.
 struct Encoder {
     encoder: mp3lame_encoder::Encoder,
     rate: u32,
     bitrate: u32,
-    /// Scratch for the f32 -> i16 conversion and the encoded output,
-    /// reused across chunks so the steady state doesn't allocate.
+    /// Reused across chunks so the steady state doesn't allocate.
     pcm: Vec<i16>,
     out: Vec<u8>,
 }
@@ -411,8 +355,7 @@ impl Encoder {
         })
     }
 
-    /// One chunk of interleaved stereo f32 in, the encoded bytes out. The
-    /// returned slice points into this encoder's scratch until the next call.
+    /// The returned slice lives until the next call.
     fn encode(&mut self, samples: &[f32]) -> Result<&[u8], String> {
         self.pcm.clear();
         self.pcm.extend(
@@ -434,8 +377,7 @@ impl Encoder {
     }
 }
 
-/// The nearest bitrate step LAME takes, with what it resolved to for the
-/// log line. 0 (an unconfigured field) resolves to the 192 default.
+/// With the resolved kbps for the log line. 0 means the 192 default.
 fn nearest_bitrate(kbps: u32) -> (mp3lame_encoder::Bitrate, u32) {
     use mp3lame_encoder::Bitrate;
     let steps: [(Bitrate, u32); 8] = [
@@ -463,8 +405,7 @@ mod tests {
     fn feed_never_blocks_however_dead_the_sink() {
         configure(Some(Config {
             host: "127.0.0.1".into(),
-            // A port nothing listens on: the sink retries forever while
-            // the feed keeps pushing into (and overflowing) the buffer.
+            // Nothing listens here, so the sink retries forever while the feed overflows.
             port: 1,
             mount: "/test".into(),
             user: "source".into(),
@@ -473,13 +414,11 @@ mod tests {
             bitrate: 192,
         }));
         let chunk = vec![0.0f32; 4096];
-        // Far past FEED_BUFFER: if a full buffer blocked the feed, this
-        // test would hang instead of finishing.
+        // If a full buffer blocked the feed, this would hang.
         for _ in 0..FEED_BUFFER * 4 {
             feed(&chunk, 48_000);
         }
         configure(None);
-        // Torn down, the gate is closed and feeding is a no-op.
         assert!(!ACTIVE.load(Ordering::Relaxed));
         feed(&chunk, 48_000);
     }

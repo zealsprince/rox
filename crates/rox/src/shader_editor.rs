@@ -1,27 +1,16 @@
-//! The shader editor window: one OS window over one surface's WGSL, opened
-//! from the Edit button every shader picker carries. It's a modest editor
-//! on purpose. The external-editor loop (eject, save, watch) already serves
-//! anyone with a real editor; this one is for tweaking a preset without
-//! leaving rox, and for the hints, which a file on disk can't offer: the
-//! uniform block's fields, the slots the source names, and the signal pool
-//! with live meters, each a click from landing in the buffer.
+//! The shader editor window: one window over one surface's WGSL, opened from
+//! the Edit button every shader picker carries. Modest on purpose: the
+//! eject-and-watch loop serves real editors, and this is for quick tweaks and
+//! the hints a file can't offer (uniforms, named slots, the signal pool with
+//! live meters).
 //!
-//! The buffer checks itself a beat after each edit, so naga's message
-//! shows while typing. That check validates rather than registers: it
-//! compiles nothing into the window, since one pipeline per pause in
-//! typing is a session's worth of them for a verdict. Apply takes the
-//! registering path, writes the text where the target says (the pool
-//! entry, the panel's config, the screen), the bookmarked file with it,
-//! and approves the hash, since applying is the user vouching for the text
-//! the way picking a file is. Revert puts the last applied text back. The
-//! surface keeps painting its last good registration through a broken
-//! apply, so half-written shaders cost nothing on screen.
+//! The buffer validates a beat after each edit but never registers, since
+//! registration keeps a pipeline per check. Apply registers, writes the text
+//! where the target says, and approves its hash. The surface keeps its last
+//! good registration through a broken apply.
 //!
-//! A source that arrived unapproved opens here to be read, and nothing
-//! runs it: the first edit is the vouch, and the checking starts there.
-//!
-//! One window per target, registered like the lyrics editor: a second Edit
-//! on the same surface focuses the open one.
+//! An unapproved source opens here to be read, and nothing runs it until the
+//! first edit vouches for it. One window per target.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,55 +33,39 @@ use rox_panel_kit::ui::{self as settings_ui, Seg, kbd_line, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_viz::signal::SignalHub;
 
-/// The default window size: room for a shader's width beside the hint
-/// column, and enough lines that a preset fits without scrolling.
 const DEFAULT_SIZE: (f32, f32) = (940., 660.);
 
-/// The hint column's width: a uniform's name and type on one line.
 const HINTS_W: f32 = 250.;
 
-/// How long typing has to pause before the buffer is checked. naga is
-/// quick, but a check registers a pipeline in this window, which isn't a
-/// per-keystroke cost.
+/// A verdict per keystroke would flicker through every half-typed line.
 const CHECK_AFTER: Duration = Duration::from_millis(350);
 
-/// How much of a compile message the readout shows. naga points at the
-/// span with a caret line, which is the useful part.
+/// naga's caret line is the useful part.
 const ERROR_LINES: usize = 12;
 
 actions!(shader_editor, [Apply]);
 
-/// The key context the window's bindings scope to.
 const CONTEXT: &str = "ShaderEditor";
 
-// The buffer is a multi-line input, where plain enter is a newline, so the
-// apply uses the platform's primary modifier, the same fork the lyrics
-// editor's save takes.
+// A multi-line input takes plain enter as a newline, so apply uses the primary
+// modifier.
 #[cfg(target_os = "macos")]
 const APPLY_CHORD: &str = "cmd-enter";
 
 #[cfg(not(target_os = "macos"))]
 const APPLY_CHORD: &str = "ctrl-enter";
 
-/// The editor's apply binding; call once at startup, before
-/// [`crate::keymap::init`] snapshots what's bound.
-///
-/// Bound on the input inside this window rather than on the window: the
-/// input binds the same chord itself (secondary-enter, a newline in a
-/// multi-line buffer), and the focused element's bindings win over its
-/// ancestors', so a window-level binding never sees the key. At the same
-/// depth the later binding wins, and this one registers after the
-/// component library's, so the apply takes the chord here and nowhere else.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
+/// Bound on the input, not the window: the input binds the same chord itself
+/// and the focused element's bindings win. At the same depth the later binding
+/// wins, and the keymap lays this one down after the component library's.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new(
         APPLY_CHORD,
         Apply,
         Some(&format!("{CONTEXT} > Input")),
-    )]);
+    )]
 }
 
-/// The open editors, keyed by what they edit, so a second Edit on the
-/// same surface focuses the first.
 #[derive(Default)]
 struct OpenEditors(Vec<(EditKey, WindowHandle<Root>)>);
 
@@ -105,7 +78,6 @@ impl WindowRegistry for OpenEditors {
     }
 }
 
-/// Open an editor over `target`, or focus the one already on it.
 pub fn open(state: AppState, target: ShaderEditTarget, cx: &mut App) {
     open_or_focus::<OpenEditors>(
         target.key.clone(),
@@ -123,33 +95,23 @@ pub fn open(state: AppState, target: ShaderEditTarget, cx: &mut App) {
     );
 }
 
-/// What the last check made of the buffer.
 enum Check {
-    /// No check has run on this text yet, or there's no text to check.
     Unchecked,
-    /// The text arrived unapproved and nobody has vouched for it, so
-    /// nothing has compiled it and nothing will until it's edited or
-    /// applied.
+    /// Unapproved and not vouched for, so nothing has compiled it.
     Pending,
-    /// Registration took it.
     Ok,
-    /// naga's message, verbatim.
     Err(String),
-    /// This build has no shader pipeline, so nothing here can be checked.
     Unsupported,
 }
 
-/// One field of the uniform block, as the hint column lists it: what to
-/// type, its WGSL type, and the one-line meaning.
 struct Uniform {
     insert: &'static str,
     kind: &'static str,
     blurb: &'static str,
 }
 
-/// The uniform block, in declaration order. The meanings of the `meta`
-/// floats are rox's convention (see `meta_slots` in the surface module),
-/// spelled out here because the block itself only calls them user_meta.
+/// The `meta` meanings are rox's convention (see `meta_slots` in the surface
+/// module); the block only calls them user_meta.
 const UNIFORMS: &[Uniform] = &[
     Uniform {
         insert: "params.time",
@@ -183,7 +145,6 @@ const UNIFORMS: &[Uniform] = &[
     },
 ];
 
-/// The textures a screen pass can sample, with the call that reads them.
 const TEXTURES: &[Uniform] = &[
     Uniform {
         insert: "textureSample(screen, samp, uv)",
@@ -200,23 +161,15 @@ const TEXTURES: &[Uniform] = &[
 struct ShaderEditor {
     target: ShaderEditTarget,
     input: Entity<InputState>,
-    /// The text the surface holds, what Revert goes back to and what a
-    /// clean buffer is compared against.
+    /// What Revert restores and a clean buffer is compared against.
     applied: String,
     check: Check,
-    /// Bumped on every edit; the check scheduled for an edit runs only if
-    /// nothing has moved since.
     check_gen: u64,
-    /// Whether the user has vouched for what's in the buffer, which an
-    /// edit is: an unapproved source opens here without being run, and
-    /// touching it is the same act as picking a file.
+    /// An edit vouches for the text, the same act as picking a file.
     vouched: bool,
-    /// Whether this window's renderer turned a registration down for
-    /// having no shader pipeline. Sticky, because only a registration can
-    /// find that out and the checks after it don't register.
+    /// Sticky: only a registration finds this out, and later checks don't
+    /// register.
     no_pipeline: bool,
-    /// A file that didn't take the last apply's write, shown beside the
-    /// status. The surface took the text regardless.
     warning: Option<SharedString>,
     hub: Arc<SignalHub>,
     now_art: Entity<NowPlayingArt>,
@@ -241,22 +194,17 @@ impl ShaderEditor {
         });
         window.focus(&input.read(cx).focus_handle(cx));
         let mut subscriptions = vec![
-            // Every edit schedules a check; the one that runs is the one
-            // nothing followed within the pause.
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    // An edit is the user vouching for the text, the same
-                    // act as picking a file, so a source that opened
-                    // pending starts being checked from the first
-                    // keystroke.
+                    // A source that opened pending starts being checked from
+                    // the first keystroke.
                     this.vouched = true;
                     this.check_soon(window, cx);
                 }
             }),
             cx.observe(&state.now_art, |_, _, cx| cx.notify()),
-            // The meters in the hint column move with the music, and this
-            // window pumps its own frames, so the player's tick wakes it
-            // the way it wakes the signals window.
+            // The meters move with the music, and this window pumps its own
+            // frames.
             cx.observe(&state.player, |_, _, cx| cx.notify()),
         ];
         subscriptions.shrink_to_fit();
@@ -277,11 +225,8 @@ impl ShaderEditor {
             backdrop: WindowBackdrop::default(),
             _subscriptions: subscriptions,
         };
-        // What the surface runs gets its verdict up front, so a shader
-        // that's already broken says so before the first keystroke. An
-        // unapproved source gets none: the check compiles it, and
-        // compiling somebody else's WGSL because a window opened over it
-        // is the thing the approval gate exists to stop.
+        // An unapproved source gets no upfront verdict: checking compiles it,
+        // which is what the approval gate exists to stop.
         if surface::approved(&this.target.source) {
             this.check(true, window, cx);
         } else {
@@ -294,15 +239,11 @@ impl ShaderEditor {
         self.input.read(cx).value().to_string()
     }
 
-    /// Whether the buffer differs from what the surface holds. Trimmed,
-    /// the way the approval hash reads it, so a trailing newline isn't an
-    /// edit.
+    /// Trimmed like the approval hash, so a trailing newline isn't an edit.
     fn dirty(&self, cx: &App) -> bool {
         self.text(cx).trim() != self.applied.trim()
     }
 
-    /// Check the buffer once typing pauses. Each edit moves the generation
-    /// on, and only the timer that still matches it runs.
     fn check_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.check_gen = self.check_gen.wrapping_add(1);
         let generation = self.check_gen;
@@ -318,17 +259,9 @@ impl ShaderEditor {
         .detach();
     }
 
-    /// Put a verdict on the buffer. Both routes split the chain and
-    /// resolve the images the same way, so they agree on everything a
-    /// text can get wrong.
-    ///
-    /// `register` compiles it into this window, which is what an apply
-    /// wants: it's the surface's own path, so what passes here runs there,
-    /// and the pipeline it leaves behind is this window's and goes with
-    /// it. The debounced check validates instead. Registration is keyed by
-    /// content and never evicts, so checking that way would leave a
-    /// compiled pipeline per pause in typing, which is a lot of pipelines
-    /// for a status line.
+    /// `register` compiles into this window, the surface's own path, for apply.
+    /// The debounced check validates instead: registration never evicts, so it
+    /// would leave a pipeline per pause.
     fn check(&mut self, register: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
         // Nothing has vouched for this text, so nothing compiles it.
@@ -340,8 +273,8 @@ impl ShaderEditor {
         self.check = if text.trim().is_empty() {
             Check::Unchecked
         } else if self.no_pipeline {
-            // Already asked and answered. Validation can't reach that
-            // verdict: it lives in the window's renderer, not in the WGSL.
+            // Validation can't reach this verdict: it lives in the renderer,
+            // not the WGSL.
             Check::Unsupported
         } else {
             let checked = if register {
@@ -361,10 +294,8 @@ impl ShaderEditor {
         cx.notify();
     }
 
-    /// Put the buffer into the surface. A broken buffer applies too: the
-    /// surface keeps painting its last good registration and shows the
-    /// message in its own readout, the same as a save from an external
-    /// editor mid-edit, so the window never has to refuse.
+    /// A broken buffer applies too: the surface keeps its last good
+    /// registration and shows the error itself.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
         if text.trim().is_empty() {
@@ -372,15 +303,12 @@ impl ShaderEditor {
         }
         self.warning = self.target.apply(text.clone(), cx).map(Into::into);
         self.applied = text;
-        // The verdict on what was just applied, without waiting for the
-        // pause: the status line should describe what the surface got, so
-        // this is the one check that registers.
+        // The one check that registers, so the status describes what the
+        // surface got.
         self.vouched = true;
         self.check(true, window, cx);
     }
 
-    /// Put the last applied text back in the buffer. The input reports
-    /// the change, which schedules the check.
     fn revert(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let applied = self.applied.clone();
         self.input.update(cx, |input, cx| {
@@ -390,7 +318,6 @@ impl ShaderEditor {
         cx.notify();
     }
 
-    /// Drop a hint into the buffer at the cursor and hand focus back to it.
     fn insert(
         &mut self,
         text: impl Into<SharedString>,
@@ -404,8 +331,6 @@ impl ShaderEditor {
         window.focus(&self.input.read(cx).focus_handle(cx));
     }
 
-    /// One row of the hint column: a name in the code face over its
-    /// meaning, inserting `insert` on click.
     fn hint_row(
         &self,
         id: SharedString,
@@ -450,10 +375,6 @@ impl ShaderEditor {
             .children(blurb.map(|blurb| div().text_color(palette::text_muted()).child(blurb)))
     }
 
-    /// The hint column: the uniform block, the textures a screen pass can
-    /// read, the sixteen slots under the names the buffer gives them, and
-    /// the signal pool with its meters. Everything here is known at edit
-    /// time and nothing on disk could tell the author.
     fn hints(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let text = self.text(cx);
         let labels = surface::slot_labels(&text);
@@ -486,9 +407,7 @@ impl ShaderEditor {
                 )
             }));
 
-        // Each slot reads as one lane of a vec4, which is the expression
-        // that lands in the buffer; the row shows the name the source gave
-        // the slot, or its number.
+        // Each slot is one lane of a vec4.
         let slots = div()
             .flex()
             .flex_col()
@@ -509,10 +428,8 @@ impl ShaderEditor {
                 )
             }));
 
-        // A signal reaches a shader through a slot, so clicking one
-        // declares it on the first slot the source hasn't named yet: the
-        // `@slot` line the Bindings page reads, which is the half of the
-        // hookup a file can't do. The route itself is still made there.
+        // Clicking a signal declares it on the first unnamed slot with an
+        // `@slot` line; the route itself is made on the Bindings page.
         let pool = self.hub.pool();
         let next_free = labels.iter().position(Option::is_none);
         let signals = if pool.is_empty() {
@@ -572,8 +489,6 @@ impl ShaderEditor {
             ))
     }
 
-    /// The status line: what the last check said, and a file that didn't
-    /// take the last write.
     fn status(&self) -> Div {
         let line =
             |tone: gpui::Rgba, text: SharedString| div().text_xs().text_color(tone).child(text);
@@ -582,8 +497,7 @@ impl ShaderEditor {
                 palette::text_muted(),
                 rox_i18n::t!("shader-editor-status-unchecked"),
             ),
-            // The panel's own wording for a source waiting on a read,
-            // since it's the same source in the same state.
+            // The panel's own wording for the same state.
             Check::Pending => div()
                 .flex()
                 .flex_col()
@@ -610,8 +524,7 @@ impl ShaderEditor {
                     palette::text_muted(),
                     surface::NO_PIPELINE_NOTE.into(),
                 )),
-            // naga's lines stay lines and stay left: the caret under the
-            // span points at a column.
+            // naga's lines stay left-aligned: the caret points at a column.
             Check::Err(error) => div()
                 .flex()
                 .flex_col()
@@ -640,8 +553,6 @@ impl ShaderEditor {
             )
     }
 
-    /// The window's own actions: the status on the left, Apply, Revert
-    /// and Close on the right with the apply chord spelled out.
     fn footer(&self, dirty: bool, cx: &mut Context<Self>) -> Div {
         let hint = kbd_line([
             Seg::Text(rox_i18n::t!("shader-editor-hint-press")),
@@ -690,7 +601,6 @@ impl ShaderEditor {
             )
     }
 
-    /// The header: which surface this is over, and where its text lives.
     fn header(&self) -> Div {
         let origin: SharedString = match (&self.target.key, &self.target.path) {
             (EditKey::Pool(_), Some(path)) => {
@@ -739,14 +649,13 @@ impl Render for ShaderEditor {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // SearchInput scopes the workspace's playback bindings out
-            // while the input is focused; ShaderEditor scopes the apply in.
+            // SearchInput scopes playback bindings out; ShaderEditor scopes the
+            // apply in.
             .key_context("SearchInput ShaderEditor")
             .on_action(cx.listener(|this, _: &Apply, window, cx| this.apply(window, cx)))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                // Escape closes a clean window. A dirty one stays: the
-                // text isn't anywhere else yet, and a key that throws it
-                // away is the wrong key to have next to the buffer.
+                // Escape only closes a clean window: a dirty buffer isn't saved
+                // anywhere yet.
                 if event.keystroke.key != "escape" || this.dirty(cx) {
                     return;
                 }
@@ -771,9 +680,8 @@ impl Render for ShaderEditor {
                             .flex_row()
                             .gap(tokens::SPACE_MD)
                             .child(
-                                // The input frames itself transparent, so
-                                // the buffer gets its own card to read as a
-                                // surface, the lyrics editor's idiom.
+                                // The input frames itself transparent, so the buffer gets
+                                // its own card.
                                 div()
                                     .flex_1()
                                     .min_w_0()

@@ -1,8 +1,6 @@
-//! The spacer panel: nothing but the space it holds. Drop one into a row or
-//! a split to push the panels around it apart, or to leave a deliberate gap.
-//! It draws no content and takes no input, so whatever is behind it in the
-//! window shows through. All it has is the shared chrome, so it can be
-//! renamed, themed, and locked like any other panel.
+//! The spacer panel: nothing but the space it holds, to push the panels
+//! around it apart or leave a deliberate gap. It draws no content, so
+//! whatever is behind it shows through.
 
 use gpui::{
     App, Context, Div, EventEmitter, FocusHandle, Focusable, Pixels, WeakEntity, Window, div,
@@ -15,11 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 
-/// The spacer panel's per-view config: what a saved layout restores. Just the
-/// shared chrome, since a spacer has no knobs of its own beyond appearance.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SpacerConfig {
-    /// The rename, theme override, and placement locks shared by every panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
 }
@@ -28,7 +23,6 @@ pub struct SpacerPanel {
     state: AppState,
     config: SpacerConfig,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
 
@@ -43,8 +37,7 @@ impl SpacerPanel {
     }
 
     fn body(&self) -> Div {
-        // No background: the window behind shows through, so the spacer reads
-        // as a gap rather than a filled pane.
+        // No background, so the window behind shows through.
         div().size_full()
     }
 }
@@ -72,9 +65,6 @@ impl PanelSettings for SpacerPanel {
 impl Render for SpacerPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body().track_focus(&focus))
     }
@@ -118,10 +108,8 @@ impl Panel for SpacerPanel {
         false
     }
 
-    /// The floor is zero: the spacer is nothing but the space it holds, so
-    /// a shrinking window may squeeze it away entirely before its neighbors
-    /// give anything up. The chrome's own minimums still raise it where a
-    /// layout needs a guaranteed gap.
+    /// A zero floor, so a shrinking window squeezes the spacer away before
+    /// its neighbors.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         crate::panel::chrome_min_size(&self.config.chrome, gpui::size(gpui::px(0.), gpui::px(0.)))
     }
@@ -130,8 +118,6 @@ impl Panel for SpacerPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered in
-    /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(

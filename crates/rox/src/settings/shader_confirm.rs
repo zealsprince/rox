@@ -1,16 +1,11 @@
-//! The screen shader confirm: one small OS window opened after a risky
-//! apply from the Shader settings page (the enable toggle, a file pick), the
-//! display-settings pattern. Keep locks the change in; Revert or closing
-//! the window restores the state from before the apply and persists it.
-//! There's no countdown: a timer that reverts on its own is easy to miss,
-//! and then the shader is off with nothing saying why. The window just
-//! stays until it's answered, and since it's never shaded it remains the
-//! way back however bad the shader looks. Hot reloads and the toggle hotkey
-//! never come through here: the reload is the authoring loop, and the
-//! hotkey is the escape hatch. The window registers itself with the
-//! workspace's shading machinery so it's never shaded, whatever the
-//! all-windows option says: it has to stay readable under exactly the
-//! shader it exists to undo.
+//! The screen shader confirm: a small window opened after a risky apply from
+//! the Shader settings page. Keep locks the change in; Revert or closing the
+//! window restores the state from before the apply.
+//!
+//! No countdown: a timer that reverts on its own is easy to miss. Hot reloads
+//! and the toggle hotkey never come through here. The window is never shaded,
+//! whatever the all-windows option says, so it stays readable under the shader
+//! it exists to undo.
 
 use gpui::{
     App, Bounds, Context, Entity, EntityId, FocusHandle, Global, KeyBinding, Subscription,
@@ -25,22 +20,15 @@ use rox_panel_api::panel;
 use rox_panel_kit::ui::{Seg, chord, kbd_line, small_button};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
-/// The caller's after-revert refresh, boxed for the entity to hold.
 type OnReverted = Box<dyn FnOnce(&mut App)>;
 
-/// The open confirm, if any: a second risky apply reuses it, keeping the
-/// first dialog's prior as the baseline, so a run of quick changes still
-/// reverts to the last state the user actually confirmed. Weak, or the
-/// global itself would keep the entity from ever releasing.
+/// A second risky apply reuses the open confirm, keeping the first prior as the
+/// baseline. Weak, or the global would keep the entity alive.
 #[derive(Default)]
 struct OpenConfirm(Option<(WindowHandle<Root>, WeakEntity<ShaderConfirm>)>);
 
 impl Global for OpenConfirm {}
 
-/// Open the confirm for a change whose pre-apply state was `prior`, or
-/// bring the open one forward. `now_art` is the shared art bake this
-/// window's backdrop paints from. `on_reverted` runs after a revert so the
-/// caller can refresh its own copies of the reverted fields.
 pub fn open(
     prior: PostShaderConfig,
     player: EntityId,
@@ -73,13 +61,11 @@ pub fn open(
         )
     };
     let entity = view.borrow_mut().take().expect("build ran synchronously");
-    // Registered before any shading sweep can run, and torn down with the
-    // entity below.
+    // Registered before any shading sweep can run.
     crate::workspace::note_confirm_window(Some(handle.into()), cx);
     cx.default_global::<OpenConfirm>().0 = Some((handle, entity.downgrade()));
-    // Every close ends up here: Keep and Revert close the window, the OS
-    // close button too. Only Keep marks the entity, everything else is a
-    // revert, so a dismissed dialog fails safe.
+    // Every close ends up here. Only Keep marks the entity, so a dismissed
+    // dialog fails safe.
     cx.observe_release(&entity, |confirm, cx| {
         crate::workspace::note_confirm_window(None, cx);
         cx.default_global::<OpenConfirm>().0 = None;
@@ -90,9 +76,8 @@ pub fn open(
         Settings::update(move |s| {
             s.post_shader.enabled = prior.enabled;
             s.post_shader.path = prior.path.clone();
-            // The source and the pool name come back too, or a workspace
-            // apply's revert would put the old switch over the new look's
-            // shader and run the very thing it was reverting.
+            // Source and pool name come back too, or a workspace apply's revert
+            // would run the new look's shader under the old switch.
             s.post_shader.source = prior.source.clone();
             s.post_shader.name = prior.name.clone();
         });
@@ -104,42 +89,29 @@ pub fn open(
     .detach();
 }
 
-/// The window's own key context, so Enter keeps and Escape reverts.
 const CONTEXT: &str = "ShaderConfirm";
 
 actions!(shader_confirm, [Keep, Revert]);
 
-/// Bind the confirm's two answers; call once at startup.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("enter", Keep, Some(CONTEXT)),
         KeyBinding::new("escape", Revert, Some(CONTEXT)),
-    ]);
+    ]
 }
 
 struct ShaderConfirm {
-    /// The config from before the apply, what a revert restores: the enable
-    /// switch and the three ways a source gets picked (the file, the inline
-    /// copy, the pool name). The all-windows option and the routes are part
-    /// of the snapshot but never written back, so a route dragged while the
-    /// window is open persists across a revert.
+    /// A revert restores the switch and the source trio. The all-windows
+    /// option, routes and hand-set slots are never written back, so a route
+    /// dragged meanwhile survives.
     prior: PostShaderConfig,
-    /// The front workspace's player, for the window tint.
     player: EntityId,
-    /// The shared art bake and this window's slice of the backdrop, so it's
-    /// backed by the playing track's art like every other window.
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
-    /// Set by Keep alone. The release hook reads it to tell a confirmed
-    /// close from every other way the window can go away.
+    /// Set by Keep alone; the release hook reads it.
     kept: bool,
-    /// The window's keyboard home, taken on open so Enter and Escape land
-    /// on the two buttons. Nothing else in here is focusable.
     focus: FocusHandle,
-    /// The caller's after-revert refresh, taken by the release hook.
     on_reverted: Option<OnReverted>,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
     _backdrop_changed: Subscription,
 }
 
@@ -164,8 +136,7 @@ impl ShaderConfirm {
         }
     }
 
-    /// Close the window; the release hook decides what the close means.
-    /// Deferred, since the buttons run inside this window's own update.
+    /// Deferred: the buttons run inside this window's own update.
     fn close(&mut self, cx: &mut Context<Self>) {
         if let Some((handle, _)) = cx.default_global::<OpenConfirm>().0.clone() {
             cx.defer(move |cx| {
@@ -179,11 +150,8 @@ impl ShaderConfirm {
 
 impl Render for ShaderConfirm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Tinted and focus-claimed like every other child window.
         let player = self.player;
         palette::note_focus(player, window.is_window_active(), cx);
-        // The window is one question with two answers, so it holds the
-        // keyboard: Enter keeps, Escape reverts.
         window.focus(&self.focus);
         panel::window_body(player, || {
             div()
@@ -203,9 +171,6 @@ impl Render for ShaderConfirm {
                 .when_some(rox_core::settings::app_font(), |d, font| {
                     d.font_family(font)
                 })
-                // The backdrop paints first, under the copy, so a thinned
-                // surface is backed by the playing track's art like every
-                // other window rather than sinking into black.
                 .children(self.backdrop.layer(&self.now_art, window, cx))
                 .child(
                     div()

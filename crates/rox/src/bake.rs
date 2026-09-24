@@ -1,22 +1,10 @@
-//! Embedding stored metadata: the run behind [`crate::bake_dialog`].
+//! Embedding stored metadata: the survey and the run behind
+//! [`crate::bake_dialog`], around [`rox_library::bake`]. Same shape and pool
+//! as [`crate::convert`]: every write is a whole-file clone-verify-rename, so
+//! this is disk-bound and going wide only slows it.
 //!
-//! [`rox_library::bake`] defines what a bake is; this is the machinery around
-//! it. Two blocking halves, both on the background executor: the survey, which
-//! is a database read and then a tag read per candidate, and the run, which is
-//! a commit per file.
-//!
-//! The run copies [`crate::convert`]'s shape (an app-global `Arc<Progress>`
-//! the tasks window polls, a summary and a first-failure line that outlive it
-//! for the row that reports on them) because it's the same kind of job: short,
-//! started from a dialog that closes on the press, and worth saying something
-//! about afterwards. The pool is convert's too, and for a related reason:
-//! nothing here decodes, but every write is a clone-verify-rename of a whole
-//! file, so this is disk rather than CPU and going wide on a spinning disk
-//! makes it slower rather than faster.
-//!
-//! Nothing is computed anywhere in here. Every value written was already in
-//! the database, the lyrics store or a sidecar, which makes the whole thing
-//! safe to run twice: the second pass finds the tags there and skips.
+//! Nothing is computed here. Every value was already in the database, the
+//! lyrics store, or a sidecar, so a second run finds the tags and skips.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -28,11 +16,9 @@ use rox_library::bake::{self, Candidate, Item};
 use rox_library::store;
 use rox_services::catalog::Library;
 
-/// The most files worked on at once. Convert's ceiling, since a tag commit is
-/// a whole-file copy and four of those already saturate a disk.
+/// A tag commit is a whole-file copy; four already saturate a disk.
 const MAX_WORKERS: usize = 4;
 
-/// Half the cores, capped, and never more than there is work for.
 fn workers(len: usize) -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get() / 2)
@@ -41,8 +27,6 @@ fn workers(len: usize) -> usize {
         .min(len.max(1))
 }
 
-/// How far along the survey is, for a dialog that would otherwise stay blank
-/// while a described library's tags are read.
 #[derive(Default)]
 pub struct Survey {
     done: AtomicUsize,
@@ -51,18 +35,15 @@ pub struct Survey {
 }
 
 impl Survey {
-    /// Candidates whose files have been looked at.
     pub fn done(&self) -> usize {
         self.done.load(Ordering::Relaxed)
     }
 
-    /// Candidates there are to look at. Zero while the database half is still
-    /// running, which a big library is in for a moment.
+    /// Zero while the database half is still running.
     pub fn total(&self) -> usize {
         self.total.load(Ordering::Relaxed)
     }
 
-    /// Give up: the dialog closed and nobody is waiting for the result.
     pub fn abandon(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -72,13 +53,8 @@ impl Survey {
     }
 }
 
-/// Everything a bake could write, refusals and all. Blocking and potentially
-/// long: the tag reads are one file open each, so this runs on the background
-/// executor with `progress` shared out to whatever is drawing it.
-///
-/// A cancelled survey comes back with what it had, which the caller throws
-/// away: the counts would be wrong, and the only cancel is the dialog
-/// closing.
+/// Everything a bake could write, refusals included. Blocking: one file open
+/// per candidate. A cancelled survey returns partial counts to be discarded.
 pub fn survey(
     db_path: &Path,
     model: &str,
@@ -90,12 +66,8 @@ pub fn survey(
     drop(conn);
     progress.total.store(found.len(), Ordering::Relaxed);
 
-    // Only the ones nothing has refused yet cost a file open, so a library
-    // full of formats the writer can't handle surveys almost instantly.
-    //
-    // A mutex per candidate rather than one over the list: every worker takes
-    // its own index off the cursor, so no two ever touch the same slot and
-    // the locks are the price of handing `&mut` across a scope at all.
+    // A mutex per candidate: each worker takes its own index off the cursor, so
+    // the locks only exist to hand `&mut` across the scope.
     {
         let cursor = AtomicUsize::new(0);
         let slots: Vec<Mutex<&mut Candidate>> = found.iter_mut().map(Mutex::new).collect();
@@ -120,19 +92,13 @@ pub fn survey(
     Ok(found)
 }
 
-/// Live progress of a run: a worker writes it per file, the tasks window
-/// polls it.
 #[derive(Default)]
 pub struct Progress {
     done: AtomicUsize,
     total: AtomicUsize,
-    /// Files that took their tags.
     wrote: AtomicUsize,
-    /// Files nothing was written for. Seeded with what the survey refused
-    /// before the run began; nothing is added here, since every item that
-    /// became work has something to write.
+    /// Seeded with the survey's refusals; the run itself never adds to it.
     skipped: AtomicUsize,
-    /// Files the writer couldn't commit.
     failed: AtomicUsize,
     current: Mutex<String>,
     cancel: AtomicBool,
@@ -169,7 +135,6 @@ impl Progress {
     }
 }
 
-/// What a run left behind, for the row that reports on it afterwards.
 #[derive(Clone)]
 pub struct Summary {
     pub updated: usize,
@@ -179,9 +144,7 @@ pub struct Summary {
 }
 
 impl Summary {
-    /// The one-line report. All three numbers, zeros included: the skips are
-    /// most of what someone wants to know afterwards, and "0 failed" is the
-    /// answer to the question a count of updates raises.
+    /// All three numbers, zeros included: the skips are what people want to know.
     pub fn line(&self) -> String {
         let files = rox_i18n::t!("bake-summary-files", count = self.updated).to_string();
         let mut line = if self.stopped {
@@ -196,63 +159,49 @@ impl Summary {
     }
 }
 
-/// The running bake, or nothing. App-global so it outlives the dialog that
-/// started it.
+/// App-global so it outlives the dialog that started it.
 #[derive(Default)]
 struct Running(Option<Arc<Progress>>);
 
 impl Global for Running {}
 
-/// The last run's report, kept for the tasks window until it's dismissed.
 #[derive(Default)]
 struct Last(Option<Summary>);
 
 impl Global for Last {}
 
-/// Why the first file that failed did, kept beside the summary: a count with
-/// no reason just sends someone to the log.
 #[derive(Default)]
 struct LastFailure(Option<String>);
 
 impl Global for LastFailure {}
 
-/// The running bake's progress, for any UI that shows it.
 pub fn progress(cx: &App) -> Option<Arc<Progress>> {
     cx.try_global::<Running>().and_then(|r| r.0.clone())
 }
 
-/// How the last run went. None until one has run this session, and None again
-/// once its row has been dismissed.
 pub fn last(cx: &App) -> Option<Summary> {
     cx.try_global::<Last>().and_then(|l| l.0.clone())
 }
 
-/// The writer's error for the last file that failed, if one did.
 pub fn last_failure(cx: &App) -> Option<String> {
     cx.try_global::<LastFailure>().and_then(|f| f.0.clone())
 }
 
-/// Drop the last run's report, the X on its row.
 pub fn dismiss(cx: &mut App) {
     cx.set_global(Last(None));
     cx.set_global(LastFailure(None));
 }
 
-/// Signal the running bake to stop after the file it's on. What it already
-/// wrote stays: every write puts one file's tags into that one file, so
-/// there's nothing half-done to undo.
+/// Stops after the current file. Each write is one file, so nothing is half done.
 pub fn stop(cx: &mut App) {
     if let Some(progress) = progress(cx) {
         progress.cancel.store(true, Ordering::Relaxed);
     }
 }
 
-/// Write `items`, and hand every file that took a write to the library so the
-/// watcher doesn't bounce it back as an outside edit.
-///
-/// `skipped` is what the survey refused for the picked sources, passed
-/// through so the finished line can account for every file the dialog counted.
-/// A no-op while a run is already going.
+/// Write `items`, then claim the written files so the watcher doesn't bounce
+/// them back as outside edits. `skipped` is the survey's refusals, carried
+/// through to the finished line.
 pub fn start(library: Entity<Library>, items: Vec<Item>, skipped: usize, cx: &mut App) {
     if progress(cx).is_some() || items.is_empty() {
         return;
@@ -261,19 +210,12 @@ pub fn start(library: Entity<Library>, items: Vec<Item>, skipped: usize, cx: &mu
     progress.total.store(items.len(), Ordering::Relaxed);
     progress.skipped.store(skipped, Ordering::Relaxed);
     cx.set_global(Running(Some(progress.clone())));
-    // A fresh run's report replaces the last one rather than appearing
-    // under it, so the row never shows an old count beside a live bar.
     cx.set_global(Last(None));
     cx.set_global(LastFailure(None));
-    // Nothing observes an app-global job on its own; this keeps the tasks
-    // window and the menubar chip ticking while it runs.
+    // Nothing observes an app-global job on its own.
     crate::tasks_window::repaint_while_running(cx);
-    // The run outlives the dialog, which closes on the press, so hand over
-    // something that shows the count and the stop button.
     crate::tasks_window::open(cx);
-    // Quitting mid-run shouldn't leave a commit half done. The flag the stop
-    // button raises goes up on the way out too; a worker is between files
-    // within one file's write.
+    // Quit raises the stop flag so a commit isn't cut off mid-file.
     cx.on_app_quit({
         let progress = progress.clone();
         move |_| {
@@ -302,9 +244,6 @@ pub fn start(library: Entity<Library>, items: Vec<Item>, skipped: usize, cx: &mu
                 log::warn!("bake: {failure}");
                 cx.set_global(LastFailure(Some(failure)));
             }
-            // Every path that changed on disk, so the watcher drops its own
-            // event and the rows pick the new tags up. The same handoff the
-            // ReplayGain and acoustic passes end on.
             library.update(cx, |library, cx| library.reindex_written(written, cx));
         })
         .ok();
@@ -312,9 +251,7 @@ pub fn start(library: Entity<Library>, items: Vec<Item>, skipped: usize, cx: &mu
     .detach();
 }
 
-/// The blocking half: a bounded pool over a cursor, convert's shape. Returns
-/// the files that changed and the first failure's reason, since a row can
-/// only show one and they're usually all the same reason.
+/// Returns the changed files and the first failure; they're usually all the same.
 fn run(items: &[Item], progress: &Progress) -> (Vec<PathBuf>, Option<String>) {
     progress.pace.begin();
     let cursor = AtomicUsize::new(0);
@@ -337,9 +274,6 @@ fn run(items: &[Item], progress: &Progress) -> (Vec<PathBuf>, Option<String>) {
                             written.lock().unwrap().push(item.path.clone());
                             progress.wrote.fetch_add(1, Ordering::Relaxed);
                         }
-                        // One file that won't take a tag costs its own tags and
-                        // nothing else: the values are still in the database, and
-                        // the next file is unaffected.
                         Err(e) => {
                             log::warn!("bake: {}: {e}", item.path.display());
                             progress.failed.fetch_add(1, Ordering::Relaxed);
@@ -361,9 +295,6 @@ fn run(items: &[Item], progress: &Progress) -> (Vec<PathBuf>, Option<String>) {
 mod tests {
     use super::*;
 
-    /// The report reads as a sentence whichever way the run went, and never
-    /// leaves a number out: the skips are the interesting half, and they're
-    /// the ones a count of updates would otherwise hide.
     #[test]
     fn the_finished_line_accounts_for_every_file() {
         assert_eq!(
@@ -388,8 +319,6 @@ mod tests {
         );
     }
 
-    /// A modest pool: this is disk rather than CPU, and a machine with
-    /// thirty-two cores must not point all of them at one drive.
     #[test]
     fn the_pool_stays_small_and_never_outgrows_the_work() {
         assert!(workers(1000) <= MAX_WORKERS);

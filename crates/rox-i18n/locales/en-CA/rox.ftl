@@ -5,7 +5,7 @@
 
 ## Shared widgets
 
-# The tracking section in every scrolling panel's customize window.
+# The tracking section in every scrolling panel's panel settings window.
 # What each toggle follows is worded by the panel itself and passed in.
 tracking-title = Tracking
 tracking-follow = Follow Playing
@@ -782,11 +782,11 @@ settings-appearance-milkdrop-strength = Strength
 settings-appearance-border = Border
     .description = A line around every panel's edge, in the Border role's color; a side at zero draws none
 settings-appearance-chrome-side = Window Button Side
-    .description = Which end of rox's own titlebar the buttons sit at; only drawn where the compositor refuses to decorate the window
+    .description = Which end of rox's own titlebar the buttons sit at; drawn where the compositor refuses to decorate a window, and on bare child windows
 settings-appearance-chrome-side-left = Left
 settings-appearance-chrome-side-right = Right
 settings-appearance-chrome-style = Window Button Style
-    .description = How the buttons on rox's own titlebar draw; only drawn where the compositor refuses to decorate the window
+    .description = How the buttons on rox's own titlebar draw; drawn where the compositor refuses to decorate a window, and on bare child windows
 settings-appearance-cjk-fonts-note = Japanese, Chinese and Korean text in your library tries every installed font in turn. That slows scrolling and draws the text in a stand-in face. Install the static Noto Sans CJK fonts: noto-fonts-cjk-sans-static on NixOS, google-noto-sans-cjk-fonts on Fedora, noto-fonts-cjk on Arch, fonts-noto-cjk on Debian.
 settings-appearance-cjk-fonts-title = No regular-weight CJK font found
 settings-appearance-colors-locked-note = Song theming is on, so the playing track drives these colors and export saves them. Turn it off above to edit them
@@ -808,6 +808,10 @@ settings-appearance-margin = Margin
     .description = Pull every panel in from its cell; a panel can override this in its own settings
 settings-appearance-os-decorations = OS Decorations
     .description = The OS titlebar and borders on the main windows; off relies on the window controls and drag anchor panels
+settings-appearance-bare-child-windows = Bare Child Windows
+    .description = With OS Decorations off, settings, editors and popped-out panels drop the OS frame too and draw rox's own titlebar; Resize Border applies to them as well
+settings-appearance-child-titlebar = Child Window Titlebar
+    .description = The titlebar rox draws on bare child windows; off leaves them with no chrome at all, and the Close Window shortcut closes them
 settings-appearance-padding = Padding
     .description = Space inside every panel's edge, kept in its own background
 settings-appearance-palette-export = Export
@@ -1096,11 +1100,17 @@ settings-library-add-subsonic = Subsonic Server...
 settings-library-col-source = Source
 settings-library-duplicates = Duplicates...
 settings-library-embed-button = Embed Stored Metadata...
+settings-library-exclude-col = Excluded
+settings-library-exclude-intro = Files and folders the library leaves out of every source above. A name like *.tmp matches anywhere, and a path like Live/** starts at the top of each folder. Case doesn't matter, and a matching folder is skipped whole. The files themselves are left alone
+settings-library-exclude-invalid = Can't read that pattern: { $reason }
+settings-library-exclude-none = Nothing excluded
+settings-library-exclude-nudge = Patterns changed: the watcher follows right away. Tracks already in the library stay until you hit Rescan up in the Sources header
+settings-library-exclude-placeholder = *.tmp or Live/**
 settings-library-folder-col-albums = Albums
 settings-library-folder-col-size = Size
 settings-library-folder-col-tracks = Tracks
 settings-library-folders-intro = Folders and servers the library is read from; removing one drops its tracks from the catalog, and a folder's files are left alone
-settings-library-genre-separator-nudge = Separators changed: browsing follows right away. Genre lists stored by earlier scans keep their old shape until you hit Rescan up in the Folders header
+settings-library-genre-separator-nudge = Separators changed: browsing follows right away. Genre lists stored by earlier scans keep their old shape until you hit Rescan up in the Sources header
 settings-library-merge-case = Merge case variants
     .description = Treat values differing only by case as one: Rock and rock become the same genre, artist, and album, shown under the casing most tracks use. Files keep their tags as written
 settings-library-no-sources = No sources yet

@@ -1,42 +1,30 @@
-//! The self-updater: the download half of the update story, where
-//! [`updates`](crate::startup::updates) is the check half. Given a newer
-//! release it resolves this platform's artifact, downloads it with a
-//! checksum verify against the release's SHA256SUMS.txt, stages the new
-//! build next to the running one, and swaps it into place: rename-over on
-//! Linux, the rename-aside dance on Windows where a running exe can't be
-//! replaced, and a bundle swap on macOS. The swap takes effect on disk at
-//! once; the running process keeps its old build until a restart, which is
-//! what the About page's restart prompt is for.
+//! The self-updater, the download half of the update story
+//! ([`updates`](crate::startup::updates) is the check half). It resolves this
+//! platform's artifact, verifies it against the release's SHA256SUMS.txt,
+//! stages it beside the running build, and swaps it in: rename-over on Linux,
+//! rename-aside on Windows where a running exe can't be replaced, a bundle
+//! swap on macOS. The running process keeps its old build until a restart.
 //!
 //! ## What can update
 //!
-//! Only an install that owns its own folder: the write probe in
-//! [`can_update`] is the gate, so a distro package in /usr/bin, a nix store
-//! path, or any other read-only home stays notify-only. A portable install
-//! passes the probe by construction (portable requires a writable folder)
-//! and updates in place beside its data. Platforms the release workflow
-//! doesn't build for resolve no artifact and stay notify-only too.
+//! Only an install that owns its folder: the write probe in [`can_update`]
+//! is the gate, so a distro package, a nix store path, or any other
+//! read-only home stays notify-only, as does a platform the release workflow
+//! doesn't build for.
 //!
 //! ## The AppImage
 //!
-//! An AppImage is one file that mounts itself to run, so `current_exe()`
-//! is a squashfs path under /tmp, read-only and gone on exit. The target
-//! is the .AppImage the launcher named in `$APPIMAGE`, never the mount,
-//! and the artifact is already the whole build with rox-mcp inside: it
-//! copies beside the file and takes the same rename-over the tarball's
-//! binary does, one file instead of two. The restart can't go through
-//! gpui's, which would re-run the mount of the build just replaced;
-//! [`relaunch`] waits for this pid and execs the .AppImage instead.
+//! `current_exe()` is the read-only squashfs mount, so the target is the
+//! file `$APPIMAGE` names, never the mount. The restart can't go through
+//! gpui's, which would re-run the replaced mount; [`relaunch`] waits for
+//! this pid and execs the .AppImage instead.
 //!
 //! ## Why a failed download can't hurt
 //!
-//! Everything up to the swap happens in the OS temp dir, and the swap only
-//! runs after the checksum matches, so a failed or interrupted download
-//! leaves the install exactly as it was and a retry starts clean. Renames
-//! within the install folder are the only writes it ever takes, and the
-//! Windows dance rolls the first rename back if the second fails.
-//! [`clean_leftovers`] sweeps the temp dir and any rename-aside remains at
-//! the next launch.
+//! Everything before the swap happens in the OS temp dir, and the swap only
+//! runs after the checksum matches. The only writes in the install folder
+//! are renames, and the Windows dance rolls back if its second rename fails.
+//! [`clean_leftovers`] sweeps the remains at the next launch.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,9 +35,7 @@ use sha2::{Digest, Sha256};
 
 use crate::startup::updates::{self, Release};
 
-/// This build's artifact suffix, matching release.yml's matrix. None on a
-/// platform the workflow doesn't build, which leaves the check notify-only.
-/// [`platform`] is the read: an AppImage run swaps in its own suffix.
+/// Matches release.yml's matrix. None leaves the check notify-only.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PLATFORM: Option<&str> = Some("linux-x86_64.tar.gz");
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -63,15 +49,11 @@ const PLATFORM: Option<&str> = Some("windows-x86_64.zip");
 )))]
 const PLATFORM: Option<&str> = None;
 
-/// The artifact suffix this run installs: the AppImage when running out of
-/// one, the platform's archive otherwise.
 fn platform() -> Option<&'static str> {
     platform_for(rox_core::install::appimage())
 }
 
-/// The suffix over the AppImage answer rather than the process, so the
-/// tests can hand one in. Only the Linux x86_64 build ships as an AppImage,
-/// so only there does the answer change anything.
+/// Takes the AppImage answer as an argument so tests can hand one in.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn platform_for(appimage: Option<&Path>) -> Option<&'static str> {
     if appimage.is_some() {
@@ -86,22 +68,18 @@ fn platform_for(_appimage: Option<&Path>) -> Option<&'static str> {
     PLATFORM
 }
 
-/// The checksum manifest the release workflow publishes beside the
-/// artifacts, one `sha256sum` line per file.
 const SUMS: &str = "SHA256SUMS.txt";
 
-/// Where the archive downloads before anything touches the install.
 fn work_dir() -> PathBuf {
     std::env::temp_dir().join("rox-update")
 }
 
-/// The update as it moves along, one global slot: at most one download per
-/// run, and once a build is applied the only step left is a restart.
+/// One global slot: at most one download per run.
 #[derive(Clone)]
 pub enum Status {
     Idle,
     Downloading(Arc<Progress>),
-    /// The new build is on disk where the old one was; a restart runs it.
+    /// The new build is on disk; a restart runs it.
     Applied {
         version: String,
     },
@@ -112,15 +90,12 @@ pub enum Status {
 
 static STATE: Mutex<Status> = Mutex::new(Status::Idle);
 
-/// The updater's current state, for the About page's status line.
 pub fn status() -> Status {
     STATE.lock().unwrap().clone()
 }
 
-/// Live progress of the download: the worker writes it, the UI polls it.
-/// Shaped after `rox_acoustic::models::Progress` minus the cancel: a
-/// download this size finishing unwanted costs nothing, the swap is only
-/// ever wanted, and quitting kills the process anyway.
+/// No cancel, unlike the model downloader's: an unwanted download costs
+/// nothing and quitting kills it anyway.
 #[derive(Default)]
 pub struct Progress {
     done: AtomicU64,
@@ -128,7 +103,6 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// How far along, 0 to 1. Zero until the artifact's size is known.
     pub fn fraction(&self) -> f32 {
         let total = self.total.load(Ordering::Relaxed);
         if total == 0 {
@@ -138,20 +112,15 @@ impl Progress {
     }
 }
 
-/// Whether this install can replace itself: the platform has an artifact
-/// and the install's folder takes writes. Probed once per run: the answer
-/// is about where the executable lives, which doesn't move mid-run.
+/// Probed once per run: the executable's location doesn't move mid-run.
 pub fn can_update() -> bool {
     static CAN: OnceLock<bool> = OnceLock::new();
     *CAN.get_or_init(|| platform().is_some() && install_writable())
 }
 
-/// Restart into the build now on disk. Everywhere but an AppImage that's
-/// gpui's own restart. Under an AppImage, gpui would wait for this pid and
-/// then run `current_exe()`, the mount of the build just replaced, and
-/// its script pastes the path into bash unquoted, which breaks on the
-/// first folder with a space in its name. So the wait-then-exec is spawned
-/// here with the .AppImage as an argument, and this process quits.
+/// Under an AppImage, gpui's restart would run the replaced mount and paste
+/// the path into bash unquoted, which breaks on a space. So spawn our own
+/// wait-then-exec and quit.
 pub fn relaunch(cx: &mut gpui::App) {
     #[cfg(target_os = "linux")]
     {
@@ -167,9 +136,8 @@ pub fn relaunch(cx: &mut gpui::App) {
     cx.restart();
 }
 
-/// The detached shell that outlives this process: poll until `pid` is
-/// gone, then exec `appimage`. Both arrive as positional arguments, so
-/// the path is never parsed by the shell.
+/// Both values arrive as positional arguments, so the shell never parses
+/// the path.
 #[cfg(target_os = "linux")]
 fn spawn_relauncher(pid: u32, appimage: &Path) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt as _;
@@ -181,8 +149,7 @@ fn spawn_relauncher(pid: u32, appimage: &Path) -> std::io::Result<()> {
         .arg("sh")
         .arg(pid.to_string())
         .arg(appimage)
-        // Its own group and no inherited stdio, so it survives this
-        // process's exit and holds nothing of its terminal open.
+        // Its own group and no inherited stdio, so it outlives this process.
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -191,10 +158,8 @@ fn spawn_relauncher(pid: u32, appimage: &Path) -> std::io::Result<()> {
         .map(drop)
 }
 
-/// Claim the one download slot and hand back the blocking job, or None
-/// when a download is already running or a build is already applied. The
-/// claim happens on the caller's thread so the UI sees Downloading the
-/// moment it asks, however long the executor takes to start the job.
+/// The claim happens on the caller's thread, so the UI sees Downloading
+/// at once.
 pub fn begin(release: &Release) -> Option<impl FnOnce() + Send + 'static + use<>> {
     let progress = Arc::new(Progress::default());
     {
@@ -221,16 +186,13 @@ pub fn begin(release: &Release) -> Option<impl FnOnce() + Send + 'static + use<>
     })
 }
 
-/// Sweep what an update can leave behind: the temp workspace, plus the
-/// rename-aside remains in the install folder (the `.old` build Windows
-/// can't delete while it runs, and a `.new` stage a crash stranded). Launch
-/// calls this; every miss just waits for the next one.
+/// Sweep the temp dir and the `.old`/`.new` rename-aside remains. Called at
+/// launch.
 pub fn clean_leftovers() {
     let _ = std::fs::remove_dir_all(work_dir());
     if let Ok(target) = install_target() {
         remove_any(&sibling(&target, "new"));
         remove_any(&sibling(&target, "old"));
-        // The rox-mcp swap beside the app leaves the same remains.
         #[cfg(not(target_os = "macos"))]
         {
             let helper = target.with_file_name(helper_name());
@@ -240,11 +202,8 @@ pub fn clean_leftovers() {
     }
 }
 
-/// The whole blocking journey: resolve, download, verify, stage, swap.
-/// Returns the version now on disk.
 fn download_and_apply(release: &Release, progress: &Progress) -> Result<String, String> {
-    // A release rebuilt from the settings cache has no asset list, so ask
-    // GitHub again; the user asked for whatever is latest now.
+    // A release rebuilt from the settings cache has no asset list.
     let release = if release.assets.is_empty() {
         updates::fetch_latest()?
     } else {
@@ -255,15 +214,10 @@ fn download_and_apply(release: &Release, progress: &Progress) -> Result<String, 
     }
     let archive = fetch_verified(&release, progress)?;
     let applied = apply(&archive);
-    // The archive is spent either way; a failure's retry downloads fresh.
     let _ = std::fs::remove_file(&archive);
     applied.map(|()| release.version.clone())
 }
 
-/// Resolve this platform's artifact against the release's files, download
-/// it into the work dir, and hand back the archive once its checksum
-/// matches the release's manifest. The download half of the journey, with
-/// no writes anywhere near the install.
 fn fetch_verified(release: &Release, progress: &Progress) -> Result<PathBuf, String> {
     let platform = platform().ok_or_else(|| rox_i18n::t_static("updater-no-release-build"))?;
     let name = format!("rox-v{}-{platform}", release.version);
@@ -295,11 +249,8 @@ fn fetch_verified(release: &Release, progress: &Progress) -> Result<PathBuf, Str
     Ok(archive)
 }
 
-/// The agent the download uses. Not `rox_net::providers::agent`: that one
-/// caps every request at ten seconds total, right for a metadata lookup and
-/// fatal for tens of megabytes on a slow link. Bounding the connect and
-/// each read instead means a stalled transfer still gives up while a
-/// slow-but-alive one finishes. Same reasoning as the model downloader's.
+/// Not `rox_net::providers::agent`: its ten-second total cap is fatal for
+/// a large download. Bound the connect and each read instead.
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -315,7 +266,6 @@ fn agent() -> &'static ureq::Agent {
     })
 }
 
-/// Fetch the checksum manifest, a few hundred bytes of text.
 fn fetch_sums(url: &str) -> Result<String, String> {
     agent()
         .get(url)
@@ -325,9 +275,7 @@ fn fetch_sums(url: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The manifest's hash for one artifact. `sha256sum` writes
-/// `<hex>  <name>`, with a `*` on the name in binary mode, so take the
-/// first and last tokens and let the middle collapse.
+/// `sha256sum` writes `<hex>  <name>`, with `*` on the name in binary mode.
 fn expected_sum(manifest: &str, name: &str) -> Option<String> {
     manifest.lines().find_map(|line| {
         let mut tokens = line.split_whitespace();
@@ -338,9 +286,8 @@ fn expected_sum(manifest: &str, name: &str) -> Option<String> {
     })
 }
 
-/// Stream the artifact to a `.part` file, hashing as the bytes go by, and
-/// rename to `path` only once the size and checksum both match. The part
-/// file is removed on any failure, so nothing half-written is left behind.
+/// Rename to `path` only once size and checksum match; the part file is
+/// removed on any failure.
 fn download(
     url: &str,
     bytes: u64,
@@ -353,9 +300,7 @@ fn download(
         .get(url)
         .call()
         .map_err(|e| rox_net::providers::net_reason(&e))?;
-    // Guard the length before a byte is written: a redirect to an error
-    // page shows up here as a wildly different size, and there's no point
-    // streaming megabytes to find that out.
+    // A redirect to an error page shows up here as a wildly different size.
     if let Some(claimed) = response
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok())
@@ -376,8 +321,6 @@ fn download(
     }
 }
 
-/// Copy the body into the part file, counting and hashing, then check what
-/// arrived against the release's own numbers.
 fn stream(
     mut body: impl std::io::Read,
     part: &Path,
@@ -397,8 +340,7 @@ fn stream(
         if read == 0 {
             break;
         }
-        // Refuse to write past the stated size, so a server streaming
-        // forever can't fill the disk.
+        // Never write past the stated size, so an endless stream can't fill the disk.
         done += read as u64;
         if done > bytes {
             return Err(rox_i18n::t!("updater-overran").to_string());
@@ -428,12 +370,10 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// What the swap replaces: the executable itself, or on macOS the whole
-/// app bundle, since a build is the whole bundle, Info.plist's version and all.
+/// On macOS the whole bundle, since a build is the whole bundle.
 #[cfg(not(target_os = "macos"))]
 fn install_target() -> Result<PathBuf, String> {
-    // The .AppImage file, never its mount: the mount is read-only and a
-    // different path every run.
+    // The .AppImage file, never its read-only mount.
     if let Some(appimage) = rox_core::install::appimage() {
         return Ok(appimage.to_path_buf());
     }
@@ -446,9 +386,7 @@ fn install_target() -> Result<PathBuf, String> {
     bundle_root().ok_or_else(|| "not running from an app bundle".into())
 }
 
-/// The .app the running executable is inside, walking up from the binary.
-/// None for a bare binary, which stays notify-only: the artifact is a
-/// bundle, and a dev build has no install to keep current.
+/// None for a bare binary, which stays notify-only.
 #[cfg(target_os = "macos")]
 fn bundle_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -457,15 +395,12 @@ fn bundle_root() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The target's neighbor with a suffix tacked on: `rox.exe` to
-/// `rox.exe.new`, `rox.app` to `rox.app.old`. Built off the target's own
-/// name, so a renamed executable stages beside itself.
+/// `rox.exe` to `rox.exe.new`: the suffix goes after the extension.
 fn sibling(target: &Path, suffix: &str) -> PathBuf {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     target.with_file_name(format!("{name}.{suffix}"))
 }
 
-/// Remove a leftover whatever it is, file or bundle folder.
 fn remove_any(path: &Path) {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return;
@@ -477,16 +412,13 @@ fn remove_any(path: &Path) {
     };
 }
 
-/// Whether the install's folder takes writes, probed with a real file the
-/// way the portable gate does: permission bits aren't reliable across
-/// platforms.
+/// Probed with a real file: permission bits aren't reliable across platforms.
 #[cfg(not(target_os = "macos"))]
 fn install_writable() -> bool {
     rox_core::settings::portable_available()
 }
 
-/// On macOS the swap renames the bundle, so the probe belongs in the
-/// folder holding it (/Applications, usually), not in MacOS/ inside.
+/// The swap renames the bundle, so probe the folder holding it.
 #[cfg(target_os = "macos")]
 fn install_writable() -> bool {
     let Some(dir) = bundle_root().and_then(|app| app.parent().map(Path::to_path_buf)) else {
@@ -502,10 +434,7 @@ fn install_writable() -> bool {
     }
 }
 
-/// Stage the verified archive's build beside the running one and swap it
-/// into place. The stage is the last thing that can fail big; the swap is
-/// renames within one folder. On macOS the bundle contains rox-mcp, so the
-/// one swap covers both.
+/// The bundle contains rox-mcp, so one swap covers both.
 #[cfg(target_os = "macos")]
 fn apply(archive: &Path) -> Result<(), String> {
     let target = install_target()?;
@@ -515,17 +444,12 @@ fn apply(archive: &Path) -> Result<(), String> {
     swap(&staged, &target)
 }
 
-/// The bare-binary flavor: the app and the rox-mcp proxy beside it, each
-/// staged then swapped. Both stages finish before anything moves, and the
-/// helper swaps first: if it can't, the app hasn't moved and a retry
-/// starts clean. For the reverse partial, a new helper under an old app,
-/// the socket's generation check gives a plain error rather than silence.
+/// The app and the rox-mcp proxy beside it. Both stage before anything
+/// moves, and the helper swaps first so a failure leaves the app untouched.
 #[cfg(not(target_os = "macos"))]
 fn apply(archive: &Path) -> Result<(), String> {
     let target = install_target()?;
 
-    // An AppImage is the whole install in one file, rox-mcp inside it, so
-    // the download is already the staged build.
     #[cfg(target_os = "linux")]
     {
         if rox_core::install::appimage().is_some() {
@@ -542,17 +466,13 @@ fn apply(archive: &Path) -> Result<(), String> {
     if !stage(archive, &binary, &staged)? {
         return Err(format!("the archive holds no {binary}"));
     }
-    // Absent only in archives from before the proxy shipped; nothing to
-    // deliver then, and the app still updates.
+    // Absent only in archives from before the proxy shipped.
     if stage(archive, &helper_name(), &helper_staged)? {
         swap(&helper_staged, &helper_target)?;
     }
     swap(&staged, &target)
 }
 
-/// The AppImage flavor: copy the downloaded file beside the installed one,
-/// make it executable, sync it, and rename over. No helper to stage; the
-/// proxy rides inside the file.
 #[cfg(target_os = "linux")]
 fn apply_appimage(archive: &Path, target: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -563,8 +483,8 @@ fn apply_appimage(archive: &Path, target: &Path) -> Result<(), String> {
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("{}: {e}", staged.display()))?;
 
-    // Synced before the rename, so a power cut after the swap can't leave
-    // the name on a file whose bytes never reached the disk.
+    // Synced before the rename, so a power cut can't leave the name on a file
+    // whose bytes never reached the disk.
     std::fs::File::open(&staged)
         .and_then(|file| file.sync_all())
         .map_err(|e| format!("{}: {e}", staged.display()))?;
@@ -572,16 +492,13 @@ fn apply_appimage(archive: &Path, target: &Path) -> Result<(), String> {
     swap(&staged, target)
 }
 
-/// The proxy's file name beside the executable, the same shape the MCP
-/// settings page hands out.
+/// Same shape the MCP settings page hands out.
 #[cfg(not(target_os = "macos"))]
 fn helper_name() -> String {
     format!("rox-mcp{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// Pull one file out of the Linux tarball by name, written out executable
-/// and synced before the caller renames it live. False when the archive
-/// doesn't contain it.
+/// False when the archive doesn't contain it.
 #[cfg(target_os = "linux")]
 fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -607,7 +524,6 @@ fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
-/// The same out of the Windows zip.
 #[cfg(windows)]
 fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
@@ -623,9 +539,7 @@ fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// And the whole bundle out of the macOS disk image: mount read-only, copy
-/// rox.app beside the installed one with ditto (which keeps the code
-/// signature intact) then unmount whatever happened.
+/// ditto keeps the code signature intact. Unmount whatever happened.
 #[cfg(target_os = "macos")]
 fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
     use std::process::Command;
@@ -650,7 +564,6 @@ fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
     copied
 }
 
-/// Run a staging tool, folding a failure's stderr into the error.
 #[cfg(target_os = "macos")]
 fn run_tool(command: &mut std::process::Command) -> Result<(), String> {
     let output = command.output().map_err(|e| e.to_string())?;
@@ -661,16 +574,14 @@ fn run_tool(command: &mut std::process::Command) -> Result<(), String> {
     }
 }
 
-/// Rename-over: one atomic rename, and the running process keeps its inode.
+/// The running process keeps its inode.
 #[cfg(target_os = "linux")]
 fn swap(staged: &Path, target: &Path) -> Result<(), String> {
     std::fs::rename(staged, target).map_err(|e| format!("{}: {e}", target.display()))
 }
 
-/// The rename-aside dance: a running exe can't be replaced but it can be
-/// renamed, so the old build steps aside and the new one takes its name.
-/// If the second rename fails the first rolls back, so a half-danced swap
-/// never strands the install without a rox.exe.
+/// A running exe can't be replaced but can be renamed. If the second rename
+/// fails the first rolls back, so the install never loses its rox.exe.
 #[cfg(windows)]
 fn swap(staged: &Path, target: &Path) -> Result<(), String> {
     let old = sibling(target, "old");
@@ -680,14 +591,12 @@ fn swap(staged: &Path, target: &Path) -> Result<(), String> {
         let _ = std::fs::rename(&old, target);
         return Err(format!("{}: {e}", target.display()));
     }
-    // The old exe is still running, so Windows won't delete it now;
-    // clean_leftovers sweeps it on the next launch.
+    // Windows won't delete the running exe; clean_leftovers gets it next launch.
     Ok(())
 }
 
-/// The bundle flavor of the dance. A directory can't rename over another,
-/// so the old bundle steps aside like Windows' exe; unlike Windows it can
-/// be deleted at once, the running binary living on through its inode.
+/// A directory can't rename over another, so the old bundle steps aside,
+/// and unlike Windows it can be deleted at once.
 #[cfg(target_os = "macos")]
 fn swap(staged: &Path, target: &Path) -> Result<(), String> {
     let old = sibling(target, "old");
@@ -712,17 +621,14 @@ mod tests {
             "ABCDEF6789abcdef0123456789abcdef0123456789abcdef0123456789abcdef *rox-v1.2.0-windows-x86_64.zip\n",
             "deadbeef  something else entirely\n",
         );
-        // A plain text-mode line.
         assert_eq!(
             expected_sum(manifest, "rox-v1.2.0-linux-x86_64.tar.gz").as_deref(),
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
-        // Binary-mode's `*` prefix comes off, and the hash lowercases.
         assert_eq!(
             expected_sum(manifest, "rox-v1.2.0-windows-x86_64.zip").as_deref(),
             Some("abcdef6789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
-        // A short hash is not a checksum, and a missing file is a miss.
         assert_eq!(expected_sum(manifest, "something else entirely"), None);
         assert_eq!(expected_sum(manifest, "rox-v1.2.0-macos-aarch64.dmg"), None);
     }
@@ -733,8 +639,6 @@ mod tests {
             sibling(Path::new("/opt/rox/rox"), "new"),
             Path::new("/opt/rox/rox.new")
         );
-        // The suffix goes after the extension, never instead of it:
-        // rox.exe steps aside as rox.exe.old, not rox.old.
         assert_eq!(
             sibling(Path::new("/opt/rox/rox.exe"), "old"),
             Path::new("/opt/rox/rox.exe.old")
@@ -745,23 +649,18 @@ mod tests {
         );
     }
 
-    /// A short, flooding, or tampered body never becomes a staged archive;
-    /// same failure family the model downloader guards, same reasons.
     #[test]
     fn a_wrong_body_never_lands() {
         let dir = std::env::temp_dir().join(format!("rox-updater-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let part = dir.join("artifact.part");
-        // sha256("abc")
         let sum = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         let progress = Progress::default();
 
         assert!(stream(&b"abc"[..], &part, 3, sum, &progress).is_ok());
         assert_eq!(progress.done.load(Ordering::Relaxed), 3);
 
-        // Against the resolved message, not an English fragment of it: the
-        // active locale comes from the OS, so a German machine would fail a
-        // substring check for "stopped at" while the code was working fine.
+        // Compare against the resolved message: the locale comes from the OS.
         let short = stream(&b"ab"[..], &part, 3, sum, &progress).unwrap_err();
         assert_eq!(
             short,
@@ -769,9 +668,7 @@ mod tests {
             "{short}"
         );
 
-        // A body of the right length but the wrong bytes is refused for the
-        // checksum, not for a length: the digest is in the message so the
-        // whole string can't be predicted, but it's neither of these two.
+        // The digest is in the message, so check it's neither of the other two.
         let wrong = stream(&b"abd"[..], &part, 3, sum, &progress).unwrap_err();
         assert_ne!(wrong, short, "{wrong}");
         assert_ne!(
@@ -790,13 +687,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The real resolve-download-verify, end to end against the latest
-    /// published release. Ignored, so `cargo test` never touches the
-    /// network or pulls a whole artifact; run it by hand
-    /// (`cargo test -- --ignored downloads_and`) after the workflow
-    /// change ships, since a release without SHA256SUMS.txt, a renamed
-    /// artifact, or a manifest the parser misreads only shows up against
-    /// the real thing. It never applies anything.
+    /// End to end against the latest published release. Ignored, since it hits
+    /// the network; run it by hand after a release workflow change. It never
+    /// applies anything.
     #[test]
     #[ignore = "hits the network and downloads a whole release artifact"]
     fn downloads_and_verifies_the_latest_release() {
@@ -808,8 +701,6 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
-    /// An AppImage run resolves the AppImage artifact; anything else gets
-    /// the platform's archive, which on this build is the tarball.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn an_appimage_run_resolves_its_own_artifact() {
@@ -820,8 +711,6 @@ mod tests {
         assert_eq!(platform_for(None), Some("linux-x86_64.tar.gz"));
     }
 
-    /// The whole AppImage swap against a scratch folder: the target ends
-    /// up with the archive's bytes, executable, and no stage left over.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_appimage_swaps_in_as_one_executable_file() {
@@ -836,7 +725,6 @@ mod tests {
             .join("rox-v9.9.9-linux-x86_64.AppImage");
         std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
         std::fs::write(&target, b"old build").unwrap();
-        // The download lands without the executable bit; the swap adds it.
         std::fs::write(&archive, b"new build").unwrap();
         std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o644)).unwrap();
 
@@ -846,7 +734,6 @@ mod tests {
         let mode = std::fs::metadata(&target).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "mode {mode:o}");
         assert!(!sibling(&target, "new").exists(), "no stage left behind");
-        // The download itself is the caller's to remove, as with the tarball.
         assert!(archive.exists());
 
         std::fs::remove_dir_all(&dir).ok();

@@ -1,39 +1,26 @@
-//! The multi-genre convention, in one place. A track's genre column is a
-//! single display string, but the string is a list: values joined with
-//! "; ", the separator foobar2000 and Picard taught everyone's files.
-//! Formats that store real multiples (repeated GENRE comments on Vorbis,
-//! null-separated TCON on ID3v2.4) fold into this form at scan and read,
-//! and unfold from it at write. Matching splits; display and grouping
-//! keep the joined string whole.
+//! The multi-genre convention: the genre column is one string holding a
+//! "; " list. Native multiples (repeated Vorbis GENRE, null-separated TCON)
+//! fold into it on read and unfold on write. Matching splits; display and
+//! grouping keep the string whole.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-/// Whether `,` and `/` split genre lists alongside the `;` that always
-/// does. Real libraries have "Dubstep, Trap, Grime" and "Drum & Bass /
-/// Neurofunk" as often as the semicolon form. Module state like the
-/// alias map, seeded from the library setting at launch and flipped by
-/// its toggle; on by default because the compound tags are the common
-/// case, off for taggers whose slashes name single genres.
+/// Whether `,` and `/` split alongside `;`. Seeded from the library setting;
+/// off for taggers whose slashes name single genres.
 static SPLIT_COMPOUNDS: AtomicBool = AtomicBool::new(true);
 
-/// Flip whether `,` and `/` split, the library setting's write-through.
 pub fn set_split_compounds(on: bool) {
     SPLIT_COMPOUNDS.store(on, Ordering::Relaxed);
 }
 
-/// The live alias map off the library's genre_meta table, folded name ->
-/// canonical display. Module state rather than a parameter because every
-/// consumer of genre values already routes through this module (the
-/// projection's matching, the listens rollups, the panels) and each
-/// would otherwise thread the map through call chains that never look
-/// inside it. The app seeds it after opening the library and after every
-/// alias edit, then reloads the projection, the case-fold toggle's move.
+/// The live alias map, folded name -> canonical display. Module state
+/// because every genre consumer already routes through here. The app
+/// reseeds it after each alias edit, then reloads the projection.
 static ALIASES: RwLock<Option<Arc<HashMap<String, String>>>> = RwLock::new(None);
 
-/// Install the alias map, [`crate::genre_meta::aliases`]'s output; an
-/// empty map clears it.
+/// An empty map clears it.
 pub fn set_aliases(map: HashMap<String, String>) {
     let map = if map.is_empty() {
         None
@@ -43,9 +30,6 @@ pub fn set_aliases(map: HashMap<String, String>) {
     *ALIASES.write().expect("alias lock never poisons") = map;
 }
 
-/// A value through the alias map: the canonical display it folds into,
-/// or itself untouched. The common no-alias library skips the lookup and
-/// hands back a copy.
 pub fn resolve(value: &str) -> String {
     let Some(map) = ALIASES.read().expect("alias lock never poisons").clone() else {
         return value.to_string();
@@ -56,12 +40,8 @@ pub fn resolve(value: &str) -> String {
     }
 }
 
-/// The values inside one genre string: split on ';' always, on ',' and
-/// '/' while [`SPLIT_COMPOUNDS`] says so, trimmed, empties dropped. A
-/// plain single genre comes back as itself; '&' and '+' never split, an
-/// "and" is not a list. Raw values, no alias applied: callers building
-/// display surfaces run each part through [`resolve`]; [`has`] resolves
-/// internally.
+/// The raw values in one genre string, no alias applied. `&` and `+` never
+/// split.
 pub fn split(s: &str) -> impl Iterator<Item = &str> {
     let compounds = SPLIT_COMPOUNDS.load(Ordering::Relaxed);
     s.split(move |c: char| c == ';' || (compounds && (c == ',' || c == '/')))
@@ -69,8 +49,7 @@ pub fn split(s: &str) -> impl Iterator<Item = &str> {
         .filter(|part| !part.is_empty())
 }
 
-/// One display string from many values: joined with "; ", each value
-/// trimmed, empties dropped. The inverse of [`split`].
+/// The inverse of [`split`].
 pub fn join<'a>(values: impl Iterator<Item = &'a str>) -> String {
     let mut out = String::new();
     for value in values.flat_map(split) {
@@ -82,23 +61,16 @@ pub fn join<'a>(values: impl Iterator<Item = &'a str>) -> String {
     out
 }
 
-/// The string's canonical form: split and rejoined, so "Rock;;Pop " and
-/// "Rock; Pop" read the same.
 pub fn canonical(s: &str) -> String {
     join(std::iter::once(s))
 }
 
-/// The string with each value's words capitalized: "ambient; hip-hop"
-/// reads as "Ambient; Hip-Hop". Services hand tags over in lowercase and
-/// a library shouldn't inherit that. A word that already carries a
-/// capital anywhere is left alone, so "IDM" and "nu-Disco" stay as typed;
-/// only all-lowercase words get their first letter raised, after a space
-/// or a hyphen.
+/// Raise the first letter of all-lowercase words; a word with any capital
+/// ("IDM", "nu-Disco") stays as typed.
 pub fn capitalize(s: &str) -> String {
     join_owned(split(s).map(capitalize_value))
 }
 
-/// One value's words capitalized; see [`capitalize`].
 fn capitalize_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for word in value.split_inclusive([' ', '-']) {
@@ -119,17 +91,13 @@ fn capitalize_value(value: &str) -> String {
     out
 }
 
-/// [`join`] over owned values.
 fn join_owned(values: impl Iterator<Item = String>) -> String {
     let values: Vec<String> = values.collect();
     join(values.iter().map(String::as_str))
 }
 
-/// Whether the genre string includes `value` as one of its values, exact
-/// or case-folded per the library's `fold` rule, both sides read through
-/// the alias map so a pick on the merged name takes the folded-away tags
-/// too. An empty `value` is the untagged pick and matches only a string
-/// with no values at all.
+/// Whether `value` is one of the string's values, both sides through the
+/// alias map. An empty `value` matches only an empty list.
 pub fn has(s: &str, value: &str, fold: bool) -> bool {
     if value.is_empty() {
         return split(s).next().is_none();
@@ -162,10 +130,7 @@ mod tests {
         assert_eq!(split(" ; ").count(), 0);
     }
 
-    /// Commas and slashes split while the compound setting is on (the
-    /// default) and stay whole when it is off; the semicolon and the
-    /// ampersand never change their minds either way. The flag is
-    /// process-global, so the test restores the default on its way out.
+    /// The flag is process-global, so the test restores the default.
     #[test]
     fn compound_separators_follow_the_setting() {
         let parts: Vec<&str> = split("Dubstep, Trap, Grime").collect();
@@ -187,8 +152,6 @@ mod tests {
     #[test]
     fn join_canonicalizes_each_value() {
         assert_eq!(join(["Rock", "Shoegaze"].into_iter()), "Rock; Shoegaze");
-        // A value that is itself a list folds flat, so joining tag items
-        // that already have the separator cannot nest.
         assert_eq!(join(["Rock;Pop", " Jazz "].into_iter()), "Rock; Pop; Jazz");
         assert_eq!(join(std::iter::empty()), "");
     }
@@ -200,9 +163,7 @@ mod tests {
         assert_eq!(canonical(""), "");
     }
 
-    /// Aliases route both sides of a match and resolve to the canonical
-    /// display. The map is process-global, so the keys collide with no
-    /// other test's values and the test clears it on its way out.
+    /// The map is process-global, so the test clears it on its way out.
     #[test]
     fn aliases_route_matching_and_resolution() {
         set_aliases(HashMap::from([(
@@ -224,11 +185,9 @@ mod tests {
         assert!(has("Rock; Shoegaze", "Shoegaze", false));
         assert!(!has("Rock; Shoegaze", "Rock; Shoegaze", false));
         assert!(!has("Progressive Rock", "Rock", false));
-        // The empty pick is the untagged bucket.
         assert!(has("", "", false));
         assert!(has(" ; ", "", false));
         assert!(!has("Rock", "", false));
-        // Folding matches across casings, still whole values only.
         assert!(!has("rock; shoegaze", "Rock", false));
         assert!(has("rock; shoegaze", "Rock", true));
         assert!(!has("progressive rock", "Rock", true));

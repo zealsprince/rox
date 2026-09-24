@@ -1,22 +1,12 @@
-//! The read path measured against a generated library, so the scale claims
-//! in `docs/0R-research/02-library-scale.md` have something behind them that
-//! still exists.
+//! The read path measured against a generated library, backing the scale
+//! claims in `docs/0R-research/02-library-scale.md`.
 //!
-//! Everything here runs over a database `examples/genlib.rs` wrote, pointed
-//! at by `ROX_BENCH_DB`. Generating it inside the bench would put minutes of
-//! insert time inside a harness that wants to measure microseconds, and it
-//! would make the numbers depend on the machine's write path rather than the
-//! projection's. With the variable unset the file registers no benchmarks and
-//! says why, so `cargo test` and `cargo bench` stay green on a machine that
-//! has never generated one.
+//! Runs over a database `examples/genlib.rs` wrote, named by `ROX_BENCH_DB`.
+//! Unset, the file registers no benchmarks, so `cargo bench` stays green.
 //!
 //! ```sh
 //! ROX_BENCH_DB=/tmp/rox-bench-1m.db cargo bench -p rox-library --bench scale
 //! ```
-//!
-//! The projection loads once for every bench but the load bench itself: it's
-//! immutable after load, so sharing it costs nothing and rebuilding it per
-//! sample would measure the load over and over.
 
 use std::hint::black_box;
 use std::path::PathBuf;
@@ -28,8 +18,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use rox_library::projection::{self, FilterField, FilterSet, Patch, Projection, SortKey};
 use rox_library::store;
 
-/// The database under test, or None with a reason. Nothing here panics: an
-/// absent database is the ordinary case on a CI runner, not a failure.
+/// An absent database is the ordinary case on CI, not a failure.
 fn bench_db() -> Option<PathBuf> {
     let Some(path) = std::env::var_os("ROX_BENCH_DB") else {
         eprintln!(
@@ -56,9 +45,7 @@ fn shards() -> usize {
         .unwrap_or(4)
 }
 
-/// The heaviest genre value in the library, split out of its "; " list, and
-/// the two heaviest artists. Read off the data rather than hardcoded, so the
-/// filter benches stay meaningful if the generator's vocabulary changes.
+/// Read off the data so the filter benches survive vocabulary changes.
 fn hot_values(p: &Projection) -> (String, Vec<String>) {
     let mut genre_rows = vec![0usize; p.genres.strings.len()];
     for &sym in &p.genre {
@@ -92,22 +79,14 @@ fn hot_values(p: &Projection) -> (String, Vec<String>) {
     (genre, artists)
 }
 
-/// What one changed file costs against what it used to cost: a single-row
-/// upsert and a single-row remove patched into a live projection, beside the
-/// full rebuild that was the only way to fold either in.
-///
-/// Printed rather than benched, and on a projection of its own. Criterion
-/// measures a function it can run a hundred times over the same input; a
-/// patch mutates what it runs against, so the hundredth sample would be
-/// measuring a projection a hundred rows longer than the first. This times
-/// each round itself and reports the median.
+/// One changed file's upsert and remove against a full rebuild. Printed, not
+/// benched: a patch mutates its input, so criterion's repeated samples would
+/// measure a growing projection.
 fn patch_timings(db: &std::path::Path, shards: usize) {
     let started = Instant::now();
     let mut projection = Projection::load_parallel(db, shards, false).expect("load the projection");
     let full_load = started.elapsed();
-    // Fifty upserts and fifty removes, or as many pairs as a small database
-    // has rows for: every round takes a row of its own, so a scratch library
-    // would otherwise index past the end of the projection.
+    // Capped so a small database doesn't index past the end.
     let rounds = (projection.len() / 2).min(50);
     if rounds == 0 {
         eprintln!(
@@ -123,8 +102,6 @@ fn patch_timings(db: &std::path::Path, shards: usize) {
         .enumerate()
         .map(|(row, &id)| (id, row as u32))
         .collect();
-    // Ids spread across the library rather than a contiguous run, so the
-    // order merge and the id lookups aren't all landing in one place.
     let step = (projection.len() / (rounds * 2)).max(1);
     let ids: Vec<i64> = (0..rounds * 2)
         .map(|n| projection.db_id[n * step])
@@ -192,10 +169,7 @@ fn benches(c: &mut Criterion) {
     };
     let shards = shards();
 
-    // The one bench that has to build its own projection. Ten samples, not
-    // criterion's hundred: at a million tracks this is most of a second a
-    // run, and the spread on it is small enough that ten says the same thing
-    // a hundred would in a tenth the wall time.
+    // Ten samples: at a million tracks a load is most of a second.
     let mut group = c.benchmark_group("load");
     group.sample_size(10);
     group.bench_function("load_parallel", |b| {
@@ -208,9 +182,7 @@ fn benches(c: &mut Criterion) {
     let order = projection.sort_canonical();
     let (genre, artists) = hot_values(&projection);
 
-    // Printed, not benched: heap_bytes is a size, and criterion has no way
-    // to report one. Same for the cardinalities, which are the thing that
-    // decides whether the generated library is shaped like a real one.
+    // Printed: criterion can't report a size.
     eprintln!(
         "scale: {} tracks from {} in {:.2}s\n\
          scale: {} artists, {} album artists, {} albums, {} genres, {} folders\n\
@@ -252,9 +224,8 @@ fn benches(c: &mut Criterion) {
         ],
         ids: None,
     };
-    // The intersection the view builder does with a mask once it has one
-    // (`view.rs`), split out so the mask build and the row walk are separate
-    // numbers instead of one lump.
+    // The view builder's mask intersection (`view.rs`), timed apart from the mask
+    // build.
     let mask = projection
         .filter_mask(&genre_only)
         .expect("a non-empty filter has a mask");
@@ -278,8 +249,7 @@ fn benches(c: &mut Criterion) {
     });
     group.finish();
 
-    // The one sort that compares strings rather than integer ranks, which
-    // the research doc called out as the near-second click at 10M.
+    // The one sort comparing strings, the research doc's slow click at 10M.
     let mut group = c.benchmark_group("sort");
     group.sample_size(10);
     group.bench_function("sort_view_title", |b| {

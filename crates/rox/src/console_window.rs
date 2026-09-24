@@ -1,18 +1,8 @@
-//! The console window: one OS window opened from the Application menu that
-//! shows the app's log live, the same lines the backend writes to stderr
-//! and the rolling file on disk (see [`rox_core::logging`]). Standalone rather
-//! than a dock panel so it's one click from the menu whatever the layout,
-//! and reachable from a panel or a match window that hit an error without
-//! rearranging the workspace. It reads the in-memory ring; Reveal opens the
-//! file on disk for a report, Copy grabs the visible lines, Clear tidies the
-//! pane without touching the file, and the level toggles filter the view.
-//!
-//! Global, so it takes no state of its own: it themes to the front
-//! workspace's playback tint if there is one, and [`open_button`]/[`notice`]
-//! let any failing surface offer a way in without threading state through.
-//! The logger writes from any thread, so there's no entity to observe; a
-//! light poll while the window is open picks up new lines and repaints only
-//! when the ring's sequence moved, so an idle console costs nothing.
+//! The console window: the app's log live, read from the in-memory ring the
+//! backend also writes to stderr and the rolling file ([`rox_core::logging`]).
+//! A window rather than a panel so it's reachable from any failure without
+//! rearranging the workspace. The logger has no entity to observe, so a
+//! light poll repaints only when the ring's sequence moves.
 
 use std::time::Duration;
 
@@ -33,27 +23,17 @@ use rox_design::{palette, tokens};
 use rox_panel_api::panel;
 use rox_panel_kit::ui as settings_ui;
 
-/// How often the open window checks the ring for new lines. Fast enough to
-/// read live, slow enough that an idle console never shows up in a profile.
 const POLL: Duration = Duration::from_millis(250);
 
-/// The scrollbar's lane: the width the bar paints in, kept clear of the log
-/// text on the right so the thumb never sits over a message.
+/// Kept clear of the text so the thumb never sits over a message.
 const LANE: Pixels = px(16.);
 
-/// The open console window, if any: opening again focuses it instead of
-/// stacking a second one, the stats window's move.
 struct OpenConsole(WindowHandle<Root>);
 
 impl Global for OpenConsole {}
 
-/// Open the console window, or bring the open one to the front. Global, so
-/// it reads the front workspace itself for the playback tint to theme to,
-/// and a caller needs nothing to hand it in.
-///
-/// Deferred, because the menu action that opens it runs inside the
-/// workspace's own update: reading the front workspace for the tint mid-update
-/// would panic, so the read and the window open wait for the cycle to settle.
+/// Deferred: the menu action runs inside the workspace's update, and reading
+/// the front workspace for the tint mid-update would panic.
 pub fn open(cx: &mut App) {
     cx.defer(open_now);
 }
@@ -68,9 +48,6 @@ fn open_now(cx: &mut App) {
             return;
         }
     }
-    // Theme to the front workspace's player if one is up; the console is a
-    // global window, so it borrows whatever song tint is showing rather than
-    // owning one.
     let player =
         rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.player.entity_id());
     let min = settings_ui::MIN_SIZE;
@@ -91,9 +68,6 @@ fn open_now(cx: &mut App) {
     cx.set_global(OpenConsole(handle));
 }
 
-/// A small button that opens the console, for a panel or window to place
-/// beside a failure message so the log is one click away. The mark matches
-/// the menu entry's.
 pub fn open_button() -> impl IntoElement {
     Button::new("open-console")
         .icon(Icon::default().path(icons::FILE_TEXT))
@@ -103,10 +77,8 @@ pub fn open_button() -> impl IntoElement {
         .on_click(|_, _, cx| open(cx))
 }
 
-/// A failed-lookup state every online surface shares: the plain reason (no
-/// URL, no key; the provider sanitizes those, see
-/// [`rox_net::providers::net_reason`]) centered over a button into the console,
-/// where the same line and the rest of the session's log are ready for a report.
+/// The shared failed-lookup state: the sanitized reason
+/// ([`rox_net::providers::net_reason`]) over a button into the console.
 pub fn notice(message: impl Into<SharedString>) -> Div {
     div()
         .size_full()
@@ -125,21 +97,11 @@ pub fn notice(message: impl Into<SharedString>) -> Div {
 }
 
 struct ConsoleWindow {
-    /// The workspace player the window themes to, if one was up when it
-    /// opened; None themes to the base palette.
     player: Option<EntityId>,
-    /// The ring as of the last poll, newest last.
     lines: Vec<logging::Line>,
-    /// The ring sequence the shown lines were read at, so the poll repaints
-    /// only when it moved.
     seen: u64,
-    /// Pin to the newest line as it arrives. On while reading live; scrolling
-    /// the pane or grabbing the scrollbar turns it off, so reading back through
-    /// history doesn't fight the tail. The toolbar toggle turns it on again and
-    /// jumps to the newest line.
+    /// Pin to the newest line. Scrolling or grabbing the scrollbar turns it off.
     follow: bool,
-    /// The level filter: each toggle hides its level from the pane. All on by
-    /// default, so the console opens showing everything.
     show_error: bool,
     show_warn: bool,
     show_info: bool,
@@ -148,9 +110,7 @@ struct ConsoleWindow {
 
 impl ConsoleWindow {
     fn new(player: Option<EntityId>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // The frame persists on the OS close button, which never runs
-        // remove_window, so write the size in the should-close hook, the
-        // settings window's move.
+        // The OS close button never runs remove_window, so the size persists here.
         window.on_window_should_close(cx, |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
@@ -190,9 +150,7 @@ impl ConsoleWindow {
         }
     }
 
-    /// Whether a line's level passes the filter. Debug and trace are never
-    /// emitted (the backend caps at info), so they pass through if they ever
-    /// appear rather than vanishing behind a toggle that isn't shown.
+    /// Debug and trace pass: the backend caps at info, and no toggle shows for them.
     fn shows(&self, level: Level) -> bool {
         match level {
             Level::Error => self.show_error,
@@ -202,13 +160,10 @@ impl ConsoleWindow {
         }
     }
 
-    /// The lines the filter lets through, newest last.
     fn shown(&self) -> Vec<&logging::Line> {
         self.lines.iter().filter(|l| self.shows(l.level)).collect()
     }
 
-    /// The shown lines as one block of text, the shape Copy hands the
-    /// clipboard.
     fn as_text(&self) -> String {
         let mut out = String::new();
         for line in self.shown() {
@@ -220,9 +175,6 @@ impl ConsoleWindow {
         out
     }
 
-    /// One toolbar toggle: the kit's tick box with its label beside it, the
-    /// checkbox row the settings windows use. The handler is on the pair, so
-    /// the label is part of the target.
     fn toggle(
         &self,
         id: &'static str,
@@ -248,8 +200,6 @@ impl ConsoleWindow {
             .child(div().text_color(palette::text_muted()).child(label))
     }
 
-    /// The action row: the level filters, the follow toggle, and the copy,
-    /// reveal, and clear buttons, over the shown-line count.
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
         let count = self.shown().len();
         div()
@@ -339,9 +289,6 @@ impl ConsoleWindow {
             ))
     }
 
-    /// The scrolling log body: one row per shown line, the time muted and the
-    /// message colored by level. Pinned to the bottom while Follow is on, with
-    /// the same idle-fading scrollbar the panels use over the rows.
     fn body(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let shown = self.shown();
         if shown.is_empty() {
@@ -363,16 +310,12 @@ impl ConsoleWindow {
             .flex_col()
             .w_full()
             .p(tokens::SPACE_MD)
-            // Room for the bar's lane, so a long message never runs under the
-            // thumb.
             .pr(tokens::SPACE_MD + LANE)
             .text_xs()
             .children(shown.into_iter().map(line_row));
-        // A huge negative offset scrolls to the bottom: the scroll container
-        // clamps it to the real maximum at paint, so Follow pins the tail
-        // without measuring the content height here. The pin runs every frame
-        // while Follow is on, which is why both gestures below drop Follow
-        // before the view moves.
+        // The container clamps a huge negative offset to the real maximum, so this
+        // pins the tail without measuring. It runs every frame while Follow is on,
+        // so both gestures below drop Follow before the view moves.
         if self.follow {
             self.scroll.set_offset(point(px(0.), px(-1_000_000.)));
         }
@@ -385,9 +328,7 @@ impl ConsoleWindow {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    // A wheel over the pane is the user taking the view: drop
-                    // the pin in the same dispatch that scrolls, so the notch
-                    // lands instead of being yanked back on the next frame.
+                    // Drop the pin in the same dispatch that scrolls, or the notch is yanked back.
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                         if !this.follow || event.delta.pixel_delta(window.line_height()).y == px(0.)
                         {
@@ -399,11 +340,8 @@ impl ConsoleWindow {
                     .child(rows),
             )
             .child(
-                // The bar's own bounds: the lane at the right edge rather than
-                // the whole pane, so only a grab on the scrollbar drops Follow.
-                // On the capture phase, because the bar stops propagation on
-                // its own mouse down and a bubble listener here would never
-                // see the grab that starts a drag.
+                // Only a grab on the bar's lane drops Follow. Capture phase, because the bar
+                // stops propagation on its own mouse down.
                 div()
                     .absolute()
                     .top_0()
@@ -425,8 +363,6 @@ impl ConsoleWindow {
 
 impl Render for ConsoleWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // With no workspace player to theme to, tint to the window's own id,
-        // which isn't in the palette map, so it reads the base palette.
         let player = self.player.unwrap_or_else(|| cx.entity().entity_id());
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {
@@ -444,8 +380,6 @@ impl Render for ConsoleWindow {
     }
 }
 
-/// One log line as a row: the time in a fixed muted column, then the
-/// message wrapping after it in the level's color.
 fn line_row(line: &logging::Line) -> Div {
     div()
         .flex()
@@ -468,9 +402,6 @@ fn line_row(line: &logging::Line) -> Div {
         )
 }
 
-/// The message color per level: error reads red, warning amber, everything
-/// else the plain and muted text roles. The first two are the shared status
-/// tones, so a red line here and a red banner elsewhere are the same red.
 fn level_color(level: Level) -> Rgba {
     match level {
         Level::Error => palette::tone_bad(),

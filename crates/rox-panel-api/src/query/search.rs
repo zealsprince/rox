@@ -1,14 +1,9 @@
 //! The search box the searching views share: one wrapper over
-//! gpui-component's input with the behaviors every host needs and
-//! none of the reactions, which stay per-host. The behaviors: the
-//! `SearchInput` key context that scopes playback bindings out while
-//! focused, and the escape ladder, where the first escape clears the query
-//! and a second one hands control back to the host. Hosts embed the element,
-//! size it themselves, and subscribe to [`SearchEvent`]; a host whose box
-//! is in a tab title row must notify its tab panel on `Changed` and
-//! `FocusChanged`, since that row only repaints when the tab panel is
-//! notified. Query semantics (what a string matches) stay in the
-//! projection; this is only the box.
+//! gpui-component's input with the `SearchInput` key context and the escape
+//! ladder, where the first escape clears and the second hands control back.
+//! Reactions stay per-host, and query semantics stay in the projection. A
+//! host whose box sits in a tab title row must notify its tab panel on
+//! `Changed` and `FocusChanged`, since that row only repaints then.
 
 use std::rc::Rc;
 
@@ -24,35 +19,21 @@ use gpui_component::{ActiveTheme, Icon, Sizable};
 
 use rox_design::assets::icons;
 
-/// What the box tells its host; the host reads the query back through
-/// [`SearchBox::query`].
+/// The host reads the query back through [`SearchBox::query`].
 pub enum SearchEvent {
-    /// The query text changed.
     Changed,
-    /// Enter pressed inside the box.
     Submitted,
-    /// Focus entered or left the box.
     FocusChanged,
-    /// Escape on an empty query: the host takes focus back (and a modal
-    /// host closes).
+    /// Escape on an empty query: the host takes focus back.
     Dismissed,
 }
 
 pub struct SearchBox {
     input: Entity<InputState>,
-    /// The input's value, copied on change events so reads never dig
-    /// through the widget.
     query: String,
-    /// Render the compact input, the title-row fit.
     small: bool,
-    /// Render the input at the extra-small size, a single font line tall,
-    /// for a host that needs the thinnest possible bar (the search panel).
     xsmall: bool,
-    /// Drop the input's border, rounding, and background, for a host that
-    /// frames the box itself (the search panel filling its body).
     bare: bool,
-    /// Show a magnifier glyph as the input's prefix, so the box reads as
-    /// search at a glance.
     icon: bool,
     _input_events: Subscription,
 }
@@ -93,34 +74,27 @@ impl SearchBox {
         }
     }
 
-    /// Use the compact input size, for title-bar hosts.
     pub fn small(mut self) -> Self {
         self.small = true;
         self
     }
 
-    /// Use the extra-small input size, a single font line tall.
     pub fn xsmall(mut self) -> Self {
         self.xsmall = true;
         self
     }
 
-    /// Drop the input's border, rounding, and background: the host frames
-    /// the box, like the search panel filling its whole body.
+    /// For a host that frames the box itself.
     pub fn bare(mut self) -> Self {
         self.bare = true;
         self
     }
 
-    /// Lead the box with a magnifier glyph, so a bare box still reads as
-    /// search without its own label.
     pub fn icon(mut self) -> Self {
         self.icon = true;
         self
     }
 
-    /// Attach or swap the input's completion provider, the suggestion
-    /// menu over the query syntax's tag values.
     pub fn set_completions(
         &mut self,
         provider: Option<Rc<dyn CompletionProvider>>,
@@ -130,21 +104,17 @@ impl SearchBox {
             .update(cx, |input, _| input.lsp.completion_provider = provider);
     }
 
-    /// Replace the box's text, cursor to the end. Used to copy an
-    /// external query in (a global-following panel pushing the shared
-    /// query) so the change still fires and the host reconciles as if
-    /// typed; the host guards its own echo. Guard on drift before calling,
-    /// so the box the user is typing in keeps its cursor.
+    /// Replace the text, cursor to the end. Change still fires so the host
+    /// reconciles as if typed. Guard on drift before calling, so a box being
+    /// typed in keeps its cursor.
     pub fn set_value(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| {
             input.set_value(value.to_string(), window, cx)
         });
     }
 
-    /// Append a term to the query (a hint chip's `artist:`), space
-    /// separated, cursor at the end, focus back on the box. The term
-    /// itself goes in through the input's typing path, so the suggestion
-    /// menu opens on it like it would for a keystroke.
+    /// Append a term (a hint chip's `artist:`) through the typing path, so the
+    /// suggestion menu opens on it.
     pub fn append_term(&mut self, term: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| {
             let value = input.value().to_string();
@@ -161,10 +131,8 @@ impl SearchBox {
         });
     }
 
-    /// Give the input's suggestion menu first claim on an action; true
-    /// when the menu was open and took it. A host that captures arrows
-    /// for its own list calls this first, so an open menu keeps its
-    /// navigation.
+    /// Give the suggestion menu first claim on an action; true when it took
+    /// it. A host that captures arrows for its own list calls this first.
     pub fn menu_action(
         &mut self,
         action: Box<dyn Action>,
@@ -180,8 +148,6 @@ impl SearchBox {
         &self.query
     }
 
-    /// The input's focus handle, so a host can focus the box or make it
-    /// the host's own focus target.
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.input.read(cx).focus_handle(cx)
     }
@@ -190,25 +156,19 @@ impl SearchBox {
         self.focus_handle(cx).is_focused(window)
     }
 
-    /// The rendered box; the host sizes it (`.w()`, `.flex_1()`). Built
-    /// through the entity so the key handler can get at the state:
-    /// `search.update(cx, |search, cx| search.element(cx))`.
+    /// The host sizes it. Built through the entity so the key handler can
+    /// reach the state: `search.update(cx, |search, cx| search.element(cx))`.
     pub fn element(&self, cx: &mut Context<Self>) -> Div {
         self.element_with_suffix(None, cx)
     }
 
-    /// [`Self::element`] with a control of the host's riding inside the
-    /// box, at the tail past the clear glyph. For a host whose box carries
-    /// a mode the query runs under rather than a second query: the
-    /// settings window's page-scope button. Inside rather than beside
-    /// because a box in a 160px sidebar has no width to give a neighbour.
-    ///
-    /// The control arrives already built, since the host's listeners need
-    /// the host's own context and this method only has the box's.
+    /// [`Self::element`] with a host control inside the box past the clear
+    /// glyph, like the settings window's page-scope button: a 160px sidebar
+    /// has no width for a neighbour. It arrives built because its listeners
+    /// need the host's context.
     pub fn element_with_suffix(&self, suffix: Option<AnyElement>, cx: &mut Context<Self>) -> Div {
-        // A clear glyph at the tail once there's text: clicking it empties the
-        // box, which fires Change like a keystroke, so followers and the shared
-        // query reset the same way an escape-to-clear does.
+        // Clearing fires Change like a keystroke, so followers and the shared
+        // query reset the same way escape does.
         let mut input = Input::new(&self.input).w_full().cleanable(true);
         if let Some(suffix) = suffix {
             input = input.suffix(suffix);
@@ -230,25 +190,18 @@ impl SearchBox {
             );
         }
         div()
-            // Scopes the workspace's playback key bindings out while the
-            // input is focused, so space and arrows type instead.
+            // Scopes the playback bindings out while focused, so space and
+            // arrows type.
             .key_context("SearchInput")
-            // Tab accepts the highlighted suggestion. The input binds tab
-            // to IndentInline, which the menu ignores, so translate it to
-            // the menu's accept; with the menu closed, tab keeps its
-            // default meaning.
+            // Tab accepts the highlighted suggestion. The input binds tab to
+            // IndentInline, which the menu ignores, so translate it.
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
                 if !this.menu_action(Box::new(Enter { secondary: false }), window, cx) {
                     cx.propagate();
                 }
             }))
-            // Arrows step through the suggestion list. The input only wires
-            // its own up/down handlers on a multi-line box, so on a one-line
-            // search box nothing ever hands the arrows to the menu; do it
-            // here. With the menu closed they propagate untouched, so a host
-            // that drives its own list off the arrows still sees them. A host
-            // that captures them higher up, like the play launcher, never
-            // gets here at all.
+            // The input only hands up/down to its menu on a multi-line box, so
+            // do it here. With the menu closed they propagate to the host.
             .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
                 if !this.menu_action(Box::new(MoveUp), window, cx) {
                     cx.propagate();
@@ -259,10 +212,9 @@ impl SearchBox {
                     cx.propagate();
                 }
             }))
-            // The escape ladder. The widget propagates escape when it has
-            // nothing of its own (IME, context menu) to close, so it arrives
-            // here; stopped either way so a host's own escape handler
-            // never fires over a handled one.
+            // The escape ladder. Escape arrives when the widget has nothing of
+            // its own to close; stop it so a host's escape handler doesn't fire
+            // over this one.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key != "escape" {
                     return;

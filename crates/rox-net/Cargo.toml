@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# The Last.fm artist lookup reads the settings override before falling back
-# to the build's own key.
+# The Last.fm and AcoustID lookups read the settings override before falling
+# back to the build's own key.
 rox-core = { path = "../rox-core" }
 # Every outbound request rides one shared blocking agent, and the Last.fm
 # signature is md5 over the sorted parameters.

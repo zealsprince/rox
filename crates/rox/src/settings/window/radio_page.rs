@@ -1,20 +1,14 @@
-//! The Radio settings page: the stations the library holds, added one at a
-//! time or imported from a `.pls` or `.m3u`.
+//! The Radio settings page: the stations the library holds, added by URL or
+//! imported from a `.pls` or `.m3u`. Not a Library source, since a station has
+//! no catalog behind it.
 
 use super::*;
 
 impl SettingsWindow {
-    /// The Radio page: the stations the library holds. A station is a
-    /// stream with no catalog behind it, so it isn't one of the Library
-    /// page's sources, the folders and servers a library is browsed out of.
-    /// It's configured here and played from its own panel.
     pub(super) fn radio_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new().section(self.stations_section(q, cx))
     }
 
-    /// The stations section: what the library holds, a row to add one by
-    /// URL, and the two ways in that aren't typing. The stations panel
-    /// lists and plays; everything that changes the list is here.
     fn stations_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let controls = div()
             .flex()
@@ -37,8 +31,6 @@ impl SettingsWindow {
             ))
             .into_any_element();
 
-        // The list, then the add row at its foot, where the eye lands
-        // after reading it. The folder table above takes the same shape.
         let mut table = div().flex().flex_col();
         if self.stations.is_empty() {
             table = table.child(
@@ -89,9 +81,7 @@ impl SettingsWindow {
         )
     }
 
-    /// One station: its name over its stream, and the remove that drops
-    /// it. Unnamed stations show the URL on both lines, which is all they
-    /// have and still better than a blank row.
+    /// Unnamed stations show the URL on both lines.
     fn station_row(&self, station: &Station, cx: &mut Context<Self>) -> Stateful<Div> {
         let url: SharedString = station.url.clone().into();
         let name = station.name.trim();
@@ -106,8 +96,7 @@ impl SettingsWindow {
         });
 
         div()
-            // Named after the stream, so the row's remove button is its own
-            // rather than every other row's. See
+            // Named after the stream so its remove button is its own. See
             // `rox_panel_kit::ui::control_focus`.
             .id(ElementId::Name(url.clone()))
             .flex()
@@ -135,9 +124,6 @@ impl SettingsWindow {
             .child(remove)
     }
 
-    /// The add row under the list: the stream, an optional name, and the
-    /// button. The URL is the identity, so it's the only field that has to
-    /// be filled in.
     fn station_add_row(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
@@ -158,8 +144,6 @@ impl SettingsWindow {
             ))
     }
 
-    /// Write stations, then have the library rebuild its projection so the
-    /// new rows show up everywhere else too, not only in this list.
     fn write_stations(&mut self, stations: &[Station], cx: &mut Context<Self>) -> bool {
         let path = self.library.read(cx).db_path();
         let Ok(mut conn) = rox_library::store::open(&path) else {
@@ -178,22 +162,17 @@ impl SettingsWindow {
         true
     }
 
-    /// Add whatever is in the two fields, in two passes. The URL string
-    /// is judged first, because most of what gets pasted in here is
-    /// wrong in a way the string already shows, and that answer is
-    /// instant. What survives that goes to the stream itself, because
-    /// the other common mistake is a station's web page, and a web page
-    /// URL is indistinguishable from a mount until something asks.
+    /// Two passes: the URL string first, which catches most mistakes instantly,
+    /// then the stream itself, since a station's web page looks like a mount
+    /// until something asks.
     fn add_station(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.station_url.read(cx).value().trim().to_string();
         if url.is_empty() || self.station_probing {
             return;
         }
 
-        // The string rule is the import reader's, so typing a URL in and
-        // importing a file holding it agree on which lines rox will take.
-        // Each refusal gets its own line: someone holding a perfectly good
-        // `.pls` needs to hear "Import", not "that isn't a stream".
+        // The import reader's rule, so typing and importing agree. Each refusal
+        // says what to do instead.
         if let Some(refusal) = stations::refusal(&url) {
             self.station_notice = Some(match refusal {
                 Refusal::Scheme => rox_i18n::t!("stations-not-a-stream"),
@@ -227,16 +206,9 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The second half of an add, once the stream has answered.
-    ///
-    /// Only one answer stops the add, and that's the one where the URL
-    /// positively said it serves a document. Everything else lands as a
-    /// row, including a station that didn't answer at all: a stream URL
-    /// is something somebody found on a forum years ago, an Icecast
-    /// mount whose source is asleep answers 404, and refusing a station
-    /// for being down today would be a worse bug than the one this
-    /// check exists to catch. The line says the check came back empty so
-    /// the row isn't mistaken for a verified one.
+    /// Only a URL that positively serves a document stops the add. A station
+    /// that didn't answer still lands, since a sleeping Icecast mount answers
+    /// 404; the line says the check came back empty.
     fn finish_add_station(
         &mut self,
         url: String,
@@ -275,8 +247,6 @@ impl SettingsWindow {
             .update(cx, |input, cx| input.set_value("", window, cx));
     }
 
-    /// Import a `.pls` or `.m3u` of stream URLs, which is how most people
-    /// already have their stations.
     fn import_stations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -298,8 +268,7 @@ impl SettingsWindow {
 
             let found = stations::import(&text);
             this.update(cx, |this, cx| {
-                // A playlist of local files is a real thing to pick by
-                // mistake, and it imports as nothing. Say so.
+                // A playlist of local files imports as nothing, so say so.
                 if found.is_empty() {
                     this.station_notice = Some(rox_i18n::t!("stations-import-empty"));
                     cx.notify();
@@ -315,8 +284,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Drop one station, then rebuild the projection the way a write does:
-    /// the row has to leave the library everywhere, not just this list.
     fn remove_station(&mut self, url: &str, cx: &mut Context<Self>) {
         let path = self.library.read(cx).db_path();
         let Ok(mut conn) = rox_library::store::open(&path) else {
@@ -335,11 +302,8 @@ impl SettingsWindow {
     }
 }
 
-/// Every radio station the library holds. Its own connection, opened per
-/// read rather than held, for the reason the row count above gives: this
-/// runs at the pace someone edits a list, and a held connection would sit
-/// through every scan in between. A database that isn't there yet reads as
-/// no stations.
+/// Its own connection per read: a held one would sit through every scan. A
+/// missing database reads as no stations.
 pub(super) fn read_stations(library: &Entity<Library>, cx: &App) -> Vec<Station> {
     let db = library.read(cx).db_path();
     if !db.exists() {

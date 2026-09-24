@@ -1,16 +1,8 @@
 //! The debug scope's drive half (ADR 22): synthetic input and action
-//! dispatch over the control socket, so a script or an agent can work the
-//! UI of a live rox without OS input tools. Everything goes through gpui's
-//! own event pipeline (`dispatch_event`, `dispatch_keystroke`, and the
-//! action registry), which is why it works the same on every platform and on
-//! any compositor, including ones with no injection surface at all.
+//! dispatch over the control socket. Everything goes through gpui's own event
+//! pipeline, so it works on any platform and compositor.
 //!
-//! Methods: `debug.windows` lists what's open with the ids the rest take,
-//! `debug.actions` and `debug.action` cover the command surface by name,
-//! `debug.key` and `debug.type` the keyboard, `debug.click`, `debug.hover`,
-//! and `debug.scroll` the mouse at window-local logical coordinates.
-//! Coordinates and state come from `debug.windows` and `debug.panels`;
-//! pixels stay a screenshot job.
+//! Coordinates are window-local logical pixels, from `debug.windows`.
 
 use gpui::{
     App, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
@@ -20,7 +12,6 @@ use serde_json::{Value, json};
 
 use rox_ipc::RpcError;
 
-/// Route one drive method, or `None` when the method isn't ours.
 pub fn route(method: &str, params: &Value, cx: &mut App) -> Option<Result<Value, RpcError>> {
     Some(match method {
         "debug.windows" => windows(cx),
@@ -35,9 +26,6 @@ pub fn route(method: &str, params: &Value, cx: &mut App) -> Option<Result<Value,
     })
 }
 
-/// Every open window: the id the other methods target, the title rox last
-/// set on it, its size in the logical pixels the input methods speak, and
-/// whether the platform calls it active.
 fn windows(cx: &mut App) -> Result<Value, RpcError> {
     let mut rows = Vec::new();
     for handle in cx.windows() {
@@ -60,8 +48,7 @@ fn windows(cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "windows": rows }))
 }
 
-/// The window a drive method acts on: the one named by `window`, else the
-/// active window, else the first open one, so the plain case needs no id.
+/// The window named by `window`, else the active one, else the first.
 fn target(params: &Value, cx: &mut App) -> Result<gpui::AnyWindowHandle, RpcError> {
     if let Some(id) = params.get("window").and_then(Value::as_u64) {
         return cx
@@ -75,9 +62,7 @@ fn target(params: &Value, cx: &mut App) -> Result<gpui::AnyWindowHandle, RpcErro
         .ok_or_else(|| RpcError::app("no window open"))
 }
 
-/// Registered action names, optionally narrowed to a substring. What
-/// `debug.action` will accept; registration doesn't promise a binding in
-/// the current focus chain, only that the name builds.
+/// Registration only says the name builds, not that anything is bound.
 fn actions(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let filter = params
         .get("filter")
@@ -94,9 +79,6 @@ fn actions(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "actions": names }))
 }
 
-/// Build an action by name and dispatch it down the target window's focus
-/// chain, exactly as a keybinding would. `data` supplies the payload for
-/// actions that take one, the way a keymap entry does.
 fn action(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
         RpcError::invalid_params("action takes {\"name\", \"data\"?, \"window\"?}")
@@ -112,9 +94,8 @@ fn action(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(Value::Null)
 }
 
-/// Send keystrokes, gpui keymap syntax, space separated: "ctrl-comma",
-/// "escape", "cmd-shift-p enter". Returns per stroke whether anything
-/// handled it, so a probe can tell a live binding from a dead one.
+/// Keystrokes in gpui keymap syntax, space separated. Returns per stroke
+/// whether anything handled it.
 fn key(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let keys = params
         .get("keys")
@@ -140,10 +121,8 @@ fn key(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "handled": handled }))
 }
 
-/// Type text into whatever holds focus, one keystroke per character over
-/// the same simulated-IME path a test window uses: a binding may eat a
-/// character, and the rest go through the input handler. Newlines go as
-/// enter so multi-line fields and confirm-on-enter both behave.
+/// One keystroke per character over the simulated-IME path; newlines go as
+/// enter.
 fn type_text(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let text = params
         .get("text")
@@ -172,9 +151,7 @@ fn type_text(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "typed": text.chars().count() }))
 }
 
-/// Click at window-local logical coordinates: a move to get hover state
-/// right, then down and up per click. `count` above one climbs the
-/// click_count the double- and triple-click handlers key on.
+/// A move first so hover state is right; `count` climbs `click_count`.
 fn click(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let position = position(params)?;
     let modifiers = modifiers(params);
@@ -234,8 +211,6 @@ fn click(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(Value::Null)
 }
 
-/// Move the mouse to a point without pressing anything, for hover styles,
-/// tooltips, and menus that open on entry.
 fn hover(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let position = position(params)?;
     let modifiers = modifiers(params);
@@ -255,8 +230,7 @@ fn hover(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(Value::Null)
 }
 
-/// Scroll at a point, `dx`/`dy` in lines the way a wheel notch counts:
-/// positive y scrolls content up the way a wheel-up does.
+/// `dx`/`dy` in wheel lines; positive y scrolls content up.
 fn scroll(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let position = position(params)?;
     let modifiers = modifiers(params);
@@ -284,8 +258,6 @@ fn scroll(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(Value::Null)
 }
 
-/// The `x`/`y` a mouse method targets, in the window-local logical pixels
-/// `debug.windows` reports sizes in.
 fn position(params: &Value) -> Result<Point<Pixels>, RpcError> {
     let x = params.get("x").and_then(Value::as_f64);
     let y = params.get("y").and_then(Value::as_f64);
@@ -297,9 +269,7 @@ fn position(params: &Value) -> Result<Point<Pixels>, RpcError> {
     }
 }
 
-/// Held modifiers for a mouse method, from an optional `modifiers` object:
-/// `{"ctrl": true}` for a ctrl-click multi-select, and so on. `cmd` means
-/// the platform key the keymap calls cmd.
+/// `cmd` is the platform key.
 fn modifiers(params: &Value) -> Modifiers {
     let flags = &params["modifiers"];
     let on = |name: &str| flags.get(name).and_then(Value::as_bool).unwrap_or(false);

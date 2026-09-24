@@ -1,8 +1,7 @@
 //! The library service per ADR 5 and ADR 6: SQLite is the durable source of
-//! truth and the write path, a full in-memory columnar projection is the read
-//! path, search is a case-folded substring scan over the projection. The
-//! shape was validated at 10 million tracks in rox-prototype-library, which
-//! reused these modules for its harness (git history, commit bd22dc1).
+//! truth and the write path, an in-memory columnar projection is the read
+//! path, and search is a folded substring scan over it. Validated at 10
+//! million tracks (rox-prototype-library, commit bd22dc1).
 
 pub mod album_meta;
 pub mod art;
@@ -13,6 +12,7 @@ pub mod cue;
 pub mod duplicates;
 pub mod embed_tag;
 pub mod embeddings;
+pub mod exclude;
 pub mod fold;
 pub mod folders;
 pub mod genre;
@@ -48,33 +48,25 @@ pub mod watch;
 pub mod writer;
 pub mod xspf;
 
-// Embedders hold a Connection for store queries, so its type needs to be
-// nameable without taking on the dep directly.
+// Re-exported so embedders can name a Connection without the dep.
 pub use rusqlite;
 
-/// The parse options every lofty read in this crate starts from. Relaxed
-/// mode, because the default BestAttempt still hard-errors on a malformed
-/// date frame (a TDRC holding "06-08", say), and one garbage frame must
-/// cost that frame, never the file. Relaxed drops what it cannot parse,
-/// so a commit through the writer rewrites such a tag without the frame.
+/// Relaxed parsing: BestAttempt hard-errors on a malformed frame (a TDRC of
+/// "06-08"), and one bad frame must cost that frame, never the file.
 pub(crate) fn parse_opts() -> lofty::config::ParseOptions {
     lofty::config::ParseOptions::new().parsing_mode(lofty::config::ParsingMode::Relaxed)
 }
 
-/// Whether two field values match under the library's case rule: exact
-/// when `fold` is off, case-insensitive when on. The exact check runs
-/// first so folding costs nothing on identical strings.
+/// Field equality under the library's case rule: exact, or case-insensitive
+/// when `fold`.
 pub fn value_eq(a: &str, b: &str, fold: bool) -> bool {
     a == b || (fold && a.to_lowercase() == b.to_lowercase())
 }
 
-/// The cue half of a track row: which sheet claimed the image, and the
-/// slice of it this track is. Only cue tracks have one, so a library of
-/// plain files never allocates it and the store writes no side row.
+/// The cue half of a track row: the sheet that claimed the image, and this
+/// track's span of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CueSlice {
-    /// The .cue file this span came out of. Kept so a scan can tell which
-    /// sheet owns a row, and so a deleted sheet's rows are findable.
     pub cue_path: String,
     pub span: cue::Span,
 }
@@ -82,64 +74,39 @@ pub struct CueSlice {
 /// One track row as it crosses scanner -> SQLite -> projection.
 pub struct TrackRow {
     pub path: String,
-    /// Which subsong of `path` this row is: 0 for a plain file, the cue
-    /// sheet's 1-based TRACK number for a span of an image. Identity is
-    /// (source, path, sub), so a whole-disc rip holds one row per track
-    /// and playlists, listens, search and sort all inherit them.
+    /// 0 for a plain file, the cue sheet's 1-based TRACK number for a span.
+    /// Identity is (source, path, sub).
     pub sub: u16,
-    /// The span and sheet, for a cue track; None for a plain file. Part of
-    /// the row so one upsert writes the track and its side row together.
     pub cue: Option<CueSlice>,
-    /// Where a non-local row's bytes come from: the stream URL, and whether
-    /// that stream ever ends. A file on disk leaves both empty, since its
-    /// `path` is the whole answer. Credentials never land here; the live
-    /// source rebuilds its headers when a track is resolved.
+    /// A non-local row's stream URL and whether it's live; empty for a file.
+    /// Credentials never land here.
     pub remote_url: String,
     pub remote_live: bool,
     pub title: String,
     pub artist: String,
-    /// The album's credited artist, falling back to the track artist when
-    /// the tag is missing, so a plain album groups the same either way.
+    /// Falls back to the track artist when the tag is missing.
     pub album_artist: String,
     pub album: String,
-    /// The four sort names off the file's tags, empty when it carries
-    /// none, the way `album_artist` and `genre` already carry absence.
-    /// These are the Latin forms ordering and search fall back to when the
-    /// displayed name isn't one, so a library of Japanese titles still
-    /// files under the letter a person would look for it under.
+    /// The four sort names off the file's tags, empty when absent.
     pub title_sort: String,
     pub artist_sort: String,
     pub album_artist_sort: String,
     pub album_sort: String,
     pub genre: String,
     pub year: u16,
-    /// The disc this track belongs to in a multi-disc set; 0 when untagged.
     pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,
-    /// The container's short lowercase name (mp3, flac, wav), off the
-    /// parsed file type, the extension when the parse fails.
     pub codec: String,
-    /// The audio stream's bitrate in kbps; 0 when the parse fails.
     pub bitrate_kbps: u16,
-    /// The stream's sample rate in Hz (44100, 48000); 0 when the parse
-    /// fails. Held in Hz, not kHz, so 44.1 comes back exact.
     pub sample_rate_hz: u32,
-    /// Bits per sample; 0 when the parse fails and for the lossy formats
-    /// that have no fixed depth to report.
+    /// 0 for lossy formats and failed parses.
     pub bit_depth: u8,
-    /// The file's rating on the app's 0-100 scale, read off its tags
-    /// (FMPS exact, POPM stars); 0 when it has none.
+    /// The app's 0-100 scale, 0 when unrated.
     pub rating: u8,
-    /// What the file's ReplayGain tags measured, all None when it has
-    /// none. The engine levels by these at play time (ADR 19). A file with
-    /// none can get them from rox's own measurement pass, which writes past
-    /// the scanner straight onto the row.
+    /// The file's ReplayGain tags (ADR 19), all None when it has none.
     pub replay_gain: replaygain::ReplayGain,
-    /// The tempo the file's tags claim, in beats a minute; None when it has
-    /// none rox will believe (see [`tempo::parse`]). A file with
-    /// none can get one from rox's own analysis pass, which writes past the
-    /// scanner straight onto the row.
+    /// The tagged tempo; None when absent or unbelievable (see [`tempo::parse`]).
     pub bpm: Option<f32>,
     pub size: u64,
     pub mtime: i64,

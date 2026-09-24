@@ -1,31 +1,17 @@
-//! The metadata panel: the current track's tags laid out as a sheet, with
-//! title and artist up top, then the labeled fields the library has
-//! (album, genre, year, duration, codec, bitrate, and a sort name beside
-//! each name that carries one). What it describes is per-view config
-//! through [`MetadataSource`]: the playing track, the selected one, or
-//! the library as a whole, where the sheet zooms out to the catalog's
-//! counts, so a duplicate can watch each. The background
-//! can show the track's cover art, cropped to fill and dimmed under a
-//! scrim so the fields keep reading; art comes off the file on a
-//! background thread like the cover panel's and is retired the same way
-//! when the track moves on.
+//! The metadata panel: the current track's tags laid out as a sheet, title
+//! and artist up top, then the labeled fields. [`MetadataSource`] picks
+//! the playing track, the selected one, or the library as a whole, where
+//! the sheet zooms out to the catalog's counts. The cover art can sit
+//! behind the fields, faded so they keep reading.
 //!
-//! The sheet has an edit face, the pencil in the title row: the tag
-//! fields become inputs over a baseline read off the file itself, and a
-//! save commits only the fields that moved against it, through the
-//! writer's atomic layer. A successful commit is written to the catalog too,
-//! so the library shows the edit without a rescan.
+//! The pencil opens an edit face: inputs over a baseline read off the file,
+//! and a save commits only the fields that moved, through the writer's
+//! atomic layer, then updates the catalog so no rescan is needed.
 //!
-//! The tag values click through to the app-wide search, so the sheet
-//! doubles as a way into the rest of the library. Artist, album artist,
-//! album, genre, and year go through the shared filter, the filter
-//! panel's path: the pick shows as a chip beside the search box, whatever
-//! is typed there keeps narrowing alongside it, and a second click drops
-//! it again. The title has no filter column, so it goes into the query text
-//! as a `title:"value"` term instead, appended and removed the same way.
-//! A genre list splits, so a click takes the one value it hit. The
-//! hit areas only show while a search panel is up somewhere to display
-//! what a click writes.
+//! Tag values click through to the app-wide search: artist, album artist,
+//! album, genre, and year pin the shared filter, the title adds a
+//! `title:"value"` term. The hit areas only show while a search panel is
+//! up to display what a click writes.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -70,41 +56,24 @@ use crate::settings::ui as settings_ui;
 use crate::source::{ResolvedTrack, TrackSource};
 use crate::track_ui::track_columns::{self, Column};
 
-/// The metadata panel's per-view config: what a saved layout restores, and
-/// what the settings window edits. Missing fields take the defaults, so a
-/// layout dumped before a knob existed still loads.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MetadataConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub source: MetadataSource,
     pub align: Align,
-    /// Where the content goes down the panel when there's height to
-    /// spare. The sheet has always centered, so that stays the default;
-    /// the table face follows the knob too, and pins to the top with it.
+    /// For both faces; centered by default.
     pub valign: VAlign,
-    /// The track's cover art behind the fields, at `cover_opacity`.
     pub cover: bool,
-    /// How strongly the cover shows through, in percent.
     pub cover_opacity: f32,
-    /// Leave out a shown field the track has nothing for, instead of
-    /// listing it as "n/a". On by default: the bare sheet reads cleaner,
-    /// and the "n/a" rows are there for whoever wants every field
-    /// accounted for.
+    /// On by default: the bare sheet reads cleaner.
     pub hide_empty: bool,
-    /// How the fields lay out; see [`MetadataDisplay`].
     pub display: MetadataDisplay,
-    /// Tint every other row of the table face; the sheet never stripes.
     pub stripes: bool,
-    /// Draw the hairline under each table row. Off by default: the table
-    /// face has always drawn bare, the stripes alone carrying the rhythm.
+    /// Off by default, so the stripes alone carry the rhythm.
     pub row_borders: bool,
-    /// The shown field keys out of [`fields`]; the registry's default-on
-    /// set for a fresh panel. Title and artist head the sheet and are not
-    /// listed.
+    /// Title and artist head the sheet and aren't listed.
     pub fields: Vec<String>,
 }
 
@@ -126,9 +95,6 @@ impl Default for MetadataConfig {
     }
 }
 
-/// How the fields lay out: the title-led sheet, or a flat label and
-/// value table from the top, the classic file-info pane. The table
-/// folds the title and artist in as rows of their own.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MetadataDisplay {
@@ -137,10 +103,8 @@ pub enum MetadataDisplay {
     Table,
 }
 
-/// What the sheet describes: the playing track, the selected one, or the
-/// library as a whole, the same fields idea zoomed out to the catalog.
-/// The track sides spell the same as [`TrackSource`], so a layout saved
-/// before the library scope existed reads unchanged.
+/// The track values spell the same as [`TrackSource`], so older layouts
+/// read unchanged.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MetadataSource {
@@ -151,7 +115,6 @@ pub enum MetadataSource {
 }
 
 impl MetadataSource {
-    /// The track-scoped side, None for the library scope.
     fn track(self) -> Option<TrackSource> {
         match self {
             MetadataSource::Playing => Some(TrackSource::Playing),
@@ -161,34 +124,16 @@ impl MetadataSource {
     }
 }
 
-/// The sheet's toggleable fields in display order, the library-column
-/// registry shape so the shared checklist and Fields submenu drive them.
-/// The file facts are off by default; the tag sheet is the stock face.
-///
-/// The title and artist sort names lead, mirroring the title-over-artist
-/// head the sheet puts above this list, and each other one sits under the
-/// field it sorts. They're on by default and cost a Latin-only library
-/// nothing, since a row whose value is empty is skipped like any other.
-///
-/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
-/// this rebuilds and leaks once per active locale rather than on every
-/// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
-/// The cover opacity knob's default, in percent: what the fixed scrim
-/// it replaces left showing.
 const COVER_OPACITY_DEFAULT: f32 = 30.;
 
-/// How far apart two copies of a song may run and still count as one,
-/// the duplicates matcher's tolerance.
+/// The duplicates matcher's tolerance.
 const COPY_TOLERANCE_MS: u32 = 1500;
 
-/// The window the recent plays row counts over: thirty days.
 const RECENT_WINDOW_SECS: i64 = 30 * 24 * 60 * 60;
 
-/// How many similar tracks the row names.
 const SIMILAR_SHOWN: usize = 3;
 
-/// How many neighbours to pull before folding same-song duplicates down
-/// to [`SIMILAR_SHOWN`] distinct songs.
+/// Pulled before folding same-song duplicates down to [`SIMILAR_SHOWN`].
 const SIMILAR_POOL: usize = 24;
 
 fn now_secs() -> i64 {
@@ -198,23 +143,18 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// What the file itself and the stores beside it say about a track,
-/// read off the UI thread since every part touches the disk: the size,
-/// the cover's origin and pixel size, whether lyrics are on file and
-/// timed, and the nearest songs by acoustic similarity.
+/// Read off the UI thread, since every part touches the disk.
 #[derive(Clone, Default)]
 struct Facts {
     size: u64,
-    /// The cover: its folder file name (None for an embedded one) and its
-    /// pixel size. None when the track has no cover.
     cover: Option<(Option<String>, (u32, u32))>,
-    /// Whether lyrics are on file, and if so whether they're synced.
     lyrics: Option<bool>,
-    /// The nearest distinct songs as (artist, title), nearest first.
-    /// Empty without embeddings for the track.
     similar: Vec<(String, String)>,
 }
 
+/// The library-column registry shape, so the shared checklist and Fields
+/// submenu drive it. The sort names are on by default and cost a
+/// Latin-only library nothing: an empty sort name skips its row.
 fn fields() -> Vec<Column> {
     vec![
         Column {
@@ -440,10 +380,8 @@ fn fields() -> Vec<Column> {
     ]
 }
 
-/// The fields a picker should offer: the registry minus BPM while tempo
-/// analysis is off, the way the library's column picker hides it. Only
-/// discovery is gated: a layout already holding the field keeps showing
-/// whatever tempo the tags brought in.
+/// BPM is hidden while tempo analysis is off. Only discovery is gated: a
+/// layout already holding the field keeps showing tagged tempos.
 fn offered() -> Vec<Column> {
     let tempo = crate::settings::tempo_analysis();
     fields()
@@ -452,32 +390,23 @@ fn offered() -> Vec<Column> {
         .collect()
 }
 
-/// A ReplayGain figure with its sign forced, "+1.25 dB", so a positive
-/// gain reads as one rather than as a bare number. The locale formatter
-/// has no sign flag, so it's glued on by hand.
+/// The locale formatter has no sign flag, so the sign is glued on.
 fn fmt_gain(db: f32) -> String {
     let sign = if db.is_sign_negative() { "-" } else { "+" };
     let magnitude = rox_i18n::format::format_float(f64::from(db.abs()), 2);
     format!("{sign}{magnitude} dB")
 }
 
-/// What a click on a value does to the shared query: pin the exact value
-/// on the structured filter, the filter panel's own path, or add the
-/// `title:"value"` term to the text for the title, which the filter keeps
-/// no column for. Either way it adds to what's already narrowed
-/// instead of replacing it, and clicking the same value again takes it
-/// back off.
+/// Adds to what's already narrowed, and clicking the same value again
+/// takes it back off.
 #[derive(Clone, Copy)]
 enum Search {
     Pick(FilterField),
     Term(&'static str),
 }
 
-/// How a shown value searches when it's clicked, keyed by [`fields`] plus
-/// the sheet's two head rows. The rest of the sheet describes the file
-/// rather than tagging it, and neither the filter nor the query syntax
-/// covers those, so duration, codec, bitrate, plays, rating, and the file
-/// name stay inert text.
+/// The file facts (duration, codec, bitrate, plays, rating, file name)
+/// have no filter column or query syntax, so they stay inert.
 fn query_field(key: &str) -> Option<Search> {
     match key {
         "title" => Some(Search::Term("title")),
@@ -490,9 +419,6 @@ fn query_field(key: &str) -> Option<Search> {
     }
 }
 
-/// The library scope's readouts: the catalog boiled down to the counts a
-/// collection sheet lists. Cached and rebuilt when the catalog or the
-/// listen record moves, never per frame.
 struct LibraryTotals {
     tracks: usize,
     albums: usize,
@@ -502,17 +428,13 @@ struct LibraryTotals {
     plays: u64,
 }
 
-/// The shown track's full projection row, owned so it outlives the borrow
-/// of the library.
 #[derive(Clone)]
 struct Details {
     title: String,
     artist: String,
     album_artist: String,
     album: String,
-    /// The sort names, empty when the file carries none. Off the
-    /// projection like the rest: the interned ones ride their symbol
-    /// tables, the sort title is per row.
+    /// Empty when the file carries none.
     title_sort: String,
     artist_sort: String,
     album_artist_sort: String,
@@ -528,46 +450,23 @@ struct Details {
     bit_depth: u8,
     plays: u32,
     rating: u8,
-    /// Beats a minute, None where nothing has filled a tempo.
     bpm: Option<f32>,
-    /// Whether that tempo is rox's own estimate rather than a tag.
     bpm_measured: bool,
-    /// The file's ReplayGain figures in dB, None where it carries none.
     track_gain_db: Option<f32>,
     album_gain_db: Option<f32>,
-    /// When the scanner took the track in, as unix seconds, 0 when the
-    /// library predates the timestamp.
     added: i64,
-    /// The row's library id, what the listen and similarity lookups key
-    /// on.
     track_id: i64,
-    /// How many tracks the album holds on this disc, for "4 of 12"; 0
-    /// when the row has no album.
     album_tracks: u16,
-    /// Where the track's play count stands in the library, 1 the most
-    /// played; None for a track never played.
     rank: Option<usize>,
-    /// The other copies of the same song the library holds, as codec and
-    /// bitrate: the duplicates matcher's identity (folded title and
-    /// artist within its duration tolerance), per track.
+    /// The duplicates matcher's identity: folded title and artist within its
+    /// duration tolerance.
     copies: Vec<(String, u16)>,
-    /// First and last play and the plays of the last thirty days; None
-    /// for a track never played.
     listens: Option<TrackSummary>,
-    /// The track's bookmarks, earliest first, by name or by position for
-    /// an unnamed one.
     bookmarks: Vec<String>,
 }
 
-/// The editable fields in sheet order, each with its input row's label:
-/// the tags the panel shows plus the comment, which is only stored in
-/// the file. Each sort name sits under the field it sorts, so a
-/// romanization is typed next to the name it stands in for. Duration,
-/// codec, and bitrate stay display-only, they describe the stream. A
-/// plain function rather than a `const`: `t_static` isn't
-/// const-evaluable, and nothing outside this file needs the slice itself
-/// to be `'static`, so it just rebuilds (cheaply, `t_static` caches the
-/// strings) on each call.
+/// The comment is file-only. Duration, codec, and bitrate stay
+/// display-only: they describe the stream.
 fn edit_fields() -> Vec<(Field, gpui::SharedString)> {
     vec![
         (Field::Title, rox_i18n::t!("info-item-title")),
@@ -595,34 +494,19 @@ fn edit_fields() -> Vec<(Field, gpui::SharedString)> {
     ]
 }
 
-/// What Romanize does to one sort input, decided per field by
-/// [`sort_fill`].
 #[derive(PartialEq, Debug)]
 enum Fill {
-    /// Leave the input alone: the user typed something into it, or the
-    /// name it sorts already files where a person would look for it.
     Leave,
-    /// Put this in the input. Either the sort name the library already
-    /// holds, or a fresh reading of the name.
     Value(String),
-    /// The name is kanji and no dictionary is installed, so there's no
-    /// honest answer. The sheet says so under the rows.
+    /// The sheet says so under the rows.
     NeedsDictionary,
 }
 
-/// What Romanize should put in one sort input, given the name it sorts
-/// (`base`), what's typed in the input now, and the sort name the
-/// library already holds for that name (`stored`).
-///
-/// Three rules, in order. A typed value is never touched: the whole
-/// point of the sheet is that a person can overrule any of this, and a
-/// button that overwrites what they wrote is a button they stop
-/// pressing. A name that already reads in Latin letters gets nothing at
-/// all, whatever the library holds for it, because this button says
-/// Romanize and "Beatles, The" is not a romanization. What's left is a
-/// name that needs one, and there the sort name the library already
-/// holds wins over a fresh reading: it's MusicBrainz's or the user's
-/// answer where the reading is IPADIC's guess.
+/// Three rules, in order. A typed value is never touched. A name already
+/// in Latin letters gets nothing, whatever the library holds ("Beatles,
+/// The" is not a romanization). Otherwise the stored sort name wins over a
+/// fresh reading: it's MusicBrainz's or the user's, the reading IPADIC's
+/// guess.
 fn sort_fill(
     base: &str,
     current: &str,
@@ -634,9 +518,8 @@ fn sort_fill(
         return Fill::Leave;
     }
     let read = rox_romanize::romanize_as(base, ja, reading);
-    // Either there's a reading, or there would be one with the
-    // dictionary installed. Anything else is a name this can't improve:
-    // Latin already, or a script the crate doesn't read.
+    // No reading now or with the dictionary: Latin already, or a script the
+    // crate doesn't read.
     let readable = read.is_some() || rox_romanize::needs_dictionary(base, reading);
     if !readable {
         return Fill::Leave;
@@ -646,21 +529,14 @@ fn sort_fill(
     }
     match read {
         Some(read) => Fill::Value(read),
-        // The one refusal worth telling the user about. A dictionary
-        // that's loaded and still can't read the name is a different
-        // problem, and pointing at the download wouldn't fix it.
+        // Only a missing dictionary is worth telling the user about.
         None if ja.is_none() => Fill::NeedsDictionary,
         None => Fill::Leave,
     }
 }
 
-/// The four sort fields Romanize fills, each with the field it sorts and
-/// the sort name the projection holds for that value, empty where it
-/// holds none.
-///
-/// The stored side is what the fill pass and the romanize pass wrote into
-/// the library's own tables, which is exactly the answer this button is
-/// for: the sheet shows it, and Save is what gets it into the file.
+/// The stored side is what the fill and romanize passes wrote to the
+/// library; Save is what gets it into the file.
 fn sort_targets(details: Option<&Details>) -> [(Field, Field, String); 4] {
     let stored =
         |pick: fn(&Details) -> &str| details.map(|d| pick(d).to_string()).unwrap_or_default();
@@ -676,11 +552,8 @@ fn sort_targets(details: Option<&Details>) -> [(Field, Field, String); 4] {
     ]
 }
 
-/// The changes a save writes: one per [`edit_fields`] entry whose input
-/// drifted from the baseline the writer read off the file, and nothing
-/// for the rest, so an untouched tag never rewrites. A field the file
-/// never carried reads as empty, which is what keeps a blank input
-/// quiet; emptying one it does carry drops the tag.
+/// Only inputs that drifted from the baseline, so an untouched tag never
+/// rewrites. Emptying a tag the file carries drops it.
 fn diff_baseline(values: &[String], baseline: &[(Field, String)]) -> Vec<Change> {
     edit_fields()
         .iter()
@@ -702,26 +575,18 @@ fn diff_baseline(values: &[String], baseline: &[(Field, String)]) -> Vec<Change>
         .collect()
 }
 
-/// One in-progress edit: the pinned track, the baseline read off its
-/// file, and one input per entry of [`edit_fields`]. Lives only while
-/// edit mode is on.
 struct EditState {
     key: TrackKey,
-    /// The named fields as the writer read them, what save diffs
-    /// against; None until the read finishes (or never, on a file the
-    /// writer can't parse), and save stays inert without it.
+    /// None until the read finishes, or forever on a file the writer can't
+    /// parse; save stays inert without it.
     baseline: Option<Vec<(Field, String)>>,
     inputs: Vec<Entity<InputState>>,
-    /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
-    /// What Romanize couldn't answer, a muted line under the rows. Set
-    /// when a name needed the Japanese dictionary and none is installed.
+    /// Set when a name needed the Japanese dictionary and none is installed.
     note: Option<SharedString>,
-    /// Run Romanize as soon as the baseline read lands. The menu row
-    /// opens the sheet and fills it in one click, and the read is what
-    /// puts the file's own sort names in the way of the fill.
+    /// Run Romanize once the baseline lands, so the file's own sort names
+    /// don't land on top of the fill.
     romanize_on_open: bool,
-    /// A commit is in flight; the buttons hold still until it finishes.
     saving: bool,
     _input_events: Vec<Subscription>,
 }
@@ -729,73 +594,46 @@ struct EditState {
 pub struct MetadataPanel {
     state: AppState,
     config: MetadataConfig,
-    /// The in-progress edit while the sheet shows its edit face.
     edit: Option<EditState>,
-    /// The row a right press last landed on, as its label and the value
-    /// it shows, which is what the context menu's Copy entry writes. A
-    /// press anywhere but a row clears it, so the menu falls back to the
-    /// panel's own entries.
+    /// A press anywhere but a row clears it, so the menu falls back to the
+    /// panel's entries.
     menu_field: Option<(SharedString, String)>,
-    /// The shown path's row, or None inside for a file the library does
-    /// not know. Cached because the pump notifies every frame and the row
-    /// lookup scans the projection; cleared when the catalog changes.
+    /// Cached because the pump notifies every frame and the lookup scans the
+    /// projection.
     details: Option<(TrackKey, Option<Details>)>,
-    /// The library scope's cached counts; cleared when the catalog or the
-    /// listen record moves.
     totals: Option<LibraryTotals>,
-    /// Last.fm's counts for the shown track, the global rows, from the
-    /// track stats store; None inside is a clean miss. Keyed by the track
-    /// so a source flip never shows another track's numbers, and cleared
-    /// when the catalog changes, since a rescan can rewrite the tags the
-    /// lookup went under.
+    /// Keyed by track so a source flip never shows another track's numbers;
+    /// cleared on a catalog change, since a rescan can rewrite the tags.
     stats: Option<(TrackKey, Option<TrackStats>)>,
-    /// The track a stats fetch is running for, so a render can tell
-    /// "already fetching" from "needs a fetch".
     stats_pending: Option<TrackKey>,
-    /// Discards a stale stats result when the track changes mid-flight.
     stats_generation: u64,
-    /// The file facts for the shown track, keyed by the track; the same
-    /// pending marker and generation guard as the stats.
     facts: Option<(TrackKey, Facts)>,
     facts_pending: Option<TrackKey>,
     facts_generation: u64,
-    /// MusicBrainz's release facts for the shown track, from the release
-    /// facts store; None inside is a clean miss. Same bookkeeping as the
-    /// stats.
+    /// None inside is a clean miss.
     release: Option<(TrackKey, Option<ReleaseFacts>)>,
     release_pending: Option<TrackKey>,
     release_generation: u64,
-    /// The loaded background art keyed by the track it belongs to, with the
-    /// pending marker, generation guard, and swap/drop retires the shared
-    /// loader provides.
     art: panel::TrackedImage,
-    /// The cached source resolve, so the pump's per-frame notifies never
-    /// turn into selection lookups.
+    /// So the pump's notifies never turn into selection lookups.
     resolved: ResolvedTrack,
-    /// The Source row's text and the source string it was worked out for.
-    /// A server's name lives in the settings file, which is a disk read,
-    /// so it happens when the shown track changes source rather than per
-    /// frame.
+    /// A server's name lives in the settings file, so it's read on a source
+    /// change, not per frame.
     source_label: Option<(String, SharedString)>,
     focus: FocusHandle,
-    /// The cover opacity slider's scrub and readout-edit state.
     cover_scrub: ScrubState,
     value_edit: panel::ValueEdit,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _selection_changed: Subscription,
     _library_changed: Subscription,
-    /// Retires the shown background art when the panel is dropped (closed or
-    /// its pop-out window shut), so nothing stays pinned in gpui's
-    /// never-evicting asset cache.
+    /// Retires the art on drop, or it stays pinned in gpui's never-evicting
+    /// asset cache.
     _retire_on_drop: Subscription,
 }
 
 impl MetadataPanel {
     pub fn new(state: AppState, config: MetadataConfig, cx: &mut Context<Self>) -> Self {
-        // The tags and details turn over with the track, not as it plays,
-        // so the gated observe skips the pump's per-tick repaints.
         let _player_changed = crate::player::observe_view(&state.player, cx);
         let _selection_changed = cx.subscribe(
             &state.selection,
@@ -804,17 +642,12 @@ impl MetadataPanel {
                 cx.notify();
             },
         );
-        // A rescan can rewrite tags, art files, and id -> path mappings;
-        // drop the resolve and the row so they re-read, and send the cover
-        // background back through the file behind the one it's showing.
+        // A rescan can rewrite tags, art, and id-to-path mappings.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                // A rating click or a new listen moves two of the sheet's
-                // fields, and the listen moves the library scope's play
-                // total too; re-resolve those, nothing else changed. A
-                // play-count import moves the same two fields for a set of
-                // tracks it doesn't name, which is the same re-resolve.
+                // A rating, a listen, or a play-count import only moves plays and
+                // rating; re-resolve those.
                 if matches!(
                     event,
                     LibraryEvent::Rated
@@ -871,40 +704,30 @@ impl MetadataPanel {
         }
     }
 
-    /// The track the panel describes, through the source's track side;
-    /// the library scope names no track, which folds the pencil and the
-    /// online lookup away there.
     fn resolved_track(&mut self, cx: &App) -> Option<TrackKey> {
         let source = self.config.source.track()?;
         self.resolved.get(source, &self.state, cx)
     }
 
-    /// The shown track when it's a file, the one kind of track the edit
-    /// face, the online lookup and the romanize pass can write back to. A
-    /// server's song or a station answers None, which folds all three away.
+    /// A server's song or a station answers None, folding away the edit face,
+    /// the online lookup, and romanize.
     fn editable_track(&mut self, cx: &App) -> Option<TrackKey> {
         self.resolved_track(cx).filter(TrackKey::is_local)
     }
 
-    /// The shown track's row, from the cache or one projection scan on a
-    /// miss. None for a track the library does not know or while the
-    /// projection is still loading.
     fn details_for(&mut self, key: &TrackKey, cx: &App) -> Option<&Details> {
         if self.details.as_ref().map(|(k, _)| k) != Some(key) {
             let library = self.state.library.read(cx);
             let details = library.id_for_key(key).and_then(|id| {
                 let projection = library.projection()?;
-                // The live row for the id: an update tombstones the old
-                // row and appends the new one, so both can carry the id
-                // and the dead one comes first.
+                // An update tombstones the old row and appends the new one, so the dead
+                // copy can carry the id first.
                 let row = (0..projection.len() as u32).find(|&row| {
                     projection.db_id[row as usize] == id && !projection.is_dead(row)
                 })?;
                 let v = projection.resolve(row);
-                // The rows this one is measured against, one more pass:
-                // its album's disc for the position, the plays above it
-                // for the rank, and the same song elsewhere for the
-                // copies. Folded the way the duplicates matcher folds.
+                // One more pass: the album's disc for the position, plays for the rank,
+                // the same song elsewhere for the copies.
                 let same_song =
                     |a: &str, b: &str| rox_library::fold::fold(a) == rox_library::fold::fold(b);
                 let mut album_tracks = 0u16;
@@ -985,12 +808,8 @@ impl MetadataPanel {
             .and_then(|(_, details)| details.as_ref())
     }
 
-    /// The library scope's counts, from the cache or one projection scan
-    /// on a miss: the whole catalog's tracks, albums, artists, genres,
-    /// running time, and play total. Albums key on the (album artist,
-    /// album) pair the library groups by; artists are the distinct album
-    /// artists, matching the artist grid; genres split compound tags the
-    /// way the genre grid does, so the counts agree across the app.
+    /// Albums key on (album artist, album) and genres split compound tags,
+    /// matching the grids.
     fn library_totals(&mut self, cx: &App) -> Option<&LibraryTotals> {
         if self.totals.is_none() {
             let library = self.state.library.read(cx);
@@ -1010,8 +829,7 @@ impl MetadataPanel {
                 artists.insert(projection.album_artist[ix]);
                 genre_syms.insert(projection.genre[ix]);
             }
-            // The distinct syms first, then the strings split once each:
-            // a compound tag names every genre in it, the grid's read.
+            // A compound tag names every genre in it.
             let mut genres: HashSet<String> = HashSet::new();
             for sym in genre_syms {
                 for genre in rox_library::genre::split(&projection.genres.strings[sym as usize]) {
@@ -1031,10 +849,8 @@ impl MetadataPanel {
         self.totals.as_ref()
     }
 
-    /// Make sure Last.fm's counts for the shown track are loaded or on
-    /// their way: run the store's cache-or-fetch off the UI thread and
-    /// swap the result in when it arrives. Only called while a global row
-    /// is shown, so a sheet without them never touches the network.
+    /// Only called while a global row is shown, so a sheet without them never
+    /// touches the network.
     fn ensure_stats(&mut self, key: &TrackKey, d: &Details, cx: &mut Context<Self>) {
         if self.stats.as_ref().is_some_and(|(k, _)| k == key)
             || self.stats_pending.as_ref() == Some(key)
@@ -1046,8 +862,7 @@ impl MetadataPanel {
         let generation = self.stats_generation;
         let key = key.clone();
         let (artist, title, album) = (d.artist.clone(), d.title.clone(), d.album.clone());
-        // The connected account, for its own counts; empty asks for the
-        // global numbers alone.
+        // Empty asks for the global numbers alone.
         let username = self.state.scrobbler.read(cx).username().to_string();
         cx.spawn(async move |this, cx| {
             let result =
@@ -1063,9 +878,8 @@ impl MetadataPanel {
                 this.stats_pending = None;
                 match result {
                     Ok(stats) => this.stats = Some((key, stats)),
-                    // A failed lookup leaves the rows absent rather than
-                    // erroring a sheet that is otherwise fine; the next
-                    // track change asks again.
+                    // A failed lookup leaves the rows absent; the next track change asks
+                    // again.
                     Err(e) => {
                         log::debug!("metadata: track stats: {e}");
                         this.stats = Some((key, None));
@@ -1078,10 +892,8 @@ impl MetadataPanel {
         .detach();
     }
 
-    /// Make sure MusicBrainz's release facts for the shown track are
-    /// loaded or on their way: the store's cache-or-fetch off the UI
-    /// thread, two throttled calls on a miss. Only called while a
-    /// release row is shown.
+    /// Two throttled calls on a miss. Only called while a release row is
+    /// shown.
     fn ensure_release(&mut self, key: &TrackKey, d: &Details, cx: &mut Context<Self>) {
         if self.release.as_ref().is_some_and(|(k, _)| k == key)
             || self.release_pending.as_ref() == Some(key)
@@ -1122,10 +934,6 @@ impl MetadataPanel {
         .detach();
     }
 
-    /// Make sure the file facts for the shown track are loaded or on
-    /// their way: one background read of the file's size, cover, lyrics,
-    /// and, when the row is on, its acoustic neighbours. Only called
-    /// while a facts row is shown.
     fn ensure_facts(
         &mut self,
         key: &TrackKey,
@@ -1164,11 +972,8 @@ impl MetadataPanel {
         .detach();
     }
 
-    /// Make sure the background art for `path` is cached or on its way:
-    /// read the file off the UI thread through the shared loader, which
-    /// swaps the result in and retires the previous decode. A `remote` row
-    /// has no file, so its picture comes out of the thumbnail store under
-    /// the same key, fetched from its server the first time.
+    /// A `remote` row has no file; its picture comes from the thumbnail store
+    /// under the same key.
     fn ensure_art(&mut self, path: &Path, remote: bool, cx: &mut Context<Self>) {
         let read = path.to_path_buf();
         let thumbs = remote
@@ -1185,7 +990,6 @@ impl MetadataPanel {
                     });
                 }
 
-                // The store holds JPEG thumbnails and nothing else.
                 let thumbs = thumbs?;
                 let bytes = rox_services::sources::art(&thumbs, &read.to_string_lossy())?;
                 Some(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)))
@@ -1194,10 +998,8 @@ impl MetadataPanel {
         );
     }
 
-    /// The panel's own dropdown entries: the source pick and the cover
-    /// background toggle, the same knobs the customize window edits. The
-    /// source flyout is the panel's own rather than the shared track
-    /// pair, because this sheet can also describe the library itself.
+    /// The source flyout is the panel's own because this sheet can also
+    /// describe the library.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -1206,8 +1008,7 @@ impl MetadataPanel {
     ) -> PopupMenu {
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
-            // The flyout follows the panel so the picked row's tick swaps
-            // live instead of going stale until the menu is reopened.
+            // Follows the panel so the tick swaps live.
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (label, icon, source) in [
@@ -1263,7 +1064,6 @@ impl MetadataPanel {
         )
     }
 
-    /// The title-row pencil: into edit mode, or back out of it.
     fn toggle_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit.is_some() {
             self.close_edit(cx);
@@ -1272,10 +1072,8 @@ impl MetadataPanel {
         }
     }
 
-    /// Open edit mode on the shown track: one input per field, filled
-    /// once the writer's read finishes off the UI thread. The path pins
-    /// here, so a Playing source that moves on mid-edit doesn't steal
-    /// the form.
+    /// The key pins here, so a Playing source moving on mid-edit doesn't
+    /// steal the form.
     fn start_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit.is_some() {
             return;
@@ -1283,11 +1081,8 @@ impl MetadataPanel {
         let Some(key) = self.editable_track(cx) else {
             return;
         };
-        // IPADIC is forty megabytes of mapped tables and the first caller
-        // in the session pays for the open. Romanize lives one click away
-        // from here, so the open happens off the UI thread while the sheet
-        // is being filled in. The load is cached and idempotent, so a
-        // second sheet costs a lock.
+        // IPADIC is forty megabytes of mapped tables, so warm it off the UI
+        // thread while the sheet fills in. Cached and idempotent.
         cx.background_executor()
             .spawn(async {
                 rox_romanize::japanese();
@@ -1297,7 +1092,6 @@ impl MetadataPanel {
             .iter()
             .map(|_| cx.new(|cx| InputState::new(window, cx)))
             .collect();
-        // Enter in any input saves; Escape is handled by the sheet's wrapper.
         let _input_events = inputs
             .iter()
             .map(|input| {
@@ -1337,8 +1131,8 @@ impl MetadataPanel {
                 match read {
                     Ok(fields) => {
                         for ((field, _), input) in edit_fields().iter().zip(&edit.inputs) {
-                            // Multi-value tags show their first item, the
-                            // same one the writer's verify reads back.
+                            // Multi-value tags show their first item, the one the writer's verify
+                            // reads back.
                             let value = fields
                                 .iter()
                                 .find(|(f, _)| f == field)
@@ -1350,9 +1144,7 @@ impl MetadataPanel {
                     }
                     Err(e) => edit.error = Some(e.into()),
                 }
-                // The menu's row opens the sheet and fills it; the fill
-                // waits for this read, which would otherwise land on top
-                // of it with the file's own (empty) sort names.
+                // The fill waits for this read, which would otherwise land on top of it.
                 if this.edit.as_ref().is_some_and(|edit| edit.romanize_on_open) {
                     this.fill_romanize(window, cx);
                 }
@@ -1363,22 +1155,17 @@ impl MetadataPanel {
         .detach();
     }
 
-    /// Drop the edit face without writing anything.
     fn close_edit(&mut self, cx: &mut Context<Self>) {
         self.edit = None;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
 
-    /// Commit the fields that moved against the baseline, through the
-    /// writer's atomic layer off the UI thread. Nothing moved closes the
-    /// form; a failed commit keeps it open with the error inline, the
-    /// file untouched. Success hands the changes to the catalog, so the
-    /// projection follows without a rescan.
+    /// A failed commit keeps the form open with the error, the file
+    /// untouched.
     fn save_edit(&mut self, cx: &mut Context<Self>) {
         let Some(edit) = &mut self.edit else { return };
-        // No baseline means nothing safe to diff against: the read is
-        // still running, or the file defeated it.
+        // No baseline means nothing safe to diff against.
         let (Some(baseline), false) = (&edit.baseline, edit.saving) else {
             return;
         };
@@ -1402,9 +1189,8 @@ impl MetadataPanel {
                 .spawn({
                     let key = key.clone();
                     let changes = changes.clone();
-                    // Through the key: a cue track's edit stays in the
-                    // library, since the image on disk belongs to the whole
-                    // disc and writing a title there would title all of it.
+                    // Through the key: a cue track's edit stays in the library, since
+                    // writing a title to the shared image would title the whole disc.
                     async move { writer::commit_key(&key.path, key.sub, &changes, &[]) }
                 })
                 .await;
@@ -1436,16 +1222,12 @@ impl MetadataPanel {
     }
 }
 
-/// Romanize, from the panel's own menu: open the sheet if it's closed,
-/// then fill it. Nothing here writes the file; the sort names land in
-/// the inputs and Save is what commits them, which is the confirmed
-/// write step every enrichment path in the app goes through.
+/// Nothing here writes the file: the sort names land in the inputs and
+/// Save commits them.
 impl MetadataPanel {
     fn romanize_sort_names(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &mut self.edit {
-            // Already open, and its baseline read is either done or
-            // about to land on top of the fill; flag it either way and
-            // fill now if the read is already in.
+            // The read may still be landing: flag it, and fill now if it's in.
             Some(edit) => {
                 if edit.baseline.is_none() {
                     edit.romanize_on_open = true;
@@ -1462,14 +1244,8 @@ impl MetadataPanel {
         }
     }
 
-    /// Fill the empty sort inputs with a Latin reading of the name each
-    /// one sorts, leaving every typed value alone. [`sort_fill`] makes
-    /// the call per field; this is where the values it needs come from.
-    ///
-    /// The reading hint comes off the whole row rather than the one
-    /// field: bare kanji is the same characters in Japanese and Chinese,
-    /// and kana anywhere in the track's names is the one signal that says
-    /// which. That's the same read the library pass makes.
+    /// The reading hint comes off the whole row: kana anywhere is the one
+    /// signal that bare kanji is Japanese, not Chinese.
     fn fill_romanize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.edit.as_ref().map(|edit| edit.key.clone()) else {
             return;
@@ -1483,8 +1259,7 @@ impl MetadataPanel {
             .map(|input| input.read(cx).value().to_string())
             .collect();
         let index = |field: &Field| fields.iter().position(|(f, _)| f == field);
-        // The name a sort field sorts, as the sheet has it now: what's
-        // typed, or what the library holds when the file carried no tag.
+        // What's typed, or what the library holds when the file had no tag.
         let name = |field: &Field, from_details: fn(&Details) -> &str| -> String {
             let typed = index(field)
                 .map(|ix| values[ix].trim().to_string())
@@ -1509,10 +1284,8 @@ impl MetadataPanel {
         } else {
             Reading::Auto
         };
-        // What each sort input would take, gathered here and decided off
-        // the UI thread: the reading walks IPADIC, and the first call in a
-        // session opens it, which is dictionary-sized rather than
-        // click-sized.
+        // Decided off the UI thread: the first IPADIC call in a session opens
+        // the dictionary.
         let mut plan: Vec<(usize, String, String, String)> = Vec::new();
         for (sort, base, stored) in sort_targets(details.as_ref()) {
             let Some(sort_ix) = index(&sort) else {
@@ -1526,8 +1299,8 @@ impl MetadataPanel {
             };
             plan.push((sort_ix, base_value.clone(), values[sort_ix].clone(), stored));
         }
-        // The flag is spent the moment the reading starts, so the baseline
-        // landing behind it doesn't queue a second pass over the same row.
+        // Spent now, so the baseline landing behind it doesn't queue a second
+        // pass.
         if let Some(edit) = &mut self.edit {
             edit.romanize_on_open = false;
         }
@@ -1545,8 +1318,7 @@ impl MetadataPanel {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 let Some(edit) = &this.edit else { return };
-                // The sheet moved to another track while the dictionary
-                // opened, so this reading is about a row nobody is editing.
+                // The sheet moved to another track while the dictionary opened.
                 if edit.key != key {
                     return;
                 }
@@ -1558,8 +1330,7 @@ impl MetadataPanel {
                     };
                     match fill {
                         Fill::Leave => {}
-                        // Typed while the reading ran, and a typed value is
-                        // never overwritten.
+                        // Typed while the reading ran; a typed value is never overwritten.
                         Fill::Value(_) if !input.read(cx).value().trim().is_empty() => {}
                         Fill::Value(value) => writes.push((input.clone(), value)),
                         Fill::NeedsDictionary => needs_dictionary = true,
@@ -1580,17 +1351,11 @@ impl MetadataPanel {
     }
 }
 
-/// The shared column machinery drives the sheet's field set: the
-/// settings checklist and the right-click Fields submenu both edit
-/// through here. Turning a field on rebuilds the list in registry order,
-/// so the sheet never shuffles with toggle order.
 impl track_columns::ColumnHost for MetadataPanel {
     fn column_shown(&self, key: &str) -> bool {
         self.config.fields.iter().any(|k| k == key)
     }
 
-    /// Turning a field on appends it: the list's order is the sheet's
-    /// order, and the customize window's arrows move a row from there.
     fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>) {
         if on {
             if !self.config.fields.iter().any(|k| k == key) {
@@ -1604,8 +1369,6 @@ impl track_columns::ColumnHost for MetadataPanel {
 }
 
 impl MetadataPanel {
-    /// Move a shown field one place up (`delta` -1) or down (+1) in the
-    /// sheet's order. A move off either end does nothing.
     fn move_field(&mut self, key: &str, delta: isize, cx: &mut Context<Self>) {
         let Some(from) = self.config.fields.iter().position(|k| k == key) else {
             return;
@@ -1618,10 +1381,6 @@ impl MetadataPanel {
         cx.notify();
     }
 
-    /// The Fields block of the customize window: the shown fields first in
-    /// the sheet's order, each with arrows to move it, then the hidden
-    /// ones in registry order. A click on a row flips it, the shared
-    /// checklist's gesture; the arrows are their own targets.
     fn field_list(&self, cx: &mut Context<Self>) -> Div {
         let registry = offered();
         let shown: Vec<&Column> = self
@@ -1646,9 +1405,6 @@ impl MetadataPanel {
     }
 }
 
-/// One row of the Fields block: the tick, the label, and for a shown
-/// field (`place` is its index and the shown count) the up and down
-/// arrows, each faint at the end it can't move past.
 fn field_row(col: &Column, place: Option<(usize, usize)>, cx: &mut Context<MetadataPanel>) -> Div {
     let key = col.key;
     let on = place.is_some();
@@ -1794,8 +1550,8 @@ impl PanelSettings for MetadataPanel {
                     cx,
                 ),
             ))
-            // The horizontal knob only places the sheet; the table always
-            // runs full width, so the row is hidden while that face shows.
+            // The table always runs full width, so the horizontal knob only shows for
+            // the sheet.
             .when(self.config.display == MetadataDisplay::Sheet, |d| {
                 d.child(align_row(
                     self.config.align,
@@ -1856,9 +1612,7 @@ impl PanelSettings for MetadataPanel {
             .into_any_element()
     }
 
-    /// The table face's row look on the shared Appearance page, the
-    /// library's Rows section for this panel. The sheet has no rows, so
-    /// the section only shows with the table.
+    /// The sheet has no rows, so this only shows with the table.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.config.display != MetadataDisplay::Table {
             return None;
@@ -1927,8 +1681,6 @@ impl Panel for MetadataPanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The edit toggle shares the title bar row, the library's move.
-    /// Hidden while the panel shows no file; lit while an edit is open.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
@@ -1956,15 +1708,12 @@ impl Panel for MetadataPanel {
         false
     }
 
-    /// The sheet serves its own right click, so the tab panel's body
-    /// menu stays out of the way: a press over a row offers to copy that
-    /// row's value, with the panel's own entries after it.
+    /// A press over a row offers to copy its value, with the panel's entries
+    /// after.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -2009,12 +1758,9 @@ impl Panel for MetadataPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The config block: the panel's quick entries and the settings
-        // window, apart from the core panel items.
         let menu = self.config_menu(menu, window, cx);
-        // The online lookup, gated with the provider toggle so the menu
-        // never offers a search that can't run. Opens the compare window;
-        // the write waits for a confirmed, field-by-field pick.
+        // Gated on the provider toggle. The write waits for a confirmed,
+        // field-by-field pick in the compare window.
         let menu = match (providers::metadata_online(), self.editable_track(cx)) {
             (true, Some(key)) => {
                 let library = self.state.library.clone();
@@ -2034,17 +1780,12 @@ impl Panel for MetadataPanel {
             }
             _ => menu,
         };
-        // Reading the names into Latin letters, the library pass's work
-        // on the one track the sheet has pinned. It opens the edit face
-        // and fills the empty sort inputs; the file is only touched when
-        // Save is pressed, so this is a proposal like every other
-        // enrichment path. No file, nothing to write the names into.
+        // No file, nothing to write the names into.
         let menu = match self.editable_track(cx) {
             Some(_) => {
                 let weak = cx.entity().downgrade();
-                // The online lookup above draws the separator when it's
-                // there; with the provider off this row is the first of
-                // the group and draws its own.
+                // With the provider off this row starts the group and draws the
+                // separator.
                 let menu = if providers::metadata_online() {
                     menu
                 } else {
@@ -2061,8 +1802,7 @@ impl Panel for MetadataPanel {
             }
             None => menu,
         };
-        // Copy takes the track the panel showed when the menu opened; the
-        // tags resolve at click time so a fresh tag write copies through.
+        // The tags resolve at click time, so a fresh tag write copies through.
         let menu = match self.resolved_track(cx) {
             Some(key) => {
                 let library = self.state.library.clone();
@@ -2102,19 +1842,7 @@ impl Panel for MetadataPanel {
     }
 }
 
-/// The value side of a row: plain truncating text, or the same text as
-/// hit areas that narrow the app-wide search. `query` holds the shared
-/// query only while a search panel is up to show what a click writes;
-/// without one every follower would narrow with nothing on screen saying
-/// why, so the values render inert. `search` is [`query_field`]'s verdict,
-/// and `next_id` counts up through the sheet so each hit area gets an
-/// element id of its own.
-///
-/// The genre column is a "; " list, so it splits: a click picks the value
-/// it hit rather than filtering on the whole list at once.
-/// The file facts for a track, off the disk and the library database.
-/// Blocking, background executor only. `model` names the embedding
-/// model to ask for neighbours under, None to skip that part.
+/// Blocking: background executor only.
 fn read_facts(path: &Path, track_id: i64, model: Option<&str>) -> Facts {
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let cover = match rox_library::art::cover_art_source(path) {
@@ -2154,9 +1882,8 @@ fn read_facts(path: &Path, track_id: i64, model: Option<&str>) -> Facts {
     }
 }
 
-/// The nearest distinct songs to a track by its acoustic embedding, as
-/// (artist, title): the neighbours folded so a library holding a song
-/// five times names it once, and the seed's own song left out.
+/// Folded so a song held five times is named once; the seed's own song
+/// is left out.
 fn similar_songs(track_id: i64, model: &str) -> Vec<(String, String)> {
     let db = rox_core::settings::data_dir().join("library.db");
     let Ok(conn) = rox_library::store::open(&db) else {
@@ -2196,8 +1923,6 @@ fn similar_songs(track_id: i64, model: &str) -> Vec<(String, String)> {
     out
 }
 
-/// One row of either face: the label, the value with its reading, and
-/// what a click on the value searches.
 struct FieldRow {
     label: SharedString,
     value: Value,
@@ -2205,23 +1930,17 @@ struct FieldRow {
     search: Option<Search>,
 }
 
-/// What a row's value cell holds. The tag fields only ever carry text,
-/// since an empty one skips its row; the global rows run through all
-/// three, so a switched-on row is on the sheet from the first frame.
+/// The lookup rows can sit pending, so a switched-on row shows from the
+/// first frame.
 enum Value {
     Text(String),
-    /// A row of chips, each a pick on the genre filter, with a faint note
-    /// after them (the tag fallback's scope).
+    /// Chips that pick the genre filter, with the tag fallback's scope after.
     Tags(Vec<String>, Option<SharedString>),
-    /// The lookup is still running: a spinner where the value goes.
     Pending,
-    /// Settled with nothing: "n/a", faint.
     Absent,
 }
 
 impl Value {
-    /// The text a copy takes: the text, the chips joined, empty for the
-    /// rest.
     fn text(&self) -> String {
         match self {
             Value::Text(text) => text.clone(),
@@ -2232,8 +1951,6 @@ impl Value {
 }
 
 impl FieldRow {
-    /// The value cell: the text, the spinner while it's on its way, or the
-    /// faint "n/a" once there is none.
     fn cell(&self, query: Option<&Entity<SharedQuery>>, next_id: &mut usize) -> Div {
         match &self.value {
             Value::Text(value) => value_cell(value, &self.reading, self.search, query, next_id),
@@ -2298,18 +2015,14 @@ impl FieldRow {
     }
 }
 
-/// Where an online lookup stands, for the rows it feeds: Last.fm's
-/// counts, MusicBrainz's release facts.
 enum Stats<T> {
-    /// The answer landed.
     Have(T),
-    /// The lookup is running.
     Pending,
-    /// Nothing to show: a settled miss, no lookup asked, or a track
-    /// without the tags to ask under.
     Miss,
 }
 
+/// `query` is set only while a search panel is up to show what a click
+/// writes. The genre column splits, so a click picks the value it hit.
 fn value_cell(
     value: &str,
     reading: &str,
@@ -2361,11 +2074,8 @@ fn value_cell(
     row
 }
 
-/// Arm one row for the copy menu: a right press over it records the
-/// label and the value it shows, which the panel's context menu turns
-/// into a "Copy Title" entry. The row records itself on the press and
-/// the menu reads it back, the shape the history and queue panels use
-/// for their track rows.
+/// The row records itself on the press and the menu reads it back, the
+/// history and queue panels' shape.
 fn copy_target(
     row: Div,
     label: SharedString,
@@ -2381,8 +2091,6 @@ fn copy_target(
     })
 }
 
-/// One labeled field of the sheet: the tag's name dimmed in a fixed
-/// column, its value truncating beside it.
 fn field(label: impl Into<SharedString>, value: Div) -> Div {
     div()
         .flex()
@@ -2398,10 +2106,6 @@ fn field(label: impl Into<SharedString>, value: Div) -> Div {
         .child(value)
 }
 
-/// One row of the table face: the label column, the value beside it,
-/// faint striping and a bottom hairline as the knobs ask, both in the
-/// library rows' colors. The stripe is translucent so the cover
-/// background keeps showing through.
 fn table_row(
     ix: usize,
     label: impl Into<SharedString>,
@@ -2430,13 +2134,8 @@ fn table_row(
         .child(value)
 }
 
-/// The scrolling frame every face is drawn in: as tall as its content,
-/// capped at the panel. Short content leaves slack the body's column hands
-/// to the vertical knob; tall content fills the panel and scrolls from the
-/// top. The placement can't go inside the scroll box, since a percentage
-/// height resolves to nothing in there and the column collapses onto its
-/// content, which is why the sheet always stayed at the top no matter the
-/// knob.
+/// The placement can't go inside the scroll box: a percentage height
+/// resolves to nothing there and the sheet pins to the top.
 fn scroll_frame(id: &'static str, align: Align, content: impl IntoElement) -> Stateful<Div> {
     div()
         .id(id)
@@ -2461,9 +2160,6 @@ fn scroll_frame(id: &'static str, align: Align, content: impl IntoElement) -> St
 impl Render for MetadataPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
@@ -2471,26 +2167,19 @@ impl Render for MetadataPanel {
 
 impl MetadataPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
-        // The edit toggle goes in the tab bar via title_suffix while the
-        // panel shares a group; solo or popped out there's no header at
-        // all, so it renders as a toolbar in the body instead, the
-        // library's move.
+        // Solo or popped out there's no tab bar for `title_suffix`, so the
+        // toggle renders as a toolbar.
         let headerless = self
             .tab_panel
             .as_ref()
             .and_then(|tabs| tabs.upgrade())
             .is_none_or(|tabs| tabs.read(cx).panels_count() < 2);
-        // Same show rule as the suffix: hidden while the panel shows no
-        // file, unless an edit is already open. The chrome's finished-
-        // furniture flag drops it too, for a slot in a shipped layout.
-        // Deliberately the panel's own flag rather than `controls_hidden`:
-        // this one edits tags, not the layout, so design mode leaves it be.
+        // The panel's own `hide_controls`, not `controls_hidden`: this edits
+        // tags, not the layout, so design mode leaves it be.
         let show_toggle = !self.config.chrome.hide_controls
             && (self.edit.is_some() || self.editable_track(cx).is_some());
-        // A right press arrives here in the capture phase, before any
-        // row's own handler records itself, so a press off the rows
-        // leaves no target and the menu below falls back to the panel's
-        // entries alone. The history panel's shape.
+        // The capture phase runs before a row records itself, so a press off the
+        // rows leaves no target.
         let sheet = self
             .sheet_body(cx)
             .flex_1()
@@ -2505,9 +2194,7 @@ impl MetadataPanel {
             let Some(this) = weak.upgrade() else {
                 return menu;
             };
-            // Copy first, then the panel's normal entries after a
-            // separator, so a right click over the sheet never loses what
-            // the tab menu offers.
+            // Copy first, then the panel's normal entries.
             let field = this.read(cx).menu_field.clone();
             let menu = match field {
                 Some((label, value)) if !value.is_empty() => menu
@@ -2535,9 +2222,6 @@ impl MetadataPanel {
             .child(sheet)
     }
 
-    /// Solo or popped out there is no title bar to host the edit toggle,
-    /// so it renders as a toolbar row above the sheet instead, the
-    /// library's move.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let editing = self.edit.is_some();
         let weak = cx.entity().downgrade();
@@ -2561,11 +2245,8 @@ impl MetadataPanel {
             )
     }
 
-    /// What the Source row says for a remote track: the one word for a
-    /// station, the server's name or host for a Subsonic row, since the
-    /// source string it's filed under is a digest nobody would recognize.
-    /// Held against that source string, since the sheet redraws on the
-    /// pump and a label is a lock and a clone either way.
+    /// The source string is a digest nobody would recognize. Cached against
+    /// it, since the sheet redraws on the pump.
     fn source_label(&mut self, key: &TrackKey) -> SharedString {
         let source = key.source.to_string();
         if let Some((held, label)) = &self.source_label
@@ -2577,10 +2258,7 @@ impl MetadataPanel {
         let label: SharedString = match key.origin() {
             Origin::Radio => rox_i18n::t!("metadata-source-radio"),
 
-            // The server this row came from, by the name it was given or
-            // its host, since there can be several. A row no account
-            // claims any more has only its digest to show, and reads as
-            // plain Subsonic instead.
+            // A row no account claims any more reads as plain Subsonic.
             Origin::Subsonic => match rox_library::cue::source_label(&source) {
                 label if label == source => rox_i18n::t!("metadata-source-subsonic"),
                 label => SharedString::from(label),
@@ -2592,10 +2270,8 @@ impl MetadataPanel {
         label
     }
 
-    /// What the playing station says about itself, for the row the station
-    /// is. None for every other row: the headers are read at the connect
-    /// and nothing stores them, so a station that isn't playing has
-    /// nothing anybody here can show.
+    /// Only for the playing station: its headers are read at connect and
+    /// never stored.
     fn station_info(&self, key: &TrackKey, cx: &App) -> Option<rox_playback::StationInfo> {
         let player = self.state.player.read(cx);
         player
@@ -2605,33 +2281,24 @@ impl MetadataPanel {
         player.station_info()
     }
 
-    /// The sheet under the toolbar: the display face, or the edit face
-    /// while an edit is open.
     fn sheet_body(&mut self, cx: &mut Context<Self>) -> Div {
         let align = self.config.align;
-        // The faces are normal-flow children of this column, so the
-        // vertical knob places them the way flexbox places any child that
-        // leaves slack. The background art layers are absolute inside it,
-        // out of the flow.
+        // The background art layers are absolute, out of the flow.
         let root = justify_v(div().relative().flex().flex_col(), self.config.valign);
 
-        // The library scope: the catalog's own sheet, no track to
-        // resolve, no cover, nothing to edit. An open edit still shows
-        // its form, so a source flip mid-edit doesn't eat the typing.
+        // An open edit still shows its form, so a source flip mid-edit doesn't
+        // eat the typing.
         if self.config.source == MetadataSource::Library && self.edit.is_none() {
             return self.library_sheet(root, cx);
         }
 
-        // An open edit pins its track; the source only drives the sheet
-        // while nothing is being edited.
+        // An open edit pins its track.
         let Some(key) = self
             .edit
             .as_ref()
             .map(|edit| edit.key.clone())
             .or_else(|| self.resolved_track(cx))
         else {
-            // The source points at no track: a quiet line in place of the
-            // sheet.
             return root.child(
                 justify(div().w_full().flex_none().flex(), align)
                     .p(tokens::SPACE_MD)
@@ -2643,12 +2310,8 @@ impl MetadataPanel {
             );
         };
 
-        // The background layer: the track's art cropped to fill, a scrim
-        // over it so the fields keep reading over busy covers. Until the
-        // load finishes the plain background stands in; no fade, the sheet's
-        // text swaps in the same frame anyway.
-        // Art hangs off the file, which cue tracks of one image share, so
-        // the cache stays keyed on the path.
+        // No fade while the art loads: the text swaps in the same frame anyway.
+        // Cue tracks share one image file, so the cache stays keyed on the path.
         let path = key.path.clone();
         if self.config.cover {
             self.ensure_art(&path, !key.is_local(), cx);
@@ -2670,8 +2333,6 @@ impl MetadataPanel {
             return root.child(scroll_frame("metadata-edit", align, self.edit_sheet(cx)));
         }
 
-        // An untagged file still shows something: its file name for the
-        // title, no fields.
         let details = self.details_for(&key, cx).cloned();
         let title = details
             .as_ref()
@@ -2682,28 +2343,17 @@ impl MetadataPanel {
                     .unwrap_or_else(|| path.display().to_string())
             });
 
-        // A click on a taggable value narrows the app-wide search, but only
-        // while a search panel is up somewhere to show the pick it writes,
-        // since the chips appear beside that box. With none in the tree the
-        // followers would narrow with nothing on screen saying why, or how
-        // to undo it, so the values stay inert text instead.
+        // Clickable only while a search panel is up to show the pick; otherwise
+        // a follower would narrow with nothing saying why.
         let query = self
             .state
             .query
             .read(cx)
             .has_box()
             .then(|| self.state.query.clone());
-        // Counts up through the rendered values so each hit area gets its own
-        // element id.
         let mut hit_id = 0usize;
-        // Every row arms itself for the copy menu on a right press.
         let weak = cx.entity().downgrade();
 
-        // The Last.fm rows are asked for only while one of them is on and
-        // the track has the artist and title to ask under; the file facts
-        // likewise only while one of theirs is on.
-        // A copy of the on-set, so the checks below don't hold the config
-        // borrowed across the fetches.
         let fields_on = self.config.fields.clone();
         let shown = |k: &str| fields_on.iter().any(|f| f == k);
         let global_rows = self.config.fields.iter().any(|k| k.starts_with("lastfm_"));
@@ -2722,9 +2372,6 @@ impl MetadataPanel {
         {
             self.ensure_release(&key, d, cx);
         }
-        // A release row: the fact once it landed, a spinner while the
-        // lookup runs, "n/a" after a settled miss or for a fact the
-        // release lacks.
         let release = match self.release.as_ref().filter(|(k, _)| *k == key) {
             Some((_, Some(facts))) => Stats::Have(facts.clone()),
             Some((_, None)) => Stats::Miss,
@@ -2756,8 +2403,6 @@ impl MetadataPanel {
             .filter(|(k, _)| *k == key)
             .map(|(_, facts)| facts.clone());
         let facts_pending = facts.is_none() && self.facts_pending.as_ref() == Some(&key);
-        // A facts row: the spinner until the read lands, then the value or
-        // "n/a" for a settled nothing.
         let fact = |pick: &dyn Fn(&Facts) -> Option<String>| match &facts {
             Some(facts) => Some(pick(facts).map_or(Value::Absent, Value::Text)),
             None if facts_pending => Some(Value::Pending),
@@ -2765,32 +2410,24 @@ impl MetadataPanel {
         };
         let username = self.state.scrobbler.read(cx).username().to_string();
         let tempo = crate::settings::tempo_analysis();
-        // What the global rows have to show: the counts once they landed,
-        // a spinner while the lookup runs so a switched-on row is visible
-        // before its number is, nothing after a settled miss.
+        // A spinner while the lookup runs, so a switched-on row is visible
+        // before its number.
         let stats = match self.stats.as_ref().filter(|(k, _)| *k == key) {
             Some((_, Some(stats))) => Stats::Have(stats.clone()),
             Some((_, None)) => Stats::Miss,
             None if self.stats_pending.as_ref() == Some(&key) => Stats::Pending,
             None => Stats::Miss,
         };
-        // A global row stays on the sheet whatever the lookup found: the
-        // number, a spinner, or "n/a" once it's settled that there is
-        // none, so a switched-on row never silently vanishes.
+        // A switched-on global row never silently vanishes.
         let global = |pick: &dyn Fn(&TrackStats) -> Option<String>| match &stats {
             Stats::Have(stats) => Some(pick(stats).map_or(Value::Absent, Value::Text)),
             Stats::Pending => Some(Value::Pending),
             Stats::Miss => Some(Value::Absent),
         };
-        // The shown fields in the config's own order, which the customize
-        // window's arrows set, each skipped when its value is empty:
-        // absence reads cleaner than a labeled blank. The key comes along
-        // for [`query_field`], which decides whether the value is
-        // clickable. A global row is the exception, see above.
+        // The config's order. [`query_field`] decides whether a value clicks.
         let registry = self::fields();
         let mut fields: Vec<FieldRow> = Vec::new();
-        // A remote row was never scanned off a disk, so the date would be
-        // whenever the sync wrote it, which says nothing about the track.
+        // A remote row's added date is just when the sync wrote it.
         let remote = !key.is_local();
         for shown in &self.config.fields {
             let Some(col) = registry.iter().find(|c| c.key == shown.as_str()) else {
@@ -2806,8 +2443,6 @@ impl MetadataPanel {
                 "lastfm_plays" => global(&|s| {
                     (s.playcount > 0).then(|| rox_i18n::format::format_int(s.playcount as i64))
                 }),
-                // The tags as chips, each a pick on the genre filter, with
-                // the fallback's scope noted after them.
                 "lastfm_tags" => match &stats {
                     Stats::Have(s) if !s.tags.is_empty() => {
                         let scope = match s.tags_scope.as_str() {
@@ -2820,8 +2455,7 @@ impl MetadataPanel {
                     Stats::Have(_) | Stats::Miss => Some(Value::Absent),
                     Stats::Pending => Some(Value::Pending),
                 },
-                // The user's own rows only mean something with an account
-                // connected; without one they settle to "n/a".
+                // The user's rows need a connected account.
                 "lastfm_user_plays" => global(&|s| {
                     s.user_plays
                         .filter(|_| !username.is_empty())
@@ -2882,8 +2516,7 @@ impl MetadataPanel {
                             .join(", ")
                     })
                 }),
-                // What a complete track would have and this one lacks: the
-                // tag gaps off the row, the cover and lyrics off the facts.
+                // The tag gaps off the row, the cover and lyrics off the facts.
                 "missing" => details.as_ref().map(|d| {
                     let Some(facts) = &facts else {
                         return if facts_pending {
@@ -2931,17 +2564,13 @@ impl MetadataPanel {
                         )
                     }
                 }),
-                // The file name comes off the path, so it shows even for
-                // a track the library doesn't know.
                 "file" => path
                     .file_name()
                     .map(|name| Value::Text(name.to_string_lossy().into_owned())),
                 key => details.as_ref().and_then(|d| {
                     match key {
                         "album" => (!d.album.is_empty()).then(|| d.album.clone()),
-                        // Absent on everything but a romanized library, and
-                        // an absent value skips its row, so a Latin-only
-                        // sheet looks exactly as it did.
+                        // An empty sort name skips its row (see below).
                         "title_sort" => (!d.title_sort.is_empty()).then(|| d.title_sort.clone()),
                         "artist_sort" => (!d.artist_sort.is_empty()).then(|| d.artist_sort.clone()),
                         "album_sort" => (!d.album_sort.is_empty()).then(|| d.album_sort.clone()),
@@ -2952,8 +2581,7 @@ impl MetadataPanel {
                             && d.album_artist != d.artist)
                             .then(|| d.album_artist.clone()),
                         "disc" => (d.disc_no > 0).then(|| d.disc_no.to_string()),
-                        // With the album's disc counted, the position reads
-                        // against it: "04 of 12".
+                        // With the album's disc counted: "04 of 12".
                         "track" => (d.track_no > 0).then(|| {
                             let track = format!("{:02}", d.track_no);
                             if d.album_tracks > 1 {
@@ -3015,8 +2643,7 @@ impl MetadataPanel {
                         "sample_rate" => (d.sample_rate_hz > 0)
                             .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
                         "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
-                        // Whole beats, like the library column: the fraction
-                        // comes from the estimator, and an estimate says so.
+                        // Whole beats like the library column, and an estimate says so.
                         "bpm" => d.bpm.map(|bpm| {
                             let beats = rox_i18n::format::format_int(bpm.round() as i64);
                             if d.bpm_measured {
@@ -3035,11 +2662,8 @@ impl MetadataPanel {
                         _ => None,
                     }
                     .map(Value::Text)
-                    // A shown row stays on the sheet with "n/a" when the
-                    // track has nothing for it, so a switched-on field is
-                    // always accounted for. The sort names and the album
-                    // artist are the exception: they hide when they'd only
-                    // repeat the row above, which is most of the time.
+                    // A shown row with nothing reads "n/a". The sort names and album artist
+                    // hide instead, since they'd mostly repeat the row above.
                     .or_else(|| {
                         (!matches!(
                             key,
@@ -3057,8 +2681,6 @@ impl MetadataPanel {
                 if self.config.hide_empty && matches!(value, Value::Absent) {
                     continue;
                 }
-                // A field row's value is the tag itself, sort rows
-                // included, so none of them takes a reading.
                 fields.push(FieldRow {
                     label: col.label.clone(),
                     value,
@@ -3067,10 +2689,8 @@ impl MetadataPanel {
                 });
             }
         }
-        // Where a remote track is coming from, ahead of its tags. Outside
-        // the field registry on purpose: these aren't tags, they only
-        // exist for a row that isn't a file, and a sheet full of switched
-        // off tag rows should still say what it's describing.
+        // Outside the field registry: not tags, and a sheet of switched-off tag
+        // rows should still say what it describes.
         if remote {
             let mut head: Vec<FieldRow> = vec![FieldRow {
                 label: rox_i18n::t!("metadata-field-source"),
@@ -3078,9 +2698,8 @@ impl MetadataPanel {
                 reading: String::new(),
                 search: None,
             }];
-            // The station's own words about itself, which only exist while
-            // it's the thing playing: they come off the stream's headers
-            // and nothing writes them down.
+            // Only while the station plays: they come off its headers and aren't
+            // stored.
             if let Some(info) = self.station_info(&key, cx) {
                 for (label, value) in [
                     (rox_i18n::t!("metadata-field-station"), info.name),
@@ -3106,9 +2725,7 @@ impl MetadataPanel {
             .as_ref()
             .map(|d| d.artist.clone())
             .filter(|a| !a.is_empty());
-        // The head's two readings. A file the library doesn't know has no
-        // details and so no sort names, which is also the case where the
-        // title above is a file name rather than a tag.
+        // No details means no sort names, and the title above is a file name.
         let title_reading = details
             .as_ref()
             .map(|d| d.title_sort.clone())
@@ -3117,13 +2734,9 @@ impl MetadataPanel {
             .as_ref()
             .map(|d| d.artist_sort.clone())
             .unwrap_or_default();
-        // The title only searches when the library has the track; for one
-        // it doesn't the line is the file name, which no tag holds.
         let title_field = details.as_ref().and_then(|_| query_field("title"));
 
-        // The table face: title and artist fold in as rows, the list goes
-        // where the vertical knob puts it, and it scrolls when the panel
-        // runs short.
+        // Title and artist fold in as rows.
         if self.config.display == MetadataDisplay::Table {
             let mut rows: Vec<FieldRow> = Vec::new();
             rows.push(FieldRow {
@@ -3171,9 +2784,7 @@ impl MetadataPanel {
             );
         }
 
-        // The sheet: title over artist, the fields below, placed by the
-        // two alignment knobs. The cells build up front so each one gets
-        // its turn at the shared hit-id counter.
+        // Built up front so each cell takes its turn at the hit-id counter.
         let title_cell = value_cell(
             &title,
             &title_reading,
@@ -3234,18 +2845,12 @@ impl MetadataPanel {
         root.child(scroll_frame("metadata-sheet", align, sheet))
     }
 
-    /// The library scope's face: the catalog's counts through the same
-    /// two layouts the track fields use, "Library" standing where the
-    /// title does. Nothing here names a track, so there's no cover
-    /// backdrop and the values stay inert text.
     fn library_sheet(&mut self, root: Div, cx: &mut Context<Self>) -> Div {
         let align = self.config.align;
         let display = self.config.display;
         let stripes = self.config.stripes;
         let borders = self.config.row_borders;
         let Some(totals) = self.library_totals(cx) else {
-            // The projection is still loading: the quiet line the track
-            // scopes show while they point at nothing.
             return root.child(
                 justify(div().w_full().flex_none().flex(), align)
                     .p(tokens::SPACE_MD)
@@ -3346,10 +2951,6 @@ impl MetadataPanel {
         root.child(scroll_frame("metadata-sheet", align, sheet))
     }
 
-    /// The sheet's edit face: one input per editable field, the save and
-    /// cancel row under them, and whatever error the last read or commit
-    /// left. Enter saves through the inputs' own event; Escape cancels
-    /// here, where the widget propagates it.
     fn edit_sheet(&self, cx: &mut Context<Self>) -> Div {
         let Some(edit) = &self.edit else {
             return div();
@@ -3374,8 +2975,7 @@ impl MetadataPanel {
                     .child(div().flex_1().min_w_0().child(Input::new(input).small()))
             });
         div()
-            // Scopes the workspace's playback key bindings out while an
-            // input is focused, so space and arrows type instead.
+            // Scopes the playback bindings out while an input is focused.
             .key_context("SearchInput")
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key != "escape" {
@@ -3391,9 +2991,7 @@ impl MetadataPanel {
             .flex_col()
             .gap(px(2.))
             .children(rows)
-            // Romanize's one refusal: a kanji name with no dictionary
-            // installed. Muted, under the rows, and it says where the
-            // download is.
+            // Romanize's one refusal: a kanji name with no dictionary.
             .when_some(edit.note.clone(), |d, note| {
                 d.child(
                     div()
@@ -3428,15 +3026,12 @@ impl MetadataPanel {
                         edit.saving,
                         cx.listener(|this, _, _, cx| this.close_edit(cx)),
                     ))
-                    // Fills the empty sort inputs and stops there: what
-                    // it wrote is a proposal until Save takes it to the
-                    // file, and a typed sort name survives it.
+                    // What it writes is a proposal until Save, and a typed sort name
+                    // survives it.
                     .child(settings_ui::small_button(
                         rox_i18n::t!("metadata-romanize"),
                         icons::GLOBE,
-                        // Inert until the baseline read lands, like Save:
-                        // the read fills every input, so a fill before it
-                        // would be overwritten a moment later.
+                        // Inert until the baseline lands, which would overwrite a fill.
                         edit.saving || edit.baseline.is_none(),
                         cx.listener(|this, _, window, cx| this.fill_romanize(window, cx)),
                     )),
@@ -3453,8 +3048,6 @@ mod tests {
     use rox_library::writer::Field;
     use rox_romanize::Reading;
 
-    /// One input value per [`edit_fields`] entry, seeded from a baseline
-    /// so nothing reads as drifted until the caller moves a field.
     fn inputs(baseline: &[(Field, String)]) -> Vec<String> {
         edit_fields()
             .iter()
@@ -3468,11 +3061,8 @@ mod tests {
             .collect()
     }
 
-    /// Typing a romanization into one sort field writes that field and
-    /// nothing else, and leaving the form alone writes nothing at all.
-    /// This is the property the baseline diff exists for, and the one
-    /// that breaks if `writer::field_of` is missing a reverse arm: a
-    /// sort field with no baseline entry would read as always-dirty.
+    /// This breaks if `writer::field_of` misses a reverse arm: a sort field
+    /// with no baseline entry would read as always-dirty.
     #[test]
     fn only_the_moved_sort_field_writes() {
         let baseline = vec![
@@ -3493,7 +3083,6 @@ mod tests {
         assert!(changes[0].field == Field::AlbumArtistSort);
         assert!(changes[0].value.as_deref() == Some("Yonezu, Kenshi"));
 
-        // Emptying a sort field the file carries drops the tag.
         let mut values = inputs(&baseline);
         let ix = edit_fields()
             .iter()
@@ -3506,9 +3095,6 @@ mod tests {
         assert!(changes[0].value.is_none());
     }
 
-    /// Every sort field the form edits has a read-only row to show it
-    /// when the panel isn't editing, so a value a user types comes back
-    /// as a labeled row instead of vanishing until the next edit.
     #[test]
     fn sort_names_show_outside_the_edit_form() {
         for key in [
@@ -3529,8 +3115,6 @@ mod tests {
         }
     }
 
-    /// Every projection field the library table offers has a sheet row
-    /// too, so the two faces never disagree about what a track carries.
     #[test]
     fn projection_extras_have_fields() {
         for key in ["bpm", "gain_track", "gain_album", "added"] {
@@ -3538,9 +3122,6 @@ mod tests {
         }
     }
 
-    /// A layout saved before the library scope existed spells its source
-    /// the shared track pair's way, and still reads; no source at all is
-    /// the stock follow-playing.
     #[test]
     fn track_sources_read_unchanged() {
         let config: MetadataConfig = serde_json::from_str(r#"{"source": "selected"}"#).unwrap();
@@ -3553,19 +3134,15 @@ mod tests {
         assert!(config.source == MetadataSource::Library);
     }
 
-    /// Romanize's decision, per field. The dictionary is never installed
-    /// on a CI runner, so these are the cases that answer without one:
-    /// kana reads, kanji doesn't, and neither one gets to touch a value
-    /// somebody typed.
+    /// The dictionary is never installed on CI, so these cases answer without
+    /// one.
     #[test]
     fn romanize_fills_only_the_empty_sort_inputs() {
-        // An empty input with a non-Latin name gets its reading.
         assert_eq!(
             sort_fill("レモン", "", "", Reading::Auto, None),
             Fill::Value("Remon".to_string())
         );
-        // A typed sort name is never overwritten, whatever else is on
-        // offer.
+        // A typed sort name is never overwritten.
         assert_eq!(
             sort_fill("レモン", "Lemon", "", Reading::Auto, None),
             Fill::Leave
@@ -3574,40 +3151,30 @@ mod tests {
             sort_fill("レモン", "Lemon", "remon", Reading::Auto, None),
             Fill::Leave
         );
-        // A Latin name has no reading to add, so the row stays empty
-        // rather than filling with a copy of itself, and the sort name
-        // the library holds for it stays out of the file too: this
-        // button romanizes, it doesn't fill sort names in general.
+        // This button romanizes; it doesn't fill sort names in general.
         assert_eq!(sort_fill("Lemon", "", "", Reading::Auto, None), Fill::Leave);
         assert_eq!(
             sort_fill("The Beatles", "", "Beatles, The", Reading::Auto, None),
             Fill::Leave
         );
-        // The sort name the library already holds wins over a fresh
-        // reading: it's MusicBrainz's or the user's answer, where the
-        // reading is IPADIC's guess.
+        // The stored sort name wins over a fresh reading.
         assert_eq!(
             sort_fill("米津玄師", "", "Yonezu, Kenshi", Reading::Japanese, None),
             Fill::Value("Yonezu, Kenshi".to_string())
         );
-        // Kanji with nothing stored and no dictionary: the sheet says so
-        // instead of writing a Chinese reading of Japanese text.
+        // Never a Chinese reading of Japanese text.
         assert_eq!(
             sort_fill("米津玄師", "", "", Reading::Japanese, None),
             Fill::NeedsDictionary
         );
     }
 
-    /// Every sort field the button fills is a field the form actually
-    /// has, and each one is paired with the name it sorts.
     #[test]
     fn romanize_covers_the_four_sort_fields() {
         let targets = sort_targets(None);
         for (sort, base, stored) in &targets {
             assert!(edit_fields().iter().any(|(f, _)| f == sort), "{sort:?}");
             assert!(edit_fields().iter().any(|(f, _)| f == base), "{base:?}");
-            // No row, nothing stored: the fill falls back to reading the
-            // name itself.
             assert!(stored.is_empty());
         }
         for field in [
@@ -3620,8 +3187,6 @@ mod tests {
         }
     }
 
-    /// The row context menu names the field it copies, so a right click
-    /// on Title offers Copy Title rather than a bare Copy.
     #[test]
     fn the_copy_entry_carries_the_rows_label() {
         let label = rox_i18n::t!("info-item-title");

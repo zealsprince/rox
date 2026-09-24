@@ -1,58 +1,32 @@
-//! What a window has to draw for itself when the compositor leaves it
-//! bare: the resize grips along its edges, and the test for whether it's
-//! in that spot at all.
-//!
-//! Wayland is the case that matters. A compositor advertises
-//! `zxdg_decoration_manager_v1` or it doesn't, and the ones that don't
-//! (GNOME's mutter) hand back an undecorated surface no matter what the
-//! window asked for. Nothing else supplies a close button or an edge to
-//! drag, so the window supplies both.
+//! What a window draws for itself when the compositor leaves it bare. Wayland
+//! compositors without `zxdg_decoration_manager_v1` (GNOME's mutter) hand back
+//! an undecorated surface whatever the window asked for.
 
 use gpui::{
     Decorations, Div, MouseButton, ResizeEdge, Tiling, Window, WindowDecorations, div, prelude::*,
     px,
 };
 
-/// How far in from an edge a press still counts as a resize. Wider than
-/// the 1px an OS frame gets away with: there's no visible border here to
-/// aim at, so the zone has to be findable by feel.
+/// Wider than an OS frame's 1px: there's no visible border to aim at.
 const GRIP: gpui::Pixels = px(6.);
 
-/// The corner zones, where a press resizes both axes at once. Square, so
-/// a corner reads as a corner rather than two edges meeting.
 const CORNER: gpui::Pixels = px(14.);
 
-/// Whether `window` is missing the chrome it asked for: it wanted the OS
-/// frame and came up client-decorated anyway. True only where the
-/// compositor refused, so a window that deliberately asked to go bare
-/// (the OS Decorations toggle, off) answers false and keeps its own
-/// arrangement.
+/// True only where the window asked for the OS frame and the compositor
+/// refused. A window that asked to go bare keeps its own arrangement.
 pub fn chrome_missing(asked: WindowDecorations, window: &Window) -> bool {
     refused(asked, window.window_decorations())
 }
 
-/// [`chrome_missing`] without the window, so the rule itself is testable.
 fn refused(asked: WindowDecorations, got: Decorations) -> bool {
     matches!(asked, WindowDecorations::Server) && matches!(got, Decorations::Client { .. })
 }
 
-/// The resize grips for a window drawing its own chrome: four edges and
-/// four corners, absolutely placed, meant as the last child of the window
-/// root so they paint over whatever content reaches the edge. None when
-/// the OS owns the frame and there's nothing to stand in for.
+/// Paint as the window root's last child. Tiled edges are skipped since they
+/// won't resize.
 ///
-/// Drawn whichever way the window ended up undecorated: the compositor
-/// refused, or the OS Decorations toggle asked it to. Both leave the same
-/// hole, since a bare Wayland surface has no edge of its own to drag.
-///
-/// An edge the compositor reports as tiled is skipped: it's flush against
-/// a screen edge or a neighbour and won't resize, so a grip there would
-/// be a cursor change that does nothing.
-///
-/// Linux only. `start_window_resize` is implemented on X11 and Wayland
-/// and nowhere else, so the grips would be dead zones eating edge clicks
-/// on Windows (which has its own resize border, see the Resize Border
-/// setting) and macOS (which never goes client-decorated).
+/// Linux only: `start_window_resize` exists on X11 and Wayland and nowhere
+/// else, so elsewhere the grips would be dead zones eating edge clicks.
 pub fn resize_grips(window: &Window) -> Option<Div> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -66,15 +40,13 @@ pub fn resize_grips(window: &Window) -> Option<Div> {
         div()
             .absolute()
             .inset_0()
-            // The container itself takes no hits, only the eight children
-            // below do, so the content underneath stays clickable.
+            // Only the children take hits, so the content stays clickable.
             .children(edges(tiling))
             .children(corners(tiling)),
     )
 }
 
-/// The four straight edges, each inset by a corner at both ends so the
-/// corner zones win the overlap.
+/// Each inset by a corner at both ends so the corners win the overlap.
 fn edges(tiling: Tiling) -> Vec<Div> {
     let mut out = Vec::with_capacity(4);
 
@@ -125,8 +97,7 @@ fn edges(tiling: Tiling) -> Vec<Div> {
     out
 }
 
-/// The four corners. A corner needs both of its edges free to be worth
-/// drawing: pinned on either axis, the diagonal drag can't go anywhere.
+/// A corner needs both its edges free, or the diagonal drag goes nowhere.
 fn corners(tiling: Tiling) -> Vec<Div> {
     let mut out = Vec::with_capacity(4);
 
@@ -173,10 +144,6 @@ fn corners(tiling: Tiling) -> Vec<Div> {
     out
 }
 
-/// One grip: an invisible absolutely-placed zone that hands the press to
-/// the compositor's own resize loop. The caller sizes and places it and
-/// picks the cursor; everything from the press on belongs to the
-/// compositor, so there's no drag to track on this side.
 fn grip(edge: ResizeEdge) -> Div {
     div()
         .absolute()
@@ -189,27 +156,21 @@ fn grip(edge: ResizeEdge) -> Div {
 mod tests {
     use super::*;
 
-    /// The rule the fallback titlebar hangs off. Getting the ask backwards
-    /// either strands a GNOME window with no close button (the bug this
-    /// exists for) or stacks a second titlebar on a layout that turned the
-    /// OS chrome off on purpose.
+    /// Getting this backwards strands a GNOME window with no close button or
+    /// stacks a second titlebar on a layout that went bare on purpose.
     #[test]
     fn only_a_refused_ask_counts_as_missing() {
         let client = Decorations::Client {
             tiling: Tiling::default(),
         };
 
-        // Wanted the OS frame, came up bare: the compositor refused.
         assert!(refused(WindowDecorations::Server, client));
 
-        // Wanted the OS frame and got it.
         assert!(!refused(WindowDecorations::Server, Decorations::Server));
 
-        // Asked to go bare, went bare. The layout owns its own chrome.
         assert!(!refused(WindowDecorations::Client, client));
 
-        // Asked to go bare and the compositor decorated it anyway, which
-        // xdg-decoration allows. Nothing is missing, so nothing is drawn.
+        // xdg-decoration allows decorating a window that asked to go bare.
         assert!(!refused(WindowDecorations::Client, Decorations::Server));
     }
 }

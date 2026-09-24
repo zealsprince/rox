@@ -1,7 +1,5 @@
-//! The bookmark modal: a name field and a color row, for a mark about to
-//! be dropped (Shift+M, taking the position at the press) or one being
-//! edited from a strip's chevron or the bookmarks panel. Modeled on the
-//! playlist name window. A blank name is fine: the mark shows its time.
+//! The bookmark modal: a name and a color, for a mark about to drop (Shift+M)
+//! or one being edited. A blank name is fine: the mark shows its time.
 
 use gpui::{
     App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, Rgba, SharedString,
@@ -22,29 +20,22 @@ use rox_services::backdrop::WindowBackdrop;
 
 actions!(bookmark_dialog, [Save, Cancel]);
 
-/// The key context the window's own bindings scope to.
 const CONTEXT: &str = "BookmarkName";
 
-/// The modal's save and dismiss bindings; call once at startup. Bound on
-/// the window root so Enter commits and Escape closes wherever focus is.
-/// The name field and the color picker each pass an idle Escape through,
-/// so the binding only sees the press once neither had a use for it.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([
+/// Bound on the window root so Enter and Escape work wherever focus is. The
+/// name field and color picker pass an idle Escape through.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("enter", Save, Some(CONTEXT)),
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
-    ]);
+    ]
 }
 
-/// What the modal commits on Enter.
 enum Action {
-    /// Drop a mark this many milliseconds into the track.
     New { key: TrackKey, position_ms: u32 },
-    /// Rename and recolor this mark.
     Edit(i64),
 }
 
-/// Open the new-mark modal, the position already taken.
 pub fn open_new(state: AppState, key: TrackKey, secs: f64, cx: &mut App) {
     let position_ms = (secs.max(0.0) * 1000.0).round() as u32;
     open_modal(
@@ -57,8 +48,7 @@ pub fn open_new(state: AppState, key: TrackKey, secs: f64, cx: &mut App) {
     );
 }
 
-/// Open the edit modal over an existing mark, seeded with its name and
-/// color. A mark that has since been removed opens nothing.
+/// A mark removed in the meantime opens nothing.
 pub fn open_edit(state: AppState, id: i64, cx: &mut App) {
     let Some(mark) = state.library.read(cx).bookmark(id) else {
         return;
@@ -92,14 +82,12 @@ struct BookmarkWindow {
     state: AppState,
     action: Action,
     input: Entity<InputState>,
-    /// The chosen color as `#rrggbb`, None for the theme accent.
+    /// `#rrggbb`, None for the theme accent.
     color: Option<String>,
     picker: Entity<ColorPickerState>,
     backdrop: WindowBackdrop,
     _input_events: Subscription,
     _picker_events: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own wake on
-    /// a new bake.
     _backdrop_changed: Subscription,
 }
 
@@ -122,8 +110,6 @@ impl BookmarkWindow {
                 cx.notify();
             }
         });
-        // The picker seeds from the current color so a custom pick starts
-        // near where the mark already is rather than at a stock value.
         let seed: Rgba = bookmark_ui::color_of(color.as_deref());
         let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(seed));
         let _picker_events = cx.subscribe_in(
@@ -152,7 +138,6 @@ impl BookmarkWindow {
         }
     }
 
-    /// Commit and close.
     fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.input.read(cx).value().trim().to_string();
         let color = self.color.clone();
@@ -170,9 +155,6 @@ impl BookmarkWindow {
         window.remove_window();
     }
 
-    /// The swatch row: the accent, the quick picks, and the picker for
-    /// anything else. The chosen one wears a ring; a custom color off the
-    /// quick set shows as the picker's own swatch being the ring's.
     fn colors(&self, cx: &mut Context<Self>) -> Div {
         let current = self.color.as_deref().map(str::to_ascii_lowercase);
         let custom = current
@@ -209,7 +191,7 @@ impl BookmarkWindow {
         )
     }
 
-    /// One round swatch; `pick` is the hex it sets, None for the accent.
+    /// `pick` is the hex it sets, None for the accent.
     fn swatch(
         &self,
         ix: u64,
@@ -237,7 +219,6 @@ impl BookmarkWindow {
             }))
     }
 
-    /// The window's own actions: the save, and the shortcut for it.
     fn footer(&self, cx: &mut Context<Self>) -> Div {
         let hint = kbd_line([
             Seg::Text(rox_i18n::t!("bookmark-hint-before")),
@@ -278,8 +259,6 @@ impl BookmarkWindow {
             )
     }
 
-    /// Where the mark sits, for the new-mark modal's heading: the time
-    /// the press took, so what gets saved is never a surprise.
     fn position_line(&self) -> Option<Div> {
         let Action::New { position_ms, .. } = &self.action else {
             return None;
@@ -344,10 +323,8 @@ impl Render for BookmarkWindow {
     }
 }
 
-/// Drop a mark at the playing position: silently with the M key, or
-/// through the modal for a named one. Nothing playing means nothing to
-/// mark, and a track from outside the library has no row to hang one on,
-/// which the library reports by adding nothing.
+/// Drop a mark at the playing position: silently, or through the modal when
+/// `named`. A track outside the library gets nothing.
 pub fn drop_here(state: AppState, named: bool, cx: &mut App) {
     let Some(now) = state.player.read(cx).now_playing() else {
         return;

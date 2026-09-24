@@ -1,19 +1,14 @@
-//! CUE sheet support: the parser and the two types that describe a cue track
-//! through the rest of the app. A cue rip is one image file (a whole-disc
-//! FLAC or WAV) split into tracks by timestamps in a sidecar .cue sheet, so
-//! a track stops being a file and becomes a span inside one. Identity per
-//! the subsong model: a track is (source, path, sub), where sub is 0 for a
-//! plain file and the 1-based cue track number for a span, and the source
-//! is "local" for everything that came off disk.
+//! CUE sheet support, and the track identity types built around it. A cue
+//! rip is one image file split into tracks by a sidecar sheet, so a track is
+//! (source, path, sub): sub 0 for a plain file, the 1-based cue track number
+//! for a span.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
-/// A cue track's slice of its image file, in milliseconds from the start.
-/// `end_ms` is None on the last track of an image, which runs to the end of
-/// the file; the store keeps that as NULL so the boundary follows the file
-/// rather than a duration measured at scan time.
+/// `end_ms` None means the last track, running to the file's end; stored as
+/// NULL so the boundary follows the file, not a scan-time duration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     pub start_ms: u32,
@@ -21,35 +16,26 @@ pub struct Span {
 }
 
 impl Span {
-    /// The span's length where it has one; the last track of an image
-    /// answers None and the caller falls back to the file's own end.
     pub fn len_ms(&self) -> Option<u32> {
         self.end_ms.map(|end| end.saturating_sub(self.start_ms))
     }
 }
 
-/// Which source a track belongs to: "local" for a file on disk, whatever a
-/// source names itself otherwise ("subsonic:<server-id>", "radio"). An
-/// `Arc<str>` rather than a `String` because a key is cloned per queue entry
-/// and per queue snapshot while the value repeats across every row of a
-/// library, so the clone should be a pointer bump.
+/// "local", or whatever a source names itself ("subsonic:<id>", "radio").
+/// `Arc<str>` so cloning a key per queue entry is a pointer bump.
 pub type SourceId = Arc<str>;
 
-/// The source every track had before sources existed: a file on disk.
 pub const LOCAL: &str = "local";
 
-/// The one shared allocation behind every local key. Handing out clones of
-/// it keeps the overwhelmingly common case off the allocator.
+/// One shared allocation behind every local key.
 pub fn local() -> SourceId {
     static LOCAL_ID: OnceLock<SourceId> = OnceLock::new();
 
     LOCAL_ID.get_or_init(|| Arc::from(LOCAL)).clone()
 }
 
-/// A source string as a [`SourceId`], sharing the one local allocation for
-/// the case that's almost every row. Anything reading a source off a
-/// database row or a projection row goes through this rather than
-/// `Arc::from`, so a library of a million local tracks holds one.
+/// Go through this rather than `Arc::from` so local rows share one
+/// allocation.
 pub fn source_id(source: &str) -> SourceId {
     if source == LOCAL {
         local()
@@ -58,28 +44,18 @@ pub fn source_id(source: &str) -> SourceId {
     }
 }
 
-/// What each source is called where a person reads it: "Local", a
-/// server's own name or host, "Radio". The source string is a storage key,
-/// and a Subsonic one is a digest nobody would recognize, so every surface
-/// that shows a source or matches one typed by hand asks here.
-///
-/// The names live in settings, which this crate sits below, so the layer
-/// that reads them fills the table: the catalog, each time it loads a
-/// projection. Held process-wide rather than on the projection because
-/// the queue, the history and the playlists match `source:` over rows the
-/// projection never sees.
+/// Display names per source string (a Subsonic string is a digest). Filled
+/// by the catalog from settings, which this crate sits below. Process-wide
+/// because the queue, history and playlists match `source:` too.
 static SOURCE_LABELS: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 
-/// Replace the whole name table.
 pub fn set_source_labels(labels: HashMap<String, String>) {
     if let Ok(mut table) = SOURCE_LABELS.write() {
         *table = Some(labels);
     }
 }
 
-/// What a source is called: its name from the table, or the source string
-/// itself for one the table doesn't know, which is still better than
-/// nothing and is what a source added before the next load shows.
+/// Falls back to the source string for one the table doesn't know yet.
 pub fn source_label(source: &str) -> String {
     SOURCE_LABELS
         .read()
@@ -88,23 +64,11 @@ pub fn source_label(source: &str) -> String {
         .unwrap_or_else(|| source.to_string())
 }
 
-/// The prefix every Subsonic source string carries, one source per
-/// configured server with a digest of its URL and user behind the colon.
-/// Written out here rather than imported because the format lives in
-/// rox-net, which this crate sits below.
+/// Written out here because the format lives in rox-net, above this crate.
 pub const SUBSONIC_PREFIX: &str = "subsonic:";
 
-/// Which kind of source a track came from, as the UI branches on it. The
-/// source string is the storage form and there are as many of them as
-/// there are configured servers; this is the three cases a surface
-/// actually draws differently. A station has no timeline and gets its
-/// song title off the stream, a server-backed track has no file behind
-/// it, and a local file is everything the app did before sources.
-///
-/// Anything the match doesn't recognize reads as [`Origin::Subsonic`]
-/// would be a lie, so it reads as local: a future source added without
-/// touching this still draws like a plain track rather than borrowing a
-/// station's live handling.
+/// The three cases a surface draws differently. Anything unrecognized reads
+/// as local, so a new source never borrows a station's live handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Origin {
     Local,
@@ -113,8 +77,7 @@ pub enum Origin {
 }
 
 impl Origin {
-    /// Read a source string. Takes the string rather than a key so a
-    /// projection row, which carries its source and no key, can ask too.
+    /// Takes the string so a projection row, which has no key, can ask too.
     pub fn of(source: &str) -> Origin {
         if source == crate::stations::SOURCE {
             Origin::Radio
@@ -126,16 +89,9 @@ impl Origin {
     }
 }
 
-/// What a play request points at: a source, something within it, and which
-/// subsong of that. Plain files are sub 0; cue tracks use their 1-based
-/// track number. This is the currency the player and panels trade in where
-/// a bare PathBuf used to do, so two tracks of the same image stay distinct
-/// in a queue.
-///
-/// The source is part of the key rather than a lookup off it, because
-/// identity repeats across sources: a Subsonic server's song id and a path
-/// on disk can be the same string, and two servers can hand back the same
-/// id for different music.
+/// What a play request points at: source, path within it, and subsong.
+/// The source is part of the key because identity repeats across sources: a
+/// server's song id can equal a path on disk.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TrackKey {
     pub source: SourceId,
@@ -154,25 +110,16 @@ impl From<PathBuf> for TrackKey {
 }
 
 impl TrackKey {
-    /// True for a track that lives on disk, which is still most of them.
     pub fn is_local(&self) -> bool {
         &*self.source == LOCAL
     }
 
-    /// Which kind of source this track came from, for the surfaces that
-    /// draw one differently.
     pub fn origin(&self) -> Origin {
         Origin::of(&self.source)
     }
 
-    /// The string form for stores that only hold text (m3u exports): the
-    /// bare path for a plain file, `path#N` for a cue track. Readers try
-    /// the string as a literal path first, so a real file whose name ends
-    /// in `#2` still resolves to itself ahead of the fragment reading.
-    ///
-    /// A local key writes exactly what it always wrote, so an m3u exported
-    /// before sources and one exported after are the same file. Any other
-    /// source prefixes `source|`.
+    /// The text form for m3u exports: the path, `path#N` for a cue track, and a
+    /// `source|` prefix for anything non-local.
     pub fn to_fragment(&self) -> String {
         let path = self.path.display();
 
@@ -189,19 +136,15 @@ impl TrackKey {
         }
     }
 
-    /// Read a fragment string back, `exists` deciding whether the literal
-    /// reading wins: handed a callback that checks the store (or the disk),
-    /// a name that really ends in `#2` beats the cue reading of it. The
-    /// source prefix is read the same way round, since `|` is a legal
-    /// character in a file name and a path holding one has to stay whole.
+    /// `exists` decides whether the literal reading wins, so a real name ending
+    /// in `#2` (or holding `|`) stays whole.
     pub fn from_fragment(s: &str, exists: impl Fn(&str) -> bool) -> TrackKey {
         if !exists(s)
             && let Some((source, rest)) = s.split_once('|')
             && !source.is_empty()
             && source != LOCAL
         {
-            // Past the prefix there's no on-disk reading left to lose to, so
-            // a `#N` suffix here means what it says.
+            // Past the prefix, no on-disk reading can lose to the `#N`.
             let (path, sub) = match rest.rsplit_once('#') {
                 Some((path, sub)) => match sub.parse::<u16>() {
                     Ok(sub) if sub > 0 => (path, sub),
@@ -240,10 +183,8 @@ impl TrackKey {
     }
 }
 
-/// A parsed .cue sheet: the album-level tags, then the image files it splits.
-/// Most sheets name exactly one file, but a per-track rip with a cue on top
-/// (one FILE per song) is legal and shows up in the wild, so files is a list
-/// and track spans never cross a file boundary.
+/// A per-track rip with one FILE per song is legal, so `files` is a list and
+/// spans never cross a file boundary.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CueSheet {
     pub title: String,
@@ -253,18 +194,15 @@ pub struct CueSheet {
     pub files: Vec<CueFile>,
 }
 
-/// One image file and the tracks cut out of it. `path` is the FILE argument
-/// exactly as the sheet wrote it, relative names and all; resolving that
-/// against the sheet's own directory is the scanner's call, not the parser's.
+/// `path` is the FILE argument as written; resolving it is the scanner's job.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CueFile {
     pub path: String,
     pub tracks: Vec<CueTrack>,
 }
 
-/// A single cue track. `number` is what the sheet said rather than the
-/// position in the list, since that number is the `sub` half of a TrackKey
-/// and has to stay stable when data tracks are skipped out of the middle.
+/// `number` is the sheet's own, stable when data tracks are skipped: it's
+/// the `sub` half of a TrackKey.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CueTrack {
     pub number: u16,
@@ -273,12 +211,8 @@ pub struct CueTrack {
     pub span: Span,
 }
 
-/// The cp1252 mapping for 0x80 to 0x9F, the one stretch where Windows-1252
-/// and Latin-1 disagree. Everything below 0x80 is ASCII and everything from
-/// 0xA0 up matches Latin-1, which is a straight cast to char. The five slots
-/// cp1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) answer U+FFFD, so
-/// a byte that was never text stays visibly wrong instead of quietly
-/// borrowing a C1 control's identity.
+/// cp1252 for 0x80..=0x9F, the only stretch that differs from Latin-1.
+/// Undefined slots answer U+FFFD so non-text stays visibly wrong.
 const CP1252_HIGH: [char; 32] = [
     '\u{20ac}', '\u{fffd}', '\u{201a}', '\u{0192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}',
     '\u{02c6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{fffd}', '\u{017d}', '\u{fffd}',
@@ -286,12 +220,8 @@ const CP1252_HIGH: [char; 32] = [
     '\u{02dc}', '\u{2122}', '\u{0161}', '\u{203a}', '\u{0153}', '\u{fffd}', '\u{017e}', '\u{0178}',
 ];
 
-/// Get text out of a cue file's bytes. Sheets have no encoding declaration
-/// and predate UTF-8 by a decade, so the rule is UTF-8 first (with the BOM
-/// that Windows editors like to leave behind stripped) and Windows-1252 as
-/// the fallback when that fails. cp1252 can't fail, every byte maps to
-/// something, which is exactly why it only runs second: guess it too early
-/// and a real UTF-8 sheet turns into mojibake.
+/// UTF-8 first (BOM stripped), cp1252 as the fallback. cp1252 never fails,
+/// so it has to run second.
 fn decode(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     match std::str::from_utf8(bytes) {
@@ -306,9 +236,6 @@ fn decode(bytes: &[u8]) -> String {
     }
 }
 
-/// Peel the leading bare word off a line, handing back the word and what
-/// follows it. Leading whitespace goes, which makes the indentation every
-/// cue sheet uses under TRACK a non-issue.
 fn split_token(s: &str) -> Option<(&str, &str)> {
     let s = s.trim_start();
     if s.is_empty() {
@@ -320,10 +247,7 @@ fn split_token(s: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// Read one command argument. Quoted arguments run to the closing quote and
-/// may hold spaces, bare ones stop at the next whitespace. An unterminated
-/// quote takes the rest of the line instead of dropping the value, since a
-/// truncated title still beats no title.
+/// An unterminated quote takes the rest of the line.
 fn read_arg(s: &str) -> Option<(String, &str)> {
     let s = s.trim_start();
     if let Some(rest) = s.strip_prefix('"') {
@@ -335,10 +259,8 @@ fn read_arg(s: &str) -> Option<(String, &str)> {
     split_token(s).map(|(word, rest)| (word.to_string(), rest))
 }
 
-/// `mm:ss:ff` to milliseconds. Frames are 1/75 of a second on a CD, and the
-/// division truncates, so 37 frames is 493ms rather than 493.33. Minutes
-/// aren't capped at 59 because a single-file rip counts straight through the
-/// disc, and a missing frame field is read as zero.
+/// `mm:ss:ff`, 75 frames a second, truncated. Minutes aren't capped: a
+/// single-file rip counts straight through the disc.
 fn parse_time(s: &str) -> Option<u32> {
     let mut parts = s.split(':');
     let minutes: u64 = parts.next()?.trim().parse().ok()?;
@@ -351,10 +273,8 @@ fn parse_time(s: &str) -> Option<u32> {
     Some(ms.min(u32::MAX as u64) as u32)
 }
 
-/// The first standalone four-digit run in a REM DATE value. Sheets write the
-/// year as `1997`, `1997-05-01`, or the odd `05/1997`, and looking for a run
-/// of exactly four digits picks the year out of all three without pretending
-/// to parse a date.
+/// The first standalone four-digit run, so `1997-05-01` and `05/1997` both
+/// work.
 fn first_year(s: &str) -> u16 {
     s.split(|c: char| !c.is_ascii_digit())
         .find(|group| group.len() == 4)
@@ -362,9 +282,8 @@ fn first_year(s: &str) -> u16 {
         .unwrap_or(0)
 }
 
-/// A track being filled in as its lines go by. Both indexes are kept because
-/// INDEX 01 is the real start and INDEX 00 is the pregap, and a sheet that
-/// only ever writes INDEX 00 still has to yield a usable start.
+/// INDEX 01 is the start; INDEX 00 (the pregap) stands in when it's the only
+/// one.
 struct Pending {
     number: u16,
     title: String,
@@ -373,18 +292,14 @@ struct Pending {
     index01: Option<u32>,
 }
 
-/// Where the parser is relative to a TRACK command. The Skipped arm matters
-/// as much as the other two: a data track's TITLE has to go nowhere, and
-/// without a state for it that title would fall through to the album.
+/// Skipped exists so a data track's TITLE can't fall through to the album.
 enum TrackState {
     Album,
     Skipped,
     Audio(Pending),
 }
 
-/// Close out the track being built and hang it on the current file. A track
-/// with no INDEX at all is dropped, as is one that arrived before any FILE
-/// line, because neither has a span anything could play.
+/// A track with no INDEX, or before any FILE, has no span and is dropped.
 fn flush_track(state: &mut TrackState, file: &mut Option<CueFile>) {
     let TrackState::Audio(pending) = std::mem::replace(state, TrackState::Album) else {
         return;
@@ -403,12 +318,8 @@ fn flush_track(state: &mut TrackState, file: &mut Option<CueFile>) {
     });
 }
 
-/// Read a .cue sheet. Answers None when nothing playable came out of it, so
-/// a sheet that's all data tracks, or one that isn't a cue sheet at all,
-/// reads the same as an unparseable one to the caller. Anything it doesn't
-/// recognise (CATALOG, ISRC, FLAGS, SONGWRITER, PREGAP, plain junk) is
-/// skipped rather than treated as an error, since half the sheets in a real
-/// library have some ripper's private line.
+/// None when nothing playable came out. Unknown commands are skipped, not
+/// errors: half of real sheets carry some ripper's private line.
 pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
     let text = decode(bytes);
     let mut sheet = CueSheet::default();
@@ -425,8 +336,7 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
                 if let Some(done) = current.take() {
                     sheet.files.push(done);
                 }
-                // The trailing WAVE/MP3/BINARY word is noise: the decoder
-                // reads the real format off the file, and sheets lie here.
+                // The WAVE/MP3/BINARY word is ignored: sheets lie, the decoder knows.
                 if let Some((path, _)) = read_arg(rest) {
                     current = Some(CueFile {
                         path,
@@ -450,8 +360,7 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
                         index00: None,
                         index01: None,
                     }),
-                    // A data track, or a TRACK line we couldn't read. Either
-                    // way the whole block including its indexes goes.
+                    // A data track or an unreadable TRACK line: the whole block goes.
                     None => TrackState::Skipped,
                 };
             }
@@ -479,16 +388,12 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
                     match (number.trim().parse::<u8>().ok(), at) {
                         (Some(0), Some(at)) => pending.index00 = Some(at),
                         (Some(1), Some(at)) => pending.index01 = Some(at),
-                        // INDEX 02 and up are intra-track markers nothing
-                        // here plays from, so they're dropped.
                         _ => {}
                     }
                 }
             }
             "REM" => {
-                // REM is the escape hatch rippers hang their own tags off.
-                // Only genre and date mean anything to us; the rest, COMMENT
-                // included, is a comment and is treated like one.
+                // Only genre and date mean anything among REM lines.
                 let Some((keyword, tail)) = split_token(rest) else {
                     continue;
                 };
@@ -509,24 +414,18 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
     }
 
     for file in &mut sheet.files {
-        // A track runs until the next one starts, which is why the ends get
-        // filled in here rather than as the tracks are read. The last track
-        // of every file keeps None: it runs to the end of its image, and
-        // that boundary belongs to the file, not the sheet.
+        // Each end is the next start; the last track's end stays None.
         let starts: Vec<u32> = file.tracks.iter().map(|t| t.span.start_ms).collect();
         for (i, track) in file.tracks.iter_mut().enumerate() {
             track.span.end_ms = starts.get(i + 1).copied();
         }
-        // Out-of-order or duplicate timestamps would make an empty or
-        // backwards span. Drop those tracks and keep the rest of the sheet.
+        // Drop tracks with empty or backwards spans, keep the rest.
         file.tracks
             .retain(|t| t.span.end_ms.is_none_or(|end| end > t.span.start_ms));
     }
     sheet.files.retain(|file| !file.tracks.is_empty());
 
-    // A track that never named a performer belongs to whoever made the
-    // album, which is the common case: only compilations bother repeating
-    // PERFORMER per track.
+    // A track without its own PERFORMER takes the album's.
     for file in &mut sheet.files {
         for track in &mut file.tracks {
             if track.performer.is_empty() {
@@ -575,11 +474,9 @@ FILE "Urban Hymns.flac" WAVE
         let numbers: Vec<u16> = file.tracks.iter().map(|t| t.number).collect();
         assert_eq!(numbers, [1, 2, 3]);
 
-        // 5:58 and 37 frames is 358000 + 493ms, the frame division floored.
         assert_eq!(file.tracks[0].span.start_ms, 0);
         assert_eq!(file.tracks[0].span.end_ms, Some(358_493));
         assert_eq!(file.tracks[1].span.start_ms, 358_493);
-        // 10:20 and 11 frames is 620000 + 146ms.
         assert_eq!(file.tracks[1].span.end_ms, Some(620_146));
         assert_eq!(file.tracks[2].span.start_ms, 620_146);
         assert_eq!(file.tracks[2].span.end_ms, None, "last track runs to EOF");
@@ -600,8 +497,6 @@ FILE "Urban Hymns.flac" WAVE
 
     #[test]
     fn decodes_windows_1252_bytes() {
-        // Raw cp1252, not UTF-8: 0xE9 is e-acute, 0xF6 is o-umlaut, 0x92 is
-        // the curly apostrophe that only cp1252 puts in that slot.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"PERFORMER \"Bj");
         bytes.push(0xF6);
@@ -839,7 +734,6 @@ FILE "Urban Hymns.flac" WAVE
             cue
         );
 
-        // A file that really is named `...#2` wins over the cue reading.
         let literal = TrackKey::from(PathBuf::from("/m/track#2"));
         assert_eq!(
             TrackKey::from_fragment("/m/track#2", |s| s == "/m/track#2"),
@@ -878,13 +772,9 @@ FILE "Urban Hymns.flac" WAVE
         assert_eq!(Origin::of("radio"), Origin::Radio);
         assert_eq!(Origin::of("subsonic:9f2a1c"), Origin::Subsonic);
 
-        // A source nobody has taught this about draws like a plain track
-        // rather than borrowing a station's live handling.
         assert_eq!(Origin::of("tidal:abc"), Origin::Local);
         assert_eq!(Origin::of(""), Origin::Local);
 
-        // The prefix is a prefix, not the whole string: a source that only
-        // spells the word is not a server.
         assert_eq!(Origin::of("subsonic"), Origin::Local);
     }
 
@@ -912,8 +802,6 @@ FILE "Urban Hymns.flac" WAVE
 
     #[test]
     fn a_path_with_a_pipe_in_it_stays_local() {
-        // `|` is legal in a file name, so the prefix split only happens when
-        // the whole string isn't a path the caller recognises.
         let piped = TrackKey::from(PathBuf::from("/m/a|b.flac"));
         assert_eq!(piped.to_fragment(), "/m/a|b.flac");
         assert_eq!(

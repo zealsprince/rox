@@ -1,19 +1,9 @@
-//! The lyrics match window: one OS window opened from the lyrics panel
-//! when a track has no words, so an online search is verified before it
-//! writes anything. It runs the providers' search off the UI thread,
-//! lists the candidates best first with a confidence bar, and previews
-//! the selected sheet on the right. Apply saves the picked candidate
-//! through the same lyrics save the editor uses, honoring the Providers
-//! page's tag/sidecar/store destination, then tells every lyrics panel to
-//! re-read and closes. A track with no file to write a tag or a sidecar
-//! beside takes the store whatever that page says. Nothing is written
-//! until Apply; closing leaves everything where it was.
+//! The lyrics match window: an online search verified before it writes.
+//! Apply saves the picked sheet through the editor's save path to the
+//! Providers page's destination, or the store for a track with no file.
 //!
-//! One window per subject, registered like the cover editor, so asking
-//! again focuses the open one instead of stacking a twin. A subject rather
-//! than a path because not every track is a file: a station's words belong
-//! to the song it announced, and this window is open on that song and not
-//! on the URL it came down.
+//! Keyed by subject rather than path: a station's words belong to the song
+//! it announced, not the stream URL.
 
 use gpui::{
     App, Bounds, Context, Div, Entity, FocusHandle, Global, KeyBinding, ScrollHandle, SharedString,
@@ -37,25 +27,17 @@ use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::lyrics::{LyricsTarget, save_target};
 use rox_services::player::fmt_time;
 
-/// The default window size: room for the candidate list beside a preview
-/// that reads a verse or two without scrolling.
 const DEFAULT_SIZE: (f32, f32) = (720., 560.);
 
 actions!(lyrics_match, [Apply]);
 
-/// The key context the window's own binding scopes to.
 const CONTEXT: &str = "LyricsMatch";
 
-/// The window's apply binding; call once at startup. It's on the
-/// window root, so enter applies wherever focus is. Nothing here takes
-/// the key first: the window has no fields of its own, only a list to
-/// click through.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Apply, Some(CONTEXT))]);
+/// On the window root: there are no fields here to take Enter first.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("enter", Apply, Some(CONTEXT))]
 }
 
-/// The open match windows, keyed by subject, so a second request for
-/// the same track focuses the first. The cover editor's registry shape.
 #[derive(Default)]
 struct OpenMatchers(Vec<(Subject, WindowHandle<Root>)>);
 
@@ -68,9 +50,6 @@ impl WindowRegistry for OpenMatchers {
     }
 }
 
-/// Open a lyrics match window on `target`, or focus the one already on it. A
-/// save broadcasts through [`crate::lyrics::saved`], so the window never
-/// holds a panel of its own.
 pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
     open_or_focus::<OpenMatchers>(
         target.subject.clone(),
@@ -89,25 +68,15 @@ pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
 }
 
 struct LyricsMatch {
-    /// What the words save back to.
     subject: Subject,
-    /// The track as the header shows it, and what the candidates scored
-    /// against.
     line: SharedString,
     duration_ms: u32,
     phase: Phase<LyricsCandidate>,
-    /// The highlighted candidate, an index into the ready list; the search
-    /// pre-selects the top score.
     selected: Option<usize>,
-    /// A save is in flight; the buttons hold still until it finishes.
     saving: bool,
-    /// A failed save, shown inline over the buttons.
     error: Option<SharedString>,
-    /// The preview pane's scroll, so a long sheet reads on its own.
     preview_scroll: ScrollHandle,
-    /// The window root's focus, held so the enter binding has a path to
-    /// dispatch along; the list rows aren't focusable, so nothing else
-    /// ever takes it.
+    /// Held so the Enter binding has a dispatch path; nothing else takes focus.
     focus: FocusHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
@@ -144,8 +113,7 @@ impl LyricsMatch {
             backdrop: WindowBackdrop::default(),
             _backdrop_changed,
         };
-        // A query with nothing to match on can only miss; say so instead of
-        // a search that comes back empty for the wrong reason.
+        // Nothing to match on: say so rather than search for an empty result.
         if query.artist.is_empty() || query.title.is_empty() {
             let mut this = this;
             this.phase = Phase::Failed(rox_i18n::t!("lyrics-matcher-no-query"));
@@ -155,8 +123,6 @@ impl LyricsMatch {
         this
     }
 
-    /// Run the providers' search off the UI thread and fill the list when
-    /// it returns, the top score pre-selected.
     fn search(&self, query: TrackQuery, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -182,9 +148,6 @@ impl LyricsMatch {
         .detach();
     }
 
-    /// Save the selected candidate where the Providers page says, off the
-    /// UI thread. Success re-reads the panels and closes; a failure keeps
-    /// the window open with the error, nothing written.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -218,8 +181,8 @@ impl LyricsMatch {
             this.update_in(cx, |this, window, cx| {
                 match saved {
                     Ok(()) => {
-                        // Panels cache lyrics off the projection, so every
-                        // one of them needs a poke to re-read.
+                        // Lyrics aren't in the projection, so every panel
+                        // needs a poke to re-read.
                         crate::lyrics::saved(&subject, cx);
                         window.remove_window();
                     }
@@ -235,8 +198,6 @@ impl LyricsMatch {
         .detach();
     }
 
-    /// The header: what we are matching against, so the candidate rows
-    /// read as better or worse than the track in hand.
     fn track_row(&self) -> Div {
         div()
             .flex()
@@ -254,9 +215,6 @@ impl LyricsMatch {
             })
     }
 
-    /// The candidate list: one row each, best first, the confidence as a
-    /// bar and a percent, the synced ones badged. Clicking selects; the
-    /// preview follows.
     fn candidate_list(&self, found: &[LyricsCandidate], cx: &mut Context<Self>) -> Div {
         let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
         for (ix, candidate) in found.iter().enumerate() {
@@ -309,9 +267,6 @@ impl LyricsMatch {
                                     .child(SharedString::from(candidate.title.clone())),
                             )
                             .child(
-                                // The service and, for a timed sheet, a
-                                // synced tag, so the row says where the
-                                // words came from and what shape they take.
                                 div()
                                     .flex_none()
                                     .text_xs()
@@ -342,8 +297,7 @@ impl LyricsMatch {
         body
     }
 
-    /// The preview pane: the selected candidate's sheet as raw text, timing
-    /// tags and all, so a verify sees exactly what a save would write.
+    /// Raw text, timing tags and all: exactly what a save would write.
     fn preview(&self, found: &[LyricsCandidate]) -> Div {
         let text = self
             .selected
@@ -385,10 +339,7 @@ impl LyricsMatch {
             .child(body)
     }
 
-    /// What stands between the window and a save, when something does.
-    /// The clauses run in the order a search clears them, so the footer
-    /// names the one step that's actually next, and Apply is live
-    /// exactly when nothing is left.
+    /// Ordered the way a search clears them, so the footer names the next step.
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
@@ -405,8 +356,6 @@ impl LyricsMatch {
         None
     }
 
-    /// The window's actions, and either the shortcut for them or what's
-    /// in their way.
     fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
         let hint = match self.blocker() {
             Some(reason) => div()
@@ -458,7 +407,6 @@ impl LyricsMatch {
 
 impl Render for LyricsMatch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Apply is live only with a candidate picked and no save running.
         let can_apply = self.blocker().is_none();
         let count = match &self.phase {
             Phase::Ready(found) if !found.is_empty() => Some(
@@ -505,8 +453,6 @@ impl Render for LyricsMatch {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // The backdrop paints first, under the page, so translucent
-            // surfaces back with the playing track's art like every window.
             .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(
                 div()
@@ -514,9 +460,6 @@ impl Render for LyricsMatch {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    // The page's own surface over the root's, the same second
-                    // pass the settings page takes: the backdrop reads through
-                    // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)

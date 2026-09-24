@@ -1,94 +1,56 @@
-//! The parametric equalizer, the chain's first real node (ADR 19). Ten
-//! peaking biquads per channel, each with its own center, gain, and width,
-//! no lookahead and nothing allocated once it's built. The centers start on
-//! the ISO octaves a graphic EQ uses, so it opens as the familiar thing and
-//! becomes parametric the moment a band is dragged off its home.
+//! The parametric equalizer, a chain node (ADR 19): ten peaking biquads per
+//! channel, starting on the ISO octaves. [`EqParams`] is shared with the UI,
+//! so a drag is an atomic store picked up on the next buffer.
+//! [`EqParams::response_db`] evaluates the node's own coefficients, so the
+//! plotted curve is the real one.
 //!
-//! [`EqParams::response_db`] evaluates the same coefficients the node runs,
-//! which lets a plot of the curve be the truth rather than an artist's
-//! impression of it.
-//!
-//! Its parameters are in [`EqParams`], an Arc the UI and the decode thread
-//! both hold: dragging a band is an atomic store, and the node picks the
-//! change up on its next buffer. That's the ADR's split between parameters
-//! and structure: only putting the node in a chain goes over the engine's
-//! command channel, everything after is a store.
-//!
-//! A band at 0 dB is a bit-exact passthrough rather than an approximate
-//! one. The cookbook's peaking coefficients collapse to b0 = 1 with
-//! b1 == a1 and b2 == a2, so the arithmetic cancels back to the input
-//! sample and the filter state stays at zero. So the EQ can stay in the
-//! chain while it's flat without anyone having to trust it.
+//! A band at 0 dB is bit-exact: the cookbook coefficients collapse to b0 = 1,
+//! b1 == a1, b2 == a2, so a flat EQ can sit in the chain.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::chain::Node;
 
-/// Band centers in Hz: ISO octave spacing, the ten sliders a graphic EQ has
-/// had since the hi-fi rack. Their order is the order gains are stored and
-/// drawn in.
+/// ISO octave centers. Their order is the order gains are stored and drawn in.
 pub const BAND_HZ: [f32; 10] = [
     32.0, 64.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-/// How many bands there are, for anything sizing itself to the set.
 pub const BANDS: usize = BAND_HZ.len();
 
-/// How far a band cuts or boosts, in dB either way. Past this a band stops
-/// shaping and starts distorting the mix into the ceiling.
+/// Past this a band distorts rather than shapes.
 pub const GAIN_MAX_DB: f32 = 12.0;
 
-/// The default width, one octave: neighbouring bands overlap at their
-/// half-power points and a run of them adds up to a smooth curve rather
-/// than a comb. Q = sqrt(2^BW) / (2^BW - 1) at BW = 1.
+/// One octave: Q = sqrt(2^BW) / (2^BW - 1) at BW = 1.
 pub const Q_DEFAULT: f32 = std::f32::consts::SQRT_2;
 
-/// How narrow and how wide a band can be pulled. Below the floor a band
-/// stops being a bell and starts being a whistle; above the ceiling it
-/// covers most of the spectrum and the neighbours stop meaning anything.
 pub const Q_MIN: f32 = 0.2;
 pub const Q_MAX: f32 = 12.0;
 
-/// The range a band's center can be set to. The bottom is under anything a
-/// speaker reproduces and the top is past where most people hear, so the
-/// whole audible range is available without the ends being useful places to
-/// park.
 pub const FREQ_MIN: f32 = 20.0;
 pub const FREQ_MAX: f32 = 20000.0;
 
-/// Where a band stops filtering. The cookbook's coefficients degenerate as
-/// the center approaches Nyquist (alpha goes to zero, both poles move onto
-/// the unit circle), so a 16 kHz band at a 32 kHz device rate has to pass
-/// through instead of ringing forever.
+/// Cookbook coefficients degenerate near Nyquist, so a band past this share
+/// of the rate passes through (a 16 kHz band at 32 kHz).
 const NYQUIST_MARGIN: f64 = 0.45;
 
-/// Filter state below this is a decay tail nobody can hear, and left alone
-/// it decays into subnormals where some CPUs fall off a cliff. Flushed
-/// once per buffer rather than per sample.
+/// Flushed to zero once per buffer so the decay tail never reaches subnormals.
 const QUIET: f64 = 1e-30;
 
-/// The equalizer's live parameters, shared between whatever UI draws the
-/// bands and the node running on the decode thread. Every field is an
-/// atomic because that's the contract: a knob write is a store, and the
-/// change takes effect as soon as the ring drains past it.
+/// Live parameters shared between the UI and the node on the decode thread.
+/// All atomics, so a knob write is a store.
 pub struct EqParams {
     enabled: AtomicBool,
-    /// Per-band gain in dB, as f32 bits. Same trick the volume atomic uses.
+    /// f32 bits, like the volume atomic.
     gains_db: [AtomicU32; BANDS],
-    /// Per-band center in Hz. Movable, which makes this parametric rather
-    /// than a graphic EQ with the centers welded to the ISO octaves.
     freqs_hz: [AtomicU32; BANDS],
-    /// Per-band Q. Higher is narrower; see [`Q_DEFAULT`].
     qs: [AtomicU32; BANDS],
 }
 
 impl EqParams {
-    /// Build the shared parameters from persisted state. Each list folds to
-    /// what's there, so a settings file written against a different set of
-    /// bands, or one from before the centers were movable, loads instead of
-    /// resetting the user's curve. A missing center falls back to that
-    /// band's ISO octave, which is exactly where the graphic EQ had it.
+    /// Each list folds to what's there, so a file with fewer bands or no centers
+    /// loads instead of resetting the curve. Missing centers take their ISO octave.
     pub fn new(enabled: bool, gains_db: &[f32], freqs_hz: &[f32], qs: &[f32]) -> EqParams {
         EqParams {
             enabled: AtomicBool::new(enabled),
@@ -115,8 +77,7 @@ impl EqParams {
         self.enabled.store(on, Ordering::Relaxed);
     }
 
-    /// A band's gain in dB. Out-of-range bands read flat, so a caller
-    /// iterating a stale band count can't panic the audio thread.
+    /// Out-of-range bands read flat rather than panicking the audio thread.
     pub fn gain(&self, band: usize) -> f32 {
         self.gains_db
             .get(band)
@@ -124,14 +85,12 @@ impl EqParams {
             .unwrap_or(0.0)
     }
 
-    /// Set a band's gain in dB, clamped to the range the sliders offer.
     pub fn set_gain(&self, band: usize, db: f32) {
         if let Some(slot) = self.gains_db.get(band) {
             slot.store(clamp_db(db).to_bits(), Ordering::Relaxed);
         }
     }
 
-    /// A band's center in Hz.
     pub fn freq(&self, band: usize) -> f32 {
         self.freqs_hz
             .get(band)
@@ -139,14 +98,12 @@ impl EqParams {
             .unwrap_or_else(|| BAND_HZ.get(band).copied().unwrap_or(1000.0))
     }
 
-    /// Move a band's center, clamped to the audible range.
     pub fn set_freq(&self, band: usize, hz: f32) {
         if let Some(slot) = self.freqs_hz.get(band) {
             slot.store(clamp_hz(hz, band).to_bits(), Ordering::Relaxed);
         }
     }
 
-    /// A band's Q. Higher is narrower.
     pub fn q(&self, band: usize) -> f32 {
         self.qs
             .get(band)
@@ -154,24 +111,20 @@ impl EqParams {
             .unwrap_or(Q_DEFAULT)
     }
 
-    /// Set a band's Q, clamped to the range the curve can draw usefully.
     pub fn set_q(&self, band: usize, q: f32) {
         if let Some(slot) = self.qs.get(band) {
             slot.store(clamp_q(q).to_bits(), Ordering::Relaxed);
         }
     }
 
-    /// Every band back to 0 dB. Centers and widths stay put: flatten is
-    /// about undoing the shaping, not throwing away where the bands were
-    /// placed to do it.
+    /// Centers and widths stay put.
     pub fn flatten(&self) {
         for band in 0..BANDS {
             self.set_gain(band, 0.0);
         }
     }
 
-    /// Centers and widths back to the ISO octaves at one octave wide, the
-    /// layout a graphic EQ has. The gains are left untouched.
+    /// Gains untouched.
     pub fn reset_shape(&self) {
         for (band, hz) in BAND_HZ.iter().enumerate() {
             self.set_freq(band, *hz);
@@ -179,8 +132,6 @@ impl EqParams {
         }
     }
 
-    /// Set all 10 band gains and reset center frequencies to standard ISO
-    /// octaves and widths to one octave.
     pub fn apply_graphic_curve(&self, gains: &[f32; BANDS]) {
         self.reset_shape();
         for (band, &db) in gains.iter().enumerate() {
@@ -188,29 +139,21 @@ impl EqParams {
         }
     }
 
-    /// The whole curve, in band order. What gets persisted.
+    /// What gets persisted.
     pub fn gains(&self) -> Vec<f32> {
         (0..BANDS).map(|band| self.gain(band)).collect()
     }
 
-    /// Every center, in band order.
     pub fn freqs(&self) -> Vec<f32> {
         (0..BANDS).map(|band| self.freq(band)).collect()
     }
 
-    /// Every width, in band order.
     pub fn qs(&self) -> Vec<f32> {
         (0..BANDS).map(|band| self.q(band)).collect()
     }
 
-    /// The whole cascade's gain at one frequency, in dB: what a plot of the
-    /// EQ draws, and the only honest way to show what a stack of overlapping
-    /// bells actually does to the signal. Computed from the same
-    /// coefficients the node runs, so the picture can't drift from the
-    /// sound. Off, everything is flat.
-    ///
-    /// This is for whatever draws the curve, not the audio thread, which
-    /// never needs to know its own response.
+    /// The whole cascade's gain at `hz` in dB, from the node's own coefficients.
+    /// Flat when off. For drawing only.
     pub fn response_db(&self, hz: f32, rate: u32) -> f32 {
         if !self.enabled() {
             return 0.0;
@@ -224,8 +167,7 @@ impl EqParams {
     }
 }
 
-/// A gain the filter math can live with: NaN out of a corrupt settings file
-/// would poison the state and never come back.
+/// NaN from a corrupt file would poison the filter state for good.
 fn clamp_db(db: f32) -> f32 {
     if db.is_nan() {
         0.0
@@ -234,9 +176,7 @@ fn clamp_db(db: f32) -> f32 {
     }
 }
 
-/// A center the filter math can live with. NaN falls back to the band's own
-/// ISO octave rather than to a fixed value, so a corrupt file loads with the
-/// layout the band would have had.
+/// NaN takes the band's own ISO octave.
 fn clamp_hz(hz: f32, band: usize) -> f32 {
     if hz.is_nan() {
         BAND_HZ.get(band).copied().unwrap_or(1000.0)
@@ -245,8 +185,7 @@ fn clamp_hz(hz: f32, band: usize) -> f32 {
     }
 }
 
-/// A width the filter math can live with. Zero or negative Q divides by zero
-/// in the cookbook's alpha, so this floor is load-bearing rather than taste.
+/// Q at or under zero divides by zero in the cookbook's alpha.
 fn clamp_q(q: f32) -> f32 {
     if q.is_nan() {
         Q_DEFAULT
@@ -255,14 +194,11 @@ fn clamp_q(q: f32) -> f32 {
     }
 }
 
-/// The EQ as a chain node: the shared parameters plus one biquad per band
-/// per channel. Everything it needs exists after [`Node::reset`], so
-/// `process` only ever does arithmetic.
+/// Everything it needs exists after [`Node::reset`], so `process` is pure arithmetic.
 pub struct Eq {
     params: Arc<EqParams>,
     bands: [Band; BANDS],
-    /// The rate the coefficients were built against, 0 before the first
-    /// reset.
+    /// 0 before the first reset.
     rate: u32,
 }
 
@@ -291,12 +227,8 @@ impl Node for Eq {
     }
 
     fn process(&mut self, buf: &mut [f32]) {
-        // Off, or reset hasn't happened yet: hand the buffer back untouched.
-        // That's the bypass rule the ADR makes checkable, held here for a
-        // node that's in the chain but idle. The history goes with it: the
-        // samples that pass while the EQ is off never went through the filters,
-        // so keeping the old state would have switching back on resume from
-        // audio that's minutes gone.
+        // Off or not yet reset: untouched, the bypass rule. Clear history too, or
+        // switching back on would resume from audio that's long gone.
         if self.rate == 0 || !self.params.enabled() {
             for band in &mut self.bands {
                 band.clear();
@@ -313,7 +245,7 @@ impl Node for Eq {
     }
 }
 
-/// A biquad's five coefficients, a0 already divided out.
+/// a0 already divided out.
 #[derive(Clone, Copy)]
 struct Coeffs {
     b0: f64,
@@ -324,7 +256,6 @@ struct Coeffs {
 }
 
 impl Coeffs {
-    /// The identity: input straight back out.
     const PASSTHROUGH: Coeffs = Coeffs {
         b0: 1.0,
         b1: 0.0,
@@ -333,9 +264,7 @@ impl Coeffs {
         a2: 0.0,
     };
 
-    /// This section's gain at one frequency, in dB. The transfer function
-    /// evaluated on the unit circle: |H(e^-jw)| as the ratio of the two
-    /// quadratics' magnitudes.
+    /// |H(e^-jw)| in dB.
     fn gain_db(&self, hz: f64, rate: u32) -> f32 {
         if rate == 0 {
             return 0.0;
@@ -352,18 +281,14 @@ impl Coeffs {
         if den <= 0.0 || num <= 0.0 {
             return 0.0;
         }
-        // 10 rather than 20 because these are already squared magnitudes.
+        // Already squared magnitudes.
         (10.0 * (num / den).log10()) as f32
     }
 }
 
-/// The audio EQ cookbook's peaking filter, the one place the coefficients
-/// are worked out. The node runs them and the plot evaluates them, so a
-/// curve on screen can't claim something the filter isn't doing.
-///
-/// `b1` and `a1` come out of the same expression on purpose: at 0 dB that
-/// makes the difference in the state update exactly zero, so a flat band is
-/// bit-exact rather than nearly so.
+/// The one place coefficients are worked out; the node runs them and the plot
+/// evaluates them. `b1` and `a1` share an expression on purpose, so a flat
+/// band is bit-exact.
 fn coeffs(hz: f64, rate: u32, db: f32, q: f32) -> Coeffs {
     if rate == 0 || hz >= rate as f64 * NYQUIST_MARGIN {
         return Coeffs::PASSTHROUGH;
@@ -381,27 +306,21 @@ fn coeffs(hz: f64, rate: u32, db: f32, q: f32) -> Coeffs {
     }
 }
 
-/// One band: a peaking biquad in transposed direct form II, run
-/// independently over each of the two channels. TDF-II because the state
-/// stays bounded by the signal rather than the intermediate, which makes a
-/// coefficient swap mid-stream (a slider drag) settle instead of jump. The
-/// state is f64: a 32 Hz biquad at 48 kHz has poles close enough to the
-/// unit circle that f32 accumulates audible noise in it.
+/// Transposed direct form II, so a mid-stream coefficient swap settles
+/// instead of jumping. f64 state: a 32 Hz band at 48 kHz accumulates audible
+/// noise in f32.
 #[derive(Clone, Copy)]
 struct Band {
     coeffs: Coeffs,
-    /// The shape these coefficients were built for, so a buffer where
-    /// nothing moved skips the trig.
+    /// The shape these coefficients were built for, so an unchanged buffer skips the trig.
     shape: (f32, f32, f32),
-    /// Per channel, left then right.
+    /// Left, right.
     s1: [f64; 2],
     s2: [f64; 2],
 }
 
 impl Band {
-    /// A band that hands its input straight back, the shape one takes
-    /// before the first reset and at every rate where its center is too
-    /// close to Nyquist to filter.
+    /// Before the first reset, and wherever the center is too close to Nyquist.
     const PASSTHROUGH: Band = Band {
         coeffs: Coeffs::PASSTHROUGH,
         shape: (0.0, 0.0, 0.0),
@@ -414,16 +333,13 @@ impl Band {
         self.s2 = [0.0; 2];
     }
 
-    /// Rebuild the coefficients for a center, a rate, a gain, and a width.
-    /// The state stays where it is: this runs mid-stream on a drag, and
-    /// zeroing here would click.
+    /// Keeps the state: zeroing it mid-drag would click.
     fn tune(&mut self, hz: f32, rate: u32, db: f32, q: f32) {
         self.shape = (hz, db, q);
         self.coeffs = coeffs(hz as f64, rate, db, q);
     }
 
-    /// Run one interleaved stereo buffer through the band in place. A
-    /// trailing odd sample can't be half a frame, so it's left alone.
+    /// A trailing odd sample is left alone.
     fn run(&mut self, buf: &mut [f32]) {
         let Coeffs { b0, b1, b2, a1, a2 } = self.coeffs;
         for frame in buf.as_chunks_mut::<2>().0 {
@@ -451,8 +367,7 @@ mod tests {
 
     const RATE: u32 = 48000;
 
-    /// A stereo ramp with a different signal on each channel, so a channel
-    /// leak or a swapped state shows up.
+    /// Different on each channel, so a leak or swapped state shows.
     fn signal(frames: usize) -> Vec<f32> {
         (0..frames)
             .flat_map(|n| {
@@ -468,9 +383,7 @@ mod tests {
         Eq::new(Arc::new(EqParams::new(true, gains, &[], &[])))
     }
 
-    /// The bypass rule with the node actually in the chain: every band flat
-    /// means the samples pushed into the ring are the ones the decoder
-    /// produced, bit for bit, not merely close.
+    /// The bypass rule with the node in the chain: flat is bit for bit.
     #[test]
     fn a_flat_eq_is_bit_exact_passthrough() {
         let mut chain = Chain::new();
@@ -482,9 +395,7 @@ mod tests {
         assert_eq!(buf, original, "a flat EQ changes nothing at all");
     }
 
-    /// Same claim for a disabled EQ with a curve set: the node is in the
-    /// chain, its bands are anything but flat, and the buffer still comes
-    /// out untouched.
+    /// Disabled with a curve set is bit-exact too.
     #[test]
     fn a_disabled_eq_is_bit_exact_passthrough() {
         let params = Arc::new(EqParams::new(false, &[12.0; BANDS], &[], &[]));
@@ -495,20 +406,15 @@ mod tests {
         let mut buf = original.clone();
         chain.process(&mut buf);
         assert_eq!(buf, original);
-        // And it's the flag doing it, not a dead node.
         params.set_enabled(true);
         let mut buf = original.clone();
         chain.process(&mut buf);
         assert_ne!(buf, original);
     }
 
-    /// A boost and a cut both take effect, measured at the band's own
-    /// center: drive that center and compare the settled amplitude against
-    /// the same signal through a flat EQ.
     #[test]
     fn a_gain_change_lands() {
-        // 1 kHz is band 5, far enough from its neighbours that their
-        // skirts don't muddy the number.
+        // Band 5 (1 kHz) sits clear of its neighbours' skirts.
         let band = 5;
         let hz = BAND_HZ[band];
         let frames = RATE as usize / 4;
@@ -526,8 +432,7 @@ mod tests {
             eq.reset(RATE);
             let mut buf = tone.clone();
             eq.process(&mut buf);
-            // Skip the first half: the filter is still settling into the
-            // tone, and the ear hears the tail as the level.
+            // Skip the first half while the filter settles.
             buf[buf.len() / 2..]
                 .iter()
                 .fold(0.0f32, |peak, s| peak.max(s.abs()))
@@ -536,8 +441,7 @@ mod tests {
         let flat = peak(0.0);
         let boosted = peak(12.0);
         let cut = peak(-12.0);
-        // 12 dB is a factor of 4; allow a wide window, the point is that
-        // the gain is in the right place and roughly the right size.
+        // 12 dB is a factor of 4; the window is wide on purpose.
         assert!(
             boosted > flat * 3.0 && boosted < flat * 4.5,
             "boost landed at {boosted} against flat {flat}"
@@ -548,10 +452,7 @@ mod tests {
         );
     }
 
-    /// Filter history persists across a buffer boundary: one pass over a whole
-    /// signal and two passes over its halves have to produce the same
-    /// samples, or the chunk size the decoder happens to hand over would be
-    /// audible as a click on every boundary.
+    /// One pass and two half passes must match, or every buffer boundary clicks.
     #[test]
     fn history_carries_across_a_buffer_boundary() {
         let gains = [6.0, -6.0, 3.0, 0.0, -3.0, 9.0, 0.0, -9.0, 4.0, -4.0];
@@ -572,11 +473,8 @@ mod tests {
         assert_eq!(whole, split, "the split at the buffer boundary is audible");
     }
 
-    /// The same for the gapless splice: the engine resets the chain at
-    /// stream open and on a flush, never between tracks of an album, so a
-    /// track boundary has to look exactly like a buffer boundary to the
-    /// filters. A reset in the middle breaks it, which is why the promise is
-    /// worth writing down.
+    /// The engine never resets the chain between album tracks, so a track
+    /// boundary must look like a buffer boundary to the filters.
     #[test]
     fn a_reset_is_what_drops_history_not_a_track_change() {
         let gains = [9.0; BANDS];
@@ -587,7 +485,6 @@ mod tests {
         eq.reset(RATE);
         let (head, tail) = carried.split_at_mut(original.len() / 2);
         eq.process(head);
-        // The gapless boundary: the next track's samples arrive, no reset.
         eq.process(tail);
 
         let mut broken = original.clone();
@@ -601,9 +498,7 @@ mod tests {
         assert_ne!(carried, broken);
     }
 
-    /// A band whose center is at or past Nyquist passes through instead
-    /// of ringing: the 16 kHz band at a 32 kHz device rate is the real
-    /// case.
+    /// The 16 kHz band at a 32 kHz rate passes through.
     #[test]
     fn bands_past_nyquist_pass_through() {
         let mut gains = [0.0f32; BANDS];
@@ -614,7 +509,6 @@ mod tests {
         let mut buf = original.clone();
         eq.process(&mut buf);
         assert_eq!(buf, original);
-        // The same band at a rate high enough for it does shape the signal.
         let mut eq = enabled_eq(&gains);
         eq.reset(48000);
         let mut buf = original.clone();
@@ -622,8 +516,7 @@ mod tests {
         assert_ne!(buf, original);
     }
 
-    /// Gains out of a settings file come back clamped and NaN-free, so nothing
-    /// a hand-edited file can say poisons the filter state.
+    /// Clamped and NaN-free.
     #[test]
     fn stored_gains_come_back_sane() {
         let params = EqParams::new(true, &[99.0, -99.0, f32::NAN, 3.5], &[], &[]);
@@ -631,16 +524,13 @@ mod tests {
         assert_eq!(params.gain(1), -GAIN_MAX_DB);
         assert_eq!(params.gain(2), 0.0);
         assert_eq!(params.gain(3), 3.5);
-        // A short list pads out flat, and the rest of the set is there.
         assert_eq!(params.gains().len(), BANDS);
         assert_eq!(params.gain(BANDS - 1), 0.0);
         params.flatten();
         assert!(params.gains().iter().all(|db| *db == 0.0));
     }
 
-    /// A settings file from before the centers moved still loads: the
-    /// missing lists fall back to the ISO octaves at one octave wide, which
-    /// is the graphic EQ the gains were dialed on.
+    /// A file with gains only loads onto the ISO octaves at one octave wide.
     #[test]
     fn a_pre_parametric_file_loads_onto_the_iso_octaves() {
         let params = EqParams::new(true, &[3.0; BANDS], &[], &[]);
@@ -648,8 +538,6 @@ mod tests {
         assert!(params.qs().iter().all(|q| *q == Q_DEFAULT));
     }
 
-    /// Centers and widths clamp the same way gains do, and a zero Q (which
-    /// would divide by zero in the cookbook's alpha) clamps to the floor.
     #[test]
     fn stored_shape_comes_back_sane() {
         let params = EqParams::new(true, &[], &[1.0, 99_000.0, f32::NAN], &[0.0, -4.0, 99.0]);
@@ -661,8 +549,7 @@ mod tests {
         assert_eq!(params.q(2), Q_MAX);
     }
 
-    /// The plotted curve comes from the filter's own coefficients: a boosted
-    /// band reads near its gain at its center and falls away either side of it.
+    /// The plot uses the filter's own coefficients.
     #[test]
     fn the_response_matches_the_band_at_its_center() {
         let params = EqParams::new(true, &[], &[], &[]);
@@ -673,14 +560,11 @@ mod tests {
             (at_center - 6.0).abs() < 0.5,
             "a 6 dB band should read about 6 dB at its center, read {at_center}"
         );
-        // Far enough away that neither this band nor its neighbours extend
-        // that far.
+        // Beyond this band's and its neighbours' reach.
         let far = params.response_db(60.0, RATE);
         assert!(far < at_center, "the bell has to fall off, read {far}");
     }
 
-    /// A narrower band extends less far, which is the whole point of Q and
-    /// the thing a curve has to show honestly.
     #[test]
     fn a_higher_q_narrows_the_bell() {
         let wide = EqParams::new(true, &[], &[], &[]);
@@ -691,8 +575,6 @@ mod tests {
         narrow.set_freq(0, 1000.0);
         narrow.set_gain(0, 12.0);
         narrow.set_q(0, 8.0);
-        // Off to the side, the wide one is still lifting and the narrow one
-        // has let go.
         let (wide_off, narrow_off) = (
             wide.response_db(1400.0, RATE),
             narrow.response_db(1400.0, RATE),
@@ -703,8 +585,6 @@ mod tests {
         );
     }
 
-    /// Off means flat, so the plot can't draw a curve the signal isn't
-    /// getting.
     #[test]
     fn a_disabled_eq_plots_flat() {
         let params = EqParams::new(false, &[12.0; BANDS], &[], &[]);
@@ -713,8 +593,7 @@ mod tests {
         }
     }
 
-    /// The node picks up a center move, not just a gain move: the same store
-    /// the UI makes on a drag has to retune on the next buffer.
+    /// A center move retunes on the next buffer, like a gain move.
     #[test]
     fn moving_a_center_retunes_the_node() {
         let params = Arc::new(EqParams::new(true, &[], &[], &[]));

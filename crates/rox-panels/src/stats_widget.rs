@@ -1,9 +1,6 @@
-//! The stats widget: the listening record boiled down to one number for
-//! a transport row, and the stats window's front door. Counts the listens
-//! inside one trailing window, with the other windows on hover, so the
-//! record is a glance away without giving up a panel-sized surface. The
-//! counts are the stats page's own indexed reads (ADR 11), run when a
-//! listen is recorded rather than per frame.
+//! The stats widget: the listen count over one trailing window for a
+//! transport row, and the stats window's front door. The counts are the
+//! stats page's indexed reads (ADR 11), cached rather than run per frame.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,14 +23,11 @@ use rox_services::history::HistoryEvent;
 
 const DAY: i64 = 86400;
 
-/// How often the counts re-run with nothing else prompting them. The
-/// windows trail the clock, so an idle widget would show yesterday's
-/// "today" until the next listen arrived; nine indexed counts a minute
-/// costs nothing next to showing a stale number for hours.
+/// Re-count on a timer: the windows trail the clock, so an idle widget
+/// would keep yesterday's "today". Nine indexed counts a minute cost nothing.
 const TICK: Duration = Duration::from_secs(60);
 
-/// Which trailing window the readout counts over. Trailing, no calendar
-/// math, same as the stats page's rows: "today" is the last 24 hours.
+/// Trailing, no calendar math: "today" is the last 24 hours.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ListenRange {
@@ -46,8 +40,6 @@ pub enum ListenRange {
 }
 
 impl ListenRange {
-    /// How wide the window is in seconds. None for All Time, which has
-    /// no width and so nothing behind it for the change chip.
     fn span(self) -> Option<i64> {
         match self {
             ListenRange::Day => Some(DAY),
@@ -58,14 +50,11 @@ impl ListenRange {
         }
     }
 
-    /// The window's lower bound in unix seconds; 0 counts every event.
     fn since(self, now: i64) -> i64 {
         self.span().map_or(0, |span| now - span)
     }
 
-    /// The window spelled out, for the tooltip and the readout's own
-    /// hover copy. The settings picker uses shorter labels so five
-    /// segments still fit its row.
+    /// The settings picker uses shorter labels so five segments fit its row.
     fn label(self) -> &'static str {
         match self {
             ListenRange::Day => rox_i18n::t_static("stats-range-today"),
@@ -77,8 +66,6 @@ impl ListenRange {
     }
 }
 
-/// Every window in order, the tooltip's rows and the menu flyout's; the
-/// readout's own range reads brighter among the tooltip's.
 const ALL_RANGES: &[ListenRange] = &[
     ListenRange::Day,
     ListenRange::Week,
@@ -87,24 +74,14 @@ const ALL_RANGES: &[ListenRange] = &[
     ListenRange::All,
 ];
 
-/// The widget's config: the shared chrome plus what it counts, whether
-/// the count shows at all, and whether a click opens the stats window.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StatsWidgetConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Which trailing window the readout counts over.
     pub range: ListenRange,
-    /// Draw the count beside the icon. Off leaves a bare icon, for a
-    /// strip that only needs the way in to the stats window.
     pub show_count: bool,
-    /// Draw the change chip: how this window compares with the window
-    /// right before it, up or down. All Time has nothing behind it, so
-    /// the chip is hidden on that range.
     pub show_change: bool,
-    /// Click the widget to open the stats window. On by default; off
-    /// leaves it a readout.
     pub open_on_click: bool,
 }
 
@@ -120,17 +97,13 @@ impl Default for StatsWidgetConfig {
     }
 }
 
-/// One window's pair of numbers: the listens inside it, and the listens
-/// in the window right before it, which the change chip subtracts.
 #[derive(Clone, Copy, Default, PartialEq)]
 struct Tally {
     count: u64,
     before: u64,
 }
 
-/// Every window's listen count, measured together. Two COUNTs over the
-/// played_at index per window, so taking them all costs about what
-/// taking the picked one would, and neither the tooltip nor the chip
+/// Every window counted at once, so neither the tooltip nor the chip
 /// queries at hover.
 #[derive(Default, PartialEq)]
 struct Counts {
@@ -152,8 +125,6 @@ impl Counts {
         }
     }
 
-    /// How this window compares with the one before it, positive for up.
-    /// None for All Time, which has no window behind it.
     fn change(&self, range: ListenRange) -> Option<i64> {
         let tally = match range {
             ListenRange::Day => self.day,
@@ -169,15 +140,12 @@ impl Counts {
 pub struct StatsWidgetPanel {
     state: AppState,
     config: StatsWidgetConfig,
-    /// The cached counts, so a repaint never touches the database.
     counts: Counts,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// A new listen moves every number here.
     _history_changed: Subscription,
-    /// A rescan can drop tracks the events point at, which moves the
-    /// rollups the stats window shows beside these counts, and a play-count
-    /// import writes listens straight into the table these count.
+    /// A rescan drops tracks the events point at, and a play-count import
+    /// writes listens directly.
     _library_changed: Subscription,
 }
 
@@ -195,9 +163,7 @@ impl StatsWidgetPanel {
                 }
             },
         );
-        // The trailing windows slide whether or not anything plays, so
-        // re-count on a slow tick; the loop ends with the view, the
-        // console window's shape.
+        // The windows slide whether or not anything plays.
         cx.spawn(async move |view, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -220,17 +186,15 @@ impl StatsWidgetPanel {
         this
     }
 
-    /// Re-count every window, repainting only when a number actually
-    /// moved: the minute tick fires far more often than a listen does.
+    /// Repaint only when a number moved: the tick fires far more often than a
+    /// listen.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         let library = self.state.library.read(cx);
-        // Two reads a window: everything since it opened, and everything
-        // since the window before it opened. Subtract the first from the
-        // second and what's left is the earlier window on its own.
+        // Two reads a window; the second minus the first is the window before it.
         let tally = |range: ListenRange| {
             let span = range.span().unwrap_or(0);
             let count = library.listens_since(range.since(now));
@@ -253,9 +217,6 @@ impl StatsWidgetPanel {
         cx.notify();
     }
 
-    /// The panel's own quick entries: the range flyout and the readout
-    /// toggles, so the widget can be re-aimed from its right-click
-    /// without a trip through the settings window.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -265,9 +226,7 @@ impl StatsWidgetPanel {
         let menu = menu
             .separator()
             .label(rox_i18n::t!("stats-readout-section"));
-        // The range as a flyout, with live ticks through follow_panel +
-        // check_row: the flyout stays open on a pick, so a tick baked in
-        // at build time would stay on the old range.
+        // Live ticks through follow_panel, since the flyout stays open on a pick.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -290,8 +249,8 @@ impl StatsWidgetPanel {
             rox_i18n::t!("stats-count-menu"),
             submenu,
         ));
-        // The three booleans are at the top level, where the menu closes
-        // on the click and a plain check shows the state fine.
+        // The booleans sit at the top level, where the menu closes on click and
+        // a plain check is enough.
         let menu = self.toggle_item(
             menu,
             rox_i18n::t!("stats-show-number"),
@@ -317,7 +276,6 @@ impl StatsWidgetPanel {
         )
     }
 
-    /// One checked menu row over a config boolean.
     fn toggle_item(
         &self,
         menu: PopupMenu,
@@ -340,9 +298,6 @@ impl StatsWidgetPanel {
         )
     }
 
-    /// The tooltip's rows: every window's count with the picked one
-    /// marked, read off the cache. The change is included only when the
-    /// chip is on, so the tooltip stays a plain list otherwise.
     fn rows(&self) -> Vec<TooltipRow> {
         ALL_RANGES
             .iter()
@@ -363,11 +318,8 @@ impl StatsWidgetPanel {
     }
 }
 
-/// The chip's three states, picked off the sign: which way the arrow
-/// points and how loud it reads. Up takes the accent because a climbing
-/// record is the thing worth catching from across the strip; a dip and a
-/// flat window step back rather than reading as a fault, the way the
-/// status tones would.
+/// Up takes the accent; a dip or a flat window stays muted rather than
+/// reading as a fault.
 fn change_look(delta: i64) -> (&'static str, gpui::Rgba) {
     match delta.signum() {
         1 => (icons::ARROW_UP, palette::accent()),
@@ -376,7 +328,6 @@ fn change_look(delta: i64) -> (&'static str, gpui::Rgba) {
     }
 }
 
-/// The change spelled out with its sign, the tooltip's column.
 fn change_label(delta: i64) -> String {
     if delta == 0 {
         "0".to_string()
@@ -387,19 +338,14 @@ fn change_label(delta: i64) -> String {
     }
 }
 
-/// One window's line in the tooltip.
 struct TooltipRow {
     label: SharedString,
     count: SharedString,
-    /// The signed change against the window before, when the chip is on.
     change: Option<SharedString>,
-    /// The readout's own range, which reads brighter than the rest.
     picked: bool,
 }
 
-/// The hover tooltip: the same counts over every window, so the picked
-/// one has something to compare against. Opaque fill like the popup menus,
-/// since it floats over panel content with no backdrop behind it.
+/// Opaque fill, since it floats over panel content with no backdrop.
 struct StatsTooltip {
     rows: Vec<TooltipRow>,
 }
@@ -581,9 +527,7 @@ impl Panel for StatsWidgetPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        // The count runs to four digits on an old record, so the floor
-        // widens with it, and again with the chip's arrow and delta; the
-        // bare icon keeps the strip's own minimum.
+        // Room for a four-digit count, and for the chip.
         let mut width = rox_dock::resizable::PANEL_MIN_SIZE;
         if self.config.show_count {
             width += px(24.);
@@ -677,9 +621,6 @@ impl Render for StatsWidgetPanel {
             .flatten();
         let open_on_click = self.config.open_on_click;
         let weak = cx.entity().downgrade();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, move || {
             div()
@@ -720,8 +661,6 @@ impl Render for StatsWidgetPanel {
                         .when(show_count, |d| {
                             d.child(
                                 div()
-                                    // The strip is short, and a four-digit
-                                    // count would otherwise wrap.
                                     .whitespace_nowrap()
                                     .text_xs()
                                     .text_color(if count > 0 {
@@ -752,9 +691,7 @@ impl Render for StatsWidgetPanel {
                                             .flex_none()
                                             .text_color(color),
                                     )
-                                    // The dash already covers a flat window;
-                                    // a zero beside it would just be another
-                                    // digit to read past.
+                                    // The dash covers a flat window, so no zero beside it.
                                     .when(delta != 0, |d| {
                                         d.child(SharedString::from(rox_i18n::format::format_int(
                                             delta.unsigned_abs() as i64,

@@ -1,11 +1,8 @@
-//! The VU meter panel: per-channel loudness over the player's PCM tap, the
-//! classic level meter. One or two meters (mono fold or stereo L/R) grow from
-//! the configured edge, colored by the shared loudness ramp, with peak-hold
-//! marks above them. Two ballistics: VU integrates slowly for the needle
-//! feel, Peak snaps up and eases down for the PPM look. Like the spectrum, it's
-//! paint primitives on the UI thread and parks once the meters settle, so
-//! an idle app pays nothing. The frequency vocabulary (the growth edge, the
-//! color ramp) is shared with the spectrum panel.
+//! The VU meter panel: per-channel loudness over the player's PCM tap.
+//! One or two meters grow from the configured edge, colored by the loudness
+//! ramp shared with the spectrum. VU integrates slowly for the needle feel;
+//! Peak snaps up and eases down for the PPM look. The panel parks once the
+//! meters settle, so an idle app pays nothing.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -32,61 +29,43 @@ use crate::panel_settings;
 use crate::settings::ui as settings_ui;
 use crate::spectrum::{Gradient, Orientation, gradient_choices, orientation_choices, ramp_color};
 
-/// The most meters the panel draws: stereo is two, mono folds to one.
 const MAX_METERS: usize = 2;
 
-/// Frames pulled off the feed each tick to measure the current level. At
-/// 48 kHz this is a ~85 ms window, long enough for a steady RMS and short
-/// enough that a peak read still catches transients.
+/// At 48 kHz, ~85 ms: long enough for a steady RMS, short enough for a
+/// peak read to catch transients.
 const WINDOW: usize = 4096;
 
-/// dB window the meters normalize into, on samples where a full-scale sine
-/// is 0 dB, the top of the meter. The floor is the quiet end the bar
-/// falls to.
+/// A full-scale sine is 0 dB, the meter's top.
 const FLOOR_DB: f32 = -60.0;
 const MAX_DB: f32 = 0.0;
 
-/// dB marks the scale draws behind the meters: a gridline each, tagged with
-/// the level when there's room for the labels.
 const DB_MARKS: [f32; 3] = [-6.0, -18.0, -36.0];
 
-/// The VU ballistic's smoothing rate, per second, applied both ways: the
-/// needle rises and falls at the same slow rate, integrating the loudness
-/// rather than tracking every transient.
+/// The same rate both ways, so the needle integrates rather than tracks
+/// transients.
 const VU_RATE: f32 = 9.0;
 
-/// The peak ballistic's rates, per second: snap up near-instantly, ease down
-/// slowly, the PPM look where a transient pins the meter and drifts back.
 const PEAK_ATTACK: f32 = 60.0;
 const PEAK_RELEASE: f32 = 7.0;
 
-/// The default rate peak-hold caps accelerate downward at, meter heights per
-/// second squared, the same floaty drift the spectrum caps use.
 const HOLD_GRAVITY: f32 = 0.05;
 const GRAVITY_MIN: f32 = 0.01;
 const GRAVITY_MAX: f32 = 1.0;
 
-/// The segment sliders' spans, px: how deep each LED cell draws and the dark
-/// seam between cells. Values snap to whole pixels; gap zero fuses a stack
-/// into a solid bar.
 const SEG_H_MIN: f32 = 2.0;
 const SEG_H_MAX: f32 = 14.0;
 const SEG_GAP_MIN: f32 = 0.0;
 const SEG_GAP_MAX: f32 = 4.0;
 
-/// The gap between the two stereo meters, px.
 const METER_GAP: f32 = 3.0;
 
-/// Everything below this reads as settled; the panel stops animating.
 const EPSILON: f32 = 0.002;
 
-/// How long the feed may sit still before it reads as stopped audio rather
-/// than the gap between pump ticks. Same as the spectrum's, and for the
-/// same reason: between ticks the meters hold instead of dipping.
+/// How long the feed may sit still before it reads as stopped rather than
+/// a gap between pump ticks. Between ticks the meters hold instead of
+/// dipping.
 const SILENT_AFTER: f32 = 0.15;
 
-/// How the meters render: a solid gradient column, or a stack of LED-style
-/// segments (the hardware meter look).
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeterStyle {
@@ -95,7 +74,6 @@ pub enum MeterStyle {
     Segments,
 }
 
-/// How many meters: fold to one, or split the stereo pair.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Channels {
@@ -113,8 +91,6 @@ impl Channels {
     }
 }
 
-/// How the level is measured and smoothed: VU integrates the RMS slowly,
-/// Peak tracks the sample peak with a fast attack and slow release.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Ballistics {
@@ -139,49 +115,31 @@ fn channel_choices() -> [(SharedString, Channels); 2] {
 
 fn ballistics_choices() -> [(SharedString, Ballistics); 2] {
     [
-        // No locale key surveyed for this label; left as-is (see
-        // .i18n-work/skipped-visual-panels.md).
+        // Untranslated: no locale key exists for this label.
         ("VU".into(), Ballistics::Vu),
         (rox_i18n::t!("vu-ballistics-peak"), Ballistics::Peak),
     ]
 }
 
-/// The VU panel's per-view config: what a saved layout restores and what the
-/// customize window edits. Missing fields take the defaults, so a layout
-/// dumped before a field existed still loads. The growth edge and color ramp
-/// reuse the spectrum's types so the two visualizers use the same terms.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VuConfig {
-    /// The rename, theme override, and placement locks shared by every panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Fold to one meter or split the stereo pair.
     pub channels: Channels,
-    /// A solid gradient column, or LED-style segments.
     pub style: MeterStyle,
-    /// The edge the meters grow from.
     pub orientation: Orientation,
-    /// How the level is measured and smoothed.
     pub ballistics: Ballistics,
-    /// How the meters color by level: flat accent, or a ramp from the theme,
-    /// the cover art, or the custom pair below.
     pub gradient: Gradient,
-    /// The custom ramp's ends, `#rrggbb`: the quiet base and the loud tip.
+    /// `#rrggbb`: the quiet base and the loud tip.
     pub gradient_lo: String,
     pub gradient_hi: String,
-    /// Cell depth in the segment style, px.
     pub seg_height: f32,
-    /// Dark seam between cells in the segment style, px.
     pub seg_gap: f32,
-    /// Peak-hold marks above the meters.
     pub caps: bool,
-    /// How hard the caps fall, meter heights per second squared.
+    /// Meter heights per second squared.
     pub cap_gravity: f32,
-    /// Freeze the meters while playback is paused instead of letting them
-    /// fall to silence.
     pub freeze: bool,
-    /// Draw the dB scale behind the meters: gridlines with level labels.
     pub scale: bool,
 }
 
@@ -207,9 +165,8 @@ impl Default for VuConfig {
 }
 
 impl VuConfig {
-    /// The cell depth and seam read back to the typed ceiling rather than
-    /// the strip's own top, or every value typed past the top would drop
-    /// on the next load.
+    /// Clamped to the typed ceiling, not the strip's top, so a value typed
+    /// past the top survives a reload.
     fn seg_h(&self) -> f32 {
         self.seg_height
             .clamp(SEG_H_MIN, settings_ui::ceiling(SEG_H_MIN, SEG_H_MAX))
@@ -224,8 +181,8 @@ impl VuConfig {
         self.cap_gravity.clamp(GRAVITY_MIN, GRAVITY_MAX)
     }
 
-    /// The custom ramp's ends parsed, falling back to the theme ramp's when a
-    /// hand-edited hex doesn't parse, the same fallback the spectrum uses.
+    /// Falls back to the theme ramp's ends when a hand-edited hex doesn't
+    /// parse.
     fn custom_ramp(&self) -> (Rgba, Rgba) {
         (
             palette::parse_hex(&self.gradient_lo)
@@ -235,8 +192,6 @@ impl VuConfig {
     }
 }
 
-/// A level in [0, 1] from a channel's samples: the sample peak for the Peak
-/// ballistic, the RMS for VU. dB-mapped into the meter's window.
 fn level_of(samples: &[f32], ballistics: Ballistics) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -252,25 +207,17 @@ fn level_of(samples: &[f32], ballistics: Ballistics) -> f32 {
     ((db - FLOOR_DB) / (MAX_DB - FLOOR_DB)).clamp(0.0, 1.0)
 }
 
-/// Per-panel meter state, shared with the paint closure the way the spectrum
-/// shares its bars: the entity holds the handle, the closure does the
-/// per-frame work where the bounds are known.
 struct Meters {
     last_written: u64,
     last_tick: Option<Instant>,
-    /// When the feed last carried new audio.
     last_fresh: Option<Instant>,
-    /// Per-channel sample scratch, refilled from the feed each fresh tick.
     left: Vec<f32>,
     right: Vec<f32>,
-    /// How many meters are live: one folded, or two split.
     count: usize,
-    /// What each meter eases toward, and where it is now.
     targets: [f32; MAX_METERS],
     levels: [f32; MAX_METERS],
     holds: [f32; MAX_METERS],
     hold_vel: [f32; MAX_METERS],
-    /// Meters still moving: render keeps requesting frames until this clears.
     alive: bool,
 }
 
@@ -291,9 +238,6 @@ impl Meters {
         }
     }
 
-    /// One tick: read the newest window, fold it into per-channel levels,
-    /// advance the peak-hold caps. No new audio means the meters decay,
-    /// unless `hold` keeps the last frame standing (freeze on pause).
     fn step(&mut self, feed: &AudioFeed, config: &VuConfig, hold: bool) {
         let now = Instant::now();
         let dt = self
@@ -308,7 +252,6 @@ impl Meters {
 
         self.count = config.channels.count();
 
-        // Frozen and nothing new: keep the standing frame and stop animating.
         if hold && !fresh {
             self.alive = false;
             return;
@@ -321,9 +264,7 @@ impl Meters {
             .last_fresh
             .is_none_or(|t| (now - t).as_secs_f32() > SILENT_AFTER);
 
-        // New audio: measure the newest window per channel. Nothing new but
-        // not yet stopped: hold the targets across the pump-tick gap. Stopped:
-        // fall to silence.
+        // Nothing new but not yet stopped: hold across the pump-tick gap.
         if fresh {
             match config.channels {
                 Channels::Stereo => {
@@ -345,8 +286,7 @@ impl Meters {
         for i in 0..self.count {
             let target = self.targets[i];
             if hold {
-                // Frozen: jump to the target at once, since the next tick
-                // parks again and an ease would strand the meter partway.
+                // Frozen: jump straight to the target, since the next tick parks again.
                 self.levels[i] = target;
             } else {
                 let rate = match config.ballistics {
@@ -362,9 +302,8 @@ impl Meters {
                 self.levels[i] += (target - self.levels[i]) * (rate * dt).min(1.0);
             }
 
-            // The cap follows the meter up and falls back under gravity
-            // once it drops away. Caps off: the holds track the meters so
-            // they don't keep the panel animating.
+            // Caps off: the holds track the meters so they don't keep the panel
+            // animating.
             if !config.caps || self.levels[i] >= self.holds[i] {
                 self.holds[i] = self.levels[i];
                 self.hold_vel[i] = 0.0;
@@ -392,8 +331,6 @@ impl Meters {
             return;
         }
 
-        // The meters lay along `axis`, levels grow into `depth`, matching the
-        // spectrum's axis/depth split so both read the orientation the same.
         let orientation = config.orientation;
         let (axis, depth) = if orientation.horizontal() {
             (w, h)
@@ -404,9 +341,7 @@ impl Meters {
         let slot = axis / self.count as f32;
         let meter_w = (slot - METER_GAP).max(1.0);
 
-        // Axis/depth space into panel space, the same mapping the spectrum
-        // uses: `a` along the meter axis, `d` from the base edge toward the
-        // tips.
+        // `a` runs along the meter axis, `d` from the base edge toward the tips.
         let origin = bounds.origin;
         let rect = move |a: f32, aw: f32, d: f32, dw: f32| {
             let (x, y, rw, rh) = match orientation {
@@ -421,9 +356,8 @@ impl Meters {
             )
         };
 
-        // dB gridlines behind the meters, each tagged with its level. Text is
-        // pricier than the lines, so labels only draw once the meter has room
-        // to spread them without stacking; below that the bare lines stand in.
+        // Labels only once there's room to spread them; text costs more than
+        // the lines.
         if config.scale {
             let ox = f32::from(origin.x);
             let oy = f32::from(origin.y);
@@ -452,8 +386,6 @@ impl Meters {
                 };
                 let line = window.text_system().shape_line(text, fs, &[run], None);
                 let lw = f32::from(line.width);
-                // Place the tag just clear of its line, along the base edge, then
-                // clamp so a mark near a corner never spills out of the panel.
                 let (tx, ty) = match orientation {
                     Orientation::Bottom => (ox + 2.0, oy + (h - d) - fh - 1.0),
                     Orientation::Top => (ox + 2.0, oy + d + 1.0),
@@ -475,8 +407,6 @@ impl Meters {
             let level = self.levels[i];
             let a = i as f32 * slot;
             if config.style == MeterStyle::Segments {
-                // The stack: cells lit up to the level, each colored by its
-                // own height on the ramp, so only a full meter's top runs hot.
                 let lit = (level * cells as f32).round() as usize;
                 for c in 0..lit {
                     let color =
@@ -484,17 +414,12 @@ impl Meters {
                     window.paint_quad(fill(rect(a, meter_w, c as f32 * cell, seg_h), color));
                 }
                 if lit == 0 {
-                    // A ghosted cell at the base keeps a silent meter's
-                    // footprint, the segment twin of the column's stub.
                     window.paint_quad(fill(
                         rect(a, meter_w, 0.0, seg_h),
                         palette::alpha(ramp_color(config.gradient, 0.0, custom), 0x40),
                     ));
                 }
             } else {
-                // The solid column, filled with the ramp from the base color
-                // up to the color at its own tip, so a short meter shows only
-                // the cool end and a pinned one reveals the hot top.
                 let bar = rect(a, meter_w, 0.0, (level * max_d).max(2.0));
                 let base = ramp_color(config.gradient, 0.0, custom);
                 let tip = ramp_color(config.gradient, level, custom);
@@ -512,8 +437,6 @@ impl Meters {
         if !config.caps {
             return;
         }
-        // Peak-hold marks at the held level: the highlight, like the spectrum
-        // caps and the slider knobs, so they stay legible over the meters.
         for i in 0..self.count {
             let a = i as f32 * slot;
             let cap = if config.style == MeterStyle::Segments {
@@ -534,23 +457,16 @@ pub struct VuPanel {
     config: VuConfig,
     feed: Arc<AudioFeed>,
     meters: Arc<Mutex<Meters>>,
-    /// The settings sliders' painted bounds and drag state, one per slider so
-    /// a drag on one never moves the others.
     seg_h_scrub: ScrubState,
     seg_gap_scrub: ScrubState,
     gravity_scrub: ScrubState,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// The custom ramp's pickers, base then tip, built on the first settings
-    /// render, since the panel itself constructs without a window and the
-    /// picker state needs one.
+    /// Built on the first settings render: the picker state needs a window.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
     _ramp_changes: Vec<Subscription>,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Wakes the panel when a session starts, so an idle window resumes
-    /// animating without the player bar's frame pump.
+    /// Wakes an idle window when a session starts.
     _player_changed: Subscription,
 }
 
@@ -590,8 +506,6 @@ impl VuPanel {
         cx.notify();
     }
 
-    /// The panel's own dropdown entries: a Display flyout of the quick toggles
-    /// the customize window also holds, for a flip without opening it.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -632,15 +546,12 @@ impl VuPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // While audio moves the direct observe re-renders on every pump tick,
-        // the only rate new samples arrive at. Frame polling is just for the
-        // falling meters after audio stops; once they settle the panel parks,
-        // and a resume wakes it through the pump's play-state notify.
+        // The observe re-renders on every pump tick while audio moves. Frame
+        // polling only runs the fall after audio stops, then the panel parks.
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
-        // Freeze on pause holds the standing frame: paused mid-session, not a
-        // played-out queue.
+        // Paused mid-session, not a played-out queue.
         let hold = self.config.freeze && session && !playing && !player.queue_ended();
         if !playing && self.meters.lock().unwrap().alive {
             window.request_animation_frame();
@@ -692,8 +603,6 @@ impl PanelSettings for VuPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // The custom ramp's pickers on first need; each edit writes its hex
-        // back into the config, the format the layout dump stores.
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -719,7 +628,6 @@ impl PanelSettings for VuPanel {
         let seg_h = self.config.seg_h();
         let seg_gap = self.config.seg_gap();
         let gravity = self.config.gravity();
-        // What the meter reads and what it's drawn as.
         let meter = div()
             .flex()
             .flex_col()
@@ -802,7 +710,6 @@ impl PanelSettings for VuPanel {
                     ),
                 ))
             });
-        // The loudness ramp the meter is painted with.
         let color = div()
             .flex()
             .flex_col()
@@ -837,7 +744,6 @@ impl PanelSettings for VuPanel {
                     ))
                 },
             );
-        // The caps riding the meter, and how fast they fall back.
         let peaks = div()
             .flex()
             .flex_col()
@@ -906,9 +812,6 @@ impl PanelSettings for VuPanel {
             .into_any_element()
     }
 
-    /// Hold on Pause sits on the shared Behavior page rather than here: it's
-    /// about how the panel acts when the audio stops, not how the meter is
-    /// drawn, and that's where every other panel keeps its behavior switches.
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             settings_ui::section(
@@ -980,8 +883,6 @@ impl Panel for VuPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered in
-    /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -1041,9 +942,6 @@ impl Panel for VuPanel {
 impl Render for VuPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }

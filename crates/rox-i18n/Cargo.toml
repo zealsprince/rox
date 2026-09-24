@@ -8,10 +8,9 @@ license.workspace = true
 # ryu is the f64-to-decimal path behind format_float.
 fixed_decimal = { version = "0.7", features = ["ryu"] }
 # Messages are Fluent: plural rules and selectors per locale, which is
-# what keeps a zh or ja locale a data question later. langneg stays on
-# 0.13 deliberately - 0.14 builds against a newer unic-langid than
-# fluent-bundle 0.16 does and the two LanguageIdentifier types don't
-# unify.
+# what keeps a new locale a data question. langneg stays on 0.13
+# deliberately: 0.14 builds against a newer unic-langid than fluent-bundle
+# 0.16 does and the two LanguageIdentifier types don't unify.
 fluent-bundle = "0.16.0"
 fluent-langneg = "0.13"
 # Translate answers in SharedString because that's what every call site

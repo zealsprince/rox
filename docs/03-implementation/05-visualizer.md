@@ -64,9 +64,12 @@ panicking with the lock held.
 The signal hub (`crates/rox-viz/src/signal.rs`) is built bound to its player's feed
 (`SignalHub::with_feed`). Every read that reports a value (`value`, `raw_value`,
 `live`, `settling`) advances the engine first, deduped to once per frame by
-`TICK_MIN`, and takes its song-change edge off the feed's `track`. Nothing ticks the
-hub from outside, so a new consumer only has to read it. `SignalHub::new` builds a
-hub with no feed, which holds what it's given and never moves on its own.
+`TICK_MIN`, and takes its song-change edge off the feed's `track`. There's no tick to
+call from outside, so a new consumer only has to read it. `with_feed` is the
+constructor for anything showing live values. The one hub without a feed comes from
+`SignalHub::unfed`, used by the signals window when it opens with no workspace up.
+With no player to borrow from, it builds a hub over the saved pool that never moves
+and reads empty, so the pool stays editable and persistable without audio.
 
 ## FFT
 

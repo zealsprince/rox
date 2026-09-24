@@ -1,16 +1,8 @@
-//! Shared plumbing for the layout-composition panels (group, overlay,
-//! slide): panels that host other panels inside one dock slot. The dock
-//! tree only knows splits and tabs, so these hosts render their children
-//! themselves. A child is just an [`Arc<dyn PanelView>`] whose view goes
-//! into the host's own element tree. Children serialize into the host's
-//! [`PanelState::children`] and rebuild through the dock's panel registry,
-//! so nesting round-trips layout dumps like any other panel, composites
-//! inside composites included.
-//!
-//! What a hosted child gives up: the dock never sees it, so there's no
-//! tab-drag into or out of a slot and no per-child zoom or pop-out. Slots
-//! are filled and changed through menus built from the panel catalog
-//! instead.
+//! Shared plumbing for the composition panels (group, overlay, slide,
+//! drawer), which host other panels inside one dock slot and render them
+//! themselves. Children serialize into [`PanelState::children`] and rebuild
+//! through the panel registry. The dock never sees a hosted child, so there's
+//! no tab drag, zoom, or pop-out per slot; the catalog menus fill slots.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -34,18 +26,11 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{AppState, PanelSettings};
 
-/// One hosted slot: a live child panel, or empty and showing the add
-/// affordance.
 pub type Slot = Option<Arc<dyn PanelView>>;
 
-/// Open the settings of whichever hosted child holds focus, or the host's
-/// own when focus is on the container itself. The `Panel::open_settings`
-/// override every composite uses in place of `opens_settings!`.
-///
-/// The dock's chord reaches the tab group, which only knows the panel it
-/// holds directly, and inside a composite that's the container. Without
-/// this, standing in a child and asking for panel settings would open the
-/// container's.
+/// Open the focused child's settings, or the host's own. The dock's chord
+/// only reaches the container, so every composite overrides
+/// `Panel::open_settings` with this.
 pub fn open_slot_settings<'a, P: PanelSettings>(
     slots: impl IntoIterator<Item = &'a Slot>,
     window: &mut Window,
@@ -62,16 +47,9 @@ pub fn open_slot_settings<'a, P: PanelSettings>(
     }
 }
 
-/// Hand a host's tab panel down to its hosted children, once per change.
-///
-/// `on_added_to` is only ever called on panels the dock holds directly, so
-/// a child in a composite slot is never told which tab panel it's in, and
-/// anything it routes there (its fallback right-click menu above all)
-/// quietly goes nowhere. The host knows, so it passes the introduction
-/// along from render, the one place with a window in hand on every path a
-/// slot can change through. `introduced` is the host's own once-flag:
-/// cleared when its tab panel or a slot turns over, set here, so a settled
-/// layout pays one bool check per frame.
+/// `on_added_to` only reaches panels the dock holds directly, so the host
+/// introduces its tab panel to its children from render, or their fallback
+/// right-click menu goes nowhere. `introduced` keeps it to once per change.
 pub fn introduce_slots<'a>(
     children: impl IntoIterator<Item = &'a Arc<dyn PanelView>>,
     tab_panel: &Option<WeakEntity<TabPanel>>,
@@ -91,10 +69,7 @@ pub fn introduce_slots<'a>(
     }
 }
 
-/// A hosted child's view, with its right-click routed to the hosting tab
-/// panel's fallback menu when the child doesn't serve a content menu of
-/// its own. That's the exact overlay a lone docked panel gets. Children
-/// that do serve one keep the click untouched.
+/// Right-click routes to the tab panel's fallback menu unless the child serves its own.
 pub fn menu_routed_slot(
     child: &Arc<dyn PanelView>,
     tab_panel: &Option<WeakEntity<TabPanel>>,
@@ -121,31 +96,21 @@ pub fn menu_routed_slot(
     )
 }
 
-/// Which composite a hosted panel is in. A host reports its slots as it
-/// renders, so a child's own right-click can get to the panel that holds it.
-/// The dock never sees a hosted child, so without this a host with its
-/// corner controls hidden has no route to its settings at all, and even with
-/// them showing this is the shorter one.
+/// Hosted panel to host, reported from each host's render, so a child's
+/// right-click can reach the host's settings even with its controls hidden.
 #[derive(Default)]
 struct Hosts(HashMap<EntityId, Host>);
 
 impl Global for Hosts {}
 
 struct Host {
-    /// The host itself, so a re-report can tell a fresh entry from its own.
     id: EntityId,
-    /// What the row calls it: the host's rename when it has one, its panel
-    /// name otherwise.
     label: SharedString,
-    /// Opens the host's settings window. Holds the host weakly, so an entry
-    /// left behind by a removed child just no-ops.
+    /// Weak, so an entry left behind by a removed child no-ops.
     open: Rc<dyn Fn(&mut App)>,
 }
 
-/// Record a composite as the host of its filled slots. Called from the
-/// host's render, which is the one place that always sees the current
-/// children; the work settles to a couple of map lookups once the slots stop
-/// changing.
+/// Settles to a couple of map lookups once the slots stop changing.
 pub fn report_hosted<'a, P: PanelSettings>(
     children: impl IntoIterator<Item = &'a Arc<dyn PanelView>>,
     label: &str,
@@ -187,9 +152,6 @@ pub fn report_hosted<'a, P: PanelSettings>(
     }
 }
 
-/// The row that opens a hosted panel's host settings, for the end of the
-/// child's own menu. Nothing at all when the panel isn't hosted, which is
-/// every panel the dock holds directly.
 pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMenu {
     let Some(host) = cx
         .try_global::<Hosts>()
@@ -208,9 +170,7 @@ pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMe
     )
 }
 
-/// Serialize a host's slots in order. An empty slot dumps as the default
-/// (empty-named) state, so slot positions are preserved through the
-/// round-trip.
+/// An empty slot dumps as the default state, so slot positions survive.
 pub fn dump_slots(slots: &[Slot], cx: &App) -> Vec<PanelState> {
     slots
         .iter()
@@ -221,10 +181,7 @@ pub fn dump_slots(slots: &[Slot], cx: &App) -> Vec<PanelState> {
         .collect()
 }
 
-/// Rebuild a host's slots from its dumped children through the panel
-/// registry, the same route the dock takes for its own tabs. The empty
-/// sentinel comes back as an empty slot; an unregistered name builds the
-/// dock's invalid-panel placeholder, which keeps the dump intact.
+/// An unregistered name builds the invalid-panel placeholder, keeping the dump intact.
 pub fn restore_slots(
     dock_area: &WeakEntity<DockArea>,
     state: &PanelState,
@@ -251,11 +208,7 @@ pub fn restore_slots(
         .collect()
 }
 
-/// The children a composite hosts, in slot order, or None when the panel
-/// isn't a composite. The settings window's layout tree shows hosted
-/// children under their host's row through this; an empty slot comes back
-/// as None so the tree can name the hole. The slide deck has no holes, so
-/// its entries are all Some.
+/// For the layout tree. Empty slots come back as None so the tree can name the hole.
 pub fn hosted_children(panel: &Arc<dyn PanelView>, cx: &App) -> Option<Vec<Slot>> {
     let view = panel.view();
     if let Ok(group) = view.clone().downcast::<crate::panels::group::GroupPanel>() {
@@ -279,10 +232,6 @@ pub fn hosted_children(panel: &Arc<dyn PanelView>, cx: &App) -> Option<Vec<Slot>
     None
 }
 
-/// Append the catalog to a menu as pick rows: the bare center panels
-/// flat, the labeled groups as flyouts, the same shape as the dock's Add
-/// Panel submenu. A pick builds the panel against the workspace's state
-/// and hands it to `on_pick`; where it goes is the caller's business.
 pub fn pick_items(
     mut menu: PopupMenu,
     state: AppState,
@@ -291,15 +240,12 @@ pub fn pick_items(
     cx: &mut Context<PopupMenu>,
     on_pick: impl Fn(Arc<dyn PanelView>, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
-    // The saved panels lead the list here too, grayed by the same nesting
-    // rule the arrangement section is: a preset of a composite is still a
-    // composite.
+    // Presets lead here too, grayed by the same no-nesting rule.
     if let Some(dock) = workspace.upgrade().map(|ws| ws.read(cx).dock().downgrade()) {
         menu = crate::panel_presets::pick_submenu(menu, dock, true, window, cx, on_pick.clone());
     }
     for section in catalog::sections() {
-        // The arrangement panels stay in the slot picker but grayed: a
-        // composite can't host another composite, one level of nesting.
+        // Composites stay listed but grayed: one level of nesting.
         let disabled = catalog::is_arrangement(section);
         match section.group {
             None => {
@@ -343,9 +289,6 @@ pub fn pick_items(
     menu
 }
 
-/// One catalog pick row: build the def's panel and hand it over. A
-/// disabled row shows grayed with no click, for the panels that can't go
-/// in this slot (a composite inside a composite).
 fn pick_item(
     menu: PopupMenu,
     def: &'static PanelDef,
@@ -364,10 +307,7 @@ fn pick_item(
     }))
 }
 
-/// An empty slot's body: a dashed stand-in with an Add Panel dropdown
-/// over the catalog. Fills whatever cell the host gives it. Out of design
-/// mode the button goes and the dashed mark stands alone: filling the slot
-/// is a layout edit, and the Workspace page's tree still does it.
+/// Out of design mode the add button hides; the Workspace page can still fill it.
 pub fn empty_slot(
     id: impl Into<gpui::ElementId>,
     state: AppState,
@@ -408,13 +348,8 @@ pub fn empty_slot(
         })
 }
 
-/// Hold a slot's cell to the size the child asks for. A host lays its
-/// children out itself, so nothing else reads a hosted panel's min and max:
-/// without this, the size settings on a child inside a group say one thing
-/// and the host draws another. These are the same numbers the dock's splits
-/// honor for a docked panel, so a panel keeps its size wherever it ends up.
-/// An unset cap comes back as [`Pixels::MAX`] and is left off the cell
-/// rather than written out as a bound.
+/// Apply the child's min and max to its cell, the numbers the dock's splits
+/// honor, since nothing else reads them for a hosted panel.
 pub fn clamp_to_panel(cell: Div, child: &Slot, cx: &App) -> Div {
     let Some(child) = child else { return cell };
     let (min, max) = (child.min_size(cx), child.max_size(cx));
@@ -436,10 +371,7 @@ pub fn clamp_to_panel(cell: Div, child: &Slot, cx: &App) -> Div {
         })
 }
 
-/// The wrapper for a host's per-slot floating controls: pinned to the
-/// slot's top-right corner, faint until hovered so they never fight the
-/// child's own chrome for attention. Children's controls on the right,
-/// the parent grip on the left, so the two never collide.
+/// Top-right, faint until hovered. The parent grip takes the top-left.
 pub fn corner_controls() -> Div {
     div()
         .absolute()
@@ -452,8 +384,6 @@ pub fn corner_controls() -> Div {
         .hover(|style| style.opacity(1.))
 }
 
-/// The wrapper for the composite's own grip: the top-left corner, clear of
-/// the per-slot controls on the right, faint until hovered.
 pub fn parent_controls() -> Div {
     div()
         .absolute()
@@ -463,15 +393,8 @@ pub fn parent_controls() -> Div {
         .hover(|style| style.opacity(1.))
 }
 
-/// The composite's own menu button: opens the host's [`Panel::dropdown_menu`],
-/// the very menu the dock's tab chrome shows for it. The parent grip keeps
-/// split, swap, rename, settings, and close reachable from inside the
-/// panel, which matters when the composite is solo and the dock draws no
-/// tab bar to hang that menu off. Content panels set
-/// `content_context_menu` so a right-click over a child opens the child's
-/// own menu, not the parent's; this button is how the parent stays
-/// managed once that body route is handed to the children. Drawn with the
-/// layout mark so the grip reads as the container, not a child.
+/// The host's own [`Panel::dropdown_menu`]. Needed because children take the
+/// body right-click, and a solo composite gets no tab bar to hang it off.
 pub fn parent_button<P: Panel>(
     tooltip: impl Into<SharedString>,
     cx: &mut Context<P>,
@@ -488,16 +411,8 @@ pub fn parent_button<P: Panel>(
         })
 }
 
-/// A filled slot's menu button: Replace (the catalog as a flyout), the
-/// child's Panel Settings, and Remove, with `extend` prepending any
-/// host-specific rows (a slide's reorder moves). Replace and Remove go
-/// back to the host through the callbacks; the settings route goes
-/// through the type-erased opener, so a child type without a settings
-/// window just no-ops.
-///
-/// A locked child keeps its settings row and loses the two that would move
-/// it: locked means pinned in place, and a slot is the hosted panel's
-/// version of the tab a docked panel gets pinned into.
+/// Replace, the child's settings, and Remove, after any rows `extend` adds.
+/// A locked child keeps only its settings row.
 #[allow(clippy::too_many_arguments)]
 pub fn slot_button<P: 'static>(
     id: (&'static str, usize),
@@ -563,10 +478,7 @@ pub fn slot_button<P: 'static>(
         })
 }
 
-/// A group divider's live drag: where the slots container painted and
-/// whether a drag is on, behind Arcs so the panel, its paint closure, and
-/// the window-level handlers can all hold it. The [`rox_panel_kit::ScrubState`]
-/// idiom, made axis-generic for the vertical split.
+/// The [`rox_panel_kit::ScrubState`] idiom, made axis-generic.
 #[derive(Clone, Default)]
 pub struct DividerState {
     bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
@@ -574,12 +486,10 @@ pub struct DividerState {
 }
 
 impl DividerState {
-    /// Remember where the slots container was painted, from its prepaint.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
         *self.bounds.lock().unwrap() = Some(bounds);
     }
 
-    /// A drag started (mouse down on the divider).
     pub fn begin(&self) {
         self.dragging.store(true, Ordering::Relaxed);
     }
@@ -592,8 +502,7 @@ impl DividerState {
         self.dragging.load(Ordering::Relaxed)
     }
 
-    /// Where the pointer is along the container's `axis`, 0 to 1;
-    /// overshoot clamps so the drag never lets go of the divider.
+    /// 0 to 1; overshoot clamps so the drag never lets go.
     fn fraction(&self, position: Point<Pixels>, axis: Axis) -> Option<f32> {
         let bounds = (*self.bounds.lock().unwrap())?;
         let extent = f32::from(bounds.size.along(axis));
@@ -605,11 +514,8 @@ impl DividerState {
     }
 }
 
-/// Keep a live divider drag following the pointer along `axis`: apply the
-/// container fraction on every move, end the drag on release. Call from
-/// the host's paint pass: window handlers only last one frame, the
-/// [`rox_panel_kit::scrub_on_paint`] idiom. Applying must notify the
-/// entity so the next frame re-arms the handlers.
+/// Call from the host's paint: window handlers last one frame, the
+/// [`rox_panel_kit::scrub_on_paint`] idiom. `apply` must notify.
 pub fn divider_on_paint(
     divider: &DividerState,
     axis: Axis,
@@ -625,8 +531,7 @@ pub fn divider_on_paint(
             if !phase.bubble() || !divider.is_dragging() {
                 return;
             }
-            // A release outside the window never reaches the up handler;
-            // a move without the button still held ends the drag instead.
+            // A release outside the window never arrives; a buttonless move ends the drag.
             if event.pressed_button != Some(MouseButton::Left) {
                 divider.end();
                 return;

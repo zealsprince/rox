@@ -1,23 +1,17 @@
-//! Named dock layouts the user saved into the live look. Each is a full dock
-//! dump under a name; the settings window lists them, and the mini-player
-//! button toggles between the two a user picks as primary and mini. Presets
-//! belong to the workspace they were saved in, so they're stored in
-//! `workspace.json` with the rest of the look and travel inside a shared
-//! bundle.
+//! Named dock layouts saved into the live look. The mini-player button
+//! toggles between the two picked as primary and mini. Presets belong to
+//! their workspace, so they live in `workspace.json` and travel in a bundle.
 
 use serde_json::Value;
 
 use crate::settings::{LayoutSize, Settings};
 
-/// A layout preset for the settings list: its name, the dock dump to apply,
-/// and an optional window size to restore with it.
 pub struct Preset {
     pub name: String,
     pub dump: Value,
     pub size: Option<LayoutSize>,
 }
 
-/// Every saved preset for the settings list, in save order.
 pub fn all(settings: &Settings) -> Vec<Preset> {
     settings
         .look
@@ -32,8 +26,6 @@ pub fn all(settings: &Settings) -> Vec<Preset> {
         .collect()
 }
 
-/// Resolve a preset name to its dump and size. None when no preset has that
-/// name.
 pub fn resolve(settings: &Settings, name: &str) -> Option<Preset> {
     settings
         .look
@@ -71,8 +63,6 @@ mod tests {
         s
     }
 
-    /// `all` lists every saved preset in save order, dumps and sizes passed
-    /// through untouched.
     #[test]
     fn all_lists_presets_in_order() {
         let s = settings_with_presets();
@@ -80,13 +70,10 @@ mod tests {
         assert_eq!(presets.len(), 2);
         assert_eq!(presets[0].name, "Compact");
         assert_eq!(presets[1].name, "Wide");
-        // The size comes back with the preset that has one.
         assert_eq!(presets[0].size.map(|z| z.width), Some(800.0));
         assert!(presets[1].size.is_none());
     }
 
-    /// `resolve` finds a preset by exact name and hands back its dump and
-    /// size; an unknown name resolves to None.
     #[test]
     fn resolve_finds_known_and_misses_unknown() {
         let s = settings_with_presets();
@@ -95,7 +82,6 @@ mod tests {
         assert_eq!(hit.size.map(|z| z.height), Some(600.0));
         // A preset with no stored size resolves with None, not a default.
         assert!(resolve(&s, "Wide").unwrap().size.is_none());
-        // No preset has this name.
         assert!(resolve(&s, "Nope").is_none());
     }
 }

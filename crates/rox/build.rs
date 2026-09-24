@@ -1,6 +1,5 @@
 fn main() {
-    // Windows resolves the taskbar and Explorer icon from a resource compiled
-    // into the exe; every other platform gets it from the packaging instead.
+    // Windows reads its icon from the exe; packaging supplies it elsewhere.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         embed_windows_icon();
     }

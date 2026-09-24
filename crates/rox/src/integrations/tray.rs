@@ -1,22 +1,11 @@
 //! Quit to tray: the app resident with zero windows, music playing, and a
-//! way back in. On Linux that's an SNI icon over D-Bus via ksni, the same
-//! zbus stack the media keys use; on Windows a notification area icon
-//! through tray-icon, which is Shell_NotifyIcon with no GTK anywhere; on
-//! macOS the dock already is the tray and this module only holds the kept
-//! state for `on_reopen`.
+//! way back in. Linux uses an SNI icon via ksni, Windows a notification area
+//! icon via tray-icon, and on macOS the dock is the tray, so this only holds
+//! the kept state. Findings in docs/0R-research/03-quit-to-tray.md.
 //!
-//! The research entry (docs/0R-research/03-quit-to-tray.md) holds the
-//! findings this leans on. The shape matches [`crate::integrations::media_controls`]: the
-//! tray's callbacks run on its own service thread and only send commands
-//! over an async channel; a drain task on the foreground executor does the
-//! work. State flows the other way through [`set_playing`], gated so player
-//! notifies don't become D-Bus writes.
-//!
-//! When the last workspace window closes with the setting on,
-//! [`crate::workspace::close_workspace_window`] hands the shared state to
-//! [`hold`] instead of quitting. The hold keeps the player and its engine
-//! alive, and the tray's Open (or the dock click) adopts it into a fresh
-//! window through [`crate::open_workspace_adopting`].
+//! The tray's callbacks only send commands over a channel; a drain on the
+//! foreground executor does the work. When the last window closes with the
+//! setting on, [`hold`] keeps the player alive until a reopen adopts it.
 
 use gpui::{App, Entity, Global, Subscription};
 
@@ -24,9 +13,6 @@ use crate::integrations::media_controls::MediaSession;
 use crate::workspace::Adopted;
 use rox_panel_api::panel::AppState;
 
-/// The tray's app-side state. The hold exists on every platform; the icon
-/// handle and its push gate exist where there's a real icon to talk to,
-/// alive exactly while the setting is on and the platform played along.
 #[derive(Default)]
 struct TrayService {
     hold: Option<Held>,
@@ -34,31 +20,22 @@ struct TrayService {
     handle: Option<ksni::blocking::Handle<RoxTray>>,
     #[cfg(target_os = "windows")]
     icon: Option<WindowsTray>,
-    /// The (has_track, playing) pair last pushed to the icon, so the
-    /// steady stream of player notifies writes only on change.
+    /// The last pushed (has_track, playing), so writes happen only on change.
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     pushed: Option<(bool, bool)>,
 }
 
 impl Global for TrayService {}
 
-/// The shared state stashed by the last window close, keeping the playing
-/// player alive while no window holds it.
 struct Held {
     state: AppState,
-    /// The OS media service, still registered and still answering the
-    /// hardware keys with no window behind it. `None` on Windows, where SMTC
-    /// is bound to the window handle and can't outlive it, and wherever the
-    /// service never came up in the first place.
+    /// The media service, still answering the hardware keys. `None` on Windows,
+    /// where SMTC is bound to the window handle and can't outlive it.
     media: Option<Entity<MediaSession>>,
-    /// Keeps the menu's Play/Pause label honest while no workspace drives
-    /// the publish path: a track running out flips it windowless.
+    /// Keeps the Play/Pause label honest with no workspace publishing.
     _observer: Subscription,
 }
 
-/// Whether this platform has a way back into a windowless app: the tray
-/// icon on Linux and Windows, the dock on macOS. The Application row hides
-/// where this is false, and the close path quits regardless of the setting.
 pub(crate) fn supported() -> bool {
     cfg!(any(
         target_os = "linux",
@@ -67,10 +44,8 @@ pub(crate) fn supported() -> bool {
     ))
 }
 
-/// Whether closing the last window can leave the app reachable right now.
-/// On Linux that means the icon actually made it onto the bus; a missing
-/// SNI host falls back to quitting rather than stranding a headless
-/// process.
+/// Whether closing the last window leaves the app reachable. With no SNI host
+/// the close quits rather than stranding a headless process.
 #[cfg(target_os = "linux")]
 pub(crate) fn resident(cx: &mut App) -> bool {
     cx.default_global::<TrayService>().handle.is_some()
@@ -81,8 +56,6 @@ pub(crate) fn resident(_cx: &mut App) -> bool {
     true
 }
 
-/// The same honesty as Linux: true only while the pump thread is up with an
-/// icon in the notification area.
 #[cfg(target_os = "windows")]
 pub(crate) fn resident(cx: &mut App) -> bool {
     cx.default_global::<TrayService>().icon.is_some()
@@ -93,9 +66,6 @@ pub(crate) fn resident(_cx: &mut App) -> bool {
     false
 }
 
-/// Stash the closing primary's state and its media service, and watch the
-/// player so the tray label stays current without a window. The service
-/// keeps running here, so the media keys still work from the tray.
 pub(crate) fn hold(state: AppState, media: Option<Entity<MediaSession>>, cx: &mut App) {
     let observer = cx.observe(&state.player, |player, cx| {
         let (has_track, playing) = {
@@ -111,9 +81,7 @@ pub(crate) fn hold(state: AppState, media: Option<Entity<MediaSession>>, cx: &mu
     });
 }
 
-/// Bring a workspace window back: over the held state when the close
-/// stashed one, cold otherwise (quit-to-tray turned on mid-session on
-/// macOS, say, where no hold ever formed).
+/// Adopts the held state, or opens cold when no hold formed.
 pub(crate) fn reopen(cx: &mut App) {
     let held = cx.default_global::<TrayService>().hold.take();
     match held {
@@ -128,9 +96,6 @@ pub(crate) fn reopen(cx: &mut App) {
     }
 }
 
-/// What the tray asks of the app. The menu callbacks run on the tray's own
-/// thread, so they only send; the drain on the foreground executor does the
-/// work.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 enum TrayCommand {
     Open,
@@ -138,9 +103,7 @@ enum TrayCommand {
     Quit,
 }
 
-/// The app icon decoded and thumbnailed once, as (width, height, RGBA). The
-/// 2048 px source is 16 MB of pixels, and on Linux every one of them travels
-/// over the session bus.
+/// Thumbnailed once: the 2048 px source is 16 MB, and on Linux it travels the bus.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 static ICON: std::sync::LazyLock<(u32, u32, Vec<u8>)> = std::sync::LazyLock::new(|| {
     let img = image::load_from_memory(include_bytes!("../../assets/app/rox.png"))
@@ -150,8 +113,6 @@ static ICON: std::sync::LazyLock<(u32, u32, Vec<u8>)> = std::sync::LazyLock::new
     (width, height, img.into_rgba8().into_vec())
 });
 
-/// Hand the tray's channel to the foreground executor. The drain outlives
-/// this call and ends when the channel closes or the app quits.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn drain(events: async_channel::Receiver<TrayCommand>, cx: &mut App) {
     cx.spawn(async move |cx| {
@@ -240,10 +201,8 @@ impl ksni::Tray for RoxTray {
     }
 }
 
-/// Reconcile the icon with the setting: put it up when quit-to-tray turns
-/// on, take it down when it turns off. Called at startup and from both
-/// toggles. Failing to reach an SNI host leaves the handle empty and the
-/// close path quitting as if the setting were off.
+/// Put the icon up or take it down to match the setting. No SNI host leaves
+/// the handle empty, and the close path quits as if the setting were off.
 #[cfg(target_os = "linux")]
 pub(crate) fn sync(cx: &mut App) {
     use ksni::blocking::TrayMethods as _;
@@ -269,25 +228,21 @@ pub(crate) fn sync(cx: &mut App) {
         let service = cx.default_global::<TrayService>();
         service.pushed = None;
         if let Some(handle) = service.handle.take() {
-            // Fire and forget: dropping the awaiter lets the service thread
-            // wind down on its own, and the closed channel ends the drain.
+            // Dropping the awaiter lets the service thread wind down; the closed
+            // channel ends the drain.
             let _ = handle.shutdown();
         }
     }
 }
 
-/// The Windows icon and its menu, from the app's side. Both are Rc-backed
-/// and pinned to the thread that pumps their messages, so this end holds no
-/// handle at all: just the thread id to post to, and the join that proves
-/// the icon is gone.
+/// The icon and menu are Rc-backed and pinned to their pump thread, so this
+/// side holds only the thread id to post to and the join.
 #[cfg(target_os = "windows")]
 struct WindowsTray {
     thread: u32,
     join: std::thread::JoinHandle<()>,
 }
 
-/// Our private thread messages into the pump. WM_APP up is the range
-/// Windows reserves for an application's own use.
 #[cfg(target_os = "windows")]
 const WM_ROX_TRAY_STATE: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 #[cfg(target_os = "windows")]
@@ -306,18 +261,13 @@ impl WindowsTray {
         }
     }
 
-    /// Wait for the thread rather than just asking it to go: the icon drops
-    /// there, and returning early would leave a dead one in the notification
-    /// area until the shell next swept it.
+    /// Waits: returning early leaves a dead icon until the shell sweeps it.
     fn shutdown(self) {
         self.post(WM_ROX_TRAY_QUIT, 0);
         let _ = self.join.join();
     }
 }
 
-/// Put the icon up on its own thread and hand back the way to talk to it.
-/// None when the icon or its menu wouldn't build, which leaves the close
-/// path quitting as if the setting were off.
 #[cfg(target_os = "windows")]
 fn spawn_windows_tray(tx: async_channel::Sender<TrayCommand>) -> Option<WindowsTray> {
     let (ready, up) = std::sync::mpsc::channel();
@@ -334,9 +284,8 @@ fn spawn_windows_tray(tx: async_channel::Sender<TrayCommand>) -> Option<WindowsT
     }
 }
 
-/// The pump thread. tray-icon needs the icon created on a thread running a
-/// win32 message loop, and muda's menu items are Rc-backed, so the menu is
-/// built here and only ever touched here; the app pokes it with
+/// tray-icon needs a thread running a win32 message loop, and muda's menu
+/// items are Rc-backed, so the menu lives here; the app pokes it with
 /// [`WM_ROX_TRAY_STATE`].
 #[cfg(target_os = "windows")]
 fn windows_tray_thread(
@@ -350,8 +299,8 @@ fn windows_tray_thread(
         DispatchMessageW, GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, TranslateMessage, WM_USER,
     };
 
-    // PostThreadMessage throws messages away for a thread that has never
-    // asked for one, so force the queue into being before the id goes out.
+    // PostThreadMessage drops messages for a thread with no queue yet, so force
+    // one into being before the id goes out.
     let mut probe = MSG::default();
     unsafe {
         PeekMessageW(
@@ -389,7 +338,6 @@ fn windows_tray_thread(
         .with_tooltip("rox")
         .with_icon(icon)
         .with_menu(Box::new(menu))
-        // Left click is the way back in, so the menu stays on right click.
         .with_menu_on_left_click(false)
         .build();
     let _tray = match built {
@@ -401,9 +349,8 @@ fn windows_tray_thread(
         }
     };
 
-    // Both crates fan their events through process-wide channels, so a run
-    // that turned the setting off and on again can leave the last icon's
-    // clicks queued there. They mean nothing to this one.
+    // Both crates use process-wide channels, so a previous icon's clicks may
+    // still be queued. Drain them.
     while TrayIconEvent::receiver().try_recv().is_ok() {}
     while MenuEvent::receiver().try_recv().is_ok() {}
 
@@ -413,11 +360,9 @@ fn windows_tray_thread(
 
     loop {
         let mut msg = MSG::default();
-        // Zero is WM_QUIT, negative is an error there's no recovering from.
         if unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } <= 0 {
             break;
         }
-        // Thread messages belong to no window, so they never get dispatched.
         if msg.hwnd.is_null() {
             match msg.message {
                 WM_ROX_TRAY_STATE => {
@@ -437,8 +382,6 @@ fn windows_tray_thread(
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        // Both crates post from the window procedures this just dispatched
-        // into, so whatever the click meant is on their channels by now.
         for event in TrayIconEvent::receiver().try_iter() {
             if matches!(
                 event,
@@ -463,9 +406,6 @@ fn windows_tray_thread(
     }
 }
 
-/// Reconcile the icon with the setting, the Windows half. A thread that
-/// can't get an icon into the notification area leaves the slot empty and
-/// the close path quitting as if the setting were off.
 #[cfg(target_os = "windows")]
 pub(crate) fn sync(cx: &mut App) {
     let on = rox_core::settings::quit_to_tray();
@@ -491,9 +431,7 @@ pub(crate) fn sync(cx: &mut App) {
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn sync(_cx: &mut App) {}
 
-/// Take the icon down and wait for it to actually be gone, so the platform
-/// has released the slot before the event loop stops. The prototype timed
-/// the whole exit under 200 ms on the D-Bus side.
+/// Wait for the icon to be gone so the slot is released before the loop stops.
 #[cfg(target_os = "linux")]
 fn shutdown(cx: &mut App) {
     if let Some(handle) = cx.default_global::<TrayService>().handle.take() {
@@ -508,8 +446,7 @@ fn shutdown(cx: &mut App) {
     }
 }
 
-/// One tray command against the app, on the foreground executor. Returns
-/// true when the app is quitting and the drain should end.
+/// Returns true when the app is quitting.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn apply(command: TrayCommand, cx: &mut App) -> bool {
     match command {
@@ -527,7 +464,6 @@ fn apply(command: TrayCommand, cx: &mut App) -> bool {
             false
         }
         TrayCommand::Toggle => {
-            // A window's state when one is open, the hold's when resident.
             let state = rox_panel_api::windows::front_workspace(cx)
                 .map(|(_, state)| state)
                 .or_else(|| {
@@ -557,10 +493,8 @@ fn apply(command: TrayCommand, cx: &mut App) -> bool {
     }
 }
 
-/// Push play state to the icon's menu, gated on change. The push blocks
-/// until the tray thread acks, which the prototype measured as effectively
-/// instant; the menu closures never call back into gpui, so the two
-/// threads can't wait on each other.
+/// Blocks until the tray thread acks. The menu closures never call into gpui,
+/// so the two threads can't deadlock.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_playing(has_track: bool, playing: bool, cx: &mut App) {
     let service = cx.default_global::<TrayService>();
@@ -577,8 +511,7 @@ pub(crate) fn set_playing(has_track: bool, playing: bool, cx: &mut App) {
     });
 }
 
-/// The same gate on Windows, except the push is a posted thread message the
-/// pump picks up on its own time, so this never waits on anything.
+/// A posted thread message, so this never waits.
 #[cfg(target_os = "windows")]
 pub(crate) fn set_playing(has_track: bool, playing: bool, cx: &mut App) {
     let service = cx.default_global::<TrayService>();

@@ -1,12 +1,6 @@
-//! Panel presets: one saved panel, rebuilt on demand. A preset is the same
-//! leaf a layout dump stores per panel, so building one is the restore path
-//! a layout takes for that node: the registry name routes through
-//! [`PanelRegistry`], the config blob goes back in, and a composite's
-//! children come along.
-//!
-//! Saving happens down in `rox_panel_api::panel_settings` (the dropdown that
-//! owns the panel); everything that turns a saved preset back into a live
-//! panel is here, because only this crate has the catalog.
+//! Panel presets: one saved panel, rebuilt through the same restore path a
+//! layout takes for that node. Saving lives in `rox_panel_api::panel_settings`;
+//! rebuilding is here because only this crate has the catalog.
 
 use std::sync::Arc;
 
@@ -20,22 +14,14 @@ use rox_dock::{DockArea, PanelInfo, PanelRegistry, PanelState, PanelView};
 
 use crate::panel_catalog::{self as catalog, PanelPlacement};
 
-/// What the presets group is called and the icon it shows wherever a panel
-/// picker lists it, so the group reads the same in every menu that has one.
-/// The label is an i18n key, like every other group label a picker draws,
-/// and it's the same one the Panels menu's own presets row uses.
+/// The presets group's i18n label and icon, shared by every panel picker.
 pub(crate) const GROUP_LABEL: &str = "menu-panels-presets";
 pub(crate) const GROUP_ICON: &str = icons::COPY;
 
-/// Every preset the live look holds, in save order. Read at the moment a
-/// menu opens rather than held, the way the layout flyouts read theirs.
 pub(crate) fn saved() -> Vec<PanelPreset> {
     rox_core::settings::panel_presets::all(&Settings::load())
 }
 
-/// The icon a preset's row shows: the icon of the panel inside it, so a
-/// preset reads as the thing it makes. A preset whose panel isn't in the
-/// catalog falls back to the group's own glyph.
 pub(crate) fn icon_for(preset: &PanelPreset) -> &'static str {
     preset
         .panel_name()
@@ -44,9 +30,6 @@ pub(crate) fn icon_for(preset: &PanelPreset) -> &'static str {
         .unwrap_or(GROUP_ICON)
 }
 
-/// Where a preset's panel joins the layout when it's opened from a menu with
-/// no group under the pointer: its catalog entry's placement, center for a
-/// panel the catalog doesn't list.
 pub(crate) fn placement_for(preset: &PanelPreset) -> PanelPlacement {
     preset
         .panel_name()
@@ -55,9 +38,7 @@ pub(crate) fn placement_for(preset: &PanelPreset) -> PanelPlacement {
         .unwrap_or(PanelPlacement::Center)
 }
 
-/// Whether a preset holds a composition host, which the slot pickers gray
-/// out: a composite can go in a tab but not in another composite's slot,
-/// and a preset of one is still one.
+/// The slot pickers gray these out: a composite can't nest in another.
 pub(crate) fn is_arrangement(preset: &PanelPreset) -> bool {
     preset
         .panel_name()
@@ -65,10 +46,8 @@ pub(crate) fn is_arrangement(preset: &PanelPreset) -> bool {
         .is_some_and(catalog::is_arrangement)
 }
 
-/// Build the panel a preset holds, against the registry the workspace
-/// owning `dock` registered. None when the stored dump won't parse; a name
-/// nothing registers comes back as the dock's invalid-panel placeholder,
-/// the same as a layout holding a panel this build doesn't have.
+/// None when the dump won't parse. An unregistered name builds the dock's
+/// invalid-panel placeholder, like a layout would.
 pub(crate) fn build(
     preset: &PanelPreset,
     dock: WeakEntity<DockArea>,
@@ -83,8 +62,7 @@ pub(crate) fn build(
         }
     };
     let info = state.info.clone();
-    // Only a leaf makes sense as a preset: the containers are the dock's own
-    // nodes, and one saved alone would rebuild as an empty tab strip.
+    // A container saved alone would rebuild as an empty tab strip.
     if !matches!(info, PanelInfo::Panel(_)) {
         log::warn!(
             "panel presets: {} holds a container, not a panel",
@@ -95,9 +73,7 @@ pub(crate) fn build(
     Some(PanelRegistry::build_panel(&state.panel_name, dock, &state, &info, window, cx).into())
 }
 
-/// Build the preset named `name`, or nothing when the look has since dropped
-/// it. The flyouts hold names rather than dumps, so a preset deleted while a
-/// menu stood open picks as a no-op instead of stale settings.
+/// A preset deleted while its menu stood open picks as a no-op.
 pub(crate) fn build_named(
     name: &str,
     dock: WeakEntity<DockArea>,
@@ -108,13 +84,8 @@ pub(crate) fn build_named(
     build(&preset, dock, window, cx)
 }
 
-/// Lead a panel picker with the Presets group: one flyout of the saved
-/// panels above the catalog's own groups, skipped whole when nothing is
-/// saved. A pick builds the preset and hands it to `on_pick`, which decides
-/// where it goes, the same split [`crate::composite::pick_items`] draws.
-///
-/// `no_composites` grays the presets that hold a composition host, for the
-/// slot pickers that can't take one.
+/// The Presets flyout leading a panel picker, skipped when nothing is saved.
+/// `on_pick` decides where the built panel goes.
 pub(crate) fn pick_submenu(
     menu: PopupMenu,
     dock: WeakEntity<DockArea>,
@@ -159,10 +130,6 @@ pub(crate) fn pick_submenu(
 mod tests {
     use super::*;
 
-    /// The presets group sits beside the catalog's groups in every picker
-    /// and goes through the same lookup, so its label has to be a key the
-    /// same way theirs are. It was plain English for a while, which drew as
-    /// the missing marker once the pickers started translating it.
     #[test]
     fn the_group_label_is_a_message_key() {
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
@@ -170,10 +137,7 @@ mod tests {
         assert!(rox_i18n::try_translate(GROUP_LABEL).is_some());
     }
 
-    /// A dump makes the round trip a save and an add put it through: a panel
-    /// state to JSON, the kind readable off it without parsing, and back to
-    /// the state the registry builds from. The two halves are in different
-    /// crates, so nothing else checks they agree on the shape.
+    /// The save and restore halves live in different crates; this pins the shape.
     #[test]
     fn a_dump_round_trips_through_a_preset() {
         let dump = PanelState {
@@ -186,7 +150,6 @@ mod tests {
             panel: serde_json::to_value(&dump).expect("a dump serializes"),
         };
         assert_eq!(preset.panel_name(), Some("spectrum"));
-        // The catalog resolves what that name is and where it goes.
         assert_eq!(icon_for(&preset), icons::AUDIO_LINES);
         assert!(matches!(placement_for(&preset), PanelPlacement::Bottom));
         assert!(!is_arrangement(&preset));
@@ -199,8 +162,6 @@ mod tests {
         );
     }
 
-    /// A preset of a composition host reads as one, which keeps it out of
-    /// another composite's slot.
     #[test]
     fn a_composite_preset_reads_as_one() {
         let preset = PanelPreset {

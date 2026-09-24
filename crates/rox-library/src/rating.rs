@@ -1,10 +1,6 @@
-//! One rating, three shapes. The app holds a 0-100 value (0 unrated,
-//! a star is 20 points, the numeric scale's 7.5 is 75) and every tag
-//! write stores it twice: a whole-star POPM/RATING for the players that
-//! only understand stars, and an exact FMPS_Rating decimal so half points
-//! come through the round trip. This module owns every conversion between
-//! those shapes, so the writer, the scanner, and the store agree on one
-//! set of thresholds: lofty's MusicBee mapping, the de-facto default.
+//! One rating, three shapes: the app's 0-100 value, a whole-star POPM/RATING
+//! for star-only players, and an exact FMPS_Rating so half points survive.
+//! Every conversion lives here, on lofty's MusicBee thresholds.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -17,18 +13,15 @@ use lofty::mpeg::MpegFile;
 use lofty::ogg::{OpusFile, VorbisComments};
 use lofty::probe::Probe;
 
-/// The exact-value key, the FreeDesktop media player spec's 0.0-1.0
-/// fraction: a TXXX description on ID3v2, a comment key on Vorbis.
+/// FreeDesktop's 0.0-1.0 fraction: a TXXX description on ID3v2, a Vorbis key.
 pub const FMPS_KEY: &str = "FMPS_Rating";
 
-/// The whole stars a value rounds to, 1-5; a set value never rounds to
-/// zero, so half a star still shows and writes as one.
+/// 1-5 stars. A set value never rounds to zero, so half a star writes as one.
 pub fn stars(value: u8) -> u8 {
     ((value + 10) / 20).clamp(1, 5)
 }
 
-/// The 0-10 display form, the value the writer's `Field::Rating` speaks:
-/// whole numbers bare, halves and finer with their decimal ("8", "7.5").
+/// The 0-10 display form `Field::Rating` speaks ("8", "7.5").
 pub fn display(value: u8) -> String {
     if value.is_multiple_of(10) {
         (value / 10).to_string()
@@ -37,8 +30,7 @@ pub fn display(value: u8) -> String {
     }
 }
 
-/// A 0-10 display number back to the value; None for anything that does
-/// not read as one. "0" parses to Some(0), the explicit clear.
+/// "0" parses to Some(0), the explicit clear.
 pub fn parse_display(s: &str) -> Option<u8> {
     let n: f32 = s.trim().parse().ok()?;
     if !n.is_finite() || !(0.0..=10.0).contains(&n) {
@@ -47,13 +39,10 @@ pub fn parse_display(s: &str) -> Option<u8> {
     Some((n * 10.0).round() as u8)
 }
 
-/// The FMPS 0.0-1.0 fraction for a value.
 pub fn fmps(value: u8) -> String {
     format!("{:.2}", f32::from(value) / 100.0)
 }
 
-/// An FMPS fraction back to the value; out-of-range values are noise,
-/// not ratings.
 pub fn parse_fmps(s: &str) -> Option<u8> {
     let n: f32 = s.trim().parse().ok()?;
     if !n.is_finite() || !(0.0..=1.0).contains(&n) {
@@ -62,11 +51,8 @@ pub fn parse_fmps(s: &str) -> Option<u8> {
     Some((n * 100.0).round() as u8)
 }
 
-/// The generic popularimeter text lofty's split produces, and what its
-/// merge expects back: "email|stars|counter" off a POPM frame or a
-/// RATING:email key, or the bare number a plain Vorbis RATING passes
-/// through raw. The bare form has no standard scale; small values read
-/// as stars, the rest as 0-100.
+/// Parse lofty's "email|stars|counter" popularimeter text, or a bare Vorbis
+/// RATING number (small values read as stars, the rest as 0-100).
 pub fn parse_popm_text(s: &str) -> Option<u8> {
     let parts: Vec<&str> = s.split('|').collect();
     if parts.len() == 3 {
@@ -81,16 +67,13 @@ pub fn parse_popm_text(s: &str) -> Option<u8> {
     })
 }
 
-/// The popularimeter text for a value, with an empty email: lofty
-/// merges an empty email to a bare POPM frame on ID3v2 and a bare
-/// RATING key on Vorbis, the forms other players read without knowing
-/// us. The counter stays zero; rox counts plays in its own listens.
+/// An empty email merges to a bare POPM frame or RATING key, the forms other
+/// players read.
 pub fn popm_text(value: u8) -> String {
     format!("|{}|0", stars(value))
 }
 
-/// A raw POPM byte to the value, lofty's MusicBee ID3v2 thresholds; zero
-/// is unrated, not one star.
+/// lofty's MusicBee ID3v2 thresholds; zero is unrated, not one star.
 pub fn from_popm_byte(byte: u8) -> u8 {
     let stars = match byte {
         0 => return 0,
@@ -103,11 +86,8 @@ pub fn from_popm_byte(byte: u8) -> u8 {
     stars * 20
 }
 
-/// A file's rating for the scanner: FMPS first, the exact value, then
-/// the star forms. One targeted tag parse (properties off); the formats
-/// the writer cannot write read the same way they were written by
-/// whoever wrote them. None (never an error) when nothing readable has
-/// one: a scan must not lose a file over its rating.
+/// FMPS first, then the star forms. Never an error: a scan must not lose a
+/// file over its rating.
 pub fn read(path: &Path, kind: FileType) -> Option<u8> {
     catch_unwind(AssertUnwindSafe(|| read_inner(path, kind)))
         .ok()
@@ -141,9 +121,7 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
                 .cloned()?;
             from_ilst(&tag)
         }
-        // Opus keeps its comments in the same shape FLAC does, and the
-        // scanner reads a rating off them on its native parse, so the
-        // standalone reader has to agree with it.
+        // Must agree with the scanner, which reads Opus ratings off its native parse.
         FileType::Opus => {
             let mut source = std::fs::File::open(path).ok()?;
             let opus = OpusFile::read_from(&mut source, opts).ok()?;
@@ -153,12 +131,7 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
     }
 }
 
-/// The rating held by an already-parsed ID3v2 tag: FMPS first, the
-/// exact value, then the popularimeter's stars. The scanner parses the
-/// MPEG file once for its generic tags and hands that same tag here, so a
-/// scan never re-opens the file just for the rating. FMPS is stored in a
-/// TXXX frame and POPM in its own frame, neither of which the generic tag
-/// exposes, so this reads the native frames directly.
+/// FMPS first, then POPM, off the native frames the generic tag hides.
 pub fn from_id3v2(tag: &Id3v2Tag) -> Option<u8> {
     let mut popm = None;
     for frame in tag {
@@ -177,10 +150,7 @@ pub fn from_id3v2(tag: &Id3v2Tag) -> Option<u8> {
     popm
 }
 
-/// The rating held by an already-parsed Vorbis comment block, the FLAC
-/// counterpart of [`from_id3v2`]: FMPS first, then a bare RATING or a
-/// RATING:email key. The scanner's single FLAC parse supplies this so a
-/// scan reads the file once, not twice.
+/// FMPS first, then a bare RATING or RATING:email key.
 pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
     let mut popm = None;
     for (key, value) in tag.items() {
@@ -189,9 +159,7 @@ pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
         {
             return Some(value);
         }
-        // The bare key and the RATING:email convention both count;
-        // provider-specific email scales (Picard's 0-25) are rare
-        // enough to read on the common 0-100 assumption.
+        // Provider email scales (Picard's 0-25) are read as 0-100.
         if popm.is_none()
             && (key.eq_ignore_ascii_case("RATING")
                 || key
@@ -204,14 +172,8 @@ pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
     popm
 }
 
-/// The rating held by an already-parsed MP4 tag, the third carrier and the
-/// short one: the FMPS freeform atom, and nothing else. There's no
-/// popularimeter on this format. lofty maps `ItemKey::Popularimeter` to the
-/// `rate` atom, which no tagger fills with stars, and `rtng` is Apple's
-/// content advisory ("explicit"), so reading either as a rating would put
-/// one on a file whose owner never gave it one. An m4a tagged by something
-/// that writes stars alone therefore reads as unrated, which is the honest
-/// answer: the number isn't in the file.
+/// FMPS freeform atom only. `rate` holds no stars and `rtng` is Apple's
+/// content advisory, so reading either would invent a rating.
 pub fn from_ilst(tag: &Ilst) -> Option<u8> {
     tag.into_iter()
         .filter(|atom| match atom.ident() {
@@ -225,7 +187,6 @@ pub fn from_ilst(tag: &Ilst) -> Option<u8> {
         })
 }
 
-/// Probe a path's format and read its rating, the reindex-free entry.
 pub fn read_path(path: &Path) -> Option<u8> {
     let kind = Probe::open(path)
         .ok()?
@@ -252,10 +213,6 @@ mod tests {
         assert_eq!(parse_fmps("2.0"), None);
     }
 
-    /// The MP4 read, off the atom rather than off a key. Taggers disagree
-    /// about which mean an FMPS rating belongs under, so the name is the
-    /// whole match; a file carrying no such atom reads as unrated rather
-    /// than falling back to something that isn't a rating.
     #[test]
     fn an_m4a_rating_comes_off_any_freeform_fmps_atom() {
         use lofty::config::WriteOptions;
@@ -275,8 +232,6 @@ mod tests {
             },
             AtomData::UTF8("0.75".into()),
         ));
-        // The content advisory sits right beside it and is not a rating,
-        // however much `rtng` looks like one.
         tag.insert(Atom::new(
             AtomIdent::Fourcc(*b"rtng"),
             AtomData::SignedInteger(4),

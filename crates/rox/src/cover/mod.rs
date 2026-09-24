@@ -1,5 +1,4 @@
-//! Cover art windows: the editor that writes embedded artwork and the
-//! online matcher that fetches candidates from the art providers.
+//! Cover art windows: the embedded-art editor and the online matcher.
 
 pub mod editor;
 pub mod matcher;

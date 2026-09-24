@@ -1,9 +1,6 @@
-//! The panels that still belong to the binary.
-//!
-//! Most panels render out of [`rox_panels`] now. The ones that stay here
-//! call into [`crate::workspace::Workspace`] for real, and the workspace is
-//! the binary: the drawer, the group and overlay hosts, the slide and mini
-//! frames, the menu panel, the window controls, and the queue widget.
+//! The panels that stay in the binary because they call into it: the custom
+//! controls through [`crate::keymap`], the rest through
+//! [`crate::workspace::Workspace`].
 
 pub mod controls;
 pub mod drawer;

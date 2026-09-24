@@ -1,13 +1,9 @@
-//! The EQ widget: the equalizer as one compact readout for a transport row,
-//! where the curve editor would be absurd. It answers the two questions worth
-//! answering from across the room, is the EQ on and is it doing anything, and
-//! a click opens the real window.
+//! The EQ widget: the equalizer as a compact transport-row readout (is it
+//! on, is it doing anything), with a click to the real window.
 //!
-//! No state of its own, because the curve hasn't got any either: it's a set of
-//! process-global atomics (see [`crate::player::eq_gain`] and ADR 19). The
-//! setters touch a marker global on their way past, so this reads the curve
-//! fresh on every paint and uses [`crate::player::observe_eq`] to tell when
-//! a paint is due.
+//! No state of its own: the curve is process-global atomics (ADR 19), so
+//! this reads it fresh each paint and repaints off
+//! [`crate::player::observe_eq`].
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, Path, Pixels,
@@ -28,61 +24,45 @@ use crate::panel_settings;
 use crate::player;
 use crate::settings::ui as settings_ui;
 
-/// How far off flat a band has to be to count as doing something. Under this
-/// it's neither audible nor visible in a 16 pixel sparkline.
+/// Under this a band is neither audible nor visible in a 16 px sparkline.
 const ACTIVE_DB: f32 = 0.05;
 
-/// The sparkline's footprint. The height matches the icon beside it so the
-/// two read as one row rather than a picture with a glyph stuck to it.
+/// The height matches the icon beside it.
 const SPARK_W: f32 = 44.0;
 const SPARK_H: f32 = 16.0;
 
-/// The dB the sparkline spans either side of flat. One band's ceiling rather
-/// than the EQ window's wider view: at this size a summed stack clipping the
-/// top edge still reads as "a lot", which is all the widget promises.
+/// One band's ceiling rather than the EQ window's wider range: a stack
+/// clipping the top still reads as "a lot".
 const SPARK_DB: f32 = GAIN_MAX_DB;
 
-/// How many points the curve is sampled at across the sparkline, about one
-/// per pixel. Any finer is thrown away by the raster.
+/// About one point per pixel.
 const SPARK_POINTS: usize = 44;
 
-/// What a click on the widget does.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EqClick {
-    /// Open the equalizer window, or raise the open one.
     #[default]
     Open,
-    /// Flip the whole curve on and off in place, no window.
     Toggle,
-    /// Nothing. A readout and no more.
     Nothing,
 }
 
-/// What the widget draws.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EqReadout {
-    /// The icon alone, with the band count on its badge.
     Icon,
-    /// The response curve alone, for a strip that's already all glyphs.
     Curve,
-    /// Both, the icon leading.
     #[default]
     Both,
 }
 
-/// The widget's config: the shared chrome, what a click does, and how much of
-/// the curve is drawn.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EqWidgetConfig {
-    /// The rename, theme override, and placement locks shared by every panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub click: EqClick,
     pub readout: EqReadout,
-    /// Count the bands off flat on a badge over the icon.
     pub badge: bool,
 }
 
@@ -97,10 +77,7 @@ impl Default for EqWidgetConfig {
     }
 }
 
-/// The parts of the curve the widget reads off the parameters directly: the
-/// switch, and how far each band is from flat. The centers and widths aren't
-/// here because nothing draws off them; the sparkline's shape comes from the
-/// player's response, which accounts for the rate the filters were built for.
+/// No centers or widths: the sparkline's shape comes from the player's response.
 #[derive(Clone, Copy)]
 struct EqShape {
     enabled: bool,
@@ -115,7 +92,6 @@ impl EqShape {
         }
     }
 
-    /// How many bands are pulling the sound around.
     fn active(&self) -> usize {
         self.gains
             .iter()
@@ -123,8 +99,6 @@ impl EqShape {
             .count()
     }
 
-    /// The furthest a band is from flat, keeping its sign, so the readout
-    /// says which way the biggest move goes.
     fn peak(&self) -> f32 {
         self.gains.iter().copied().fold(0.0, |worst, gain| {
             if gain.abs() > worst.abs() {
@@ -141,9 +115,6 @@ pub struct EqWidgetPanel {
     config: EqWidgetConfig,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Repaints whenever the curve moves, whichever window moved it: this
-    /// widget's own toggle, the EQ window, or a copy of this in another
-    /// workspace.
     _eq_changed: Subscription,
 }
 
@@ -166,9 +137,8 @@ impl EqWidgetPanel {
         }
     }
 
-    /// The cascade's response across the sparkline, in dB. Off the player
-    /// because the player has the device rate the running filters were built
-    /// against; the EQ window's plot does the same.
+    /// Off the player, which knows the device rate the running filters were
+    /// built for.
     fn curve(&self, cx: &App) -> Vec<f32> {
         let player = self.state.player.read(cx);
         let (lo, hi) = (FREQ_MIN.log10(), FREQ_MAX.log10());
@@ -180,19 +150,16 @@ impl EqWidgetPanel {
             .collect()
     }
 
-    /// The icon, colored by what the EQ is up to: accent while it's on and
-    /// shaping something, plain while it's on and flat, muted while it's off.
-    /// The badge counts the bands off flat, floating off the corner so the
-    /// widget's footprint never shifts with the number.
+    /// The badge floats off the corner so the footprint never shifts with
+    /// the number.
     fn glyph(&self, enabled: bool, active: usize) -> Div {
         let tint = match (enabled, active) {
             (true, 1..) => palette::accent(),
             (true, _) => palette::text(),
             (false, _) => palette::text_muted(),
         };
-        // A shaped curve with the switch off still earns its badge, dimmed:
-        // it's the state most worth catching, since the sound is flat while
-        // the settings show otherwise.
+        // A shaped curve with the switch off keeps a dimmed badge: the
+        // settings show a curve the sound doesn't have.
         let badge_bg = if enabled {
             palette::accent()
         } else {
@@ -227,12 +194,8 @@ impl EqWidgetPanel {
             })
     }
 
-    /// The response as a sparkline: the flat line, a wash under the curve,
-    /// and a stroke along it. The EQ window's plot shrunk to a glance, same
-    /// triangles, minus the grid and the handles there's no room for.
     fn spark(&self, enabled: bool, curve: Vec<f32>) -> Div {
-        // Read out here rather than in the paint closure: paint has no cx,
-        // and the tint has to be the one the panel was themed with.
+        // Read here: paint has no cx, and the tint must be the themed one.
         let zero_line = palette::alpha(palette::text_muted(), 0x44);
         let wash = palette::alpha(palette::accent(), if enabled { 0x33 } else { 0x14 });
         let stroke_color = palette::alpha(palette::accent(), if enabled { 0xff } else { 0x66 });
@@ -290,8 +253,6 @@ impl EqWidgetPanel {
         let click = self.config.click;
         let curve = matches!(self.config.readout, EqReadout::Curve | EqReadout::Both)
             .then(|| self.curve(cx));
-        // Copied into the hover rather than read back through a handle: these
-        // are three numbers, and the panel repaints whenever they move.
         let tooltip = EqTooltip {
             enabled: eq.enabled,
             active,
@@ -321,7 +282,6 @@ impl EqWidgetPanel {
     }
 }
 
-/// What the tooltip says a click will do, if anything.
 fn hint(click: EqClick, enabled: bool) -> Option<SharedString> {
     match click {
         EqClick::Open => Some(rox_i18n::t!("eq-hint-open")),
@@ -331,9 +291,7 @@ fn hint(click: EqClick, enabled: bool) -> Option<SharedString> {
     }
 }
 
-/// The hover note: the switch, what the curve is doing, and where a click
-/// goes. Opaque like the popup menus, since it floats over panel content with
-/// no backdrop of its own.
+/// Opaque like the popup menus: it floats over panel content with no backdrop.
 #[derive(Clone)]
 struct EqTooltip {
     enabled: bool,
@@ -486,9 +444,8 @@ impl Panel for EqWidgetPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        // What the readout in force actually needs across, raised by any
-        // floor the user set. The sparkline needs a real width; the icon on
-        // its own fits the dock's minimum.
+        // The sparkline needs a real width; the icon alone fits the dock's
+        // minimum.
         let width = match self.config.readout {
             EqReadout::Icon => f32::from(rox_dock::resizable::PANEL_MIN_SIZE),
             EqReadout::Curve => SPARK_W + 16.,
@@ -574,9 +531,7 @@ impl Panel for EqWidgetPanel {
 impl Render for EqWidgetPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
+        // A focus stop, which puts its tab group on the tab-cycle chord's path.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }

@@ -1,21 +1,10 @@
-//! Subsonic and OpenSubsonic: a catalog on a server the user runs, read
-//! over a documented HTTP API. Every request carries the same six
-//! parameters and a token that's `md5(password + salt)` with a fresh salt
-//! each time, so a URL someone captures off the wire doesn't replay against
-//! a different call. That's the auth scheme every server implements, which
-//! is why it's the one built first; the `apiKey` parameter newer servers
-//! also take is one more branch here whenever a server asks for it.
+//! Subsonic and OpenSubsonic: a catalog on a server the user runs. Every
+//! request carries a token `md5(password + salt)` with a fresh salt, the auth
+//! every server implements. Responses drift between Subsonic, Navidrome,
+//! Airsonic and gonic, so parsing goes through `serde_json::Value`.
 //!
-//! Responses come back wrapped in `subsonic-response`, and the shape inside
-//! drifts between Subsonic, Navidrome, Airsonic and gonic, so parsing goes
-//! through `serde_json::Value` rather than typed structs. That's the
-//! convention the crate's Cargo.toml already names: typed where the shape
-//! is stable, untyped where the services wander.
-//!
-//! Streaming asks for `format=raw`. A server-side transcode would hand the
-//! engine re-encoded audio, and gapless and ReplayGain would then be acting
-//! on something other than the file the user has. Bandwidth is a real want
-//! and a separate decision.
+//! Streaming asks for `format=raw`: a server transcode would put gapless and
+//! ReplayGain to work on something other than the user's file.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,38 +15,28 @@ use serde_json::Value;
 use super::{SourcePlaylist, SourceStation, SourceTrack, number, text, text_of};
 use crate::providers::{agent, net_reason};
 
-/// The protocol version rox claims. 1.16.1 is the last Subsonic release's
-/// version and covers everything used here; `getArtists` and `search3` have
-/// been in since 1.8.0, so nothing older than that will talk to us anyway.
+/// The last Subsonic release. `getArtists` and `search3` need 1.8.0, so
+/// nothing older works anyway.
 const API_VERSION: &str = "1.16.1";
 
-/// The client name every request identifies itself by. Servers show it in
-/// their session lists, so it wants to read as the app, not as a library.
+/// Servers show this in their session lists.
 const CLIENT: &str = "rox";
 
-/// What the server said about itself when we pinged it. The three
-/// OpenSubsonic fields are absent on a plain Subsonic server, which is the
-/// documented way to tell the two apart before asking for extensions.
+/// The OpenSubsonic fields are absent on a plain Subsonic server.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServerInfo {
-    /// The protocol version the server answers at.
     pub version: String,
-    /// The server's own name ("Navidrome", "gonic"), empty on a plain
-    /// Subsonic server.
+    /// "Navidrome", "gonic"; empty on plain Subsonic.
     pub server_type: String,
     pub server_version: String,
-    /// Whether the server reports OpenSubsonic support.
     pub open_subsonic: bool,
 }
 
-/// One server and the account rox reaches it with. The password is held in
-/// the clear because the token is derived per request and the server has no
-/// other way to accept us; it lives in `accounts.json`, not in the settings
-/// file people hand around.
+/// The password is held in the clear because the token is derived per
+/// request. It lives in `accounts.json`, not the shareable settings file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Server {
-    /// Base URL with scheme, no trailing `/rest`. Trailing slashes are
-    /// trimmed, so what someone pastes out of a browser works.
+    /// No trailing `/rest` or slash.
     pub url: String,
     pub user: String,
     pub password: String,
@@ -72,9 +51,7 @@ impl Server {
         }
     }
 
-    /// Salt and token for one request, plus the four parameters every call
-    /// carries. A fresh salt per request, so a captured URL isn't
-    /// replayable against a different one.
+    /// A fresh salt per request, so a captured URL can't replay another call.
     fn auth(&self) -> Vec<(String, String)> {
         let salt = salt();
         let token = token(&self.password, &salt);
@@ -89,15 +66,11 @@ impl Server {
         ]
     }
 
-    /// The endpoint URL for one method. `.view` rather than the bare name
-    /// because the original Subsonic server only serves the suffixed form,
-    /// and everything newer accepts both.
+    /// `.view` because the original Subsonic server only serves the suffixed form.
     fn endpoint(&self, method: &str) -> String {
         format!("{}/rest/{method}.view", self.url)
     }
 
-    /// One GET, parsed down to the body of `subsonic-response`. Errors come
-    /// back already folded to something worth showing.
     fn get(&self, method: &str, params: &[(&str, String)]) -> Result<Value, String> {
         let mut request = agent().get(&self.endpoint(method));
 
@@ -118,21 +91,15 @@ impl Server {
         parse_response(&text)
     }
 
-    /// Connectivity and credentials in one call. Ok carries the server's
-    /// type and version when it reports them, so the settings row can show
-    /// what it connected to.
     pub fn ping(&self) -> Result<ServerInfo, String> {
         let body = self.get("ping", &[])?;
 
         Ok(server_info(&body))
     }
 
-    /// The whole catalog, artists then albums then songs. `progress` is
-    /// called per album so a sync of a large library isn't a silent wait.
+    /// `progress` is called per album.
     pub fn catalog(&self, progress: impl Fn(usize, usize)) -> Result<Vec<SourceTrack>, String> {
-        // Two walks down: the index of artists, then each artist's albums.
-        // Only the album call returns songs, so the album list is what the
-        // progress count is measured against.
+        // Only the album call returns songs, so progress counts albums.
         let artists = artist_ids(&self.get("getArtists", &[])?);
 
         let mut album_ids = Vec::new();
@@ -170,29 +137,23 @@ impl Server {
         Ok(out)
     }
 
-    /// The server's own internet radio list (`getInternetRadioStations`,
-    /// in the protocol since 1.9.0). A station is a name and a stream URL;
-    /// there's no catalog behind it, so the sync hands these to the radio
-    /// source rather than to this server's rows.
+    /// `getInternetRadioStations` (since 1.9.0). These go to the radio source,
+    /// not this server's rows.
     pub fn radio_stations(&self) -> Result<Vec<SourceStation>, String> {
         let body = self.get("getInternetRadioStations", &[])?;
 
         Ok(radio_stations_of(&body))
     }
 
-    /// The art id one song's cover is filed under, off `getSong`. The spec
-    /// leaves the id's shape to the server and doesn't promise the song's
-    /// own id works in its place, so the song is asked which. Empty when
-    /// the server lists no cover for it.
+    /// The spec doesn't promise a song's id works as its art id, so the song is
+    /// asked. Empty when it has no cover.
     pub fn cover_id(&self, song_id: &str) -> Result<String, String> {
         let body = self.get("getSong", &[("id", song_id.to_string())])?;
 
         Ok(song_cover_id(&body))
     }
 
-    /// Cover art bytes for an art id, at a requested size. The server
-    /// scales, so asking for what the thumbnail cache wants avoids pulling
-    /// a full-resolution scan down for a list row.
+    /// The server scales, so a list row never pulls a full-resolution scan.
     pub fn cover(&self, art_id: &str, size: u32) -> Result<Vec<u8>, String> {
         let mut request = agent().get(&self.endpoint("getCoverArt"));
 
@@ -206,8 +167,7 @@ impl Server {
             .call()
             .map_err(|e| net_reason(&e))?;
 
-        // Art comes back as image bytes, but a server that failed answers
-        // 200 with a JSON error body, so the content type decides which.
+        // A failed request answers 200 with a JSON error body.
         if response.content_type().contains("json") {
             let text = response.into_string().map_err(|e| e.to_string())?;
             parse_response(&text)?;
@@ -224,18 +184,14 @@ impl Server {
         Ok(bytes)
     }
 
-    /// Headers for a stream request. Empty today: Subsonic authorizes in
-    /// the query string, so the URL carries it. Present because the
-    /// registry contract takes headers and a server behind a reverse proxy
-    /// may need them later.
+    /// Empty: Subsonic authorizes in the query string. The registry contract
+    /// takes headers for servers behind a proxy.
     pub fn stream_headers(&self) -> Vec<(String, String)> {
         Vec::new()
     }
 
-    /// The stream URL for one song id, with everything but the token and
-    /// the salt already on it. Those two go on fresh at resolve time, since
-    /// a token stored on a row would be a replayable credential sitting in
-    /// SQLite.
+    /// Everything but token and salt, which go on at resolve time: a stored
+    /// token would be a replayable credential in SQLite.
     pub fn stream_url(&self, song_id: &str) -> String {
         format!(
             "{}?id={}&format=raw&v={}&c={}&u={}",
@@ -247,8 +203,7 @@ impl Server {
         )
     }
 
-    /// Finish a stored stream URL for playback: the same URL with a fresh
-    /// salt and token appended. What the resolve step calls.
+    /// The stored URL with a fresh salt and token, for the resolve step.
     pub fn sign(&self, stream_url: &str) -> String {
         let salt = salt();
         let token = token(&self.password, &salt);
@@ -256,20 +211,14 @@ impl Server {
         format!("{stream_url}&t={token}&s={salt}")
     }
 
-    /// The source string every row of this server is keyed under:
-    /// "subsonic:" plus a stable digest of the base URL and username, so
-    /// two accounts on one server, or one account on two servers, never
-    /// collide. The password is deliberately not in the digest, or changing
-    /// it would orphan the whole library.
+    /// "subsonic:" plus a digest of URL and username. Never include the
+    /// password: changing it would orphan the whole library.
     pub fn source_id(&self) -> String {
         let digest = format!("{:x}", md5::compute(format!("{}\n{}", self.url, self.user)));
 
         format!("subsonic:{}", &digest[..16])
     }
 
-    /// Every song on one `getAlbum` reply, mapped to the plain shape the
-    /// sync consumes. A method rather than a free function because the
-    /// stream URL needs the server's base URL and account.
     fn songs_of(&self, body: &Value) -> Vec<SourceTrack> {
         let Some(songs) = body.pointer("/album/song").and_then(Value::as_array) else {
             return Vec::new();
@@ -286,9 +235,7 @@ impl Server {
                 let artist = text(song, "artist");
                 let album_artist = {
                     let credited = text(song, "albumArtist");
-                    // Same fallback the scanner uses on an untagged file,
-                    // so an album groups the same whichever side it came
-                    // from.
+                    // Same fallback the scanner uses on an untagged file.
                     if credited.is_empty() {
                         artist.clone()
                     } else {
@@ -306,9 +253,6 @@ impl Server {
                     year: number(song, "year") as u16,
                     disc_no: number(song, "discNumber") as u16,
                     track_no: number(song, "track") as u16,
-                    // The API reports whole seconds; the library holds
-                    // milliseconds, so an unknown duration stays 0 either
-                    // way.
                     duration_ms: (number(song, "duration") as u32).saturating_mul(1000),
                     codec: codec_of(song),
                     bitrate_kbps: number(song, "bitRate") as u16,
@@ -321,17 +265,12 @@ impl Server {
     }
 }
 
-/// The token for one request: `md5(password + salt)` as 32 lowercase hex
-/// characters, both sides UTF-8. The docs' own example is the test.
 pub fn token(password: &str, salt: &str) -> String {
     format!("{:x}", md5::compute(format!("{password}{salt}").as_bytes()))
 }
 
-/// A fresh salt for one request. The spec asks for at least six characters
-/// and what matters is that it differs per call, not that it's
-/// cryptographically strong, since it only has to stop one signed URL from
-/// standing in for another. The clock plus a per-process counter gives that
-/// without pulling an RNG crate into rox-net for it.
+/// The spec wants six or more characters that differ per call, not
+/// cryptographic strength. Clock plus counter, no RNG crate.
 fn salt() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -346,8 +285,7 @@ fn salt() -> String {
     digest[..12].to_string()
 }
 
-/// Percent-encode a query value. Only the characters that would break a
-/// query string get escaped, which keeps a song id readable in a log line.
+/// Escapes only what breaks a query string, so ids stay readable in logs.
 fn urlencode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
 
@@ -364,9 +302,6 @@ fn urlencode(value: &str) -> String {
     out
 }
 
-/// Unwrap `subsonic-response`, turning a `failed` status into the reason
-/// its code means. Every call goes through here, so an expired trial or a
-/// rejected password reads the same wherever it surfaces.
 fn parse_response(text: &str) -> Result<Value, String> {
     let root: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
 
@@ -385,11 +320,8 @@ fn parse_response(text: &str) -> Result<Value, String> {
     Err(error_reason(code.unwrap_or(0), &message))
 }
 
-/// A Subsonic error code folded to a reason worth showing. The four
-/// credential codes collapse into one line because they're the same
-/// situation from the typist's side: the login didn't take. Everything else
-/// keeps the server's own message when it sent one, since those are
-/// specific enough to act on.
+/// The four credential codes collapse into one line: to the user they're all
+/// "the login didn't take".
 fn error_reason(code: i64, message: &str) -> String {
     match code {
         40 | 41 | 44 | 50 => "check the username and password".to_string(),
@@ -412,8 +344,6 @@ fn error_reason(code: i64, message: &str) -> String {
     }
 }
 
-/// What a `ping` reply says about the server. The three OpenSubsonic fields
-/// are simply missing on a plain Subsonic server.
 fn server_info(body: &Value) -> ServerInfo {
     ServerInfo {
         version: text(body, "version"),
@@ -426,8 +356,6 @@ fn server_info(body: &Value) -> ServerInfo {
     }
 }
 
-/// Every artist id on a `getArtists` reply. The index letters are a display
-/// concern, so they're flattened away here.
 fn artist_ids(body: &Value) -> Vec<String> {
     let Some(indexes) = body.pointer("/artists/index").and_then(Value::as_array) else {
         return Vec::new();
@@ -442,7 +370,6 @@ fn artist_ids(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Every album id on a `getArtist` reply.
 fn album_ids_of(body: &Value) -> Vec<String> {
     let Some(albums) = body.pointer("/artist/album").and_then(Value::as_array) else {
         return Vec::new();
@@ -455,7 +382,6 @@ fn album_ids_of(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Id and name for every playlist on a `getPlaylists` reply.
 fn playlist_index(body: &Value) -> Vec<(String, String)> {
     let Some(lists) = body
         .pointer("/playlists/playlist")
@@ -471,8 +397,6 @@ fn playlist_index(body: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The stations on a `getInternetRadioStations` reply. One with no stream
-/// URL is skipped: nothing could play it.
 fn radio_stations_of(body: &Value) -> Vec<SourceStation> {
     let Some(stations) = body
         .pointer("/internetRadioStations/internetRadioStation")
@@ -493,8 +417,6 @@ fn radio_stations_of(body: &Value) -> Vec<SourceStation> {
         .collect()
 }
 
-/// The song ids on a `getPlaylist` reply, in the order the server holds
-/// them, which is the order the playlist is in.
 fn playlist_entries(body: &Value) -> Vec<String> {
     let Some(entries) = body.pointer("/playlist/entry").and_then(Value::as_array) else {
         return Vec::new();
@@ -507,16 +429,13 @@ fn playlist_entries(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The cover's art id on a `getSong` reply, empty when there's no song or
-/// no cover on it.
 fn song_cover_id(body: &Value) -> String {
     body.get("song")
         .map(|song| text(song, "coverArt"))
         .unwrap_or_default()
 }
 
-/// The container name for a song, which servers report as either a file
-/// suffix or a MIME type and sometimes both.
+/// Servers report a file suffix, a MIME type, or both.
 fn codec_of(song: &Value) -> String {
     let suffix = text(song, "suffix");
     if !suffix.is_empty() {
@@ -540,8 +459,7 @@ mod tests {
 
     #[test]
     fn token_matches_the_documented_example() {
-        // Straight out of the OpenSubsonic docs: password "sesame" salted
-        // with "c19b2d". If this drifts, no server will take us.
+        // The OpenSubsonic docs' own example.
         assert_eq!(
             token("sesame", "c19b2d"),
             "26719a1196d2a940705a59634eb18eab"
@@ -565,11 +483,8 @@ mod tests {
         let other_user = Server::new("https://music.example.com", "guest", "sesame");
         let other_host = Server::new("https://other.example.com", "andrew", "sesame");
 
-        // A trailing slash and a changed password are the same library.
         assert_eq!(one.source_id(), same.source_id());
 
-        // Two accounts on one server, and one account on two servers, are
-        // not.
         assert_ne!(one.source_id(), other_user.source_id());
         assert_ne!(one.source_id(), other_host.source_id());
 
@@ -670,15 +585,12 @@ mod tests {
         assert!(song.stream_url.contains("/rest/stream.view?id=sg-1"));
         assert!(song.stream_url.contains("format=raw"));
 
-        // The token and the salt are added at resolve time, never stored.
         assert!(!song.stream_url.contains("&t="));
         assert!(!song.stream_url.contains("&s="));
     }
 
     #[test]
     fn a_sparse_song_still_maps() {
-        // What real servers send constantly: no year, no disc, no genre, no
-        // credited album artist, no cover.
         let body = parse_response(
             r#"{"subsonic-response":{"status":"ok","version":"1.16.1","album":{"song":[
                {"id":"sg-9","title":"Untitled","album":"Bootleg","artist":"Unknown",
@@ -696,8 +608,6 @@ mod tests {
         assert_eq!(song.duration_ms, 0);
         assert_eq!(song.cover_id, "");
 
-        // Album artist falls back to the track artist, and the codec comes
-        // off the MIME type when there's no suffix.
         assert_eq!(song.album_artist, "Unknown");
         assert_eq!(song.codec, "mpeg");
     }
@@ -712,7 +622,6 @@ mod tests {
 
         assert_eq!(song_cover_id(&body), "mf-sg-1_65f1a0c2");
 
-        // No cover on the song, and no song at all, both come back empty.
         let bare = parse_response(
             r#"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"sg-9"}}}"#,
         )
@@ -821,13 +730,11 @@ mod tests {
         assert!(signed.contains("&t="));
         assert!(signed.contains("&s="));
 
-        // The token is what goes on the wire, never the password. The legacy
-        // `p=` parameter would work against most servers, which is exactly
-        // why it wants pinning shut.
+        // Never the legacy `p=` password parameter, even though most servers
+        // accept it.
         assert!(!signed.contains("p="));
         assert!(!signed.contains("sesame"));
 
-        // Two signings of one URL differ, which is the point of the salt.
         assert_ne!(signed, server.sign(&url));
     }
 
@@ -846,8 +753,6 @@ mod tests {
         assert!(server().stream_headers().is_empty());
     }
 
-    /// The docs' own `getInternetRadioStations` example, plus one entry
-    /// with no stream, which nothing could play and so isn't returned.
     #[test]
     fn radio_stations_read_off_the_documented_reply() {
         let body = parse_response(

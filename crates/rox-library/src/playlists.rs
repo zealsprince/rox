@@ -1,23 +1,11 @@
-//! Custom playlists in the library database (ADR 16). A playlist is a named,
-//! ordered list of member rows; a member holds the track id, its position,
-//! and a snapshot of the identifying tags at add time, the same deletion
-//! hedge the listen events use (ADR 11). While a track exists, reads resolve
-//! through the live catalog, so a fixed tag shows on the playlist row too;
-//! once the track is gone the snapshot keeps the row readable, though there is
-//! no file left to play. Track identity is kept across a rescan on the rowid
-//! (ADR 5), so a playlist follows its tracks across scans.
+//! Custom playlists in the library database (ADR 16). A member holds the
+//! track id, its position, and a tag snapshot (the ADR 11 deletion hedge):
+//! reads resolve live while the track exists, from the snapshot after.
+//! Members are addressed by their own row id, since a playlist may hold a
+//! track twice.
 //!
-//! Members are addressed by their own row id, not the track id: a playlist may
-//! hold the same track more than once, so removing or moving a member acts on
-//! one occurrence, not every copy of a track.
-//!
-//! The one thing a rowid doesn't outlast is a prune: a file missing at scan
-//! time loses its row, and coming back it gets a fresh id the member knows
-//! nothing about. So a member also snapshots the track's path, and
-//! [`reattach`] runs after every scan to match dangling members back to the
-//! catalog: by that path first, then by the tag snapshot when it names
-//! exactly one track. A playlist holds together across its files leaving and
-//! returning, even at a new path.
+//! A prune kills the track id, so members also snapshot the path, and
+//! [`reattach`] relinks them after every scan.
 
 use std::sync::Arc;
 
@@ -26,10 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::projection::{FilterSet, Filterable, Projection, SortKey, TrackFields};
 
-/// The playlists and their member rows beside the tracks they key to. No
-/// foreign key here, matching the listens table: deleting a track keeps its
-/// playlist rows, which is the snapshot's job. Duplicates are allowed, so
-/// there's no uniqueness on (playlist, track).
+/// No foreign key and no uniqueness on (playlist, track): deleted tracks
+/// keep their rows, and duplicates are allowed.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS playlists (
@@ -51,9 +37,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS playlist_tracks_list
             ON playlist_tracks (playlist_id, position);",
     )?;
-    // An earlier cut of this table carried UNIQUE (playlist_id, track_id),
-    // which forbade duplicates. SQLite can't drop a constraint in place, so
-    // rebuild the table without it when the old shape is found.
+    // Rebuild an older table that had UNIQUE (playlist_id, track_id); SQLite
+    // can't drop a constraint in place.
     let sql: Option<String> = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'playlist_tracks'",
@@ -81,9 +66,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
                 ON playlist_tracks (playlist_id, position);",
         )?;
     }
-    // A playlists table from before the favourites flag: add it. The default
-    // 0 leaves every existing playlist a normal one; ensure_favourites makes
-    // the marked one on next open.
+    // Pre-favourites tables get the column; ensure_favourites makes the marked
+    // playlist on next open.
     let has_favourite = conn
         .prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name = 'favourite'")?
         .exists([])?;
@@ -92,16 +76,11 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE playlists ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
-    // The path snapshot column arrives via the store ladder's snapshot-paths
-    // step, which runs after this baseline.
     Ok(())
 }
 
-/// The store ladder's snapshot-paths step, the playlist half: members learn
-/// the track's path, the content key [`reattach`] matches on. Live members
-/// backfill from the catalog so existing playlists get the durability
-/// without a re-add; dangling ones keep the empty default and rely on the
-/// tag fallback.
+/// The store ladder's snapshot-paths step, playlist half. Live members
+/// backfill from the catalog; dangling ones rely on the tag fallback.
 pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "ALTER TABLE playlist_tracks ADD COLUMN path TEXT NOT NULL DEFAULT '';
@@ -111,13 +90,8 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The store ladder's smart-playlists step: every playlist row learns
-/// which kind it is and, for a smart one, what query stands in for its
-/// members. Widening `playlists` rather than opening a side table follows
-/// the favourite column above: kind is something every row records, and
-/// [`list`] keeps reading both kinds in one pass. The default 0 leaves
-/// every existing playlist static with a NULL definition, which is
-/// exactly what they are.
+/// The store ladder's smart-playlists step. Existing rows default to static
+/// with a NULL definition.
 pub(crate) fn add_smart_columns(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "ALTER TABLE playlists ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
@@ -125,18 +99,9 @@ pub(crate) fn add_smart_columns(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Match member rows back to the catalog after a scan. A member keys to its
-/// track by rowid, which holds across rescans and renames (ADR 5) but dies
-/// with a prune: a drive missing at scan time, an album deleted and restored, a
-/// reorganize done with the app closed all bring the file back under a fresh
-/// id the member knows nothing about. Dangling members relink by their path
-/// snapshot first, then by their tag snapshot when it names exactly one
-/// track, so an ambiguous match never guesses. Members with a live track
-/// just keep their path snapshot current (a rename moves the path under the
-/// same id).
-///
-/// Returns how many members relinked, or None when nothing was dangling and
-/// the matchers never ran at all.
+/// Relink dangling members after a scan: by path snapshot first, then by tag
+/// snapshot only when it names exactly one track, so an ambiguous match never
+/// guesses. Live members just refresh their path. None when nothing dangled.
 pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
     conn.execute(
         "UPDATE playlist_tracks SET path = t.path FROM tracks t
@@ -144,11 +109,8 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
            AND playlist_tracks.path <> t.path",
         [],
     )?;
-    // Nothing dangling, nothing to match. The two passes below are the
-    // expensive half (the tag one joins on the tag triple and counts the
-    // matches to refuse an ambiguous one), and a healthy library runs this
-    // after every scan and every reindex, so it pays one indexed probe
-    // instead.
+    // The matchers are expensive and this runs after every scan and reindex;
+    // one indexed probe gates them.
     if !has_dangling(conn)? {
         return Ok(None);
     }
@@ -175,9 +137,6 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
     Ok(Some(by_path + by_tags))
 }
 
-/// Whether any member points at a track row that no longer exists. One
-/// indexed lookup per member and it stops at the first hit, so the answer
-/// costs nothing on a library whose playlists all still have their files.
 fn has_dangling(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM playlist_tracks
@@ -188,9 +147,7 @@ fn has_dangling(conn: &Connection) -> rusqlite::Result<bool> {
     .map(|found| found == 1)
 }
 
-/// Which kind of list a playlist row is. A static playlist owns member
-/// rows; a smart one owns a query and no members at all, and materializes
-/// against the projection whenever something asks what's in it.
+/// A smart playlist owns a query and no members, materialized on demand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlaylistKind {
     #[default]
@@ -199,9 +156,7 @@ pub enum PlaylistKind {
 }
 
 impl PlaylistKind {
-    /// The `kind` column's integer. Anything unknown reads as static: an
-    /// older binary pointed at a newer file must still show the row, and a
-    /// list with no members it can explain is the safe reading.
+    /// Anything unknown reads as static, so an older binary still shows the row.
     fn from_column(value: i64) -> PlaylistKind {
         match value {
             1 => PlaylistKind::Smart,
@@ -217,16 +172,8 @@ impl PlaylistKind {
     }
 }
 
-/// What a smart playlist is: the saved query, in the same syntax the
-/// search boxes use, plus the structured filter, sort, and cap a view
-/// takes. Held as JSON in the playlist row's `definition` column and
-/// evaluated live, so a smart playlist never holds member rows and never
-/// goes stale against the catalog.
-///
-/// `sort` is a column and whether it runs descending, the pair
-/// [`crate::view::ViewSpec`] takes; None keeps the canonical browse order.
-/// `limit` caps the result after the sort, so "my top 50" is a rating sort
-/// with a 50.
+/// A smart playlist: query, filter, sort and cap, stored as JSON and
+/// evaluated live, so it never goes stale. `limit` applies after the sort.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SmartDef {
@@ -237,15 +184,9 @@ pub struct SmartDef {
 }
 
 impl SmartDef {
-    /// The track ids this definition names, in the order it asks for. The
-    /// whole of what a smart playlist "holds": there are no member rows, so
-    /// every read that wants its tracks runs this.
-    ///
-    /// The kernel is the same [`crate::view::view_for`] the library table
-    /// runs, so a saved query means exactly what the same string typed into
-    /// a search box means. Nothing is cached: a pass is one sweep of the
-    /// projection, and a cache would need invalidating on every rating,
-    /// play, and scan.
+    /// Runs the same [`crate::view::view_for`] as the library table, so a saved
+    /// query means what the typed one does. Uncached: a cache would need
+    /// invalidating on every rating, play and scan.
     pub fn ids(&self, projection: &Projection, order: Arc<Vec<u32>>) -> Vec<i64> {
         self.rows(projection, order)
             .iter()
@@ -253,11 +194,7 @@ impl SmartDef {
             .collect()
     }
 
-    /// The same pass as [`SmartDef::ids`] stopped one step earlier: the
-    /// projection rows, before they turn into db ids. What a caller wants
-    /// when it draws the tracks rather than hands them on, since drawing a
-    /// row is resolving it, and going through ids would mean mapping every
-    /// one back to the row it came from.
+    /// [`SmartDef::ids`] one step earlier, for a caller that draws the rows.
     pub fn rows(&self, projection: &Projection, order: Arc<Vec<u32>>) -> Vec<u32> {
         let (rows, _) = crate::view::view_for(
             projection,
@@ -277,8 +214,6 @@ impl SmartDef {
                 _ => None,
             })
             .collect();
-        // The cap applies after the sort, so "top 50" means the first fifty
-        // of the order the definition asked for.
         if let Some(limit) = self.limit {
             rows.truncate(limit as usize);
         }
@@ -286,14 +221,8 @@ impl SmartDef {
     }
 }
 
-/// A playlist in the sidebar list: its id, name, and how many tracks it holds.
-/// `favourite` marks the one default playlist behind the heart column and the
-/// Favourites menu; the panel pins it to the top and shields it from delete
-/// and rename.
-///
-/// `tracks` counts member rows, so a smart playlist always reports 0 here:
-/// it has no members to count and the real number costs a projection pass.
-/// The panel fills that in from the materialization it already ran.
+/// `favourite` marks the one default playlist behind the heart column.
+/// `tracks` counts member rows, so a smart playlist reports 0.
 #[derive(Clone)]
 pub struct Playlist {
     pub id: i64,
@@ -303,9 +232,8 @@ pub struct Playlist {
     pub kind: PlaylistKind,
 }
 
-/// One member's line in a playlist view. `member_id` addresses this exact
-/// occurrence for remove, move, and reorder; the tags resolve from the live
-/// catalog while the track exists, from the snapshot once it is gone.
+/// `member_id` addresses this exact occurrence. Tags resolve live, snapshot
+/// after deletion.
 #[derive(Clone)]
 pub struct PlaylistTrack {
     pub member_id: i64,
@@ -313,29 +241,20 @@ pub struct PlaylistTrack {
     pub title: String,
     pub artist: String,
     pub album: String,
-    /// Album grouping metadata, read live from the catalog for the panel's
-    /// album headings. A deleted track has no live row, so these fall back
-    /// to empty or zero; the snapshot only keeps title, artist, and album.
+    /// Live-catalog only from here on; empty or zero once the track is gone.
     pub album_artist: String,
     pub year: u16,
     pub genre: String,
     pub duration_ms: u32,
     pub codec: String,
     pub bitrate_kbps: u16,
-    /// The stream's sample rate in Hz and bits per sample, for the album
-    /// headings' quality line; live-catalog only like the fields above.
     pub sample_rate_hz: u32,
     pub bit_depth: u8,
-    /// The 0-5 star rating, 0 when unrated. Read live from the catalog for
-    /// the panel's rating cell, like the album grouping fields.
+    /// 0-100, 0 when unrated.
     pub rating: u8,
-    /// The file path, for the cover column's thumbnail: the live catalog's
-    /// while the track exists, the snapshot's once it is gone, so a pruned
-    /// file whose bytes are still on disk keeps its cover.
+    /// Falls back to the snapshot, so a pruned file on disk keeps its cover.
     pub path: String,
-    /// Where the track comes from, for the `source:` pin and the source
-    /// filter. Empty once the track is gone from the catalog: the snapshot
-    /// never kept it.
+    /// Empty once the track is gone: the snapshot never kept it.
     pub source: String,
 }
 
@@ -356,7 +275,6 @@ impl Filterable for PlaylistTrack {
     }
 }
 
-/// Create an empty playlist, returning its id. `now` is unix seconds.
 pub fn create(conn: &Connection, name: &str, now: i64) -> rusqlite::Result<i64> {
     conn.execute(
         "INSERT INTO playlists (name, created, updated) VALUES (?1, ?2, ?2)",
@@ -365,8 +283,6 @@ pub fn create(conn: &Connection, name: &str, now: i64) -> rusqlite::Result<i64> 
     Ok(conn.last_insert_rowid())
 }
 
-/// Create a smart playlist around a definition, returning its id. `now` is
-/// unix seconds.
 pub fn create_smart(
     conn: &Connection,
     name: &str,
@@ -381,9 +297,7 @@ pub fn create_smart(
     Ok(conn.last_insert_rowid())
 }
 
-/// Rewrite a smart playlist's definition and stamp it updated. Also flips
-/// the row to smart, so the one call covers both a saved edit and the
-/// first definition a row is given.
+/// Also flips the row to smart.
 pub fn set_definition(
     conn: &Connection,
     id: i64,
@@ -397,10 +311,7 @@ pub fn set_definition(
     Ok(())
 }
 
-/// One playlist's definition, None when it is static or its stored JSON
-/// no longer parses. An unreadable definition reads as none rather than an
-/// error: the row is still a playlist, it just resolves to nothing until
-/// the editor writes it again.
+/// None when static or when the JSON no longer parses.
 pub fn definition(conn: &Connection, id: i64) -> rusqlite::Result<Option<SmartDef>> {
     let stored: Option<String> = conn
         .query_row(
@@ -413,14 +324,10 @@ pub fn definition(conn: &Connection, id: i64) -> rusqlite::Result<Option<SmartDe
     Ok(stored.and_then(|json| serde_json::from_str(&json).ok()))
 }
 
-/// A definition as the JSON the `definition` column holds. A `SmartDef` is
-/// plain data, so the encode cannot fail; an empty string would read back
-/// as no definition, which is the harmless answer if it somehow did.
 fn encode(def: &SmartDef) -> String {
     serde_json::to_string(def).unwrap_or_default()
 }
 
-/// Rename a playlist and stamp it updated.
 pub fn rename(conn: &Connection, id: i64, name: &str, now: i64) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE playlists SET name = ?2, updated = ?3 WHERE id = ?1",
@@ -429,7 +336,6 @@ pub fn rename(conn: &Connection, id: i64, name: &str, now: i64) -> rusqlite::Res
     Ok(())
 }
 
-/// Delete a playlist and all its member rows.
 pub fn delete(conn: &mut Connection, id: i64) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
@@ -437,8 +343,7 @@ pub fn delete(conn: &mut Connection, id: i64) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// Every playlist with its track count. Favourites pins to the top, the rest
-/// follow newest updated first.
+/// Favourites first, then newest updated.
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Playlist>> {
     let mut stmt = conn.prepare_cached(
         "SELECT p.id, p.name,
@@ -459,10 +364,8 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Playlist>> {
     rows.collect()
 }
 
-/// The id of the one favourites playlist, creating it if this library has
-/// none yet. Called on startup so the default playlist is always present, and
-/// again by the favourite toggles so they never race a missing row. Idempotent:
-/// a library that already has the favourites playlist just gets its id back.
+/// Called at startup and by the favourite toggles, so the toggles never race
+/// a missing row.
 pub fn ensure_favourites(conn: &Connection, now: i64) -> rusqlite::Result<i64> {
     if let Some(id) = favourites_id(conn)? {
         return Ok(id);
@@ -475,7 +378,6 @@ pub fn ensure_favourites(conn: &Connection, now: i64) -> rusqlite::Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-/// The favourites playlist's id, if it exists yet.
 pub fn favourites_id(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
         "SELECT id FROM playlists WHERE favourite = 1 ORDER BY id LIMIT 1",
@@ -485,8 +387,6 @@ pub fn favourites_id(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The track ids in the favourites playlist, for the library's heart column.
-/// Empty when there is no favourites playlist yet.
 pub fn favourite_track_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
     let Some(fav) = favourites_id(conn)? else {
         return Ok(Vec::new());
@@ -497,12 +397,9 @@ pub fn favourite_track_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
-/// Drop duplicate members from the favourites playlist, keeping the first row
-/// per track. The heart is on or off, so its playlist holds a track once
-/// however the track got in. [`set_favourite`] never duplicates, but a menu
-/// add or a drag onto the list is a plain playlist write and would, and a
-/// second row makes the heart's off switch look broken: one delete, still
-/// favourited. Returns how many rows it dropped.
+/// Keep the first row per track. A menu add or drag is a plain write and
+/// would duplicate; a second row would make the heart's off switch need two
+/// clicks.
 fn dedupe_favourite_members(conn: &Connection, fav: i64) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM playlist_tracks
@@ -513,9 +410,7 @@ fn dedupe_favourite_members(conn: &Connection, fav: i64) -> rusqlite::Result<usi
     )
 }
 
-/// Clear duplicates a library picked up before the writes started keeping
-/// them out. Startup's one sweep, cheap on a list that's already clean;
-/// every write since holds the line on its own.
+/// Startup sweep for duplicates an older build left behind.
 pub fn dedupe_favourites(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
     let Some(fav) = favourites_id(conn)? else {
         return Ok(0);
@@ -530,7 +425,6 @@ pub fn dedupe_favourites(conn: &Connection, now: i64) -> rusqlite::Result<usize>
     Ok(dropped)
 }
 
-/// Whether a track is in the favourites playlist.
 pub fn is_favourite(conn: &Connection, track_id: i64) -> rusqlite::Result<bool> {
     let Some(fav) = favourites_id(conn)? else {
         return Ok(false);
@@ -545,11 +439,7 @@ pub fn is_favourite(conn: &Connection, track_id: i64) -> rusqlite::Result<bool> 
         .is_some())
 }
 
-/// Turn a track's favourite on or off. On adds it to the favourites playlist
-/// once, off drops every copy; unlike a normal playlist add this never
-/// duplicates, so the heart stays a clean on/off. Creates the favourites
-/// playlist if it is somehow missing. A no-op when the track is already in the
-/// wanted state.
+/// Never duplicates, unlike a plain add.
 pub fn set_favourite(
     conn: &mut Connection,
     track_id: i64,
@@ -582,16 +472,9 @@ pub fn set_favourite(
     }
 }
 
-/// Append tracks to a playlist in the given order, snapshotting each track's
-/// tags from the live catalog. Duplicates are kept: a track already in the
-/// playlist gets a second member row. The favourites playlist is the one
-/// exception, per [`dedupe_favourite_members`]. Stamps the playlist updated.
-///
-/// Returns the member ids of the rows that landed, in insertion order. A
-/// track id with no catalog row contributes nothing, and on favourites the
-/// dedupe below can drop a row this call just made, so the list is what
-/// survived the transaction, not one id per input. That's what a drop from
-/// elsewhere needs to hand [`place_members`] to position the new block.
+/// Append in order, snapshotting tags. Duplicates are kept except on
+/// favourites. Returns the member ids that survived, which a drop hands to
+/// [`place_members`].
 pub fn add(
     conn: &mut Connection,
     playlist_id: i64,
@@ -619,22 +502,17 @@ pub fn add(
         )?;
         for &track_id in track_ids {
             let added = insert.execute(rusqlite::params![playlist_id, track_id, next])?;
-            // Only advance the position when a row actually landed, so a track
-            // id with no catalog row (nothing to snapshot) leaves no gap.
+            // Advance only when a row landed, so a missing track leaves no gap.
             if added > 0 {
                 added_ids.push(tx.last_insert_rowid());
                 next += 1;
             }
         }
     }
-    // A track added to favourites it was already in keeps the row it had, so
-    // the heart reads the same before and after and one click still clears it.
     if favourites_id(&tx)? == Some(playlist_id) {
         dedupe_favourite_members(&tx, playlist_id)?;
 
-        // The dedupe keeps the older row, so some of the ids just collected
-        // are gone. Ask the table which ones are still there rather than
-        // guessing from what was inserted.
+        // The dedupe kept the older row; ask which new ids survived.
         let alive: std::collections::HashSet<i64> = {
             let mut stmt = tx.prepare("SELECT id FROM playlist_tracks WHERE playlist_id = ?1")?;
             let rows = stmt.query_map([playlist_id], |row| row.get::<_, i64>(0))?;
@@ -651,9 +529,7 @@ pub fn add(
     Ok(added_ids)
 }
 
-/// Remove one member from a playlist by its row id. Leaves the remaining
-/// positions as they are; they stay ordered, just with a gap the next
-/// reorder closes.
+/// Leaves a position gap the next reorder closes.
 pub fn remove_member(conn: &Connection, member_id: i64, now: i64) -> rusqlite::Result<()> {
     let playlist_id: Option<i64> = conn
         .query_row(
@@ -672,8 +548,7 @@ pub fn remove_member(conn: &Connection, member_id: i64, now: i64) -> rusqlite::R
     Ok(())
 }
 
-/// Move a member to the end of another playlist, keeping its snapshot. Both
-/// playlists stamp updated. A no-op when the member is already there.
+/// A no-op when the member is already there.
 pub fn move_member(
     conn: &mut Connection,
     member_id: i64,
@@ -710,9 +585,7 @@ pub fn move_member(
     tx.commit()
 }
 
-/// Rewrite a playlist's order to exactly `member_ids`, positions 0..n. The
-/// caller passes the full ordered member list (a drag-reorder result); ids
-/// not in the list keep their old position and sort after.
+/// Ids not in `member_ids` keep their old position and sort after.
 pub fn reorder(
     conn: &mut Connection,
     playlist_id: i64,
@@ -735,15 +608,9 @@ pub fn reorder(
     tx.commit()
 }
 
-/// Move `members` into `playlist_id` and drop them in as one contiguous block
-/// just before `before` (a member id already in the target), or at the end
-/// when `before` is None. Members from other playlists are pulled in keeping
-/// their snapshot; members already there are repositioned. The dragged block
-/// keeps the given order, the rest of the target keeps its relative order.
-/// This is the one primitive behind every playlist drag, single or multi,
-/// reorder or cross-playlist move. The target and any source playlists stamp
-/// updated. `before` must not name one of `members`; the caller drops a
-/// self-drop before it gets here.
+/// The one primitive behind every playlist drag: move `members` in as a
+/// contiguous block before `before` (or at the end), pulling in members from
+/// other playlists. `before` must not be one of `members`.
 pub fn place_members(
     conn: &mut Connection,
     playlist_id: i64,
@@ -755,7 +622,6 @@ pub fn place_members(
         return Ok(());
     }
     let tx = conn.transaction()?;
-    // Source playlists losing a member want their stamp bumped too.
     let mut touched: Vec<i64> = vec![playlist_id];
     {
         let mut src = tx.prepare("SELECT playlist_id FROM playlist_tracks WHERE id = ?1")?;
@@ -770,7 +636,6 @@ pub fn place_members(
             mv.execute(rusqlite::params![member, playlist_id])?;
         }
     }
-    // The target's remaining members in order, without the dragged block.
     let moved: std::collections::HashSet<i64> = members.iter().copied().collect();
     let existing: Vec<i64> = {
         let mut stmt = tx.prepare(
@@ -781,7 +646,6 @@ pub fn place_members(
             .filter(|id| !moved.contains(id))
             .collect()
     };
-    // Splice the dragged block in before the target member, else at the end.
     let at = before
         .and_then(|b| existing.iter().position(|&id| id == b))
         .unwrap_or(existing.len());
@@ -795,8 +659,6 @@ pub fn place_members(
             up.execute(rusqlite::params![id, pos as i64])?;
         }
     }
-    // Dragging a track onto favourites it was already in leaves it favourited
-    // once, not twice. The row that stays keeps its place in the order.
     if favourites_id(&tx)? == Some(playlist_id) {
         dedupe_favourite_members(&tx, playlist_id)?;
     }
@@ -809,9 +671,7 @@ pub fn place_members(
     tx.commit()
 }
 
-/// Drop several members at once by row id, across whatever playlists they
-/// belong to. Each playlist they leave stamps updated. Positions keep their
-/// gaps, the same as the single remove; the next reorder closes them.
+/// Positions keep their gaps until the next reorder.
 pub fn remove_members(conn: &mut Connection, member_ids: &[i64], now: i64) -> rusqlite::Result<()> {
     if member_ids.is_empty() {
         return Ok(());
@@ -839,8 +699,6 @@ pub fn remove_members(conn: &mut Connection, member_ids: &[i64], now: i64) -> ru
     tx.commit()
 }
 
-/// A playlist's members in order, tags resolved live with the snapshot as
-/// fallback so a deleted track still shows a name.
 pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<PlaylistTrack>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.id, m.track_id,
@@ -885,9 +743,7 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
     rows.collect()
 }
 
-/// A playlist's track ids in play order. What the panel hands the player to
-/// start the whole list. Only tracks still in the catalog, since a snapshot
-/// row has no file to play.
+/// Live tracks only; a snapshot has no file to play.
 pub fn ids(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<i64>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.track_id FROM playlist_tracks m JOIN tracks t ON t.id = m.track_id
@@ -897,9 +753,6 @@ pub fn ids(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
-/// One row for an M3U export: the file to point at, display tags for the
-/// `#EXTINF` line, and the duration in whole seconds. Only local members whose
-/// track is still in the catalog, since a snapshot row has no file to write.
 pub struct ExportTrack {
     pub path: String,
     pub title: String,
@@ -907,9 +760,7 @@ pub struct ExportTrack {
     pub duration_secs: i64,
 }
 
-/// A playlist's playable members in order, resolved to what an M3U needs.
-/// Deleted and non-local tracks fall away, the same way [`ids`] drops what
-/// has no file behind it.
+/// Local, live tracks only.
 pub fn export_rows(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<ExportTrack>> {
     let mut stmt = conn.prepare_cached(
         "SELECT t.path, t.title, t.artist, t.duration_ms
@@ -922,7 +773,6 @@ pub fn export_rows(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<
             path: row.get(0)?,
             title: row.get(1)?,
             artist: row.get(2)?,
-            // Round to the nearest second, the resolution #EXTINF wants.
             duration_secs: (row.get::<_, i64>(3)? + 500) / 1000,
         })
     })?;
@@ -992,10 +842,7 @@ mod tests {
         .unwrap()
     }
 
-    /// The smart-playlists rung adds its columns to a fresh database and to
-    /// one written before the step existed. The ladder is forward-only and
-    /// additive, so the older file has to converge by running the tail, not
-    /// by being rebuilt.
+    /// The older file has to converge by running the ladder's tail.
     #[test]
     fn the_smart_columns_land_on_a_fresh_db_and_an_older_one() {
         let fresh = Connection::open_in_memory().unwrap();
@@ -1003,10 +850,8 @@ mod tests {
         assert!(has_column(&fresh, "playlists", "kind"));
         assert!(has_column(&fresh, "playlists", "definition"));
 
-        // What a binary from before the step wrote: the ladder run up to the
-        // rung and stopped there, rather than a current file wound back,
-        // which would leave every later rung's columns in place for the
-        // rerun to trip over.
+        // Run the ladder up to the rung: a current file wound back would keep the
+        // later rungs' columns and trip the rerun.
         let conn = Connection::open_in_memory().unwrap();
         store::run_ladder_before(&conn, "smart-playlists").unwrap();
         assert!(!has_column(&conn, "playlists", "kind"));
@@ -1024,7 +869,6 @@ mod tests {
         );
     }
 
-    /// A definition comes back intact through the column, filter and all.
     #[test]
     fn a_definition_round_trips_through_the_row() {
         let conn = seed();
@@ -1051,7 +895,6 @@ mod tests {
         assert_eq!(row.kind, PlaylistKind::Smart);
         assert_eq!(row.tracks, 0, "a smart playlist holds no member rows");
 
-        // An edit rewrites it whole.
         let edited = SmartDef {
             query: "artist:air".into(),
             ..SmartDef::default()
@@ -1059,8 +902,6 @@ mod tests {
         set_definition(&conn, id, &edited, 110).unwrap();
         assert_eq!(definition(&conn, id).unwrap().as_ref(), Some(&edited));
 
-        // A static playlist has none, and unreadable JSON reads as none
-        // rather than an error.
         let plain = create(&conn, "Plain", 100).unwrap();
         assert_eq!(definition(&conn, plain).unwrap(), None);
         conn.execute(
@@ -1071,8 +912,6 @@ mod tests {
         assert_eq!(definition(&conn, id).unwrap(), None);
     }
 
-    /// The saved query evaluates against the projection, and the limit cuts
-    /// the sorted result rather than the order it was read in.
     #[test]
     fn a_smart_definition_resolves_to_the_tracks_it_names() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1111,8 +950,6 @@ mod tests {
             "the four-star-and-up tracks nobody has played"
         );
 
-        // The limit takes the head of the sort it asked for, not of the
-        // canonical order: descending by title puts Loved first.
         let capped = SmartDef {
             query: "rating:>=4".into(),
             sort: Some((SortKey::Title, true)),
@@ -1121,7 +958,6 @@ mod tests {
         };
         assert_eq!(capped.ids(&projection, order.clone()), [3, 1]);
 
-        // An empty query is the whole library through the sort.
         let everything = SmartDef {
             limit: Some(1),
             ..SmartDef::default()
@@ -1129,11 +965,8 @@ mod tests {
         assert_eq!(everything.ids(&projection, order).len(), 1);
     }
 
-    /// The "never played" list, which is the whole promise of the feature:
-    /// a track that gets played leaves it on the next materialization, with
-    /// nothing written to any playlist row. Nothing invalidates in between,
-    /// so the panel showing the old answer until it refreshes is the known
-    /// cost, not a bug in the evaluation.
+    /// Nothing invalidates between materializations, so a stale panel until
+    /// refresh is the known cost.
     #[test]
     fn a_never_played_list_drops_a_track_once_it_plays() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1198,7 +1031,6 @@ mod tests {
             "the same track lands twice"
         );
 
-        // Remove only the first occurrence, by its member id.
         remove_member(&conn, members[0].member_id, 110).unwrap();
         assert_eq!(
             tracks(&conn, pl)
@@ -1212,9 +1044,6 @@ mod tests {
         assert_eq!(ids(&conn, pl).unwrap(), [2, 1]);
     }
 
-    /// The ids an add hands back are the rows it just made, in order. A drop
-    /// from elsewhere feeds them straight to `place_members`, so a stale or
-    /// reordered list would land the block wrong.
     #[test]
     fn add_returns_the_member_ids_it_made() {
         let mut conn = seed();
@@ -1228,12 +1057,10 @@ mod tests {
             .collect();
         assert_eq!(first, members, "the new rows, in insertion order");
 
-        // A second add reports its own row only, not the ones already there.
         let second = add(&mut conn, pl, &[3], 110).unwrap();
         let after = tracks(&conn, pl).unwrap();
         assert_eq!(second, [after[2].member_id]);
 
-        // An id with no catalog row behind it inserts nothing to report.
         assert!(add(&mut conn, pl, &[404], 120).unwrap().is_empty());
     }
 
@@ -1253,7 +1080,6 @@ mod tests {
         reorder(&mut conn, a, &order, 110).unwrap();
         assert_eq!(ids(&conn, a).unwrap(), [3, 1, 2]);
 
-        // Move the first member of A into B.
         let first = tracks(&conn, a).unwrap()[0].member_id;
         move_member(&mut conn, first, b, 120).unwrap();
         assert_eq!(ids(&conn, a).unwrap(), [1, 2]);
@@ -1264,7 +1090,6 @@ mod tests {
     fn favourites_playlist_is_made_once_and_toggles_cleanly() {
         let mut conn = seed();
         let fav = ensure_favourites(&conn, 100).unwrap();
-        // Idempotent: a second call returns the same playlist, makes no other.
         assert_eq!(ensure_favourites(&conn, 100).unwrap(), fav);
         assert_eq!(
             list(&conn).unwrap().len(),
@@ -1275,7 +1100,6 @@ mod tests {
 
         assert!(!is_favourite(&conn, 1).unwrap());
         set_favourite(&mut conn, 1, true, 110).unwrap();
-        // On twice does not duplicate the member.
         set_favourite(&mut conn, 1, true, 111).unwrap();
         assert!(is_favourite(&conn, 1).unwrap());
         assert_eq!(favourite_track_ids(&conn).unwrap(), [1]);
@@ -1290,7 +1114,6 @@ mod tests {
         let mut conn = seed();
         let fav = ensure_favourites(&conn, 100).unwrap();
 
-        // The menu's Add to Playlist path, over a track the heart already has.
         set_favourite(&mut conn, 1, true, 110).unwrap();
         add(&mut conn, fav, &[1, 2], 111).unwrap();
         assert_eq!(
@@ -1299,7 +1122,6 @@ mod tests {
             "the add lands the new track and leaves the old one alone"
         );
 
-        // And the drag path, pulling a member in from another playlist.
         let other = create(&conn, "Other", 100).unwrap();
         add(&mut conn, other, &[1], 112).unwrap();
         let dragged = tracks(&conn, other).unwrap()[0].member_id;
@@ -1311,14 +1133,10 @@ mod tests {
         );
         assert!(tracks(&conn, other).unwrap().is_empty());
 
-        // One click clears it, which is the whole point of holding the line.
         set_favourite(&mut conn, 1, false, 120).unwrap();
         assert!(!is_favourite(&conn, 1).unwrap());
     }
 
-    /// An add onto favourites over a track it already holds keeps the older
-    /// row, so the ids handed back are the survivors. Reporting the id it
-    /// inserted would point the caller at a row the dedupe just deleted.
     #[test]
     fn add_to_favourites_reports_only_the_rows_that_survived() {
         let mut conn = seed();
@@ -1345,8 +1163,6 @@ mod tests {
         let mut conn = seed();
         let fav = ensure_favourites(&conn, 100).unwrap();
         add(&mut conn, fav, &[1, 2], 100).unwrap();
-        // A second row for track 1, the way a menu add made one before the
-        // writes kept them out.
         conn.execute(
             "INSERT INTO playlist_tracks (playlist_id, track_id, position, title, artist, album, path)
              VALUES (?1, 1, 9, 'One', 'A', 'First', '/m/1.mp3')",
@@ -1383,7 +1199,6 @@ mod tests {
         let pl = create(&conn, "A", 100).unwrap();
         add(&mut conn, pl, &[1, 2, 3], 100).unwrap();
         let m = tracks(&conn, pl).unwrap();
-        // Move members 1 and 3 (the block) to just before member 2.
         place_members(
             &mut conn,
             pl,
@@ -1461,8 +1276,6 @@ mod tests {
         assert_eq!(rows[0].title, "Three");
     }
 
-    /// A member's stored path snapshot, for asserting on the column the
-    /// reattach passes maintain.
     fn member_path(conn: &Connection, member_id: i64) -> String {
         conn.query_row(
             "SELECT path FROM playlist_tracks WHERE id = ?1",
@@ -1478,8 +1291,6 @@ mod tests {
         let pl = create(&conn, "Mix", 100).unwrap();
         add(&mut conn, pl, &[1], 100).unwrap();
 
-        // The file goes missing at scan time and its row prunes; later it
-        // comes back at the same path under a fresh id.
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
         assert!(ids(&conn, pl).unwrap().is_empty(), "the member dangles");
         store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First")]).unwrap();
@@ -1498,8 +1309,6 @@ mod tests {
         let pl = create(&conn, "Mix", 100).unwrap();
         add(&mut conn, pl, &[1], 100).unwrap();
 
-        // The file returns at a different path (a reorganize done with the
-        // app closed), so the path snapshot misses; its tags still name it.
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
         store::insert_batch(&mut conn, &[track("/new/1.mp3", "One", "A", "First")]).unwrap();
         let new_id = store::id_for_path(&conn, crate::cue::LOCAL, "/new/1.mp3")
@@ -1522,8 +1331,6 @@ mod tests {
         let pl = create(&conn, "Mix", 100).unwrap();
         add(&mut conn, pl, &[1], 100).unwrap();
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
-        // Two candidates have the snapshot's tags and neither is at its
-        // path; picking one would be a coin flip, so neither is taken.
         store::insert_batch(
             &mut conn,
             &[
@@ -1541,10 +1348,6 @@ mod tests {
         assert_eq!(tracks(&conn, pl).unwrap()[0].title, "One", "still readable");
     }
 
-    /// Playlists whose members all still have their tracks never reach the
-    /// matchers, the same gate the listen pass runs: this is called after
-    /// every scan and every reindex, and the tag matcher is far too
-    /// expensive to run for nothing.
     #[test]
     fn reattach_gates_on_a_library_with_nothing_dangling() {
         let mut conn = seed();
@@ -1553,8 +1356,6 @@ mod tests {
         assert_eq!(reattach(&conn).unwrap(), None, "nothing to match");
         assert_eq!(reattach(&conn).unwrap(), None);
 
-        // One pruned file is enough to open the gate, and the pass behind it
-        // does what it always did.
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
         store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First")]).unwrap();
         let new_id = store::id_for_path(&conn, crate::cue::LOCAL, "/m/1.mp3")
@@ -1571,9 +1372,6 @@ mod tests {
         let pl = create(&conn, "Mix", 100).unwrap();
         add(&mut conn, pl, &[1], 100).unwrap();
 
-        // A rename keeps the id, so the member never dangles; the refresh
-        // pass moves its path snapshot along so a later prune can still be
-        // matched back.
         store::rename_within(&mut conn, Path::new("/m/1.mp3"), Path::new("/m/one.mp3")).unwrap();
         assert_eq!(
             reattach(&conn).unwrap(),

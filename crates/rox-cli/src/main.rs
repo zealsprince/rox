@@ -1,11 +1,6 @@
-//! roxctl: the control socket's reference client (ADR 22). Transport verbs,
-//! queue edits, library search, and the debug scope from a shell, one call
-//! per invocation. Doubles as the scriptable test surface: state-level
-//! checks against a live rox without eyes on the screen.
-//!
-//! No rox listening exits 2 with a sentence on stderr; a refused method
-//! exits 1 with the server's error. `--json` prints the raw result for
-//! scripts; the default output is lines for people.
+//! roxctl: the control socket's reference client (ADR 22), one call per
+//! invocation. No rox listening exits 2; a refused method exits 1. `--json`
+//! prints raw results for scripts.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -78,7 +73,6 @@ fn main() -> ExitCode {
     let mut window: Option<u64> = None;
     let mut as_json = false;
 
-    // Global flags come off the front; what's left is the command.
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -121,8 +115,7 @@ fn main() -> ExitCode {
     let args = &args[1..];
 
     let socket = socket.unwrap_or_else(|| {
-        // The app's non-portable default: the OS data dir. A portable or
-        // --fresh rox hashes a different folder; point --data-dir at it.
+        // A portable or --fresh rox hashes a different folder; use --data-dir.
         let data_dir = data_dir.unwrap_or_else(|| {
             dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -166,10 +159,8 @@ fn run(
             let arg = args
                 .first()
                 .ok_or("seek takes seconds, signed for relative, or live")?;
-            // The one sub-form. A station's seek runs backwards from the
-            // live edge, so a bare number on one means the opposite of
-            // what it means on a file; `live` is how a script says which
-            // it meant and gets told off rather than obeyed if it's wrong.
+            // A station's seek counts back from the live edge, so `live` makes
+            // a script say which it meant.
             if arg == "live" {
                 let behind: f64 = match args.get(1) {
                     Some(secs) => secs.parse().map_err(|_| format!("not seconds: {secs}"))?,
@@ -389,8 +380,6 @@ fn run(
         other => return Err(format!("unknown command: {other}\n{USAGE}")),
     };
 
-    // The drive commands all take an optional window target; the flag is
-    // parsed up front so each command doesn't reparse it.
     if let Some(id) = window
         && method.starts_with("debug.")
     {
@@ -429,10 +418,7 @@ fn run(
     Ok(())
 }
 
-/// Subscribe and print events until rox goes away or the user breaks out.
-/// The human view leads with the current status so the stream starts where
-/// things stand; `--json` skips the seed and prints one frame per line for
-/// scripts to parse.
+/// The human view leads with the current status; `--json` prints frames only.
 fn watch(client: &mut Client, as_json: bool) -> Result<(), String> {
     client
         .call("subscribe", json!({}))
@@ -461,7 +447,6 @@ fn watch(client: &mut Client, as_json: bool) -> Result<(), String> {
     }
 }
 
-/// One line per track turnover: who and what, or the deck going empty.
 fn print_track_change(track: &Value) {
     if !track.is_object() {
         println!("track    (nothing)");
@@ -476,7 +461,6 @@ fn print_track_change(track: &Value) {
     }
 }
 
-/// Two leading coordinates off a drive command's arguments.
 fn point_args(args: &[&str], command: &str) -> Result<(f64, f64), String> {
     let parse = |i: usize| -> Result<f64, String> {
         let arg = args
@@ -487,7 +471,6 @@ fn point_args(args: &[&str], command: &str) -> Result<(f64, f64), String> {
     Ok((parse(0)?, parse(1)?))
 }
 
-/// Entry ids off the argument list, whole and in order.
 fn ids(args: &[String]) -> Result<Vec<u64>, String> {
     if args.is_empty() {
         return Err("takes entry ids (see `roxctl queue`)".into());
@@ -497,20 +480,30 @@ fn ids(args: &[String]) -> Result<Vec<u64>, String> {
         .collect()
 }
 
-/// The running rox has its own working directory, so relative paths leave
-/// here absolute, the same treatment a single-instance handoff gets.
+/// The running rox has its own working directory, so paths go absolute.
 fn absolute(path: &str) -> String {
-    std::fs::canonicalize(path)
+    resolve(std::path::Path::new(path))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_owned())
 }
 
-/// One `add` argument on its way to the socket. A path leaves absolute,
-/// for the reason above. A stream URL goes through untouched, because it
-/// names a station row rather than a file and there is nothing on this
-/// machine to resolve it against; a `source|path` key off `search --json`
-/// rides the same fallback, since canonicalize has nothing to say about
-/// either and hands the string straight back.
+#[cfg(unix)]
+fn resolve(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// Windows canonicalize answers in the `\\?\C:\...` verbatim form, and the
+/// library stores paths as the scanner walked them, without that prefix, so
+/// a canonical path would match no row. `absolute` joins onto the working
+/// directory without touching the disk, the same as the single-instance
+/// handoff does.
+#[cfg(not(unix))]
+fn resolve(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    std::path::absolute(path)
+}
+
+/// Stream URLs and `source|path` keys pass through: they name rows, not
+/// files on this machine.
 fn add_arg(what: &str) -> String {
     if what.starts_with("http://") || what.starts_with("https://") {
         return what.to_owned();
@@ -528,8 +521,7 @@ fn print_status(status: &Value) {
         (true, true) => "playing",
         (true, false) => "paused",
     };
-    // Indexed as a Value, never as the Map underneath: Value returns null
-    // for a missing key where the Map's Index panics on it.
+    // Index the Value, never the Map: Map's Index panics on a missing key.
     let track = &status["track"];
     match track.is_object() {
         true => {
@@ -547,13 +539,9 @@ fn print_status(status: &Value) {
                 clock(status["duration_secs"].as_f64()),
                 status["volume"].as_f64().unwrap_or_default(),
             );
-            // Where in the tape a station is playing from, on its own
-            // line and only when there is a tape: a file has none of this
-            // and a client reading `position_secs` on a station is
-            // reading a listen clock, not a position.
+            // A station's `position_secs` is a listen clock, not a position;
+            // the tape line says where it really is.
             print_shift(&status["shift"], "        ");
-            // The A-B section only when there's one to speak of: a line
-            // that says "off" on every status would be noise.
             let ab = &status["ab"];
             match (ab["a"].as_f64(), ab["b"].as_f64()) {
                 (Some(a), Some(b)) => {
@@ -567,10 +555,6 @@ fn print_status(status: &Value) {
     }
 }
 
-/// The timeshift line, for a station and nothing else. Says where the
-/// playhead is against the broadcast and how much tape there is to move
-/// through, which is the one thing `position_secs` can't tell a caller:
-/// on a station that clock counts the listen.
 fn print_shift(shift: &Value, indent: &str) {
     let Some(shift) = shift.as_object() else {
         return;
@@ -651,10 +635,8 @@ fn print_search(result: &Value) {
     };
     for track in tracks {
         let source = track["source"].as_str();
-        // The key only where the tags can't stand in for it. A station
-        // and a Subsonic song have no path anyone could type, so without
-        // this a hit here can be read and not queued; a local file keeps
-        // the line it always had.
+        // Stations and Subsonic songs have no typeable path, so print the key
+        // that queues them.
         let key = match source {
             Some("local") | None => String::new(),
             Some(_) => match track["key"].as_str() {
@@ -662,10 +644,6 @@ fn print_search(result: &Value) {
                 None => String::new(),
             },
         };
-        // A station is a name and a stream. There's no artist, no album
-        // and no length to print, so the word goes where the artist
-        // would have been and the line stops after the name and the key.
-        // The source string is the wire's own, same as "local" above.
         if source == Some("radio") {
             println!(
                 "Radio - {}{key}",
@@ -715,19 +693,14 @@ fn print_now(track: &Value) {
             println!("{field:>12}  {text}");
         }
     }
-    // The tape under a station, on the same terms `status` prints it.
     print_shift(&track["shift"], "       shift  ");
 }
 
-/// One line per pass: progress while it runs, otherwise what a start would
-/// take on and whether its switch is even on.
 fn print_tasks(result: &Value) {
     for pass in ["acoustic", "replaygain", "tempo", "sortnames", "romanize"] {
         let task = &result[pass];
         let missing = task["missing"].as_u64().unwrap_or_default();
-        // The three analysis passes count tracks; the fill counts artists
-        // and romanize counts values, and saying "tracks to do" over
-        // either would be wrong by a factor of ten.
+        // sortnames counts artists and romanize counts values.
         let unit = task["unit"].as_str().unwrap_or("tracks");
         if task["running"].as_bool().unwrap_or(false) {
             println!(
@@ -749,10 +722,7 @@ fn print_tasks(result: &Value) {
     }
 }
 
-/// What a started pass took on, the prompt's facts in one line.
 fn print_task_started(result: &Value) {
-    // The same unit the status line reads: sortnames takes on artists and
-    // romanize values, while the analysis passes send no unit at all.
     let unit = result["unit"].as_str().unwrap_or("tracks");
     let mut line = format!(
         "started  {} {unit} on {} workers",
@@ -768,7 +738,6 @@ fn print_task_started(result: &Value) {
     println!("{line}");
 }
 
-/// Decode one artwork response to a file.
 fn save_art(result: &Value, out: &str) -> Result<(), String> {
     let data = result["data_base64"]
         .as_str()
@@ -786,7 +755,6 @@ fn save_art(result: &Value, out: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The Milkdrop panel's snapshot, one fact per line.
 fn print_milkdrop(snapshot: &Value) {
     println!(
         "preset   {}",
@@ -828,7 +796,6 @@ fn print_milkdrop(snapshot: &Value) {
     }
 }
 
-/// Write the frame dump's PNG where asked.
 fn save_frame(result: &Value, out: &str) -> Result<(), String> {
     let data = result["data_base64"]
         .as_str()
@@ -845,7 +812,6 @@ fn save_frame(result: &Value, out: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Seconds as m:ss, a dash while unknown.
 fn clock(secs: Option<f64>) -> String {
     match secs {
         Some(secs) if secs.is_finite() && secs >= 0.0 => {
@@ -860,9 +826,6 @@ fn clock(secs: Option<f64>) -> String {
 mod tests {
     use super::*;
 
-    /// A stream URL and a source key reach the socket as typed. A relative
-    /// path doesn't: the running rox has its own working directory, so it
-    /// would resolve against the wrong folder.
     #[test]
     fn add_leaves_a_url_and_a_source_key_alone() {
         for what in [
@@ -878,8 +841,6 @@ mod tests {
         assert_eq!(add_arg("."), here.to_string_lossy());
     }
 
-    /// A path that doesn't resolve still goes as typed rather than being
-    /// dropped here, so the refusal comes from rox with the reason in it.
     #[test]
     fn add_passes_an_unresolvable_path_through() {
         assert_eq!(add_arg("/m/not-here.flac"), "/m/not-here.flac");

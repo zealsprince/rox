@@ -1,14 +1,10 @@
-//! The transport panels (playback controls, the track info readout, a
-//! volume strip, and a click-to-seek strip) make up the app's whole playback
-//! UI, in the bottom dock by default. Each is a view over the shared player
-//! entity, exactly like the audio views: duplicates are fresh views,
-//! pop-outs rehost the entity. Each panel is defined in its own file; this
-//! module holds what they share.
+//! The transport panels: playback controls, the track info readout, the
+//! volume strip, and the seek strip. Each is a view over the shared player
+//! entity. This module holds what they share.
 
 mod playback;
-// The seek strip owns the live-stream mark's look, which the waveform
-// panel's own corner mark matches, so this one module is visible crate
-// wide rather than only through its panel type.
+// Crate-visible because the waveform's corner mark reuses the seek
+// strip's live-mark look.
 pub(crate) mod seek;
 mod track_info;
 mod volume;
@@ -18,18 +14,14 @@ pub use seek::{SeekConfig, SeekStripPanel};
 pub use track_info::{InfoPiece, TrackInfoConfig, TrackInfoPanel};
 pub use volume::{VolumeConfig, VolumePanel};
 
-// The transport configs share the widget layer's serde default for the
-// toggles that ship on; the submodules import it back through `super`.
 use rox_panel_kit::config::default_true;
 
 use gpui::{App, Entity, ScrollDelta, ScrollWheelEvent};
 
 use crate::player::Player;
 
-/// One wheel notch over a volume control, wherever it is: the volume
-/// strip, or the speaker button on the playback strip. A notch arrives as
-/// 3 lines, so one notch steps 5%; the range is 0 to 100% and touching it
-/// unmutes.
+/// One wheel notch over a volume control: a notch is 3 lines, which
+/// steps 5%.
 pub(crate) fn volume_wheel(player: &Entity<Player>, event: &ScrollWheelEvent, cx: &mut App) {
     let lines = match event.delta {
         ScrollDelta::Lines(lines) => lines.y,
@@ -41,15 +33,10 @@ pub(crate) fn volume_wheel(player: &Entity<Player>, event: &ScrollWheelEvent, cx
     });
 }
 
-/// The Panel and focus plumbing is identical across the transport panels;
-/// only the name and the minimum width differ. Every transport panel has a
-/// per-view config struct (a `config` field, a `config_menu` method, and a
-/// PanelSettings impl): the layout dump stores the config, Duplicate
-/// copies it, and the dropdown gets the panel's own entries plus Panel
-/// Settings in a block above the shared items. The minimum width is the
-/// size the resizable layout refuses to squeeze the panel below, so controls
-/// never slide off screen; a panel whose controls depend on its config
-/// passes a closure over `&self` instead of a literal.
+/// The Panel and focus plumbing shared by the transport panels. Each one
+/// has a `config` field, a `config_menu` method, and a PanelSettings impl.
+/// `min_w` is the width the layout won't squeeze the panel below; pass a
+/// closure over `&self` when it depends on the config.
 macro_rules! transport_panel {
     ($panel:ty, $name:literal, $title:expr, min_w = $min_w:literal) => {
         transport_panel!($panel, $name, $title, min_w = |_: &$panel| px($min_w));
@@ -110,8 +97,6 @@ macro_rules! transport_panel {
                 crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
             }
 
-            /// The layout dump stores the panel's config; the builder
-            /// registered in `workspace::register_panels` reads it back.
             fn dump(&self, _cx: &App) -> rox_dock::PanelState {
                 let mut state = rox_dock::PanelState::new(self);
                 state.info = rox_dock::PanelInfo::panel(
@@ -142,8 +127,6 @@ macro_rules! transport_panel {
                 _window: &mut Window,
                 cx: &mut Context<Self>,
             ) -> PopupMenu {
-                // The config block: the panel's quick entries and the
-                // settings window, apart from the core panel items.
                 let menu = self.config_menu(menu, _window, cx);
                 let menu = panel_settings::rename_item(
                     menu,

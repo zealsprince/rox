@@ -1,22 +1,9 @@
-//! PANNs CNN10 in candle: the network behind the `panns-cnn10` model.
+//! PANNs CNN10 in candle, the network behind the `panns-cnn10` model (Kong et
+//! al., trained on AudioSet's 527 classes). rox keeps the 512 values before
+//! the classifier. Chosen because it's plain convolutions candle-nn already
+//! has, a 24 MB download, and CC BY 4.0 weights with MIT code.
 //!
-//! CNN10 is one of the pretrained audio neural networks from Kong et al.,
-//! trained on AudioSet to answer "what is this a recording of" across 527
-//! classes. rox keeps the 512 values before that final classifier:
-//! a description of what a piece of audio sounds like, learned from two
-//! million clips, which is a different and much better thing than the
-//! hand-rolled sketch the built-in [`crate::MODEL`] produces.
-//!
-//! ## Why this one
-//!
-//! It's a plain stack of 3x3 convolutions, batch norms, and average pools,
-//! which means every operation it needs already exists in candle-nn and
-//! there's no ONNX graph to fight. It's 24 MB, which is a download people
-//! will actually accept. And the weights are CC BY 4.0 with MIT code, so
-//! nothing about offering it is legally awkward, which isn't true of the
-//! Essentia music models that would otherwise be the obvious pick.
-//!
-//! ## The architecture, from `pytorch/models.py`
+//! The architecture, from `pytorch/models.py`:
 //!
 //! ```text
 //! log-mel (1, 1, T, 64)
@@ -30,18 +17,12 @@
 //!   Linear(512, 512) -> relu          -> the embedding
 //! ```
 //!
-//! `ConvBlock` is conv 3x3 (no bias) -> batch norm -> relu, twice, then the
-//! pool. Every dropout in the original is a no-op in eval mode, so the
-//! forward pass here is the whole of it.
+//! `ConvBlock` is conv 3x3 (no bias), batch norm, relu, twice, then the pool.
+//! Dropout is a no-op in eval mode.
 //!
-//! ## The front end
-//!
-//! The spectrogram recipe is in [`crate::models::PANNS_MEL`],
-//! copied from the model's training config. The weights file also ships the
-//! filterbank it was trained with, so [`Cnn10::load`] uses that matrix
-//! directly and compares it against the one the config derives. A
-//! disagreement means the config is wrong, and it gets logged loudly rather
-//! than quietly producing embeddings that look fine.
+//! The recipe is [`crate::models::PANNS_MEL`]. The weights file ships the
+//! filterbank it was trained with, which the load uses and checks against
+//! the recipe's, logging loudly on a mismatch.
 
 use std::path::Path;
 
@@ -52,19 +33,12 @@ use crate::mel::Mel;
 use crate::models::{Model, PANNS_MEL};
 use crate::resample;
 
-/// The width of the vector this produces.
 pub const DIM: usize = 512;
 
-/// How far the shipped filterbank may differ from the one the config derives
-/// before the two are calling each other liars. The two are computed in
-/// different languages at different precisions over the same formula, so
-/// they agree to about a part in ten million in practice; this leaves four
-/// orders of magnitude of headroom and still catches a wrong mel scale,
-/// which moves weights by tens of percent.
+/// The two banks agree to ~1e-7 in practice; this still catches a wrong mel
+/// scale, which moves weights by tens of percent.
 const BANK_TOLERANCE: f32 = 1e-3;
 
-/// One `ConvBlock`: two 3x3 convolutions each followed by a batch norm and
-/// a relu, then a 2x2 average pool.
 struct ConvBlock {
     conv1: Conv2d,
     bn1: BatchNorm,
@@ -74,8 +48,7 @@ struct ConvBlock {
 
 impl ConvBlock {
     fn load(inputs: usize, outputs: usize, vb: VarBuilder) -> candle_core::Result<Self> {
-        // Padding 1 on a 3x3 kernel keeps the time and mel axes the size
-        // they came in at, so only the pools change the shape.
+        // Padding 1 keeps the axes' sizes; only the pools shrink them.
         let conv = Conv2dConfig {
             padding: 1,
             ..Default::default()
@@ -89,9 +62,7 @@ impl ConvBlock {
     }
 
     fn forward(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
-        // forward_t with false is the eval path: the batch norm uses the
-        // running statistics stored in the file rather than measuring this
-        // batch, which is the whole point of using a pretrained model.
+        // Eval mode: batch norm uses the file's running statistics.
         let xs = self.conv1.forward(xs)?;
         let xs = self.bn1.forward_t(&xs, false)?.relu()?;
         let xs = self.conv2.forward(&xs)?;
@@ -100,7 +71,6 @@ impl ConvBlock {
     }
 }
 
-/// The loaded network, its front end, and the device it runs on.
 pub struct Cnn10 {
     mel: Mel,
     bn0: BatchNorm,
@@ -110,30 +80,18 @@ pub struct Cnn10 {
 }
 
 impl Cnn10 {
-    /// Load the weights for `model`, checking the file against the
-    /// catalog's checksum first.
-    ///
-    /// Tries Metal where candle was built with it and falls back to CPU,
-    /// both when the device won't open and when a probe forward pass over
-    /// it fails. The probe is the useful half: a Metal device that opens
-    /// and then can't run a convolution would otherwise fail once per track
-    /// for a whole library pass.
+    /// Check the catalog checksum, then load. Tries Metal and falls back to the
+    /// CPU if the device won't open or a probe forward pass fails, rather than
+    /// failing once per track.
     pub fn load(model: &Model) -> Result<Self, String> {
         model.verify()?;
         let path = model.path().ok_or("this model has no weights to load")?;
         Self::load_from(&path)
     }
 
-    /// Load whatever safetensors are at `path`, with no catalog entry and no
-    /// checksum behind them. This is the user-supplied route: a bigger CNN10
-    /// of their own, or a checkpoint they trained.
-    ///
-    /// Nothing validates the architecture up front, and nothing needs to.
-    /// [`Self::build`] reads named tensors at fixed shapes, so a file that
-    /// isn't this network fails there with the name of the tensor it wanted;
-    /// and the mel filterbank stored in the file is checked against the one the
-    /// front end computes, which catches a CNN10 trained at other spectrogram
-    /// settings even though every tensor loads.
+    /// Load any safetensors at `path`, no checksum: a user's own checkpoint.
+    /// [`Self::build`] fails with the tensor name on a different network, and
+    /// the stored filterbank check catches other spectrogram settings.
     pub fn load_from(path: &Path) -> Result<Self, String> {
         let mut fell_back = None;
         if candle_core::utils::metal_is_available() {
@@ -155,19 +113,15 @@ impl Cnn10 {
     }
 
     fn build(path: &Path, device: Device) -> Result<Self, String> {
-        // Unsafe because mmap can't promise the file won't be rewritten
-        // underneath us. Nothing else writes here: a re-download writes a
-        // .part file and renames, which swaps the directory entry rather
-        // than the pages this mapping holds.
+        // Unsafe because mmap can't promise the file isn't rewritten underneath.
+        // Nothing writes it in place: a re-download renames a `.part` file over it.
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[path], DType::F32, &device)
                 .map_err(|e| format!("{}: {e}", path.display()))?
         };
         let vb = vb.pp("backbone");
 
-        // The filterbank the model was trained with, straight out of the
-        // file. torchlibrosa stores it transposed for its matmul, so the
-        // rows here are FFT bins and the columns are mel bands.
+        // Stored transposed for torchlibrosa's matmul: rows are FFT bins.
         let stored = vb
             .get(
                 (PANNS_MEL.bins(), PANNS_MEL.n_mels),
@@ -178,10 +132,8 @@ impl Cnn10 {
             .and_then(|t| t.to_vec2::<f32>())
             .map_err(|e| e.to_string())?;
         let mel = Mel::with_bank(PANNS_MEL, stored)?;
-        // The config is the claim; the shipped bank is the evidence. If they
-        // part company, everything downstream is fed a spectrogram the
-        // weights were never fit against, and nothing about the output would
-        // show it, so say so here where there's still a name to blame.
+        // If the recipe and the shipped bank disagree, every embedding is wrong
+        // with no visible sign, so say so here.
         let deviation = mel.bank_deviation();
         if deviation > BANK_TOLERANCE {
             log::error!(
@@ -215,16 +167,13 @@ impl Cnn10 {
         })
     }
 
-    /// One forward pass over silence, to find out whether this device can
-    /// actually run the graph before a library pass depends on it.
+    /// Proves the device can run the graph before a pass depends on it.
     fn probe(&self) -> Result<(), String> {
         let frames = vec![vec![0.0f32; PANNS_MEL.n_mels]; MIN_FRAMES];
         self.forward(&frames).map(|_| ())
     }
 
-    /// Where the forward pass runs, for the log line a pass opens with: a
-    /// library that takes an hour on the CPU and ten minutes on the GPU
-    /// should say which one it picked.
+    /// For the pass's opening log line.
     pub fn device(&self) -> &'static str {
         if matches!(self.device, Device::Cpu) {
             "the CPU"
@@ -233,28 +182,13 @@ impl Cnn10 {
         }
     }
 
-    /// One track's vector: the same windows the built-in extractor samples,
-    /// described by the network and averaged.
-    ///
-    /// Windows are scaled to unit length before the average. The relu at the
-    /// end of the network means a loud passage produces larger activations
-    /// than a quiet one on the same material, and averaging raw would let
-    /// whichever window happened to be loudest write most of the track's
-    /// vector. Each window contributes a direction in the model's space,
-    /// not a magnitude.
-    ///
-    /// The mean isn't rescaled on the way out. The storage layer
-    /// standardizes every dimension against the corpus at query time
-    /// (`rox_library::embeddings::Stats`), so a track-level magnitude has no
-    /// vote in the ranking, and leaving it raw keeps this consistent with
-    /// what the built-in extractor writes.
+    /// One track's vector over the built-in extractor's windows. Each window is
+    /// scaled to unit length before averaging, so the loudest window doesn't
+    /// dominate. The mean stays unscaled; the query standardizes per dimension.
     pub fn extract(&self, path: &Path, duration_ms: u32) -> Result<Vec<f32>, String> {
         let duration = duration_ms as f64 / 1000.0;
-        // A track no longer than one window has one window in it, read from
-        // the top. Anything longer spreads the probes across the range a
-        // window can still start in, the same arithmetic the built-in
-        // extractor uses, and the same probe positions, so switching models
-        // describes the same parts of the record.
+        // The built-in extractor's probe positions, so both models describe the
+        // same parts of a record.
         let single = duration <= super::WINDOW_SECS;
         let span = (duration - super::WINDOW_SECS).max(0.0);
 
@@ -273,9 +207,7 @@ impl Cnn10 {
                     continue;
                 }
             };
-            // Band-limited on the way down to the model's rate. The engine's
-            // linear resampler would fold everything above 16 kHz back into
-            // the band the network reads; see the resample module's header.
+            // Band-limit on the way down; see the resample module.
             let clip = resample::convert(&mono, rate, PANNS_MEL.sample_rate);
             match self.embed(&clip)? {
                 Some(vector) => {
@@ -309,10 +241,8 @@ impl Cnn10 {
         Ok(sum.iter().map(|v| (v / taken as f64) as f32).collect())
     }
 
-    /// Embed one clip of audio already at [`PANNS_MEL`]'s sample rate.
-    /// A clip too short to survive the four pooling stages comes back as
-    /// None rather than being padded into a shape the network would read as
-    /// several seconds of silence.
+    /// Audio at [`PANNS_MEL`]'s rate. Too short for four pools is None, never
+    /// padded into seconds of silence.
     pub fn embed(&self, samples: &[f32]) -> Result<Option<Vec<f32>>, String> {
         let frames = self.mel.spectrogram(samples);
         if frames.len() < MIN_FRAMES {
@@ -321,7 +251,6 @@ impl Cnn10 {
         self.forward(&frames).map(Some)
     }
 
-    /// The network proper, over a log-mel spectrogram.
     fn forward(&self, frames: &[Vec<f32>]) -> Result<Vec<f32>, String> {
         self.forward_inner(frames).map_err(|e| e.to_string())
     }
@@ -330,13 +259,11 @@ impl Cnn10 {
         let time = frames.len();
         let mels = PANNS_MEL.n_mels;
         let flat: Vec<f32> = frames.iter().flatten().copied().collect();
-        // (batch, channel, time, mel), the layout the original takes.
+        // (batch, channel, time, mel), as the original.
         let xs = Tensor::from_vec(flat, (1, 1, time, mels), &self.device)?;
 
-        // bn0 normalizes per mel band, so the mel axis has to be the channel
-        // axis while it runs. The original does exactly this pair of
-        // transposes; contiguous() because what follows is a convolution and
-        // a transposed view isn't laid out for one.
+        // bn0 normalizes per mel band, so the mel axis is the channel axis while it
+        // runs; contiguous() because a convolution follows.
         let xs = xs.transpose(1, 3)?.contiguous()?;
         let xs = self.bn0.forward_t(&xs, false)?;
         let mut xs = xs.transpose(1, 3)?.contiguous()?;
@@ -345,10 +272,7 @@ impl Cnn10 {
             xs = block.forward(&xs)?;
         }
 
-        // Fold the mel axis away, then reduce time two ways at once: the
-        // loudest moment and the average one. The original sums them, and
-        // it's why a clip with one distinctive event and
-        // a clip that sounds like that throughout land near each other.
+        // Fold the mels, then sum time's max and mean, as the original does.
         let xs = xs.mean(D::Minus1)?;
         let peak = xs.max(D::Minus1)?;
         let average = xs.mean(D::Minus1)?;
@@ -358,19 +282,13 @@ impl Cnn10 {
     }
 }
 
-/// The fewest spectrogram frames the network can take: four 2x2 pools halve
-/// the time axis four times, so anything under sixteen frames pools down to
-/// nothing. Sixteen frames is 160 ms at the model's hop, well under any
-/// excerpt the pass actually feeds it.
+/// Four 2x2 pools: under sixteen frames (160 ms) pools to nothing.
 pub const MIN_FRAMES: usize = 16;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The pooling arithmetic the whole forward pass depends on: four 2x2
-    /// pools take 64 mel bands down to 4 and the time axis down to a
-    /// sixteenth, and a clip under [`MIN_FRAMES`] has nothing left.
     #[test]
     fn four_pools_leave_a_quarter_of_the_mel_axis() {
         let mut mels = PANNS_MEL.n_mels;
@@ -386,25 +304,19 @@ mod tests {
         assert_eq!(frames, 1, "the shortest allowed clip pools to one frame");
     }
 
-    /// A clip that produces too few frames is refused rather than padded,
-    /// so nothing feeds the network a shape it would read as silence.
-    /// Checked through the mel front end, since that's where the frame
-    /// count comes from.
+    /// Too few frames is refused, checked at the mel front end.
     #[test]
     fn a_clip_shorter_than_the_pooling_stack_makes_too_few_frames() {
         let mel = Mel::new(PANNS_MEL).unwrap();
-        // Centered framing gives 1 + samples/hop frames, so under fifteen
-        // hops of audio is under the floor.
+        // Centered framing: 1 + samples/hop frames.
         let short = vec![0.0f32; PANNS_MEL.hop_length * 10];
         assert!(mel.spectrogram(&short).len() < MIN_FRAMES);
         let long = vec![0.0f32; PANNS_MEL.hop_length * 40];
         assert!(mel.spectrogram(&long).len() >= MIN_FRAMES);
     }
 
-    /// The tests below need the weights, which are a 24 MB download and so
-    /// are not something a `cargo test` can assume. They skip when the model
-    /// isn't installed rather than failing, and say so, since a silent skip
-    /// is how a test stops being run at all.
+    /// These need the 24 MB weights, so they skip when not installed, and say
+    /// so: a silent skip is how a test stops being run.
     fn installed() -> Option<&'static Model> {
         let model = crate::models::find(crate::models::PANNS_CNN10)?;
         if model.installed() {
@@ -419,21 +331,14 @@ mod tests {
         }
     }
 
-    /// Ten seconds at the model's rate, from a function of the sample index.
     fn clip(shape: impl Fn(usize) -> f32) -> Vec<f32> {
         (0..PANNS_MEL.sample_rate as usize * 10)
             .map(shape)
             .collect()
     }
 
-    /// The config in the catalog against the filterbank the weights were
-    /// actually trained with, which the file ships.
-    ///
-    /// This is the check that the mel recipe is right rather than merely
-    /// plausible. A wrong mel scale (HTK where Slaney was meant) moves
-    /// weights by tens of percent, and a missing area normalization moves
-    /// them by a factor of ten across the top bands, so either one is orders
-    /// of magnitude outside the tolerance below.
+    /// The catalog recipe against the file's filterbank. A wrong mel scale or a
+    /// missing area norm is orders of magnitude past the tolerance.
     #[test]
     fn the_catalog_recipe_matches_the_filterbank_the_weights_ship() {
         let Some(model) = installed() else { return };
@@ -445,17 +350,9 @@ mod tests {
         );
     }
 
-    /// The whole chain against the network's own semantics: run the AudioSet
-    /// classifier that comes after the embedding and check that it
-    /// recognizes three sounds it was explicitly trained to name.
-    ///
-    /// This is the strongest verification available without a PyTorch to
-    /// diff against. The mel recipe, the weight layout, the batch norms in
-    /// eval mode, the pooling, and the transposes all have to be right at
-    /// once, because getting any of them wrong turns the input into
-    /// something the classifier has never seen and the predictions into
-    /// noise. Class indices are AudioSet's own, from the ontology's
-    /// `class_labels_indices.csv`.
+    /// The whole chain against AudioSet's own classifier head, which must name
+    /// three sounds it was trained on. Any wrong step turns the predictions to
+    /// noise. Class indices from `class_labels_indices.csv`.
     #[test]
     fn the_classifier_head_names_sounds_it_was_trained_to_name() {
         const SINE_WAVE: usize = 501;
@@ -472,9 +369,7 @@ mod tests {
         let head = candle_nn::linear(DIM, 527, vb.pp("backbone").pp("fc_audioset"))
             .expect("the classifier head loads");
 
-        // Where a sound ranks among the 527 classes, 0 being the model's
-        // first pick. A rank rather than a probability: the absolute numbers
-        // depend on the clip, and the model was scored on the ordering.
+        // Rank, not probability: the model was scored on ordering.
         let rank_of = |samples: &[f32], class: usize| -> usize {
             let embedding = net
                 .embed(samples)
@@ -489,7 +384,6 @@ mod tests {
 
         let rate = PANNS_MEL.sample_rate as f32;
         let sine = clip(|i| (std::f32::consts::TAU * 440.0 * i as f32 / rate).sin() * 0.5);
-        // A deterministic hash-noise, so the test is the same run to run.
         let noise = clip(|i| (((i as f32 * 12.9898).sin() * 43758.547).fract() - 0.5) * 0.6);
         let silence = clip(|_| 0.0);
 
@@ -510,9 +404,7 @@ mod tests {
         );
     }
 
-    /// The same audio describes the same way twice, and different audio
-    /// differently, which is the floor for the vectors being comparable at
-    /// all.
+    /// Deterministic and discriminating.
     #[test]
     fn the_embedding_is_stable_and_discriminating() {
         let Some(model) = installed() else { return };
@@ -524,8 +416,7 @@ mod tests {
         let a = net.embed(&low).unwrap().unwrap();
         assert_eq!(a.len(), DIM);
         assert!(a.iter().all(|v| v.is_finite()));
-        // relu means half of it should be zero and the rest positive; an
-        // all-zero vector would mean the forward pass collapsed.
+        // All zeros would mean the forward pass collapsed.
         assert!(a.iter().any(|&v| v > 0.0), "the embedding is all zeros");
         assert_eq!(net.embed(&low).unwrap().unwrap(), a, "not deterministic");
 

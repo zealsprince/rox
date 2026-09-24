@@ -1,30 +1,21 @@
-//! Subsonic servers on the Library page: a row each in the sources table
-//! beside the folders, and a setup dialog behind the row for its switch,
-//! address, login, Connect and Sync Now. `impl SettingsWindow` methods in a
-//! child module, the way the workspace page is, with each server's state
-//! beside them.
+//! Subsonic servers on the Library page: a row each in the sources table, and a
+//! setup dialog behind it.
 //!
-//! A server's position in [`SettingsWindow::subsonic`] is its account's
-//! index in accounts.json, and the two only move together: adding one
-//! appends to both, removing one takes the same index out of both.
-//! Everything that reaches back into the file from a callback finds its
-//! index again by the server's id first, since one above it may have gone
-//! in the meantime.
+//! A server's position in [`SettingsWindow::subsonic`] is its account's index
+//! in accounts.json, and the two only move together. A callback finds its index
+//! again by id first, since one above it may have gone meanwhile.
 
 use super::*;
 
 use gpui::Focusable;
 use rox_core::settings::SubsonicAccount;
 
-/// How often the Subsonic row re-reads a running sync. Slower again than
-/// the leveling poll: the count moves once per album, and an album is a
-/// request to somebody else's server.
+/// Slower than `RG_POLL`: the count moves once per album, a request to somebody
+/// else's server.
 const SUBSONIC_SYNC_POLL: Duration = Duration::from_millis(500);
 
-/// What the sources table answers to in the settings search on the
-/// servers' behalf: the kinds of server, and the terms a server's own
-/// settings carry. The dialog behind a row isn't searchable, so the table
-/// has to be what a query for "password" finds.
+/// The dialog isn't searchable, so the sources table carries the server
+/// settings' terms.
 pub(super) const KEYWORDS: &[&str] = &[
     "subsonic",
     "opensubsonic",
@@ -49,45 +40,31 @@ pub(super) const KEYWORDS: &[&str] = &[
     "forget",
 ];
 
-/// How a field writes its value into the account it belongs to.
 type Write = fn(&mut SubsonicAccount, String);
 
-/// One server: its fields, written through per keystroke like the icecast
-/// pair, and what this window has heard about the server.
 pub(crate) struct SubsonicForm {
-    /// Stable for as long as the window is open, unlike the server's
-    /// position, which moves when one above it goes. What the element ids,
-    /// the dialog and the remove confirm key the server by, and how a
-    /// field's subscription finds its account again.
+    /// Stable while the window is open, unlike the position. Element ids, the
+    /// dialog and the remove confirm key on it.
     id: u64,
     name: Entity<InputState>,
     url: Entity<InputState>,
     user: Entity<InputState>,
     password: Entity<InputState>,
-    /// The switch, copied from the file so the row renders without
-    /// re-reading it.
     enabled: bool,
-    /// Added from the menu and not confirmed yet. A fresh server stays out
-    /// of the table, and cancelling its dialog takes it back out of the
-    /// file, since it never held a row.
+    /// Added from the menu and not confirmed yet: out of the table, and
+    /// cancelling removes it from the file.
     fresh: bool,
-    /// What the last Connect or Sync said about this server, already
-    /// localized. None until one has run.
     status: Option<SharedString>,
-    /// What the library holds under this server, and when it last synced.
-    /// Read at open and again after anything that moves them, never per
-    /// frame.
+    /// Read at open and after anything that moves rows, never per frame.
     stats: Stats,
     last_sync: i64,
-    /// Whether a field has moved since the library last followed the
-    /// accounts. The name counts too: it moves no rows, but the catalog
-    /// reads server names on its next load, which the commit is.
+    /// A field moved since the library last followed the accounts. The name
+    /// counts: the catalog reads server names on its next load.
     dirty: bool,
     _changes: Vec<Subscription>,
 }
 
 impl SubsonicForm {
-    /// A server for `account`, its fields seeded from the file.
     pub(crate) fn new(
         id: u64,
         account: &SubsonicAccount,
@@ -130,9 +107,7 @@ impl SubsonicForm {
             (&name, |a, value| a.name = value.trim().to_string(), false),
             (&url, |a, value| a.url = value.trim().to_string(), true),
             (&user, |a, value| a.user = value.trim().to_string(), true),
-            // The password is stored exactly as typed. Trimming it the way
-            // the others are would quietly break a login on a password that
-            // really does end in a space.
+            // Stored exactly as typed: a password can end in a space.
             (&password, |a, value| a.password = value, true),
         ];
 
@@ -167,8 +142,6 @@ impl SubsonicForm {
         }
     }
 
-    /// The account as the fields read right now, for the label and the
-    /// source id the sync line is matched against.
     fn account(&self, cx: &App) -> SubsonicAccount {
         SubsonicAccount {
             enabled: self.enabled,
@@ -180,8 +153,6 @@ impl SubsonicForm {
         }
     }
 
-    /// What the row and the dialog call the server: its name or host as
-    /// typed so far, or New Server before there's either.
     fn label(&self, cx: &App) -> SharedString {
         let label = self.account(cx).label();
         if label.is_empty() {
@@ -191,18 +162,13 @@ impl SubsonicForm {
         SharedString::from(label)
     }
 
-    /// Whether an address has been typed, without which there's nothing to
-    /// connect to, sync or add.
     fn addressed(&self, cx: &App) -> bool {
         !self.url.read(cx).value().trim().is_empty()
     }
 }
 
 impl SettingsWindow {
-    /// The servers' rows in the sources table, under the folders. A row
-    /// reads like a folder's, a name and its numbers, with where it stands
-    /// beside the name: off, syncing, or when it last synced. The name opens
-    /// the setup dialog, and so does the pencil beside the remove.
+    /// A row reads like a folder's, with the server's standing beside its name.
     pub(super) fn subsonic_rows(&self, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
         (0..self.subsonic.len())
             .filter(|&ix| !self.subsonic[ix].fresh)
@@ -260,8 +226,6 @@ impl SettingsWindow {
             ));
 
         div()
-            // Named after the server, so its buttons are its own rather than
-            // every other row's.
             .id(SharedString::from(format!("subsonic-row-{id}")))
             .flex()
             .flex_row()
@@ -278,8 +242,6 @@ impl SettingsWindow {
             .child(action_cell(actions))
     }
 
-    /// Where a server stands, in the few words its row has room for: off,
-    /// the album count while it syncs, or when it last did.
     fn subsonic_standing(&self, ix: usize, cx: &App) -> SharedString {
         let form = &self.subsonic[ix];
 
@@ -305,8 +267,6 @@ impl SettingsWindow {
         )
     }
 
-    /// Albums walked and albums to walk, when the running sync is this
-    /// server's.
     fn subsonic_progress(&self, ix: usize, cx: &App) -> Option<(usize, usize)> {
         let source = rox_services::sources::syncing_source()?;
         let mine = rox_services::sources::source_of(&self.subsonic[ix].account(cx))?;
@@ -316,11 +276,9 @@ impl SettingsWindow {
             .flatten()
     }
 
-    /// The setup dialog for the server that's open, floated over the whole
-    /// window like the confirm. A fresh server's asks to be added or
-    /// cancelled; one already in the table's just closes, since every
-    /// field has written through as it was typed. Escape answers the way
-    /// the quiet button does.
+    /// A fresh server's dialog asks Add or Cancel; an existing one just closes,
+    /// since every field has written through. Escape answers like the quiet
+    /// button.
     pub(super) fn subsonic_dialog(
         &self,
         _window: &mut Window,
@@ -401,10 +359,8 @@ impl SettingsWindow {
                         .w(px(560.))
                         .p(tokens::SPACE_MD)
                         .rounded(tokens::RADIUS)
-                        // The page's own floor rather than the confirm's
-                        // menu fill: this card holds the page's controls,
-                        // and a switch's track is nearly the menu color, so
-                        // on that fill only its knob shows.
+                        // The page's floor rather than the menu fill, where a
+                        // switch's track would vanish.
                         .bg(palette::bg_root_opaque())
                         .border_1()
                         .border_color(palette::border_light())
@@ -415,9 +371,8 @@ impl SettingsWindow {
                                 .flex_col()
                                 .gap(tokens::SPACE_XS)
                                 .child(title)
-                                // "Subsonic" names the API rather than a
-                                // server most people run, so the add dialog
-                                // says which servers it means.
+                                // "Subsonic" names the API, so the add dialog says which
+                                // servers it means.
                                 .when(form.fresh, |d| {
                                     d.child(
                                         div().text_xs().text_color(palette::text_muted()).child(
@@ -432,10 +387,7 @@ impl SettingsWindow {
         )
     }
 
-    /// The dialog's body: the switch, and while it's on everything that
-    /// reaches the server. A fresh server has no switch: it's being added
-    /// to be used, and switching it off there would only fold the form
-    /// away before there was anything to keep.
+    /// A fresh server has no switch: it's being added to be used.
     fn subsonic_fields(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let form = &self.subsonic[ix];
         let id = form.id;
@@ -475,18 +427,14 @@ impl SettingsWindow {
                             .child(Input::new(&form.password).mask_toggle().w(px(140.))),
                     ))
                     .child(self.subsonic_connect_row(ix, cx))
-                    // A fresh server has nothing to sync until it's added,
-                    // which starts the first sync itself.
+                    // Adding starts the first sync itself.
                     .when(!form.fresh, |block| {
                         block.child(self.subsonic_sync_row(ix, cx))
                     })
             })
     }
 
-    /// The connect strip, shaped like the scrobble destinations': what the
-    /// last attempt said stands as the label, the button is the control.
-    /// Connect with no URL typed would only ever fail, so it stays inert
-    /// until there's a server to reach.
+    /// Inert until there's a URL to reach.
     fn subsonic_connect_row(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let form = &self.subsonic[ix];
         let id = form.id;
@@ -508,9 +456,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The sync strip: where the library stands against this server on the
-    /// left, the button that moves it on the right. Every other server's
-    /// button waits while one syncs.
     fn subsonic_sync_row(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let form = &self.subsonic[ix];
         let id = form.id;
@@ -547,9 +492,8 @@ impl SettingsWindow {
         )
     }
 
-    /// What the server with this id is called, for the remove confirm to
-    /// name the one it's about. New Server for one that's gone, which only
-    /// a confirm left open across a removal could ask about.
+    /// New Server for one that's gone, which only a confirm left open across a
+    /// removal could ask about.
     pub(super) fn subsonic_label(&self, id: u64, cx: &App) -> SharedString {
         match self.subsonic_index(id) {
             Some(ix) => self.subsonic[ix].label(cx),
@@ -557,16 +501,12 @@ impl SettingsWindow {
         }
     }
 
-    /// Where the server with this id sits now, which is also its account's
-    /// index in the file. None once it's been removed.
     fn subsonic_index(&self, id: u64) -> Option<usize> {
         self.subsonic.iter().position(|form| form.id == id)
     }
 
-    /// What one of a server's fields just did. A change writes through on
-    /// the keystroke; leaving the field is the commit, since the account
-    /// may have moved and the library has to follow it: see
-    /// `subsonic_moved` for why not on the keystroke.
+    /// Leaving the field is the commit; see `subsonic_moved` for why not the
+    /// keystroke.
     fn subsonic_field_event(
         &mut self,
         id: u64,
@@ -588,10 +528,8 @@ impl SettingsWindow {
         }
     }
 
-    /// One keystroke's worth of a field, written through to its account and
-    /// marked for the next commit. A field that moves where the server
-    /// points also clears what the last Connect said, which was about the
-    /// old server and stops standing for this one.
+    /// A field that moves where the server points clears the last Connect's
+    /// status.
     fn subsonic_write(
         &mut self,
         id: u64,
@@ -619,10 +557,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Add menu's Subsonic Server: a new account at the end of the file
-    /// and its setup dialog, switched on so its fields show, with the
-    /// address field focused since that's what it needs first. The server
-    /// stays out of the table until the dialog's Add confirms it.
+    /// Switched on so its fields show. The server stays out of the table until
+    /// the dialog's Add confirms it.
     pub(super) fn add_subsonic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let account = SubsonicAccount {
             enabled: true,
@@ -645,27 +581,21 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Open a server's setup dialog from its row.
     fn open_subsonic(&mut self, id: u64, cx: &mut Context<Self>) {
         self.subsonic_editing = Some(id);
         cx.notify();
     }
 
-    /// Close the dialog the quiet way: Cancel on a fresh server, Done or
-    /// Escape on one already in the table. A fresh server goes back out of
-    /// the file, since it never held a row and nobody said to keep it. One
-    /// that stays gets the commit a left field would have run, since
-    /// closing ends the edit without the field ever blurring.
+    /// A fresh server goes back out of the file. An existing one gets the
+    /// commit a blur would have run.
     fn close_subsonic(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.subsonic_editing.take() else {
             return;
         };
 
         match self.subsonic_index(id) {
-            // A running sync holds removals back, so the server can't go
-            // yet. It joins the table instead, where its row can remove it
-            // once the sync is done, rather than sitting in the file with
-            // nothing on screen that owns it.
+            // A running sync holds removals back, so the server joins the table
+            // instead of sitting in the file with nothing on screen owning it.
             Some(ix) if self.subsonic[ix].fresh && rox_services::sources::syncing() => {
                 self.subsonic[ix].fresh = false;
             }
@@ -680,9 +610,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The dialog's Add, for a fresh server with an address typed: into the
-    /// table, and straight into its first sync, since a server added to a
-    /// library is a server whose catalog is wanted in it.
+    /// Straight into its first sync.
     fn confirm_subsonic(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(ix) = self.subsonic_index(id) else {
             return;
@@ -700,11 +628,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Remove Server's yes, and a fresh server's Cancel: the account and its
-    /// tracks go, and so does the server's state here. Refused while a sync
-    /// runs, the same as the service refuses it: dropping the state without
-    /// the account would leave every server after it pointed at the wrong
-    /// account.
+    /// Refused while a sync runs, like the service: dropping state without the
+    /// account would point every later server at the wrong account.
     pub(super) fn remove_subsonic(&mut self, id: u64, cx: &mut Context<Self>) {
         if rox_services::sources::syncing() {
             return;
@@ -727,10 +652,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// A server's switch. The header table follows it, so a server pointed
-    /// somewhere else and turned back on can authorize a stream without a
-    /// restart, and so does the library: off takes the server's tracks out
-    /// of every list without deleting them, on brings them back.
+    /// The auth table follows the switch without a restart; off hides the
+    /// server's tracks without deleting them.
     fn set_subsonic_enabled(&mut self, id: u64, on: bool, cx: &mut Context<Self>) {
         let Some(ix) = self.subsonic_index(id) else {
             return;
@@ -752,19 +675,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// A field was left, so follow the accounts with the authorize table
-    /// and the library. The rows filed under an address an account has
-    /// left can't be signed by anybody any more, so leaving them would show
-    /// a shelf of tracks that skip themselves and blame the password.
-    ///
-    /// Leaving the field is the commit, the same one the broadcast rows
-    /// take. Hanging this off the keystroke instead would drop the catalog
-    /// on the first character typed, since mid-edit every character is its
-    /// own source id, and pay for a projection rebuild on each one after
-    /// it.
-    ///
-    /// Nothing here dials a server. A finished field is still just a field;
-    /// Connect and Sync Now are the round trips.
+    /// Rows filed under an address an account has left can't be signed, so they
+    /// go. On blur, not per keystroke: mid-edit every character is its own
+    /// source id, which would drop the catalog on the first one. Nothing here
+    /// dials a server.
     fn subsonic_moved(&mut self, cx: &mut Context<Self>) {
         let this = cx.weak_entity();
         if let Some(task) = self.subsonic_commit(this, cx) {
@@ -772,14 +686,9 @@ impl SettingsWindow {
         }
     }
 
-    /// Follow the accounts the Subsonic fields now describe, if any of them
-    /// has moved. `None` when none has, so a caller can tell a real pass
-    /// from nothing to do.
-    ///
-    /// The window handle comes in weak and separate rather than off `cx`
-    /// because the flush runs this while the entity is already on its way
-    /// out; the numbers it would refresh have nowhere to land then, and
-    /// the prune underneath still has to happen.
+    /// `None` when nothing moved. The window handle comes in weak because the
+    /// flush runs this while the entity is on its way out, and the prune must
+    /// still happen.
     pub(super) fn subsonic_commit(
         &mut self,
         this: WeakEntity<Self>,
@@ -802,9 +711,6 @@ impl SettingsWindow {
         Some(follow(this, pass, cx))
     }
 
-    /// Re-read every server's numbers and last sync off the file and the
-    /// library. After anything that moves rows: a commit, a sync, a
-    /// removal.
     fn refresh_subsonic_rows(&mut self, cx: &App) {
         let accounts = Settings::load().accounts.subsonic_servers;
 
@@ -814,8 +720,6 @@ impl SettingsWindow {
         }
     }
 
-    /// Ping one server and keep what it answered for its status line. Off
-    /// the UI thread, since it's a round trip to somebody's machine.
     fn subsonic_connect(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(ix) = self.subsonic_index(id) else {
             return;
@@ -832,8 +736,8 @@ impl SettingsWindow {
                 };
 
                 this.subsonic[ix].status = Some(match answer {
-                    // A plain Subsonic server reports no name, so its
-                    // protocol version is the most it can be called.
+                    // A plain Subsonic server reports no name, only a protocol
+                    // version.
                     Ok(info) if info.server_type.is_empty() => rox_i18n::t!(
                         "settings-integrations-subsonic-status-ok",
                         server = info.version
@@ -857,9 +761,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Ask one server for its catalog and reconcile the library against
-    /// it. Two tasks: one waits on the sync, the other keeps the album
-    /// count moving on its row and in its dialog while it walks.
+    /// A second task keeps the album count moving while it walks.
     fn subsonic_sync(&mut self, id: u64, cx: &mut Context<Self>) {
         if self.subsonic_syncing {
             return;
@@ -894,8 +796,8 @@ impl SettingsWindow {
         })
         .detach();
 
-        // A big library is walked album by album, so without this the line
-        // would sit still for minutes and read as hung.
+        // Otherwise a big library's line sits still for minutes and reads as
+        // hung.
         cx.spawn(async move |this, cx| {
             while rox_services::sources::syncing() {
                 cx.background_executor().timer(SUBSONIC_SYNC_POLL).await;
@@ -911,10 +813,7 @@ impl SettingsWindow {
     }
 }
 
-/// Hold a pass the library runs to follow the accounts, and refresh every
-/// server's numbers once it lands. Nothing moves on the overwhelming
-/// majority of these, which is every edit that didn't change where an
-/// account points, but a removal and a re-point both do.
+/// Most follows move nothing; a removal or a re-point does.
 fn follow(this: WeakEntity<SettingsWindow>, pass: Task<usize>, cx: &mut App) -> Task<()> {
     cx.spawn(async move |cx| {
         pass.await;
@@ -927,8 +826,6 @@ fn follow(this: WeakEntity<SettingsWindow>, pass: Task<usize>, cx: &mut App) -> 
     })
 }
 
-/// A row inside the setup dialog, labelled and described off its message
-/// key the way a section's keyed rows are.
 fn block_row(key: &'static str, control: impl IntoElement) -> Div {
     panel::setting_row(
         rox_i18n::t!(key),
@@ -937,12 +834,9 @@ fn block_row(key: &'static str, control: impl IntoElement) -> Div {
     )
 }
 
-/// What the library holds under one server, the numbers a folder's row
-/// shows. Empty while it names no address, or when its rows have never
-/// synced. Its own connection rather than the catalog's, since the
-/// catalog's belongs to the UI thread and this is one query a server, at
-/// open and after a change. A database that isn't there is left alone for
-/// [`StorageInfo::measure`]'s reason: opening one creates it.
+/// Empty with no address or no sync yet. Its own connection, since the
+/// catalog's belongs to the UI thread; a missing database is left alone, since
+/// opening one creates it.
 fn source_stats(library: &Entity<Library>, account: &SubsonicAccount, cx: &App) -> Stats {
     let Some(source) = rox_services::sources::source_of(account) else {
         return Stats::default();

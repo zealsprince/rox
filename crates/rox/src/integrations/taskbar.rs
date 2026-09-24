@@ -1,23 +1,13 @@
 //! Taskbar progress: the OS launcher button showing how far the background
-//! jobs have got. A scan is minutes and the acoustic pass is an afternoon,
-//! and neither is worth going and finding a window for when the button is
-//! already on screen. Nothing here reads a view, so it works with the tasks
-//! window shut.
+//! jobs have got, with or without the tasks window open.
 //!
-//! Two backends with nothing in common but the sampler. Windows paints the
-//! bar into the taskbar button through ITaskbarList3, which needs the
-//! window's own handle and the COM apartment gpui's platform init already
-//! set up, so those calls stay on the foreground executor. Linux has no
-//! equivalent; what the desktops settled on is Unity's LauncherEntry
-//! signal, a session-bus broadcast keyed by desktop file, with no window in
-//! it at all. macOS has the dock tile and isn't wired here.
+//! Windows paints into the taskbar button through ITaskbarList3, which needs
+//! the window handle and gpui's COM apartment, so it stays on the foreground
+//! executor. Linux uses Unity's LauncherEntry signal, a session-bus broadcast
+//! keyed by desktop file. macOS isn't wired.
 //!
-//! [`watch`] is the whole surface. Each job start calls it, either directly
-//! or through [`follow`] for the scans the catalog announces, one sampler
-//! spins at [`TICK`] while anything runs and stops itself once the last one
-//! ends. Writes are gated on the whole percent moving, the same shape as
-//! [`super::tray::set_playing`] against player notifies: a scan counts ten
-//! times a second and the button draws a hundred steps.
+//! One sampler runs while any job does; writes are gated on the whole
+//! percent moving.
 
 use std::time::Duration;
 
@@ -25,44 +15,31 @@ use gpui::{App, Entity, Global};
 
 use rox_services::catalog::{Library, LibraryJob};
 
-/// How often the sampler reads the running jobs. The tasks window's own
-/// tick, for the same reason: a bar this coarse has nothing to say more
-/// often, and the sample iterates over every job.
+/// The tasks window's own tick.
 const TICK: Duration = Duration::from_millis(500);
 
-/// The button's state as this side knows it, plus whatever the platform
-/// needs to write it with.
 #[derive(Default)]
 struct Taskbar {
-    /// Whether the sampler is up, so the second job to start doesn't spawn
-    /// one of its own.
     watching: bool,
-    /// The whole percent last written out, `None` for nothing running,
-    /// which is also where this starts, so an idle app never writes at all.
+    /// `None` for nothing running, so an idle app never writes.
     pushed: Option<u8>,
-    /// The connection task's end of the wire, stood up on the first write.
     #[cfg(target_os = "linux")]
     unity: Option<async_channel::Sender<Push>>,
-    /// The taskbar COM object, created on the first write and held for the
-    /// session. `Some(None)` means it wouldn't create and we stopped asking.
+    /// `Some(None)`: creation failed and we stopped asking.
     #[cfg(target_os = "windows")]
     list: Option<Option<windows::Win32::UI::Shell::ITaskbarList3>>,
 }
 
 impl Global for Taskbar {}
 
-/// Start the sampler if it isn't already up. Called wherever a job starts;
-/// the loop ends on its own once the last one stops, after the write that
-/// clears the button.
+/// Start the sampler if it isn't up. It ends itself after clearing the button.
 pub(crate) fn watch(cx: &mut App) {
     if cx.default_global::<Taskbar>().watching {
         return;
     }
     cx.default_global::<Taskbar>().watching = true;
     cx.spawn(async move |cx| {
-        // A tick in rather than right now: this is called from inside the
-        // job's own start, where the counts it would read are still being
-        // put together.
+        // A tick in: the caller is mid-start and its counts aren't built yet.
         loop {
             cx.background_executor().timer(TICK).await;
             if !matches!(cx.update(sync), Ok(true)) {
@@ -75,13 +52,9 @@ pub(crate) fn watch(cx: &mut App) {
     .detach();
 }
 
-/// Follow a library's scans. A scan is the one job that never touches the
-/// tasks window's ticker, so the sampler is started off the catalog's own
-/// event instead.
-///
-/// The launch catch-up scan starts inside `Library::new`, before anything
-/// can be subscribed to it, so a library that's already scanning gets the
-/// sampler here rather than waiting for the next one.
+/// Scans never touch the tasks window's ticker, so the catalog's event starts
+/// the sampler. The launch scan starts inside `Library::new`, before anything
+/// can subscribe, hence the check up front.
 pub(crate) fn follow(library: &Entity<Library>, cx: &mut App) {
     if library.read(cx).scanning() {
         watch(cx);
@@ -94,15 +67,11 @@ pub(crate) fn follow(library: &Entity<Library>, cx: &mut App) {
     .detach();
 }
 
-/// Read what's running and write the button if the picture moved. Returns
-/// whether anything is still going, which keeps the sampler alive.
-///
-/// Runs off the sampler's own update, so nothing is mid-update and the
-/// Windows arm can take a window out of its slot for the handle.
+/// Returns whether anything is still running. Runs off the sampler's own
+/// update, so the Windows arm can take a window out of its slot.
 fn sync(cx: &mut App) -> bool {
     let percent = crate::tasks_window::aggregate(cx).map(|(done, total)| match total {
-        // Still working out what there is to do. Zero rather than nothing,
-        // the button says busy, it just can't say how far yet.
+        // Busy but no total yet: zero rather than nothing.
         0 => 0,
         total => (done * 100 / total).min(100) as u8,
     });
@@ -115,29 +84,20 @@ fn sync(cx: &mut App) -> bool {
     percent.is_some()
 }
 
-/// What the connection task is told to do. The clear includes an ack because
-/// the one at quit has to go out before the process does.
+/// The clear carries an ack: the one at quit has to land before the process exits.
 #[cfg(target_os = "linux")]
 enum Push {
     Set(Option<u8>),
     Clear(async_channel::Sender<()>),
 }
 
-/// Where the signal goes out from. Consumers match on the interface and the
-/// member rather than the path, so this only has to be stable and ours; the
-/// convention is the app's own id under the launcher entry tree.
+/// Consumers match the interface and member, not the path; it only has to be stable.
 #[cfg(target_os = "linux")]
 const PATH: &str = "/com/canonical/unity/launcherentry/rox";
 
-/// Which launcher entry the update is about, matched against the installed
-/// desktop file.
 #[cfg(target_os = "linux")]
 const APP_URI: &str = "application://rox.desktop";
 
-/// Hand the write to the connection task, standing one up on the first
-/// call. Nothing waits here: the send is into an unbounded channel and the
-/// emit happens on the background executor, the same discipline the tray
-/// and the media keys keep.
 #[cfg(target_os = "linux")]
 fn publish(percent: Option<u8>, cx: &mut App) {
     let tx = match cx.default_global::<Taskbar>().unity.clone() {
@@ -146,9 +106,7 @@ fn publish(percent: Option<u8>, cx: &mut App) {
             let (tx, rx) = async_channel::unbounded();
             cx.background_executor().spawn(serve(rx)).detach();
             cx.default_global::<Taskbar>().unity = Some(tx.clone());
-            // The launcher remembers the last thing it was told, so quitting
-            // with a bar up would leave one showing on a closed app. Only
-            // worth arming once there's something to take back down.
+            // The launcher keeps the last value, so clear the bar on quit.
             cx.on_app_quit(|cx| {
                 let tx = cx.default_global::<Taskbar>().unity.clone();
                 async move {
@@ -168,8 +126,6 @@ fn publish(percent: Option<u8>, cx: &mut App) {
     let _ = tx.try_send(Push::Set(percent));
 }
 
-/// Own the bus connection and write every update in order. Ends when the
-/// app drops the sending half.
 #[cfg(target_os = "linux")]
 async fn serve(rx: async_channel::Receiver<Push>) {
     let conn = zbus::Connection::session().await;
@@ -184,17 +140,14 @@ async fn serve(rx: async_channel::Receiver<Push>) {
         if let Ok(conn) = &conn {
             emit(conn, percent).await;
         }
-        // The quit path is waiting on this; a bus that never came up still
-        // has to let it go.
+        // The quit path waits on this, even when the bus never came up.
         if let Some(ack) = ack {
             let _ = ack.send(()).await;
         }
     }
 }
 
-/// One LauncherEntry update out on the session bus. Plasma, Unity, and
-/// GNOME's Dash to Dock draw these; stock GNOME ignores them, so there the
-/// button stays as it was.
+/// Plasma, Unity, and Dash to Dock draw these; stock GNOME ignores them.
 #[cfg(target_os = "linux")]
 async fn emit(conn: &zbus::Connection, percent: Option<u8>) {
     use zbus::zvariant::Value;
@@ -205,8 +158,6 @@ async fn emit(conn: &zbus::Connection, percent: Option<u8>) {
         ),
         ("progress-visible", Value::from(percent.is_some())),
     ]);
-    // A broadcast, so there's no name to own and nobody to be missing: it
-    // goes out whether a launcher is listening or not.
     let sent = conn
         .emit_signal(
             None::<&str>,
@@ -221,18 +172,14 @@ async fn emit(conn: &zbus::Connection, percent: Option<u8>) {
     }
 }
 
-/// Write the bar into the taskbar button. The button has to exist for this
-/// to work, which it does by the time a job can have been started from a
-/// window. Known limitation: an Explorer restart rebuilds every button and
-/// broadcasts TaskbarButtonCreated, which nothing here listens for, so the
-/// bar comes back on the next percent rather than immediately.
+/// Known limitation: an Explorer restart broadcasts TaskbarButtonCreated,
+/// which nothing listens for, so the bar returns on the next percent.
 #[cfg(target_os = "windows")]
 fn publish(percent: Option<u8>, cx: &mut App) {
     use windows::Win32::UI::Shell::{TBPF_NOPROGRESS, TBPF_NORMAL};
 
-    // The bar belongs to a window, so it goes on whichever workspace is in
-    // front, the same one the tasks window reads its scan off. Asked for
-    // before the COM object so a windowless run never creates one.
+    // The front workspace's button. Checked before the COM object so a
+    // windowless run never creates one.
     let Some((handle, _)) = rox_panel_api::windows::front_workspace(cx) else {
         return;
     };
@@ -264,9 +211,7 @@ fn publish(percent: Option<u8>, cx: &mut App) {
     }
 }
 
-/// The taskbar COM object, created on the thread that owns the windows and
-/// the apartment gpui already initialized. `None` when it wouldn't come up,
-/// which leaves the app running without a bar rather than retrying forever.
+/// `None` leaves the app without a bar rather than retrying forever.
 #[cfg(target_os = "windows")]
 fn create_list() -> Option<windows::Win32::UI::Shell::ITaskbarList3> {
     use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
@@ -276,19 +221,17 @@ fn create_list() -> Option<windows::Win32::UI::Shell::ITaskbarList3> {
         let list: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_ALL)
             .inspect_err(|err| log::warn!("taskbar: no taskbar list, no progress bar: {err}"))
             .ok()?;
-        // ITaskbarList needs this before anything else on the interface.
+        // ITaskbarList needs this before any other call.
         list.HrInit().ok()?;
         Some(list)
     }
 }
 
-/// The Win32 handle of the window the bar is drawn on, pulled off the gpui
-/// window the same way the media keys pull theirs.
 #[cfg(target_os = "windows")]
 fn window_hwnd(window: &gpui::Window) -> Option<windows::Win32::Foundation::HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    // gpui's inherent Window::window_handle() returns AnyWindowHandle and
-    // shadows the trait, so reach for the raw handle through the trait.
+    // gpui's inherent window_handle() shadows the trait method, so call it
+    // through the trait.
     match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(windows::Win32::Foundation::HWND(
             handle.hwnd.get() as *mut std::ffi::c_void
@@ -297,8 +240,5 @@ fn window_hwnd(window: &gpui::Window) -> Option<windows::Win32::Foundation::HWND
     }
 }
 
-/// macOS keeps this sort of thing on the dock tile, which is its own
-/// surface and its own decision. Nothing is wired there, so the sampler
-/// runs and the write goes nowhere.
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn publish(_percent: Option<u8>, _cx: &mut App) {}

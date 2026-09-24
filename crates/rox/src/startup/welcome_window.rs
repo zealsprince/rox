@@ -1,9 +1,7 @@
-//! The welcome window: one OS window opened over the primary workspace on
-//! the first launch (no settings file yet), and any time from the
-//! Application menu's Welcome entry. Two stages, each filling the window on
-//! its own: a card per thing worth knowing, every one a pointer rather than
-//! a manual, then the quick start, the shipped workspaces as picture tiles
-//! with one click dressing the main window in a whole look.
+//! The welcome window, opened on the first launch and from the Application
+//! menu. Two stages: cards pointing at what's worth knowing, then the quick
+//! start, the shipped workspaces as picture tiles that apply a whole look in
+//! one click.
 
 use std::time::Duration;
 
@@ -23,15 +21,10 @@ use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ui::{SECTION_GAP, Seg, chord, kbd_line, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
-/// The open welcome window, if any: opening again focuses it instead of
-/// stacking a second one, same as the settings window.
 struct OpenWelcome(WindowHandle<Root>);
 
 impl Global for OpenWelcome {}
 
-/// Open the welcome window, or bring the open one to the front. The state
-/// holds the library the add-folder button scans into and the shared
-/// art bake for the backdrop.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenWelcome>() {
         let handle = open.0;
@@ -42,8 +35,7 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    // Wide enough for three cards across without any of them turning into a
-    // column of short lines, which is the shelf's three tile columns too.
+    // Wide enough for three cards across without squeezing their copy.
     let bounds = Bounds::centered(None, size(px(1240.), px(660.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
@@ -55,9 +47,6 @@ pub fn open(state: AppState, cx: &mut App) {
     cx.set_global(OpenWelcome(handle));
 }
 
-/// The tour's stages, in the order they're taken. Two of them: a headline
-/// over the cards, then the shelf, which is the only one with enough in it
-/// to scroll.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Welcome,
@@ -67,7 +56,6 @@ enum Stage {
 const STAGES: [Stage; 2] = [Stage::Welcome, Stage::Workspaces];
 
 impl Stage {
-    /// The stage's headline.
     fn title(self) -> SharedString {
         match self {
             Stage::Welcome => rox_i18n::t!("welcome-stage-title-welcome"),
@@ -75,7 +63,6 @@ impl Stage {
         }
     }
 
-    /// The line under the headline, the one thing the stage is about.
     fn lead(self) -> SharedString {
         match self {
             Stage::Welcome => rox_i18n::t!("welcome-stage-lead-welcome"),
@@ -85,58 +72,34 @@ impl Stage {
 }
 
 struct WelcomeWindow {
-    /// The shared state: the library the add-folder button scans into and
-    /// the art bake the backdrop paints from.
     state: AppState,
     backdrop: WindowBackdrop,
-    /// The shipped workspaces as the quick-start tiles show them: name, the
-    /// author their card credits, and when previews ship, their asset paths
-    /// and aspect ratios per theme side. Read once on open; the render loop
-    /// must not reparse the embedded bundles per frame. Render picks the
-    /// live theme's side, so the tiles follow a flip while the window is up.
+    /// Read once on open, so render never reparses the embedded bundles.
     workspaces: Vec<Tile>,
-    /// The tile the pointer is over, if any: its preview shows in color
-    /// while the rest are desaturated.
     hovered_tile: Option<usize>,
-    /// The tile grid's laid-out width, measured by a probe canvas each
-    /// paint. The grid splits it into however many tile columns fit, and
-    /// the hover pan's pixel math needs the resulting tile width. Seeded
-    /// with the default window's share; the first paint corrects it.
+    /// Measured by a probe canvas each paint, for the hover pan's pixel math.
+    /// The seed is corrected by the first paint.
     tiles_width: f32,
-    /// Which stage of [`STAGES`] is up, the tour's whole position.
     stage: usize,
-    /// The stored language pick, copied from settings the way the
-    /// settings window copies it: the tour is often the first thing a
-    /// new install shows, so the switch is right on it.
     language: Option<String>,
-    /// Where the AppImage's menu entry stands, read on open and again once
-    /// the offer is answered: a fresh AppImage shows the offer above the
-    /// cards, and every other channel reads Unavailable, which hides it.
+    /// Read on open and again once the offer is answered.
     menu: MenuStatus,
-    /// Why the last attempt to write the entry failed, shown in the offer's
-    /// place until the next attempt.
     menu_error: Option<String>,
-    /// The stage body's scroll position, shared with its scrollbar. One
-    /// handle for every stage, wound back to the top on each step so a long
-    /// stage can't hand the next one its own offset.
+    /// One handle for every stage, reset on each step.
     scroll: ScrollHandle,
-    /// The window root's own focus. Nothing here takes typing; it just
-    /// puts the arrow keys on the dispatch path.
+    /// Nothing here takes typing; this puts the arrow keys on the dispatch path.
     focus: FocusHandle,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
+    /// This window pumps its own frames, so the backdrop needs its own wake.
     _backdrop_changed: Subscription,
 }
 
 impl WelcomeWindow {
     fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        // The tour steps on the arrow keys, and nothing else in the window
-        // uses the keyboard, so the root takes focus as it opens.
         let focus = cx.focus_handle();
         window.focus(&focus);
-        // A header that doesn't parse falls back to the frame's own
-        // aspect, which renders the picture static.
+        // An unparseable header falls back to the frame's aspect, which renders
+        // the picture static.
         fn sized(path: SharedString) -> (SharedString, f32) {
             let aspect = rox_design::assets::png_aspect(&path).unwrap_or(FRAME_ASPECT);
             (path, aspect)
@@ -146,8 +109,6 @@ impl WelcomeWindow {
             .map(|entry| Tile {
                 name: SharedString::from(entry.name.clone()),
                 title: entry.title.clone(),
-                // The list already parsed the bundle to build itself, so the
-                // credit costs nothing on top.
                 author: entry.author.map(SharedString::from),
                 previews: TilePreviews {
                     dark: entry.preview_dark.map(sized),
@@ -171,10 +132,6 @@ impl WelcomeWindow {
         }
     }
 
-    /// The tour's own language switch, the settings row's exact pipe:
-    /// the pick applies to every window live and persists. The tour's
-    /// copy follows as its strings extract; the picker itself shows the
-    /// new language right away.
     fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
         set_language(language.as_deref(), cx);
         self.language = language.clone();
@@ -182,24 +139,18 @@ impl WelcomeWindow {
         cx.notify();
     }
 
-    /// The offer's yes: write the entry. The banner goes away on success
-    /// and turns into the reason on failure, buttons still up for a retry.
     fn add_menu_entry(&mut self, cx: &mut Context<Self>) {
         self.menu_error = desktop_integration::install().err();
         self.menu = desktop_integration::status();
         cx.notify();
     }
 
-    /// The offer's no, kept in the session file so the window doesn't ask
-    /// again; the settings row stays as the way back.
     fn decline_menu_entry(&mut self, cx: &mut Context<Self>) {
         Settings::update(|s| s.session.appimage_menu_declined = true);
         self.menu = MenuStatus::Declined;
         cx.notify();
     }
 
-    /// The AppImage offer, above the cards while it's unanswered: the
-    /// banner says what gets written, the two buttons answer it.
     fn menu_offer(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.menu != MenuStatus::NotOffered {
             return None;
@@ -245,15 +196,12 @@ impl WelcomeWindow {
         )
     }
 
-    /// Move the tour by `delta` stages, stopping at either end.
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         let last = STAGES.len() as isize - 1;
         let next = (self.stage as isize + delta).clamp(0, last) as usize;
         self.go_to(next, cx);
     }
 
-    /// Go to a stage: the body starts at the top, and no tile is hovered
-    /// until the pointer moves onto one.
     fn go_to(&mut self, stage: usize, cx: &mut Context<Self>) {
         if stage == self.stage {
             return;
@@ -265,42 +213,30 @@ impl WelcomeWindow {
     }
 }
 
-/// A section's body line, the pages' muted copy register.
 fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
 }
 
-/// What a card asks for before its row shares out what's left. The window
-/// opens wide enough to hold three of these plus their gaps, and the card's
-/// copy is measured at this width, which keeps a card as tall as its own
-/// text.
+/// The card's copy is measured at this basis, which keeps a card as tall as
+/// its own text.
 const CARD_BASIS: f32 = 300.0;
 
-/// The narrowest a tile column gets before the shelf drops one.
 const MIN_TILE_W: f32 = 400.0;
 
-/// The most tile columns the quick-start shelf ever lays out. Past three
-/// the shelf reads as a contact sheet rather than a gallery, and a window
-/// with room for more spends it on bigger pictures instead.
+/// Past three the shelf reads as a contact sheet; more room goes to bigger
+/// pictures instead.
 const MAX_TILE_COLUMNS: f32 = 3.0;
 
-/// The widest a tile gets. The shipped previews are about 1400px across, so
-/// this is roughly where a fullscreen shelf starts upscaling them on a 2x
-/// display; a window wider than three of these centers its grid.
+/// The shipped previews are about 1400px across, so this is roughly where a
+/// fullscreen shelf starts upscaling them on a 2x display.
 const MAX_TILE_W: f32 = 900.0;
 
-/// One card on a stage: an icon and name over whatever the card is telling
-/// you, on the panel surface so it sits proud of the page. Cards share a
-/// row and split it evenly, so a stage reads as a few things beside each
-/// other rather than one column of copy.
 fn card(icon: &'static str, title: impl Into<SharedString>, body: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_col()
-        // Grow and shrink from a real basis rather than from zero. The row
-        // wraps on the basis and the copy is measured at it, so a card
-        // comes out as tall as its own text; the zero floor keeps a long
-        // line from setting the card's width instead.
+        // Grow from a real basis rather than zero, so a card comes out as tall as
+        // its own text and a long line can't set its width.
         .flex_grow()
         .flex_shrink()
         .flex_basis(px(CARD_BASIS))
@@ -329,11 +265,8 @@ fn card(icon: &'static str, title: impl Into<SharedString>, body: impl IntoEleme
         .child(body)
 }
 
-/// One row of cards, split evenly across the stage. A row rather than a
-/// wrapping grid: a wrapped flex line takes its height from the container
-/// instead of from its own cards, which leaves the first row of a grid
-/// stretched to half the page. No cross-axis alignment, so the row stretches
-/// its cards to the tallest of them and a row reads as a row.
+/// A row rather than a wrapping grid: a wrapped flex line takes its height
+/// from the container, which stretches the first row to half the page.
 fn cards(cards: impl IntoIterator<Item = Div>) -> Div {
     div()
         .flex()
@@ -342,13 +275,9 @@ fn cards(cards: impl IntoIterator<Item = Div>) -> Div {
         .children(cards)
 }
 
-/// The width of the scrollbar's lane. The bar is an overlay, so a column
-/// keeps this much clear on its right or the thumb ends up under the content.
 const SCROLL_LANE: f32 = 16.0;
 
-/// A scrolling column paired with its scrollbar, the same overlay the about
-/// window and the settings pages use. The caller sizes the wrapper into its
-/// page and keeps the lane clear inside the column.
+/// The caller keeps [`SCROLL_LANE`] clear inside the column.
 fn scroll_lane(column: impl IntoElement, scroll: &ScrollHandle) -> Div {
     div().relative().child(column).child(
         div()
@@ -358,29 +287,19 @@ fn scroll_lane(column: impl IntoElement, scroll: &ScrollHandle) -> Div {
     )
 }
 
-/// One quick-start tile as the window holds it: what the workspace is
-/// called, who made it when their card says, and the pictures it shows.
 struct Tile {
-    /// The bundle's own name, which applying it asks for.
     name: SharedString,
-    /// What the tile reads, translated for the shipped bundles that have
-    /// a word rather than a proper name for a title.
     title: SharedString,
     author: Option<SharedString>,
     previews: TilePreviews,
 }
 
-/// One tile's preview pair: the asset path and aspect ratio per theme
-/// side, resolved once on open. Both sides fall back to a bundle's plain
-/// unthemed picture in the asset lookup, so a pair is either both set or
-/// both None until themed shots ship.
 struct TilePreviews {
     dark: Option<(SharedString, f32)>,
     light: Option<(SharedString, f32)>,
 }
 
 impl TilePreviews {
-    /// The side a theme mode shows.
     fn pick(&self, mode: palette::Mode) -> Option<(SharedString, f32)> {
         match mode {
             palette::Mode::Dark => self.dark.clone(),
@@ -389,16 +308,10 @@ impl TilePreviews {
     }
 }
 
-/// The tile frame's shape: every preview crops to a 16:9 window of the
-/// column's width, so the column reads as a uniform reel whatever each
-/// screenshot's own proportions are.
+/// Every preview crops to 16:9 of the column's width, so the shelf reads as
+/// a uniform reel.
 const FRAME_ASPECT: f32 = 16. / 9.;
 
-/// A quick-start tile: the workspace's preview picture over its name, one
-/// click applying the whole look to the main window. The tile fills the
-/// column and `width` is that column's measured width, which the pixel
-/// math for the hover pan needs. A workspace without a picture keeps the
-/// tile's shape with a quiet placeholder block.
 fn workspace_tile(
     name: SharedString,
     author: Option<SharedString>,
@@ -417,19 +330,14 @@ fn workspace_tile(
         .overflow_hidden()
         .bg(palette::bg_control())
         .map(|d| match preview {
-            // The preview reads in color only under the pointer; the rest
-            // are desaturated so the hovered look stands out. The picture
-            // renders at its real scaled height with the top edge showing,
-            // and hovering pans it down its full extent and back; the
-            // raised-cosine easing starts and ends at that resting top, so
-            // the drift picks up and loops without a jump.
+            // The picture renders at its real height and the hover pans down and back.
+            // The raised-cosine easing starts and ends at the top, so the loop never
+            // jumps.
             Some((path, aspect)) if width / aspect > frame_height => {
                 let height = (width / aspect).round();
                 let pan = height - frame_height;
-                // The element takes the picture's exact aspect, so Fill
-                // paints it edge to edge. Cover's ratio comparison would
-                // sit on a knife edge here and flip its centering between
-                // frames, a horizontal jitter while panning; the offset
+                // Fill at the picture's exact aspect, not Cover: Cover's ratio check sits
+                // on a knife edge here and jitters horizontally while panning. The offset
                 // rounds to whole pixels for the same reason.
                 let frame = move |offset: f32| {
                     img(path.clone())
@@ -443,8 +351,7 @@ fn workspace_tile(
                         .rounded(tokens::RADIUS)
                 };
                 if hovered {
-                    // Sweep time scales with the distance so a tall
-                    // portrait shot drifts at the same pace as a squat one.
+                    // Sweep time scales with distance, so every shot drifts at the same pace.
                     let duration = Duration::from_secs_f32((pan / 12.).clamp(4., 16.));
                     d.child(
                         frame(0.).with_animation(
@@ -459,8 +366,6 @@ fn workspace_tile(
                     d.child(frame(0.))
                 }
             }
-            // A picture wider than the frame, or one whose header didn't
-            // parse: nothing to pan through, a static cover crop.
             Some((path, _)) => d.child(
                 img(path)
                     .size_full()
@@ -487,8 +392,6 @@ fn workspace_tile(
         .on_mouse_down(MouseButton::Left, on_click)
         .child(picture)
         .child(
-            // Somebody made this look; their name goes on the same line as
-            // the workspace's, quieter and on the same baseline.
             div()
                 .flex()
                 .flex_row()
@@ -507,8 +410,6 @@ fn workspace_tile(
 }
 
 impl WelcomeWindow {
-    /// The stage's content under its headline. Every stage builds one of
-    /// these; the shell around them is the same.
     fn stage_body(&self, stage: Stage, cx: &mut Context<Self>) -> AnyElement {
         match stage {
             Stage::Welcome => div()
@@ -631,15 +532,11 @@ impl WelcomeWindow {
         }
     }
 
-    /// The quick-start shelf: every shipped workspace as a picture tile,
-    /// wrapping into however many columns the window affords. Applying goes
-    /// through the frontmost workspace window at app level, since this
-    /// window has no workspace of its own.
+    /// Applying goes through the frontmost workspace, since this window has
+    /// none of its own.
     fn shelf(&self, cx: &mut Context<Self>) -> AnyElement {
-        // The tiles size to the shelf but the pan math needs pixels, so a
-        // probe measures the laid-out width every paint and wakes the view
-        // when a resize moves it. Next frame renders at the corrected
-        // width; one frame of lag during a live drag.
+        // The pan math needs pixels, so a probe measures the laid-out width every
+        // paint and wakes the view when it moves. One frame of lag during a drag.
         let tiles_width = self.tiles_width;
         let entity = cx.entity().downgrade();
         let probe = canvas(
@@ -662,19 +559,13 @@ impl WelcomeWindow {
         .absolute()
         .inset_0();
 
-        // The measured width splits into however many tile columns fit at a
-        // comfortable size, so a narrow window drops to one or two across
-        // instead of squeezing three. Up to the column cap the tiles take
-        // the whole width between them; the tile cap only applies on a
-        // window wider than the shelf has any use for.
         let gap = f32::from(tokens::SPACE_SM);
         let columns = (tiles_width / MIN_TILE_W)
             .floor()
             .clamp(1., MAX_TILE_COLUMNS);
         let tile_width = (((tiles_width - gap * (columns - 1.)) / columns).min(MAX_TILE_W)).floor();
-        // The grid is only ever as wide as the columns it holds, so a window
-        // wider than that leaves the slack at the edge instead of letting
-        // flex wrap a fourth tile in behind the cap's back.
+        // Size the grid to its columns, or flex would wrap a fourth tile in past
+        // the cap.
         let grid_width = tile_width * columns + gap * (columns - 1.);
 
         div()
@@ -682,10 +573,6 @@ impl WelcomeWindow {
             .flex_col()
             .gap(tokens::SPACE_SM)
             .child(
-                // The probe measures the room the shelf has; the grid inside
-                // takes only what the column cap allows, centered in it so a
-                // window wider than the cap splits the slack instead of
-                // pushing the gallery to one side.
                 div()
                     .relative()
                     .w_full()
@@ -696,8 +583,6 @@ impl WelcomeWindow {
                             .flex()
                             .flex_row()
                             .flex_wrap()
-                            // Wrapped flex lines stretch apart to fill the
-                            // shelf by default; pack them at the top instead.
                             .content_start()
                             .w(px(grid_width))
                             .gap(tokens::SPACE_SM)
@@ -711,9 +596,6 @@ impl WelcomeWindow {
                                     tile_width,
                                     cx.listener(move |_, _, window, cx| {
                                         crate::workspace::apply_workspace_to_front(&apply, cx);
-                                        // Picking a look is the end of the
-                                        // tour, so close out to the freshly
-                                        // dressed window.
                                         window.remove_window();
                                     }),
                                 )
@@ -740,8 +622,6 @@ impl WelcomeWindow {
             .into_any_element()
     }
 
-    /// The stage row in the footer: one dot per stage, the one that's up
-    /// lit, any of them a click away.
     fn dots(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
@@ -771,9 +651,6 @@ impl WelcomeWindow {
 
 impl Render for WelcomeWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The window renders under the player's art tint like the
-        // workspace it opened over, and claims the widget theme while it
-        // holds focus, so the tour reads in the playing track's colors.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         let index = self.stage;
@@ -786,8 +663,6 @@ impl Render for WelcomeWindow {
                 .flex()
                 .flex_col()
                 .gap(tokens::SPACE_XS)
-                // The logo leads the tour and then gets out of the way; the
-                // stages after it are all copy and controls.
                 .when(first, |d| {
                     d.child(
                         svg()
@@ -800,10 +675,8 @@ impl Render for WelcomeWindow {
                 .child(div().text_lg().child(stage.title()))
                 .child(line(stage.lead()));
 
-            // The language switch is in the first page's top right: the
-            // tour is the first thing a fresh install shows, and nobody
-            // should have to find the settings window in a language that
-            // isn't theirs to leave it.
+            // The language switch sits on the first page: nobody should have to find
+            // the settings window in a language that isn't theirs.
             let heading = div()
                 .flex()
                 .flex_row()
@@ -826,8 +699,6 @@ impl Render for WelcomeWindow {
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll)
-                // The content stops short of the scrollbar's lane rather
-                // than running under the thumb.
                 .pr(px(SCROLL_LANE))
                 .child(self.stage_body(stage, cx));
 
@@ -893,9 +764,7 @@ impl Render for WelcomeWindow {
                 .flex()
                 .flex_col()
                 .track_focus(&self.focus)
-                // The arrows step the tour; anything else the window sees is
-                // somebody else's. Modified keystrokes pass through so the
-                // app's own chords keep working over the top.
+                // Modified keystrokes pass through so the app's chords keep working.
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     if event.keystroke.modifiers.modified() {
                         return;
@@ -910,18 +779,11 @@ impl Render for WelcomeWindow {
                 .text_color(palette::text_bright())
                 .text_sm()
                 .when_some(app_font(), |d, font| d.font_family(font))
-                // The backdrop paints first, under the page; without it
-                // translucent surfaces would sink into the window's own
-                // black instead of the playing track's art.
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
                 .child(
                     div()
                         .flex_1()
                         .min_h_0()
-                        // The page's own surface over the backdrop, the same
-                        // one the settings pages use: opaque at full
-                        // surface opacity, so the art only reads through as
-                        // the surfaces thin, never straight under the copy.
                         .bg(palette::bg_elevated())
                         .p(tokens::SPACE_MD)
                         .child(page),

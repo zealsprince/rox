@@ -1,40 +1,26 @@
-//! Whether this machine has the fonts to draw the library's Japanese,
-//! Chinese and Korean text quickly, for the warning under the Appearance
-//! page's font row.
+//! Whether this machine has the fonts to draw the library's CJK text
+//! quickly, for the warning under the Appearance page's font row.
 //!
-//! On Linux gpui shapes text with cosmic-text, and cosmic-text finds a
-//! glyph the UI font doesn't have by trying the Noto Sans CJK family named
-//! for that script. It only takes a face at exactly the weight asked for,
-//! though. The variable Noto Sans CJK that NixOS and Fedora install by
-//! default lists itself at weight 100, its Thin default, so it never
-//! matches a regular-weight request. cosmic-text then tries every installed
-//! face in turn, shaping the text again with each one, until one happens to
-//! cover it. Measured on a desktop with 3,800 font faces, that's about
-//! 2.5ms per library cell against 85µs for a Latin one, and a scroll step
-//! that brings in a few Japanese rows blows the frame. The face it lands on
-//! there is GNU Unifont.
+//! On Linux, cosmic-text falls back to the Noto Sans CJK family for the
+//! script but only takes a face at exactly the requested weight. The
+//! variable Noto Sans CJK that NixOS and Fedora ship lists itself at weight
+//! 100, so it never matches, and cosmic-text reshapes against every installed
+//! face until one covers the text. Measured on 3,800 faces: about 2.5ms per
+//! library cell against 85µs for Latin, enough to blow a scroll frame.
 //!
-//! rox can't fix this from its side. gpui draws a variable font at its
-//! default instance, so forcing the variable face to match would draw the
-//! text Thin. The static fonts carry a real Regular, which is the fix, and
-//! all this module does is say when it's missing.
-//!
-//! The check mirrors cosmic-text 0.14's rule rather than asking gpui, which
-//! has no way to report which fallback it used: the same family per
-//! script, the same exact-weight match. It reads its own copy of the font
-//! database, so it runs off the UI thread. macOS and Windows fall back
-//! through the OS and never hit this.
+//! rox can't fix it: gpui draws a variable font at its default instance, so
+//! forcing the match would draw Thin. The static fonts are the fix; this
+//! only reports when they're missing, mirroring cosmic-text 0.14's rule.
+//! macOS and Windows fall back through the OS and never hit this.
 
 use rox_library::projection::Projection;
 use rox_romanize::CjkScripts;
 
-/// Every script the library's titles and names are written in. Stops
-/// once all three turn up, so a big CJK library doesn't walk every row.
+/// Stops once all three scripts turn up.
 pub fn library_scripts(projection: &Projection) -> CjkScripts {
     let mut scripts = CjkScripts::default();
 
-    // The interned tables first: one entry per distinct name, so they
-    // answer for most libraries before the titles are touched.
+    // The interned tables answer for most libraries before any title is read.
     for table in [
         &projection.artists,
         &projection.album_artists,
@@ -62,10 +48,8 @@ pub fn library_scripts(projection: &Projection) -> CjkScripts {
     scripts
 }
 
-/// Which Noto Sans CJK family cosmic-text 0.14 falls back to for Han, by
-/// the system locale string exactly as it matches it. So "ja" gets the
-/// Japanese forms, but "ja-JP" and every non-CJK locale get Simplified
-/// Chinese.
+/// cosmic-text 0.14's Han family, matched on the whole locale string: "ja"
+/// gets Japanese forms, "ja-JP" gets Simplified Chinese.
 fn han_family(locale: &str) -> &'static str {
     match locale {
         "ja" => "Noto Sans CJK JP",
@@ -76,7 +60,6 @@ fn han_family(locale: &str) -> &'static str {
     }
 }
 
-/// The families these scripts fall back to under this locale.
 fn families(scripts: CjkScripts, locale: &str) -> Vec<&'static str> {
     let mut families = Vec::new();
 
@@ -95,9 +78,6 @@ fn families(scripts: CjkScripts, locale: &str) -> Vec<&'static str> {
     families
 }
 
-/// Whether some of the library's text will fall back slowly on this
-/// machine. False when the library has no CJK text at all, since then
-/// there's nothing to warn about.
 #[cfg(target_os = "linux")]
 pub fn fallback_missing(scripts: CjkScripts) -> bool {
     use fontdb::{Database, Stretch, Style, Weight};
@@ -106,16 +86,14 @@ pub fn fallback_missing(scripts: CjkScripts) -> bool {
         return false;
     }
 
-    // cosmic-text reads the locale the same way and makes the same
-    // default when there isn't one.
+    // cosmic-text's own locale read and default.
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_owned());
     let wanted = families(scripts, &locale);
 
     let mut db = Database::new();
     db.load_system_fonts();
 
-    // A face cosmic-text will accept for a regular-weight request: the
-    // family, upright, normal width, weight 400 on the nose.
+    // What cosmic-text accepts for a regular request: upright, normal width, weight 400 exactly.
     let usable = |family: &str| {
         db.faces().any(|face| {
             face.weight == Weight::NORMAL
@@ -146,8 +124,6 @@ mod tests {
         );
     }
 
-    /// cosmic-text matches the locale string whole, so a regional
-    /// Japanese locale still reads bare kanji as Simplified Chinese.
     #[test]
     fn han_follows_the_locale_string_exactly() {
         let han = CjkScripts::of("東京");

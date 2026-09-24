@@ -1,7 +1,5 @@
-//! The analysis passes on the Library page: acoustic similarity and tempo,
-//! each a switch, a save mode where there is one, and a progress line. The
-//! pass prompt's host side is here too, since every long pass that prompt
-//! starts reports back through it, ReplayGain's on the Audio page included.
+//! The acoustic and tempo passes on the Library page, and the pass prompt's
+//! host side, which every long pass reports back through.
 
 use super::*;
 
@@ -10,18 +8,16 @@ impl SettingsWindow {
         self.acoustic_analysis = on;
         Settings::update(move |s| s.acoustic_analysis = on);
         settings::set_acoustic_analysis(on, cx);
-        // Switching it off mid-pass stops the pass: it's the only thing that
-        // sanctioned the decoding in the first place.
+        // Switching it off stops a running pass: it's what sanctioned the
+        // decoding.
         if !on {
             embeddings::stop(cx);
         }
         cx.notify();
     }
 
-    /// The follow-the-watcher switch for the analysis pass,
-    /// [`Self::set_replay_gain_auto`]'s shape: on the way on it prices the
-    /// backlog through the prompt, and declining is a no to the switch too,
-    /// coming back through `pass_refused`.
+    /// On the way on, the prompt prices the backlog; declining turns the switch
+    /// back off through `pass_refused`.
     fn set_acoustic_auto(&mut self, on: bool, cx: &mut Context<Self>) {
         self.acoustic_auto = on;
         Settings::update(move |s| s.acoustic_auto = on);
@@ -32,17 +28,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Where an analyzed vector saves. Straight to the file: nothing holds a
-    /// live copy of it, and the pass reads it once when it starts, so a pass
-    /// already running keeps the destination it began with.
+    /// Straight to the file: the pass reads it once at start, so a running pass
+    /// keeps its destination.
     fn set_acoustic_save(&mut self, save: AcousticSave, cx: &mut Context<Self>) {
         self.acoustic_save = save;
         Settings::update(move |s| s.acoustic_save = save);
         cx.notify();
     }
 
-    /// The Library page's switch: run the built-in sketch, or the model the
-    /// ML Models page is offering.
     fn set_acoustic_uses_model(&mut self, on: bool, cx: &mut Context<Self>) {
         let id = if on {
             self.acoustic_ml_source.id().to_string()
@@ -53,13 +46,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Acoustic analysis, on the Library page because that's what it
-    /// describes: the switch, which extractor runs, and how far it has got.
-    ///
-    /// The extractor choice is two options rather than a list of every model,
-    /// because the shelf is on the ML Models page. This is a job picking a
-    /// tool off it, so the question here is only built-in or the model, and
-    /// which model is the other page's business.
+    /// Two options, built-in or the model, because the shelf lives on the ML
+    /// Models page.
     pub(super) fn acoustic_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let on = self.acoustic_analysis;
         let auto = self.acoustic_auto;
@@ -100,10 +88,9 @@ impl SettingsWindow {
                         }
                         .into(),
                     ),
-                    // Model is dimmed with nothing installed rather than
-                    // simply refused. Pressing it used to fall straight back
-                    // to Built-in, since the pick can't resolve, which looks
-                    // like a broken button rather than a missing download.
+                    // Dimmed rather than refused: with nothing installed the
+                    // pick falls back to Built-in, which reads as a broken
+                    // button.
                     panel::choices_gated(
                         &[
                             (rox_i18n::t!("settings-common-built-in"), false),
@@ -152,9 +139,6 @@ impl SettingsWindow {
 
     fn acoustic_note(&self) -> String {
         if let Some(job) = &self.acoustic_job {
-            // The running pass's own model, not the current pick: switching
-            // models mid-pass is possible, and the line should say what's
-            // actually being written.
             let running = self.label_for(
                 &job.model(),
                 rox_i18n::t_static("settings-library-acoustic-fallback"),
@@ -174,8 +158,6 @@ impl SettingsWindow {
                 total = total as u64
             )
             .to_string();
-            // The pass's own measured rate, which prices whatever worker
-            // count it's actually running with.
             if let Some(eta) = job.eta_secs() {
                 line.push_str(&rox_i18n::t!(
                     "tasks-time-left",
@@ -205,9 +187,7 @@ impl SettingsWindow {
         if coverage.total == 0 {
             return rox_i18n::t!("settings-analyze-nothing-scanned").to_string();
         }
-        // Named, because the count is per model: every model describes the
-        // library separately, and a line that said "142 of 208" without
-        // saying whose would read as the library's own progress.
+        // Named, because the count is per model.
         let label = self.acoustic_source.label();
         if coverage.missing() == 0 {
             return rox_i18n::t!(
@@ -224,10 +204,8 @@ impl SettingsWindow {
             total = coverage.total as u64
         )
         .to_string();
-        // Priced off what the last pass measured on this machine for this
-        // model, scaled to the worker setting, so dragging the slider shows
-        // what it buys. Quiet until a pass has measured anything: a number
-        // invented from constants would be wrong on every machine but one.
+        // Quiet until a pass has measured this machine: a number from constants
+        // would be wrong everywhere.
         if let Some(estimate) = self.acoustic_estimate(coverage.missing()) {
             line.push_str(&format!(
                 " {}",
@@ -241,17 +219,11 @@ impl SettingsWindow {
         line
     }
 
-    /// A rough cost for analyzing `missing` tracks at the current worker
-    /// setting, off the pace the last pass over this model measured here.
-    /// None until one has.
     fn acoustic_estimate(&self, missing: usize) -> Option<String> {
         let pace = *self.acoustic_pace.get(self.acoustic_source.id())?;
         rox_core::pace::estimate(pace, missing as u64, self.acoustic_workers)
     }
 
-    /// Start the pass, or stop the one running. Inert with nothing missing,
-    /// and while the library is scanning, since a scan rewrites the very
-    /// rows the pass reads.
     fn acoustic_control(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(job) = &self.acoustic_job {
             let stopping = job.stopping();
@@ -267,9 +239,8 @@ impl SettingsWindow {
             )
             .into_any_element();
         }
-        // Also inert while a model is coming down: the pass would load the
-        // half-written file, and the download is the thing that has to
-        // finish first anyway.
+        // Also inert while a model downloads: the pass would load the
+        // half-written file.
         let idle = self.acoustic_coverage.missing() == 0
             || self.library.read(cx).busy().is_some()
             || self.model_job.is_some();
@@ -285,14 +256,8 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Copy the running pass into the section, `poll_measuring`'s twin.
-    /// Stops itself once the pass clears the global, and refreshes the
-    /// coverage once on the way out so the line ends on the final count.
-    ///
-    /// Covers the model download on the same timer rather than on one of its
-    /// own: the two never run together (the analyze button is inert while a
-    /// download runs), and one loop means one place that decides when the
-    /// section has stopped moving.
+    /// Also covers the model download: the two never run together, so one loop
+    /// decides when the section stops moving.
     pub(super) fn poll_analyzing(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
@@ -302,21 +267,15 @@ impl SettingsWindow {
                     this.acoustic_job = embeddings::progress(cx);
                     let was_downloading = this.model_job.is_some();
                     this.model_job = embeddings::models::progress(cx);
-                    // Only the pass moves the count, so it's re-read on the tick
-                    // the pass ends rather than on every tick: this loop also runs
-                    // for the whole length of a model download, and the count is a
-                    // walk of the tracks table on the UI thread.
+                    // The count is a walk of the tracks table, so only re-read
+                    // when the pass ends.
                     if was_analyzing && this.acoustic_job.is_none() {
                         this.acoustic_coverage = this
                             .library
                             .read(cx)
                             .acoustic_coverage(this.acoustic_source.id());
-                        // The pass that just ended wrote what it measured per
-                        // track; pick it up so the next estimate prices off it.
                         this.acoustic_pace = Settings::load().session.acoustic_pace.clone();
                     }
-                    // A finished download changed what's on disk, so the sizes
-                    // and the install marks have to be re-walked once.
                     if was_downloading && this.model_job.is_none() {
                         this.model_sizes = Self::measure_models();
                     }
@@ -331,10 +290,8 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Tempo analysis, under the acoustic section because it's the same
-    /// kind of thing: a pass over the audio that fills a column in. One
-    /// switch and one line, since there's nothing to pick: no model, and
-    /// nowhere but the database for the numbers to go.
+    /// One switch and one line: no model, and nowhere but the database for the
+    /// numbers.
     pub(super) fn tempo_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let on = self.tempo_analysis;
         let auto = self.tempo_auto;
@@ -368,9 +325,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The tempo switch. It's the feature as well as the permission: with
-    /// it off nothing measures, the BPM column isn't offered, and the pass
-    /// no-ops even if something asks it to run.
+    /// The feature as well as the permission: off, nothing measures and the BPM
+    /// column isn't offered.
     fn set_tempo_analysis(&mut self, on: bool, cx: &mut Context<Self>) {
         self.tempo_analysis = on;
         Settings::update(move |s| s.tempo_analysis = on);
@@ -378,9 +334,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The follow-the-watcher switch for the tempo pass, the acoustic
-    /// setter's twin: the backlog gets priced on the way on, and a decline
-    /// puts the switch back through `pass_refused`.
     fn set_tempo_auto(&mut self, on: bool, cx: &mut Context<Self>) {
         self.tempo_auto = on;
         Settings::update(move |s| s.tempo_auto = on);
@@ -398,10 +351,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The line under the tempo switch: what a running pass is doing, or
-    /// where the library stands. The three-way split is worth spelling out
-    /// for the ReplayGain section's reason: a number rox worked out and a
-    /// number the file arrived with are not the same claim.
     fn tempo_note(&self) -> String {
         if let Some(job) = &self.tempo_job {
             let total = job.total();
@@ -444,21 +393,14 @@ impl SettingsWindow {
         if total == 0 {
             return rox_i18n::t!("settings-analyze-nothing-scanned").to_string();
         }
-        // Refused gets its own sentence rather than a share of either count.
-        // They're not missing, since nothing will pick them up again on its
-        // own, and they're not covered either, so folding them into one of
-        // the two would misreport it.
+        // Refused gets its own sentence: it's neither missing nor covered.
         let refused = match split.refused {
             0 => String::new(),
-            // Carries its own sentence break, the way the other appended
-            // messages carry their leading comma: where one sentence ends
-            // and the next starts is the translator's call, not something
-            // to hard-code as ". " here and get wrong in Japanese.
+            // Carries its own sentence break; where it goes is the translator's
+            // call.
             count => rox_i18n::t!("settings-library-tempo-refused", count = count).to_string(),
         };
-        // The missing check rides along because a library where every track
-        // was refused has no tempos and no work either, and this line offers
-        // to do some.
+        // A library where every track was refused has no work to offer.
         if split.covered() == 0 && split.missing > 0 {
             return format!(
                 "{}{}{refused}",
@@ -479,9 +421,8 @@ impl SettingsWindow {
                 self.tempo_estimate_suffix(split.missing)
             );
         }
-        // Nothing left to reach, but a refused pile still means the library
-        // isn't fully timed, so the "all of them" wording is kept for the
-        // case where it's true of every scanned track.
+        // A refused pile means the library isn't fully timed, so the "all of
+        // them" wording is out.
         if split.refused > 0 {
             let line = if split.measured > 0 {
                 rox_i18n::t!(
@@ -510,9 +451,6 @@ impl SettingsWindow {
         rox_i18n::t!("settings-library-tempo-status-tagged", total = total).to_string()
     }
 
-    /// A rough cost for working out `missing` tempos at the current worker
-    /// setting, ready to append to the line above, or nothing until a pass
-    /// has measured this machine's pace.
     fn tempo_estimate_suffix(&self, missing: u64) -> String {
         match rox_core::pace::estimate(self.tempo_pace, missing, self.tempo_workers) {
             Some(estimate) => format!(
@@ -527,9 +465,6 @@ impl SettingsWindow {
         }
     }
 
-    /// Start the pass, or stop the one running. Inert with nothing missing,
-    /// and while the library is busy, since a scan rewrites the very rows
-    /// the pass reads.
     fn tempo_control(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(job) = &self.tempo_job {
             let stopping = job.stopping();
@@ -546,12 +481,8 @@ impl SettingsWindow {
             .into_any_element();
         }
         let busy = self.library.read(cx).busy().is_some();
-        // Retry Refused stands beside Analyze Missing rather than replacing
-        // it: the two work through different piles, and the refused one is
-        // the only work left once missing hits zero. It goes inert with an
-        // empty pile the way its neighbour does with nothing missing, so the
-        // pair reads as two standing offers rather than a button that comes
-        // and goes.
+        // Retry Refused stands beside Analyze Missing: they work different
+        // piles, and both stay put when empty.
         div()
             .flex()
             .flex_row()
@@ -592,9 +523,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// Copy the running tempo pass into the section, `poll_measuring`'s
-    /// twin. Stops itself once the pass clears the global, and re-reads the
-    /// split on the way out so the line ends on the final count.
     pub(super) fn poll_timing(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
@@ -604,8 +532,6 @@ impl SettingsWindow {
                     this.tempo_job = tempo_job::progress(cx);
                     if was && this.tempo_job.is_none() {
                         this.bpm_coverage = this.library.read(cx).bpm_breakdown();
-                        // The pass that just ended wrote what it measured per
-                        // track; pick it up so the next estimate prices off it.
                         this.tempo_pace = Settings::load().session.tempo_pace;
                     }
                     cx.notify();
@@ -620,8 +546,6 @@ impl SettingsWindow {
     }
 }
 
-/// The pass prompt's host side: where the dialog's state is kept on this
-/// window, and what the window re-reads once the dialog has done something.
 impl pass_prompt::Host for SettingsWindow {
     fn prompt(&self) -> Option<&pass_prompt::Prompt> {
         self.prompt.as_ref()
@@ -639,9 +563,6 @@ impl pass_prompt::Host for SettingsWindow {
         &self.dialog_focus
     }
 
-    /// Everything the pages state about the passes, re-read at once: the
-    /// counts a start just changed, the pace a probe just measured, and the
-    /// worker counts the dialog's slider wrote.
     fn pass_changed(&mut self, cx: &mut Context<Self>) {
         let settings = Settings::load();
         self.acoustic_workers = settings.acoustic_workers.max(1);
@@ -661,8 +582,6 @@ impl pass_prompt::Host for SettingsWindow {
         self.acoustic_job = embeddings::progress(cx);
         self.rg_job = replaygain_job::progress(cx);
         self.tempo_job = tempo_job::progress(cx);
-        // A pass that just started needs its poll; one that was already
-        // running has a loop and doesn't need a second.
         if !was_analyzing && self.acoustic_job.is_some() {
             Self::poll_analyzing(cx);
         }
@@ -675,9 +594,8 @@ impl pass_prompt::Host for SettingsWindow {
         cx.notify();
     }
 
-    /// The backlog behind a follow-the-watcher switch was declined, so the
-    /// switch was a no as well: put it back, rather than leave it on to start
-    /// the pass it just refused at the next watch sync.
+    /// A declined backlog turns its switch back off, or the switch would start
+    /// the refused pass at the next watch sync.
     fn pass_refused(&mut self, pass: pass_prompt::Pass, cx: &mut Context<Self>) {
         match pass {
             pass_prompt::Pass::Acoustic => {
@@ -692,9 +610,6 @@ impl pass_prompt::Host for SettingsWindow {
                 self.tempo_auto = false;
                 Settings::update(|s| s.tempo_auto = false);
             }
-            // No switch stands behind either of the last two, so nothing
-            // here ever raises them through `raise_for_switch` and there's
-            // nothing to put back.
             pass_prompt::Pass::SortNames { .. } | pass_prompt::Pass::Romanize => {}
         }
     }

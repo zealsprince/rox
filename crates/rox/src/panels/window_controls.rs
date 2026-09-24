@@ -1,8 +1,6 @@
-//! The window controls panel: minimize, maximize, and close for whatever
-//! OS window hosts it, the stand-in buttons for layouts that turn the OS
-//! decorations off. Two styles: flat icons in the app's palette, or the
-//! macOS traffic lights. The buttons drive the window they render in, so
-//! a popped-out copy controls its own window.
+//! The window controls panel: minimize, maximize and close for the OS window
+//! hosting it, for layouts with the OS decorations off. Icons or macOS traffic
+//! lights; a popped-out copy controls its own window.
 
 use gpui::{
     AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton,
@@ -21,18 +19,12 @@ use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::{Align, align_row, justify};
 
-/// The window controls panel's per-view config: what a saved layout
-/// restores, and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WindowControlsConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
     pub style: ChromeStyle,
-    /// Lead the row with the mini-layout toggle, the menubar button's
-    /// twin. Only shows once a mini layout is assigned.
     #[serde(default)]
     pub mini: bool,
     #[serde(default)]
@@ -42,14 +34,9 @@ pub struct WindowControlsConfig {
 pub struct WindowControlsPanel {
     state: AppState,
     config: WindowControlsConfig,
-    /// The workspace this panel drives its mini toggle through; gone in
-    /// a popped-out window whose workspace has closed, where the toggle
-    /// just hides.
     workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
-    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The mini toggle's glyph follows the workspace's state.
     _workspace_changed: Option<Subscription>,
 }
 
@@ -73,8 +60,6 @@ impl WindowControlsPanel {
         }
     }
 
-    /// The panel's own dropdown entries: the quick style flip and the
-    /// mini toggle, the same knobs the customize window edits.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let weak = cx.entity().downgrade();
         let menu = menu.item(
@@ -105,9 +90,6 @@ impl WindowControlsPanel {
         )
     }
 
-    /// The mini-layout toggle, the menubar button's twin: swaps the
-    /// workspace between its mini and primary layouts. None while turned
-    /// off, no mini layout is assigned, or the workspace is gone.
     fn mini_button(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         if !self.config.mini {
             return None;
@@ -134,10 +116,8 @@ impl WindowControlsPanel {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
-                            // Deferred out of this panel's update: the toggle
-                            // stashes a dock dump, and dumping reads every
-                            // panel, this one included. A read inside its own
-                            // update panics.
+                            // Deferred: the toggle dumps the dock, which reads this
+                            // panel, and a read inside its own update panics.
                             let ws = this.workspace.clone();
                             window.defer(cx, move |window, cx| {
                                 let Some(ws) = ws.upgrade() else { return };
@@ -156,16 +136,12 @@ impl WindowControlsPanel {
     }
 
     fn body(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        // Close the window this panel is in. A workspace window runs the
-        // same teardown the OS close button does, so shutting the last one
-        // quits and takes the settings and popout windows with it; a
-        // popped-out copy of this panel isn't a workspace window, so it just
-        // closes.
+        // A workspace window runs the OS close button's teardown, so closing
+        // the last one quits. A popped-out copy just closes.
         let close =
             |this: &mut Self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>| {
-                // Deferred out of this panel's update: the workspace teardown
-                // persists the layout, and dumping reads every panel, this one
-                // included. A read inside its own update panics.
+                // Deferred: the teardown dumps the layout, which reads this
+                // panel, and a read inside its own update panics.
                 let ws = this.workspace.clone();
                 window.defer(cx, move |window, cx| {
                     if crate::workspace::is_workspace_window(window, cx) {
@@ -183,11 +159,9 @@ impl WindowControlsPanel {
             .px(tokens::SPACE_MD)
             .children(self.mini_button(cx))
             .map(|d| match self.config.style {
-                // Windows order: minimize, maximize, close.
                 ChromeStyle::Icons => d
                     .gap(tokens::SPACE_XS)
                     .children(icon_controls(window, cx.listener(close))),
-                // macOS order: close, minimize, zoom.
                 ChromeStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
                     .children(traffic_lights(window, cx.listener(close))),
@@ -320,7 +294,6 @@ impl Panel for WindowControlsPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-        // Three buttons plus the strip's padding, raised by any user floor.
         rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(px(96.), rox_dock::resizable::PANEL_MIN_SIZE),
@@ -331,8 +304,6 @@ impl Panel for WindowControlsPanel {
         rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -363,8 +334,6 @@ impl Panel for WindowControlsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The config block: the panel's quick entry and the settings
-        // window, apart from the core panel items.
         let menu = self.config_menu(menu, cx);
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);

@@ -20,9 +20,7 @@ use crate::player::observe_view;
 
 use super::{default_true, transport_panel};
 
-/// Where a strip piece went in the retired side-picker configs: leading
-/// the slider, trailing it, or gone. Legacy-only; new layouts write the
-/// ordered items list instead.
+/// The retired side-picker positions. Legacy-only.
 #[derive(Clone, Copy, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum PiecePos {
@@ -32,26 +30,19 @@ enum PiecePos {
     Hidden,
 }
 
-/// One piece of the volume strip, the arrange editor's unit. The config's
-/// list holds the shown ones in display order.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VolumeItem {
-    /// The speaker button that toggles mute. Scrolling anywhere on the
-    /// strip still changes the volume, so the icon alone stays usable.
+    /// Scrolling anywhere on the strip still changes the volume, so the icon
+    /// alone stays usable.
     Icon,
-    /// The volume slider.
     Slider,
-    /// The percent readout. While it's hidden the speaker icon shows the
-    /// number in a tooltip instead.
+    /// While hidden, the icon's tooltip shows the level instead.
     Percent,
-    /// A flexible gap that pushes the pieces around it apart; the strip
-    /// holds as many as the layout needs.
     Spacer,
 }
 
-/// The strip's full catalog in stock order: what the arrange editor
-/// offers, and where a menu toggle slots a re-shown piece back in.
+/// Stock order: where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<VolumeItem>] = &[
     panel::ArrangeSpec {
         key: "volume-item-icon",
@@ -79,25 +70,14 @@ const ITEMS: &[panel::ArrangeSpec<VolumeItem>] = &[
     },
 ];
 
-/// The volume panel's per-view config: what a saved layout restores, and
-/// what the settings window edits. Deserialization routes through
-/// [`VolumeConfigDump`], which still reads the retired side-picker and
-/// toggle forms.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(from = "VolumeConfigDump")]
 pub struct VolumeConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub align: Align,
-    /// Let the slider fill whatever width the panel has instead of capping
-    /// at its natural size.
     pub stretch: bool,
-    /// Show the readout (and the icon's fallback tooltip) in decibels
-    /// instead of percent.
     pub percent_db: bool,
-    /// The shown pieces in display order; one not listed is hidden.
     pub items: Vec<VolumeItem>,
 }
 
@@ -113,9 +93,8 @@ impl Default for VolumeConfig {
     }
 }
 
-/// A piece field as older layouts wrote it: the plain on/off toggle, or
-/// the side it holds now. The legacy `true` resolves to the piece's stock
-/// side at the fold below.
+/// An older layout's piece field: a bool, or the side picker. `true`
+/// means the piece's stock side.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum PieceDump {
@@ -133,10 +112,8 @@ impl PieceDump {
     }
 }
 
-/// The dump shape [`VolumeConfig`] deserializes through: the ordered list
-/// newer layouts write, or the per-piece knobs in their toggle or side
-/// form, plus the retired `icon_only` knob so layouts saved before the
-/// pieces became toggles fold into icon on, slider and percent off.
+/// Reads the ordered list, the per-piece toggle or side forms, and the
+/// retired `icon_only`.
 #[derive(Deserialize)]
 struct VolumeConfigDump {
     #[serde(flatten)]
@@ -168,9 +145,8 @@ impl From<VolumeConfigDump> for VolumeConfig {
         let items = match dump.items {
             Some(items) => panel::dedup(ITEMS, items),
             None => {
-                // The side pickers fold in the order the strip rendered
-                // them: each piece on its side of the slider, a right-set
-                // pair ending on the speaker.
+                // Fold in the order the strip rendered: each piece on its side of the
+                // slider.
                 let icon = dump.icon.fold(PiecePos::Left);
                 let icon = if dump.icon_only && icon == PiecePos::Hidden {
                     PiecePos::Left
@@ -212,29 +188,21 @@ impl From<VolumeConfigDump> for VolumeConfig {
     }
 }
 
-/// The volume strip: the speaker button that toggles mute, the volume
-/// slider, and the percent readout, composed from the config's ordered
-/// list.
 pub struct VolumePanel {
     state: AppState,
     config: VolumeConfig,
-    /// The slider's painted bounds and drag state.
     scrub: ScrubState,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The strip as it stood when a menu toggle last hid a piece, so
-    /// showing it again puts it back where it was rather than at its
-    /// catalog rank. The undo for one toggle, not a layout anybody saves,
-    /// so it's stored on the panel and not the config.
+    /// The strip before a menu toggle hid a piece, so re-showing it restores
+    /// its place. Panel state, not config.
     items_stash: Option<Vec<VolumeItem>>,
     _player_changed: Subscription,
 }
 
 impl VolumePanel {
     pub fn new(state: AppState, config: VolumeConfig, cx: &mut Context<Self>) -> Self {
-        // Volume and mute aren't on the pump at all; the gated observe
-        // still catches changes from a keyboard shortcut or elsewhere.
+        // Volume isn't on the pump; the gated observe catches shortcut changes.
         let _player_changed = observe_view(&state.player, cx);
         VolumePanel {
             state,
@@ -247,10 +215,6 @@ impl VolumePanel {
         }
     }
 
-    /// The panel's own dropdown entries: the per-piece toggles and the
-    /// stretch knob. The menu shows and hides a piece, putting it back
-    /// where it was; the order changes in the customize window's arrange
-    /// editor.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -389,8 +353,7 @@ impl PanelSettings for VolumePanel {
     }
 }
 
-/// The level in decibels: 20 log10 of the linear gain the volume applies
-/// to the samples. Zero has no logarithm, so silence reads "-inf dB".
+/// 20 log10 of the linear gain; silence reads "-inf dB".
 fn fmt_db(volume: f32) -> String {
     if volume <= 0.0 {
         "-inf dB".into()
@@ -399,9 +362,7 @@ fn fmt_db(volume: f32) -> String {
     }
 }
 
-/// One wheel step over the volume panel, wherever the pointer is on the
-/// strip. The step itself is shared with the playback strip's speaker
-/// button, so the two never drift apart.
+/// The step is shared with the playback strip's speaker button.
 fn volume_scroll(
     this: &mut VolumePanel,
     event: &gpui::ScrollWheelEvent,
@@ -414,9 +375,6 @@ fn volume_scroll(
 impl Render for VolumePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
@@ -427,16 +385,12 @@ impl VolumePanel {
         let player = self.state.player.read(cx);
         let volume = player.volume();
         let muted = player.muted();
-        // The readout in the configured format: percent, or the decibel
-        // gain the linear volume actually applies.
         let level = if self.config.percent_db {
             fmt_db(volume)
         } else {
             rox_i18n::format::format_percent((volume * 100.0).round() as f64)
         };
 
-        // The speaker doubles as the mute toggle and the state readout:
-        // crossed out while muted, fewer waves at low volume.
         let (speaker, speaker_color) = if muted {
             (icons::VOLUME_X, palette::text_faint())
         } else if volume <= 0.5 {
@@ -445,8 +399,7 @@ impl VolumePanel {
             (icons::VOLUME_2, palette::text())
         };
 
-        // Click toggles mute, so that's what the tip says; with the readout
-        // off, the tip includes the level so it still shows somewhere.
+        // With the readout hidden, the tip carries the level.
         let tip = match (muted, self.config.items.contains(&VolumeItem::Percent)) {
             (true, true) => rox_i18n::t!("volume-tip-unmute").to_string(),
             (true, false) => {
@@ -500,9 +453,7 @@ impl VolumePanel {
                         let scrub = scrub.clone();
                         move |bounds, _, _| scrub.set_bounds(bounds)
                     },
-                    // Muted keeps the knob where it is and dims the fill. The
-                    // slider spans 0 to 100%; a louder hand-edited settings
-                    // value shows as full.
+                    // A hand-edited volume past 100% shows as full.
                     move |bounds, _, window, _| {
                         panel::paint_slider(volume, muted, bounds, window);
                         panel::scrub_on_paint(&scrub, window, {
@@ -517,10 +468,8 @@ impl VolumePanel {
             );
 
         let readout = div()
-            // Track the font: at the stock size 40px holds "100%" and the
-            // wider dB strings ("-12.3 dB") get their own floor, but a
-            // larger app font overruns either and drops the tail to a
-            // second line. Scale with the text and never wrap.
+            // Scale with the app font and never wrap: a larger font overruns the
+            // fixed width.
             .w(px(if self.config.percent_db { 64. } else { 40. }) * palette::row_scale())
             .flex_none()
             .whitespace_nowrap()
@@ -528,8 +477,6 @@ impl VolumePanel {
             .text_color(palette::text_muted())
             .child(level);
 
-        // The strip renders the config's list as-is: each shown piece in
-        // its place, whatever order the arrange editor left them in.
         let mut icon = Some(icon);
         let mut slider = Some(slider);
         let mut readout = Some(readout);
@@ -553,15 +500,11 @@ impl VolumePanel {
             .map(|d| justify(d, self.config.align))
             .gap(tokens::SPACE_SM)
             .px(tokens::SPACE_MD)
-            // Scrolling anywhere on the strip nudges the volume; like the
-            // slider it spans 0 to 100% and unmutes on touch.
             .on_scroll_wheel(cx.listener(volume_scroll))
             .children(pieces)
     }
 }
 
-// The volume strip is fully composable, so it uses the app's own panel
-// floor instead of pinning a width.
 transport_panel!(
     VolumePanel,
     "volume",
@@ -573,25 +516,18 @@ transport_panel!(
 mod tests {
     use super::{VolumeConfig, VolumeItem};
 
-    /// A layout saved before the pieces became toggles has `icon_only`,
-    /// which folds into the icon alone.
     #[test]
     fn icon_only_folds_into_the_item_list() {
         let config: VolumeConfig = serde_json::from_str(r#"{"icon_only": true}"#).unwrap();
         assert!(config.items == vec![VolumeItem::Icon]);
     }
 
-    /// A layout with no piece fields at all decodes to the full strip in
-    /// stock order.
     #[test]
     fn missing_toggles_default_on() {
         let config: VolumeConfig = serde_json::from_str("{}").unwrap();
         assert!(config.items == VolumeConfig::default().items);
     }
 
-    /// The boolean toggles and side pickers older layouts wrote still
-    /// read, folding into the list in the order the strip rendered: a
-    /// right-set icon ends the row past the percent.
     #[test]
     fn legacy_forms_fold_into_the_item_list() {
         let config: VolumeConfig =
@@ -607,8 +543,6 @@ mod tests {
         assert!(config.items == vec![VolumeItem::Percent, VolumeItem::Slider, VolumeItem::Icon]);
     }
 
-    /// A layout with the list uses it as-is, duplicates dropped,
-    /// and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {
         let config: VolumeConfig =

@@ -1,67 +1,25 @@
 //! The colour grade a Milkdrop frame passes through on its way to the screen.
+//! Presets assume black, which on the light theme is a dark hole in a pale
+//! window, so the frame gets one of three remaps before it's composited. The
+//! Milkdrop panel and the backdrop share the same WGSL and slots.
 //!
-//! Presets were drawn on black by people who assumed black, and most of
-//! the twenty-year corpus lights a few shapes against it. On the dark
-//! theme that's the look. On the light theme it's a dark hole in a pale
-//! window, and no amount of fading toward the panel background fixes a
-//! frame whose own background is the wrong colour. So the frame gets a
-//! grade before it's composited: nothing at all, or one of three remaps,
-//! one of which only fires on the light theme.
+//! - `Theme` inverts Oklab lightness on the light theme, keeping chroma and hue.
+//! - `Palette` maps lightness onto a background-to-accent ramp in Oklab.
+//! - `Cover` runs a three-stop ramp through the cover's colour at full chroma,
+//!   since a two-stop ramp from grey reads as a tint. The cover lends hue and
+//!   chroma only; its lightness would kill the contrast on a dark cover. A
+//!   pixel keeps its own chroma where that beats the ramp's, and its hue folds
+//!   near the cover's, so the result isn't a duotone. With no colour to lend,
+//!   `Cover` degrades to `Palette`.
 //!
-//! It lives here for the same reason [`crate::fade`] does: the Milkdrop
-//! panel and the app-wide backdrop both draw a frame through a one-pass
-//! chain, and both want the same maths in the same slots. The WGSL is
-//! one string prepended to each pass's own source, and [`Grade`] is the
-//! Rust side that fills the slots the string reads.
-//!
-//! ## The three remaps
-//!
-//! `Theme` inverts the frame's Oklab lightness on the light theme and
-//! leaves the dark theme alone. Chroma and hue are kept, so a blue
-//! streak stays blue while the black behind it becomes white: the
-//! preset's own design survives, upside down in lightness only.
-//!
-//! `Palette` maps the frame's lightness onto a ramp from the theme's root
-//! background to its accent, interpolated in Oklab so the midpoints
-//! don't go grey. Black lands on the background and white on the accent,
-//! which is the app's own colours in the preset's shape, and it follows
-//! the cover for free when song theming drives the accent.
-//!
-//! `Cover` paints the frame in the playing cover's dominant colour, for
-//! the cover's colour with song theming off; the accent stands in while
-//! there's no cover to take it from. It's a three-stop ramp rather than
-//! Palette's two: the background, the cover's colour at full chroma
-//! halfway up, and the cover's hue at the accent's lightness on top. A
-//! straight line from a grey background to a colour has half its chroma
-//! in the mid-tones, and the top stop loses chroma again to the gamut
-//! fit at the accent's lightness, so the two-stop version of this read as
-//! a tint over a grey frame. The cover colour lends its hue and chroma
-//! only: its lightness is replaced by the ramp's, which the palette
-//! already set against the background. A dark cover taken as-is made a
-//! ramp from near-black to dark brown, and a frame with no contrast in it
-//! is a frame nobody can see.
-//!
-//! The ramp alone is still a duotone, and two preset pixels at the same
-//! lightness in different colours would come out the same. So the frame's
-//! own colour survives the remap: a pixel keeps its chroma where that's
-//! more than the ramp's, and its hue lands a spread either side of the
-//! cover's, folded from the full circle. Grey pixels take the ramp as is.
-//!
-//! A cover with no colour in it has no hue to lend, and neither does the
-//! accent standing in for it, which song theming strips to grey under
-//! exactly that cover. `Cover` degrades to `Palette` there: the same two
-//! colours, the preset's shape, and no hue conjured out of a grey.
-//!
-//! Both run in linear light: the frame is sampled from an sRGB texture
-//! that decodes on read, and Oklab is defined from linear sRGB. The theme
-//! colours are handed over already linearised for the same reason.
+//! Everything runs in linear light: the frame texture decodes sRGB on read and
+//! Oklab is defined from linear sRGB.
 
 use gpui::Rgba;
 use rox_design::palette;
 
 /// The slot layout every Milkdrop pass shares. The fade, hue and tint are
-/// the panel's; the backdrop leaves the tint at zero. Named so the two
-/// consumers can't disagree on a number.
+/// the panel's; the backdrop leaves the tint at zero.
 pub const SLOT_FADE: usize = 0;
 pub const SLOT_HUE: usize = 1;
 pub const SLOT_TINT: usize = 2;
@@ -69,47 +27,34 @@ pub const SLOT_MODE: usize = 3;
 pub const SLOT_BG: usize = 4;
 pub const SLOT_LIGHT: usize = 7;
 pub const SLOT_ACCENT: usize = 8;
-/// Two slots: the cover's Oklab hue in radians, then its chroma. Slot 13
-/// is free.
+/// Two slots: the cover's Oklab hue in radians, then its chroma. Slot 13 is
+/// free.
 pub const SLOT_COVER: usize = 11;
 
-/// How the frame's colours meet the theme. Mirrors rox-core's
-/// `MilkdropColor` one for one; that one is the setting on disk, this
-/// one is what a pass reads.
+/// Mirrors rox-core's on-disk `MilkdropColor` one for one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GradeMode {
-    /// The preset's own colours, whatever the theme.
     Preset,
-    /// The preset's colours on the dark theme, lightness inverted on the
-    /// light one.
     #[default]
     Theme,
-    /// Lightness mapped onto the theme's background-to-accent ramp.
     Palette,
-    /// The same ramp topped with the playing cover's colour.
     Cover,
 }
 
-/// What a pass needs to grade a frame: the mode, which theme it's under,
-/// and the two colours the palette ramp runs between, in linear light.
+/// Colours are in linear light.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Grade {
     pub mode: GradeMode,
     pub light: bool,
     pub bg: [f32; 3],
     pub accent: [f32; 3],
-    /// The cover ramp's colour as Oklab hue in radians and chroma. The
-    /// lightness is the ramp's own, so it isn't carried. The accent's
-    /// while there's no cover with colour in it, and zero chroma when
-    /// that accent has no colour either.
+    /// Oklab hue in radians and chroma; zero chroma means no hue to lend.
     pub cover: (f32, f32),
 }
 
 impl Grade {
-    /// A grade from explicit colours. `bg` and `accent` arrive as the
-    /// palette hands them out, sRGB, and go into the slots linear.
-    /// `cover` is the playing cover's dominant colour, None while nothing
-    /// plays or the cover is grey.
+    /// `bg` and `accent` arrive sRGB and go into the slots linear. `cover` is
+    /// None while nothing plays or the cover is grey.
     pub fn new(mode: GradeMode, light: bool, bg: Rgba, accent: Rgba, cover: Option<Rgba>) -> Grade {
         Grade {
             mode,
@@ -120,26 +65,20 @@ impl Grade {
         }
     }
 
-    /// The grade for whatever palette scope the caller is rendering in:
-    /// the panel's own theme override inside a themed body, the window's
-    /// tint outside one. Light is read off the root background rather
-    /// than the app-wide theme pick, so a light panel in a dark app
-    /// grades as light.
+    /// Light is read off the scope's root background rather than the theme
+    /// pick, so a light panel in a dark app grades as light.
     pub fn from_scope(mode: GradeMode, cover: Option<Rgba>) -> Grade {
         let bg = palette::bg_root_opaque();
         Grade::new(mode, is_light(bg), bg, palette::accent(), cover)
     }
 
-    /// Whether the album tint still applies over this grade. The palette
-    /// ramp is the theme's colours by choice, and turning those toward the
-    /// cover would undo the choice; the cover ramp is already the cover's
-    /// colour, so there's nothing left to turn.
+    /// The palette and cover ramps already chose their colours, so the album
+    /// tint doesn't turn them.
     pub fn tints(&self) -> bool {
         !matches!(self.mode, GradeMode::Palette | GradeMode::Cover)
     }
 
-    /// Fill the grade's slots. The fade, hue and tint slots are the
-    /// caller's and are left alone.
+    /// The fade, hue and tint slots are the caller's.
     pub fn write(&self, signals: &mut [f32; 16]) {
         signals[SLOT_MODE] = match self.mode {
             GradeMode::Preset => 0.0,
@@ -155,29 +94,15 @@ impl Grade {
     }
 }
 
-/// The least chroma the cover ramp peaks at. A cover whose dominant
-/// colour is a muted tan still has a hue worth showing, and that hue
-/// needs some chroma behind it to read as a colour rather than a warm
-/// grey.
+/// So a muted tan still reads as a colour rather than a warm grey.
 const COVER_CHROMA_FLOOR: f32 = 0.1;
 
-/// The least chroma a colour needs before its hue means anything. A tan
-/// is muted; a grey has no hue at all, and the angle `atan2` reads off
-/// what's left of one is the round trip's own rounding error. Song
-/// theming strips the accent to grey under an achromatic cover, and that
-/// grey stands in for the cover here, so without this the ramp ran on
-/// whichever hue the last ulp happened to point at: an amber accent came
-/// back at exactly 180 degrees and painted the frame teal.
+/// Below this a hue is rounding error: an amber accent stripped to grey comes
+/// back at exactly 180 degrees and would paint the frame teal.
 const COVER_CHROMA_MIN: f32 = 0.01;
 
-/// The cover ramp's colour: the cover's hue in radians and its chroma or
-/// the floor. The lightness is dropped on purpose; the ramp's contrast is
-/// the distance between its ends, and the palette already put the accent
-/// that distance from the background.
-///
-/// A colour with no chroma worth the name comes back as no stop at all,
-/// zero chroma, which the shader takes as its cue to run the plain
-/// two-stop ramp instead of inventing a hue to grade toward.
+/// Lightness is dropped: the palette already set the accent's distance from
+/// the background. Zero chroma tells the shader to run the two-stop ramp.
 pub fn cover_stop(cover: Rgba) -> (f32, f32) {
     let (_, chroma, hue) = palette::rgba_to_oklch(cover);
     if chroma < COVER_CHROMA_MIN {
@@ -187,9 +112,6 @@ pub fn cover_stop(cover: Rgba) -> (f32, f32) {
     (hue, chroma.max(COVER_CHROMA_FLOOR))
 }
 
-/// Whether a background reads as light: past the midpoint of Oklab
-/// lightness. The two shipped themes sit far either side of it, and a
-/// hand-made theme near the middle gets whichever half it's on.
 pub fn is_light(bg: Rgba) -> bool {
     palette::rgba_to_oklch(bg).0 > 0.5
 }
@@ -205,20 +127,13 @@ fn linear(color: Rgba) -> [f32; 3] {
     [channel(color.r), channel(color.g), channel(color.b)]
 }
 
-/// A pass's full source: the grade's helpers, then the pass's own body,
-/// which calls `grade(rgb)` on the sampled frame.
 pub fn wgsl(body: &str) -> String {
     format!("{WGSL}\n{body}")
 }
 
-/// The helpers every Milkdrop pass gets in scope. Oklab both ways, a gamut
-/// fit, the album tint's hue turn, and `grade`, which reads the slots
-/// [`Grade::write`] fills.
-///
-/// The gamut fit is the same trade `palette::oklch_to_rgba` makes:
-/// lightness and hue are the promise, chroma is the budget. A colour that
-/// has no sRGB pixel gives chroma back through a few bisection steps until
-/// it fits, and only pixels that need it pay for the loop.
+/// The helpers every Milkdrop pass gets in scope; `grade` reads the slots
+/// [`Grade::write`] fills. The gamut fit trades chroma away by bisection, and
+/// only pixels out of gamut pay for the loop.
 pub const WGSL: &str = "
 fn linear_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     let l = dot(rgb, vec3<f32>(0.4122214708, 0.5363325363, 0.0514459929));
@@ -366,8 +281,6 @@ mod tests {
         assert_eq!(signals[SLOT_TINT], 0.5);
         assert_eq!(signals[SLOT_MODE], 2.0);
         assert_eq!(signals[SLOT_LIGHT], 1.0);
-        // The colours go in linear: sRGB 0xed is well above 0.85 as a
-        // fraction and lands lower once decoded.
         assert!(signals[SLOT_BG] > 0.8 && signals[SLOT_BG] < 0.86);
         assert_eq!(signals[SLOT_BG], signals[SLOT_BG + 1]);
         assert!(signals[SLOT_ACCENT] > 0.99, "full red decodes to one");
@@ -393,8 +306,6 @@ mod tests {
         assert!(!Grade::new(GradeMode::Cover, false, bg, accent, None).tints());
     }
 
-    /// A dark, muted cover colour keeps its hue and has its chroma
-    /// floored; its lightness never reaches the ramp.
     #[test]
     fn a_dark_cover_keeps_its_hue_and_is_floored() {
         let cover = gpui::rgb(0x3a2410);
@@ -406,15 +317,10 @@ mod tests {
         assert_eq!(got_c, COVER_CHROMA_FLOOR, "chroma floored");
     }
 
-    /// A grey has no hue to floor. The angle left on one is the round
-    /// trip's rounding error, and the shipped amber stripped of its
-    /// chroma comes back pointing at exactly 180 degrees, so the floor
-    /// used to paint the whole frame teal under a colourless cover.
+    /// The shipped amber stripped to grey points at exactly 180 degrees.
     #[test]
     fn a_neutralised_accent_lends_no_hue() {
         let (lightness, _, hue) = palette::rgba_to_oklch(gpui::rgb(0xffb300));
-        // What derivation does to a colourful role when the cover has no
-        // colour in it: the chroma goes, the lightness stays.
         let neutral = palette::oklch_to_rgba(lightness, 0.0, hue, 1.0);
         let (_, left, _) = palette::rgba_to_oklch(neutral);
         assert!(
@@ -423,15 +329,12 @@ mod tests {
         );
         assert_eq!(cover_stop(neutral), (0.0, 0.0), "no colour, no stop");
 
-        // Zero in the chroma slot is what sends the shader down the
-        // two-stop ramp instead of the cover one.
         let grade = Grade::new(GradeMode::Cover, false, gpui::rgb(0x121212), neutral, None);
         let mut signals = [0.0f32; 16];
         grade.write(&mut signals);
         assert_eq!(signals[SLOT_COVER + 1], 0.0, "and none reaches the shader");
     }
 
-    /// A vivid cover colour goes through untouched, floor or not.
     #[test]
     fn a_vivid_cover_keeps_its_chroma() {
         let cover = gpui::rgb(0xff0000);
@@ -440,8 +343,6 @@ mod tests {
         assert_eq!(cover_stop(cover), (cover_h, cover_c));
     }
 
-    /// No cover means the cover ramp tops out at the accent, so the mode
-    /// degrades to Palette rather than to black.
     #[test]
     fn a_missing_cover_falls_back_to_the_accent() {
         let grade = Grade::new(

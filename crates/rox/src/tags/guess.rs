@@ -1,20 +1,11 @@
-//! Filename pattern guessing: tag values pulled out of a path by a
-//! format string, foobar2000's masstagger idea. A pattern mixes literal
-//! text with %field% placeholders ("%artist% - %title%") and matches
-//! against the file stem; a "/" in the pattern steps up the path, so
-//! "%artist% - %album%/%track%. %title%" reads the folder name too.
-//! %skip% swallows a segment without keeping it. Matching is non-greedy:
-//! a capture takes the shortest text that lets the rest of the pattern
-//! match, so the first " - " splits artist from title even when the title
-//! contains one. Captures trim their edges and must be non-empty. The
-//! editor previews every track through [`Pattern::apply`] before
-//! anything is written, so a bad pattern costs nothing.
+//! Filename pattern guessing, foobar2000's masstagger idea: a pattern of
+//! literal text and %field% placeholders matched against the file stem, with
+//! "/" stepping up to the folders above. %skip% swallows a segment.
+//! Matching is non-greedy, so the first " - " splits artist from title even
+//! when the title contains one. Captures trim and must be non-empty.
 //!
-//! Reading a path is all this module does. The same pattern runs the
-//! other way through [`rox_core::pattern`], values in and a relative path
-//! out, which file renaming and conversion output naming are both built
-//! on, and which the stream capture down in the services shares. The
-//! parse is one parse; only the direction differs.
+//! This module only reads paths. The same pattern runs the other way through
+//! [`rox_core::pattern`] for renaming, conversion output and stream capture.
 
 use std::path::{Path, PathBuf};
 
@@ -23,22 +14,14 @@ use rox_library::writer::Field;
 
 pub use rox_core::pattern::PLACEHOLDERS;
 
-/// The tag fields as a pattern vocabulary: what this crate makes of each
-/// placeholder name, and what it renders as. The engine down in
-/// [`rox_core::pattern`] never learns what a tag is, so this is where
-/// that gets said.
-///
-/// A wrapper rather than the bare field because the trait and the field
-/// are each defined in a crate that isn't this one, and Rust won't take
-/// an impl from a third. It stays inside this module: everything outside
-/// hands over and takes back plain [`Field`] values.
+/// The tag fields as a pattern vocabulary. A wrapper because the trait and
+/// [`Field`] both live in other crates; it never leaves this module.
 #[derive(Clone, PartialEq)]
 enum TagField {
     Tag(Field),
-    /// A name the vocabulary parses and a file can't answer: the station
-    /// a stream came from, its source, the audio format. They belong to
-    /// the surfaces that have them, and a pattern carried over from one
-    /// of those renders without them here rather than being refused.
+    /// A name the vocabulary parses but a file can't answer (station, source,
+    /// format). A pattern carried over from another surface renders without it
+    /// rather than being refused.
     Unfilled,
 }
 
@@ -51,8 +34,6 @@ impl PatternField for TagField {
             Name::Title => Field::Title,
             Name::Track => Field::TrackNo,
             Name::Disc => Field::DiscNo,
-            // A tagged file's only date is its release year, so both
-            // names read as that.
             Name::Year | Name::Date => Field::Year,
             Name::Genre => Field::Genre,
             Name::Comment => Field::Comment,
@@ -61,16 +42,11 @@ impl PatternField for TagField {
         }))
     }
 
-    /// What a field renders as when the track has nothing for it. No tag
-    /// field is allowed to vanish: a missing album would collapse a
-    /// folder level and drop the file somewhere it doesn't belong. These
-    /// double as the sanitizer's fallback, so a value of pure punctuation
-    /// ends up here too.
+    /// No tag field may vanish: a missing album would collapse a folder level.
+    /// Also the sanitizer's fallback for a value of pure punctuation.
     fn fallback(&self) -> &'static str {
         let field = match self {
             TagField::Tag(field) => field,
-            // The one field that is allowed to vanish, because there was
-            // never a value to miss.
             TagField::Unfilled => return "",
         };
 
@@ -81,10 +57,7 @@ impl PatternField for TagField {
             Field::TrackNo | Field::DiscNo => "00",
             Field::Year => "Unknown Year",
             Field::Genre => "Unknown Genre",
-            // %comment% lands here: a track with no comment renders like
-            // the rest of them. No other field has a placeholder, so
-            // nothing else reaches this from a parsed pattern. Kept total
-            // rather than panicking.
+            // %comment% lands here. Kept total rather than panicking.
             _ => "Unknown",
         }
     }
@@ -97,9 +70,8 @@ impl PatternField for TagField {
     }
 }
 
-/// A track or disc number as two digits, so 3 sorts before 12 in every
-/// file browser. ID3's "3/12" total form keeps only the number. Anything
-/// that isn't a plain number (a "A1" vinyl side) is left alone.
+/// Two digits, so 3 sorts before 12. "3/12" keeps only the number; a
+/// non-number like "A1" is left alone.
 fn padded(value: &str) -> String {
     let head = value.split('/').next().unwrap_or(value).trim();
 
@@ -109,17 +81,13 @@ fn padded(value: &str) -> String {
     }
 }
 
-/// A parsed pattern over the tag fields, matching and rendering both.
 pub struct Pattern(rox_core::pattern::Pattern<TagField>);
 
-/// Parse `text` into a pattern, or say what is wrong with it: an unknown
-/// placeholder, an unclosed %, or nothing to capture at all.
 pub fn parse(text: &str) -> Result<Pattern, String> {
     rox_core::pattern::parse(text).map(Pattern)
 }
 
-/// Match `tokens` against `text` from the front, non-greedy, collecting
-/// captures into `out`. On failure `out` is left as it was.
+/// On failure `out` is left as it was.
 fn match_tokens(tokens: &[Token<TagField>], text: &str, out: &mut Vec<(Field, String)>) -> bool {
     let Some(token) = tokens.first() else {
         return text.is_empty();
@@ -130,10 +98,8 @@ fn match_tokens(tokens: &[Token<TagField>], text: &str, out: &mut Vec<(Field, St
             None => false,
         },
         Token::Capture(_) | Token::Skip => {
-            // Shortest capture first: every char boundary is a candidate
-            // split, and the first one the rest of the pattern accepts
-            // wins. A trailing capture takes the whole remainder in one
-            // step since only the empty tail can close the list.
+            // Shortest capture first: the first split the rest of the pattern accepts
+            // wins.
             let ends = text
                 .char_indices()
                 .map(|(i, _)| i)
@@ -146,9 +112,7 @@ fn match_tokens(tokens: &[Token<TagField>], text: &str, out: &mut Vec<(Field, St
                     continue;
                 }
                 let mark = out.len();
-                // An unfilled name matches like %skip%: the text it
-                // covers is swallowed, and there's no tag to keep it
-                // under.
+                // An unfilled name matches like %skip%.
                 if let Token::Capture(TagField::Tag(field)) = token {
                     out.push((field.clone(), trimmed.to_owned()));
                 }
@@ -163,16 +127,10 @@ fn match_tokens(tokens: &[Token<TagField>], text: &str, out: &mut Vec<(Field, St
 }
 
 impl Pattern {
-    /// Whether the pattern has a folder part at all: `%track% - %title%`
-    /// is a file name alone, `%album%/%title%` names a folder above it.
     pub fn has_folders(&self) -> bool {
         self.0.has_folders()
     }
 
-    /// Run the pattern forwards: tag values in, a relative path out. The
-    /// rendering itself is [`rox_core::pattern::Pattern::render`]; the
-    /// pass here only puts the caller's fields into the wrapper the
-    /// engine is parameterized over.
     pub fn render(&self, values: &[(Field, String)]) -> Result<PathBuf, String> {
         let values: Vec<(TagField, String)> = values
             .iter()
@@ -182,11 +140,8 @@ impl Pattern {
         self.0.render(&values)
     }
 
-    /// Run the pattern over `path`: the last component against the file
-    /// stem, earlier ones against the folders above it. A field captured
-    /// twice keeps the deepest hit, so the filename outranks the folder
-    /// when both name the artist. None when any component fails to
-    /// match, including a pattern deeper than the path itself.
+    /// A field captured twice keeps the deepest hit, so the filename outranks
+    /// the folder. None when any component fails to match.
     pub fn apply(&self, path: &Path) -> Option<Vec<(Field, String)>> {
         let components = self.0.components();
         let mut names: Vec<String> = Vec::with_capacity(components.len());
@@ -207,8 +162,6 @@ impl Pattern {
                 return None;
             }
         }
-        // Deepest capture of a field wins; matching walked shallow to
-        // deep, so keep each field's last entry.
         let mut deduped: Vec<(Field, String)> = Vec::with_capacity(captures.len());
         for (field, value) in captures.into_iter().rev() {
             if !deduped.iter().any(|(f, _)| *f == field) {
@@ -278,10 +231,8 @@ mod tests {
         );
     }
 
-    /// A name this vocabulary can't fill still parses, so a pattern
-    /// written in the capture row or on Discord's card carries over.
-    /// Matching swallows it like %skip%, and rendering leaves it out
-    /// along with its separator.
+    /// A name this vocabulary can't fill still parses, so a capture or Discord
+    /// pattern carries over.
     #[test]
     fn a_name_a_file_cannot_answer_carries_over_anyway() {
         let got = apply("%station% - %title%", "/m/Noise FM - Song.mp3").unwrap();
@@ -358,8 +309,6 @@ mod tests {
             .unwrap(),
             "02-07 Outro"
         );
-        // Past two digits the number keeps its own width, and a side
-        // marker that isn't a number is left as it was typed.
         assert_eq!(
             render(
                 "%track% %title%",

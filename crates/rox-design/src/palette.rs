@@ -1,34 +1,18 @@
-//! The app palette per ADR 10: every color the UI draws, one token per
-//! role, held as data behind the plain accessors. The base palette and
-//! the transparency scalars are app-wide; the art tint layered on top
-//! is per playback, keyed by the player entity, so a second window's
-//! track tints only its own windows and a popped-out panel shares its
-//! parent's run. Panels keep pulling from the plain accessors instead of
-//! inlining hex values; the accessors read the window tint in scope, so
-//! a swap through [`set`] recolors the whole app and a track change
-//! recolors one playback's windows. ADR 10's transparency pair goes
-//! through the same pipe: surface opacity applies inside the background
-//! accessors at read time, backdrop strength inside [`backdrop_wash`],
-//! neither stored per token. While a track plays, [`set_seed`] layers the
-//! derived mode on top of that player's tint: every role's hue and chroma
-//! move toward a seed color pulled from the cover art while its lightness
-//! holds, so the contrast ladder stays intact for any album. The one
-//! gpui-component widget theme is a single global, so it can hold only
-//! one tint; it follows the focused window's playback. A bright cover
-//! swaps in the light theme's palette before tinting, and when a second
-//! cover color stands apart from the first it takes the highlight role
-//! whole. The whole derived mode is behind the [`set_art_theming`]
-//! switch, off by default; the backdrop layers read the same switch. The
-//! user keeps two palettes, one per theme; the active [`Mode`] picks
-//! which one renders, and derivation flips between them by cover
-//! lightness unless keep-theme pins the active one. Changes ease
-//! componentwise from wherever the palette visibly is to the new target.
-//! The static is outside gpui's reactivity, so the setters repaint
-//! explicitly, one choke point for every writer. On top of all of it,
-//! per ADR 13 a panel can have a [`PanelTheme`]: a sparse override the
-//! accessors use while the panel renders inside [`scoped`]. An
-//! overridden role reads as written, passed by song theming and easing
-//! alike, while the rest keep following the app palette.
+//! The app palette per ADR 10: every color the UI draws, one token per role,
+//! behind plain accessors. Panels never inline hex values.
+//!
+//! The base palettes (one per theme) and the transparency scalars are
+//! app-wide. The art tint is per playback, keyed by player, so a second
+//! window's track tints only its own windows. With song theming on,
+//! [`set_seed`] moves every role's hue and chroma toward the cover while
+//! lightness holds, so the contrast ladder survives any album; a bright
+//! cover swaps in the light palette first. The one gpui-component widget
+//! theme is a global, so it follows the focused window's playback.
+//!
+//! Changes ease from wherever the palette visibly is. The statics sit
+//! outside gpui's reactivity, so every setter repaints explicitly. Per ADR
+//! 13 a panel can carry a [`PanelTheme`], a sparse override the accessors
+//! read inside [`scoped`].
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -42,7 +26,6 @@ use serde::{Deserialize, Serialize};
 
 use super::tokens::EASE_SECS;
 
-/// A palette color with its alpha replaced, for washes and gradients.
 pub fn alpha(color: Rgba, a: u8) -> Rgba {
     Rgba {
         a: a as f32 / 255.0,
@@ -50,22 +33,16 @@ pub fn alpha(color: Rgba, a: u8) -> Rgba {
     }
 }
 
-/// A genre's own color, the visual thread every genre surface shares:
-/// deterministic off the alias-resolved, folded name, so the same genre
-/// gets the same hue in every panel, session, and machine, and the hue
-/// holds as a library grows new genres (an index-spaced scheme would
-/// reshuffle everyone on each addition). Saturation and lightness pin
-/// per theme (deep cards in dark, pastels in light), so a wall of
-/// genres reads as one system, not confetti. The untagged bucket goes
-/// neutral instead of taking a hue of its own.
+/// Deterministic off the alias-resolved, folded name, so a genre keeps its
+/// hue everywhere and as the library grows (an index-spaced scheme would
+/// reshuffle on every addition). Saturation and lightness pin per theme.
 pub fn genre_color(name: &str) -> Rgba {
     match genre_hash(name) {
         Some(hash) => {
             let dark = matches!(mode(), Mode::Dark);
             let (saturation, lightness): (f32, f32) =
                 if dark { (0.42, 0.34) } else { (0.52, 0.74) };
-            // A tone step around the theme's anchor, so two genres in
-            // the same hue family still split light and dark.
+            // A tone step so two genres in one hue family still split.
             let jitter = ((hash >> 9) % 16) as f32 / 16.0 * 0.12 - 0.06;
             Rgba::from(gpui::hsla(
                 hue_of(hash),
@@ -78,10 +55,8 @@ pub fn genre_color(name: &str) -> Rgba {
     }
 }
 
-/// The two stops of a genre's gradient card: the genre color and a
-/// partner drifted 25 to 60 degrees along the wheel (direction and
-/// distance off the same hash) with a small lightness step, so every
-/// genre's gradient leans its own way while the wall stays one system.
+/// The genre color and a partner drifted 25 to 60 degrees along the wheel,
+/// so every gradient leans its own way.
 pub fn genre_color_pair(name: &str) -> (Rgba, Rgba) {
     let base = genre_color(name);
     let Some(hash) = genre_hash(name) else {
@@ -89,13 +64,11 @@ pub fn genre_color_pair(name: &str) -> (Rgba, Rgba) {
     };
     let dark = matches!(mode(), Mode::Dark);
     let (saturation, lightness): (f32, f32) = if dark { (0.42, 0.34) } else { (0.52, 0.74) };
-    // Independent bits of the hash steer the drift, so genres sharing a
-    // hue by chance still get different gradients.
+    // Independent hash bits, so genres sharing a hue still differ.
     let drift = 0.07 + ((hash >> 17) % 64) as f32 / 64.0 * 0.10;
     let signed = if (hash >> 23) & 1 == 0 { drift } else { -drift };
     let partner_hue = (hue_of(hash) + signed).rem_euclid(1.0);
-    // The partner steps off the base's jittered tone, not the theme
-    // anchor, so the gradient's lean stays the same size per genre.
+    // Off the base's jittered tone, so the lean stays the same size.
     let jitter = ((hash >> 9) % 16) as f32 / 16.0 * 0.12 - 0.06;
     let step = if (hash >> 29) & 1 == 0 { 0.07 } else { -0.07 };
     let partner = Rgba::from(gpui::hsla(
@@ -107,27 +80,19 @@ pub fn genre_color_pair(name: &str) -> (Rgba, Rgba) {
     (base, partner)
 }
 
-/// A genre's stable seed, for derived looks beyond color (the genre
-/// grid's card motifs): the same hash the hue comes from, 0 for the
-/// untagged bucket.
+/// For derived looks beyond color (the genre grid's motifs). 0 for untagged.
 pub fn genre_seed(name: &str) -> u64 {
     genre_hash(name).unwrap_or(0)
 }
 
-/// FNV-1a over the alias-resolved, folded name, run through splitmix64's
-/// finalizer so every bit field downstream draws from well-avalanched
-/// bits (raw FNV mixes its low bits poorly on short keys). None for the
-/// untagged bucket, which never gets a hue of its own.
+/// FNV-1a finished with splitmix64, since raw FNV mixes its low bits poorly
+/// on short keys. None for the untagged bucket.
 ///
-/// Consumers slice disjoint fields off this one hash; keep the map in
-/// one place so nothing doubles up: hue takes `% 360` over the whole
-/// word, lightness jitter bits 9-12, drift bits 17-29, placement and
-/// scale bits 33-41, symmetry 42-44, gradient angle 45-53, motif 13-16,
-/// arrangement rotation 55-59.
-/// Never take `% 8` or `% 16` of the raw value for anything: both
-/// divide 360, so such a field would be the hue's own low bits and
-/// same-hue genres would share it (the correlation that once stamped
-/// same-color cards with the same motif).
+/// Consumers slice disjoint fields off this hash; keep the map here: hue
+/// `% 360` over the whole word, lightness jitter bits 9-12, motif 13-16,
+/// drift 17-29, placement and scale 33-41, symmetry 42-44, gradient angle
+/// 45-53, arrangement rotation 55-59. Never take `% 8` or `% 16` of the raw
+/// value: both divide 360, so the field would track the hue.
 fn genre_hash(name: &str) -> Option<u64> {
     let key = rox_library::genre::resolve(name).to_lowercase();
     if key.is_empty() {
@@ -142,7 +107,6 @@ fn genre_hash(name: &str) -> Option<u64> {
     Some(hash ^ (hash >> 31))
 }
 
-/// The hash spread over the wheel, as gpui's fractional hue.
 fn hue_of(hash: u64) -> f32 {
     (hash % 360) as f32 / 360.0
 }
@@ -155,10 +119,8 @@ fn untagged_color() -> Rgba {
     }
 }
 
-/// The text that reads on an arbitrary color: near-black over a light
-/// one, near-white over a dark one, by the color's own luminance rather
-/// than the theme, so a dim-authored light palette still gets legible
-/// cards.
+/// By the color's own luminance rather than the theme, so a dim light
+/// palette still gets legible cards.
 pub fn text_on(color: Rgba) -> Rgba {
     let luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
     if luminance > 0.55 {
@@ -168,8 +130,6 @@ pub fn text_on(color: Rgba) -> Rgba {
     }
 }
 
-/// A componentwise blend between two palette colors, `t` = 0 all `a`,
-/// `t` = 1 all `b`. For animated transitions between roles.
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     Rgba {
         r: a.r + (b.r - a.r) * t,
@@ -179,8 +139,6 @@ pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
-/// A color with its alpha scaled by a unit scalar, the surface accessors'
-/// read-time application of surface opacity.
 fn scaled(color: Rgba, opacity: f32) -> Rgba {
     Rgba {
         a: color.a * opacity,
@@ -188,9 +146,8 @@ fn scaled(color: Rgba, opacity: f32) -> Rgba {
     }
 }
 
-// Oklch, the derivation's working space: perceptual lightness L, chroma
-// C, hue h. Hand-rolled from Ottosson's reference so tinting can hold a
-// token's lightness exactly, which sRGB or HSL math can't promise.
+// Oklch, hand-rolled from Ottosson's reference so tinting can hold a
+// token's lightness exactly, which sRGB or HSL math can't.
 
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -208,7 +165,6 @@ fn linear_to_srgb(c: f32) -> f32 {
     }
 }
 
-/// An sRGB color as (L, C, h); alpha does not participate.
 #[allow(clippy::excessive_precision)]
 pub fn rgba_to_oklch(color: Rgba) -> (f32, f32, f32) {
     let r = srgb_to_linear(color.r);
@@ -223,7 +179,6 @@ pub fn rgba_to_oklch(color: Rgba) -> (f32, f32, f32) {
     (lightness, (a * a + b * b).sqrt(), b.atan2(a))
 }
 
-/// (L, C, h) to linear sRGB channels, which may leave the gamut.
 #[allow(clippy::excessive_precision)]
 fn oklch_to_linear(lightness: f32, chroma: f32, hue: f32) -> (f32, f32, f32) {
     let ok_a = chroma * hue.cos();
@@ -245,10 +200,8 @@ fn in_gamut((r, g, b): (f32, f32, f32)) -> bool {
     fits(r) && fits(g) && fits(b)
 }
 
-/// (L, C, h) back to sRGB. A requested color can be outside the gamut
-/// (a light, vivid blue doesn't exist); clipping channels there would
-/// shift lightness, so chroma is reduced until the color fits instead.
-/// Lightness and hue are the promise, chroma is the budget.
+/// Out of gamut, chroma shrinks until the color fits: clipping channels
+/// would shift lightness, and lightness and hue are the promise.
 pub fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rgba {
     let mut linear = oklch_to_linear(lightness, chroma, hue);
     if !in_gamut(linear) {
@@ -271,10 +224,7 @@ pub fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rgba {
     }
 }
 
-/// One palette role by name: how the palette editor and the settings
-/// file reach a field without naming it. `name` keys the settings map
-/// and stays stable; `label` is the editor's display name, short because
-/// it reads under its `group` header.
+/// `name` keys the settings map and stays stable; `label` is the editor's.
 pub struct Role {
     pub name: &'static str,
     pub label: &'static str,
@@ -283,17 +233,11 @@ pub struct Role {
     pub set: fn(&mut Palette, Rgba),
 }
 
-/// One listing defines each role four ways: the [`Palette`] field, its
-/// default with the editor label beside it, the accessor panels call,
-/// and its [`ROLES`] entry. Adding a role means adding one line here.
-/// Roles in the `surfaces` block are the backgrounds the backdrop can show
-/// through: their accessors read out at surface opacity. Roles in the
-/// `tints` block are sub-surface texture drawn on a surface that already
-/// has the wash: they read out at the square of surface opacity, thinning
-/// to a whisper under translucency instead of stacking a second coat.
-/// Roles in the `ink` block are foregrounds drawn over the surfaces: they
-/// read out lifted toward `text_bright` as surfaces thin, so contrast
-/// holds whatever the backdrop shows through. The rest read plain.
+/// One line per role defines its [`Palette`] field, default, editor label,
+/// accessor, and [`ROLES`] entry. `surfaces` read out at surface opacity;
+/// `tints` draw on a surface that already has the wash, so they read at its
+/// square; `ink` lifts toward `text_bright` as surfaces thin, so contrast
+/// holds. The rest read plain.
 macro_rules! tokens {
     (
         $( $(#[$doc:meta])* $role:ident: $default:literal, $label:literal; )*
@@ -307,8 +251,7 @@ macro_rules! tokens {
             $( $(#[$idoc:meta])* $irole:ident: $idefault:literal, $ilabel:literal; )*
         }
     ) => {
-        /// The palette as data: one color per role. The default is the
-        /// hardcoded look the app has always rendered.
+        /// The default is the stock dark look.
         #[derive(Clone, Copy)]
         pub struct Palette {
             $( $(#[$doc])* pub $role: Rgba, )*
@@ -329,7 +272,6 @@ macro_rules! tokens {
         }
 
         impl Palette {
-            /// Componentwise blend of every role, the easing step.
             fn mixed(from: &Palette, to: &Palette, t: f32) -> Palette {
                 Palette {
                     $( $role: mix(from.$role, to.$role, t), )*
@@ -339,8 +281,6 @@ macro_rules! tokens {
                 }
             }
 
-            /// Every role through one transform, how derivation re-tints
-            /// the whole ladder.
             fn map(&self, f: impl Fn(Rgba) -> Rgba) -> Palette {
                 Palette {
                     $( $role: f(self.$role), )*
@@ -351,13 +291,8 @@ macro_rules! tokens {
             }
         }
 
-        // The accessors are the palette's read API, one per role, so a
-        // role read only through its field (a raw wash in the theme
-        // projection, an opaque overlay variant) leaves its generated
-        // accessor uncalled without meaning the token is dead. Each one
-        // checks the active panel scope first: an overridden role reads as
-        // written, an overridden opacity replaces the app's in the same
-        // scaling and lifting the global values get.
+        // An accessor can go uncalled while its role is still read through
+        // the field. Each checks the panel scope first.
         $(
             $(#[$doc])*
             #[allow(dead_code)]
@@ -402,7 +337,6 @@ macro_rules! tokens {
             }
         )*
 
-        /// Every role in listing order.
         pub const ROLES: &[Role] = &[
             $( Role { name: stringify!($role), label: $label, group: "Core", get: |p| p.$role, set: |p, c| p.$role = c }, )*
             $( Role { name: stringify!($srole), label: $slabel, group: "Surfaces", get: |p| p.$srole, set: |p, c| p.$srole = c }, )*
@@ -413,36 +347,27 @@ macro_rules! tokens {
 }
 
 tokens! {
-    // The accent family: the one brand color and its hover shift.
     accent: 0xffb300, "Accent";
-    /// The accent blended a quarter toward white, the lift hover states use.
+    /// The accent lifted toward white, for hover.
     accent_hover: 0xfed840, "Accent hover";
-    /// The contrast mark drawn over accent fills: the playheads, the
-    /// slider knobs, the spectrum's peak caps. Matches the bright text by
-    /// default; under song theming the cover's runner-up color takes it
-    /// when one stands apart from the seed.
+    /// The mark over accent fills: playheads, knobs, peak caps. Song theming
+    /// gives it the cover's runner-up color.
     highlight: 0xfacc15, "Highlight";
 
-    // Borders.
     border: 0x333333, "Border";
     border_light: 0x3a3a3a, "Border light";
 
-    // The two text roles that stay fixed: the top of the ladder, which the
-    // ink roles also lift toward, and the dark text over accent-filled
-    // controls, which are drawn on opaque accent, not on a thinning surface.
+    // Fixed text roles: the top of the ladder ink lifts toward, and text on
+    // opaque accent fills.
     text_bright: 0xe0e0e0, "Bright text";
-    /// Dark text over accent-filled controls.
+    /// Text over accent-filled controls.
     text_on_accent: 0x121212, "Text on accent";
 
-    // Backgrounds, deepest to most raised.
     @surfaces {
         bg_root: 0x121212, "Root";
         bg_panel: 0x181818, "Panel";
         bg_elevated: 0x1c1c1c, "Elevated";
-        /// The grouped lists' heading strips, the library's album blocks
-        /// foremost. Matches the elevated tint by default; its own role so
-        /// a look can pull the headings apart from the other raised
-        /// surfaces.
+        /// The grouped lists' heading strips.
         bg_header: 0x1c1c1c, "Header";
         bg_menubar: 0x242424, "Menubar";
         bg_menu: 0x262626, "Menu";
@@ -452,14 +377,12 @@ tokens! {
         bg_control_hover: 0x3a3a3a, "Control hover";
     }
 
-    // Layered fills that always draw on one of the surfaces above: the
-    // library toolbar strip on the panel, the search box on the toolbar.
+    // Fills that always draw on one of the surfaces above.
     @tints {
         bg_input: 0x141414, "Input";
         bg_toolbar: 0x1f1f1f, "Toolbar";
     }
 
-    // Text, brightest to faintest, and the canvas strokes with it.
     @ink {
         text: 0xc0c0c0, "Text";
         text_secondary: 0xa0a0a0, "Secondary";
@@ -470,9 +393,7 @@ tokens! {
     }
 }
 
-/// A `#rrggbb` string as a color; anything else is None. The settings
-/// map's format, tolerant of a missing `#` from a hand edit. Shared with
-/// whatever else records colors as hex, like the spectrum's custom ramp.
+/// Tolerates a missing `#` from a hand edit.
 pub fn parse_hex(hex: &str) -> Option<Rgba> {
     let hex = hex.trim().trim_start_matches('#');
     if hex.len() != 6 {
@@ -481,7 +402,6 @@ pub fn parse_hex(hex: &str) -> Option<Rgba> {
     u32::from_str_radix(hex, 16).ok().map(rgb)
 }
 
-/// A color as the settings map's `#rrggbb`; alpha does not participate.
 pub fn to_hex(c: Rgba) -> String {
     format!(
         "#{:02x}{:02x}{:02x}",
@@ -492,8 +412,6 @@ pub fn to_hex(c: Rgba) -> String {
 }
 
 impl Palette {
-    /// The palette as the settings file records it: every role as
-    /// `#rrggbb`, in role-name keys. The same shape a shared theme is.
     pub fn to_map(self) -> BTreeMap<String, String> {
         ROLES
             .iter()
@@ -501,16 +419,13 @@ impl Palette {
             .collect()
     }
 
-    /// A palette from the settings map, over the dark defaults: unknown
-    /// keys and unparsable values fall away silently, so the file stays
-    /// valid across role changes in both directions.
+    /// Unknown keys and bad values fall away, so the file stays valid across
+    /// role changes in both directions.
     pub fn from_map(map: &BTreeMap<String, String>) -> Palette {
         Palette::from_map_over(Palette::default(), map)
     }
 
-    /// A palette from the settings map over an explicit anchor, the light
-    /// theme's read: its map fills in over [`Palette::light`] where the
-    /// dark one fills in over the defaults.
+    /// The light theme's read, over [`Palette::light`].
     pub fn from_map_over(anchor: Palette, map: &BTreeMap<String, String>) -> Palette {
         let mut palette = anchor;
         for role in ROLES {
@@ -518,9 +433,8 @@ impl Palette {
                 (role.set)(&mut palette, color);
             }
         }
-        // The heading strips read the elevated tint before they had a role
-        // of their own, so a palette that recolors bg_elevated without
-        // naming bg_header keeps the look it was saved with. [compat]
+        // bg_header used to be bg_elevated, so a palette naming only the
+        // latter keeps its look. [compat]
         if !map.contains_key("bg_header")
             && let Some(color) = map.get("bg_elevated").and_then(|hex| parse_hex(hex))
         {
@@ -530,72 +444,43 @@ impl Palette {
     }
 }
 
-/// A panel's palette override: only the roles it overrides, in the
-/// settings map's role-to-hex shape, plus an optional surface opacity of
-/// the panel's own. Stored in the panel's config in the layout dump, so
-/// it restores and duplicates like any other per-view knob. An overridden
-/// role reads as written (song theming and palette easing pass it by),
-/// while every other role keeps following the app palette, so a panel
-/// that only recolors its accent still tracks edits and tinting
-/// everywhere else. A value may also name another role instead of a hex
-/// color: the override then follows that app role live, easing and song
-/// theming included, so a panel can swap its surfaces around inside the
-/// palette and still move with the theme. References always point into
-/// the app palette, never at the panel's own overrides, so there's
-/// nothing to recurse through. The frame knobs are here too: margin
-/// insets the panel from its cell, padding opens space inside its own
-/// surface, rounding and border shape its edge. Margin, padding, and
-/// border each have a value per side, so a panel can sit tight against
-/// one edge and stand off another. They're geometry, not colors, so the
-/// themed wrapper applies them directly instead of going through the
-/// scope; the border draws in the border role's color, which the color
-/// grid already covers.
+/// A panel's sparse palette override, stored in its config in the layout
+/// dump. An overridden role reads as written; the rest follow the app
+/// palette. A value may name another app role instead of a hex color, and
+/// then follows it live. References only ever point into the app palette,
+/// so there's nothing to recurse through. The frame knobs are geometry, so
+/// the themed wrapper applies them directly rather than through the scope.
 #[derive(Clone, Default, PartialEq, Serialize)]
 pub struct PanelTheme {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_opacity: Option<f32>,
-    /// Space between the panel and its cell, per side in px; the backdrop
-    /// shows through the gap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin: Option<Sides>,
-    /// Space inside the panel's edge, per side in px, kept in the panel's
-    /// own background; the content pulls in, the surface stays whole.
+    /// Kept in the panel's own background: the content pulls in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding: Option<Sides>,
-    /// The panel's corner radius, in px.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rounding: Option<f32>,
-    /// A border around the panel, per side in px of width. A side at zero
-    /// draws nothing, which is how a panel trims its border to one edge.
+    /// A side at zero draws nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<Sides>,
-    /// The edge mask an older config trimmed its border with, folded over
-    /// whichever width wins (the panel's own or the app default), so a
-    /// panel that inherited the app border and cut a side keeps that look.
-    /// [`border_sides`](PanelTheme::border_sides) does the folding, and
-    /// touching the border in the settings window bakes it into the
-    /// per-side widths and clears this for good. [compat]
+    /// An older config's edge mask, folded over whichever width wins by
+    /// [`border_sides`](PanelTheme::border_sides). Editing the border bakes it
+    /// in and clears this. [compat]
     #[serde(skip_serializing)]
     pub legacy_border_edges: Option<BorderEdges>,
-    /// The panel's font family, overriding the app font just here. None
-    /// follows the app font. A name that isn't installed falls back at
-    /// render, so a config moved between machines still shows.
+    /// A name that isn't installed falls back at render.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<String>,
-    /// The panel's text size as a multiplier over the app font size, so it
-    /// grows and shrinks with the app control instead of pinning an
-    /// absolute px. None (and 1.0) follows the app size; the wrapper scales
-    /// the panel's rem and its hand-rolled rows by this. Clamped to
+    /// A multiplier over the app font size, clamped to
     /// [`PANEL_FONT_SCALE_MIN`]..=[`PANEL_FONT_SCALE_MAX`] at render.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_scale: Option<f32>,
 }
 
-/// The theme as a config file holds it. Hand-written on the reading side
-/// so the legacy border mask has a field to read into; writing stays the
-/// derive on [`PanelTheme`] itself.
+/// Hand-written on the reading side so the legacy border mask has a field.
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct PanelThemeRepr {
@@ -620,8 +505,6 @@ impl<'de> Deserialize<'de> for PanelTheme {
             padding: repr.padding,
             rounding: repr.rounding,
             border: repr.border,
-            // An all-on mask says nothing the widths don't, so it drops
-            // here instead of being kept as a no-op.
             legacy_border_edges: repr.border_edges.filter(|edges| *edges != BorderEdges::ALL),
             font: repr.font,
             font_scale: repr.font_scale,
@@ -630,9 +513,6 @@ impl<'de> Deserialize<'de> for PanelTheme {
 }
 
 impl PanelTheme {
-    /// The border widths this panel actually draws, given the app-wide
-    /// default it falls back to: its own sides where it set them, with an
-    /// older config's edge mask folded over the result.
     pub fn border_sides(&self, app: Sides) -> Sides {
         let sides = self.border.unwrap_or(app);
         match self.legacy_border_edges {
@@ -641,9 +521,7 @@ impl PanelTheme {
         }
     }
 
-    /// Whether the theme overrides nothing at all. Empty themes skip the
-    /// scope entirely and serialize away, so an untouched panel's config
-    /// stays what it was.
+    /// Empty themes skip the scope and serialize away.
     pub fn is_empty(&self) -> bool {
         self.colors.is_empty()
             && self.surface_opacity.is_none()
@@ -656,10 +534,8 @@ impl PanelTheme {
             && self.font_scale.is_none()
     }
 
-    /// A role's override resolved to a color right now: a hex literal as
-    /// written, a reference through the app palette's current resolve.
-    /// Seeds the settings pickers; the live read path resolves through
-    /// [`PanelTheme::scope`] instead, where a reference stays attached.
+    /// Seeds the settings pickers; the live read path goes through
+    /// [`PanelTheme::scope`], where a reference stays attached.
     pub fn color(&self, role: &str) -> Option<Rgba> {
         let value = self.colors.get(role)?;
         if let Some(color) = parse_hex(value) {
@@ -668,7 +544,6 @@ impl PanelTheme {
         reference_role(value).map(|get| get(&resolved()))
     }
 
-    /// Set or clear a role's override.
     pub fn set_color(&mut self, role: &str, color: Option<Rgba>) {
         match color {
             Some(color) => {
@@ -680,10 +555,6 @@ impl PanelTheme {
         }
     }
 
-    /// The app role an override follows, when it holds a reference
-    /// rather than a literal. A value that neither parses as hex nor
-    /// names a role reads as no reference, the same tolerance the hex
-    /// parse extends a hand-edited file.
     pub fn reference(&self, role: &str) -> Option<&'static str> {
         let value = self.colors.get(role)?;
         if parse_hex(value).is_some() {
@@ -696,16 +567,12 @@ impl PanelTheme {
             .map(|role| role.name)
     }
 
-    /// Point a role at another app role instead of a literal color.
     pub fn set_reference(&mut self, role: &str, target: &str) {
         self.colors.insert(role.to_string(), target.to_string());
     }
 
-    /// The theme resolved for the read path: role names checked against
-    /// the listing, unknown and unparsable entries dropped, so a
-    /// hand-edited config degrades quietly. None while no color or
-    /// opacity overrides, so renders skip the scope push. The frame
-    /// knobs never need one; the wrapper reads them directly.
+    /// Unknown and unparsable entries are dropped. None while no color or
+    /// opacity overrides, so renders skip the scope push.
     pub fn scope(&self) -> Option<Scope> {
         if self.colors.is_empty() && self.surface_opacity.is_none() {
             return None;
@@ -728,7 +595,6 @@ impl PanelTheme {
     }
 }
 
-/// The accessor behind a role name, the reference values' lookup.
 fn reference_role(name: &str) -> Option<fn(&Palette) -> Rgba> {
     let name = name.trim();
     ROLES
@@ -737,7 +603,6 @@ fn reference_role(name: &str) -> Option<fn(&Palette) -> Rgba> {
         .map(|role| role.get)
 }
 
-/// One side of a panel's frame, the per-side knobs' currency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Top,
@@ -747,16 +612,12 @@ pub enum Side {
 }
 
 impl Side {
-    /// The four sides clockwise from the top, the order CSS reads them in
-    /// and the order the editors stack them.
+    /// Clockwise from the top, the order the editors stack them.
     pub const ALL: [Side; 4] = [Side::Top, Side::Right, Side::Bottom, Side::Left];
 }
 
-/// A frame knob's four sides, in px. Serializes as a bare number while
-/// every side matches, which is what a knob that was never split looks
-/// like, so configs written before the split (and hand-edited ones that
-/// only want one value) read straight through. Once the sides differ it
-/// writes the object form.
+/// Serializes as a bare number while every side matches, so configs from
+/// before the split read straight through.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sides {
     pub top: f32,
@@ -766,10 +627,8 @@ pub struct Sides {
 }
 
 impl Sides {
-    /// The knob off on every side.
     pub const ZERO: Sides = Sides::all(0.0);
 
-    /// One value on all four sides, the shape a linked knob holds.
     pub const fn all(value: f32) -> Sides {
         Sides {
             top: value,
@@ -779,27 +638,19 @@ impl Sides {
         }
     }
 
-    /// The single value behind all four sides, or None once they differ.
-    /// What the editors read to know whether a knob is linked, and what
-    /// the serializer writes when it's the whole story.
     pub fn uniform(self) -> Option<f32> {
         (self.top == self.right && self.right == self.bottom && self.bottom == self.left)
             .then_some(self.top)
     }
 
-    /// Whether the knob does anything at all; all zero draws nothing and
-    /// the render path skips it.
     pub fn any(self) -> bool {
         self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0 || self.left > 0.0
     }
 
-    /// The widest side, the single number a caller that can only take one
-    /// has to work with.
     pub fn max(self) -> f32 {
         self.top.max(self.right).max(self.bottom).max(self.left)
     }
 
-    /// One side's value.
     pub fn get(self, side: Side) -> f32 {
         match side {
             Side::Top => self.top,
@@ -809,7 +660,6 @@ impl Sides {
         }
     }
 
-    /// The knob with one side set.
     pub fn with(mut self, side: Side, value: f32) -> Sides {
         match side {
             Side::Top => self.top = value,
@@ -820,15 +670,12 @@ impl Sides {
         self
     }
 
-    /// Every side floored at zero and a non-finite one dropped, what the
-    /// render path applies: a hand-edited config can hold anything, and a
-    /// negative inset would push a panel out of its own cell.
+    /// A hand-edited config can hold anything, and a negative inset would push
+    /// a panel out of its cell.
     pub fn positive(self) -> Sides {
         self.clamped(f32::INFINITY)
     }
 
-    /// The knob after one edit: the named side set, or every side at once
-    /// when the linked strip moved.
     pub fn edited(self, side: Option<Side>, value: f32) -> Sides {
         match side {
             Some(side) => self.with(side, value),
@@ -836,15 +683,11 @@ impl Sides {
         }
     }
 
-    /// The knob linked back up: the widest side on all four, so relinking
-    /// keeps what's on screen rather than dropping to whichever side the
-    /// collapse happened to read.
+    /// Relinks at the widest side, so what's on screen stays.
     pub fn linked(self) -> Sides {
         Sides::all(self.max())
     }
 
-    /// Every side held to the knob's ceiling, a non-finite one reset to
-    /// zero, for a hand-edited file.
     pub fn clamped(self, max: f32) -> Sides {
         let hold = |value: f32| {
             if value.is_finite() {
@@ -861,9 +704,6 @@ impl Sides {
         }
     }
 
-    /// The widths a legacy edge mask leaves behind: the sides it turned
-    /// off drop to zero, the rest keep their width. The fold that brings
-    /// pre-per-side border configs forward.
     pub fn masked(self, edges: BorderEdges) -> Sides {
         Sides {
             top: if edges.top { self.top } else { 0.0 },
@@ -874,7 +714,6 @@ impl Sides {
     }
 }
 
-/// The object form on the wire, and the deserializer's other arm.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct SidesRepr {
@@ -884,8 +723,6 @@ struct SidesRepr {
     left: f32,
 }
 
-/// A number for all four sides or an object naming them, the two shapes a
-/// config can use.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum SidesIn {
@@ -922,10 +759,9 @@ impl<'de> Deserialize<'de> for Sides {
     }
 }
 
-/// Hand-written because the serde above is: the derive would describe the
-/// struct's four fields and miss the bare-number form the serializer
-/// actually writes for a linked knob. Both shapes, or the workspace schema
-/// (ADR 22) flags every file whose knobs were never split.
+/// Hand-written because the serde above is: the derive would miss the
+/// bare-number form, and the workspace schema (ADR 22) would flag every
+/// file whose knobs were never split.
 impl schemars::JsonSchema for Sides {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "Sides".into()
@@ -950,9 +786,8 @@ impl schemars::JsonSchema for Sides {
     }
 }
 
-/// Which sides a panel's border drew on, back when the width was one
-/// number for all four. Read from old configs and folded onto the
-/// per-side widths; nothing writes it any more. [compat]
+/// Read from old configs and folded onto per-side widths; never written.
+/// [compat]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BorderEdges {
     #[serde(default = "edge_on")]
@@ -970,7 +805,6 @@ fn edge_on() -> bool {
 }
 
 impl BorderEdges {
-    /// Every side on, the look an unmasked border drew.
     pub const ALL: BorderEdges = BorderEdges {
         top: true,
         right: true,
@@ -979,19 +813,15 @@ impl BorderEdges {
     };
 }
 
-/// One override as the read path holds it: a literal reads as written
-/// and holds still, a reference keeps following its app role through
-/// easing and song theming. The reference holds the target's accessor
-/// into the app palette, never another override, so resolution is one
-/// hop by construction.
+/// A reference holds its target's accessor into the app palette, never
+/// another override, so resolution is one hop.
 #[derive(Clone, Copy)]
 enum ScopeColor {
     Literal(Rgba),
     Reference(fn(&Palette) -> Rgba),
 }
 
-/// A resolved [`PanelTheme`], what the accessors actually consult: cheap
-/// to clone, so the themed wrapper can pass it into every render phase.
+/// Cheap to clone, so the themed wrapper can pass it into every render phase.
 #[derive(Clone)]
 pub struct Scope {
     colors: Arc<[(&'static str, ScopeColor)]>,
@@ -999,17 +829,12 @@ pub struct Scope {
 }
 
 thread_local! {
-    /// The active panel scopes, innermost last. A stack rather than a
-    /// slot so a themed subtree inside another themed subtree nests
-    /// instead of clobbering. Thread-local is enough: rendering runs on
-    /// the UI thread, and the paint closures that read the palette run
-    /// inside the element phases [`scoped`] wraps.
+    /// Innermost last, so nested themed subtrees stack. Thread-local is
+    /// enough: rendering and the paint closures run on the UI thread.
     static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The innermost scope's override for a role, if any. A reference
-/// samples the live app palette here, at read time, so it moves with
-/// easing and song theming the way an unoverridden role does.
+/// A reference samples the live app palette at read time, so it eases.
 fn scope_color(role: &str) -> Option<Rgba> {
     SCOPES.with(|scopes| {
         scopes.borrow().last().and_then(|scope| {
@@ -1026,18 +851,12 @@ fn scope_color(role: &str) -> Option<Rgba> {
 }
 
 thread_local! {
-    /// Whether the window being rendered is one that always paints the
-    /// cover backdrop: the workspaces, which push this around their whole
-    /// body. Everything else leaves it unset and follows the All Windows
-    /// switch instead: with the backdrop kept out of the child windows,
-    /// their surfaces read opaque, since transparency over a bare root is
-    /// how a settings page turns illegible.
+    /// Set by workspaces, which always paint the cover backdrop. Other
+    /// windows follow the All Windows switch, and read opaque without it,
+    /// since transparency over a bare root makes a settings page illegible.
     static BACKDROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Run `f` with the window marked as one that paints the backdrop. The
-/// workspace body wrapper pushes this through build and every render
-/// phase, the same way the window tint travels.
 pub fn backdropped<R>(on: bool, f: impl FnOnce() -> R) -> R {
     BACKDROPPED.with(|flag| {
         let prior = flag.replace(on);
@@ -1047,10 +866,6 @@ pub fn backdropped<R>(on: bool, f: impl FnOnce() -> R) -> R {
     })
 }
 
-/// The opacity the surface accessors scale by: the scope's or the app's
-/// where this window shows the backdrop, full where it doesn't. A window
-/// only counts as showing it when it's a workspace or the All Windows
-/// switch backs the children too.
 fn effective_opacity() -> f32 {
     if BACKDROPPED.with(std::cell::Cell::get) || BASE.read().unwrap().backdrop_all_windows {
         scope_opacity().unwrap_or_else(base_surface_opacity)
@@ -1059,7 +874,6 @@ fn effective_opacity() -> f32 {
     }
 }
 
-/// The innermost scope's surface opacity, if it has one.
 fn scope_opacity() -> Option<f32> {
     SCOPES.with(|scopes| {
         scopes
@@ -1070,22 +884,17 @@ fn scope_opacity() -> Option<f32> {
 }
 
 thread_local! {
-    /// The active panel rem scales, innermost last: a panel font override
-    /// multiplies the app rem for its own subtree. The [`Themed`] wrapper
-    /// pushes it around build and every render phase, the twin of [`SCOPES`],
-    /// so [`scaled_px`] (the hand-rolled rows built without a `Window`) reads
-    /// the same multiplier the window rem uses for text and the table.
+    /// A panel font override's rem multiplier, innermost last. The twin of
+    /// [`SCOPES`], so [`scaled_px`] reads what the window rem uses.
     static REM_SCALES: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The innermost panel rem scale, 1.0 when no panel override is in scope.
 fn panel_rem_scale() -> f32 {
     REM_SCALES.with(|scales| scales.borrow().last().copied().unwrap_or(1.0))
 }
 
-/// Run `f` with a panel rem scale active, so [`scaled_px`] inside it grows
-/// its rows with the panel's font override. The pop happens in a drop guard,
-/// like [`scoped`], so an unwinding `f` can't leave the scale stuck.
+/// The pop happens in a drop guard, so an unwinding `f` can't leave the
+/// scale stuck.
 pub fn rem_scaled<R>(scale: f32, f: impl FnOnce() -> R) -> R {
     REM_SCALES.with(|scales| scales.borrow_mut().push(scale));
     struct Pop;
@@ -1100,10 +909,8 @@ pub fn rem_scaled<R>(scale: f32, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Run `f` with a panel scope active: every accessor reads the scope's
-/// roles and opacity, falling through to the app palette for the rest.
 /// The pop happens in a drop guard, so an unwinding `f` can't leave the
-/// scope stuck on the stack.
+/// scope stuck.
 pub fn scoped<R>(scope: &Scope, f: impl FnOnce() -> R) -> R {
     SCOPES.with(|scopes| scopes.borrow_mut().push(scope.clone()));
     struct Pop;
@@ -1118,24 +925,19 @@ pub fn scoped<R>(scope: &Scope, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// What a playing track's cover contributes to derivation: its dominant
-/// color, the strongest color standing apart from it, and how bright the
-/// cover reads overall. The backdrop bake extracts one per track.
+/// What a cover contributes to derivation. The backdrop bake extracts one
+/// per track.
 #[derive(Clone, Copy)]
 pub struct Seed {
-    /// The dominant chromatic color; None when the cover is achromatic,
-    /// which tints nothing but still picks the ladder by lightness.
+    /// None for an achromatic cover, which still picks the ladder by lightness.
     pub primary: Option<Rgba>,
-    /// The strongest color far enough from the primary in hue to read as
-    /// a second color rather than a shade of the first.
+    /// Far enough from the primary in hue to read as a second color.
     pub secondary: Option<Rgba>,
     /// Mean perceptual lightness over the whole cover, gray mass and all.
     pub lightness: f32,
 }
 
 impl Seed {
-    /// Whether two seeds would derive the same palette; alpha never
-    /// participates.
     fn same(&self, other: &Seed) -> bool {
         let key = |c: Option<Rgba>| c.map(|c| (c.r, c.g, c.b));
         key(self.primary) == key(other.primary)
@@ -1144,46 +946,35 @@ impl Seed {
     }
 }
 
-/// Which of the two user palettes the app renders. The persisted theme
-/// pick is with the settings; System is resolved against the OS there,
-/// so only a concrete side ever gets here.
+/// System is resolved against the OS in the settings layer, so only a
+/// concrete side gets here.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Dark,
     Light,
 }
 
-/// What the accessors read: the two user palettes and their writers'
-/// inputs, plus the easing run the reads actually sample.
 #[derive(Clone, Copy)]
 struct Base {
-    /// The dark theme's user palette. [`set`] writes the active side,
-    /// editing targets it, derivation layers on top without touching it.
+    /// [`set`] writes the active side; derivation layers on top without
+    /// touching it.
     dark: Palette,
-    /// The light theme's counterpart, same contract.
     light: Palette,
-    /// The theme in effect: which of the two palettes renders while
-    /// nothing derives, and the side keep-theme holds derivation to.
     mode: Mode,
-    /// The song-theming switch: whether a seed may derive at all. Off,
-    /// each tint's seed is only remembered for a later enable.
+    /// Off, each tint's seed is only remembered for a later enable.
     art_theming: bool,
-    /// Hold the active theme under any cover: song theming still tints
-    /// hue and chroma toward the seed, but a cover's brightness never
-    /// swaps the theme. Caps how far the look shifts.
+    /// Song theming still tints, but a cover's brightness never swaps the
+    /// theme.
     keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
     backdrop_all_windows: bool,
-    /// The app-wide text size in px, the rem every `.text_*` class
-    /// resolves against. [`apply`] projects it into the widget theme,
-    /// whose root pushes it to each window's rem size per frame.
+    /// [`apply`] projects it into the widget theme, whose root pushes it to
+    /// each window's rem per frame.
     font_size: f32,
 }
 
 impl Base {
-    /// The palette the active theme renders, the accessors' fallback and
-    /// what derivation returns to while nothing seeds.
     fn active(&self) -> &Palette {
         match self.mode {
             Mode::Dark => &self.dark,
@@ -1192,26 +983,17 @@ impl Base {
     }
 }
 
-/// One playback's art tint: the easing run between the palette where it
-/// visibly sat and where its current seed takes it. Held per player, so a
-/// second window's playback tints only its own windows while a popped-out
-/// panel shares its parent player's run. The seed is kept with it so a
-/// base or song-theming change can re-derive without the caller replaying
-/// it.
+/// One playback's easing run toward its seed, per player. The seed is kept
+/// so a base or song-theming change can re-derive without the caller.
 #[derive(Clone, Copy)]
 pub struct Tint {
-    /// The cover-art seed while a track plays; None reads as the plain
-    /// base palette.
     seed: Option<Seed>,
-    /// The easing run: reads sample between these two by elapsed time.
     from: Palette,
     target: Palette,
     eased_at: Instant,
 }
 
 impl Tint {
-    /// A settled run on a palette, nothing easing. What a window reads
-    /// when its player has never seeded.
     fn settled(palette: Palette) -> Tint {
         Tint {
             seed: None,
@@ -1221,14 +1003,12 @@ impl Tint {
         }
     }
 
-    /// How far the easing run has got, 0 fresh, 1 settled, smoothstepped
-    /// so changes ease out instead of stopping dead.
+    /// Smoothstepped, so changes ease out instead of stopping dead.
     fn progress(&self) -> f32 {
         let u = (self.eased_at.elapsed().as_secs_f32() / EASE_SECS).min(1.0);
         u * u * (3.0 - 2.0 * u)
     }
 
-    /// One role sampled from the easing run.
     fn role(&self, pick: impl Fn(&Palette) -> Rgba) -> Rgba {
         let u = self.progress();
         if u >= 1.0 {
@@ -1238,7 +1018,6 @@ impl Tint {
         }
     }
 
-    /// The whole palette as it visibly is right now.
     fn snapshot(&self) -> Palette {
         let u = self.progress();
         if u >= 1.0 {
@@ -1248,9 +1027,7 @@ impl Tint {
         }
     }
 
-    /// Aim a fresh easing run at the base and this tint's seed. Interrupting
-    /// a run starts from wherever it visibly is, the waveform's rule, so
-    /// nothing snaps.
+    /// Starts from wherever the run visibly is, so nothing snaps.
     fn retarget(&mut self, base: &Base) {
         self.from = self.snapshot();
         let seed = if base.art_theming { self.seed } else { None };
@@ -1259,10 +1036,8 @@ impl Tint {
     }
 }
 
-/// The app-wide palette inputs: the user's base palette, the two
-/// transparency scalars, and the song-theming switch. One for the whole
-/// app. A static rather than a gpui global so the accessors keep their
-/// plain signatures and paint closures can read them without a context.
+/// A static rather than a gpui global so the accessors keep their plain
+/// signatures and paint closures can read them without a context.
 static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
     RwLock::new(Base {
         dark: Palette::default(),
@@ -1277,26 +1052,25 @@ static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
     })
 });
 
-/// The art tints, one per player entity. A window resolves its own by
-/// pushing [`window_tint`] before it renders; a player with no entry
-/// reads the plain base palette.
+/// A window pushes [`window_tint`] before it renders.
 static TINTS: LazyLock<RwLock<HashMap<EntityId, Tint>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// The player whose tint the app-wide widget theme follows. The
-/// gpui-component theme is one global, so it can only hold one tint at a
-/// time; it tracks the focused window's playback.
+/// The gpui-component theme is one global, so it follows one tint: the
+/// focused window's.
 static FOCUSED: LazyLock<RwLock<Option<EntityId>>> = LazyLock::new(|| RwLock::new(None));
 
+/// The player whose window last took focus, for a surface that can't name
+/// its own.
+pub fn focused_player() -> Option<EntityId> {
+    *FOCUSED.read().unwrap()
+}
+
 thread_local! {
-    /// The active window tint, innermost last, matching [`SCOPES`]. The
-    /// role accessors fall back to the top of this stack, and to the base
-    /// palette when it's empty.
+    /// Innermost last, matching [`SCOPES`].
     static TINT_STACK: RefCell<Vec<Tint>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A role off the active window tint, or the base palette when no window
-/// tint is in scope: the accessors' fallback once a panel scope misses.
 fn active_role(pick: impl Fn(&Palette) -> Rgba) -> Rgba {
     TINT_STACK.with(|stack| match stack.borrow().last() {
         Some(tint) => tint.role(&pick),
@@ -1304,15 +1078,11 @@ fn active_role(pick: impl Fn(&Palette) -> Rgba) -> Rgba {
     })
 }
 
-/// The app surface opacity, the accessors' scale when no panel scope
-/// overrides it.
 fn base_surface_opacity() -> f32 {
     BASE.read().unwrap().surface_opacity
 }
 
-/// The wash the backdrop layer paints over the baked image: the floor
-/// color at the inverse of backdrop strength. Strength 1 shows the bake
-/// bare, 0 sinks it back into the floor.
+/// The floor color at the inverse of backdrop strength.
 pub fn backdrop_wash() -> Rgba {
     Rgba {
         a: 1.0 - BASE.read().unwrap().backdrop_strength,
@@ -1320,34 +1090,25 @@ pub fn backdrop_wash() -> Rgba {
     }
 }
 
-// Status tones. Outside the user palette and outside the art tint, unlike
-// everything above: these three mean one thing each, and a warning that
-// turns the album's color stops reading as a warning. They're here rather
-// than in tokens because ADR 12 keeps every color on this side of the
-// line, themed or not. The console's level colors are the same three, as
-// they were before this gave them a name.
+// Status tones, outside the user palette and the art tint: a warning that
+// turns the album's color stops reading as a warning. Here rather than in
+// tokens because ADR 12 keeps every color on this side.
 
-/// Something worked, and the honest kind of worked: bit-perfect, matched,
-/// claimed.
+/// Bit-perfect, matched, claimed.
 pub fn tone_good() -> Rgba {
     rgb(0x4ade80)
 }
 
-/// Something is standing in for what was asked: a fallback, a resample, a
-/// setting the hardware rejected.
+/// A fallback, a resample, a setting the hardware rejected.
 pub fn tone_warn() -> Rgba {
     rgb(0xfbbf24)
 }
 
-/// Something failed outright.
 pub fn tone_bad() -> Rgba {
     rgb(0xf87171)
 }
 
-/// Every tint re-aimed at the base and its own seed. The choke point for
-/// an app-wide change: a base swap or a song-theming toggle moves the
-/// target every window's playback eases toward, without the callers
-/// replaying their seeds.
+/// The choke point for an app-wide change, so callers never replay seeds.
 fn retarget_all() {
     let base = *BASE.read().unwrap();
     let mut tints = TINTS.write().unwrap();
@@ -1356,9 +1117,7 @@ fn retarget_all() {
     }
 }
 
-/// The one setter every palette edit goes through: swap the active
-/// theme's palette and ease every window toward it. User edits go here;
-/// derivation layers over whatever this holds.
+/// The one setter every palette edit goes through.
 pub fn set(palette: Palette, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
@@ -1371,8 +1130,8 @@ pub fn set(palette: Palette, cx: &mut App) {
     drive(cx);
 }
 
-/// Both user palettes at once, the startup and workspace-apply path, so
-/// the inactive theme's palette is set without a second ease.
+/// Startup and workspace apply, so the inactive side is set without a
+/// second ease.
 pub fn set_palettes(dark: Palette, light: Palette, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
@@ -1383,10 +1142,7 @@ pub fn set_palettes(dark: Palette, light: Palette, cx: &mut App) {
     drive(cx);
 }
 
-/// The theme's setter: which of the two user palettes renders. The
-/// settings layer resolves System against the OS before calling, so a
-/// no-op resolution (the OS matching the current side) returns early
-/// instead of restarting every window's ease.
+/// A no-op resolution returns early instead of restarting every ease.
 pub fn set_mode(mode: Mode, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
@@ -1399,14 +1155,10 @@ pub fn set_mode(mode: Mode, cx: &mut App) {
     drive(cx);
 }
 
-/// The theme in effect, for the editor and the writers that persist
-/// alongside the live statics.
 pub fn mode() -> Mode {
     BASE.read().unwrap().mode
 }
 
-/// A theme's palette as edits left it, whether or not it's the one
-/// rendering: what the editor seeds one side from the other with.
 pub fn theme_palette(mode: Mode) -> Palette {
     let base = BASE.read().unwrap();
     match mode {
@@ -1415,9 +1167,8 @@ pub fn theme_palette(mode: Mode) -> Palette {
     }
 }
 
-/// The transparency pair's setter, the same pipe as [`set`] but without
-/// easing: the scalars are settings knobs, not palette colors. Runtime
-/// values only; persisting them stays with the settings' writers.
+/// No easing: the scalars are knobs, not palette colors. Persisting is the
+/// settings' writers' job.
 pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
@@ -1427,33 +1178,21 @@ pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
     apply(cx);
 }
 
-/// Whether child windows paint the cover backdrop, the Transparency
-/// section's All Windows switch. Runtime value like the scalars; the
-/// backdrop layer's gate reads it per render.
 pub fn backdrop_all_windows() -> bool {
     BASE.read().unwrap().backdrop_all_windows
 }
 
-/// Its setter, [`set_scalars`]'s pipe: live value here, persistence with
-/// the settings' writers.
 pub fn set_backdrop_all_windows(on: bool, cx: &mut App) {
     BASE.write().unwrap().backdrop_all_windows = on;
     apply(cx);
 }
 
-/// The app font size's range in px, shared by the setter's clamp and the
-/// settings window's slider. The band stays modest: the rem
-/// text classes scale with it while the px chrome (control heights, icons,
-/// the spacing ladder) holds, and past this range the fixed chrome crowds
-/// the grown text.
+/// Modest: the rem text classes scale while the px chrome holds, and past
+/// this the fixed chrome crowds the text.
 pub const FONT_SIZE_MIN: f32 = 12.0;
 pub const FONT_SIZE_MAX: f32 = 20.0;
-/// gpui's stock rem, the size the app has always drawn at.
 pub const FONT_SIZE_DEFAULT: f32 = 16.0;
 
-/// The app font size's setter, the same pipe as [`set_scalars`]: a
-/// settings knob, not a palette color, so no easing. Runtime value only;
-/// persisting it stays with the settings' writers.
 pub fn set_app_font_size(size: f32, cx: &mut App) {
     let size = if size.is_finite() {
         size.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX)
@@ -1470,54 +1209,31 @@ pub fn set_app_font_size(size: f32, cx: &mut App) {
     apply(cx);
 }
 
-/// How far the app font size is from the stock rem, as a multiplier: what
-/// a fixed px height tuned for the 16px rem scales by to track the text,
-/// where no `Window` is at hand to read the rem itself. 1 at the default
-/// size. Matches the window rem because the widget theme's root sets each
-/// window's rem from the same value.
+/// For fixed px heights where no `Window` is at hand to read the rem.
 pub fn font_scale() -> f32 {
     BASE.read().unwrap().font_size / FONT_SIZE_DEFAULT
 }
 
-/// The app font size as it currently stands, in px. What the zoom shortcuts
-/// read to step from, and what a fresh window opens sized against.
 pub fn app_font_size() -> f32 {
     BASE.read().unwrap().font_size
 }
 
-/// The total font scale in effect right now: the app size ([`font_scale`])
-/// times any panel override in scope. What a fixed row height or cover tile
-/// multiplies by to track the text. Equal to the window rem over the stock
-/// 16, since the panel wrapper sets the window rem to the same product, so a
-/// size derived from this matches one the vendored table derives from the
-/// window rem.
+/// The app size times any panel override in scope, which is the window rem
+/// over 16, so sizes derived here match the vendored table's.
 pub fn row_scale() -> f32 {
     font_scale() * panel_rem_scale()
 }
 
-/// A fixed px length grown by [`row_scale`], for the hand-rolled lists
-/// (playlists, queue, history, the folder tree, the filter facets) whose
-/// `uniform_list` rows size themselves rather than going through the library
-/// table. A row height run through here tracks the text the way the table's
-/// rows do, and a cover tile derived from it stays square. The library table
-/// scales off the window rem instead, since its rows draw inside the
-/// vendored widget where a `Window` is at hand; the two agree by
-/// construction.
+/// For the hand-rolled `uniform_list` rows, so they track the text the way
+/// the library table's rows do.
 pub fn scaled_px(length: f32) -> gpui::Pixels {
     px(length * row_scale())
 }
 
-/// A panel font override's range, as a multiplier over the app font size,
-/// shared by the wrapper's clamp and the settings slider. Modest like the
-/// app size's own band: text scales, the px chrome holds.
 pub const PANEL_FONT_SCALE_MIN: f32 = 0.75;
 pub const PANEL_FONT_SCALE_MAX: f32 = 1.5;
 
-/// The derived mode's writer, one playback at a time: the playing track's
-/// seed color in, None when playback stops or the cover is achromatic.
-/// Keyed by the player so a track change tints only that player's windows.
-/// Eases like any other palette change, so a track change washes the tint
-/// across instead of snapping it.
+/// Keyed by player, so a track change tints only that player's windows.
 pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
     let base = *BASE.read().unwrap();
     {
@@ -1525,8 +1241,7 @@ pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
         let tint = tints
             .entry(player)
             .or_insert_with(|| Tint::settled(*base.active()));
-        // Consecutive tracks off one album have identical art; don't
-        // restart the ease for a seed that isn't going anywhere.
+        // Consecutive tracks off one album have identical art.
         let unchanged = match (&tint.seed, &seed) {
             (None, None) => true,
             (Some(a), Some(b)) => a.same(b),
@@ -1536,8 +1251,7 @@ pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
             return;
         }
         tint.seed = seed;
-        // With song theming off the seed is only remembered, so a later
-        // enable picks up the playing track; nothing repaints.
+        // With song theming off the seed is only remembered.
         if !base.art_theming {
             return;
         }
@@ -1546,9 +1260,6 @@ pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
     drive(cx);
 }
 
-/// The song-theming switch: whether the playing track's art re-tints the
-/// palette and backs the windows. Toggling eases every window like any
-/// other palette change, so the tint washes in or out instead of snapping.
 pub fn set_art_theming(on: bool, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
@@ -1561,16 +1272,10 @@ pub fn set_art_theming(on: bool, cx: &mut App) {
     drive(cx);
 }
 
-/// Whether song theming is on, for the backdrop layers that paint outside
-/// the palette's own pipe.
 pub fn art_theming() -> bool {
     BASE.read().unwrap().art_theming
 }
 
-/// The keep-theme switch: whether a cover's brightness may swap the
-/// theme. On, song theming still tints, but the active theme's palette
-/// holds. Toggling eases every window like any other palette change, so
-/// the surfaces wash between the two palettes instead of snapping.
 pub fn set_keep_theme(on: bool, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
@@ -1583,17 +1288,12 @@ pub fn set_keep_theme(on: bool, cx: &mut App) {
     drive(cx);
 }
 
-/// The app's surface opacity as it currently stands: what a panel's own
-/// override starts from when it forks off.
 pub fn app_surface_opacity() -> f32 {
     BASE.read().unwrap().surface_opacity
 }
 
-/// The palette as the current derivation leaves it: the active window
-/// tint's easing target, the focused window's while none is in scope, the
-/// base itself when nothing derives. What the locked editor swatches show
-/// and what export saves while song theming drives the colors, so a look a
-/// track built can leave as a theme.
+/// The active window tint's target, else the focused window's, else the
+/// base. What the locked editor swatches show and what export saves.
 pub fn resolved() -> Palette {
     if let Some(tint) = TINT_STACK.with(|stack| stack.borrow().last().copied()) {
         return tint.target;
@@ -1609,10 +1309,7 @@ pub fn resolved() -> Palette {
     *BASE.read().unwrap().active()
 }
 
-/// The tint a window should render under: its player's easing run, or a
-/// settled base run when that player has never seeded. Snapshotted for the
-/// frame; the easing reads live off the stored `eased_at`, so a window
-/// wraps its body once per render and paint stays smooth from it.
+/// Snapshotted per frame; the easing reads live off `eased_at`.
 pub fn window_tint(player: EntityId) -> Tint {
     match TINTS.read().unwrap().get(&player) {
         Some(tint) => *tint,
@@ -1620,12 +1317,8 @@ pub fn window_tint(player: EntityId) -> Tint {
     }
 }
 
-/// The cover seed a player is carrying right now, None while nothing
-/// plays or the cover had no color worth taking.
-///
-/// For surfaces that color themselves off the art directly instead of
-/// through the derived palette: the seed is kept whatever the song-theming
-/// switch says, so what they read follows the cover in both theme modes.
+/// Kept whatever the song-theming switch says, for surfaces that color
+/// themselves off the art directly.
 pub fn seed(player: EntityId) -> Option<Seed> {
     TINTS
         .read()
@@ -1634,10 +1327,8 @@ pub fn seed(player: EntityId) -> Option<Seed> {
         .and_then(|tint| tint.seed)
 }
 
-/// Push a window tint for the duration of `f`, matching [`scoped`]. The
-/// accessors' base fallback reads from it while it's active, and a
-/// panel scope still layers on top. The pop happens in a drop guard so an
-/// unwinding `f` can't leave the tint stuck on the stack.
+/// The pop happens in a drop guard, so an unwinding `f` can't leave the
+/// tint stuck.
 pub fn tinted<R>(tint: Tint, f: impl FnOnce() -> R) -> R {
     TINT_STACK.with(|stack| stack.borrow_mut().push(tint));
     struct Pop;
@@ -1652,10 +1343,7 @@ pub fn tinted<R>(tint: Tint, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Note which window holds focus so the one app-wide widget theme follows
-/// its playback's tint. Called from a workspace root's render with the
-/// window's active flag; a change reprojects the theme once, deferred out
-/// of the render pass.
+/// The theme change is deferred out of the render pass.
 pub fn note_focus(player: EntityId, active: bool, cx: &mut App) {
     if !active {
         return;
@@ -1674,8 +1362,6 @@ pub fn note_focus(player: EntityId, active: bool, cx: &mut App) {
     }
 }
 
-/// Drop a player's art tint when its last window closes, so a closed
-/// window's seed no longer counts toward the focused-theme projection.
 pub fn forget(player: EntityId, cx: &mut App) {
     let removed = TINTS.write().unwrap().remove(&player).is_some();
     let unfocused = {
@@ -1692,21 +1378,15 @@ pub fn forget(player: EntityId, cx: &mut App) {
     }
 }
 
-// The menu overlays read their fill and row hover opaque. A floating
-// dropdown has no backdrop behind it (it hovers over panel content),
-// so it stays filled while the menubar chrome it drops from thins with
-// surface opacity. Same eased colors as the scaled accessors, the
-// surface-opacity scale left off, matching the projected popover tokens
-// the gpui-component context menus already read.
+// The menu overlays read opaque: a floating dropdown has no backdrop
+// behind it.
 
 pub fn bg_menu_opaque() -> Rgba {
     active_role(|p| p.bg_menu)
 }
 
-/// The root surface read opaque, the surface-opacity scale left off. For a
-/// panel that lays text over an image of its own (the biography panel's
-/// dimmed artist background): the floor has to hide the window backdrop
-/// bleeding up from behind, or two images fight under the words.
+/// For a panel that lays text over its own image: the floor must hide the
+/// window backdrop, or two images fight under the words.
 pub fn bg_root_opaque() -> Rgba {
     active_role(|p| p.bg_root)
 }
@@ -1715,46 +1395,33 @@ pub fn bg_control_hover_opaque() -> Rgba {
     active_role(|p| p.bg_control_hover)
 }
 
-/// How far the near-gray roles' chroma moves toward the seed's, and the
-/// ceiling it never crosses: enough for surfaces and text to pick up the
-/// album's cast, never enough to become it.
+/// Enough for surfaces and text to pick up the album's cast, never enough
+/// to become it.
 const TINT_STRENGTH: f32 = 0.35;
 const TINT_CAP: f32 = 0.045;
-/// Chroma above this marks a role as already colorful (the accent
-/// family): it keeps its own chroma and swings only its hue to the seed.
+/// A colorful role keeps its chroma and swings only its hue.
 const CHROMATIC: f32 = 0.05;
-/// How much of the seed's chroma the border roles take, past the
-/// near-gray cap: hairlines are drawn on surfaces the backdrop saturates
-/// well beyond what the capped tint can match, so a border must be a darker
-/// shade of the field, not a gray line over it. Scales with the seed,
-/// so a muted album still gets quiet borders.
+/// Borders sit on surfaces the backdrop saturates past the capped tint, so
+/// they take a share of the seed's chroma to stay a darker shade of the
+/// field.
 const BORDER_TINT: f32 = 0.6;
-/// Mean cover lightness above this reads as a light album: derivation
-/// tints the light theme's palette instead of the dark's. The same cut
-/// [`apply`] makes on the resolved palette to pick the widget baseline.
+/// The same cut [`apply`] makes to pick the widget baseline.
 const LIGHT_COVER: f32 = 0.70;
-/// The lightness band the highlight clamps into when a runner-up cover
-/// color takes it, one band per ladder: far enough from the surfaces to
-/// read as a mark, wide enough that the color keeps the chroma to stay
-/// itself. Pinning it to the ladder's own mark lightness crushed a
-/// vivid red to maroon on a light album.
+/// One band per ladder. Pinning it to the ladder's own mark lightness would
+/// crush a vivid red to maroon on a light album.
 const HIGHLIGHT_DARK_BAND: (f32, f32) = (0.60, 0.85);
 const HIGHLIGHT_LIGHT_BAND: (f32, f32) = (0.30, 0.55);
 
 impl Palette {
-    /// The light ladder, the dark defaults' designed counterpart:
-    /// surfaces flipped bright, ink flipped dark, the accent pulled
-    /// down to read over bright surfaces. The light theme's stock
-    /// palette, the anchor its settings map fills in over, and the far
-    /// anchor [`Palette::inverse`] applies edits to.
+    /// The dark defaults' designed counterpart, and the far anchor
+    /// [`Palette::inverse`] applies edits to.
     pub fn light() -> Palette {
         Palette {
             accent: rgb(0xb07d00),
             accent_hover: rgb(0x976a00),
             highlight: rgb(0x1f1f1f),
-            // Deeper below the surfaces than a plain mirror of the dark
-            // deltas: the backdrop bleeding through translucent surfaces
-            // eats hairline contrast, so the light ladder buys more.
+            // Deeper than a mirror of the dark deltas: the backdrop eats
+            // hairline contrast on translucent surfaces.
             border: rgb(0xb3b3b3),
             border_light: rgb(0xa9a9a9),
             text_bright: rgb(0x1a1a1a),
@@ -1780,9 +1447,6 @@ impl Palette {
         }
     }
 
-    /// Mean perceptual lightness across the surface roles: the read that
-    /// tells a dark palette from a light one, the same lightness cut
-    /// derivation makes on a cover.
     fn mean_surface_lightness(&self) -> f32 {
         let (sum, count) = ROLES
             .iter()
@@ -1794,17 +1458,10 @@ impl Palette {
         sum / count.max(1) as f32
     }
 
-    /// The palette flipped light for dark, or dark for light. Not a raw
-    /// lightness mirror: the two designed ladders ([`Palette::default`]
-    /// dark, [`Palette::light`] bright) are the anchors, and inverse
-    /// applies the palette's own edits to the opposite one. Each role's
-    /// oklch distance from the anchor it started nearest to is re-applied
-    /// over the far anchor, so an untouched palette returns the hand-tuned
-    /// counterpart exactly, and a recolored one brings that character
-    /// across without inheriting the near ladder's spacing or its
-    /// backdrop-eaten hairline contrast. Reading the far anchor also fixes
-    /// the pinned pairs a mirror broke: text over the held accent flips
-    /// with the accent instead of turning unreadable.
+    /// Not a raw lightness mirror: each role's oklch distance from the nearer
+    /// designed ladder is re-applied over the far one, so an untouched
+    /// palette returns the hand-tuned counterpart exactly and pinned pairs
+    /// like text on accent stay readable.
     pub fn inverse(&self) -> Palette {
         let dark = Palette::default();
         let light = Palette::light();
@@ -1829,14 +1486,9 @@ impl Palette {
     }
 }
 
-/// The derived palette: the user palette the cover's lightness picks,
-/// every role re-tinted toward the seed, or the active theme's palette
-/// while nothing seeds. A bright cover derives over the light theme's
-/// palette and a dark one over the dark's (the user's own edits on
-/// either side show up in the tint), unless keep-theme pins the active
-/// side. An achromatic cover picks the side by lightness too, then
-/// strips the colorful roles to neutral so a black-and-white album gets
-/// a black-and-white app.
+/// A bright cover derives over the light palette unless keep-theme pins
+/// the active side. An achromatic cover strips the colorful roles, so a
+/// black-and-white album gets a black-and-white app.
 fn derive(base: &Base, seed: Option<Seed>) -> Palette {
     let Some(seed) = seed else {
         return *base.active();
@@ -1854,10 +1506,8 @@ fn derive(base: &Base, seed: Option<Seed>) -> Palette {
         Mode::Light => base.light,
     };
     let Some(primary) = seed.primary else {
-        // No hue to derive toward. Leaving the ladder as-is would keep
-        // the brand accent as a lone spot of color against a gray cover,
-        // so drop the colorful roles' chroma to zero at their own
-        // lightness; the near-gray roles are already neutral and stay.
+        // No hue: drop the colorful roles' chroma, or the accent stays a lone
+        // spot of color against a gray cover.
         return ladder.map(|color| {
             let (lightness, chroma, hue) = rgba_to_oklch(color);
             if chroma > CHROMATIC {
@@ -1877,7 +1527,6 @@ fn derive(base: &Base, seed: Option<Seed>) -> Palette {
         };
         oklch_to_rgba(lightness, chroma, seed_hue, color.a)
     });
-    // Borders re-tint past the gray cap, [`BORDER_TINT`]'s rule.
     for (derived_border, ladder_border) in [
         (&mut derived.border, ladder.border),
         (&mut derived.border_light, ladder.border_light),
@@ -1890,9 +1539,8 @@ fn derive(base: &Base, seed: Option<Seed>) -> Palette {
             ladder_border.a,
         );
     }
-    // The runner-up color takes the highlight role as itself: its own
-    // chroma, hue, and lightness, the last clamped into the mark band
-    // opposite the ladder's surfaces so it still reads over them.
+    // The runner-up takes the highlight as itself, its lightness clamped into
+    // the mark band.
     if let Some(secondary) = seed.secondary {
         let (lightness, chroma, hue) = rgba_to_oklch(secondary);
         let (lo, hi) = if light {
@@ -1905,20 +1553,13 @@ fn derive(base: &Base, seed: Option<Seed>) -> Palette {
     derived
 }
 
-/// Repaint generations: each palette change starts a pump that reprojects
-/// the theme and refreshes windows until its run settles; a newer change
-/// takes the loop over and the old pump dies on its next tick.
+/// A newer change takes the loop over and the old pump dies on its tick.
 static PUMP: AtomicU64 = AtomicU64::new(0);
 
-/// Whether any window's tint is still mid-ease, the signal the pump keeps
-/// painting on. A base or theming change retargets every tint at once, so
-/// one run can cover several windows.
 fn any_tint_easing() -> bool {
     TINTS.read().unwrap().values().any(|t| t.progress() < 1.0)
 }
 
-/// Apply a palette change: paint it once right away, then keep painting
-/// while any window's easing run moves.
 fn drive(cx: &mut App) {
     apply(cx);
     let generation = PUMP.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1934,8 +1575,7 @@ fn drive(cx: &mut App) {
             if cx.update(apply).is_err() {
                 return;
             }
-            // The settled check ran before the apply, so the final frame
-            // painted the target before the pump exits.
+            // Checked before the apply, so the final frame paints the target.
             if settled {
                 return;
             }
@@ -1944,24 +1584,15 @@ fn drive(cx: &mut App) {
     .detach();
 }
 
-/// The shared tail of every palette change: project the gpui-component
-/// theme tokens the widgets draw from the palette as it visibly is,
-/// then repaint every open window. Per ADR 10 the widget theme stays a
-/// projection of our tokens, never the source; everything not projected
-/// here keeps the stock dark set.
+/// Per ADR 10 the widget theme is a projection of our tokens, never the
+/// source; what isn't projected keeps the stock set.
 fn apply(cx: &mut App) {
     let base = *BASE.read().unwrap();
-    // A settled seedless tint reads the same as no entry, so drop those
-    // rather than let idle windows accumulate slots. Runs on the UI thread
-    // between reads, so the write never races a paint.
+    // Drop settled seedless tints, so idle windows don't accumulate slots.
     TINTS
         .write()
         .unwrap()
         .retain(|_, tint| tint.seed.is_some() || tint.progress() < 1.0);
-    // The one widget theme follows the focused window's playback, the
-    // gpui-component theme being a single global. Its own windows' panels
-    // still tint per player through the accessors; this is only the dock
-    // chrome, tables, and inputs the widget theme covers.
     let focused_tint = {
         let tints = TINTS.read().unwrap();
         FOCUSED
@@ -1973,13 +1604,8 @@ fn apply(cx: &mut App) {
         Some(tint) => (tint.snapshot(), base.surface_opacity),
         None => (*base.active(), base.surface_opacity),
     };
-    // Start over from the stock baseline so repeated projections start
-    // from pristine values instead of compounding. The baseline follows the
-    // palette on screen, so the widget tokens we never project (scrollbars,
-    // popovers, dialogs, the ghost/secondary foregrounds) aren't left dark
-    // on a light surface. Read the resolved palette's own lightness, the
-    // same cut derivation makes on a cover, rather than the theme pick: a
-    // dim-authored light theme still gets the baseline that reads on it.
+    // Start from the stock baseline, chosen by the palette's own lightness
+    // rather than the theme pick, so unprojected tokens read on it.
     let light = palette.mean_surface_lightness() > LIGHT_COVER;
     let mode = if light {
         ThemeMode::Light
@@ -1988,88 +1614,50 @@ fn apply(cx: &mut App) {
     };
     Theme::change(mode, None, cx);
     let theme = Theme::global_mut(cx);
-    // The app font size goes through the theme: every window's Root pushes
-    // `font_size` into its rem size per frame, scaling the rem-based text
-    // classes at once. `Theme::change` just reset it to stock, so it
-    // reprojects here like the color tokens below.
+    // `Theme::change` reset the font size, so reproject it.
     theme.font_size = px(base.font_size);
-    // Selection follows the accent instead of the stock blue.
     theme.table_active = alpha(palette.accent, 0x26).into();
     theme.table_active_border = palette.accent.into();
     theme.list_active = alpha(palette.accent, 0x26).into();
     theme.list_active_border = palette.accent.into();
-    // Hairlines follow our border roles instead of the stock set: the
-    // stock dark values were near ours, but a light baseline's read
-    // near-white against the tinted ladder. Borders read plain, like our
-    // own border accessors; a thinned hairline is just a ghost.
+    // Stock hairlines read near-white against the tinted light ladder.
     theme.border = palette.border.into();
     theme.sidebar_border = palette.border.into();
     theme.title_bar_border = palette.border.into();
     theme.table_row_border = palette.border.into();
-    // The scrollbar thumb follows the ink ladder like the faint text next
-    // to it; the track stays the stock transparent. Same alphas as
-    // the stock thumb, resting slightly sheer, opaque under the pointer.
     theme.scrollbar_thumb = alpha(palette.text_faint, 0xe6).into();
     theme.scrollbar_thumb_hover = palette.text_faint.into();
-    // Input boxes: resting border from our border role, focus ring from
-    // the accent, the same pair the hand-rolled search box drew with.
     theme.input = palette.border.into();
     theme.ring = palette.accent.into();
-    // The chrome between the backdrop and the panel content, projected
-    // from the palette roles whose ladder values are nearest the stock
-    // dark set, so palette edits and art tinting recolor the dock and
-    // table along with everything else. One deref up front: field
-    // borrows through the Theme wrapper would each re-borrow it.
+    // One deref up front: field borrows through the Theme wrapper would
+    // each re-borrow it.
     let colors: &mut ThemeColor = theme;
-    // Floating menus (the right-click context menus and their submenus)
-    // are overlays with no backdrop behind them, so they read the raw
-    // palette fields, not the opacity-scaled surface accessors: a popup
-    // stays filled while the panels it floats over thin. gpui-component's
-    // `accent` is its subtle highlight surface, our bg_menu_hover, not the
-    // brand accent, so a selected row matches the menubar dropdown's own
-    // hover instead of flooding with color. Selected text reads a step
-    // brighter than the resting item, the ladder's own order.
+    // Floating menus have no backdrop behind them, so they read the raw
+    // fields. gpui-component's `accent` is its highlight surface, not our
+    // brand accent.
     colors.popover = palette.bg_menu.into();
     colors.popover_foreground = palette.text.into();
     colors.foreground = palette.text.into();
     colors.accent = palette.bg_menu_hover.into();
     colors.accent_foreground = palette.text_bright.into();
-    // The completion menu paints its matched-prefix highlight with the
-    // stock `blue` token; route it through the brand accent so
-    // suggestion matches read in the app's own highlight color.
+    // The completion menu highlights matches with the stock `blue`.
     colors.blue = palette.accent.into();
-    // Washes: visible chrome with nothing of ours underneath (the tab
-    // strip, the active tab, toolbar buttons, the table's row hover),
-    // reading out at surface opacity like our own surface tokens.
     colors.tab_bar = scaled(palette.bg_panel, opacity).into();
     colors.tab_active = scaled(palette.bg_root, opacity).into();
     colors.secondary = scaled(palette.bg_panel, opacity).into();
     colors.table_hover = scaled(palette.bg_menu, opacity).into();
-    // The table's striping and header draw on the panel surface, so they
-    // have to be a step above it, not the same role at a thinner alpha.
-    // Following the tint rule (panel wash, thinned by the square) canceled
-    // out on a translucent skin: bg_panel over bg_panel at 0.3 alpha left
-    // the rows flat. Same recipe the metadata panel's rows use, the one
-    // that reads: the elevated surface at a fixed half alpha, held there
-    // as the panels thin. At full opacity it composites where the old
-    // wash did, so opaque skins look unchanged.
+    // Striping must be a step above the panel. The tint rule cancels out on
+    // a translucent skin, so use the elevated surface at a fixed half alpha.
     let stripe = alpha(palette.bg_elevated, 0x80);
     colors.table_even = stripe.into();
     colors.table_head = stripe.into();
-    // Structural backstops are always under a surface that already
-    // has the wash: the stack body under the panel tiles, the tab
-    // panel body under panel content, the table body over the panel's
-    // own background. Scaling them would stack a second and third fog
-    // layer over the backdrop, so translucency drops them out entirely.
+    // Structural backstops sit under a surface that already has the wash;
+    // scaling them would stack fog, so translucency drops them.
     let structural = if opacity < 1.0 { 0.0 } else { 1.0 };
     colors.background = scaled(palette.bg_root, structural).into();
     colors.table = scaled(palette.bg_root, structural).into();
-    // The ink rule again, for the chrome's own labels and icons, seeded
-    // from the ladder roles nearest their stock dark values. Left stock
-    // they stay gray, which reads as a bug on a high-chroma skin like
-    // Phosphor (gray table headers and search placeholder in a sea of
-    // green). As surfaces thin they lift toward text_bright so tab
-    // titles, dock buttons, and the table header keep contrast.
+    // Chrome labels lift toward text_bright as surfaces thin. Left stock they
+    // stay gray, which reads as a bug on a high-chroma skin like Phosphor.
     colors.tab_foreground = palette.text.into();
     colors.muted_foreground = palette.text_muted.into();
     colors.secondary_foreground = palette.text_bright.into();
@@ -2083,8 +1671,6 @@ fn apply(cx: &mut App) {
     ] {
         *token = mix((*token).into(), palette.text_bright, lift).into();
     }
-    // The static is outside gpui's reactivity, so the repaint is
-    // explicit: wake every window, whichever entities they host.
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -2094,8 +1680,6 @@ fn apply(cx: &mut App) {
 mod tests {
     use super::*;
 
-    /// The hand-rolled Oklch math must survive a roundtrip, or every
-    /// derived palette drifts.
     #[test]
     fn oklch_roundtrips() {
         for hex in [
@@ -2111,8 +1695,6 @@ mod tests {
         }
     }
 
-    /// The settings map must hold a palette losslessly, or the user's
-    /// colors drift a little on every restart.
     #[test]
     fn map_roundtrips() {
         let palette = Palette {
@@ -2128,10 +1710,6 @@ mod tests {
         }
     }
 
-    /// A knob written as one number covers all four sides, and one
-    /// written per side keeps them apart. Uniform knobs go back out as a
-    /// bare number, so a config that never split one doesn't grow an
-    /// object on the next save.
     #[test]
     fn sides_parse() {
         let theme: PanelTheme =
@@ -2140,8 +1718,7 @@ mod tests {
         assert_eq!(theme.margin, Some(Sides::all(4.0)));
         let padding = theme.padding.unwrap();
         assert_eq!((padding.top, padding.left), (2.0, 8.0));
-        // The sides an object leaves out are off, not inherited: the knob
-        // is overridden whole or not at all.
+        // Sides an object leaves out are off, not inherited.
         assert_eq!((padding.right, padding.bottom), (0.0, 0.0));
 
         let json = serde_json::to_string(&theme).unwrap();
@@ -2152,9 +1729,6 @@ mod tests {
         assert_eq!(back.padding, theme.padding);
     }
 
-    /// An older config trimmed its border with an edge mask beside a
-    /// single width, including one it inherited from the app. Both read
-    /// back as per-side widths, and the mask never goes out again.
     #[test]
     fn legacy_border_edges_fold() {
         let own: PanelTheme =
@@ -2165,7 +1739,6 @@ mod tests {
             (0.0, 2.0, 2.0, 2.0)
         );
 
-        // No width of its own: the mask still has to cut the app's.
         let inherited: PanelTheme =
             serde_json::from_str(r#"{"border_edges": {"top": false, "right": false}}"#).unwrap();
         let sides = inherited.border_sides(Sides::all(1.0));
@@ -2174,7 +1747,6 @@ mod tests {
             (0.0, 0.0, 1.0, 1.0)
         );
 
-        // All four on says nothing the widths don't, so it drops on read.
         let unmasked: PanelTheme = serde_json::from_str(
             r#"{"border": 2.0, "border_edges": {"top": true, "right": true, "bottom": true, "left": true}}"#,
         )
@@ -2185,8 +1757,6 @@ mod tests {
         assert!(!json.contains("border_edges"), "{json}");
     }
 
-    /// A seed with only a primary color, at a cover lightness that keeps
-    /// the dark ladder.
     fn dark_seed(color: Rgba) -> Seed {
         Seed {
             primary: Some(color),
@@ -2195,8 +1765,6 @@ mod tests {
         }
     }
 
-    /// A [`Base`] over the designed palettes for the derive tests: dark
-    /// theme active, the writers' inputs at rest.
     fn test_base(keep_theme: bool) -> Base {
         Base {
             dark: Palette::default(),
@@ -2211,8 +1779,6 @@ mod tests {
         }
     }
 
-    /// Derivation's core promise: whatever the seed, every role keeps
-    /// its lightness, so the contrast ladder holds.
     #[test]
     fn derivation_preserves_lightness() {
         let base = Palette::default();
@@ -2236,8 +1802,6 @@ mod tests {
         }
     }
 
-    /// Borders follow the seed past the near-gray cap: a saturated
-    /// album gets dividers that are a shade of it, not gray.
     #[test]
     fn borders_outrun_the_gray_cap() {
         let base = Palette::default();
@@ -2247,16 +1811,10 @@ mod tests {
         let (l, c, h) = rgba_to_oklch(derived.border);
         let (base_l, ..) = rgba_to_oklch(base.border);
         assert!((l - base_l).abs() < 0.02, "border lightness drifted");
-        // The gamut search may still trim the request at border lightness,
-        // but the result must come out clear of the near-gray cap and on
-        // the seed's hue.
         assert!(c > TINT_CAP + 0.02, "border stuck at the gray cap: {c}");
         assert!((h - seed_h).abs() < 0.05, "border missed the hue");
     }
 
-    /// An achromatic cover strips the brand accent to neutral instead of
-    /// leaving it a lone spot of color: a grayscale album gets a grayscale
-    /// app, the accent's lightness held while its color goes.
     #[test]
     fn achromatic_cover_neutralizes_accent() {
         let base = Palette::default();
@@ -2279,15 +1837,11 @@ mod tests {
         }
         let (l, ..) = rgba_to_oklch(derived.accent);
         assert!((l - accent_l).abs() < 0.02, "accent lightness drifted");
-        // The near-gray roles were already neutral and come through
-        // untouched, so the ladder's contrast holds.
         let (text_l, ..) = rgba_to_oklch(derived.text);
         let (base_text_l, ..) = rgba_to_oklch(base.text);
         assert!((text_l - base_text_l).abs() < 0.02, "text drifted");
     }
 
-    /// A bright cover flips the ladder: surfaces light, ink dark, even
-    /// when the cover is too achromatic to tint anything.
     #[test]
     fn bright_cover_goes_light() {
         for primary in [Some(rgb(0xff2200)), None] {
@@ -2306,12 +1860,9 @@ mod tests {
         }
     }
 
-    /// The flip uses the light theme's own palette, not the stock
-    /// ladder: an edit on the light side shows under a bright album.
     #[test]
     fn bright_cover_uses_light_theme_palette() {
         let mut base = test_base(false);
-        // A light theme with its root pulled well below stock.
         base.light.bg_root = rgb(0xc9c9c9);
         let derived = derive(
             &base,
@@ -2331,8 +1882,6 @@ mod tests {
         assert!((edit_l - stock_l).abs() > 0.04, "premise: the edit moved");
     }
 
-    /// The flip runs both ways: with the light theme active, a dark cover
-    /// derives over the dark theme's palette.
     #[test]
     fn dark_cover_flips_a_light_theme_dark() {
         let mut base = test_base(false);
@@ -2344,9 +1893,6 @@ mod tests {
         assert!(text_l > 0.5, "text stayed dark: {text_l}");
     }
 
-    /// Keep-theme holds the active theme's palette under the same bright
-    /// cover that flips the app light: the surfaces stay dark, the ink
-    /// stays light, so the look never leaves the theme.
     #[test]
     fn keep_theme_holds_the_active_palette() {
         let base = Palette::default();
@@ -2372,19 +1918,13 @@ mod tests {
         );
     }
 
-    /// Inverse resolves to the designed ladder, not a raw mirror: an
-    /// untouched dark palette comes back as the hand-tuned light one,
-    /// flipping again returns the original, and a role the user edited
-    /// takes its oklch delta onto the far anchor.
     #[test]
     fn inverse_lands_on_designed_ladder() {
         let dark = Palette::default();
         let light = Palette::light();
         let flipped = dark.inverse();
 
-        // Every role of an untouched dark palette resolves to its light
-        // counterpart, within an oklch round-trip's slack. Compared in
-        // sRGB, since the near-gray roles have no meaningful hue to match.
+        // Compared in sRGB: the near-gray roles have no meaningful hue.
         for role in ROLES {
             let flip = (role.get)(&flipped);
             let want = (role.get)(&light);
@@ -2397,11 +1937,9 @@ mod tests {
             );
         }
 
-        // The flip changed mode, not just hue: surfaces brighten, ink darkens.
         assert!(rgba_to_oklch(flipped.bg_root).0 > rgba_to_oklch(dark.bg_root).0);
         assert!(rgba_to_oklch(flipped.text).0 < rgba_to_oklch(dark.text).0);
 
-        // Flipping the light result returns to the original dark ladder.
         let round = flipped.inverse();
         for role in ROLES {
             let (rl, ..) = rgba_to_oklch((role.get)(&round));
@@ -2413,8 +1951,6 @@ mod tests {
             );
         }
 
-        // A user edit transfers: recolor a neutral role, and its oklch
-        // delta from the dark anchor reappears on the light one.
         let mut edited = dark;
         edited.bg_panel = rgb(0x0a1a2e);
         let flipped = edited.inverse();
@@ -2429,10 +1965,6 @@ mod tests {
         assert!(flip_c > light_c, "edit chroma didn't carry");
     }
 
-    /// The runner-up cover color takes the highlight role as itself:
-    /// its hue holds, its lightness ends up in the mark band opposite
-    /// the surfaces, and enough chroma survives the clamp to read as
-    /// the cover's color rather than a gray.
     #[test]
     fn secondary_takes_highlight() {
         let blue = rgb(0x2244ff);
@@ -2460,10 +1992,6 @@ mod tests {
         }
     }
 
-    /// A panel scope's promise: overridden roles read as written, the
-    /// rest fall through, an overridden opacity scales and lifts like the
-    /// app's, and everything is back to the app palette once the scope
-    /// drops.
     #[test]
     fn scope_overrides_and_falls_through() {
         let mut theme = PanelTheme::default();
@@ -2475,8 +2003,6 @@ mod tests {
         let outside_text = text();
         scoped(&scope, || {
             assert_rgb_eq(accent(), rgb(0x2244ff), "overridden accent");
-            // Not overridden: same color as outside, but at the scope's
-            // opacity: a surface thins, ink lifts halfway to bright.
             let root = bg_root();
             assert!((root.a - 0.5).abs() < 0.001, "surface kept app opacity");
             assert_rgb_eq(text(), mix(outside_text, text_bright(), 0.5), "lifted ink");
@@ -2485,10 +2011,6 @@ mod tests {
         assert!((bg_root().a - 1.0).abs() < 0.001, "opacity after the scope");
     }
 
-    /// A reference override follows its app role: inside the scope the
-    /// panel's root reads as whatever the accent resolves to, and the
-    /// picker-seeding resolve returns the same. A value naming no role
-    /// drops out the way a bad hex does.
     #[test]
     fn scope_reference_follows_role() {
         let mut theme = PanelTheme::default();
@@ -2511,8 +2033,6 @@ mod tests {
         });
     }
 
-    /// The theme's map shape survives a config roundtrip, and an empty
-    /// theme serializes to nothing at all.
     #[test]
     fn panel_theme_roundtrips() {
         let mut theme = PanelTheme::default();

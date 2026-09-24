@@ -1,11 +1,10 @@
 //! The Providers settings page (ADR 14): a toggle per online enrichment
-//! service, a section per domain.
+//! service. Nothing fetches on its own; the toggles gate the actions the panels
+//! offer.
 
 use super::*;
 
 impl SettingsWindow {
-    /// The lrclib toggle: through the live static, so the lyrics panel's
-    /// fetch action appears and hides with it, and into the file.
     fn set_lrclib(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.lrclib = on;
         providers::set_lyrics_online(on);
@@ -14,8 +13,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Where a fetched sheet saves: straight into the file, read at
-    /// fetch time.
     fn set_lyrics_save(&mut self, save: LyricsSave, cx: &mut Context<Self>) {
         self.providers.lyrics_save = save;
         let config = self.providers.clone();
@@ -23,8 +20,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The MusicBrainz toggle: through the live static, so the metadata
-    /// panel's lookup action appears and hides with it, and into the file.
     fn set_musicbrainz(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.musicbrainz = on;
         providers::set_metadata_online(on);
@@ -33,9 +28,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The AcoustID toggle, MusicBrainz's twin: through the live static,
-    /// so the metadata compare's identify button appears and hides with
-    /// it, and into the file.
     fn set_acoustid(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.acoustid = on;
         providers::set_acoustid_online(on);
@@ -44,8 +36,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The iTunes cover-art toggle: through the live static and into the
-    /// file, so the cover editor's search follows it.
     fn set_itunes(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.itunes = on;
         providers::set_itunes_online(on);
@@ -54,7 +44,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Deezer cover-art toggle, iTunes's twin.
     fn set_deezer(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.deezer = on;
         providers::set_deezer_online(on);
@@ -63,7 +52,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Last.fm cover-art toggle, Deezer's twin.
     fn set_lastfm_art(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.lastfm_art = on;
         providers::set_lastfm_art_online(on);
@@ -72,8 +60,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The artist-lookup toggle: through the live static, so the
-    /// biography panel's fetches follow it.
     fn set_artist(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.artist = on;
         providers::set_artist_online(on);
@@ -82,9 +68,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Providers page: the online enrichment services (ADR 14), a
-    /// section per domain. Nothing here fetches on its own; the toggles
-    /// gate the actions the panels offer.
     pub(super) fn providers_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new()
             .section(Section::new(
@@ -149,10 +132,8 @@ impl SettingsWindow {
                     .row_dyn(
                         &["lookup", "online", "fingerprint", "identify", "key"],
                         rox_i18n::t!("settings-providers-acoustid-key"),
-                        // The hint only shows on a build that ships its
-                        // own key, where the row is genuinely optional.
-                        // Without one, nothing identifies until this is
-                        // filled and the bare row says enough.
+                        // The hint only shows on a build that ships its own key,
+                        // where the row is optional.
                         (!providers::acoustid::CLIENT_KEY.is_empty())
                             .then(|| rox_i18n::t!("settings-providers-acoustid-key-hint")),
                         Input::new(&self.acoustid_key).w(px(240.)),

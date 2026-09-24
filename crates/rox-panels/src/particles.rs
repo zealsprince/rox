@@ -1,15 +1,8 @@
 //! The particles panel: a field of emitters, made musical by routing the
-//! app's shared signals onto its knobs. An emitter itself is pure geometry
-//! and throw (a point, a line, a box, or a ring, placed anywhere, with its
-//! own size, life, and speed); unbound it fountains at its sliders,
-//! independent of the music. Reactivity is all routes: bind a kick signal
-//! to a rate and the field breathes, put a burst emitter on an onset
-//! signal and it pops per hit, and the same signal can drive gravity,
-//! turbulence, or another panel entirely, since the pool is app-wide and
-//! evaluated once per frame in the [`SignalHub`]. The scene's gravity and
-//! drag pull on everything in flight; the force field adds drift on top.
-//! Everything is paint primitives on the UI thread, and once the last
-//! particle dies the panel stops asking for frames.
+//! app's shared signals onto its knobs. An emitter is pure geometry and
+//! throw; unbound it fountains at its sliders. Reactivity is all routes,
+//! evaluated once per frame in the app-wide [`SignalHub`]. The panel stops
+//! asking for frames once the last particle dies.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -36,64 +29,46 @@ use crate::panel_settings;
 use crate::settings::ui::{self as settings_ui, SECTION_GAP, section};
 use crate::signal_ui::{self, RouteHost, RouteTargets, SignalHost, SignalUi};
 
-/// Where a burst emitter's routed signal reads as a hit and where it
-/// re-arms, with hysteresis between so one swell can't stutter-fire.
+/// Hysteresis between fire and re-arm, so one swell can't stutter-fire.
 const BURST_FIRE: f32 = 0.6;
 const BURST_REARM: f32 = 0.3;
 
-/// The ceiling on live particles. A pinned emitter at the top rate would
-/// run away over a long track otherwise; past this, spawns are dropped
-/// until the older ones age out.
+/// Past this, spawns drop until older particles age out; a pinned
+/// emitter would run away otherwise.
 const MAX_PARTICLES: usize = 4000;
 
-/// How far outside the panel a particle may drift before it's culled, as
-/// a fraction of the panel's larger side with a floor in px. Generous
-/// enough that one thrown past the edge can still arc back under gravity.
+/// Past the edge by a fraction of the larger side, with a px floor, so a
+/// thrown particle can arc back under gravity.
 const CULL_MARGIN: f32 = 0.25;
 const CULL_MARGIN_MIN: f32 = 64.0;
 
-/// The emission rate slider's span, particles per second. The floor is
-/// zero because the rate is the whole story now that emitters have no
-/// threshold of their own: a route resting at its Quiet end has to be
-/// able to stop the emitter outright, and a hand-dragged rate gets to
-/// silence the same way.
+/// The floor is zero because emitters have no threshold of their own: a
+/// route resting at its Quiet end has to be able to stop one.
 const RATE_MIN: f32 = 0.0;
 const RATE_MAX: f32 = 300.0;
 
-/// The launch speed slider's span, px per second.
 const SPEED_MIN: f32 = 0.0;
 const SPEED_MAX: f32 = 600.0;
 
-/// The burst slider's span, particles thrown per onset when an emitter
-/// fires on transients instead of a steady rate.
 const BURST_MIN: f32 = 1.0;
 const BURST_MAX: f32 = 120.0;
 
-/// The scene gravity slider's span, px per second squared.
 const GRAVITY_MAX: f32 = 900.0;
 
-/// The drag slider's span, per second: how much of a particle's speed the
-/// medium eats each second. Zero is a vacuum.
+/// Per second; zero is a vacuum.
 const DRAG_MAX: f32 = 4.0;
 
-/// The turbulence sliders' spans: how hard the field pushes (px per second
-/// squared), how wide one swirl runs (px), and how fast the field drifts.
 const TURB_MAX: f32 = 600.0;
 const TURB_SCALE_MIN: f32 = 40.0;
 const TURB_SCALE_MAX: f32 = 600.0;
 const TURB_SPEED_MAX: f32 = 2.0;
 
-/// The lifetime slider's span, seconds.
 const LIFE_MIN: f32 = 0.2;
 const LIFE_MAX: f32 = 6.0;
 
-/// The particle size slider's span, px.
 const SIZE_MIN: f32 = 1.0;
 const SIZE_MAX: f32 = 16.0;
 
-/// The footprint an emitter spawns across. A line along an edge aimed
-/// outward is the plain visualizer look; a point or a ring is the burst
-/// the edge-bound version could never do.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Shape {
@@ -104,9 +79,6 @@ pub enum Shape {
     Ring,
 }
 
-/// Where a particle heads when it spawns: the emitter's fixed angle, or
-/// away from the emitter's center. Outward makes a ring burst and a point
-/// spray in every direction.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Aim {
@@ -131,9 +103,6 @@ fn aim_choices() -> [(SharedString, Aim); 2] {
     ]
 }
 
-/// How an emitter turns activation into spawns: a steady stream scaled by
-/// how hard it fires, or a burst on each onset so a kick pops in one puff
-/// instead of dribbling while the hit sustains.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Trigger {
@@ -152,19 +121,13 @@ fn trigger_choices() -> [(SharedString, Trigger); 2] {
     ]
 }
 
-/// One scene or force knob a route may drive: the persisted id, the label
-/// the target list shows, and how a route's factor applies to it. The
-/// factor scales the knob's own setting, so the slider stays the
-/// reference a route works against rather than going dead once bound, and
-/// a knob set to zero is off, route or no route. The ids only ever grow;
-/// a config with an unknown one goes quiet rather than misfiring.
-/// Making a new value bindable is one entry here plus wrapping its
-/// settings row in [`crate::signal_ui::bindable_row`].
+/// The factor scales the knob's own setting, so the slider stays the
+/// reference a route works against. The ids only ever grow. To make a
+/// value bindable, add an entry here and wrap its row in
+/// [`crate::signal_ui::bindable_row`].
 struct BindTarget {
     id: &'static str,
-    /// A rox-i18n key, resolved at the point of use rather than here: a
-    /// `const` array can't hold the locale-dependent `SharedString` `t!`
-    /// returns.
+    /// An i18n key: a `const` array can't hold the `SharedString` `t!` returns.
     label_key: &'static str,
     apply: fn(&mut Scene, &mut Forces, f32),
 }
@@ -197,12 +160,8 @@ const BIND_TARGETS: &[BindTarget] = &[
     },
 ];
 
-/// [`BindTarget`]'s per-emitter counterpart: the knob id is part of an
-/// `e<id>.<knob>` target against the emitter's stable id, and the factor
-/// scales that emitter's own setting.
 struct EmitterBindTarget {
     id: &'static str,
-    /// See [`BindTarget::label_key`].
     label_key: &'static str,
     apply: fn(&mut Emitter, f32),
 }
@@ -240,57 +199,39 @@ const EMITTER_BIND_TARGETS: &[EmitterBindTarget] = &[
     },
 ];
 
-/// One emitter: pure geometry and throw. It has no audio of its own;
-/// reactivity arrives by routing pool signals onto its knobs, and unbound
-/// it just runs at its sliders, a fountain independent of the music.
+/// No audio of its own: reactivity arrives through routes onto its knobs.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Emitter {
-    /// A stable handle routes point at, unique within the panel and
-    /// persisted, so a route holds up when removals shift the list under it.
+    /// Stable and persisted, so a route survives removals shifting the list.
     /// 0 is unassigned; the panel assigns on load and on add.
     pub id: u64,
-    /// Whether the emitter fires. Off keeps it in the list, tuned, silent.
     pub enabled: bool,
-    /// Particles per second in continuous mode.
     pub rate: f32,
-    /// Whether the emitter streams at `rate` or pops a `burst` when its
-    /// routed signal rises. Burst without a route on the burst knob stays
-    /// silent: the route is the trigger.
+    /// Burst with no route on the burst knob stays silent: the route is the
+    /// trigger.
     pub mode: Trigger,
-    /// Particles thrown per pop in burst mode.
     pub burst: f32,
-    /// Particle size, px, and lifetime, seconds, varied a little per
-    /// particle. Per emitter, so bass smoke and hat sparks coexist.
+    /// Size in px, life in seconds, both varied a little per particle.
     pub size: f32,
     pub life: f32,
-    /// The footprint particles spawn across.
     pub shape: Shape,
-    /// The footprint's center, as fractions of the panel, so a resize
-    /// keeps the arrangement instead of scattering it.
+    /// Fractions of the panel, so a resize keeps the arrangement.
     pub x: f32,
     pub y: f32,
-    /// The footprint's extent, as fractions of the panel. A line uses
-    /// `width` as its length, a box uses both, a ring uses `width` as its
-    /// radius, and a point uses neither.
+    /// Fractions of the panel. A line uses `width` as its length, a box both,
+    /// a ring `width` as its radius, a point neither.
     pub width: f32,
     pub height: f32,
-    /// The footprint's rotation, degrees clockwise. A line at 0 runs
-    /// horizontally. Rings and points ignore it.
+    /// Degrees clockwise; a line at 0 runs horizontally.
     pub rotation: f32,
-    /// Whether particles follow the fixed angle below or head away from
-    /// the emitter's center.
     pub aim: Aim,
-    /// The launch angle, degrees clockwise from up.
+    /// Degrees clockwise from up.
     pub direction: f32,
-    /// The spread around the launch angle, degrees: 0 is a beam, 360
-    /// throws every way.
+    /// Degrees around the launch angle: 0 is a beam, 360 throws every way.
     pub cone: f32,
-    /// Launch speed, px per second, varied a little per particle and
-    /// leaned on by how hard the emitter is firing.
     pub speed: f32,
-    /// The particles' color, `#rrggbb`. None follows the theme accent, so
-    /// an emitter left alone tracks song theming.
+    /// `#rrggbb`; None follows the theme accent.
     pub color: Option<String>,
 }
 
@@ -344,8 +285,6 @@ impl Emitter {
         self.cone.clamp(0.0, 360.0)
     }
 
-    /// The footprint's center and extent, clamped so a hand-edited file
-    /// can't park an emitter off the panel or invert its size.
     fn center(&self) -> (f32, f32) {
         (self.x.clamp(0.0, 1.0), self.y.clamp(0.0, 1.0))
     }
@@ -358,8 +297,6 @@ impl Emitter {
         self.height.clamp(0.0, 2.0)
     }
 
-    /// The emitter's color, falling back to the accent when unset and when
-    /// a hand-edited hex doesn't parse.
     fn color(&self) -> Rgba {
         self.color
             .as_deref()
@@ -367,8 +304,6 @@ impl Emitter {
             .unwrap_or_else(palette::accent)
     }
 
-    /// A fresh emitter for the Add button: the last one's look, nudged off
-    /// its spot so the two don't paint as one.
     fn next_after(previous: Option<&Emitter>) -> Emitter {
         let Some(previous) = previous else {
             return Emitter::default();
@@ -381,23 +316,15 @@ impl Emitter {
     }
 }
 
-/// The scene: the settings the whole field runs in, apart from any one emitter.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Scene {
-    /// Constant pull on everything in flight, px per second squared, and
-    /// the direction it pulls, degrees clockwise from up. 180 is down.
+    /// Px per second squared, and the angle in degrees clockwise from up.
     pub gravity: f32,
     pub gravity_angle: f32,
-    /// How much speed the medium eats per second. Zero is a vacuum.
     pub drag: f32,
-    /// Draw particles as dots rather than squares.
     pub round: bool,
-    /// Lay a soft halo behind each particle so it reads as light rather than
-    /// a flat chip.
     pub glow: bool,
-    /// Freeze the field while playback is paused instead of letting it
-    /// drift out.
     pub freeze: bool,
 }
 
@@ -424,16 +351,12 @@ impl Scene {
     }
 }
 
-/// The force field laid over the scene: drift that varies across the panel
-/// rather than pulling one way. Where attractors would join.
+/// Drift that varies across the panel rather than pulling one way.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Forces {
-    /// How hard the field pushes, px per second squared. Zero is off.
     pub turbulence: f32,
-    /// How wide one swirl runs, px: small values churn, large ones roll.
     pub turbulence_scale: f32,
-    /// How fast the field itself drifts, so the swirls don't stand still.
     pub turbulence_speed: f32,
 }
 
@@ -461,30 +384,19 @@ impl Forces {
     }
 }
 
-/// The particles panel's per-view config: what a saved layout restores and
-/// what the customize window edits. Missing fields take the defaults, so a
-/// layout dumped before a field existed still loads.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ParticlesConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The emitters, in the order the customize window lists them.
     pub emitters: Vec<Emitter>,
-    /// Attachments of the app's shared signals onto this panel's knobs. A
-    /// route whose signal is gone from the pool goes quiet, never wrong.
+    /// A route whose signal is gone from the pool goes quiet.
     pub routes: Vec<Route>,
     pub scene: Scene,
     pub forces: Forces,
 }
 
 impl Default for ParticlesConfig {
-    /// A fresh panel gets one emitter rather than an empty field, so it
-    /// draws something the moment it's dropped into the dock. An emptied
-    /// list is still respected: the layout dump writes `"emitters": []`,
-    /// and only a config missing the field falls back to this.
     fn default() -> Self {
         ParticlesConfig {
             chrome: PanelChrome::default(),
@@ -496,10 +408,8 @@ impl Default for ParticlesConfig {
     }
 }
 
-/// Give every emitter a unique id, keeping the ones a loaded config
-/// already has: zeroes (configs from before ids existed) and hand-edited
-/// duplicates get fresh ones, and any binding that pointed at a replaced
-/// id goes quiet rather than firing at the wrong emitter.
+/// Zeroes and hand-edited duplicates get fresh ids, so a stale binding
+/// goes quiet instead of firing at the wrong emitter.
 fn assign_emitter_ids(emitters: &mut [Emitter]) {
     let mut next = emitters.iter().map(|e| e.id).max().unwrap_or(0) + 1;
     for i in 0..emitters.len() {
@@ -511,15 +421,13 @@ fn assign_emitter_ids(emitters: &mut [Emitter]) {
     }
 }
 
-/// A binding target's emitter route, `e<id>.<knob>`, if it's one of those.
 fn emitter_route(target: &str) -> Option<(u64, &str)> {
     let (id, knob) = target.strip_prefix('e')?.split_once('.')?;
     Some((id.parse().ok()?, knob))
 }
 
-/// The frame's working copies the routes write into, dispatching plain ids
-/// through the scene and force table and `e<id>.<knob>` ids through the
-/// emitter table. Unknown ids fall through quietly, the tables' contract.
+/// Dispatches plain ids through the scene and force table and
+/// `e<id>.<knob>` through the emitter table. Unknown ids fall through.
 struct Modulated {
     emitters: Vec<Emitter>,
     scene: Scene,
@@ -564,8 +472,6 @@ impl RouteTargets for Modulated {
     }
 }
 
-/// Resolve the routes against the hub's live signals into the emitters,
-/// scene, and forces this frame runs with.
 fn modulated(config: &ParticlesConfig, hub: &SignalHub) -> (Vec<Emitter>, Scene, Forces) {
     let mut targets = Modulated {
         emitters: config.emitters.clone(),
@@ -576,8 +482,8 @@ fn modulated(config: &ParticlesConfig, hub: &SignalHub) -> (Vec<Emitter>, Scene,
     (targets.emitters, targets.scene, targets.forces)
 }
 
-/// The signal a burst emitter watches for its trigger: the last enabled
-/// route onto its burst knob, matching the order [`modulated`] applies.
+/// The last enabled route onto the burst knob, matching the order
+/// [`modulated`] applies.
 fn burst_signal(config: &ParticlesConfig, emitter_id: u64) -> Option<u64> {
     let target = format!("e{emitter_id}.burst");
     config
@@ -588,16 +494,13 @@ fn burst_signal(config: &ParticlesConfig, emitter_id: u64) -> Option<u64> {
         .map(|r| r.signal)
 }
 
-/// A heading in degrees clockwise from up as a unit vector in panel space,
-/// where y runs down. 0 is up, 90 is right, 180 is down.
 fn heading(degrees: f32) -> (f32, f32) {
     let r = degrees.to_radians();
     (r.sin(), -r.cos())
 }
 
-/// xorshift32. The field needs scatter, not statistics, and rolling it here
-/// keeps the crate's dependency list where it is, the same call the FFT in
-/// rox-viz makes.
+/// xorshift32: the field needs scatter, not statistics, and this keeps a
+/// dependency out.
 fn rand01(state: &mut u32) -> f32 {
     *state ^= *state << 13;
     *state ^= *state >> 17;
@@ -605,7 +508,6 @@ fn rand01(state: &mut u32) -> f32 {
     (*state >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// One lattice point of the turbulence field, hashed to 0..1.
 fn hash2(x: i32, y: i32, seed: u32) -> f32 {
     let mut h = (x as u32).wrapping_mul(0x27d4_eb2d) ^ (y as u32).wrapping_mul(0x1656_67b1) ^ seed;
     h ^= h >> 15;
@@ -616,9 +518,8 @@ fn hash2(x: i32, y: i32, seed: u32) -> f32 {
     (h >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// Smoothed value noise over that lattice, 0..1. Neighbouring particles
-/// read nearly the same value, so the drift looks like wind rather than
-/// per-particle jitter.
+/// Smoothed, so neighbours read nearly the same value and the drift looks
+/// like wind rather than jitter.
 fn noise2(x: f32, y: f32, seed: u32) -> f32 {
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
@@ -634,7 +535,6 @@ fn noise2(x: f32, y: f32, seed: u32) -> f32 {
     top + (bottom - top) * sy
 }
 
-/// One live particle, in panel pixels.
 struct Particle {
     x: f32,
     y: f32,
@@ -646,25 +546,18 @@ struct Particle {
     color: Rgba,
 }
 
-/// Per-panel sim state, shared with the paint closure the way the spectrum
-/// shares its bars: the entity holds the handle, the closure does the
-/// per-frame work where the bounds are known. The audio analysis itself is
-/// in the app's shared [`SignalHub`]; the sim only reads values.
+/// The audio analysis lives in the shared [`SignalHub`]; the sim only
+/// reads values.
 struct Sim {
     last_tick: Option<Instant>,
-    /// The fraction of a particle each emitter carried over from the last tick,
-    /// so a slow rate still fires at its average instead of rounding to
-    /// zero.
+    /// Fractional spawns carried between ticks, so a slow rate doesn't round
+    /// to zero.
     carry: Vec<f32>,
-    /// Whether each burst emitter is ready to fire again, re-armed once
-    /// its routed signal falls back, so one rise throws one pop.
+    /// Re-armed once the routed signal falls back, so one rise throws one pop.
     armed: Vec<bool>,
     particles: Vec<Particle>,
-    /// Seconds the sim has run, for drifting the turbulence field.
     clock: f32,
     rng: u32,
-    /// Particles still on screen: render keeps requesting frames until this
-    /// clears.
     alive: bool,
 }
 
@@ -681,10 +574,7 @@ impl Sim {
         }
     }
 
-    /// One tick: resolve the routes into this frame's emitters and field
-    /// (reading them advances the shared hub), fire what they call for, and move what
-    /// is already in the air. `hold` is the freeze-on-pause option, which
-    /// parks the field where it stands.
+    /// Reading the routes advances the shared hub. `hold` parks the field.
     fn step(&mut self, hub: &SignalHub, w: f32, h: f32, config: &ParticlesConfig, hold: bool) {
         let now = Instant::now();
         let dt = self
@@ -694,7 +584,6 @@ impl Sim {
         self.last_tick = Some(now);
 
         if hold {
-            // Frozen: the standing frame keeps painting, and nothing ages.
             self.alive = false;
             return;
         }
@@ -711,17 +600,13 @@ impl Sim {
             }
             let color = emitter.color();
             let due = match emitter.mode {
-                // Continuous runs at its rate, routed or not: an unbound
-                // emitter is a fountain independent of the music.
                 Trigger::Continuous => {
                     self.carry[i] += emitter.rate() * dt;
                     let due = self.carry[i].floor();
                     self.carry[i] -= due;
                     due as usize
                 }
-                // The pop fires on the routed signal's rising edge, with
-                // hysteresis so one swell can't stutter-fire. No route on
-                // the burst knob means no trigger at all.
+                // Fires on the rising edge, with hysteresis.
                 Trigger::Burst => {
                     let value = burst_signal(config, emitter.id)
                         .and_then(|id| hub.value(id))
@@ -748,15 +633,11 @@ impl Sim {
         self.advance(w, h, dt, &scene, &forces);
     }
 
-    /// Launch one particle for an emitter: somewhere on its footprint,
-    /// headed the way it aims, scattered enough that a steady emitter reads
-    /// as a plume rather than a line.
     fn spawn(&mut self, emitter: &Emitter, w: f32, h: f32, color: Rgba) {
         let (fx, fy) = emitter.center();
         let (cx, cy) = (fx * w, fy * h);
         let rot = emitter.rotation.to_radians();
-        // Where on the footprint the particle appears, and how far it is
-        // from the center, the direction Outward aims along.
+        // The offset from the center is also the direction Outward aims along.
         let (ox, oy) = match emitter.shape {
             Shape::Point => (0.0, 0.0),
             Shape::Line => {
@@ -778,9 +659,8 @@ impl Sim {
             }
         };
 
-        // Outward heads away from the center; a particle sitting exactly on
-        // it has no outward to speak of, so it takes a random heading and
-        // the cone spreads from there.
+        // A particle exactly on the center has no outward, so it takes a random
+        // heading.
         let base = match emitter.aim {
             Aim::Outward if ox.abs() > 1e-4 || oy.abs() > 1e-4 => ox.atan2(-oy).to_degrees(),
             Aim::Outward => rand01(&mut self.rng) * 360.0,
@@ -803,9 +683,6 @@ impl Sim {
         });
     }
 
-    /// Move everything in flight one step, and drop what has aged out or
-    /// drifted too far to come back. Retain keeps the order stable, so
-    /// older particles paint under newer ones.
     fn advance(&mut self, w: f32, h: f32, dt: f32, scene: &Scene, forces: &Forces) {
         let (gx, gy) = heading(scene.gravity_angle);
         let gravity = scene.gravity();
@@ -819,8 +696,7 @@ impl Sim {
         self.particles.retain_mut(|p| {
             let (mut ax, mut ay) = (gx, gy);
             if turbulence > 0.0 {
-                // Two lookups off the same field, offset so the x and y
-                // pushes don't march in lockstep.
+                // Offset lookups so the x and y pushes don't march in lockstep.
                 let nx = noise2(p.x * inv_scale, p.y * inv_scale + drift, 0x51ed_2701) - 0.5;
                 let ny = noise2(p.x * inv_scale + 37.5, p.y * inv_scale + drift, 0x9e17_84b5) - 0.5;
                 ax += nx * 2.0 * turbulence;
@@ -839,12 +715,10 @@ impl Sim {
     fn paint(&self, bounds: Bounds<gpui::Pixels>, window: &mut Window, scene: &Scene) {
         let origin = bounds.origin;
         for p in &self.particles {
-            // Fade out over the back half of the life, so a particle dies
-            // by dimming instead of blinking off mid-flight.
+            // Fade over the back half of the life instead of blinking off.
             let t = (p.age / p.life).clamp(0.0, 1.0);
             let fade = ((1.0 - t) * 2.0).min(1.0);
-            // A dim, wide halo under the core uses the same fade, so a
-            // particle glows out instead of blinking off.
+            // The halo shares the core's fade.
             if scene.glow {
                 let halo = p.size * 2.5;
                 let color = palette::alpha(p.color, (fade * 70.0) as u8);
@@ -885,15 +759,10 @@ impl Sim {
     }
 }
 
-/// How close to an emitter's center a press has to land to grab it in the
-/// editor, px.
 const GRAB_RADIUS: f32 = 24.0;
 
-/// The editor overlay: every emitter's footprint dotted onto the field and
-/// its center as the grab handle, in the emitter's own color so the markers
-/// read against the settings list. Disabled emitters dim; the dragged one
-/// swells. Dots are the one outline every shape can be drawn with under
-/// axis-aligned quads, rotation included.
+/// Dots are the one outline every shape can draw with axis-aligned quads,
+/// rotation included.
 fn paint_markers(
     config: &ParticlesConfig,
     drag: Option<usize>,
@@ -937,7 +806,7 @@ fn paint_markers(
                 let bh = emitter.height() * h;
                 let n = (((bw + bh) / 14.0) as usize).clamp(8, 64);
                 for k in 0..n {
-                    // Walk the perimeter as one 0..4 loop, a side per unit.
+                    // The perimeter as one 0..4 loop, a side per unit.
                     let t = k as f32 / n as f32 * 4.0;
                     let (lx, ly) = match t as usize {
                         0 => ((t - 0.5) * bw, -bh / 2.0),
@@ -975,8 +844,6 @@ fn paint_markers(
     }
 }
 
-/// The settings sliders' painted bounds and drag state for one emitter, one
-/// per slider so a drag on one never moves the others.
 #[derive(Default)]
 struct EmitterScrubs {
     rate: ScrubState,
@@ -993,8 +860,6 @@ struct EmitterScrubs {
     speed: ScrubState,
 }
 
-/// A labelled config toggle for the Display menu: the row label, a getter
-/// for its current state, and a setter that flips it.
 type ConfigToggle = (
     SharedString,
     fn(&ParticlesPanel) -> bool,
@@ -1005,16 +870,12 @@ pub struct ParticlesPanel {
     state: AppState,
     config: ParticlesConfig,
     sim: Arc<Mutex<Sim>>,
-    /// Per-emitter slider state, kept the same length as the list.
     emitter_scrubs: Vec<EmitterScrubs>,
-    /// Per-emitter color pickers, built on the first settings render and
-    /// rebuilt whenever the count changes: the panel itself constructs
-    /// without a window, which the picker state needs, and a removed
-    /// emitter shifts every index after it.
+    /// Built on the first settings render (the picker state needs a window)
+    /// and rebuilt on a count change, since a removal shifts every index.
     emitter_pickers: Vec<Entity<ColorPickerState>>,
     _emitter_changes: Vec<Subscription>,
-    /// The shared route and pool widgets' state, kept in step with the
-    /// lists by [`signal_ui::sync`] on every settings render.
+    /// Kept in step with the lists by [`signal_ui::sync`].
     signal_ui: SignalUi,
     gravity_scrub: ScrubState,
     gravity_angle_scrub: ScrubState,
@@ -1023,21 +884,14 @@ pub struct ParticlesPanel {
     turb_scale_scrub: ScrubState,
     turb_speed_scrub: ScrubState,
     focus: FocusHandle,
-    /// The one readout being typed into across all the settings sliders.
     value_edit: ValueEdit,
-    /// The editor overlay: markers over the field for arranging emitters
-    /// by hand. Session state, deliberately not persisted.
+    /// Session state, not persisted.
     edit: bool,
-    /// The emitter following the pointer while the editor is on.
     drag: Option<usize>,
-    /// The field canvas's painted bounds, for mapping editor presses into
-    /// emitter fractions, the scrub strips' arrangement.
+    /// For mapping editor presses into emitter fractions.
     canvas_bounds: Arc<Mutex<Bounds<Pixels>>>,
-    /// The tab panel that currently hosts this panel, for duplicate and
-    /// pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Wakes the panel when a session starts, so an idle window resumes
-    /// animating without the player bar's frame pump.
+    /// Wakes an idle window when a session starts.
     _player_changed: Subscription,
 }
 
@@ -1083,8 +937,6 @@ impl ParticlesPanel {
         }
     }
 
-    /// A press in the editor: pick the emitter whose center is nearest,
-    /// within the grab radius, and let it follow the pointer.
     fn editor_grab(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
         let bounds = *self.canvas_bounds.lock().unwrap();
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
@@ -1108,7 +960,6 @@ impl ParticlesPanel {
         }
     }
 
-    /// Carry the dragged emitter with the pointer, clamped to the panel.
     fn editor_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
         let Some(index) = self.drag else { return };
         let bounds = *self.canvas_bounds.lock().unwrap();
@@ -1123,9 +974,6 @@ impl ParticlesPanel {
         }
     }
 
-    /// The panel's own dropdown entries: a Display flyout of the toggles
-    /// the customize window also holds, for a quick flip without opening
-    /// it.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -1170,9 +1018,7 @@ impl ParticlesPanel {
     }
 }
 
-/// The shared route and pool widgets read this panel through the trait:
-/// its routes are per-view config, its widget state the embedded bundle,
-/// and its value edit the panel-wide one so a route slider and an emitter
+/// The value edit is the panel-wide one, so a route slider and an emitter
 /// slider never type at once.
 impl SignalHost for ParticlesPanel {
     fn hub(&self) -> &Arc<SignalHub> {
@@ -1196,8 +1042,6 @@ impl SignalHost for ParticlesPanel {
     }
 }
 
-/// The routes are this view's own, unlike the pool they read from: two
-/// particles panels bind their own knobs to the same signals.
 impl RouteHost for ParticlesPanel {
     fn routes_mut(&mut self) -> &mut Vec<Route> {
         &mut self.config.routes
@@ -1224,9 +1068,7 @@ impl PanelSettings for ParticlesPanel {
     }
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
-        // No Signals page: the pool is app-wide, so it has a window of its
-        // own, the app's signals window. What stays here is the binding,
-        // which belongs to this panel's knobs.
+        // No Signals page: the pool is app-wide and has its own window.
         &[
             ("Emitters", icons::AUDIO_LINES),
             ("Forces", icons::MOVE),
@@ -1240,9 +1082,8 @@ impl PanelSettings for ParticlesPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Any page can host a route's tuning rows, so the route and signal
-        // slider state syncs here: a route created from a Forces row must
-        // find its scrubs on the very next render.
+        // Synced here because any page can host a route's rows: a route made
+        // from a Forces row needs its scrubs on the next render.
         signal_ui::sync(self);
         match page {
             "Forces" => self.forces_page(cx).into_any_element(),
@@ -1251,10 +1092,8 @@ impl PanelSettings for ParticlesPanel {
         }
     }
 
-    /// Hold on Pause sits on the shared Behavior page rather than on the
-    /// Scene page: it's about how the panel acts when the audio stops, not
-    /// what the scene looks like, and that's where every other panel keeps
-    /// its behavior switches.
+    /// Hold on Pause lives on the shared Behavior page with every other
+    /// panel's behavior switches.
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             section(
@@ -1279,7 +1118,6 @@ impl PanelSettings for ParticlesPanel {
 }
 
 impl ParticlesPanel {
-    /// The Emitters page: the list, each emitter a block of its own rows.
     fn emitters_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         self.sync_emitter_state(window, cx);
         let count = self.config.emitters.len();
@@ -1308,9 +1146,8 @@ impl ParticlesPanel {
         ))
     }
 
-    /// Keep the per-emitter slider and picker state in step with the list.
-    /// The pickers are rebuilt whole on a count change: their subscriptions
-    /// write back by index, and a removal shifts every index after it.
+    /// The pickers rebuild whole on a count change: their subscriptions write
+    /// back by index.
     fn sync_emitter_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.config.emitters.len();
         if self.emitter_scrubs.len() != count {
@@ -1343,8 +1180,6 @@ impl ParticlesPanel {
         }
     }
 
-    /// One emitter's block: the header carrying its switch and delete, then
-    /// the trigger, the footprint, and the throw.
     fn emitter_block(&self, index: usize, cx: &mut Context<Self>) -> Div {
         let emitter = &self.config.emitters[index];
         let scrubs = &self.emitter_scrubs[index];
@@ -1390,9 +1225,7 @@ impl ParticlesPanel {
                 )),
         );
 
-        // The color row forks off the accent on the first pick, and takes an
-        // inline reset back to following it, the panel settings window's
-        // pattern for a knob that inherits until it doesn't.
+        // The first pick forks off the accent; the reset follows it again.
         let mut color_row = div()
             .flex()
             .flex_row()
@@ -1740,8 +1573,6 @@ impl ParticlesPanel {
             ))
     }
 
-    /// The Forces page: the drift laid over the scene's steady pull. Every
-    /// knob here is a binding target, so each row has the bind toggle.
     fn forces_page(&mut self, cx: &mut Context<Self>) -> Div {
         let turbulence = self.config.forces.turbulence();
         let scale = self.config.forces.scale();
@@ -1820,8 +1651,6 @@ impl ParticlesPanel {
         ))
     }
 
-    /// The Scene page: the settings the whole field runs in, apart from any
-    /// one emitter.
     fn scene_page(&mut self, cx: &mut Context<Self>) -> Div {
         let gravity = self.config.scene.gravity();
         let angle = self.config.scene.gravity_angle.rem_euclid(360.0);
@@ -1985,8 +1814,6 @@ impl Panel for ParticlesPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -2018,9 +1845,8 @@ impl Panel for ParticlesPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.config_menu(menu, window, cx);
-        // Icon on the row so it lines up with Rename and the rest of the tail
-        // and the tick is on the right, the way every other top-level
-        // check row in the app reads. The icon-less form is for flyouts.
+        // With an icon, so it lines up with Rename and the tick sits right. The
+        // icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
             rox_i18n::t!("particles-edit-emitters"),
             Some(icons::MOVE),
@@ -2059,9 +1885,6 @@ impl Panel for ParticlesPanel {
 impl Render for ParticlesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
@@ -2069,16 +1892,12 @@ impl Render for ParticlesPanel {
 
 impl ParticlesPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // While audio moves, the player observe re-renders on every pump
-        // tick, which is the only rate new samples arrive at. Frame polling
-        // is for the particles still in the air after playback stops; once
-        // the last one dies the panel parks, and a resume wakes it through
-        // the pump's play-state notify.
+        // The observe re-renders on every pump tick while audio moves. Frame
+        // polling only runs the particles still in the air, then the panel parks.
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
-        // Freeze on pause holds the standing field: paused mid-session, not
-        // a played-out queue.
+        // Paused mid-session, not a played-out queue.
         let hold = self.config.scene.freeze && session && !playing && !player.queue_ended();
         if !playing && self.sim.lock().unwrap().alive {
             window.request_animation_frame();
@@ -2111,9 +1930,8 @@ impl ParticlesPanel {
             )
             .size_full(),
         );
-        // The editor runs on the panel itself: press near a center to grab,
-        // drag to place, release to drop. The markers paint in the same
-        // canvas, so arranging happens against the live field.
+        // Press near a center to grab, drag to place. The markers paint in the
+        // same canvas, against the live field.
         if edit {
             root = root
                 .cursor_grab()

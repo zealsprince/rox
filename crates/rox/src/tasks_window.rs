@@ -1,35 +1,17 @@
-//! The tasks window: one OS window listing the long library jobs, running
-//! or not, so the settings window doesn't have to stay open to watch one.
+//! The tasks window: the long library jobs, running or not, so the settings
+//! window doesn't have to stay open to watch one.
 //!
-//! Six jobs are listed here. The library scan belongs to a workspace's
-//! catalog; the acoustic pass ([`crate::embeddings`]), the ReplayGain measurement
-//! ([`crate::replaygain_job`]), the tempo pass ([`crate::tempo_job`]), the
-//! sort-name fill ([`crate::sortnames_job`]) and the romanization pass
-//! ([`crate::romanize_job`]) are app-global, outliving the
-//! window that started them. All of them were unwatchable once their page
-//! was closed: no count, no estimate, and no way to stop short of
-//! reopening whatever started them. This is that missing half.
-//!
-//! Those six rows are always there, idle or not. A list that only exists
-//! while something is running is a progress bar with extra steps; this one
-//! is also the answer to "what can I set going, and what would it cost",
-//! which is the question someone opens it with before they've started
+//! Six standing rows, always there: the scan, which belongs to a workspace's
+//! catalog, and the app-global passes ([`crate::embeddings`],
+//! [`crate::replaygain_job`], [`crate::tempo_job`],
+//! [`crate::sortnames_job`], [`crate::romanize_job`]). Idle, a row says what
+//! it would cost, since that's what someone opens this with before starting
 //! anything.
 //!
-//! Dynamic jobs are the other kind. They're started somewhere else (the
-//! Last.fm loved-tracks import from the settings window, a conversion from
-//! the convert dialog, a bake from the embed dialog), they're measured in
-//! seconds or minutes rather than afternoons, and there's nothing to say
-//! about them before someone sets one going. Those rows appear when one
-//! runs and stay for the session to report what it did, rather than
-//! standing in the list saying nothing for the rest of the time. They sit
-//! above the standing rows: a row that's only there because something is
-//! happening is the reason the window got opened, and six fixed rows ahead
-//! of it would push it off the bottom.
-//!
-//! The scan keeps its menubar badge exactly as it was. The badge is a glance
-//! and this is the detail: the same walk with the estimate and the file under
-//! the cursor that never fit up there.
+//! Dynamic rows are jobs started elsewhere (the Last.fm imports, a
+//! conversion, a bake). They appear when one runs, stay for the session to
+//! report what it did, and sit above the standing rows so they're never
+//! pushed off the bottom.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,30 +35,15 @@ use rox_panel_api::panel;
 use rox_panel_kit::ui as settings_ui;
 use rox_services::catalog::{Library, LibraryEvent, ScanStatus};
 
-/// How often a running pass repaints the surfaces watching it. Slower than
-/// the settings page's own poll: this one redraws every window,
-/// and a pass is measured in hours, so twice a second is plenty to read a
-/// count by and cheap next to what the pass itself is doing.
+/// Twice a second: this redraws every window, and a pass runs for hours.
 const TICK: Duration = Duration::from_millis(500);
 
 /// Repaint every window while a pass runs, and once more when it stops.
-///
-/// Called by both passes when they start. Without it the menubar chip would
-/// be drawn once and then stay at whatever count it happened to catch: the
-/// passes are app-global with no entity to observe, so nothing tells a
-/// workspace that the number moved. One ticker for every surface rather
-/// than a timer per surface, which also lets the tasks window get away with
-/// no poll of its own.
-///
-/// The scan needs none of this: it belongs to a catalog entity that notifies
-/// as it counts, and the tasks window observes that directly.
+/// The passes are app-global with nothing to observe, so without this the
+/// menubar chip would freeze at its first count. The scan doesn't need it:
+/// its catalog entity notifies as it counts.
 pub fn repaint_while_running(cx: &mut App) {
-    // Every pass that repaints also belongs on the taskbar button, and that
-    // sampler gates itself the same way this one does.
     crate::integrations::taskbar::watch(cx);
-    // One ticker however many passes are running: both call this when they
-    // start, and two tickers would just refresh the same windows twice as
-    // often for the same picture.
     if cx.try_global::<Ticking>().is_some_and(|t| t.0) {
         return;
     }
@@ -85,9 +52,7 @@ pub fn repaint_while_running(cx: &mut App) {
         loop {
             cx.background_executor().timer(TICK).await;
             let live = cx.update(|cx| {
-                // The falling edge repaints too, then ends the loop: the last
-                // thing a pass does is stop, and that's the tick that swaps a
-                // chip for nothing and a bar for a finished line.
+                // The falling edge repaints too, so the chip clears and the bar finishes.
                 cx.refresh_windows();
                 embeddings::progress(cx).is_some()
                     || replaygain_job::progress(cx).is_some()
@@ -108,28 +73,14 @@ pub fn repaint_while_running(cx: &mut App) {
     .detach();
 }
 
-/// Whether a repaint ticker is already running, so the second pass to start
-/// doesn't spawn one of its own.
 #[derive(Default)]
 struct Ticking(bool);
 
 impl Global for Ticking {}
 
-/// The menubar's tasks control: always a way into the window, showing what's
-/// running while anything is.
-///
-/// Always drawn, because the window it opens is now worth opening with
-/// nothing running: it's where the passes are started from. Idle it's a
-/// plain icon, the same weight as the rescan button beside it; running it
-/// grows into a chip with the count, which is the one thing worth reading
-/// from the bar itself.
-///
-/// The library scan isn't in here: it has the badge and the
-/// status line to its left, and saying it twice in one bar would be noise.
+/// The menubar's tasks control: a plain icon idle, a chip with the count
+/// while anything runs. The scan isn't counted here; it has its own badge.
 pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
-    // More than one at a time is a count rather than a chip each: the bar is
-    // shared with the catalog status and the scan controls, and the window is
-    // one click away for the detail.
     let mut live: Vec<(&'static str, String)> = Vec::new();
     if let Some(job) = embeddings::progress(cx) {
         live.push((
@@ -202,9 +153,6 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
         )),
     };
     let open = cx.listener(|_, _, _, cx| open(cx));
-    // Idle the glyph is the checklist and nothing else, so the tip is the
-    // only thing that says what it opens. Running, the chip has the count
-    // and the tip stays on the click.
     let tip = panel::Tip::keyed("tasks", rox_i18n::t!("tasks-tip"));
     let Some((path, label)) = running else {
         return tip.apply(
@@ -239,10 +187,8 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
     )
 }
 
-/// What the rest of a pass costs at the worker count it would run with, off
-/// the pace the last one measured here. The worker count comes with it
-/// because the estimate means nothing without it: the same library is four
-/// hours or one depending on what it's allowed to use.
+/// The worker count is part of the answer: the same library is four hours
+/// or one depending on what it may use.
 fn priced(pace: f32, missing: u64, workers: usize) -> Option<String> {
     let estimate = rox_core::pace::estimate(pace, missing, workers)?;
     Some(
@@ -255,8 +201,6 @@ fn priced(pace: f32, missing: u64, workers: usize) -> Option<String> {
     )
 }
 
-/// How far along as a percentage, or an ellipsis while the work list is
-/// still being built and there's nothing to be a percentage of.
 fn share(done: usize, total: usize) -> String {
     if total == 0 {
         return "...".into();
@@ -264,25 +208,17 @@ fn share(done: usize, total: usize) -> String {
     rox_i18n::format::format_percent((done.min(total) * 100 / total).min(100) as f64)
 }
 
-/// The window's floor. Wide enough that a path and a count share a line
-/// without wrapping, tall enough for the three rows at once.
 const MIN: gpui::Size<gpui::Pixels> = gpui::Size {
     width: px(420.),
     height: px(320.),
 };
 
-/// The open tasks window, if any: opening again focuses it rather than
-/// stacking a second one, the console window's move.
 struct OpenTasks(WindowHandle<Root>);
 
 impl Global for OpenTasks {}
 
-/// Open the tasks window, or bring the open one to the front.
-///
-/// Deferred for the console window's reason: the callers that open it (a
-/// menu action, the settings window starting a pass) are inside another
-/// entity's update, and reading the front workspace for the tint mid-update
-/// would panic.
+/// Deferred: callers are inside another entity's update, and reading the
+/// front workspace for the tint mid-update would panic.
 pub fn open(cx: &mut App) {
     cx.defer(open_now);
 }
@@ -297,10 +233,8 @@ fn open_now(cx: &mut App) {
             return;
         }
     }
-    // The catalog the scan row drives and the passes read comes from
-    // whichever workspace is in front when the window opens, the same place
-    // the tint does. It's held weakly from there on: a window that outlives
-    // its workspace should go inert, not keep a dead one's library alive.
+    // Held weakly, so a window that outlives its workspace goes inert rather
+    // than keeping a dead library alive.
     let front = rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state);
     let player = front.as_ref().map(|state| state.player.entity_id());
     let library = front.map(|state| state.library);
@@ -309,8 +243,6 @@ fn open_now(cx: &mut App) {
         .tasks
         .filter(|s| s.width >= f32::from(MIN.width) && s.height >= f32::from(MIN.height))
         .map(|s| (s.width, s.height))
-        // Room for the standing rows and a dynamic one above them without a
-        // scroll on first open.
         .unwrap_or((640., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = panel::open_child_window(
@@ -323,42 +255,22 @@ fn open_now(cx: &mut App) {
     cx.set_global(OpenTasks(handle));
 }
 
-/// Which job a row is describing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Job {
     Scan,
     Acoustic,
     ReplayGain,
-    /// The tempo pass ([`crate::tempo_job`]): what every track with no BPM
-    /// runs at.
     Tempo,
-    /// The sort-name fill ([`crate::sortnames_job`]): the Latin spelling
-    /// each artist files under, asked of MusicBrainz.
     SortNames,
-    /// The romanization pass ([`crate::romanize_job`]): a Latin spelling
-    /// for every title, album and artist that still has none.
     Romanize,
-    /// The first dynamic one: Last.fm's loved tracks pulled in as hearts,
-    /// started from the settings window rather than from here.
     LovedImport,
-    /// Another dynamic one: Last.fm's play counts backfilled into history,
-    /// started from the settings window.
     PlaysImport,
-    /// Another dynamic one: a selection through ffmpeg into another
-    /// format, started from the convert dialog. Selection-scoped, so it has
-    /// nothing to say before someone picks tracks and a folder.
     Convert,
-    /// Stored lyrics, gains and vectors written into the files themselves,
-    /// started from the embed dialog. Nothing to say before someone has
-    /// picked which of the three to write.
     Bake,
 }
 
-/// Top to bottom, cheapest first: a scan is minutes and the analysis passes
-/// are afternoons, and the passes read what the scan writes. Romanization
-/// is last rather than first despite being the quickest of them, because it
-/// belongs beside the fill it finishes: the two answer the same question
-/// from different sources, and the fill should have had its go first.
+/// Cheapest first, and the passes read what the scan writes. Romanization
+/// sits after the sort-name fill it finishes, which should run first.
 const JOBS: [Job; 6] = [
     Job::Scan,
     Job::Acoustic,
@@ -389,17 +301,8 @@ impl Job {
             Job::Scan => icons::REFRESH_CW,
             Job::Acoustic => icons::FLASK,
             Job::ReplayGain => icons::GAUGE,
-            // Beats a minute is a rate over time, and the clock is the one
-            // glyph in the set that says so without borrowing the gauge the
-            // measurement pass uses.
             Job::Tempo => icons::CLOCK,
-            // The same glyph the health window's sort tile carries, since
-            // a row of names filed under their initial is what both are
-            // about.
             Job::SortNames => icons::ALIGN_LEFT,
-            // The globe rather than another alignment glyph: this is the
-            // one job in the list about which alphabet a name is written
-            // in rather than about the audio or the ordering.
             Job::Romanize => icons::GLOBE,
             Job::LovedImport => icons::HEART,
             Job::PlaysImport => icons::PLAY,
@@ -408,9 +311,7 @@ impl Job {
         }
     }
 
-    /// What the start button says and shows, or None for a job this window
-    /// only watches. The wording matches the settings page's buttons, since
-    /// they start the same work.
+    /// None for a job this window only watches.
     fn start_label(self) -> Option<(SharedString, &'static str)> {
         match self {
             Job::Scan => Some((rox_i18n::t!("tasks-start-rescan"), icons::REFRESH_CW)),
@@ -419,22 +320,12 @@ impl Job {
             Job::Tempo => Some((rox_i18n::t!("tasks-start-analyze-missing"), icons::CLOCK)),
             Job::SortNames => Some((rox_i18n::t!("tasks-start-fill-missing"), icons::ALIGN_LEFT)),
             Job::Romanize => Some((rox_i18n::t!("tasks-start-romanize"), icons::GLOBE)),
-            // The import belongs to an account, not to a library, and it
-            // reads its user off the settings it's started from. Offering
-            // it here would be a second door into a room with one chair.
             Job::LovedImport | Job::PlaysImport => None,
-            // A conversion is a selection, a format and a folder. None of
-            // those exist here, so this row only ever watches.
             Job::Convert => None,
-            // An embed is three counts and three checkboxes, and the counts
-            // take a survey to work out. That's a dialog, not a button.
             Job::Bake => None,
         }
     }
 
-    /// Ask a running job to stop. Only the scan needs the catalog to say it
-    /// to; the rest hold their own cancel flag, so a workspace closed under
-    /// them is no reason to have to wait one out.
     fn stop(self, library: Option<&Entity<Library>>, cx: &mut App) {
         match self {
             Job::Scan => {
@@ -455,17 +346,11 @@ impl Job {
     }
 }
 
-/// One running job, flattened out of whichever of the three it came from.
-/// The three progress types are unrelated and cover the same questions, so
-/// the row below is written once against this rather than three times.
 struct Snapshot {
     done: usize,
     total: usize,
     failed: usize,
     current: String,
-    /// Whether `current` is a file path, so the readout shows its name
-    /// rather than the whole line. The passes step through files; the import
-    /// steps through track names, which are already what to show.
     current_is_path: bool,
     eta: Option<f64>,
     stopping: bool,
@@ -484,9 +369,7 @@ impl Snapshot {
         }
     }
 
-    /// The import counts loved tracks read, and the ones it couldn't place
-    /// are its failed count: nothing went wrong with them, this library
-    /// just has no home for them.
+    /// Unmatched loved tracks count as failed: this library has no home for them.
     fn import(job: &import::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
@@ -511,9 +394,7 @@ impl Snapshot {
         }
     }
 
-    /// A conversion counts files, and the ones ffmpeg refused are its
-    /// failed count. What the plan skipped before the run started isn't in
-    /// here: those never became work, and the finished line reports them.
+    /// Files the plan skipped never became work; the finished line reports them.
     fn convert(job: &convert::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
@@ -526,9 +407,6 @@ impl Snapshot {
         }
     }
 
-    /// An embed counts files, and the ones the writer refused are its failed
-    /// count. What the survey refused isn't in here: those never became work,
-    /// and the finished line reports them.
     fn bake(job: &bake::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
@@ -541,10 +419,6 @@ impl Snapshot {
         }
     }
 
-    /// The tempo pass counts tracks, and the ones it looked at without
-    /// getting an answer are its failed count: a file that wouldn't decode
-    /// and one whose beat the estimator refused to call both leave the row
-    /// as it was.
     fn tempo(job: &tempo_job::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
@@ -557,33 +431,24 @@ impl Snapshot {
         }
     }
 
-    /// The fill counts artists, and the ones MusicBrainz had no confident
-    /// answer for are its failed count: nothing is stored for them, so
-    /// the next run asks about them again.
     fn sortnames(job: &sortnames_job::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
             total: job.total(),
             failed: job.failed(),
             current: job.current(),
-            // Artist names, which are already what to show.
             current_is_path: false,
             eta: job.eta_secs(),
             stopping: job.stopping(),
         }
     }
 
-    /// The romanization pass counts values, and the ones nothing could be
-    /// read out of are its failed count: a script it doesn't cover, or
-    /// kanji with no dictionary loaded. Nothing is stored for them, so the
-    /// next run looks at them again.
     fn romanize(job: &romanize_job::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
             total: job.total(),
             failed: job.failed(),
             current: job.current(),
-            // Titles and names, which are already what to show.
             current_is_path: false,
             eta: job.eta_secs(),
             stopping: job.stopping(),
@@ -602,9 +467,7 @@ impl Snapshot {
         }
     }
 
-    /// A scan counts files it went through, not files it gave up on: an
-    /// unreadable one stays in the library rather than being skipped, so
-    /// there's no failed count to report.
+    /// An unreadable file stays in the library, so a scan has no failed count.
     fn scan(scan: ScanStatus) -> Snapshot {
         Snapshot {
             done: scan.done,
@@ -618,21 +481,10 @@ impl Snapshot {
     }
 }
 
-/// How far along everything running is, as (done, total) summed over the
-/// jobs, or None when nothing is running at all.
-///
-/// One number for the batch is all a taskbar button can draw, and summing
-/// beats averaging: every job here counts files, so two half-done passes
-/// read as half done rather than as a fraction of a fraction. A job still
-/// working out its list adds nothing to either side: it hasn't got a total
-/// yet.
-///
-/// Read live off the same four sources the rows use, so this works with
-/// no window open.
+/// (done, total) summed over the running jobs, for the taskbar button.
+/// Summing rather than averaging, since every job counts files; a job with
+/// no total yet adds nothing.
 pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
-    // The scan belongs to a catalog rather than the app, so it comes off
-    // whichever workspace is in front, the same place this window takes it
-    // from when it opens.
     let library = rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.library);
     let scan = library.and_then(|library| library.read(cx).scan_status());
     let mut running: Vec<Snapshot> = Vec::new();
@@ -665,15 +517,10 @@ pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
     }))
 }
 
-/// What a pass left behind when it stopped running, so its row can still say
-/// what happened rather than going quiet the moment it finishes.
 #[derive(Clone)]
 struct Finished {
     done: usize,
     failed: usize,
-    /// Whether it was asked to stop rather than reaching the end. A pass that
-    /// was stopped and a pass that finished have the same counts and very
-    /// different meanings.
     stopped: bool,
 }
 
@@ -694,12 +541,10 @@ impl Finished {
     }
 }
 
-/// Why a row can't start, with what the row should say about it, or
-/// None where the idle line above already covers it.
+/// None where the idle line already covers it.
 struct Blocked(Option<SharedString>);
 
-/// The three app-global passes as of the last poll. The scan isn't in here:
-/// it's in the catalog, which is asked for it when a row is drawn.
+/// The scan isn't here: it's read off the catalog when a row draws.
 #[derive(Default)]
 struct Live {
     acoustic: Option<Arc<rox_acoustic::Progress>>,
@@ -709,104 +554,60 @@ struct Live {
     romanize: Option<Arc<romanize_job::Progress>>,
 }
 
-/// What the idle rows state about the library, and what it costs to find
-/// out: every field here is a pass over the tracks table or a read of the
-/// settings file. Re-read when the library says something changed and when a
-/// pass ends, never per frame.
+/// Each field is a pass over the tracks table or a settings read, so these
+/// are re-read on library events and pass ends, never per frame.
 #[derive(Default)]
 struct Facts {
-    /// Folders the library scans, for the scan row's idle line.
     roots: usize,
-    /// When the last full scan finished, in unix seconds; 0 for never.
     last_scan: i64,
-    /// The acoustic model's name and how much of the library it describes.
-    /// Per model: every model describes the library separately, and a bare
-    /// count would read as the library's own.
+    /// Per model: each model describes the library separately.
     acoustic_label: String,
     acoustic: rox_library::embeddings::Coverage,
-    /// Whether describing tracks is switched on at all. The pass no-ops
-    /// while it's off, so the row says so rather than offering a button
-    /// that does nothing.
     acoustic_on: bool,
-    /// Roughly what analyzing the rest would cost here, off the pace the
-    /// last pass measured on this machine. None until one has run.
     acoustic_estimate: Option<String>,
-    /// Tracks with no gain from either their tags or a measurement, and the
-    /// whole count they're out of.
     rg_missing: u64,
     rg_total: u64,
     rg_estimate: Option<String>,
-    /// The library's tempo split, tagged against measured against neither.
     bpm: rox_library::store::BpmCoverage,
-    /// Whether the tempo pass is switched on at all. It no-ops while it's
-    /// off, so the row says so rather than offering a dead button.
     tempo_on: bool,
     tempo_estimate: Option<String>,
-    /// Artists with no sort name from either source, and the whole count
-    /// they're out of. Values rather than tracks: a sort name belongs to
-    /// the artist, so one lookup fixes every row they're on.
+    /// Counted in artists, since one lookup fixes every row an artist is on.
     sort_missing: u64,
     sort_total: u64,
-    /// The narrow scope's share of that backlog, the one the prompt opens
-    /// on, so the idle line prices what the button will actually do.
+    /// The prompt opens on this narrower scope, so the estimate prices it.
     sort_non_latin: u64,
     sort_estimate: Option<String>,
-    /// Values with no sort name and something to read, and the whole count
-    /// they're out of. Values rather than tracks for the sort fill's
-    /// reason, with titles counted once however many rows carry them.
     romanize_missing: u64,
     romanize_total: u64,
-    /// How many of that backlog are kanji. They run when the Japanese
-    /// dictionary is installed and are skipped when it isn't; either way
-    /// the rest of the pass goes ahead, so this is a line under the row
-    /// rather than a reason it can't start.
+    /// Kanji only run with the Japanese dictionary installed; the rest of the
+    /// pass goes ahead either way.
     romanize_kanji: u64,
     romanize_estimate: Option<String>,
 }
 
 struct TasksWindow {
-    /// The workspace player the window themes to, if one was up when it
-    /// opened; None themes to the base palette.
+    /// None themes to the base palette.
     player: Option<EntityId>,
-    /// The catalog the scan row drives and both passes read. Weak: the
-    /// window outlives its workspace, and a dead library leaves the rows
-    /// readable but inert rather than taking the window with it.
+    /// Weak: the window outlives its workspace and goes inert without it.
     library: Option<WeakEntity<Library>>,
-    /// Live scan counts and the coverage refresh, off the catalog itself.
     _subs: Vec<Subscription>,
-    /// The running passes as of the last poll.
     live: Live,
-    /// What each pass left when it stopped, kept so the row can report.
     acoustic_done: Option<Finished>,
     replaygain_done: Option<Finished>,
     tempo_done: Option<Finished>,
     sortnames_done: Option<Finished>,
     romanize_done: Option<Finished>,
-    /// Values the last run left alone for want of the dictionary. Kept
-    /// beside its `Finished` rather than in it: the other four passes have
-    /// no equivalent, and a field they all set to zero would be four lies
-    /// to carry one truth.
+    /// Kept beside `Finished` rather than in it: no other pass has one.
     romanize_skipped: usize,
     facts: Facts,
-    /// The start prompt, while one is up: the same dialog the settings page
-    /// raises, with the worker slider and the estimate.
     prompt: Option<pass_prompt::Prompt>,
-    /// The prompt slider's click-to-type state. One per window, since only
-    /// one value is ever being typed into.
     value_edit: panel::ValueEdit,
-    /// The keyboard's home while the prompt is up, so Enter and Escape reach
-    /// it.
     dialog_focus: FocusHandle,
-    /// The window's own focus, claimed on open. Not a tab stop itself, so
-    /// the first Tab moves to the first control; it's here because a window
-    /// holding focus nowhere never sees a key.
+    /// A window holding focus nowhere never sees a key.
     focus: FocusHandle,
-    /// The row list's scroll position, shared with the scrollbar.
     scroll: ScrollHandle,
 }
 
-/// The pass prompt's host side. The window caches counts, so a start or a
-/// probe means re-reading them.
 impl pass_prompt::Host for TasksWindow {
     fn prompt(&self) -> Option<&pass_prompt::Prompt> {
         self.prompt.as_ref()
@@ -837,9 +638,7 @@ impl TasksWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // The frame persists on the OS close button, which never runs
-        // remove_window, so write the size in the should-close hook, the
-        // console window's move.
+        // The OS close button never runs remove_window, so persist the size here.
         window.on_window_should_close(cx, |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
@@ -850,12 +649,8 @@ impl TasksWindow {
             });
             true
         });
-        // No poll of its own for the passes: [`repaint_while_running`]
-        // redraws every window while one is going and once more when it
-        // stops, so this window resamples in render and is live for free.
-        // The scan comes off the catalog instead, which notifies as it
-        // counts; the same entity says when the counts behind the idle rows
-        // have moved.
+        // No poll of its own: [`repaint_while_running`] redraws every window while
+        // a pass runs, and render resamples.
         let subs = library
             .as_ref()
             .map(|library| {
@@ -895,14 +690,10 @@ impl TasksWindow {
         this
     }
 
-    /// The catalog behind the rows, while its workspace is still open.
     fn library(&self) -> Option<Entity<Library>> {
         self.library.as_ref().and_then(|library| library.upgrade())
     }
 
-    /// Re-read what the idle rows state. Two aggregate queries and a settings
-    /// read, so this runs on the events that can have moved them, never per
-    /// frame.
     fn read_facts(&mut self, cx: &mut Context<Self>) {
         let Some(library) = self.library() else {
             return;
@@ -945,9 +736,8 @@ impl TasksWindow {
                 sort_missing: sort.missing,
                 sort_total: sort.total,
                 sort_non_latin: sort.non_latin,
-                // Priced off the rate limit rather than off a measured
-                // pace: the service sets this pass's speed, so there's a
-                // real estimate before anything has ever run here.
+                // Priced off the rate limit: the service sets this pass's speed, so there's
+                // an estimate before it has ever run.
                 sort_estimate: priced(sortnames_job::PACE, sort.non_latin, 1),
                 romanize_missing: romanize.missing,
                 romanize_total: romanize.total,
@@ -956,8 +746,6 @@ impl TasksWindow {
             };
     }
 
-    /// Re-read both pass globals, remembering the final counts of whichever
-    /// one just stopped, and picking the new counts up with it.
     fn sample(&mut self, cx: &mut Context<Self>) {
         let mut ended = false;
         if let Some(job) = self.live.acoustic.take()
@@ -1016,8 +804,7 @@ impl TasksWindow {
         self.live.tempo = tempo_job::progress(cx);
         self.live.sortnames = sortnames_job::progress(cx);
         self.live.romanize = romanize_job::progress(cx);
-        // A pass that started again clears what the last one left, so the
-        // row never shows a finished line under a running bar.
+        // A restarted pass clears the last one's finished line.
         if self.live.acoustic.is_some() {
             self.acoustic_done = None;
         }
@@ -1033,14 +820,11 @@ impl TasksWindow {
         if self.live.romanize.is_some() {
             self.romanize_done = None;
         }
-        // A pass that just ended moved the count its own row states. The
-        // scan's finish comes through the library's event instead.
         if ended {
             self.read_facts(cx);
         }
     }
 
-    /// The running job behind a row, if it's running.
     fn running(&self, job: Job, cx: &App) -> Option<Snapshot> {
         match job {
             Job::Scan => self
@@ -1056,28 +840,17 @@ impl TasksWindow {
             Job::Tempo => self.live.tempo.as_ref().map(|j| Snapshot::tempo(j)),
             Job::SortNames => self.live.sortnames.as_ref().map(|j| Snapshot::sortnames(j)),
             Job::Romanize => self.live.romanize.as_ref().map(|j| Snapshot::romanize(j)),
-            // Read live rather than off the poll: the import is seconds
-            // long, so a sample taken a frame ago is a sample of a
-            // different job.
+            // Read live rather than off the poll: the job is seconds long.
             Job::LovedImport => import::progress(cx).as_deref().map(Snapshot::import),
             Job::PlaysImport => plays_import::progress(cx)
                 .as_deref()
                 .map(Snapshot::plays_import),
-            // Read live for the import's reason: a conversion is minutes
-            // at most, so a sample from a frame ago is a sample of a
-            // different job.
             Job::Convert => convert::progress(cx).as_deref().map(Snapshot::convert),
-            // Read live for the same reason: an embed is a commit per file
-            // and often over in seconds.
             Job::Bake => bake::progress(cx).as_deref().map(Snapshot::bake),
         }
     }
 
-    /// The jobs that only exist while something is happening. Started
-    /// elsewhere, so there's nothing to say about one before it runs and no
-    /// row for it either; once it has run, its row stays for the session
-    /// with what it did, the same as the standing rows report their last
-    /// pass. Drawn at the top of the list, ahead of the standing rows.
+    /// Started elsewhere; once run, the row stays for the session.
     fn dynamic(&self, cx: &App) -> Vec<Job> {
         let import = import::progress(cx).is_some() || import::last(cx).is_some();
         let plays_import = plays_import::progress(cx).is_some() || plays_import::last(cx).is_some();
@@ -1092,15 +865,10 @@ impl TasksWindow {
             .collect()
     }
 
-    /// What an idle row says: where the library stands on this job, and what
-    /// the rest of it would cost. One line per thing worth knowing, so a row
-    /// with nothing to add stays one line tall.
     fn idle_lines(&self, job: Job, cx: &App) -> Vec<String> {
         let mut lines = Vec::new();
         match job {
             Job::Scan => {
-                // The library's own status line, which after a scan is that
-                // scan's rollup and otherwise the track count.
                 let status = self
                     .library()
                     .map(|library| library.read(cx).status().to_string())
@@ -1200,10 +968,7 @@ impl TasksWindow {
                 } else if bpm.total() == 0 {
                     lines.push("Nothing scanned to analyze yet".into());
                 } else if bpm.missing == 0 {
-                    // "All of them" only holds when there's no refused pile:
-                    // those tracks were scanned too, and Analyze Missing
-                    // having nothing left to reach isn't the same as the
-                    // library being timed.
+                    // "All of them" only holds with no refused pile.
                     lines.push(if bpm.refused > 0 {
                         rox_i18n::t!("tasks-tempo-counted", count = bpm.covered()).to_string()
                     } else {
@@ -1224,9 +989,7 @@ impl TasksWindow {
                     }
                     lines.push(line);
                 }
-                // Its own line under whichever status ran above, since it's
-                // neither work the button will do nor coverage the library
-                // has. Retrying them lives on Settings > Library.
+                // Retrying the refused ones lives on Settings > Library.
                 if self.facts.tempo_on && bpm.refused > 0 {
                     lines
                         .push(rox_i18n::t!("tasks-tempo-refused", count = bpm.refused).to_string());
@@ -1250,9 +1013,6 @@ impl TasksWindow {
                         total = self.facts.sort_total
                     )
                     .to_string();
-                    // The button opens on the narrow scope, so the
-                    // estimate beside it has to be that scope's, not the
-                    // whole backlog's.
                     if let Some(estimate) = &self.facts.sort_estimate {
                         line.push_str(&rox_i18n::t!(
                             "tasks-sortnames-non-latin",
@@ -1289,8 +1049,6 @@ impl TasksWindow {
                     }
                     lines.push(line);
                 }
-                // Its own line under whichever status ran above: work the
-                // button will do, but only once the download is there.
                 if self.facts.romanize_kanji > 0
                     && self.facts.romanize_missing > 0
                     && !romanize_job::dictionary_installed()
@@ -1328,8 +1086,7 @@ impl TasksWindow {
                 }
                 Some(Err(e)) => lines
                     .push(rox_i18n::t!("tasks-import-failed", error = e.to_string()).to_string()),
-                // Only reachable for a frame, between the row appearing and
-                // the first progress arriving.
+                // Only reachable for a frame, before the first progress arrives.
                 None => lines.push(rox_i18n::t!("tasks-import-reading").to_string()),
             },
             Job::PlaysImport => match plays_import::last(cx) {
@@ -1352,12 +1109,8 @@ impl TasksWindow {
             Job::Convert => {
                 match convert::last(cx) {
                     Some(summary) => lines.push(summary.line()),
-                    // Only reachable for a frame, between the row appearing
-                    // and the first file finishing.
                     None => lines.push(rox_i18n::t!("tasks-convert-starting").to_string()),
                 }
-                // ffmpeg's own error for the first file it refused. A count
-                // with no reason sends someone to the log.
                 if let Some(reason) = convert::last_failure(cx) {
                     lines.push(reason);
                 }
@@ -1365,12 +1118,8 @@ impl TasksWindow {
             Job::Bake => {
                 match bake::last(cx) {
                     Some(summary) => lines.push(summary.line()),
-                    // Only reachable for a frame, between the row appearing
-                    // and the first file being written.
                     None => lines.push(rox_i18n::t!("tasks-bake-writing").to_string()),
                 }
-                // The writer's error for the first file it refused. A count
-                // with no reason sends someone to the log.
                 if let Some(reason) = bake::last_failure(cx) {
                     lines.push(reason);
                 }
@@ -1379,7 +1128,6 @@ impl TasksWindow {
         lines
     }
 
-    /// How long ago the last full scan finished, or None if none ever has.
     fn since_scan(&self) -> Option<String> {
         if self.facts.last_scan <= 0 {
             return None;
@@ -1393,19 +1141,13 @@ impl TasksWindow {
         ))
     }
 
-    /// Why a row's start button is inert, if it is, and whether that's worth
-    /// saying out loud. Nothing to start is usually the line above already:
-    /// "nothing left to analyze" under "all 12,000 tracks are described" is
-    /// the row saying the same thing twice. The reason that will pass earns
-    /// a line, since that one is worth waiting out.
+    /// Only a reason that will pass earns a line; an empty backlog is already
+    /// what the idle line says.
     fn blocked(&self, job: Job, cx: &App) -> Option<Blocked> {
-        // A watched job has no start button to explain the state of, and the
-        // import doesn't touch the rows a scan rewrites anyway.
         job.start_label()?;
         let library = self.library()?;
-        // Anything the library is already doing blocks all three: a scan
-        // rewrites the very rows the passes read, and the catalog runs one
-        // refresh at a time anyway.
+        // A scan rewrites the rows the passes read, and the catalog runs one
+        // refresh at a time.
         if library.read(cx).busy().is_some() {
             return Some(Blocked(Some(if library.read(cx).scanning() {
                 rox_i18n::t!("tasks-library-scanning")
@@ -1419,8 +1161,7 @@ impl TasksWindow {
                 if !self.facts.acoustic_on || self.facts.acoustic.missing() == 0 {
                     Some(Blocked(None))
                 } else {
-                    // The pass would load a half-written model file, and the
-                    // download has to finish first anyway.
+                    // The pass would load a half-written model file.
                     embeddings::models::progress(cx)
                         .map(|_| Blocked(Some(rox_i18n::t!("tasks-model-downloading"))))
                 }
@@ -1430,18 +1171,13 @@ impl TasksWindow {
                 (!self.facts.tempo_on || self.facts.bpm.missing == 0).then_some(Blocked(None))
             }
             Job::SortNames => (self.facts.sort_missing == 0).then_some(Blocked(None)),
-            // Nothing blocks this one but an empty backlog. A missing
-            // Japanese dictionary costs it the kanji values and nothing
-            // else, which the idle line says and the button shouldn't
-            // refuse over.
+            // A missing Japanese dictionary only costs the kanji values, so it never
+            // blocks the button.
             Job::Romanize => (self.facts.romanize_missing == 0).then_some(Blocked(None)),
-            // Returned above; a watched job never reaches here.
             Job::LovedImport | Job::PlaysImport | Job::Convert | Job::Bake => None,
         }
     }
 
-    /// One job: what it is and its button, then either a bar and a live count
-    /// or where the library stands on it.
     fn row(&self, job: Job, cx: &mut Context<Self>) -> Div {
         let running = self.running(job, cx);
         let blocked = running.is_none().then(|| self.blocked(job, cx)).flatten();
@@ -1469,11 +1205,7 @@ impl TasksWindow {
             })
     }
 
-    /// A running job's readout: the bar, the count and estimate under it, and
-    /// the file it's on.
     fn running_lines(&self, snapshot: &Snapshot) -> Vec<Div> {
-        // Zero total means the work list is still being built, which is a
-        // real state a big library stays in for a second or two.
         let counted = snapshot.done.min(snapshot.total);
         let fraction = if snapshot.total == 0 {
             0.0
@@ -1514,7 +1246,6 @@ impl TasksWindow {
         lines
     }
 
-    /// A row's one control: stop what's running, or start what isn't.
     fn button(
         &self,
         job: Job,
@@ -1526,8 +1257,7 @@ impl TasksWindow {
         if let Some(snapshot) = running {
             let stopping = snapshot.stopping;
             let library = live.clone();
-            // Only the scan needs the catalog to be stopped through, so only
-            // its button goes inert when the workspace is gone.
+            // Only the scan stops through the catalog.
             let inert = stopping || (library.is_none() && job == Job::Scan);
             return Some(
                 settings_ui::small_button(
@@ -1555,10 +1285,8 @@ impl TasksWindow {
         )
     }
 
-    /// The X that clears a finished dynamic row. Only there once the job
-    /// has stopped: a running one has a Stop beside it, and the two are
-    /// different enough that they shouldn't both be there. Standing rows
-    /// never have one, since there's nothing to clear them to.
+    /// Only on a finished dynamic row: a running one has Stop, and standing
+    /// rows have nothing to clear to.
     fn dismiss(&self, job: Job, running: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         if running || job.start_label().is_some() {
             return None;
@@ -1567,14 +1295,11 @@ impl TasksWindow {
             settings_ui::icon_button(
                 icons::CLOSE,
                 false,
-                // The standing rows returned above, so this is the only kind
-                // that reaches here.
                 cx.listener(move |_, _, _, cx| match job {
                     Job::LovedImport => import::dismiss(cx),
                     Job::PlaysImport => plays_import::dismiss(cx),
                     Job::Convert => convert::dismiss(cx),
                     Job::Bake => bake::dismiss(cx),
-                    // The standing rows have no X to reach this.
                     _ => {}
                 }),
             )
@@ -1582,12 +1307,9 @@ impl TasksWindow {
         )
     }
 
-    /// Set a job going. The scan starts on the press, the same as the
-    /// menubar's rescan button: it's minutes, it takes no settings, and
-    /// nothing it does is hard to undo. The two passes go through the shared
-    /// prompt instead, which is where their worker count and their estimate
-    /// are set, so starting one from here is the same decision it is from the
-    /// settings page rather than a shortcut around it.
+    /// The scan starts on the press. The passes go through the shared prompt,
+    /// where their worker count and estimate are set, the same decision as from
+    /// the settings page.
     fn start(&mut self, job: Job, cx: &mut Context<Self>) {
         let Some(library) = self.library() else {
             return;
@@ -1613,8 +1335,6 @@ impl TasksWindow {
                 cx,
             ),
             Job::Romanize => pass_prompt::raise(self, pass_prompt::Pass::Romanize, library, cx),
-            // Watched, not started: none of these has a button here to reach
-            // this.
             Job::LovedImport | Job::PlaysImport | Job::Convert | Job::Bake => {}
         }
     }
@@ -1628,23 +1348,13 @@ impl TasksWindow {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .p(tokens::SPACE_MD)
-            // The standing rows fit the default frame, but a dynamic one, or
-            // a resize down, shouldn't clip the bottom off the window.
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            // Dynamic rows first. They're the ones someone opens this window
-            // to check on, and below the six standing rows they'd be under
-            // the fold on a small window.
             .children(dynamic.iter().map(|job| self.row(*job, cx)))
-            // The rule says the ones above are a different kind of thing:
-            // what happened, rather than what this window can set going.
             .when(!dynamic.is_empty(), |d| {
                 d.child(div().flex_none().h(px(1.)).bg(palette::border()))
             })
             .children(JOBS.map(|job| self.row(job, cx)))
-            // Without a library there's nothing to drive: the workspace this
-            // window opened over is gone, and the rows are reading its last
-            // word rather than anything live.
             .when(self.library().is_none(), |d| {
                 d.child(muted(rox_i18n::t!("tasks-no-library-window").to_string()))
             })
@@ -1653,11 +1363,10 @@ impl TasksWindow {
 
 impl Render for TasksWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // With no workspace player to theme to, tint to the window's own id,
-        // which the palette map doesn't know, so it reads the base palette.
+        // With no workspace player, tint to this window's own id, which the
+        // palette map doesn't know, so it reads the base palette.
         let player = self.player.unwrap_or_else(|| cx.entity().entity_id());
         palette::note_focus(player, window.is_window_active(), cx);
-        // Resampled here rather than on a timer; see the note in `new`.
         self.sample(cx);
         panel::window_body(player, || {
             div()
@@ -1674,7 +1383,6 @@ impl Render for TasksWindow {
                         .min_h_0()
                         .relative()
                         .child(self.body(cx))
-                        // Fades out when idle, same as the panels.
                         .child(
                             div()
                                 .absolute()
@@ -1682,15 +1390,12 @@ impl Render for TasksWindow {
                                 .child(Scrollbar::vertical(&self.scroll)),
                         ),
                 )
-                // The start prompt floats over the rows on its own occluding
-                // layer, last so it paints on top of them.
                 .children(pass_prompt::overlay(self, window, cx))
                 .into_any_element()
         })
     }
 }
 
-/// The panel one job is drawn in.
 fn card() -> Div {
     div()
         .flex()
@@ -1704,8 +1409,6 @@ fn card() -> Div {
         .border_color(palette::border())
 }
 
-/// How far along, as a filled strip. The matching window's confidence bar at
-/// the height a progress readout needs.
 fn bar(fraction: f32) -> Div {
     div()
         .h(px(4.))

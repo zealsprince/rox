@@ -1,22 +1,10 @@
-//! The Custom Controls panel: a strip of buttons the user builds. Each one
-//! fires a global rox command on click, and its glyph, colour, and tooltip
-//! follow a piece of live player state through a case table. There are no
-//! expressions and no scripting anywhere in it: the state catalog
-//! ([`rox_panel_api::buttons`]) declares every case a state can be in, the
-//! editor generates one row per case off that, and the user only ever picks
-//! from lists.
+//! The Custom Controls panel: a strip of buttons the user builds. Each fires a
+//! global command, and its glyph, colour and tooltip follow a piece of live
+//! player state through a case table picked from lists, never expressions or
+//! scripts.
 //!
-//! It lives in the binary rather than in `rox-panels` because it calls
-//! [`keymap::dispatch`], and `keymap` is the binary's. Nothing depends on
-//! the `rox` crate, so a panel over in `rox-panels` cannot see the command
-//! table at all, and handing that crate a dependency on the binary would
-//! invert the layering the whole panel split exists to hold. This is the
-//! line `panels/mod.rs` already draws: what stays here is what calls into
-//! here for real.
-//!
-//! What it deliberately isn't: a way into the transport strips. Those carry
-//! `Copy` item enums over a `&'static` catalog and cannot grow at runtime,
-//! which is the entire reason this is a panel.
+//! It lives in the binary because it calls [`keymap::dispatch`], and
+//! `rox-panels` can't depend on the binary.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -44,37 +32,23 @@ use rox_panel_kit::{
 
 use crate::keymap::{self, Group};
 
-/// The glyph size a button draws at rest, matching the stock transport
-/// controls so a custom button sits in the same strip without reading as a
-/// different widget.
 const GLYPH: f32 = 16.0;
 
-/// The panel's per-view config: what a saved layout restores and what the
-/// settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ControlsConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Every button the user has defined, in the order the Controls page
-    /// lists them. Defining one is not placing it.
+    /// Every defined button. Defining one is not placing it: see `items`.
     pub buttons: Vec<CustomButton>,
-    /// The strip in display order: the Layout page's well, holding buttons
-    /// by id and the stock furniture between them. A button whose id isn't
-    /// here sits in that page's tray, defined and not drawn, which is where
-    /// a new one starts. No migration reads an older shape into it, because
-    /// no layout rox has ever shipped carries this panel.
+    /// The strip in display order, buttons by id with furniture between. A
+    /// defined button missing here sits in the Layout page's tray.
     pub items: Vec<WellItem>,
-    /// Where the strip sits when the panel is wider than its buttons, the
-    /// name and the vocabulary `TransportConfig` already uses for it.
     pub align: Align,
 }
 
 impl Default for ControlsConfig {
-    /// Centred rather than `Align`'s own left default: a handful of
-    /// buttons hugging one edge of a strip reads as unfinished.
+    /// Centred: a few buttons hugging one edge reads as unfinished.
     fn default() -> Self {
         ControlsConfig {
             chrome: PanelChrome::default(),
@@ -85,9 +59,7 @@ impl Default for ControlsConfig {
     }
 }
 
-/// One slot of the well: a button by id, or the furniture every strip
-/// offers between its items. Untagged so a saved well reads as `[3,
-/// "spacer", 7]`: a bare number is a button, a word is furniture.
+/// Untagged so a saved well reads as `[3, "spacer", 7]`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WellItem {
@@ -95,7 +67,6 @@ pub enum WellItem {
     Furniture(Furniture),
 }
 
-/// The stock pieces between buttons, the same two the head strips carry.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Furniture {
@@ -103,22 +74,16 @@ pub enum Furniture {
     Divider,
 }
 
-/// One slot of the strip as it draws: a definition the well named, or a
-/// piece of furniture.
 enum Placed<'a> {
     Button(&'a CustomButton),
     Furniture(Furniture),
 }
 
-/// One button: what it does, what it watches, and how it looks in each
-/// case of that.
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct CustomButton {
-    /// A stable handle, unique within the panel and persisted, so the
-    /// editor's per-button widget state survives a reorder or a removal
-    /// shifting the list under it. 0 is unassigned; the panel assigns on
-    /// load and on add.
+    /// Stable and persisted, so per-button editor state survives a reorder. 0
+    /// is unassigned; the panel assigns on load and on add.
     pub id: u64,
     /// A `keymap::COMMANDS` id. Empty means unconfigured.
     pub action: String,
@@ -128,8 +93,6 @@ pub struct CustomButton {
     pub cases: Vec<ButtonCase>,
 }
 
-/// One row of a button's case table: the look it wears while the state it
-/// follows is in that case.
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ButtonCase {
@@ -139,16 +102,11 @@ pub struct ButtonCase {
     pub icon: String,
     /// A `palette::ROLES` name. Empty falls back to `text`.
     pub color: String,
-    /// User text, shown as the tooltip. Not translated: a user-authored
-    /// button in a user-authored workspace is in their own language.
+    /// User text, not translated.
     pub tip: String,
 }
 
-/// Give every button a unique id, keeping the ones a loaded config already
-/// has: zeroes (a freshly added button, or a layout from before the field
-/// existed) and hand-edited duplicates get fresh ones. Copied from
-/// particles' `assign_emitter_ids`, which solves the same problem for the
-/// same reason.
+/// Give zero and duplicate ids fresh ones, keeping the rest.
 fn assign_button_ids(buttons: &mut [CustomButton]) {
     let mut next = buttons.iter().map(|def| def.id).max().unwrap_or(0) + 1;
     for i in 0..buttons.len() {
@@ -160,17 +118,12 @@ fn assign_button_ids(buttons: &mut [CustomButton]) {
     }
 }
 
-/// The well pruned to what the panel actually has: an id no button
-/// carries drops out, and a second mention of one already placed drops
-/// with it, first occurrence winning. A hand-edited layout is the reason
-/// this runs on load; an id left behind would hold a place on the strip
-/// that nothing can ever draw.
+/// Drop ids no button carries and repeat mentions, so a hand-edited layout
+/// can't hold a place nothing draws.
 fn normalize_items(items: &[WellItem], buttons: &[CustomButton]) -> Vec<WellItem> {
     let mut out: Vec<WellItem> = Vec::with_capacity(items.len());
     for item in items {
         match item {
-            // Furniture repeats freely; a button needs a definition behind
-            // it and one place on the strip.
             WellItem::Furniture(_) => out.push(*item),
 
             WellItem::Button(id) => {
@@ -185,9 +138,6 @@ fn normalize_items(items: &[WellItem], buttons: &[CustomButton]) -> Vec<WellItem
     out
 }
 
-/// What the strip draws, in well order rather than list order. An id with
-/// nothing behind it is skipped, which after [`normalize_items`] means it
-/// can't happen and is cheap to keep honest anyway.
 fn placed<'a>(items: &[WellItem], buttons: &'a [CustomButton]) -> Vec<Placed<'a>> {
     items
         .iter()
@@ -198,9 +148,6 @@ fn placed<'a>(items: &[WellItem], buttons: &'a [CustomButton]) -> Vec<Placed<'a>
         .collect()
 }
 
-/// Drop the button at `index`, off the definitions and off the well with
-/// it. The well is what the strip draws from, so a delete that left the id
-/// there would leave a hole that only a reload cleans up.
 fn remove_at(buttons: &mut Vec<CustomButton>, items: &mut Vec<WellItem>, index: usize) {
     if index >= buttons.len() {
         return;
@@ -210,11 +157,7 @@ fn remove_at(buttons: &mut Vec<CustomButton>, items: &mut Vec<WellItem>, index: 
     items.retain(|item| *item != gone);
 }
 
-/// The Layout page's registry: one chip per defined button, in the order
-/// the Controls page lists them, named by the command it fires and wearing
-/// the glyph of its first case, then the two pieces of furniture. Built
-/// per render, since a button's command and icon change under the editor
-/// while the page is open.
+/// Built per render: a button's command and icon change while the page is open.
 fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>> {
     let mut entries: Vec<_> = buttons
         .iter()
@@ -225,10 +168,7 @@ fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>>
                 command_label(&def.action)
             };
 
-            // Keyed by the button's own id, not its label: two buttons
-            // firing one command are two chips, and a renamed command
-            // mid-drag would otherwise move the chip out from under the
-            // pointer.
+            // Keyed by button id, not label: two buttons can fire one command.
             panel::ArrangeEntry {
                 id: SharedString::from(format!("b{}", def.id)),
                 label,
@@ -244,8 +184,6 @@ fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>>
         })
         .collect();
 
-    // The furniture after the buttons, so the tray reads as the user's
-    // own things first. Both repeat: a strip wants as many as it wants.
     entries.push(panel::ArrangeEntry {
         id: SharedString::new_static("spacer"),
         label: rox_i18n::t!("head-piece-spacer"),
@@ -264,11 +202,7 @@ fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>>
     entries
 }
 
-/// The catalog entry a stored icon path names. `icon_control`'s glyph is a
-/// `&'static str` and the config's is a `String`, so the stored path is
-/// matched against the catalog and the catalog's own static is what draws.
-/// A hand-edited config naming an icon that isn't there degrades to the
-/// unconfigured placeholder instead of failing to build an element.
+/// A path missing from the catalog degrades to the placeholder.
 fn icon_for(path: &str) -> &'static str {
     icons::CATALOG
         .iter()
@@ -277,9 +211,6 @@ fn icon_for(path: &str) -> &'static str {
         .unwrap_or(icons::SQUARE_DASHED)
 }
 
-/// The colour a case's role name resolves to against the live palette.
-/// Empty or unmatched falls back to plain text, so a role dropped from the
-/// palette leaves a readable button rather than an invisible one.
 fn color_for(role: &str) -> Rgba {
     let Some(entry) = palette::ROLES.iter().find(|entry| entry.name == role) else {
         return palette::text();
@@ -288,21 +219,13 @@ fn color_for(role: &str) -> Rgba {
     (entry.get)(&palette::resolved())
 }
 
-/// The state a button follows, or None when it's stateless or names a
-/// state this build doesn't have.
 fn state_spec(id: &str) -> Option<&'static StateSpec> {
     buttons::STATES.iter().find(|spec| spec.id == id)
 }
 
-/// The commands that only mean anything against a position in a track:
-/// dropping either kind of mark, stepping between them, and the A-B
-/// section. A live stream has no such position, so a button firing one of
-/// these is the button that locks while a station plays.
-///
-/// Held as ids rather than read off `keymap::COMMANDS`, because nothing on
-/// a command says this about it and inventing a field there would put a
-/// panel's concern in the keymap. The test below keeps the list honest
-/// against the command table.
+/// Commands that need a position in a track, so their buttons lock while a
+/// station plays. Held here rather than as a field on `keymap::COMMANDS`; the
+/// test below keeps the two in step.
 const POSITION_BOUND: &[&str] = &[
     "ab_repeat",
     "bookmark",
@@ -314,13 +237,10 @@ const POSITION_BOUND: &[&str] = &[
     "prev_bookmark",
 ];
 
-/// Whether a button's command needs a position in a track to act on.
 fn needs_position(action: &str) -> bool {
     POSITION_BOUND.contains(&action)
 }
 
-/// A command's name for the picker and the tooltip fallback, or the raw id
-/// when a saved layout names a command that has since been retired.
 fn command_label(id: &str) -> SharedString {
     keymap::COMMANDS
         .iter()
@@ -329,8 +249,6 @@ fn command_label(id: &str) -> SharedString {
         .unwrap_or_else(|| SharedString::from(id.to_owned()))
 }
 
-/// What one button looks like this frame, once the case table has picked
-/// its row.
 struct ButtonLook {
     icon: &'static str,
     color: Rgba,
@@ -338,8 +256,6 @@ struct ButtonLook {
 }
 
 impl ButtonLook {
-    /// The unconfigured button: a dashed square in muted ink, whose click
-    /// opens the settings page where it gets a command.
     fn placeholder() -> Self {
         ButtonLook {
             icon: icons::SQUARE_DASHED,
@@ -349,11 +265,6 @@ impl ButtonLook {
     }
 }
 
-/// The look a button draws with, in the contract's resolution order: an
-/// unconfigured button is the placeholder, the live case picks the row,
-/// and a table with nothing matching falls back to its first row and then
-/// to the placeholder again. `case` is None for a stateless button, which
-/// is what puts it on the first row every draw.
 fn look(def: &CustomButton, case: Option<&str>) -> ButtonLook {
     if def.action.is_empty() {
         return ButtonLook::placeholder();
@@ -367,9 +278,6 @@ fn look(def: &CustomButton, case: Option<&str>) -> ButtonLook {
         return ButtonLook::placeholder();
     };
 
-    // An untouched tooltip reads as the command's own name. A glyph with
-    // no words on hover says nothing to anyone who didn't place it, which
-    // is the case `Tip` exists to refuse.
     let tip = if row.tip.is_empty() {
         command_label(&def.action)
     } else {
@@ -383,20 +291,14 @@ fn look(def: &CustomButton, case: Option<&str>) -> ButtonLook {
     }
 }
 
-/// The case table a state's pick produces: one row per case the state
-/// declares, seeded with that case's stock icon and colour, and keeping
-/// whatever the user already edited for a case the new state still has.
-/// Silently discarding someone's icon work is worse than a slightly stale
-/// table, so nothing here asks before it writes.
-///
-/// A stateless pick collapses to the single row every draw uses.
+/// Keeps the rows for cases the new state still has, so re-picking a state
+/// never discards icon work.
 fn seed_cases(spec: Option<&StateSpec>, held: &[ButtonCase]) -> Vec<ButtonCase> {
     let Some(spec) = spec else {
         let kept = held.iter().find(|row| row.when.is_empty()).cloned();
         return vec![kept.unwrap_or_else(|| ButtonCase {
-            // Named rather than left empty: the colour picker labels a role
-            // it can't find with its head option, which would read as a
-            // colour the button never had.
+            // Named rather than empty: the colour picker labels an unknown role
+            // with its head option.
             color: "text".to_string(),
             ..ButtonCase::default()
         })];
@@ -418,10 +320,7 @@ fn seed_cases(spec: Option<&StateSpec>, held: &[ButtonCase]) -> Vec<ButtonCase> 
         .collect()
 }
 
-/// Prefill the click from the state's obvious command, into an empty field
-/// only: an action the user already chose is never overwritten. A state
-/// with no single obvious command (`player.continuation`, which no keymap
-/// entry toggles) leaves the field alone.
+/// Never overwrites an action the user already chose.
 fn prefill_action(action: &mut String, spec: Option<&StateSpec>) {
     if !action.is_empty() {
         return;
@@ -432,11 +331,8 @@ fn prefill_action(action: &mut String, spec: Option<&StateSpec>) {
     }
 }
 
-/// Every command a button may fire, as picker rows, grouped the way the
-/// Keymap page groups them. Built once: `COMMANDS` bakes its labels
-/// through its own `LazyLock` at first use, so these rows hold exactly as
-/// long as those strings do, and a settings render has no business
-/// rebuilding fifty-nine rows a frame.
+/// Built once: `COMMANDS` is a `LazyLock`, and a settings render shouldn't
+/// rebuild the list every frame.
 fn command_rows() -> Arc<Vec<PickRow>> {
     static ROWS: OnceLock<Arc<Vec<PickRow>>> = OnceLock::new();
 
@@ -452,9 +348,8 @@ fn command_rows() -> Arc<Vec<PickRow>> {
     .clone()
 }
 
-/// One command as a row. The id goes in the search terms beside the label
-/// words, so someone who knows a command by its settings key finds it
-/// without knowing what the menu calls it.
+/// The id goes in the search terms so a command is findable by its settings
+/// key.
 fn command_row(command: &'static keymap::Command) -> PickRow {
     let label = command.label.to_lowercase();
 
@@ -474,17 +369,15 @@ fn command_row(command: &'static keymap::Command) -> PickRow {
     }
 }
 
-/// The handler a button's click runs. An unconfigured button opens the
-/// panel's own settings instead of doing nothing, since a placed-but-blank
-/// button that swallows a press reads as broken.
+/// An unconfigured button opens the panel's settings rather than swallowing the
+/// press.
 fn press(
     action: String,
 ) -> impl Fn(&mut ControlsPanel, &mut Window, &mut Context<ControlsPanel>) + 'static {
     move |_, window, cx| {
         if action.is_empty() {
-            // Deferred for the reason `opens_settings!` defers: `open`
-            // reads the panel back through its handle, and this runs while
-            // that same entity is still leased for the update.
+            // Deferred: `open` reads this entity back, and it's still leased
+            // here.
             let panel = cx.entity();
             cx.defer(move |cx| panel_settings::open(panel, cx));
             return;
@@ -494,20 +387,14 @@ fn press(
     }
 }
 
-/// One button as it draws. The settings page's preview calls this too, so
-/// what the editor shows and what the strip shows can't drift apart.
+/// One button as it draws, shared with the settings preview.
 ///
-/// The glyph chrome is `panel::icon_control`'s, rebuilt here rather than
-/// called: that builder drops the window on its way into the click
-/// handler, and [`keymap::dispatch`] needs one to dispatch at. Interaction
-/// state comes from `.id()` and not `.track_focus()`, which is what lets a
-/// press here land without pulling the cursor out of a search box.
+/// Rebuilt rather than calling `panel::icon_control`, which drops the window
+/// [`keymap::dispatch`] needs. `.id()` rather than `.track_focus()`, so a press
+/// doesn't pull focus out of a search box.
 ///
-/// `locked` is a position-bound button with nothing to bind to. It keeps
-/// its place and its glyph and stops answering, and its tooltip swaps for
-/// the reason, because that's the only surface a strip of glyphs has to
-/// say one on. Dropping the button instead would move every other button
-/// sideways each time a station started.
+/// A `locked` button keeps its place and glyph, stops answering, and tips the
+/// reason, so the strip doesn't shift when a station starts.
 fn button_element(
     id: SharedString,
     look: &ButtonLook,
@@ -553,26 +440,18 @@ pub struct ControlsPanel {
     config: ControlsConfig,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The tooltip fields, keyed by button id and case so a reorder or a
-    /// removal leaves the rest of them where they were.
     tips: HashMap<(u64, String), (Entity<InputState>, Subscription)>,
-    /// The blocks unfolded on the settings page. Per view and never saved:
-    /// a reopened window starts folded, so a long list reads as a list
-    /// before it reads as a form.
+    /// Unfolded blocks on the settings page, never saved.
     open: HashSet<u64>,
     _player_changed: Subscription,
 }
 
 impl ControlsPanel {
     pub fn new(state: AppState, mut config: ControlsConfig, cx: &mut Context<Self>) -> Self {
-        // Before the editor keys anything on them: a zero or a duplicate
-        // id here hands two buttons one tooltip field for the rest of the
-        // session.
+        // Before the editor keys state on ids: a duplicate would share one
+        // tooltip field.
         assign_button_ids(&mut config.buttons);
 
-        // And after them, since the well is a list of those ids: a layout
-        // whose well names a button that got deleted by hand comes back
-        // drawing the rest of the strip rather than a gap.
         config.items = normalize_items(&config.items, &config.buttons);
 
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
@@ -588,9 +467,6 @@ impl ControlsPanel {
         }
     }
 
-    /// The live case id per placed button, read once for the frame. A
-    /// state reader is a plain `fn(&Player)`, so this is a slice scan and
-    /// a call per button.
     fn live_cases(&self, placed: &[Placed<'_>], cx: &App) -> Vec<Option<&'static str>> {
         let player = self.state.player.read(cx);
         placed
@@ -603,13 +479,8 @@ impl ControlsPanel {
     }
 
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
-        // The well, not the definition list: a button parked in the
-        // Layout page's tray is configured and deliberately not drawn.
         let placed = placed(&self.config.items, &self.config.buttons);
         let cases = self.live_cases(&placed, cx);
-        // One read for the frame: whether anything position-bound can act
-        // at all right now. False through a live stream, and the whole
-        // reason a button on this strip ever goes inert.
         let unbound = !position_bound::allowed(&self.state, cx);
 
         let strip = div()
@@ -621,8 +492,7 @@ impl ControlsPanel {
             .gap(tokens::SPACE_XS)
             .px(tokens::SPACE_SM);
 
-        // An empty well draws the placeholder once, so a panel just
-        // dropped into the dock is never a blank rectangle with no way in.
+        // An empty well draws the placeholder, so a new panel is never blank.
         if placed.is_empty() {
             let blank = ButtonLook::placeholder();
             return strip.child(button_element(
@@ -647,7 +517,6 @@ impl ControlsPanel {
 
                 Placed::Furniture(Furniture::Spacer) => div().flex_1().into_any_element(),
 
-                // The seek strip's rule: a hairline that takes the slack.
                 Placed::Furniture(Furniture::Divider) => div()
                     .flex_1()
                     .h(px(1.))
@@ -661,10 +530,7 @@ impl ControlsPanel {
     }
 }
 
-// The settings page.
 impl ControlsPanel {
-    /// The Content page: every button the panel has, and what each one
-    /// does. Where they sit is the Layout page's business.
     fn buttons_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         self.sync_tips(window, cx);
 
@@ -695,11 +561,8 @@ impl ControlsPanel {
         ))
     }
 
-    /// The Layout page: where the strip sits, then which of the defined
-    /// buttons are on it and in what order. The well is the strip and the
-    /// tray is everything defined but not placed, so taking a button off
-    /// the strip is a drag rather than a delete; deleting still lives on
-    /// the trash icon over on the Content page.
+    /// The Layout page: alignment, then the well. Taking a button off the strip
+    /// is a drag to the tray; deleting lives on the Content page.
     fn layout_page(&mut self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
@@ -730,11 +593,8 @@ impl ControlsPanel {
             ))
     }
 
-    /// Keep one tooltip field per case alive, and drop the ones whose case
-    /// is gone. Keyed by button id and case rather than by position, so
-    /// reordering the strip doesn't hand a field's typing to its
-    /// neighbour. Particles' `signal_ui::sync` discipline, for the one
-    /// piece of widget state this page owns itself.
+    /// Keyed by button id and case, not position, so a reorder doesn't hand one
+    /// field's typing to its neighbour.
     fn sync_tips(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wanted: Vec<(u64, String)> = self
             .config
@@ -805,7 +665,6 @@ impl ControlsPanel {
         self.config.buttons.push(CustomButton::default());
         assign_button_ids(&mut self.config.buttons);
 
-        // The one just added is the one about to be filled in.
         if let Some(added) = self.config.buttons.last() {
             self.open.insert(added.id);
         }
@@ -826,8 +685,6 @@ impl ControlsPanel {
         }
     }
 
-    /// Move a button one place along the strip. The editor's widget state
-    /// keys on the button's id, so nothing follows the swap.
     fn move_button(&mut self, index: usize, delta: isize, cx: &mut Context<Self>) {
         let Some(to) = index.checked_add_signed(delta) else {
             return;
@@ -839,14 +696,8 @@ impl ControlsPanel {
         }
     }
 
-    /// One button's block: the header carrying its name and its list
-    /// controls, then the command, and once there is one, everything the
-    /// look is made of.
-    ///
-    /// The block carries an element id of its own because everything below
-    /// it is built from `&'static str` ids that every other button repeats.
-    /// gpui paths ids through their ided ancestors, so this is what keeps
-    /// two buttons' state pickers from sharing one popup.
+    /// The block's own element id keeps two buttons' pickers from sharing one
+    /// popup, since the ids below it repeat per button.
     fn button_block(&self, index: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let def = &self.config.buttons[index];
         let id = def.id;
@@ -917,7 +768,6 @@ impl ControlsPanel {
             .gap(tokens::SPACE_SM)
             .child(header);
 
-        // Folded is the header alone, so the list stays a list.
         if !open {
             return block;
         }
@@ -928,8 +778,6 @@ impl ControlsPanel {
             self.command_field(id, def, cx),
         ));
 
-        // An unconfigured button stays one line. There is nothing to say
-        // about a look until there is something for it to look like.
         if def.action.is_empty() {
             return block;
         }
@@ -949,9 +797,6 @@ impl ControlsPanel {
         block
     }
 
-    /// The command picker: every global command, grouped the way the
-    /// Keymap page groups them, behind a search box because fifty-nine
-    /// entries in a plain menu is a scroll hunt.
     fn command_field(&self, id: u64, def: &CustomButton, cx: &mut Context<Self>) -> AnyElement {
         let current: Option<SharedString> = (!def.action.is_empty())
             .then(|| SharedString::from(def.action.clone()))
@@ -969,8 +814,6 @@ impl ControlsPanel {
             rox_i18n::t!("button-editor-action-search"),
             rox_i18n::t!("button-editor-action-empty"),
             move |this: &mut Self, value, cx| {
-                // Every row carries a command id; the shared field's
-                // clear-to-default head row is never built for this list.
                 let Some(value) = value else {
                     return;
                 };
@@ -978,8 +821,6 @@ impl ControlsPanel {
                 if let Some(def) = this.button_mut(id) {
                     def.action = value;
 
-                    // A button picked action-first still wants a case
-                    // table to draw from.
                     if def.cases.is_empty() {
                         def.cases = seed_cases(None, &[]);
                     }
@@ -991,8 +832,6 @@ impl ControlsPanel {
         .into_any_element()
     }
 
-    /// The state picker: the eight declared states plus the stateless
-    /// option. Nine entries doesn't need a search box.
     fn state_field(&self, id: u64, def: &CustomButton, cx: &mut Context<Self>) -> AnyElement {
         let mut options = vec![(String::new(), rox_i18n::t!("button-editor-state-none"))];
         options.extend(
@@ -1020,20 +859,16 @@ impl ControlsPanel {
         .into_any_element()
     }
 
-    /// The button drawn once per case, above the table that defines them.
-    /// This is what makes the page a design tool rather than a form: the
-    /// whole state machine is on screen without driving the app into each
-    /// state in turn. A preview press fires the command like the real one,
-    /// since the obvious thing to do to a button is press it.
+    /// The button drawn once per case, so the whole state machine is on screen.
+    /// A preview press fires the command like the real one.
     fn preview_row(
         &self,
         def: &CustomButton,
         spec: Option<&'static StateSpec>,
         cx: &mut Context<Self>,
     ) -> Div {
-        // No wrap: the control slot is measured at one line, so a wrapped
-        // second row would paint over the case block below. Three cases at
-        // most, and they fit on one line.
+        // No wrap: the slot is measured at one line, and a wrapped row would
+        // paint over the block below.
         let mut row = div().flex().flex_row().items_start().gap(tokens::SPACE_MD);
 
         for (index, case) in def.cases.iter().enumerate() {
@@ -1045,9 +880,8 @@ impl ControlsPanel {
                     .flex_col()
                     .items_center()
                     .gap(px(2.))
-                    // The preview draws the case table, not the session, so
-                    // it never locks: someone editing a bookmark button
-                    // while a station plays is still editing its icons.
+                    // Never locks: the preview draws the case table, not the
+                    // session.
                     .child(button_element(
                         id,
                         &resolved,
@@ -1067,10 +901,6 @@ impl ControlsPanel {
         setting_row(rox_i18n::t!("button-editor-preview"), None, row)
     }
 
-    /// One case's rows: the glyph, the colour role, and the tooltip, under
-    /// the case's own name. The nested-block shape is `RouteEditor::row`'s,
-    /// which is where the tree already puts several controls that belong to
-    /// one thing.
     fn case_block(
         &self,
         id: u64,
@@ -1101,8 +931,6 @@ impl ControlsPanel {
 
         let color = {
             let when = when.clone();
-            // An empty role draws as `text`, so the picker says so; left
-            // empty it would label the row with its head option instead.
             let current = if case.color.is_empty() {
                 "text".to_string()
             } else {
@@ -1141,8 +969,6 @@ impl ControlsPanel {
                 color,
             ));
 
-        // The tooltip field only exists once `sync_tips` has built it,
-        // which it has by the time a block renders.
         if let Some((input, _)) = self.tips.get(&(id, when.clone())) {
             body = body.child(setting_row(
                 rox_i18n::t!("button-editor-tip"),
@@ -1157,8 +983,6 @@ impl ControlsPanel {
     }
 }
 
-/// A case's name in the editor: the catalog's label for it, or the
-/// stateless row's own name when the button follows nothing.
 fn case_label(spec: Option<&'static StateSpec>, when: &str) -> SharedString {
     let Some(spec) = spec else {
         return rox_i18n::t!("button-editor-case-always");
@@ -1241,9 +1065,7 @@ impl Panel for ControlsPanel {
         self.config.chrome.locked
     }
 
-    /// A strip, like the transport panels: the body paints edge to edge
-    /// and pads itself, so the dock's inner padding would only show as a
-    /// bare band above the buttons.
+    /// Edge to edge: the body pads itself.
     fn inner_padding(&self, _cx: &App) -> bool {
         false
     }
@@ -1316,12 +1138,10 @@ impl Render for ControlsPanel {
 mod tests {
     use super::*;
 
-    /// A well slot naming a button.
     fn b(id: u64) -> WellItem {
         WellItem::Button(id)
     }
 
-    /// A button carrying everything a saved layout has to bring back.
     fn button(id: u64, action: &str, state: &str, cases: &[(&str, &str, &str)]) -> CustomButton {
         CustomButton {
             id,
@@ -1362,8 +1182,8 @@ mod tests {
         let json = serde_json::to_value(config.clone()).expect("the config serializes");
         let back: ControlsConfig = serde_json::from_value(json).expect("and reads back");
 
-        // Compared by value rather than by `assert_eq!`: the config types
-        // carry the derives the contract spells and `Debug` isn't one.
+        // `assert!` rather than `assert_eq!`: the config types don't derive
+        // `Debug`.
         assert!(
             back.buttons == config.buttons,
             "the buttons came back changed"
@@ -1372,8 +1192,6 @@ mod tests {
         assert!(back.align == Align::Center);
     }
 
-    /// The well is ids, and nothing stops a hand-edited layout from
-    /// naming one twice or naming a button that was deleted.
     #[test]
     fn items_normalize() {
         let buttons = vec![
@@ -1390,9 +1208,6 @@ mod tests {
         assert_eq!(normalize_items(&[b(3), b(7)], &[]), Vec::<WellItem>::new());
     }
 
-    /// The saved shape is a bare number for a button and a word for the
-    /// furniture, so a well written before the furniture existed still
-    /// reads.
     #[test]
     fn the_well_reads_numbers_and_words() {
         let old: Vec<WellItem> = serde_json::from_str("[3, 7]").expect("the old shape parses");
@@ -1414,8 +1229,6 @@ mod tests {
         assert_eq!(json, r#"[3,"spacer",7,"divider"]"#);
     }
 
-    /// Deleting a button takes it off the strip with it. Left behind, the
-    /// id would hold a place nothing can draw until the next reload.
     #[test]
     fn removing_a_button_drops_it_from_the_well() {
         let mut buttons = vec![
@@ -1430,15 +1243,10 @@ mod tests {
         assert_eq!(buttons.len(), 1);
         assert_eq!(buttons[0].id, 3);
 
-        // Past the end is a no-op rather than a panic: the editor's rows
-        // are built from a list an event could have shortened.
         remove_at(&mut buttons, &mut items, 4);
         assert_eq!(buttons.len(), 1);
     }
 
-    /// The strip reads the well, in the well's order. The Controls page's
-    /// own order only decides where a button sits in the editor's list
-    /// and in the Layout page's tray.
     #[test]
     fn the_strip_follows_the_well_not_the_list() {
         let buttons = vec![
@@ -1467,14 +1275,10 @@ mod tests {
             "a button off the well reached the strip"
         );
 
-        // Nothing placed is the placeholder's case, and an id with no
-        // button behind it is skipped rather than drawn as a gap.
         assert!(placed(&[], &buttons).is_empty());
         assert!(placed(&[b(42)], &buttons).is_empty());
     }
 
-    /// A collision here hands two buttons one tooltip field and nothing
-    /// anywhere says so.
     #[test]
     fn ids_normalize() {
         let mut buttons = vec![
@@ -1497,7 +1301,6 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), ids.len(), "{ids:?} repeats an id");
 
-        // The distinct ones a loaded config already had stay put.
         assert_eq!(ids[1], 4);
         assert_eq!(ids[4], 1);
     }
@@ -1553,7 +1356,6 @@ mod tests {
             "a case the state can't be in kept its row"
         );
 
-        // Switching away collapses to the single row every draw uses.
         let stateless = seed_cases(None, &again);
         assert_eq!(stateless.len(), 1);
         assert!(stateless[0].when.is_empty());
@@ -1571,18 +1373,13 @@ mod tests {
         prefill_action(&mut chosen, Some(repeat));
         assert_eq!(chosen, "play_random", "a chosen action was overwritten");
 
-        // A state whose catalog entry carries no action prefills nothing
-        // rather than an empty id; the stateless pick is the one case that
-        // is guaranteed to have none.
         let mut stateless = String::new();
         prefill_action(&mut stateless, None);
         assert!(stateless.is_empty());
     }
 
-    /// The catalog's prefills are plain strings `keymap` never sees, so
-    /// this is the one place the two tables meet: a state naming a command
-    /// that doesn't exist, or one a button can't reach, would seed a
-    /// button that does nothing.
+    /// The one place the state catalog's prefills meet `keymap`: a bad id would
+    /// seed a button that does nothing.
     #[test]
     fn every_state_action_is_a_global_command() {
         for spec in buttons::STATES {
@@ -1602,9 +1399,7 @@ mod tests {
         }
     }
 
-    /// The lock covers the marks, the steps between them and the A-B
-    /// section, and nothing else. Clearing A-B and the transport around it
-    /// work fine over a stream and have no business greying out.
+    /// Clearing A-B and the transport work over a stream and must not lock.
     #[test]
     fn only_the_position_bound_commands_lock() {
         for action in [
@@ -1631,10 +1426,6 @@ mod tests {
         }
     }
 
-    /// The other half of the same seam as `every_state_action_is_a_global_command`:
-    /// a typo here, or a command renamed out from under this list, would
-    /// leave a button that keeps working over a stream and stores a
-    /// position that means nothing.
     #[test]
     fn every_position_bound_id_is_a_command() {
         for action in POSITION_BOUND {

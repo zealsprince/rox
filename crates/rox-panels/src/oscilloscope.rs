@@ -1,15 +1,9 @@
-//! The oscilloscope panel: the player's PCM tap drawn in time, one window of
-//! samples spanning the panel. What makes it readable is the trigger. Rather
-//! than drawing whatever the newest window happens to hold, the panel pulls
-//! more audio than it shows and starts the drawn frame at the first crossing
-//! of the trigger level, so periodic material stands still instead of
-//! sliding sideways. Each column holds a min/max pair rather than one
-//! decimated sample, which keeps a transient from falling between pixels,
-//! and the trace colors by its own excursion through the loudness ramp the
-//! spectrum and VU panels share. Like them it's paint primitives on the UI
-//! thread: a frame per pump tick while audio flows, and once the audio stops
-//! and the phosphor trail has burned off the panel stops asking for frames,
-//! so an idle app pays nothing.
+//! The oscilloscope panel: the player's PCM tap drawn in time. The trigger
+//! makes it readable: the panel pulls more audio than it shows and starts
+//! the frame at the first crossing of the trigger level, so periodic
+//! material stands still. Each column holds a min/max pair so a transient
+//! can't fall between pixels. The panel parks once the audio stops and the
+//! phosphor trail burns off.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -38,65 +32,46 @@ use crate::panel_settings;
 use crate::settings::ui as settings_ui;
 use crate::spectrum::{Gradient, gradient_choices, ramp_color};
 
-/// The time window slider's span, ms: a millisecond resolves a single cycle
-/// of a high note, a tenth of a second holds a bar of a slow bassline.
 const WINDOW_MS_MIN: f32 = 1.0;
 const WINDOW_MS_MAX: f32 = 100.0;
 
-/// The vertical scale slider's span, log-spaced so the quiet end that
-/// actually needs the boost gets most of the travel.
+/// Log-spaced, so the quiet end that needs the boost gets most of the
+/// travel.
 const GAIN_MIN: f32 = 0.25;
 const GAIN_MAX: f32 = 16.0;
 
-/// The trace thickness slider's span, px.
 const LINE_W_MIN: f32 = 0.5;
 const LINE_W_MAX: f32 = 4.0;
 
-/// The persistence slider's top. Full 1.0 would never fade, so the trail
-/// stops just short of it.
+/// Full 1.0 would never fade.
 const PERSIST_MAX: f32 = 0.95;
 
-/// The most previous frames the phosphor trail keeps. Bounded, because
-/// each frame is a column of pairs per channel, and an unbounded ring on a
-/// wide panel adds up.
+/// Bounded: each frame is a column of pairs per channel.
 const MAX_TRAILS: usize = 8;
 
-/// How much wider than the drawn window the pull runs. The extra frames are
-/// the slack the trigger searches for its crossing, so a period longer than
-/// this can't be locked. Two windows of room covers anything periodic
-/// enough to stand still in the first place.
+/// The extra frames are the trigger's search slack, so a period longer
+/// than two windows can't lock.
 const SEARCH_SPAN: usize = 3;
 
-/// The most frames a pull can ask for: what the feed itself holds, since
-/// it buffers interleaved stereo and hands back frames.
+/// What the feed itself holds.
 const MAX_PULL: usize = MAX_FFT_SIZE * 2;
 
-/// How much of a frame's half-height full scale maps to, so a pinned trace
-/// doesn't touch the panel edge.
+/// Keeps a pinned trace off the panel edge.
 const HEADROOM: f32 = 0.94;
 
-/// How many steps the trace's color ramp quantizes into. One path is one
-/// fill, so the trace is built as this many paths and each segment joins
-/// the one nearest its own excursion; past a handful of steps the eye
-/// stops reading the difference and the paint calls keep adding up.
+/// One path is one fill, so the trace is built as one path per ramp step.
 const RAMP_STEPS: usize = 8;
 
-/// Vertical divisions the graticule rules the window into.
 const GRID_DIVS: usize = 8;
 
-/// The column count clamps: two is the fewest a segment can be built from,
-/// and the ceiling covers a wide panel on a dense display.
 const MIN_COLS: usize = 2;
 const MAX_COLS: usize = 4096;
 
-/// How long the feed may sit still before it reads as stopped audio rather
-/// than the gap between pump ticks. Same as the spectrum's and the VU's,
-/// and for the same reason: between ticks the trace holds instead of
+/// How long the feed may sit still before it reads as stopped rather than
+/// a gap between pump ticks. Between ticks the trace holds instead of
 /// flattening.
 const SILENT_AFTER: f32 = 0.15;
 
-/// Where the drawn frame starts: at a crossing of the trigger level going
-/// up, going down, or wherever the newest window happens to begin.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Trigger {
@@ -106,8 +81,6 @@ pub enum Trigger {
     Falling,
 }
 
-/// How many traces and where they go: the stereo fold, both channels over
-/// each other in one frame, or a frame each stacked down the panel.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScopeChannels {
@@ -118,7 +91,6 @@ pub enum ScopeChannels {
 }
 
 impl ScopeChannels {
-    /// Whether the panel needs the channels split rather than folded.
     fn stereo(self) -> bool {
         self != ScopeChannels::Mono
     }
@@ -152,9 +124,8 @@ fn channel_choices() -> [(SharedString, ScopeChannels); 3] {
     ]
 }
 
-/// A clamp that swallows NaN too. `f32::clamp` passes it straight through,
-/// and one NaN out of a hand-edited layout would take the whole trace with
-/// it, so every config accessor goes through here.
+/// A clamp that swallows NaN, which `f32::clamp` passes through. One NaN
+/// from a hand-edited layout would take the whole trace.
 fn sane(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     if value.is_nan() {
         fallback
@@ -163,45 +134,25 @@ fn sane(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     }
 }
 
-/// The oscilloscope panel's per-view config: what a saved layout restores
-/// and what the customize window edits. Missing fields take the defaults, so
-/// a layout dumped before a field existed still loads. The color ramp reuses
-/// the spectrum's type so the visualizers use the same terms.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OscilloscopeConfig {
-    /// The rename, theme override, and placement locks shared by every panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// How much time the trace spans, ms.
     pub window_ms: f32,
-    /// Vertical scale: what a full-scale sample is multiplied by before it
-    /// reaches the frame edge.
     pub gain: f32,
-    /// Where the drawn frame starts, and which way the signal has to cross
-    /// to start it.
     pub trigger: Trigger,
-    /// The level the trigger looks for the crossing at, in samples.
     pub trigger_level: f32,
-    /// How many traces and where they go.
     pub channels: ScopeChannels,
-    /// Trace thickness, px.
     pub line_width: f32,
-    /// A soft fill between the trace and the center line.
     pub fill: bool,
-    /// The graticule behind the trace.
     pub grid: bool,
-    /// How the trace colors by excursion: flat accent, or a ramp from the
-    /// theme, the cover art, or the custom pair below.
     pub gradient: Gradient,
-    /// The custom ramp's ends, `#rrggbb`: the quiet base and the loud tip.
+    /// `#rrggbb`: the quiet base and the loud tip.
     pub gradient_lo: String,
     pub gradient_hi: String,
-    /// How long previous frames linger behind the trace, the phosphor
-    /// afterglow look. Zero draws the standing frame alone.
+    /// Zero draws the standing frame alone.
     pub persistence: f32,
-    /// Freeze the trace while playback is paused instead of letting it fall
-    /// flat.
     pub freeze: bool,
 }
 
@@ -227,9 +178,8 @@ impl Default for OscilloscopeConfig {
 }
 
 impl OscilloscopeConfig {
-    /// The window and trace thickness read back to the typed ceiling rather
-    /// than the strip's own top, or every value typed past the top would
-    /// drop on the next load.
+    /// Clamped to the typed ceiling, not the strip's top, so a value typed
+    /// past the top survives a reload.
     fn window_ms(&self) -> f32 {
         sane(
             self.window_ms,
@@ -248,8 +198,6 @@ impl OscilloscopeConfig {
         )
     }
 
-    /// The knobs whose ends mean something: full scale either way for the
-    /// trigger level, the log slider's own span for the gain.
     fn gain(&self) -> f32 {
         sane(self.gain, GAIN_MIN, GAIN_MAX, 1.0)
     }
@@ -262,15 +210,12 @@ impl OscilloscopeConfig {
         sane(self.persistence, 0.0, PERSIST_MAX, 0.0)
     }
 
-    /// How many previous frames the trail keeps at the current persistence:
-    /// none at zero, the full ring at the top of the slider.
     fn trails(&self) -> usize {
         ((self.persistence() / PERSIST_MAX) * MAX_TRAILS as f32).round() as usize
     }
 
-    /// The custom ramp's ends parsed, falling back to the theme ramp's when
-    /// a hand-edited hex doesn't parse, the same fallback the spectrum and
-    /// the VU meter use.
+    /// Falls back to the theme ramp's ends when a hand-edited hex doesn't
+    /// parse.
     fn custom_ramp(&self) -> (Rgba, Rgba) {
         (
             palette::parse_hex(&self.gradient_lo)
@@ -280,16 +225,12 @@ impl OscilloscopeConfig {
     }
 }
 
-/// One drawn channel: a min/max sample pair per column, raw. The gain is
-/// applied at paint, so dragging the scale slider on a paused panel moves the
-/// standing trace instead of waiting for the next tick.
+/// Raw: the gain applies at paint, so dragging the scale on a paused panel
+/// moves the standing trace.
 type Lane = Vec<(f32, f32)>;
 
-/// Where the drawn window starts inside the pull: the first crossing of
-/// `level` in the configured direction within the slack the pull left in
-/// front of it. None means no crossing was there, and the caller falls back
-/// to a fixed offset: hunting for whatever looked closest is exactly the
-/// smear the trigger exists to kill.
+/// None means no crossing. The caller then uses a fixed offset; hunting
+/// for the closest match would smear.
 fn trigger_at(samples: &[f32], slack: usize, trigger: Trigger, level: f32) -> Option<usize> {
     if trigger == Trigger::Off || slack == 0 {
         return None;
@@ -305,11 +246,9 @@ fn trigger_at(samples: &[f32], slack: usize, trigger: Trigger, level: f32) -> Op
     })
 }
 
-/// The drawn window as one min/max pair per column. More than one sample to
-/// a column keeps both ends, so a transient between column centers still
-/// shows instead of being decimated away; fewer than one interpolates, which
-/// keeps a 1 ms window off a staircase. Callers guarantee at least two
-/// samples and two columns.
+/// More samples than columns keeps both ends, so a transient still shows;
+/// fewer interpolates, so a 1 ms window isn't a staircase. Needs at least
+/// two samples and two columns.
 fn resample(window: &[f32], cols: usize) -> Lane {
     let n = window.len();
     let mut lane = Vec::with_capacity(cols);
@@ -323,8 +262,7 @@ fn resample(window: &[f32], cols: usize) -> Lane {
                 lo = lo.min(s);
                 hi = hi.max(s);
             }
-            // An all-NaN column leaves the seeds untouched; a garbage tap is
-            // still a flat line rather than a path with infinite bounds.
+            // An all-NaN column draws flat rather than with infinite bounds.
             if lo.is_finite() && hi.is_finite() {
                 lane.push((lo, hi));
             } else {
@@ -346,16 +284,11 @@ fn resample(window: &[f32], cols: usize) -> Lane {
     lane
 }
 
-/// The panel-space geometry a paint pass works in: where a lane's frame is
-/// and how a column maps across it. Split stacks a frame per lane; the other
-/// modes lay every lane into the one frame.
 struct Geometry {
     ox: f32,
     oy: f32,
     w: f32,
-    /// A frame's height: the whole panel, or a share of it under Split.
     fh: f32,
-    /// How far full scale extends from a frame's center line.
     amp: f32,
     split: bool,
 }
@@ -371,9 +304,8 @@ impl Geometry {
     }
 }
 
-/// A strip segment as the two triangles a gpui path takes. Corners run
-/// top-left, top-right, bottom-right, bottom-left, so the pair tiles the
-/// quad without overlapping itself and a translucent fill blends once.
+/// Corners run clockwise from top-left, so the pair tiles the quad without
+/// overlap and a translucent fill blends once.
 fn push_quad(
     path: &mut Path<Pixels>,
     tl: Point<Pixels>,
@@ -386,25 +318,15 @@ fn push_quad(
     path.push_triangle((tl, br, bl), solid);
 }
 
-/// Per-panel scope state, shared with the paint closure the way the spectrum
-/// shares its bars: the entity holds the handle, the closure does the
-/// per-frame work where the bounds are known.
 struct Scope {
     last_written: u64,
-    /// When the feed last carried new audio.
     last_fresh: Option<Instant>,
-    /// Sample scratch, grown to whatever the window slider asks for.
     left: Vec<f32>,
     right: Vec<f32>,
-    /// The standing frame, one lane per drawn channel.
     trace: Vec<Lane>,
-    /// Previous frames for the phosphor trail, newest at the back.
     trail: VecDeque<Vec<Lane>>,
-    /// Whether the trace has already been flattened for silence, so the
-    /// flattening happens once instead of every parked frame.
+    /// Flattened for silence already, so that happens once.
     silent: bool,
-    /// Something still needs to move: render keeps requesting frames until
-    /// this clears.
     alive: bool,
 }
 
@@ -422,17 +344,13 @@ impl Scope {
         }
     }
 
-    /// One tick: pull the newest audio, trigger on it, and resample the drawn
-    /// window into columns. No new audio holds the standing frame across the
-    /// gap between pump ticks; audio that's really stopped burns the trail
-    /// off a frame at a time and then flattens, unless `hold` keeps the frame
-    /// standing (freeze on pause).
+    /// No new audio holds the frame across the pump-tick gap. Stopped audio
+    /// burns the trail off, then flattens, unless `hold` freezes it.
     fn step(&mut self, feed: &AudioFeed, cols: usize, config: &OscilloscopeConfig, hold: bool) {
         let written = feed.written();
         let fresh = written != self.last_written;
         self.last_written = written;
 
-        // Frozen and nothing new: keep the standing frame and stop animating.
         if hold && !fresh {
             self.alive = false;
             return;
@@ -454,8 +372,7 @@ impl Scope {
         if fresh {
             let lanes = self.sample(feed, cols, config);
             if lanes.is_empty() {
-                // Underfed feed: nothing to draw yet, but audio is flowing,
-                // so keep asking for frames until it catches up.
+                // Underfed but flowing: keep asking for frames.
                 self.alive = true;
                 return;
             }
@@ -469,8 +386,7 @@ impl Scope {
             self.silent = false;
             self.alive = true;
         } else if stopped {
-            // The oldest trail frame goes first, so the afterglow burns off
-            // from the back the way it built up.
+            // Oldest first, so the afterglow burns off from the back.
             if self.trail.pop_front().is_some() {
                 self.alive = true;
             } else if !self.silent {
@@ -478,23 +394,20 @@ impl Scope {
                     lane.fill((0.0, 0.0));
                 }
                 self.silent = true;
-                // Paint follows this step, so the flat frame is still drawn
-                // before the panel parks.
+                // Paint follows this step, so the flat frame still draws before the
+                // panel parks.
                 self.alive = false;
             } else {
                 self.alive = false;
             }
         } else {
-            // Between pump ticks: no new samples to draw, hold what's up.
             self.alive = true;
         }
     }
 
-    /// The newest audio as one lane per drawn channel, triggered. Returns
-    /// empty when the feed hasn't buffered enough to fill a window yet.
+    /// Empty until the feed has buffered a window.
     fn sample(&mut self, feed: &AudioFeed, cols: usize, config: &OscilloscopeConfig) -> Vec<Lane> {
-        // A device rate off the far end of plausible would blow the frame
-        // count out; the clamp keeps the pull inside what the feed holds.
+        // A wild device rate would blow the pull past what the feed holds.
         let rate = feed.sample_rate().clamp(8_000, 384_000) as f32;
         let want = (config.window_ms() / 1000.0 * rate) as usize;
         let want = want.clamp(2, MAX_PULL / SEARCH_SPAN);
@@ -507,8 +420,7 @@ impl Scope {
             self.right.resize(total, 0.0);
         }
 
-        // The feed returns short when it's underfed, so everything below
-        // measures off what actually arrived rather than what was asked for.
+        // The feed returns short when underfed; measure off what arrived.
         let n = if stereo {
             feed.latest_stereo(&mut self.left[..total], &mut self.right[..total])
         } else {
@@ -519,9 +431,8 @@ impl Scope {
             return Vec::new();
         }
         let slack = n - draw;
-        // Stereo triggers off the left channel and both lanes take the same
-        // offset, so the phase between them stays visible instead of each
-        // locking to its own crossing.
+        // Stereo triggers off the left channel and both lanes share the offset,
+        // so the phase between them stays visible.
         let start = trigger_at(
             &self.left[..n],
             slack,
@@ -559,10 +470,8 @@ impl Scope {
             paint_grid(&geo, frames, h, window);
         }
 
-        // The trail goes down first, oldest at the front, so the standing
-        // frame sits on top of its own afterglow. Each step back dims by the
-        // persistence, so the knob reads as trail length and brightness at
-        // once.
+        // Oldest trail first so the standing frame sits on top; each step back
+        // dims by the persistence.
         let fade = config.persistence();
         let depth = self.trail.len();
         for (i, frame) in self.trail.iter().enumerate() {
@@ -579,9 +488,6 @@ impl Scope {
     }
 }
 
-/// The graticule: a center line per frame with a division either side of it,
-/// and the vertical rules the window splits into. Faint enough to read
-/// behind the trace rather than through it.
 fn paint_grid(geo: &Geometry, frames: usize, h: f32, window: &mut Window) {
     let center = palette::alpha(palette::gridline(), 0x3a);
     let rule = palette::alpha(palette::gridline(), 0x1c);
@@ -604,11 +510,8 @@ fn paint_grid(geo: &Geometry, frames: usize, h: f32, window: &mut Window) {
     }
 }
 
-/// One frame's traces. The trace is a ribbon between the column tops and
-/// bottoms rather than a polyline: where the wave is steep the min/max span
-/// gives the width, where it's flat the stroke width does, and the two meet
-/// without a seam. `fade` is the trail's alpha multiplier, 1.0 for the
-/// standing frame.
+/// A ribbon between column tops and bottoms rather than a polyline, so
+/// steep and flat stretches meet without a seam.
 fn paint_lanes(
     lanes: &[Lane],
     geo: &Geometry,
@@ -627,8 +530,8 @@ fn paint_lanes(
             continue;
         }
         let yc = geo.center(i);
-        // Overlay lays both channels into one frame, so the second runs
-        // dimmer and the pair stays tellable where they cross.
+        // Overlay: the second channel runs dimmer so the pair stays tellable
+        // where they cross.
         let lane_fade = if !geo.split && i > 0 {
             fade * 0.55
         } else {
@@ -639,8 +542,6 @@ fn paint_lanes(
             continue;
         }
 
-        // Column geometry up front: the ribbon's two edges, and where the
-        // column's excursion falls on the ramp.
         let mut edges = Vec::with_capacity(cols);
         for &(lo, hi) in lane {
             let lo = (lo * gain).clamp(-1.0, 1.0);
@@ -662,9 +563,8 @@ fn paint_lanes(
             let (tl, tr) = (point(x0, px(up0)), point(x1, px(up1)));
             let (br, bl) = (point(x1, px(dn1)), point(x0, px(dn0)));
 
-            // The soft fill runs from the trace to the center line, as one
-            // band per segment rather than one either side, so the two never
-            // overlap where the wave crosses.
+            // One band per segment from the trace to the center line, so the halves
+            // never overlap where the wave crosses.
             if filled {
                 let ftl = point(x0, px(up0.min(yc)));
                 let ftr = point(x1, px(up1.min(yc)));
@@ -711,25 +611,18 @@ pub struct OscilloscopePanel {
     config: OscilloscopeConfig,
     feed: Arc<AudioFeed>,
     scope: Arc<Mutex<Scope>>,
-    /// The settings sliders' painted bounds and drag state, one per slider so
-    /// a drag on one never moves the others.
     window_scrub: ScrubState,
     gain_scrub: ScrubState,
     level_scrub: ScrubState,
     line_w_scrub: ScrubState,
     persist_scrub: ScrubState,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// The custom ramp's pickers, base then tip, built on the first settings
-    /// render, since the panel itself constructs without a window and the
-    /// picker state needs one.
+    /// Built on the first settings render: the picker state needs a window.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
     _ramp_changes: Vec<Subscription>,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// Wakes the panel when a session starts, so an idle window resumes
-    /// animating without the player bar's frame pump.
+    /// Wakes an idle window when a session starts.
     _player_changed: Subscription,
 }
 
@@ -780,8 +673,6 @@ impl OscilloscopePanel {
         cx.notify();
     }
 
-    /// The panel's own dropdown entries: a Display flyout of the quick toggles
-    /// the customize window also holds, for a flip without opening it.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -826,15 +717,12 @@ impl OscilloscopePanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // While audio moves the direct observe re-renders on every pump tick,
-        // the only rate new samples arrive at. Frame polling is just for the
-        // trail burning off after audio stops; once it's gone the panel
-        // parks, and a resume wakes it through the pump's play-state notify.
+        // The observe re-renders on every pump tick while audio moves. Frame
+        // polling only burns the trail off after audio stops, then the panel parks.
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
-        // Freeze on pause holds the standing frame: paused mid-session, not a
-        // played-out queue.
+        // Paused mid-session, not a played-out queue.
         let hold = self.config.freeze && session && !playing && !player.queue_ended();
         if !playing && self.scope.lock().unwrap().alive {
             window.request_animation_frame();
@@ -847,9 +735,7 @@ impl OscilloscopePanel {
             canvas(
                 move |_, _, _| {},
                 move |bounds, _, window, _| {
-                    // A column per horizontal pixel: any denser and the
-                    // min/max pairs are resampling into subpixels nobody
-                    // sees.
+                    // A column per pixel; denser resamples into subpixels.
                     let cols = (f32::from(bounds.size.width) as usize).clamp(MIN_COLS, MAX_COLS);
                     let mut scope = scope.lock().unwrap();
                     scope.step(&feed, cols, &config, hold);
@@ -890,8 +776,6 @@ impl PanelSettings for OscilloscopePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // The custom ramp's pickers on first need; each edit writes its hex
-        // back into the config, the format the layout dump stores.
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -919,8 +803,6 @@ impl PanelSettings for OscilloscopePanel {
         let level = self.config.trigger_level();
         let line_w = self.config.line_w();
         let persistence = self.config.persistence();
-        // The slice of samples a frame draws: how long a window, how far it's
-        // lifted, where it's cut, and which channels reach the trace.
         let signal = div()
             .flex()
             .flex_col()
@@ -991,7 +873,6 @@ impl PanelSettings for OscilloscopePanel {
                     cx,
                 ),
             ));
-        // How the line itself is drawn.
         let trace = div()
             .flex()
             .flex_col()
@@ -1032,7 +913,6 @@ impl PanelSettings for OscilloscopePanel {
                     cx,
                 ),
             ));
-        // The ramp the trace is painted with.
         let color = div()
             .flex()
             .flex_col()
@@ -1105,9 +985,6 @@ impl PanelSettings for OscilloscopePanel {
             .into_any_element()
     }
 
-    /// Hold on Pause sits on the shared Behavior page rather than here: it's
-    /// about how the panel acts when the audio stops, not how the trace is
-    /// drawn, and that's where every other panel keeps its behavior switches.
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             settings_ui::section(
@@ -1179,8 +1056,6 @@ impl Panel for OscilloscopePanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered in
-    /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -1240,9 +1115,6 @@ impl Panel for OscilloscopePanel {
 impl Render for OscilloscopePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
@@ -1252,8 +1124,6 @@ impl Render for OscilloscopePanel {
 mod tests {
     use super::*;
 
-    /// The trigger locks to a sine's rising zero crossing; the frame has to
-    /// start on one rather than wherever the pull happened to begin.
     #[test]
     fn the_trigger_finds_the_first_rising_crossing() {
         let samples: Vec<f32> = (0..400)
@@ -1273,8 +1143,6 @@ mod tests {
         assert!(samples[at] >= 0.0 && samples[at + 1] < 0.0);
     }
 
-    /// Silence never crosses, and the caller has to be told so rather than
-    /// handed an offset that would jitter frame to frame.
     #[test]
     fn no_crossing_reports_none() {
         let flat = vec![0.5f32; 100];
@@ -1306,8 +1174,6 @@ mod tests {
         assert!(lane.iter().all(|&(lo, hi)| lo == 0.0 && hi == 0.0));
     }
 
-    /// A hand-edited layout is the one place these can arrive broken, and a
-    /// NaN would take the whole trace with it.
     #[test]
     fn config_accessors_swallow_junk() {
         let config = OscilloscopeConfig {

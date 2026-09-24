@@ -1,35 +1,14 @@
-//! An acoustic vector as a tag a file can hold, so a description outlives
-//! the database it was computed into.
+//! An acoustic vector as a tag a file can hold, so a wiped library or a
+//! moved folder gets its vectors back without decoding. [`crate::embeddings`]
+//! stays the query engine; this is an optional second copy.
 //!
-//! [`crate::embeddings`] is the query engine and stays that way: every read
-//! path goes through SQLite. This is the optional second copy, written into
-//! the file itself when the acoustic setting asks for it, so a wiped library
-//! or a folder moved to another machine gets its vectors back off the files
-//! instead of decoding a library again.
+//! Key: `ROX_ACOUSTIC:<model-id>`, valid untranslated as both a TXXX
+//! description and a Vorbis key. Value: `v1;dim=<n>;f16;<base64>`, so a
+//! reader can refuse what it doesn't understand.
 //!
-//! ## The key
-//!
-//! `ROX_ACOUSTIC:<model-id>` works untranslated as both an ID3v2 TXXX
-//! description and a Vorbis comment key, which is the whole reason for the
-//! spelling: one string, two formats, no per-format table to keep in step.
-//! The model id is part of the key rather than the value, so two models'
-//! vectors coexist in one file the same way they occupy two database rows,
-//! and a reader asking for one never has to parse the other's.
-//!
-//! ## The value
-//!
-//! `v1;dim=<n>;f16;<base64>`: a version, the width, the number format, and
-//! the vector. Everything before the payload is there so a reader can refuse
-//! a value it doesn't understand instead of guessing at one.
-//!
-//! Half floats, and deliberately not integers. The vectors go in raw and
-//! unnormalized (see [`crate::embeddings`]'s header) and their dimensions
-//! span wildly different scales, so an int8 quantization would need a
-//! per-dimension scale factor to mean anything, and getting one wrong turns
-//! a neighbour list into noise. f16 has no such knob: it keeps three decimal
-//! digits at every magnitude, and the query z-scores each dimension against
-//! the corpus anyway, which throws away far more precision than the encoding
-//! does. Half the bytes of f32 for a difference nothing downstream can see.
+//! Half floats, not int8: the raw dimensions span wildly different scales,
+//! so int8 would need a per-dimension scale, and the query z-scores away
+//! more precision than f16 loses.
 
 use std::path::Path;
 
@@ -42,41 +21,28 @@ use lofty::id3::v2::Frame;
 use lofty::mpeg::MpegFile;
 use lofty::probe::Probe;
 
-/// What every acoustic key starts with. The tag editor and the metadata
-/// panel skip anything with it: these are numbers a machine wrote for
-/// another machine, and a row of base64 in a field list is noise.
+/// The editor and metadata panel skip anything with this prefix.
 pub const PREFIX: &str = "ROX_ACOUSTIC:";
 
-/// The one version this module writes and the only one it reads.
 const VERSION: &str = "v1";
 
-/// The tag key one model's vectors are stored under.
 pub fn key(model: &str) -> String {
     format!("{PREFIX}{model}")
 }
 
-/// Whether a tag key belongs to this module. Case-insensitive, because
-/// Vorbis keys are case-insensitive by spec and a tagger that round-tripped
-/// a file may have changed the casing.
+/// Case-insensitive, since Vorbis keys are.
 pub fn is_key(key: &str) -> bool {
     key.len() > PREFIX.len() && key[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
 }
 
-/// Whether a path is one the writer can put a vector into. Extension rather
-/// than content, because this is the cheap pre-check that keeps an
-/// unsupported format's skip quiet: the vector has a proven round trip on
-/// MP3 and FLAC only (the writer handles MP4 too, but the atom it would use
-/// is a round trip of its own to prove), and probing every OGG in a library
-/// to be told so again would cost a file open per track. A file whose
-/// extension lies still fails in the writer, where it's a real error worth
-/// logging.
+/// Extension only: a cheap pre-check so unsupported formats skip quietly.
+/// MP3 and FLAC only; the MP4 atom's round trip is unproven.
 pub fn writable(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("mp3") || e.eq_ignore_ascii_case("flac"))
 }
 
-/// A vector as the tag value spells it.
 pub fn encode(vec: &[f32]) -> String {
     let mut bytes = Vec::with_capacity(vec.len() * 2);
     for v in vec {
@@ -85,14 +51,8 @@ pub fn encode(vec: &[f32]) -> String {
     format!("{VERSION};dim={};f16;{}", vec.len(), BASE64.encode(&bytes))
 }
 
-/// The vector back out, or None for anything this module didn't write and
-/// anything that rotted since it did.
-///
-/// `dim` is what the caller's model produces. A value of another width is
-/// refused rather than returned short: it would come from a model whose
-/// output changed under the same name, and the store's own width check would
-/// only drop the row later, after the read had already claimed the track was
-/// covered and skipped its decode.
+/// None for anything this module didn't write. A width other than `dim` is
+/// refused: returning it would mark the track covered and skip its decode.
 pub fn decode(value: &str, dim: usize) -> Option<Vec<f32>> {
     let mut parts = value.split(';');
     if parts.next()? != VERSION {
@@ -103,9 +63,7 @@ pub fn decode(value: &str, dim: usize) -> Option<Vec<f32>> {
         return None;
     }
     let payload = parts.next()?;
-    // Nothing may follow the payload: a fifth field means a spelling this
-    // version doesn't know, and reading the first four of it would be
-    // guessing.
+    // A fifth field is a spelling this version doesn't know.
     if parts.next().is_some() {
         return None;
     }
@@ -122,26 +80,17 @@ pub fn decode(value: &str, dim: usize) -> Option<Vec<f32>> {
         .iter()
         .map(|c| f16::from_le_bytes(*c).to_f32())
         .collect();
-    // A NaN or an infinity poisons every score in the library once it's in
-    // the table (see [`crate::embeddings::upsert`]), and a tag anyone can
-    // edit by hand is exactly where one would come from.
+    // One NaN poisons every score in the library, and tags are hand-editable.
     vec.iter().all(|v| v.is_finite()).then_some(vec)
 }
 
-/// One model's vector out of a file's tags, or None when the file has
-/// none, isn't a format that can hold one, or holds one this build can't
-/// read.
-///
-/// Reads only: the write side is [`crate::writer::commit_embedding`], which
-/// needs the whole atomic clone-verify-rename layer this doesn't.
+/// Reads only; writes go through [`crate::writer::commit_embedding`].
 pub fn read(path: &Path, model: &str, dim: usize) -> Option<Vec<f32>> {
     let value = read_value(path, &key(model))?;
     decode(&value, dim)
 }
 
-/// The raw value under one key, through the same sanitising source and
-/// relaxed parse the writer's reads use, so a tag that only lofty's strict
-/// mode objects to still gives its vector up.
+/// Through the writer's sanitising source and relaxed parse.
 fn read_value(path: &Path, key: &str) -> Option<String> {
     let kind = Probe::open(path)
         .ok()?
@@ -177,14 +126,10 @@ fn read_value(path: &Path, key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The spelling is the contract: two formats read the same key, and the
-    /// value says what it is before it says what it holds.
     #[test]
     fn the_key_carries_the_model_and_the_prefix_is_recognized() {
         assert_eq!(key("builtin-v1"), "ROX_ACOUSTIC:builtin-v1");
         assert!(is_key("ROX_ACOUSTIC:builtin-v1"));
-        // Vorbis keys are case-insensitive, so a tagger that upper-cased the
-        // file's keys must not hide the row from the editor's skip.
         assert!(is_key("rox_acoustic:panns-cnn10"));
         assert!(!is_key("ROX_ACOUSTIC"), "the bare prefix names no model");
         assert!(!is_key("ROX_TEST"));
@@ -199,53 +144,36 @@ mod tests {
         let back = decode(&value, vec.len()).unwrap();
         assert_eq!(back.len(), vec.len());
         for (a, b) in vec.iter().zip(&back) {
-            // Half floats hold about three decimal digits, so the error is
-            // relative rather than absolute: a band energy in the thousands
-            // is allowed to move by a few, a rate near one is not.
+            // f16 holds about three significant digits, so the error is relative.
             let tolerance = (a.abs() * 1e-3).max(1e-6);
             assert!((a - b).abs() <= tolerance, "{a} came back as {b}");
         }
     }
 
-    /// Nothing but this module's own output is accepted. Every one of these
-    /// would otherwise read as a vector the pass then trusts enough to skip
-    /// a decode over, which is the expensive kind of wrong: the track ends
-    /// up in the corpus describing something it isn't.
     #[test]
     fn a_corrupt_value_is_refused_rather_than_guessed_at() {
         let vec = vec![1.0f32, 2.0, 3.0, 4.0];
         let good = encode(&vec);
         assert!(decode(&good, 4).is_some());
 
-        // The width the caller's model produces has to match the width the
-        // value claims, and the payload has to be as long as it claims.
         assert!(decode(&good, 5).is_none(), "a wider model refuses it");
         assert!(
             decode("v1;dim=4;f16;AAAA", 4).is_none(),
             "payload too short"
         );
-        // A version, a number format, and a field count this build doesn't
-        // know are all refusals rather than best guesses.
         assert!(decode("v2;dim=4;f16;AAAAAAAAAAAAAAAA", 4).is_none());
         assert!(decode("v1;dim=4;i8;AAAAAAAAAAAAAAAA", 4).is_none());
         assert!(decode(&format!("{good};extra"), 4).is_none());
-        // Garbage in every shape it arrives in: a hand-edited tag, a
-        // truncated one, an empty one, and a number that isn't one.
         assert!(decode("not a vector at all", 4).is_none());
         assert!(decode("v1;dim=4;f16;not base64!!", 4).is_none());
         assert!(decode("v1;dim=four;f16;AAAA", 4).is_none());
         assert!(decode("v1;dim=4;f16", 4).is_none());
         assert!(decode("", 4).is_none());
 
-        // A value with a NaN in it reads as nothing. It's finite-checked here
-        // as well as at the store, because a tag is a text field anyone can
-        // type into and one NaN makes every score in the library NaN.
         let poisoned = encode(&[1.0, f32::NAN, 3.0, 4.0]);
         assert!(decode(&poisoned, 4).is_none());
     }
 
-    /// The formats a vector may go into, off the name alone. Everything else
-    /// keeps its database row and skips the tag without a word.
     #[test]
     fn only_the_two_writable_formats_are_offered_a_tag() {
         assert!(writable(Path::new("/m/track.mp3")));

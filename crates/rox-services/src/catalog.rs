@@ -1,7 +1,6 @@
-//! The shared library catalog: the `Library` entity over the promoted
-//! library service. It owns the on-disk database and hands out only the
-//! in-memory projection, and it drives scanning, watching, and the derived
-//! playlist mutations. UI-free.
+//! The shared library catalog: the `Library` entity over [`rox_library`].
+//! It owns the database, hands out the in-memory projection, and drives
+//! scanning, watching, and playlist mutations. UI-free.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,6 +13,7 @@ use gpui::{App, Context, Entity, EventEmitter, PathPromptOptions, SharedString, 
 use rox_library::bookmarks::{self, Bookmark, BookmarkRow};
 use rox_library::cue::TrackKey;
 use rox_library::embeddings;
+use rox_library::exclude::Exclusions;
 use rox_library::listens;
 use rox_library::locator::Locator;
 use rox_library::playlists;
@@ -26,47 +26,32 @@ use rox_library::writer;
 
 use crate::sources_registry;
 
-/// The catalog changed: a scan finished or the projection reloaded. Panels
-/// subscribe and refresh their views.
 pub enum LibraryEvent {
     Updated,
-    /// One rating moved, in place through the shared projection. Its own
-    /// variant so the panels that rebuild on Updated (the grid's tiles,
-    /// the history reads, the stats recounts) can ignore a star click.
+    /// One rating moved in place, so panels that rebuild on Updated can
+    /// ignore a star click.
     Rated,
-    /// One listen was recorded, its count bumped in place through the shared
-    /// projection, same deal as Rated: cells repaint, nothing rebuilds.
+    /// One play count bumped in place: cells repaint, nothing rebuilds.
     Played,
-    /// Many plays moved at once: counts and last-played changed for a set of
-    /// tracks nobody enumerated, and nothing else about the library did. What
-    /// a Last.fm backfill raises. The panels that read plays re-read on it
-    /// and keep what the user had picked; Updated would be right about the
-    /// numbers and wrong about the selection, the cursor, and the scroll.
+    /// Counts moved for an unnamed set of tracks (a Last.fm backfill).
+    /// Updated would reset the selection, cursor, and scroll.
     PlaysReloaded,
-    /// A playlist was created, renamed, deleted, or had its tracks change.
-    /// The playlist panel and the add-to-playlist menu re-read on it.
     PlaylistsChanged,
-    /// A bookmark was set, edited, moved, or removed. The seek strip, the
-    /// waveform, and the bookmarks panel re-read their marks on it.
     BookmarksChanged,
 }
 
-/// A background job crossed a line. Separate from [`LibraryEvent`] because
-/// nothing here says the catalog changed: the subscribers are the app's OS
-/// surfaces and its follow-on passes, and the panels that rebuild on a
-/// catalog change have no business waking for these.
+/// Background job milestones. Separate from [`LibraryEvent`] so panels that
+/// rebuild on catalog changes don't wake for these.
 pub enum LibraryJob {
-    /// A full scan just started. The catalog has no business knowing what
-    /// the OS does with that, so the app hangs the taskbar sampler off this
-    /// instead.
+    /// The app hangs the taskbar sampler off this.
     ScanStarted,
-    /// A watch sync applied cleanly and nothing is left pending, so what
-    /// arrived under rox's nose is now in the database. The app follows it
-    /// with the acoustic pass when the switch is on.
+    /// A scan over every folder ran to the end. A one-folder or stopped scan
+    /// doesn't count.
+    ScanFinished,
+    /// The app follows this with the acoustic pass when the switch is on.
     WatchSettled,
 }
 
-/// Wall clock in unix seconds, for the playlist created/updated stamps.
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -74,10 +59,8 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// The same tags a store lookup returns, read off a projection row
-/// instead. What lets a (path, sub) resolve stop at the id query: the row is
-/// already in memory, and its rating and play count are the live atomics
-/// rather than whatever the last write put on disk.
+/// Off the projection row: its rating and play count are the live atomics,
+/// not whatever the last write put on disk.
 fn meta_from_row(row: &RowView<'_>) -> store::TrackMeta {
     store::TrackMeta {
         title: row.title.to_string(),
@@ -96,9 +79,6 @@ fn meta_from_row(row: &RowView<'_>) -> store::TrackMeta {
     }
 }
 
-/// The sort names one row carries, what [`Library::sort_names_for_id`]
-/// hands a panel. Each empty where the value has none, which is the whole
-/// story for a Latin library.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct SortNames {
     pub title: String,
@@ -106,25 +86,16 @@ pub struct SortNames {
     pub album: String,
 }
 
-/// The local file behind a song named by a row that has none, what
-/// [`Library::local_copies`] answers with: which track it is and where it
-/// sits, so the caller can draw its cover and play it without asking
-/// twice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalCopy {
     pub track_id: i64,
     pub path: PathBuf,
 }
 
-/// Read one M3U line back to a library track id, the other half of what
-/// [`Library::playlist_export_rows`] writes. None for an entry the library
-/// never scanned: there is no file behind it to play.
-///
-/// A `path#N` entry is a cue track, unless the library holds a file by that
-/// literal name. The existence check decides, per
-/// [`TrackKey::from_fragment`], so a real file called `track#2` still beats
-/// the fragment reading of it. Relative names resolve against the sheet's own
-/// folder either way.
+/// The other half of [`Library::playlist_export_rows`]. A `path#N` entry is
+/// a cue track unless the library holds a file by that literal name
+/// ([`TrackKey::from_fragment`]). Relative names resolve against the sheet's
+/// folder.
 fn resolve_m3u_entry(conn: &Connection, base_dir: &Path, entry: &str) -> Option<i64> {
     let resolve = |name: &str| {
         let path = Path::new(name);
@@ -146,8 +117,7 @@ fn resolve_m3u_entry(conn: &Connection, base_dir: &Path, entry: &str) -> Option<
     };
     let key = TrackKey::from_fragment(entry, exists);
 
-    // A local entry resolves against the sheet's own folder. Anything else
-    // carries its source's reference, which no directory joins onto.
+    // Only a local entry joins onto the sheet's folder.
     let path = if key.is_local() {
         resolve(key.path.to_str()?).to_string_lossy().into_owned()
     } else {
@@ -159,52 +129,30 @@ fn resolve_m3u_entry(conn: &Connection, base_dir: &Path, entry: &str) -> Option<
         .id
 }
 
-/// How often the UI samples a running scan's progress.
 const SCAN_POLL: Duration = Duration::from_millis(100);
 
-/// Interim projection swaps while a scan runs, so panels fill in live
-/// instead of waiting for the end. An empty library polls fast until the
-/// first batch arrives: the first scan should paint tracks right away. A
-/// populated one takes its first swap after [`SCAN_REFRESH_FIRST`], then
-/// settles to [`SCAN_REFRESH_STEADY`].
+/// Interim projection swaps while a scan runs. An empty library polls fast
+/// so the first scan paints tracks right away.
 const SCAN_REFRESH_EMPTY: Duration = Duration::from_secs(1);
 const SCAN_REFRESH_FIRST: Duration = Duration::from_secs(15);
 const SCAN_REFRESH_STEADY: Duration = Duration::from_secs(30);
 
-/// How much of the projection may be tombstoned before a sync stops
-/// patching and rebuilds instead. Patching appends: an upsert leaves the row
-/// it replaced behind in the columns, and the arenas and symbol tables only
-/// grow between rebuilds. A tenth is where the dead weight has cost more
-/// than the rebuild would, and a library that churns that hard pays for its
-/// own compaction. The rebuild is the same full load a scan does, off the UI
-/// thread, so compaction is a slower sync rather than a stall.
+/// Past this tombstoned fraction a sync rebuilds instead of patching:
+/// patches append, and the arenas only grow between rebuilds.
 const COMPACT_DEAD_FRACTION: f64 = 0.10;
 
-/// How many rows one sync may patch before rebuilding is the better deal.
-/// A patch reads its rows back one primary-key lookup at a time and pays a
-/// second and a third for the play count and the cue span, which is exactly
-/// what makes it cheap for the twenty files a watch batch usually carries.
-/// A renamed root arrives as one batch holding the whole library, and there
-/// the sharded rebuild wins by a mile. Five thousand is comfortably above
-/// any batch a person generates and comfortably below where the per-row
-/// lookups start costing more than the parallel load.
+/// A patch reads rows back one lookup at a time, cheap for a watch batch's
+/// handful but not for a renamed root holding the whole library.
 const PATCH_MAX_ROWS: usize = 5_000;
 
-/// How stale the last scan must be before launch spends a full catch-up walk
-/// on edits made while the app was closed. Under this, a restart trusts the
-/// stored projection and the live watch to stay current, so a quick relaunch
-/// never re-walks the library. One day: long enough that ordinary restarts
-/// skip it, short enough that a day-old offline edit still gets swept in.
+/// A restart within this of the last scan trusts the stored projection and
+/// the watch, so a quick relaunch never re-walks the library.
 const CATCH_UP_STALE: i64 = 24 * 60 * 60;
 
-/// How many folders the library will watch at most, when the platform prices
-/// watches per directory. Only Linux does: inotify spends one watch per
-/// directory out of the per-user `fs.inotify.max_user_watches` budget, shared
-/// with every other watching app (IDEs, sync tools), so the library claims at
-/// most half of it. The half also leaves room for the intermediate folders
-/// that [`store::Stats::dirs`], a count of track parents, does not see. macOS
-/// (FSEvents) and Windows (ReadDirectoryChangesW) watch a root natively at
-/// flat cost, so there is no ceiling there and this returns None.
+/// Only Linux prices watches per directory: inotify's per-user
+/// `max_user_watches` budget is shared with every watching app, so the
+/// library claims at most half. The half also covers intermediate folders
+/// that [`store::Stats::dirs`] doesn't count. None elsewhere.
 pub fn watch_limit_dirs() -> Option<u64> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -214,37 +162,28 @@ pub fn watch_limit_dirs() -> Option<u64> {
         std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
-            // The kernel's long-standing fixed default, for when /proc is
-            // unreadable; 5.11+ scales the real value up with memory.
+            // The kernel's long-standing default when /proc is unreadable;
+            // 5.11+ scales the real value with memory.
             .unwrap_or(65_536)
             / 2
     }))
 }
 
-/// Live progress of a background scan: the scan thread writes it per file,
-/// the UI polls it at [`SCAN_POLL`] cadence. Zero total means the folder
-/// walk has not finished yet.
+/// Zero total means the folder walk hasn't finished.
 #[derive(Default)]
 struct ScanProgress {
     scanned: AtomicUsize,
     total: AtomicUsize,
-    /// Full path of the file the scan last touched.
     current: Mutex<String>,
-    /// Raised by [`Library::abort_scan`]; the scan stops at the next file.
     cancel: AtomicBool,
-    /// The walk's clock, for the "about 20 minutes left" the tasks window
-    /// shows. Started on the first file rather than up front: the directory
-    /// walk that precedes it can run for a while on a big library, and
-    /// billing it to the first file would price the whole scan off it.
+    /// Started on the first file, so the directory walk before it doesn't
+    /// price the whole scan.
     pace: rox_core::pace::Pace,
-    /// Whether the clock has been started, so the per-file tick only does it
-    /// once. The tick runs on the scanner's worker threads, so this is an
-    /// atomic rather than an `Option`.
+    /// Atomic: the tick runs on the scanner's worker threads.
     timing: AtomicBool,
 }
 
 impl ScanProgress {
-    /// Note a file, starting the clock the first time through.
     fn tick(&self, scanned: usize, total: usize, path: &std::path::Path) -> bool {
         if !self.timing.swap(true, Ordering::Relaxed) {
             self.pace.begin();
@@ -256,43 +195,26 @@ impl ScanProgress {
     }
 }
 
-/// A running scan as the tasks window sees it: the same counts the menubar
-/// badge shows, plus the estimate and the file under the cursor that don't
-/// fit up there.
 pub struct ScanStatus {
     pub done: usize,
     pub total: usize,
     pub current: String,
-    /// Seconds left at the rate so far, or None until the walk has been
-    /// going long enough for an average to mean anything.
     pub eta: Option<f64>,
-    /// Whether a stop has been asked for and the walk is winding down.
     pub stopping: bool,
 }
 
-/// What a background refresh does before the projection reloads.
 enum Refresh {
-    /// Just reload the projection.
     Load,
-    /// Scan these folders first.
     Scan(Vec<PathBuf>),
-    /// Drop this folder's rows first.
     Remove(PathBuf),
-    /// Re-read exactly these files first, the tag editor's write-back:
-    /// their rows converge to what is on disk now, duration and codec
-    /// included, not just the columns the edit named.
+    /// The tag editor's write-back: rows converge to what's on disk, not just
+    /// the columns the edit named.
     Reindex(Vec<PathBuf>),
-    /// Drop exactly these files' rows first, the duplicates window's
-    /// delete: the files are already gone (trashed), so each row goes by
-    /// the same scoped delete the watcher uses, no disk walk.
+    /// The duplicates window's delete: the files are already trashed.
     Prune(Vec<PathBuf>),
-    /// Sync a batch of watched paths, the filesystem watcher's per-change
-    /// path. A correlated rename moves the row and keeps its id; a path still
-    /// on disk is re-read and upserted; one that is gone has its subtree pruned
-    /// by a scoped delete. The work is proportional to what changed, never the
-    /// library size, and no folder walk. The roots are included so a prune or rename
-    /// stays strictly inside them and never wipes a root that only momentarily
-    /// reads gone.
+    /// The watcher's per-change sync, proportional to what changed. The roots
+    /// are passed so a prune or rename stays strictly inside them and never
+    /// wipes a root that momentarily reads gone.
     Watch {
         paths: Vec<PathBuf>,
         renames: Vec<(PathBuf, PathBuf)>,
@@ -300,93 +222,55 @@ enum Refresh {
     },
 }
 
-/// One watch batch's rollup, folded into the status line the same way a
-/// scan's [`ScanSummary`] is. Terse because it shares the menubar.
 #[derive(Default)]
 struct WatchSummary {
-    /// Files re-read and upserted this batch.
     updated: usize,
-    /// Rows dropped because their paths are gone from disk.
     removed: usize,
-    /// Rows moved by a correlated rename, id kept.
     renamed: usize,
 }
 
-/// The shared catalog entity. Owns the database and the projection; every
-/// library panel reads it, none of them own it.
 pub struct Library {
     db_path: PathBuf,
-    /// UI-side connection for id -> path lookups; scans and projection loads
-    /// open their own connections on the background executor.
+    /// UI-side lookups only; background work opens its own connections.
     conn: Option<Connection>,
     projection: Option<Arc<Projection>>,
-    /// Which build of the projection is installed, counted up on every
-    /// whole swap. A row index only means anything against the build it was
-    /// read out of: a rebuild renumbers every row, so an index taken before
-    /// one points at a different track afterwards, or past the end of a
-    /// library a sync has pruned. Anything that holds row indices across an
-    /// event stamps them with this and compares before it reads. A patch
-    /// leaves it alone, because a patch appends and tombstones rather than
-    /// renumbering, so indices taken before it still hold.
+    /// Bumped on every whole swap. A rebuild renumbers every row, so anything
+    /// holding row indices across an event stamps them with this and checks
+    /// before reading. A patch appends and tombstones, so it leaves this alone.
     projection_gen: u64,
-    /// The canonical browse order: album artist, album, disc, track number.
     order: Arc<Vec<u32>>,
-    /// db id -> projection row, rebuilt on every projection swap. A rating
-    /// click resolves the row through this instead of a linear scan over
-    /// `db_id`, which was O(n) per click on a big library.
+    /// Rebuilt on every projection swap.
     row_by_id: HashMap<i64, u32>,
-    /// The folders scans read from, in the order they were added,
-    /// persisted in settings. Empty until a folder has been opened.
     scan_roots: Vec<PathBuf>,
-    /// Set while a scan or projection load runs in the background.
+    /// Swapped whole on change, so a running scan keeps the list it started
+    /// with.
+    exclude: Arc<Exclusions>,
     busy: Option<SharedString>,
-    /// Set while an interim projection built during a scan is in flight, so
-    /// the next tick of the interim cadence skips instead of putting a
-    /// second whole-library load on the executor behind the first. A scan of
-    /// a big library takes longer to load a projection than the cadence
-    /// waits, and two loads racing only means the older one's work is thrown
-    /// away after it has already competed for cores with the scan.
+    /// Skips the next interim tick while one load is in flight: a big
+    /// library's load outlasts the cadence, and racing loads only waste cores.
     interim_loading: bool,
-    /// A projection load asked for while another job held the library,
-    /// owed once it lets go. Without it the ask was dropped: a server's
-    /// sync that finished while the catalog was still reloading for the
-    /// settings edit before it left its rows in SQLite and out of every
-    /// list until something else reloaded.
+    /// A load asked for while the library was busy, owed once it frees up.
+    /// Dropping it would leave, say, a finished server sync out of every list.
     load_owed: bool,
-    /// The running scan's progress, while one runs; the handle abort
-    /// goes through.
     scan: Option<Arc<ScanProgress>>,
-    /// Rating clicks waiting on their tag write, newest value per track,
-    /// and whether the one-at-a-time drain is running.
+    /// Newest value per track; one drain writes them at a time.
     pending_ratings: HashMap<i64, u8>,
     rating_write_running: bool,
     status: SharedString,
-    /// Whether watching is meant to be on, mirroring the setting. Kept apart
-    /// from `watcher`, which is None both when off and when there are no roots
-    /// to watch yet, so adding the first folder arms the watcher.
+    /// Apart from `watcher`, which is also None with no roots yet, so adding
+    /// the first folder arms it.
     watch_on: bool,
-    /// The live filesystem watcher over the roots, while watching is on. None
-    /// when off or when the platform watcher would not start.
     watcher: Option<LibraryWatcher>,
-    /// The loop pulling change batches off the watcher; dropped to stop it.
     watch_task: Option<Task<()>>,
-    /// Paths a watch batch reported, waiting on their sync. The set dedups a
-    /// burst's repeats; it drains into one `Refresh::Watch` once no other
-    /// refresh is running, so changes fold into a single re-read-and-swap.
+    /// Deduped burst of paths, drained into one `Refresh::Watch` once no other
+    /// refresh runs.
     pending: HashSet<PathBuf>,
-    /// Correlated renames waiting on the same sync, kept apart from
-    /// `pending` because a pair keeps the row's id and a plain path does not.
+    /// Kept apart: a rename pair keeps the row's id.
     pending_renames: Vec<(PathBuf, PathBuf)>,
-    /// Paths the app itself just wrote, with when it wrote them. A watch
-    /// batch filters against this so the app's own tag, rating, and cover
-    /// writes do not bounce back as a redundant reindex of a file it just
-    /// touched.
+    /// The app's own writes, filtered out of watch batches so they don't
+    /// bounce back as a reindex.
     self_writes: HashMap<PathBuf, std::time::Instant>,
-    /// Renames the app itself just made, with when it made them. The same
-    /// idea as `self_writes` for the pairs, which travel apart from the
-    /// plain paths and so need their own filter: rox moved the file and
-    /// moved the row in the same breath, so the watcher's echo of that
-    /// move has nothing left to do.
+    /// The same for the app's own renames: the row already moved with the file.
     self_renames: HashMap<(PathBuf, PathBuf), std::time::Instant>,
 }
 
@@ -401,25 +285,19 @@ impl Library {
                 Ok(conn) => (Some(conn), SharedString::default()),
                 Err(e) => (None, SharedString::from(format!("library db: {e}"))),
             };
-        // The favourites playlist is the one default: make it up front so the
-        // heart column and the Favourites menu always have somewhere to write,
-        // and it shows in the playlists panel from a cold start.
+        // Favourites is the one default playlist, so the heart always has
+        // somewhere to write.
         if let Some(conn) = &conn {
             let _ = playlists::ensure_favourites(conn, now_secs());
-            // Clear any double rows a menu add or a drag left in there before
-            // those writes learned to keep the list single. One sweep at
-            // startup, then the writes hold it themselves.
+            // Older builds could leave double rows in favourites.
             let _ = playlists::dedupe_favourites(conn, now_secs());
-            // Seed the genre alias map before the first projection load,
-            // so merged values tile and match merged from the first paint.
+            // Before the first load, so merged genres match from the first paint.
             if let Ok(aliases) = rox_library::genre_meta::aliases(conn) {
                 rox_library::genre::set_aliases(aliases);
             }
         }
 
-        // The same never-nests rule add_root keeps, applied to the loaded
-        // list: hand-edited files and lists from before the guard flatten
-        // here, a nested folder falling to the one that covers it.
+        // Apply add_root's never-nests rule to the loaded list too.
         let loaded = rox_core::settings::Settings::load().library_roots;
         let before = loaded.len();
         let mut scan_roots: Vec<PathBuf> = Vec::with_capacity(before);
@@ -435,9 +313,8 @@ impl Library {
             rox_core::settings::Settings::update(move |s| s.library_roots = roots);
         }
 
-        // A library indexed before roots were persisted still has one in
-        // its paths: the deepest directory shared by every track. Session
-        // only; the next Open Folder persists the whole list.
+        // A library indexed before roots were persisted: use the deepest
+        // shared directory for this session.
         if scan_roots.is_empty()
             && let Some(root) = conn
                 .as_ref()
@@ -454,6 +331,9 @@ impl Library {
             order: Arc::new(Vec::new()),
             row_by_id: HashMap::new(),
             scan_roots,
+            exclude: Arc::new(Exclusions::new(
+                &rox_core::settings::Settings::load().library_exclude,
+            )),
             busy: None,
             interim_loading: false,
             load_owed: false,
@@ -469,14 +349,8 @@ impl Library {
             self_writes: HashMap::new(),
             self_renames: HashMap::new(),
         };
-        // Watching only sees changes made while the app runs, so edits made
-        // while it was closed still need one catch-up pass. When watch is on
-        // with roots and the last scan has gone stale, open on a scan instead
-        // of a plain projection load: the scan reloads the projection all the
-        // same, and the interim-projection machinery keeps it non-blocking, so
-        // the "no manual rescan" promise holds across restarts. A recent scan
-        // skips it, so a quick restart does not walk the whole library again;
-        // off, or with no roots, the plain load stands.
+        // The watch only sees changes while the app runs, so a stale last
+        // scan opens on a catch-up scan instead of a plain load.
         let last_scan = rox_core::settings::Settings::load().session.last_scan;
         let stale = now_secs().saturating_sub(last_scan) > CATCH_UP_STALE;
         let catch_up = this.watch_on && !this.scan_roots.is_empty() && stale;
@@ -487,8 +361,6 @@ impl Library {
                 this.reload(Refresh::Load, cx);
             }
         }
-        // Arm the watcher if the setting keeps it on, so live changes from
-        // here on fold in over the catch-up above.
         if this.watch_on {
             this.arm_watch(cx);
         }
@@ -503,25 +375,16 @@ impl Library {
         self.order.clone()
     }
 
-    /// Which build of the projection is installed. Anything that caches row
-    /// indices reads this when it builds the cache and again before it uses
-    /// one, and throws the cache away when the two differ: the rows were
-    /// renumbered underneath it.
+    /// Anything caching row indices checks this before use: a change means the
+    /// rows were renumbered.
     pub fn projection_gen(&self) -> u64 {
         self.projection_gen
     }
 
-    /// Swap in a freshly loaded projection, its canonical order, and the
-    /// id -> row index built beside them. The only place `projection` and
-    /// `order` change wholesale, so it is the one place the index has to
-    /// stay in sync, and the one place [`Library::projection_gen`] moves:
-    /// every row index anybody was holding stops meaning anything here.
-    ///
-    /// The index arrives built rather than being built here: at a million
-    /// rows it is a million hash inserts, and doing them inside the update
-    /// that installs the projection put every one of them on the UI thread
-    /// between two frames. [`load_projection`] builds it on the background
-    /// executor with the rest of the load, so this section only swaps Arcs.
+    /// The only place `projection` and `order` change wholesale, so the index
+    /// and [`Library::projection_gen`] move here and nowhere else. The index
+    /// arrives prebuilt by [`load_projection`]: a million hash inserts don't
+    /// belong on the UI thread.
     fn swap_projection(
         &mut self,
         projection: Projection,
@@ -534,16 +397,9 @@ impl Library {
         self.projection_gen = self.projection_gen.wrapping_add(1);
     }
 
-    /// Fold a sync's rows into the live projection instead of replacing it:
-    /// the tombstone-and-append path, whose work is the size of what changed
-    /// rather than the size of the library.
-    ///
-    /// False means it couldn't be done and the caller owes the library a
-    /// full reload. Two ways that happens, and both are ordinary: something
-    /// else is holding a clone of the projection (a tag editor keeps one for
-    /// as long as its window is open), so nothing may mutate it underneath;
-    /// or the projection refused the patch outright, which is the arena
-    /// ceiling and nothing else.
+    /// The tombstone-and-append path. False means the caller owes a full
+    /// reload: someone else holds a clone of the projection (a tag editor
+    /// does while open), or it refused the patch at the arena ceiling.
     fn apply_patch(
         &mut self,
         shard: Builder,
@@ -557,10 +413,8 @@ impl Library {
         let mut projection = match Arc::try_unwrap(shared) {
             Ok(projection) => projection,
             Err(shared) => {
-                // Somebody else is reading the projection right now, so it
-                // can't move under them. Says how many, because the answer
-                // is meant to be nobody and every holder that keeps one
-                // across events costs the library its incremental sync.
+                // Logged with a count because the answer should be nobody:
+                // every holder costs the incremental sync.
                 log::debug!(
                     "catalog: {} other holders of the projection, rebuilding instead of patching",
                     Arc::strong_count(&shared) - 1
@@ -574,8 +428,7 @@ impl Library {
             self.projection = Some(Arc::new(projection));
             return false;
         };
-        // The two halves of one sync: rows that changed and rows that went.
-        // They fold into a single patch so the order is walked once.
+        // One patch for both halves, so the order is walked once.
         let removed = projection.remove_ids(gone, &self.row_by_id);
         patch.dropped.extend(removed.dropped);
         patch.gone = removed.gone;
@@ -583,20 +436,11 @@ impl Library {
         true
     }
 
-    /// Fix the two indexes that live beside the projection, now that it has
-    /// moved: the canonical order and the id -> row map.
-    ///
-    /// [`Library::projection_gen`] deliberately stays put. A patch appends
-    /// rows and tombstones the ones that went; it renumbers nothing, so a
-    /// row index taken before it still names the same track and a holder
-    /// has no reason to throw its cache away.
+    /// Leaves [`Library::projection_gen`] alone: a patch renumbers nothing.
     fn install_patch(&mut self, projection: Projection, patch: Patch) {
         if !patch.is_empty() {
-            // A patch that moved a value the projection already knew (an
-            // artist adopting a sort name, say) took rows this patch never
-            // saw with it, so the order can't be merged into any more. It
-            // costs a full sort, which is the price of the answer being
-            // right; it takes a tag edit or a metadata lookup to get here.
+            // A patch that moved a value the projection already knew (a new
+            // sort name) reordered rows it never saw, so it needs a full sort.
             self.order = Arc::new(if patch.reordered {
                 projection.sort_canonical()
             } else {
@@ -612,31 +456,23 @@ impl Library {
         self.projection = Some(Arc::new(projection));
     }
 
-    /// The running background operation's label, for the menubar's badge.
     pub fn busy(&self) -> Option<SharedString> {
         self.busy.clone()
     }
 
-    /// The last status line: the track count, scan counts, or an error.
-    /// While a scan runs, the file it is currently on.
     pub fn status(&self) -> SharedString {
         self.status.clone()
     }
 
-    /// Whether a rescan has folders to scan.
     pub fn can_rescan(&self) -> bool {
         !self.scan_roots.is_empty()
     }
 
-    /// Whether a scan is running right now, for the menubar's abort button.
-    /// False for other background work: only scans can be aborted.
+    /// Only scans can be aborted.
     pub fn scanning(&self) -> bool {
         self.scan.is_some()
     }
 
-    /// The running scan in full, for the tasks window. The menubar keeps its
-    /// badge off `busy` and `status`; this is the same scan read at the
-    /// detail a window has room for.
     pub fn scan_status(&self) -> Option<ScanStatus> {
         let scan = self.scan.as_ref()?;
         let done = scan.scanned.load(Ordering::Relaxed);
@@ -650,9 +486,7 @@ impl Library {
         })
     }
 
-    /// Stop the running scan at the next file. What it already indexed
-    /// stays in the library; the projection reload still follows, so the
-    /// partial result shows up. A no-op when no scan is running.
+    /// What it already indexed stays; the reload still follows.
     pub fn abort_scan(&mut self, cx: &mut Context<Self>) {
         let Some(scan) = &self.scan else {
             return;
@@ -662,33 +496,25 @@ impl Library {
         cx.notify();
     }
 
-    /// Reload the projection off the database, for a setting that changes
-    /// how it interns (the case-fold toggle) or a write that went past the
-    /// scanner (a server's sync). While another job holds the library the
-    /// load is owed rather than dropped, and runs as soon as that job lets
-    /// go: the database may have moved after the running load read it.
+    /// While another job holds the library, the load is owed rather than
+    /// dropped: the database may have moved after the running load read it.
     pub fn reload_projection(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             self.load_owed = true;
             return;
         }
 
-        // This load is the one anything owed was waiting for.
         self.load_owed = false;
         self.reload(Refresh::Load, cx);
     }
 
-    /// Run the load [`Library::reload_projection`] held back while the
-    /// library was busy, now that it isn't.
     fn settle_owed_load(&mut self, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.load_owed) {
             self.reload(Refresh::Load, cx);
         }
     }
 
-    /// Merge genre values: each source counts as `target` everywhere from
-    /// here on, an opinion written to the library's genre_meta table. The
-    /// files keep their tags as written; the tag editor still shows them.
+    /// Merges are an opinion in the genre_meta table; the files keep their tags.
     pub fn merge_genres(&mut self, sources: &[String], target: &str, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else {
             return;
@@ -701,8 +527,6 @@ impl Library {
         self.refresh_genre_aliases(cx);
     }
 
-    /// Undo every merge pointing at `target`: the folded-away values come
-    /// back as their own genres on the reload this triggers.
     pub fn unmerge_genre(&mut self, target: &str, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else {
             return;
@@ -713,7 +537,6 @@ impl Library {
         self.refresh_genre_aliases(cx);
     }
 
-    /// The values folded into `target`, for the unmerge menu's tally.
     pub fn genre_aliases_into(&self, target: &str) -> Vec<String> {
         self.conn
             .as_ref()
@@ -721,8 +544,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Reinstall the live alias map off the table and reload the
-    /// projection, so every surface re-derives under the new opinions.
     fn refresh_genre_aliases(&mut self, cx: &mut Context<Self>) {
         if let Some(conn) = &self.conn
             && let Ok(aliases) = rox_library::genre_meta::aliases(conn)
@@ -732,8 +553,6 @@ impl Library {
         self.reload_projection(cx);
     }
 
-    /// Scan every remembered folder again; a no-op until one has been
-    /// opened or while a scan is already running.
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() || self.scan_roots.is_empty() {
             return;
@@ -741,9 +560,6 @@ impl Library {
         self.reload(Refresh::Scan(self.scan_roots.clone()), cx);
     }
 
-    /// Each folder with its rollup (tracks, albums, bytes on disk) on
-    /// the UI-side connection. The list never nests, so nothing counts
-    /// twice.
     pub fn root_stats(&self) -> Vec<(PathBuf, store::Stats)> {
         self.scan_roots
             .iter()
@@ -758,13 +574,21 @@ impl Library {
             .collect()
     }
 
-    /// The remembered folders, the roots a maintenance pass walks: the tag
-    /// repair window scans the whole library by walking exactly these.
     pub fn roots(&self) -> Vec<PathBuf> {
         self.scan_roots.clone()
     }
 
-    /// The whole library's rollup, for the storage page.
+    pub fn exclusions(&self) -> Arc<Exclusions> {
+        self.exclude.clone()
+    }
+
+    /// Nothing is rescanned: the watcher picks the list up on its next batch,
+    /// and existing rows answer to it on the next Rescan.
+    pub fn set_exclusions(&mut self, patterns: Vec<String>) {
+        self.exclude = Arc::new(Exclusions::new(&patterns));
+        rox_core::settings::Settings::update(move |s| s.library_exclude = patterns);
+    }
+
     pub fn stats(&self) -> store::Stats {
         self.conn
             .as_ref()
@@ -772,9 +596,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// What the library has to level by, split into what the files came
-    /// with and what rox measured. The Audio page states this beside the leveling
-    /// setting, and the missing count is the measurement pass's work list.
     pub fn replaygain_breakdown(&self) -> store::GainCoverage {
         self.conn
             .as_ref()
@@ -782,10 +603,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// What the library has for tempo, split into what the files came
-    /// with and what rox estimated. The Library page states this beside
-    /// the tempo switch, and the missing count is the tempo pass's work
-    /// list.
     pub fn bpm_breakdown(&self) -> store::BpmCoverage {
         self.conn
             .as_ref()
@@ -793,10 +610,8 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Whether the acoustic pass has described anything under `model` yet.
-    /// What the modes that rank by sound are offered on: the switch being on
-    /// only means the vectors are allowed to exist, and until a pass has run
-    /// there's nothing for them to sort by.
+    /// The switch only permits vectors; until a pass has run there's nothing
+    /// to rank by.
     pub fn analyzed(&self, model: &str) -> bool {
         self.conn
             .as_ref()
@@ -804,9 +619,6 @@ impl Library {
             .unwrap_or(false)
     }
 
-    /// How many tracks the acoustic pass has described, against how many
-    /// there are to describe. The Library page states this, and the
-    /// missing count is the pass's work list.
     pub fn acoustic_coverage(&self, model: &str) -> embeddings::Coverage {
         self.conn
             .as_ref()
@@ -814,11 +626,8 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Where the database's bytes went, for the storage page. On the
-    /// UI-side connection like the rest of the readouts: the page walk
-    /// behind it is a tenth of a second on a big library, which is a beat
-    /// on a page somebody just opened rather than a stall worth a
-    /// background hop.
+    /// On the UI connection: a tenth of a second on a big library, on a page
+    /// somebody just opened.
     pub fn storage_breakdown(&self) -> store::Storage {
         self.conn
             .as_ref()
@@ -826,9 +635,8 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Every acoustic model with vectors in the library, whatever this
-    /// build's own model is. A renamed extractor leaves its old rows
-    /// behind, and the storage page is where they can be seen and cleared.
+    /// Includes models other than this build's, whose rows a renamed extractor
+    /// leaves behind.
     pub fn embedding_models(&self) -> Vec<embeddings::ModelRows> {
         self.conn
             .as_ref()
@@ -836,24 +644,10 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Drop one model's vectors and give the pages back to the filesystem.
-    ///
-    /// Its own connection on the background executor, the idiom the scans
-    /// and the measurement pass use: the delete is quick, and the VACUUM
-    /// behind it rewrites the whole file, which on a described library is
-    /// hundreds of megabytes and nothing a UI thread can block on. Gated on
-    /// `busy` and holding the badge while it runs, the way a rescan is, so
-    /// a scan and a whole-file rewrite never hit the database together.
-    ///
-    /// What it can't gate is the analysis pass, which opens the library by
-    /// path on its own and would write vectors straight back in behind the
-    /// delete. Only the caller offering the button knows a pass is running,
-    /// so refusing it there is their job.
-    ///
-    /// Nothing the projection holds moves, so there's no reload to pay for:
-    /// [`Library::acoustic_coverage`] and [`Library::analyzed`] re-read the
-    /// table on the next repaint, and the mirror the ranking modes are gated
-    /// on is restamped here once the clear finishes.
+    /// The VACUUM rewrites the whole file, so this runs on its own connection
+    /// and holds the busy badge like a rescan. It can't gate the analysis
+    /// pass, which opens the library by path: the caller must refuse while a
+    /// pass runs. No reload needed; the projection holds no vectors.
     pub fn clear_embeddings(&mut self, model: &str, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -887,23 +681,10 @@ impl Library {
         cx.notify();
     }
 
-    /// Forget every tempo rox measured, leaving what the files' own tags
-    /// claim alone. The cleared tracks go back on the tempo pass's work
-    /// list, which is the point: the estimator improves, and a pass only
-    /// ever looks at rows with nothing on them, so a number a worse
-    /// estimator wrote would otherwise stand forever.
-    ///
-    /// The same busy gate and background connection as
-    /// [`Library::clear_embeddings`], with two differences. There's no
-    /// VACUUM, since a tempo is a float a row and there's no space to give
-    /// back. And the projection does reload, because it holds the bpm
-    /// column the BPM column draws: without it every number just forgotten
-    /// would keep rendering until something else reloaded.
-    ///
-    /// Like the vectors' clear, this can't gate the tempo pass, which opens
-    /// the library by path on its own and would write numbers back in
-    /// behind the delete. Only the caller offering the button knows a pass
-    /// is running.
+    /// Forget every tempo rox measured, keeping tagged ones, so an improved
+    /// estimator gets to re-measure. Unlike [`Library::clear_embeddings`] it
+    /// reloads the projection, which holds the BPM column. The caller must
+    /// refuse while the tempo pass runs.
     pub fn clear_measured_bpm(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -934,17 +715,9 @@ impl Library {
         cx.notify();
     }
 
-    /// Throw listening history away: everything an import wrote, or the
-    /// whole record. The listens table is append-only by design, so this
-    /// is the one path that removes an event, and it only runs behind a
-    /// confirm the caller put up.
-    ///
-    /// Same busy gate and background connection as
-    /// [`Library::clear_measured_bpm`]. The plays column reloads after,
-    /// since every count on screen came out of the rows just deleted, and
-    /// the Last.fm import bounds go with them: they say how far each
-    /// account has been read, and a bound pointing past a history that
-    /// no longer exists would make the next import fetch nothing.
+    /// The one path that removes a listen event, behind the caller's confirm.
+    /// The Last.fm import bounds go too, or the next import would fetch
+    /// nothing past a history that no longer exists.
     pub fn clear_listens(&mut self, what: listens::Clear, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -977,26 +750,18 @@ impl Library {
         cx.notify();
     }
 
-    /// The library database, for a background pass that opens its own
-    /// connection to it (the ReplayGain measurement job).
     pub fn db_path(&self) -> PathBuf {
         self.db_path.clone()
     }
 
-    /// A background pass wrote ReplayGain columns straight to the database.
-    /// Nothing the projection holds moved, so there's no reload to run and
-    /// no reason to pay for one on a big library: this only tells the
-    /// coverage readouts and the panels to re-read.
+    /// No reload needed: the projection holds no gain columns this changes.
     pub fn note_gain_written(&mut self, cx: &mut Context<Self>) {
         cx.emit(LibraryEvent::Updated);
         cx.notify();
     }
 
-    /// Re-read files the app wrote outside the tag editor, the measurement
-    /// pass's tag write-back. Same two steps [`Library::apply_edits`] ends
-    /// on (note the writes so the watcher doesn't bounce them back, then
-    /// reindex), minus the optimistic column patch, since the values only
-    /// exist on disk and the reindex brings them in.
+    /// Note the writes, then reindex, like [`Library::apply_edits`] minus the
+    /// optimistic column patch.
     pub fn reindex_written(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         if paths.is_empty() {
             self.note_gain_written(cx);
@@ -1006,11 +771,8 @@ impl Library {
         self.reload(Refresh::Reindex(paths), cx);
     }
 
-    /// Add a folder and scan it. The list never nests, so counts never
-    /// overlap and removals never reach into another folder's tracks: one
-    /// already covered by a listed folder is not added, just rescanned,
-    /// and one that covers listed folders absorbs them. A no-op while a
-    /// scan is running.
+    /// The list never nests: a covered folder is rescanned, not added, and one
+    /// that covers listed folders absorbs them. A no-op while a scan runs.
     pub fn add_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -1024,8 +786,7 @@ impl Library {
         self.reload(Refresh::Scan(vec![root]), cx);
     }
 
-    /// Drop a folder: out of the list, its tracks out of the database. The
-    /// files themselves are untouched. A no-op while a scan is running.
+    /// The files are untouched. A no-op while a scan runs.
     pub fn remove_root(&mut self, root: &Path, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -1039,38 +800,29 @@ impl Library {
         self.reload(Refresh::Remove(root.to_path_buf()), cx);
     }
 
-    /// Write the folder list through the settings file.
     fn persist_roots(&self) {
         let roots = self.scan_roots.clone();
         rox_core::settings::Settings::update(move |s| s.library_roots = roots);
     }
 
-    /// Whether the library is watching its roots right now.
     pub fn watching(&self) -> bool {
         self.watcher.is_some()
     }
 
-    /// Whether the library has outgrown live watching, holding more folders
-    /// than [`watch_limit_dirs`] allows. The watcher doesn't arm here and
-    /// the settings toggle grays out; these libraries fold changes in through
-    /// a manual rescan. Always false where the platform has no ceiling.
+    /// Past [`watch_limit_dirs`] the watcher doesn't arm and the toggle grays
+    /// out.
     pub fn watch_limited(&self) -> bool {
         watch_limit_dirs().is_some_and(|limit| self.stats().dirs > limit)
     }
 
-    /// How many roots the live watch actually covers versus how many it was
-    /// asked to, so a partial watch (a missing folder, an unplugged drive)
-    /// can be surfaced. None when watching is off. The settings UI hookup to
-    /// show a partial or failed watch is a follow-up; this only exposes the
-    /// data.
+    /// Covered roots versus asked-for. Nothing in the settings UI reads this
+    /// yet.
     pub fn watch_coverage(&self) -> Option<(usize, usize)> {
         self.watcher.as_ref().map(|w| w.coverage())
     }
 
-    /// Note paths the app is about to write itself, so the next watch batch
-    /// can drop them instead of reindexing a file the app just touched. Called
-    /// from every point that initiates a file write (a tag or cover commit, a
-    /// rating write) with the target path.
+    /// Call before every file write the app initiates, so the watch batch it
+    /// triggers is dropped.
     pub fn note_self_write<I>(&mut self, paths: I)
     where
         I: IntoIterator<Item = PathBuf>,
@@ -1081,20 +833,10 @@ impl Library {
         }
     }
 
-    /// Note moves the app is about to make itself, so the watch batch that
-    /// echoes them finds nothing. Called from the rename dialog before
-    /// each file moves, since [`Library::rename_files`] moves the row right
-    /// after and the echo would only re-do it.
-    ///
-    /// The echo is harmless either way (a second `rename_within` finds no
-    /// rows at the old path and returns 0), which is why
-    /// [`Library::remove_files`] deliberately doesn't suppress its
-    /// deletions. Renames get the opposite call because they arrive in
-    /// bulk: a pattern applied to an album is hundreds of pairs, and each
-    /// one that comes back queues a refresh cycle that reloads the whole
-    /// projection for no change. Both endpoints go into `self_writes` too,
-    /// since a move surfaces as a create and a delete alongside the pair
-    /// when the watcher can't correlate it.
+    /// The echo would be harmless (the second `rename_within` finds nothing),
+    /// but renames arrive by the hundred and each echo reloads the whole
+    /// projection. Both endpoints go into `self_writes` too, for when the
+    /// watcher can't correlate the pair.
     pub fn note_self_rename<I>(&mut self, moves: I)
     where
         I: IntoIterator<Item = (PathBuf, PathBuf)>,
@@ -1107,10 +849,6 @@ impl Library {
         }
     }
 
-    /// Turn filesystem watching on or off and remember the choice. On arms a
-    /// watcher over the current roots and starts folding live changes in; off
-    /// drops it and any pending work, so updates stop until it is turned back
-    /// on or the next manual rescan.
     pub fn set_watch(&mut self, on: bool, cx: &mut Context<Self>) {
         self.watch_on = on;
         rox_core::settings::Settings::update(move |s| s.watch_library = on);
@@ -1125,15 +863,9 @@ impl Library {
         cx.notify();
     }
 
-    /// Bring the watcher up over the current roots and start draining its
-    /// change batches. A no-op when there are no roots to watch; replaces any
-    /// live watcher, so it doubles as the re-arm after the folder list moves.
-    ///
-    /// Arming a recursive watch walks the whole tree adding one OS watch per
-    /// directory, slow enough on a big library to stall the window, so the
-    /// build runs off the UI thread and the handle is stored on the entity once
-    /// it's ready. Dropping the prior task cancels an in-flight build, so a
-    /// quick re-arm never leaves two watchers running.
+    /// Replaces any live watcher. Arming walks the whole tree adding one OS
+    /// watch per directory, so the build runs off the UI thread; dropping the
+    /// prior task cancels an in-flight build.
     fn arm_watch(&mut self, cx: &mut Context<Self>) {
         self.watcher = None;
         self.watch_task = None;
@@ -1143,15 +875,9 @@ impl Library {
         let roots = self.scan_roots.clone();
         let db_path = self.db_path.clone();
         self.watch_task = Some(cx.spawn(async move |this, cx| {
-            // The ceiling check and the watcher build go on the same
-            // background hop. Asking whether the library is past the limit
-            // means counting distinct track folders, which is a full table
-            // scan with string surgery in it; on the UI thread that was a
-            // stall at every arm, and arming happens at launch and on every
-            // folder added or removed. A library past the ceiling never
-            // arms: the recursive watch would be too heavy to build and to
-            // keep running. The stored preference stays put, so dropping
-            // back under the limit lets it watch again on the next re-arm.
+            // The ceiling check is a full table scan, so it rides the same
+            // background hop. A library past the ceiling never arms; the
+            // preference stays, so dropping back under lets it watch again.
             let Some(watcher) = cx
                 .background_executor()
                 .spawn(async move {
@@ -1171,8 +897,7 @@ impl Library {
                 return;
             };
             let events = watcher.events();
-            // Store the handle only if watching is still wanted; a toggle-off
-            // or a newer re-arm that raced this build wins.
+            // A toggle-off or a newer re-arm that raced this build wins.
             let stored = this.update(cx, |this, _| {
                 if !this.watch_on {
                     return false;
@@ -1194,26 +919,18 @@ impl Library {
         }));
     }
 
-    /// Re-point the watcher at the current roots after the folder list moves,
-    /// but only while watching is on, so an add or remove never turns it back
-    /// on behind the setting.
+    /// Only while watching is on, so a folder change never re-enables it.
     fn rearm_watch(&mut self, cx: &mut Context<Self>) {
         if self.watch_on {
             self.arm_watch(cx);
         }
     }
 
-    /// Take in a watch batch and kick the sync. Cheap on the UI thread: the
-    /// self-write filter and a couple of buffer inserts, no disk touched; the
-    /// sort into renames, re-reads, and prunes happens off-thread in the sync
-    /// itself.
+    /// Cheap: no disk touched; sorting the batch happens in the sync.
     fn note_changes(&mut self, batch: WatchBatch, cx: &mut Context<Self>) {
-        // Drop the app's own writes so a tag, rating, or cover commit does not
-        // bounce back as a redundant reindex. The window extends a few seconds
-        // past the 1s debounce, comfortably long enough to cover the write ->
-        // flush -> deliver round trip; expired entries clear each pass so the
-        // map never grows. A missed suppression only costs one reindex, so the
-        // window errs short rather than eat a real user edit.
+        // A few seconds past the 1s debounce covers the write, flush, and
+        // deliver round trip. A missed suppression only costs one reindex, so
+        // the window errs short rather than eat a real edit.
         let now = std::time::Instant::now();
         let window = std::time::Duration::from_secs(5);
         self.self_writes
@@ -1226,9 +943,6 @@ impl Library {
                 .into_iter()
                 .filter(|p| !self.self_writes.contains_key(p)),
         );
-        // The app's own moves drop out on the same window: rox already moved
-        // the row when it moved the file, so the echo would cost a full
-        // refresh cycle to change nothing.
         self.pending_renames
             .extend(batch.renames.into_iter().filter(|pair| {
                 !self
@@ -1238,9 +952,8 @@ impl Library {
         self.pump_watch(cx);
     }
 
-    /// Drain the pending paths and renames into one `Refresh::Watch`, once no
-    /// other refresh holds the badge. Re-run after every reload finishes, which
-    /// is how changes that arrived mid-refresh get picked up.
+    /// Re-run after every reload, which picks up changes that arrived
+    /// mid-refresh.
     fn pump_watch(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() || (self.pending.is_empty() && self.pending_renames.is_empty()) {
             return;
@@ -1258,7 +971,6 @@ impl Library {
         );
     }
 
-    /// Resolve database ids to playable paths on the UI-side connection.
     pub fn paths_for(&self, ids: &[i64]) -> Result<Vec<PathBuf>, String> {
         let Some(conn) = &self.conn else {
             return Ok(Vec::new());
@@ -1268,9 +980,7 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
-    /// The artist and title for each of `ids`, on the UI-side connection:
-    /// what the Last.fm mirror names a track by. Ids the library has since
-    /// dropped, and tracks missing either tag, fall out silently.
+    /// What the Last.fm mirror names a track by. Untaggable ids drop out.
     pub fn names_for(&self, ids: &[i64]) -> Vec<(String, String)> {
         self.conn
             .as_ref()
@@ -1278,18 +988,9 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// The library's own copy of each song named, answered in the order
-    /// asked. For the surfaces holding a song's two names with no file
-    /// behind them, which is every radio listen: the row that played is
-    /// the station, and what it names is the song, so the file of that
-    /// song is what its cover should come off and what a click should
-    /// play. A capture off the air is exactly this file.
-    ///
-    /// None for a song the library has no local copy of, and for a name
-    /// pair that isn't a song (the empty pair a caller passes for the rows
-    /// it isn't asking about). One projection walk for the whole list and
-    /// one path lookup per hit, so a view's worth of listens costs about
-    /// what a single lookup used to.
+    /// The local file behind each named song, for surfaces holding a song's
+    /// names with no file (every radio listen). One projection walk for the
+    /// whole list.
     pub fn local_copies(&self, names: &[(&str, &str)]) -> Vec<Option<LocalCopy>> {
         let Some(projection) = self.projection() else {
             return vec![None; names.len()];
@@ -1318,27 +1019,20 @@ impl Library {
             .collect()
     }
 
-    /// Resolve database ids to the subsong keys that name them, in the order
-    /// given. The sibling of [`paths_for`](Self::paths_for) for anything that
-    /// goes on to play what it resolved: a cue track's key includes its own
-    /// number, so it points at that track's span instead of the whole image
-    /// its dozen siblings share. Ids the library has since dropped fall out,
-    /// the same way `paths_for` drops them.
+    /// Anything that plays what it resolved uses this, not
+    /// [`paths_for`](Self::paths_for): a cue track's key points at its own span.
     pub fn keys_for(&self, ids: &[i64]) -> Result<Vec<TrackKey>, String> {
         let Some(conn) = &self.conn else {
             return Ok(Vec::new());
         };
         let mut keys = Vec::with_capacity(ids.len());
         for &id in ids {
-            // One query per id rather than one for the batch: a dropped id
-            // would slide the paths out from under the subs otherwise.
+            // One query per id: a dropped id would misalign a batch.
             let row = store::key_for_id(conn, id).map_err(|e| e.to_string())?;
             if let Some(row) = row {
                 keys.push(TrackKey {
                     source: row.source,
                     path: row.path,
-                    // Off the projection rather than the row just read, the
-                    // way this has always taken it.
                     sub: self.sub_for_id(id),
                 });
             }
@@ -1346,15 +1040,8 @@ impl Library {
         Ok(keys)
     }
 
-    /// Where each of `ids` plays from, in the order given: a file for a
-    /// local track, a finished URL with the source's own headers on it for
-    /// a remote one. What the player hands the engine, in place of the bare
-    /// paths it used to send.
-    ///
-    /// The store answers with the bare url and the live flag, since what
-    /// makes the request acceptable is a per-session credential it doesn't
-    /// hold. That gets put on here, off the registry the app installs at
-    /// startup, so the engine never has to ask a source anything.
+    /// A remote locator is finished here off the registry, so the engine
+    /// never asks a source anything.
     pub fn locators_for(&self, ids: &[i64]) -> Result<Vec<Locator>, String> {
         let Some(conn) = &self.conn else {
             return Ok(Vec::new());
@@ -1362,8 +1049,7 @@ impl Library {
 
         let mut out = Vec::with_capacity(ids.len());
         for &id in ids {
-            // One id at a time for [`keys_for`](Self::keys_for)'s reason: a
-            // dropped id would slide the credentials onto the wrong locator.
+            // One id at a time, for [`keys_for`](Self::keys_for)'s reason.
             let Some(mut locator) = store::locators_for(conn, &[id])
                 .map_err(|e| e.to_string())?
                 .pop()
@@ -1371,8 +1057,6 @@ impl Library {
                 continue;
             };
 
-            // Only a remote row costs the second lookup, so a local library
-            // reads exactly what it always did.
             if let Locator::Remote(remote) = &mut locator {
                 let source = store::key_for_id(conn, id)
                     .ok()
@@ -1389,10 +1073,7 @@ impl Library {
         Ok(out)
     }
 
-    /// Which subsong of its file a track id is, off the projection's dense
-    /// column through the same id -> row index a rating click uses. Zero when
-    /// the projection has no row for it, which is both what a plain file
-    /// has and the safe fallback mid-scan.
+    /// Zero when the projection has no row, the safe answer mid-scan.
     pub fn sub_for_id(&self, id: i64) -> u16 {
         let (Some(projection), Some(&row)) = (&self.projection, self.row_by_id.get(&id)) else {
             return 0;
@@ -1400,15 +1081,9 @@ impl Library {
         projection.sub.get(row as usize).copied().unwrap_or(0)
     }
 
-    /// The ids of `ids` that are files on disk, in the order given. What
-    /// the actions that open or rewrite a file (the tag and cover editors,
-    /// rename, convert, reveal) take instead of the whole selection, since
-    /// a server's song or a station has no file for any of them to touch.
-    ///
-    /// Off the projection's source column through the id -> row index, so
-    /// a menu over ten thousand tracks costs no queries to open. An id the
-    /// projection has no row for yet stays in: mid-load every id is one,
-    /// and the editors already skip what they can't resolve.
+    /// What file actions (editors, rename, convert, reveal) take: a server
+    /// song or a station has no file. An id with no projection row yet stays
+    /// in.
     pub fn local_ids(&self, ids: &[i64]) -> Vec<i64> {
         let Some(projection) = &self.projection else {
             return ids.to_vec();
@@ -1428,17 +1103,8 @@ impl Library {
             .collect()
     }
 
-    /// A track's three sort names, for the panels that draw their rows
-    /// off the store's tags rather than a projection row: the queue, the
-    /// history and the playlists all hold a track id and want the reading
-    /// beside each name.
-    ///
-    /// Off the projection through the same id -> row index the rating
-    /// click uses, so the artist and album readings are the interned
-    /// ones their symbol tables carry rather than whatever a single
-    /// file's tag said. All three empty for an id the projection has no
-    /// row for, and for a library that hasn't loaded, which reads the
-    /// same as a track with no sort names at all.
+    /// Off the projection, so the readings are the interned ones. All empty
+    /// for an id with no row.
     pub fn sort_names_for_id(&self, id: i64) -> SortNames {
         let (Some(projection), Some(&row)) = (&self.projection, self.row_by_id.get(&id)) else {
             return SortNames::default();
@@ -1454,14 +1120,10 @@ impl Library {
         }
     }
 
-    /// Resolve a playing track back to its tags on the UI-side connection,
-    /// for the track info panel. None when the key is not in the library.
     pub fn meta_for_key(&self, key: &TrackKey) -> Option<store::TrackMeta> {
         self.resolve_key(key).map(|(_, meta)| meta)
     }
 
-    /// Resolve a playing track to its id on the UI-side connection, for
-    /// marking its row. None when the key is not in the library.
     pub fn id_for_key(&self, key: &TrackKey) -> Option<i64> {
         let conn = self.conn.as_ref()?;
         store::queue_meta_for_key(conn, &key.source, key.path.to_str()?, key.sub)
@@ -1469,16 +1131,9 @@ impl Library {
             .id
     }
 
-    /// Resolve a key to its track id and tags together, for callers (the
-    /// queue) that need both and would otherwise ask twice.
-    ///
-    /// Keyed on (source, path, sub) rather than the path alone, which is
-    /// the whole point: a path-only lookup returns whichever row of a cue image
-    /// sorts first, so every track of a rip would draw track one's title. The
-    /// id comes from the sub-aware store lookup, and the tags come off the
-    /// projection row that id points at, which costs no second query. A plain
-    /// file falls back to the store when the projection isn't up (mid-scan,
-    /// or a deleted playlist member that never had a row).
+    /// Keyed on (source, path, sub): a path-only lookup returns whichever cue
+    /// track sorts first. Tags come off the projection row, falling back to
+    /// the store when there's none.
     pub fn resolve_key(&self, key: &TrackKey) -> Option<(i64, store::TrackMeta)> {
         let conn = self.conn.as_ref()?;
         let path = key.path.to_str()?;
@@ -1488,15 +1143,13 @@ impl Library {
         if let Some(id) = id
             && let (Some(projection), Some(&row)) = (&self.projection, self.row_by_id.get(&id))
         {
-            // The guard a rating click uses too: a projection swapped
-            // between paint and lookup would leave the row pointing at
-            // somebody else's track.
+            // Guard against a projection swapped between paint and lookup.
             if projection.db_id.get(row as usize) == Some(&id) {
                 return Some((id, meta_from_row(&projection.resolve(row))));
             }
         }
-        // No projection row to read: only a sub 0 key can be resolved from
-        // the store, since its lookup can't tell one cue track from another.
+        // Only a sub 0 key resolves from the store, which can't tell cue
+        // tracks apart.
         (key.sub == 0)
             .then(|| {
                 store::meta_row_for_path(conn, &key.source, path)
@@ -1506,23 +1159,17 @@ impl Library {
             .flatten()
     }
 
-    /// The history views' reads, on the UI-side connection: SQL over the
-    /// indexed events table at panel-open and listen-append cadence, per
-    /// ADR 11, never per keystroke or frame.
+    /// Panel-open and listen-append cadence only, per ADR 11.
     pub fn recent_listens(&self, since: i64, until: i64, limit: usize) -> Vec<listens::TrackPlays> {
         self.listen_query(|conn| listens::recent(conn, since, until, limit))
     }
 
-    /// One track's first and last play and its plays since `since`, the
-    /// metadata panel's listening rows. None for a track never played or
-    /// one the library doesn't hold.
     pub fn listen_summary(&self, id: i64, since: i64) -> Option<listens::TrackSummary> {
         self.conn
             .as_ref()
             .and_then(|conn| listens::track_summary(conn, id, since).ok().flatten())
     }
 
-    /// The latest listen timestamp for every track that has been played.
     pub fn last_played(&self) -> HashMap<i64, i64> {
         self.conn
             .as_ref()
@@ -1543,8 +1190,7 @@ impl Library {
         self.listen_query(|conn| listens::never_played(conn, order, descending, limit))
     }
 
-    /// Play counts grouped under one tag over a trailing range, the
-    /// stats panel's rollups; `since` 0 counts every event.
+    /// `since` 0 counts every event.
     pub fn listen_rollup(
         &self,
         by: listens::Rollup,
@@ -1556,13 +1202,10 @@ impl Library {
         self.listen_query(|conn| listens::rollup(conn, by, since, until, limit, fold))
     }
 
-    /// How many listens were recorded at or after `since` (unix seconds).
     pub fn listens_since(&self, since: i64) -> u64 {
         self.listens_between(since, i64::MAX)
     }
 
-    /// Listens at or after `since` and before `until`, the stats window's
-    /// picked stretch.
     pub fn listens_between(&self, since: i64, until: i64) -> u64 {
         self.conn
             .as_ref()
@@ -1570,8 +1213,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// How many listens the library holds and how many of them an import
-    /// wrote, the numbers the clear confirm reads out before it takes any.
     pub fn listens_tally(&self) -> listens::Tally {
         self.conn
             .as_ref()
@@ -1579,7 +1220,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// When the first listen was recorded; None before any has been.
     pub fn first_listen(&self) -> Option<i64> {
         self.conn
             .as_ref()
@@ -1587,13 +1227,10 @@ impl Library {
             .flatten()
     }
 
-    /// Listens bucketed over time, the stats chart's bars.
     pub fn listen_histogram(&self, since: i64, bucket: i64, end: i64, until: i64) -> Vec<u64> {
         self.listen_query(|conn| listens::histogram(conn, since, bucket, end, until))
     }
 
-    /// Resolve a rollup name to its library tracks in browse order, so
-    /// a stats row can queue what it counts.
     pub fn ids_for_rollup(&self, by: listens::Rollup, name: &str, limit: usize) -> Vec<i64> {
         let fold = rox_core::settings::fold_case();
         self.listen_query(|conn| listens::ids_for_name(conn, by, name, limit, fold))
@@ -1609,8 +1246,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Every playlist with its track count, for the sidebar and the
-    /// add-to-playlist menu.
     pub fn playlists(&self) -> Vec<playlists::Playlist> {
         self.conn
             .as_ref()
@@ -1618,7 +1253,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// One playlist's tracks in order, for the playlist panel.
     pub fn playlist_tracks(&self, id: i64) -> Vec<playlists::PlaylistTrack> {
         self.conn
             .as_ref()
@@ -1626,10 +1260,8 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// One playlist's playable track ids in order, what the panel hands the
-    /// player to start the whole list. A smart playlist materializes here,
-    /// so play, export, and continuation all take the same route whichever
-    /// kind they were pointed at.
+    /// A smart playlist materializes here, so play, export, and continuation
+    /// all take one route.
     pub fn playlist_ids(&self, id: i64) -> Vec<i64> {
         if let Some(def) = self.playlist_definition(id) {
             return self.smart_ids(&def);
@@ -1640,22 +1272,15 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// One playlist's playable members resolved for an M3U export, in order.
-    ///
-    /// Each row's path is a [`TrackKey`] fragment rather than a bare path, so
-    /// a cue rip exports as twelve `disc.flac#N` lines instead of the same
-    /// file twelve times over. The tags come off the projection row, which is
-    /// also the only place the sub is stored; with no projection loaded this
-    /// falls back to the store's own path-only rows, which is worse than
-    /// nothing only for cue tracks and exactly right for everything else.
+    /// Paths are [`TrackKey`] fragments, so a cue rip exports as `disc.flac#N`
+    /// lines. Without a projection this falls back to the store's path-only
+    /// rows, wrong only for cue tracks.
     pub fn playlist_export_rows(&self, id: i64) -> Vec<playlists::ExportTrack> {
         let Some(conn) = &self.conn else {
             return Vec::new();
         };
         let Some(projection) = &self.projection else {
-            // A smart playlist is nothing but a query over the projection,
-            // so with none loaded there is nothing to write out; the
-            // store's own member rows still hold a static one.
+            // Without a projection, only static members can be written.
             return playlists::export_rows(conn, id).unwrap_or_default();
         };
         // An export of a smart playlist writes what it holds right now,
@@ -1766,8 +1391,6 @@ impl Library {
             .collect()
     }
 
-    /// The favourited track ids, what the library's heart column checks each
-    /// row against.
     pub fn favourite_ids(&self) -> HashSet<i64> {
         self.conn
             .as_ref()
@@ -1776,9 +1399,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Whether one track is favourited, the read the favourite control
-    /// panel makes on the track it follows. The surfaces that check a whole
-    /// column of rows take [`Library::favourite_ids`] instead.
     pub fn is_favourite(&self, track_id: i64) -> bool {
         self.conn
             .as_ref()
@@ -1786,8 +1406,7 @@ impl Library {
             .unwrap_or(false)
     }
 
-    /// Turn favourite on or off for a set of tracks at once, the heart click
-    /// and the Favourites menu. One event for the whole batch.
+    /// One event for the whole batch.
     pub fn set_favourites(&mut self, track_ids: &[i64], on: bool, cx: &mut Context<Self>) {
         let Some(conn) = self.conn.as_mut() else {
             return;
@@ -1804,9 +1423,7 @@ impl Library {
         }
     }
 
-    /// The marks on one track, earliest first. Empty for a key the
-    /// library doesn't hold: a bookmark needs a row to hang off, so a
-    /// file played from outside the library can't take one.
+    /// Empty for a key the library doesn't hold: a bookmark needs a row.
     pub fn bookmarks_for(&self, key: &TrackKey) -> Vec<Bookmark> {
         let Some(conn) = &self.conn else {
             return Vec::new();
@@ -1817,8 +1434,6 @@ impl Library {
         bookmarks::for_track(conn, id).unwrap_or_default()
     }
 
-    /// Every mark whose track is in the catalog, grouped by track in
-    /// browse order. What the bookmarks panel lists.
     pub fn all_bookmarks(&self) -> Vec<BookmarkRow> {
         let Some(conn) = &self.conn else {
             return Vec::new();
@@ -1826,15 +1441,12 @@ impl Library {
         bookmarks::all(conn).unwrap_or_default()
     }
 
-    /// One mark by id, for the edit dialog seeding its fields.
     pub fn bookmark(&self, id: i64) -> Option<Bookmark> {
         let conn = self.conn.as_ref()?;
         bookmarks::get(conn, id).ok().flatten()
     }
 
-    /// Drop a mark at `position_ms` into the track `key` names, with an
-    /// optional label and color (`#rrggbb`; None follows the theme
-    /// accent). None when the key isn't a library track.
+    /// `color` is `#rrggbb`; None follows the theme accent.
     pub fn add_bookmark(
         &mut self,
         key: &TrackKey,
@@ -1858,7 +1470,6 @@ impl Library {
         }
     }
 
-    /// Recolor a mark; None goes back to the theme accent.
     pub fn set_bookmark_color(&mut self, id: i64, color: Option<&str>, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
         if bookmarks::set_color(conn, id, color).is_ok() {
@@ -1866,7 +1477,6 @@ impl Library {
         }
     }
 
-    /// Slide a mark to `position_ms` on its track, the "move here" edit.
     pub fn move_bookmark(&mut self, id: i64, position_ms: u32, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
         if bookmarks::set_position(conn, id, position_ms).is_ok() {
@@ -1874,14 +1484,11 @@ impl Library {
         }
     }
 
-    /// How many marks these tracks carry between them, for the track menu
-    /// deciding whether to offer clearing them.
     pub fn bookmark_count_for(&self, track_ids: &[i64]) -> u64 {
         let Some(conn) = &self.conn else { return 0 };
         bookmarks::count_for_tracks(conn, track_ids).unwrap_or(0)
     }
 
-    /// Drop every mark on these tracks.
     pub fn remove_track_bookmarks(&mut self, track_ids: &[i64], cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
         if matches!(bookmarks::remove_for_tracks(conn, track_ids), Ok(n) if n > 0) {
@@ -1896,7 +1503,6 @@ impl Library {
         }
     }
 
-    /// Create an empty playlist and return its id.
     pub fn create_playlist(&mut self, name: &str, cx: &mut Context<Self>) -> Option<i64> {
         let conn = self.conn.as_ref()?;
         let id = playlists::create(conn, name, now_secs()).ok()?;
@@ -1904,7 +1510,6 @@ impl Library {
         Some(id)
     }
 
-    /// Create a smart playlist around a saved query and return its id.
     pub fn create_smart_playlist(
         &mut self,
         name: &str,
@@ -1917,8 +1522,6 @@ impl Library {
         Some(id)
     }
 
-    /// Rewrite a smart playlist's query. The panel materializes again on the
-    /// event, so the tree shows the new result without a reload.
     pub fn set_playlist_definition(
         &mut self,
         id: i64,
@@ -1931,7 +1534,6 @@ impl Library {
         }
     }
 
-    /// Rename a playlist.
     pub fn rename_playlist(&mut self, id: i64, name: &str, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
         if playlists::rename(conn, id, name, now_secs()).is_ok() {
@@ -1939,7 +1541,6 @@ impl Library {
         }
     }
 
-    /// Delete a playlist and its member rows.
     pub fn delete_playlist(&mut self, id: i64, cx: &mut Context<Self>) {
         let Some(conn) = self.conn.as_mut() else {
             return;
@@ -1949,7 +1550,6 @@ impl Library {
         }
     }
 
-    /// Append tracks to a playlist, keeping duplicates.
     pub fn add_to_playlist(&mut self, id: i64, track_ids: &[i64], cx: &mut Context<Self>) {
         let Some(conn) = self.conn.as_mut() else {
             return;
@@ -1959,9 +1559,7 @@ impl Library {
         }
     }
 
-    /// Add tracks to a playlist as a block placed before `before` (a member id
-    /// already in the playlist), or at the end when None. The drop-from-elsewhere
-    /// path: `add` makes the rows, `place_members` moves the block into position.
+    /// `before` is a member id, or None for the end.
     pub fn add_to_playlist_at(
         &mut self,
         id: i64,
@@ -1980,8 +1578,6 @@ impl Library {
             return;
         }
 
-        // The rows land at the end, so only a drop with a target needs the
-        // second pass to splice them in.
         if before.is_some() {
             let _ = playlists::place_members(conn, id, &members, before, now_secs());
         }
@@ -1989,9 +1585,8 @@ impl Library {
         cx.emit(LibraryEvent::PlaylistsChanged);
     }
 
-    /// Drop a drag of members into `playlist_id` before `before` (or at the
-    /// end when None): the one call behind every playlist drag, single or
-    /// multi, reorder or cross-playlist move.
+    /// The one call behind every playlist drag: single or multi, reorder or
+    /// cross-playlist move.
     pub fn place_playlist_members(
         &mut self,
         playlist_id: i64,
@@ -2007,7 +1602,6 @@ impl Library {
         }
     }
 
-    /// Drop several members at once, a multi-select remove or Delete keypress.
     pub fn remove_playlist_members(&mut self, member_ids: &[i64], cx: &mut Context<Self>) {
         let Some(conn) = self.conn.as_mut() else {
             return;
@@ -2017,10 +1611,8 @@ impl Library {
         }
     }
 
-    /// Build a playlist from imported M3U entries: resolve each path to a
-    /// catalog track, relative paths against `base_dir` (the file's folder),
-    /// and add the hits in order. Entries the library never scanned fall away,
-    /// there is no file behind them to play. Returns the new playlist's id.
+    /// Relative paths resolve against `base_dir`; entries the library never
+    /// scanned fall away.
     pub fn import_playlist(
         &mut self,
         name: &str,
@@ -2041,21 +1633,15 @@ impl Library {
         Some(id)
     }
 
-    /// A committed tag edit into the catalog: the named columns are written
-    /// first on the UI connection, so a busy library that drops the reload still
-    /// shows the edit, then the file is re-read whole so the row converges
-    /// to what the writer put on disk. The optimistic patch alone left
-    /// duration, codec, and the like on their stale scan values; the
-    /// reindex behind it brings those in too. The file was already written
-    /// and verified by the caller.
+    /// The named columns are written first, so the edit shows even if a busy
+    /// library drops the reload; then the file is reindexed so duration and
+    /// codec converge too.
     pub fn apply_edit(
         &mut self,
         key: &TrackKey,
         changes: &[writer::Change],
         cx: &mut Context<Self>,
     ) {
-        // The caller already wrote the file; note it so the watch batch it
-        // triggers does not bounce back as a redundant reindex.
         self.note_self_write([key.path.clone()]);
         if let Some((id, conn)) = self.id_for_key(key).zip(self.conn.as_ref())
             && let Err(e) = store::apply_changes(conn, id, changes)
@@ -2066,20 +1652,10 @@ impl Library {
         self.reload(Refresh::Reindex(vec![key.path.clone()]), cx);
     }
 
-    /// A batch of committed edits into the catalog, the tag editor's save:
-    /// every named column is written first on the UI connection, then one
-    /// reindex re-reads the whole batch off disk so duration, codec, and
-    /// every other scanner-derived field converge with the edit, not just
-    /// the columns the form named. A file the writer fixed or a filename
-    /// the user finally tagged both read back true here.
-    ///
-    /// `subs` runs parallel to `edits` and says which subsong each one is,
-    /// padding with 0 where it's short: a [`writer::Edit`] names a file, and
-    /// a file stopped being a track the moment cue sheets came in. Without it
-    /// an edit to track five of a rip would be applied to track one's row.
+    /// The tag editor's save. `subs` runs parallel to `edits` (padding with
+    /// 0): an edit names a file, and one cue image is many tracks.
     pub fn apply_edits(&mut self, edits: &[writer::Edit], subs: &[u16], cx: &mut Context<Self>) {
         for (i, edit) in edits.iter().enumerate() {
-            // A writer edit names a file, so what it edits is always local.
             let key = TrackKey {
                 source: rox_library::cue::local(),
                 path: edit.path.clone(),
@@ -2095,18 +1671,12 @@ impl Library {
             }
         }
         let paths: Vec<PathBuf> = edits.iter().map(|edit| edit.path.clone()).collect();
-        // The caller wrote these files; note them so the watch batch they
-        // trigger does not bounce back as a redundant reindex.
         self.note_self_write(paths.iter().cloned());
         self.reload(Refresh::Reindex(paths), cx);
     }
 
-    /// Drop these files' rows from the catalog, the duplicates window's
-    /// write-back after trashing them. The paths are deliberately not noted
-    /// as self-writes: if the library is busy and this reload is dropped,
-    /// the watcher still sees the deletions and prunes the same rows, so the
-    /// catalog converges either way; when both run, the second prune is a
-    /// no-op.
+    /// Deliberately not noted as self-writes: if this reload is dropped, the
+    /// watcher still prunes the same rows.
     pub fn remove_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         if paths.is_empty() {
             return;
@@ -2114,18 +1684,10 @@ impl Library {
         self.reload(Refresh::Prune(paths), cx);
     }
 
-    /// Move rows to follow files the rename dialog just moved on disk. The
-    /// ids stay put through [`store::rename_within`], so the `added` stamp,
-    /// the rating, and the playlist and listen joins stay attached instead of
-    /// dying with the old path; a moved folder comes as its own pair and
-    /// takes its subtree with it.
-    ///
-    /// The two reattach passes follow because a path snapshot goes stale on
-    /// a move: a member or a listen event keeps pointing at a live row, but
-    /// the path it remembers for the day that row gets pruned would send it
-    /// to a file that isn't there any more. The watch path never runs them,
-    /// which is a gap this feature doesn't want to inherit. Then a reindex
-    /// over the new paths reconciles mtime and size from disk.
+    /// Ids stay put through [`store::rename_within`], so ratings and joins stay
+    /// attached. The reattach passes refresh the path snapshots playlist
+    /// members and listens keep for when a row is pruned; the watch path never
+    /// runs them.
     pub fn rename_files(&mut self, moves: Vec<(PathBuf, PathBuf)>, cx: &mut Context<Self>) {
         if moves.is_empty() {
             return;
@@ -2152,15 +1714,10 @@ impl Library {
         self.reload(Refresh::Reindex(paths), cx);
     }
 
-    /// A rating click into the catalog: onto the track's database row, and
-    /// into the shared projection in place: its ratings are atomics exactly
-    /// so this never pays the reload a tag edit does, and it works mid-scan
-    /// where a reload would be dropped. The row is resolved through the
-    /// id -> row index, so no linear scan per click; the guard on `db_id`
-    /// catches a projection swapped between paint and click, where the rating
-    /// still gets written to disk and shows on the next reload. A track not in
-    /// the projection at all (a deleted playlist member) still gets written to
-    /// disk the same way. The file's tags follow through the write queue below.
+    /// Written to the row and into the projection's rating atomics in place,
+    /// so it needs no reload and works mid-scan. The `db_id` guard catches a
+    /// projection swapped between paint and click. The file's tags follow
+    /// through the write queue.
     pub fn rate(&mut self, id: i64, rating: u8, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
         if let Err(e) = store::set_rating(conn, id, rating) {
@@ -2178,30 +1735,23 @@ impl Library {
         cx.notify();
     }
 
-    /// A recorded listen into the shared projection in place: plays are
-    /// atomics like the ratings, so the count moves without the reload
-    /// a catalog change pays. The event row is already on disk; this
-    /// only refreshes the cached column, per ADR 11 the events stay
-    /// the source.
+    /// The event row is already on disk (ADR 11); this only bumps the cached
+    /// column.
     pub fn record_play(&mut self, id: i64, cx: &mut Context<Self>) {
         let Some(projection) = &self.projection else {
             return;
         };
-        // Through the id map rather than a column scan: after a patch the
-        // id also sits on a tombstoned row, and the map is what tracks the
-        // live one.
+        // Through the id map: after a patch the id also sits on a tombstoned
+        // row.
         if let Some(&row) = self.row_by_id.get(&id) {
             projection.plays[row as usize].fetch_add(1, Ordering::Relaxed);
             cx.emit(LibraryEvent::Played);
         }
     }
 
-    /// Reload all play counts from the database into the shared in-memory
-    /// projection and notify observers. Used after an external play count
-    /// import (e.g. Last.fm). Unlike [`Self::record_play`] this moves counts
-    /// for a set of tracks the caller never names, so it raises
-    /// [`LibraryEvent::PlaysReloaded`]: the play-keyed views have to re-read
-    /// rather than repaint the one cell a single listen touched.
+    /// After an external import (a Last.fm backfill). Raises
+    /// [`LibraryEvent::PlaysReloaded`], since the counts moved for tracks
+    /// nobody named.
     pub fn reload_plays(&mut self, cx: &mut Context<Self>) {
         let (Some(projection), Some(conn)) = (&self.projection, &self.conn) else {
             return;
@@ -2216,9 +1766,6 @@ impl Library {
         cx.emit(LibraryEvent::PlaysReloaded);
     }
 
-    /// The total play count for each of `ids`, off the in-memory projection,
-    /// in one pass. A track not in the catalog (a deleted playlist member) is
-    /// absent from the map. What the queue and playlists plays column reads.
     pub fn plays_for(&self, ids: &[i64]) -> HashMap<i64, u32> {
         let Some(projection) = &self.projection else {
             return HashMap::new();
@@ -2231,10 +1778,7 @@ impl Library {
             .collect()
     }
 
-    /// The current rating for each of `ids`, off the in-memory projection.
-    /// The value moved in place on the last `rate`, so panels that cache the
-    /// rating in their rows re-read it here on a `Rated` event instead of
-    /// rebuilding. A track not in the catalog is absent from the map.
+    /// Panels caching ratings re-read here on `Rated` instead of rebuilding.
     pub fn ratings_for(&self, ids: &[i64]) -> HashMap<i64, u8> {
         let Some(projection) = &self.projection else {
             return HashMap::new();
@@ -2247,10 +1791,8 @@ impl Library {
             .collect()
     }
 
-    /// Queue one track's rating for its tag write. The map holds the
-    /// newest value per track and one drain runs at a time, so rapid
-    /// clicks collapse to the last value instead of racing the writer's
-    /// clone-and-rename on the same file.
+    /// Newest value per track, one drain at a time, so rapid clicks don't race
+    /// the writer's clone-and-rename on one file.
     fn queue_rating_write(&mut self, id: i64, rating: u8, cx: &mut Context<Self>) {
         self.pending_ratings.insert(id, rating);
         if self.rating_write_running {
@@ -2266,8 +1808,6 @@ impl Library {
                 let Ok(Some((id, rating))) = next else { break };
                 let Ok(Some(key)) = this.update(cx, |this, _| {
                     let key = this.keys_for(&[id]).ok().and_then(|mut keys| keys.pop());
-                    // Note the write before it happens so the watch batch it
-                    // triggers is suppressed, not reindexed.
                     if let Some(key) = &key {
                         this.note_self_write([key.path.clone()]);
                     }
@@ -2282,10 +1822,8 @@ impl Library {
                             field: writer::Field::Rating,
                             value: (rating > 0).then(|| rox_library::rating::display(rating)),
                         };
-                        // Through the key, so rating one track of a cue rip
-                        // stays in the library: the image on disk is shared by
-                        // every track of the disc, and stamping it would rate
-                        // all twelve.
+                        // Through the key: stamping a cue image's file would
+                        // rate every track of the disc.
                         writer::commit_key(&key.path, key.sub, &[change], &[])
                             .map_err(|e| (key.path, e))
                     })
@@ -2308,10 +1846,8 @@ impl Library {
         .detach();
     }
 
-    /// Run a refresh off the UI thread: its own step first, then the
-    /// projection reload. The finished projection and its canonical sort
-    /// swap in whole. One refresh at a time: while one runs, another is
-    /// dropped here, so two never race on the database or the badge.
+    /// One refresh at a time: while one runs, another is dropped here, so two
+    /// never race on the database or the badge.
     fn reload(&mut self, refresh: Refresh, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -2328,50 +1864,39 @@ impl Library {
         if matches!(refresh, Refresh::Scan(_)) {
             self.scan = Some(progress.clone());
             self.poll_scan(progress.clone(), cx);
-            // The scan is the one job that never touches the tasks window's
-            // ticker, so the taskbar sampler is started off this.
+            // The scan is the one job the tasks window's ticker doesn't see.
             cx.emit(LibraryJob::ScanStarted);
             self.refresh_during_scan(cx);
         }
-        // A watch sync that errors loses its drained batch unless it is put
-        // back, so keep a copy to re-queue on failure. Only the watch path
-        // owns pending work; the others have nothing to retry.
+        // A failed watch sync re-queues its drained batch.
         let retry = match &refresh {
             Refresh::Watch { paths, renames, .. } => Some((paths.clone(), renames.clone())),
             _ => None,
         };
-        // A full scan is the only refresh that reconciles the whole library
-        // with disk, so it stamps the catch-up clock; the incremental watch
-        // syncs and projection loads leave it be.
+        // Only a full scan stamps the catch-up clock.
         let was_scan = matches!(refresh, Refresh::Scan(_));
-        // Whether new files arrived under rox's nose rather than through a
-        // scan somebody asked for, which decides below whether the
-        // acoustic pass follows on its own.
+        let full_scan = matches!(&refresh, Refresh::Scan(roots) if *roots == self.scan_roots);
         let was_watch = matches!(refresh, Refresh::Watch { .. });
-        // Whether this refresh may patch the live projection instead of
-        // rebuilding it, and under which case-fold setting if so. A sync
-        // reads back only what it touched; every other refresh reconciles
-        // the library with disk wholesale and has nothing to gain. The
-        // dead-weight check is where compaction happens: past the ceiling
-        // the next sync takes the rebuild and the tombstones go with it.
+        // Only a sync may patch; past the dead-weight ceiling it rebuilds,
+        // which is where compaction happens.
         let patch = matches!(refresh, Refresh::Watch { .. } | Refresh::Reindex(_))
             .then_some(self.projection.as_ref())
             .flatten()
             .filter(|p| !p.is_empty() && p.dead_fraction() < COMPACT_DEAD_FRACTION)
             .map(|p| p.fold);
         let db_path = self.db_path.clone();
+        let exclude = self.exclude.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { load(&db_path, refresh, &progress, patch) })
+                .spawn(async move { load(&db_path, refresh, &exclude, &progress, patch) })
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = None;
                 this.scan = None;
                 let ok = result.is_ok();
-                // A patch the projection wouldn't take leaves the library
-                // where it was, so the reload that follows is owed, not
-                // optional.
+                // A refused patch leaves the library where it was, so the
+                // reload is owed.
                 let mut owed = false;
                 match result {
                     Ok((loaded, summary, watch)) => {
@@ -2401,10 +1926,8 @@ impl Library {
                                     status_line(total, summary.as_ref(), watch.as_ref()).into();
                             }
                         }
-                        // A finished scan reconciled with disk; stamp now so
-                        // the next launch's catch-up only fires once it ages. An
-                        // aborted walk never finished, so leave last_scan alone
-                        // and let the next launch catch up.
+                        // An aborted walk never finished, so it doesn't stamp
+                        // last_scan.
                         let aborted = summary.as_ref().is_some_and(|s| s.aborted);
                         if was_scan && !aborted {
                             let now = now_secs();
@@ -2412,34 +1935,25 @@ impl Library {
                                 s.session.last_scan = now
                             });
                         }
+                        if full_scan && !aborted {
+                            cx.emit(LibraryJob::ScanFinished);
+                        }
                     }
                     Err(e) => {
                         this.status = format!("library: {e}").into();
-                        // Put the drained watch batch back so it is not lost;
-                        // the errored sync left its paths unapplied and they
-                        // would otherwise wait on a manual rescan.
                         if let Some((paths, renames)) = retry {
                             this.pending.extend(paths);
                             this.pending_renames.extend(renames);
                         }
                     }
                 }
-                // Whether ranking by sound has anything to rank. The library
-                // holds the connection that can tell, and a refresh is when
-                // that can have changed: the first load after launch seeds
-                // it.
+                // A refresh is when "anything to rank by sound" can change.
                 let described = this.analyzed(crate::acoustic::acoustic_source().id());
                 rox_core::settings::set_acoustic_described(described, cx);
                 cx.emit(LibraryEvent::Updated);
                 cx.notify();
-                // On success, drain anything that arrived mid-refresh now that
-                // the badge is free. On error, hold: the batch just went back
-                // into pending, and re-pumping it here would busy-loop against
-                // whatever is failing. The next watch event or a manual rescan
-                // picks it back up.
-                // The projection turned the patch down, so the library is
-                // still where it was and the rebuild it fell back to goes
-                // first; the pump below finds the badge taken and waits.
+                // An owed rebuild goes first. On error, hold the batch rather
+                // than re-pump it into a busy loop against whatever is failing.
                 if owed {
                     this.reload(Refresh::Load, cx);
                 }
@@ -2447,28 +1961,10 @@ impl Library {
                 if ok {
                     this.pump_watch(cx);
                 }
-                // Describe what just arrived, so a library with the acoustic
-                // switch on stays described as it grows instead of waiting
-                // for someone to open the settings and press a button. The
-                // pass is app-global, idempotent, and its work list is
-                // whatever has no vector yet, so signalling it here needs no
-                // bookkeeping of its own: it no-ops while the switch is off
-                // and while a pass is already running.
-                //
-                // Only after a watch sync. A full scan is an import or a
-                // manual rescan, and there the right answer is the
-                // ReplayGain pass's: a library's worth of decoding is an
-                // afternoon and should be asked for. What arrives through the
-                // watcher is a handful of files, which is the case this
-                // exists for.
-                //
-                // After the pump rather than before, and only once it has
-                // nothing left, so a burst of watch events analyzes once at
-                // the end instead of putting a decode pass and a scan on the
-                // same database at the same time. They can still overlap if
-                // something arrives mid-pass; the pass is resumable, so the
-                // worst case is that it gives up and the next sync picks the
-                // work back up.
+                // Only after a watch sync, once the pump has nothing left, so a
+                // burst of arrivals is analyzed once. A full scan is an import,
+                // where a library's worth of decoding should be asked for. The
+                // pass is idempotent and no-ops while off or already running.
                 if ok && was_watch && this.busy.is_none() {
                     cx.emit(LibraryJob::WatchSettled);
                 }
@@ -2480,9 +1976,7 @@ impl Library {
         cx.notify();
     }
 
-    /// Mirror a running scan into the busy badge and status line: the count
-    /// so far and the file under the cursor. Stops itself once the reload
-    /// clears `busy`; only observers repaint, panels see no event.
+    /// Stops itself once the reload clears `busy`; panels see no event.
     fn poll_scan(&self, progress: Arc<ScanProgress>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
@@ -2492,8 +1986,7 @@ impl Library {
                         return false;
                     }
                     let total = progress.total.load(Ordering::Relaxed);
-                    // A pending stop owns the badge; counting on would
-                    // contradict it.
+                    // A pending stop owns the badge.
                     if total > 0 && !progress.cancel.load(Ordering::Relaxed) {
                         let scanned = progress.scanned.load(Ordering::Relaxed);
                         this.busy = Some(format!("scanning {scanned}/{total}").into());
@@ -2510,12 +2003,8 @@ impl Library {
         .detach();
     }
 
-    /// Swap interim projections in while a scan runs, so panels fill in
-    /// live. The scanner commits per batch and the store is WAL, so a
-    /// reader sees whatever has been committed. Each swap is the same whole
-    /// replace the final reload does, minus the status line and badge,
-    /// which the scan still owns. Stops itself when the scan ends; the
-    /// final reload swaps the authoritative result.
+    /// The store is WAL, so a reader sees each committed batch. The final
+    /// reload swaps the authoritative result.
     fn refresh_during_scan(&self, cx: &mut Context<Self>) {
         let db_path = self.db_path.clone();
         let mut delay = if self.projection.as_ref().is_none_or(|p| p.is_empty()) {
@@ -2529,7 +2018,6 @@ impl Library {
                 if !matches!(this.read_with(cx, |this, _| this.scan.is_some()), Ok(true)) {
                     break;
                 }
-                // Skip the tick if the last interim load hasn't landed.
                 let claimed = this.update(cx, |this, _| {
                     if this.interim_loading {
                         return false;
@@ -2551,8 +2039,6 @@ impl Library {
                     this.update(cx, |this, _| this.interim_loading = false).ok();
                     continue;
                 };
-                // Nothing indexed yet: keep the fast poll until the
-                // first batch is committed.
                 if projection.is_empty() && delay == SCAN_REFRESH_EMPTY {
                     this.update(cx, |this, _| this.interim_loading = false).ok();
                     continue;
@@ -2564,8 +2050,7 @@ impl Library {
                 };
                 let live = this.update(cx, |this, cx| {
                     this.interim_loading = false;
-                    // The scan finished while this projection loaded; the
-                    // final reload's swap is newer, keep it.
+                    // The final reload's swap is newer; keep it.
                     if this.scan.is_none() {
                         return false;
                     }
@@ -2583,27 +2068,20 @@ impl Library {
     }
 }
 
-/// What a background refresh brings back: either a whole new projection to
-/// swap in, or the handful of rows a sync touched, for the live one to be
-/// patched with. Which of the two a refresh takes is decided before it runs
-/// (see [`Library::reload`]), because only the UI thread knows whether the
-/// projection can be patched at all.
+/// Patch or full load is decided before the refresh runs (see
+/// [`Library::reload`]): only the UI thread knows whether the projection can
+/// be patched.
 enum Loaded {
     Full {
-        /// Boxed so the variant's size doesn't ride the projection's. It's
-        /// one allocation per full load, and without it every field added
-        /// to `Projection` fails clippy's large-variant lint here, in a
-        /// file that gives no hint why.
+        /// Boxed, or every field added to `Projection` trips clippy's
+        /// large-variant lint here.
         projection: Box<Projection>,
         order: Vec<u32>,
         row_by_id: HashMap<i64, u32>,
     },
     Patch {
-        /// The changed rows, read back out of the database into the same
-        /// shard builder a full load fills. Boxed for the same reason the
-        /// projection is: neither variant's size should decide the other's.
+        /// Boxed for the same reason.
         shard: Box<Builder>,
-        /// The ids whose rows are gone from the database.
         gone: Vec<i64>,
         /// The two columns a row can't read off its own `tracks` row.
         plays: HashMap<i64, u32>,
@@ -2611,19 +2089,13 @@ enum Loaded {
     },
 }
 
-/// Which rows a sync touched, collected as it goes so the projection can be
-/// patched rather than rebuilt. Ids, not paths: a path is how the watcher
-/// names a change and an id is how the projection does, and the translation
-/// only the database can do happens here, while the connection is open and
-/// the rows are in front of us.
+/// Ids, not paths: only the database can translate, while the connection is
+/// open.
 #[derive(Default)]
 struct Touched {
-    /// Ids whose row may have changed: re-read them and upsert. An id in
-    /// here whose row has since gone joins `removed` once the read comes
-    /// back empty, which is how a cue track that a re-cut sheet dropped
-    /// leaves the projection.
+    /// An id whose row is gone on re-read joins `removed`, which is how a cue
+    /// track a re-cut sheet dropped leaves the projection.
     changed: Vec<i64>,
-    /// Ids whose row was deleted outright.
     removed: Vec<i64>,
 }
 
@@ -2631,6 +2103,7 @@ struct Touched {
 fn load(
     db_path: &std::path::Path,
     refresh: Refresh,
+    exclude: &Exclusions,
     progress: &ScanProgress,
     patch: Option<bool>,
 ) -> Result<(Loaded, Option<ScanSummary>, Option<WatchSummary>), rox_library::rusqlite::Error> {
@@ -2641,15 +2114,12 @@ fn load(
         Refresh::Scan(roots) => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
-            // One summary and one running count across the folders; later
-            // folders grow the total as their walks finish.
             let mut summary = ScanSummary::default();
             let mut done = 0;
             for root in roots {
-                // The scanner ticks this closure per file from its worker
-                // threads, so the captured state is atomics, not &mut.
+                // Ticked from worker threads, so atomics, not &mut.
                 let root_total = AtomicUsize::new(0);
-                let s = scanner::scan(&mut conn, &root, |scanned, total, path| {
+                let s = scanner::scan(&mut conn, &root, exclude, |scanned, total, path| {
                     root_total.store(total, Ordering::Relaxed);
                     progress.tick(done + scanned, done + total, path)
                 })?;
@@ -2674,10 +2144,8 @@ fn load(
         Refresh::Reindex(paths) => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
-            // Both sides of the re-read: what sat at these paths before and
-            // what sits there after. A row the reindex dropped is in the
-            // first list and not the second, and that difference is the only
-            // way to see it go.
+            // Ids before and after: a row the reindex dropped only shows in
+            // the difference.
             touched.changed = store::ids_for_paths(&conn, &paths)?;
             touched.changed.extend(cue_neighbours(&conn, &paths)?);
             scanner::reindex(&mut conn, &paths)?;
@@ -2700,7 +2168,14 @@ fn load(
         } => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
-            watch = Some(watch_sync(&mut conn, paths, renames, &roots, &mut touched)?);
+            watch = Some(watch_sync(
+                &mut conn,
+                paths,
+                renames,
+                &roots,
+                exclude,
+                &mut touched,
+            )?);
             None
         }
     };
@@ -2716,8 +2191,8 @@ fn load(
         changed.sort_unstable();
         changed.dedup();
         if changed.len() + removed.len() <= PATCH_MAX_ROWS {
-            // The same shard builder the parallel load fills, so the patch and
-            // the rebuild read a row exactly alike.
+            // The same shard builder the full load fills, so both read a row
+            // alike.
             let shard = projection::shard_for_ids(&conn, &changed, fold)?;
             let present: HashSet<i64> = shard.ids().iter().copied().collect();
             let mut gone = touched.removed;
@@ -2748,19 +2223,10 @@ fn load(
     ))
 }
 
-/// Every row sitting in a directory one of these paths has a cue sheet in,
-/// so a sheet's arrival or edit brings its neighbours along.
-///
-/// A .cue is not a row and names none: the rows it changes are the image's,
-/// and [`store::ids_for_paths`] can only find those once the cue_tracks side
-/// table points at the sheet. That leaves the case this exists for. A sheet
-/// appears next to a plain image, the reindex cuts the image into tracks and
-/// retires the plain sub-0 row it had, and the id of that row is in neither
-/// list: not in the before, because nothing linked it to the sheet yet, and
-/// not in the after, because it's gone. The projection keeps showing it.
-/// Asking the directory instead is coarse and cheap: a sheet event is rare,
-/// an album directory is a few dozen rows, and the ids that didn't change
-/// re-read to exactly what they already were.
+/// Every row in a directory where one of these paths is a cue sheet. A new
+/// sheet retires the image's plain sub-0 row, whose id is in neither the
+/// before nor the after list, so ask the directory instead: coarse but
+/// cheap.
 fn cue_neighbours(conn: &Connection, paths: &[PathBuf]) -> Result<Vec<i64>, rusqlite::Error> {
     let mut dirs: Vec<&Path> = paths
         .iter()
@@ -2776,10 +2242,8 @@ fn cue_neighbours(conn: &Connection, paths: &[PathBuf]) -> Result<Vec<i64>, rusq
     Ok(out)
 }
 
-/// The audio files sitting directly beside a path, the re-read a vanished
-/// cue sheet asks for. Not the recursive walk [`scanner::audio_files`] is:
-/// a sheet only ever cuts images in its own directory, and reindexing a
-/// whole subtree because one sheet went away would be a scan by another name.
+/// A vanished sheet only cut images in its own directory, so no recursive
+/// walk.
 fn siblings(path: &Path) -> Vec<PathBuf> {
     let Some(dir) = path.parent() else {
         return Vec::new();
@@ -2794,40 +2258,43 @@ fn siblings(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Sort one watch batch into renames, re-reads, and prunes and apply all
-/// three, the cheap half of watching: the work scales with what changed, not
-/// the library. Renames go first: moving the row keeps its id (and with it the
-/// `added` stamp, the db-only rating, and the joins), and the order is safe -
-/// after the move the `to` path exists, so the existence pass below re-reads
-/// it and reconciles mtime, and the `from` path is gone, so its prune finds
-/// nothing. A path still on disk is re-read and upserted through the reindex
-/// path (only audio files become rows, so cover art and stray files are
-/// skipped); one that is gone has its subtree pruned by a scoped delete, no
-/// folder walk. A rename or prune only touches endpoints strictly inside a
-/// root, so a root that momentarily reads gone (a rename in flight, a remount)
-/// never wipes the library. Returns the batch's rollup. Blocking; run it off
-/// the UI thread.
+/// Renames first: moving the row keeps its id, the `to` path then re-reads,
+/// and the `from` prune finds nothing. Present paths reindex, gone ones
+/// prune their subtree. Renames and prunes only touch endpoints strictly
+/// inside a root, so a root that momentarily reads gone never wipes the
+/// library. Excluded paths prune whether or not they're on disk. Blocking.
 fn watch_sync(
     conn: &mut Connection,
-    paths: Vec<PathBuf>,
+    mut paths: Vec<PathBuf>,
     renames: Vec<(PathBuf, PathBuf)>,
     roots: &[PathBuf],
+    exclude: &Exclusions,
     touched: &mut Touched,
 ) -> Result<WatchSummary, rox_library::rusqlite::Error> {
-    let under_root = |path: &Path| {
+    // The list never nests, so at most one root.
+    let root_of = |path: &Path| {
         roots
             .iter()
-            .any(|root| path.starts_with(root) && path != *root)
+            .find(|root| path.starts_with(root) && path != root.as_path())
     };
+    let under_root = |path: &Path| root_of(path).is_some();
+    // An event names the file, not the excluded folder above it.
+    let excluded = |path: &Path| root_of(path).is_some_and(|root| exclude.covers(root, path));
+
     let mut summary = WatchSummary::default();
-    // Only a rename with both endpoints strictly inside a root moves a row;
-    // anything crossing a root boundary or out of the tree falls through to
-    // the existence routing, which handles it as a plain create or delete.
+    // A rename crossing a root boundary falls through to a plain create and
+    // delete.
     for (from, to) in renames {
         if under_root(&from) && under_root(&to) {
-            // Read the ids before the move, while the rows still answer to
-            // the old path. They keep their ids and change their folder, so
-            // they are changes to re-read, not removals.
+            // A rename across a pattern (Album to Album.bak under `*.bak`)
+            // is rows leaving or arriving, not a move.
+            if excluded(&from) || excluded(&to) {
+                paths.push(from);
+                paths.push(to);
+                continue;
+            }
+
+            // Read the ids before the move; they're changes, not removals.
             touched.changed.extend(store::ids_under(conn, &from)?);
             summary.renamed += store::rename_within(conn, &from, &to)?;
         }
@@ -2835,33 +2302,29 @@ fn watch_sync(
     let mut changed = Vec::new();
     let mut removed = Vec::new();
     for path in paths {
+        if excluded(&path) {
+            removed.push(path);
+            continue;
+        }
+
         if path.exists() {
             if path.is_dir() {
-                // A directory moved into a root arrives as one dir-path event.
-                // A dir is not is_audio, so without walking it the tracks
-                // inside never get indexed. Its counterpart, a dir moved out,
-                // is a non-existent path that remove_subtree already prunes.
-                // The full scan never descends into a junk folder, so a
-                // .Trashes dragged into a root must not get walked here
-                // either, or the tracks I threw away come back as rows.
-                if under_root(&path) && !scanner::is_junk_dir(&path) {
-                    changed.extend(scanner::audio_files(&path));
+                // A dir moved in arrives as one event, so walk it, skipping
+                // junk folders like .Trashes as the full scan does.
+                if let Some(root) = root_of(&path)
+                    && !scanner::is_junk_dir(&path)
+                {
+                    changed.extend(scanner::audio_files_in(root, &path, exclude));
                 }
             } else if scanner::is_relevant(&path) {
-                // Sheets as well as audio: a .cue edit re-cuts the image
-                // beside it, so asking is_audio here would drop every sheet
-                // change on the floor and leave the rip's tracks stale.
+                // Sheets too: a .cue edit re-cuts the image beside it.
                 changed.push(path);
             }
         } else if under_root(&path) {
             if scanner::is_cue(&path) {
-                // A sheet that went away is not a row leaving, it's an
-                // instruction to put the image back the way it was: one
-                // plain row instead of the tracks the sheet cut it into.
-                // Routing it to the prune below would delete nothing (a
-                // sheet never had a row) and leave the cue rows standing
-                // for an album nothing says how to cut any more.
-                changed.extend(siblings(&path));
+                // A vanished sheet has no row to prune: reindex its images so
+                // they go back to one plain row each.
+                changed.extend(siblings(&path).into_iter().filter(|p| !excluded(p)));
             } else {
                 removed.push(path);
             }
@@ -2886,11 +2349,8 @@ fn watch_sync(
     Ok(summary)
 }
 
-/// Load the projection, its canonical order, and the id -> row index,
-/// sharded across cores. Blocking; run it off the UI thread. The index is
-/// built here rather than at the swap for the reason [`Library::swap_projection`]
-/// gives: at a million rows it is a million hash inserts, and they have no
-/// business happening between two frames.
+/// Builds the id index here, off the UI thread (see
+/// [`Library::swap_projection`]). Blocking.
 #[allow(clippy::type_complexity)]
 fn load_projection(
     db_path: &std::path::Path,
@@ -2900,9 +2360,7 @@ fn load_projection(
         .unwrap_or(4);
     let mut projection =
         Projection::load_parallel(db_path, shards, rox_core::settings::fold_case())?;
-    // Before the order is taken, since the order is built off the browse
-    // mask this rewrites. The names first, so a search or a sort run the
-    // moment the projection lands already reads them.
+    // Before the order, which is built off the browse mask this rewrites.
     crate::sources::publish_labels();
     projection.hide_sources(crate::sources::hidden_sources());
     let order = projection.sort_canonical();
@@ -2920,8 +2378,7 @@ fn status_line(
     summary: Option<&ScanSummary>,
     watch: Option<&WatchSummary>,
 ) -> String {
-    // Zero counts say nothing, keep them out so the line stays short
-    // enough for the menubar.
+    // Zero counts stay out, so the line fits the menubar.
     let mut parts = Vec::new();
     let count = |n: usize| rox_i18n::format::format_int(n as i64);
     if let Some(s) = summary {
@@ -2941,7 +2398,6 @@ fn status_line(
             parts.push("stopped early".into());
         }
     }
-    // A watch sync reports its own counts, terse in the same voice as a scan.
     if let Some(w) = watch {
         if w.updated > 0 {
             parts.push(format!("{} updated", count(w.updated)));
@@ -2953,8 +2409,6 @@ fn status_line(
             parts.push(format!("{} renamed", count(w.renamed)));
         }
     }
-    // The count comes from the same message the status panel's readout
-    // uses, so it's grouped and plural-correct in one step.
     let tracks = rox_i18n::t!("status-count-tracks", count = total as u64);
     if parts.is_empty() {
         return tracks.to_string();
@@ -2962,8 +2416,6 @@ fn status_line(
     format!("{tracks} ({})", parts.join(", "))
 }
 
-/// Prompt for a folder and add it to the library. The picker is the
-/// platform's, so this is as close to a window as the catalog gets.
 pub fn browse(library: &Entity<Library>, cx: &mut App) {
     let rx = cx.prompt_for_paths(PathPromptOptions {
         files: false,
@@ -2987,11 +2439,9 @@ pub fn browse(library: &Entity<Library>, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{Touched, resolve_m3u_entry, watch_sync};
+    use rox_library::exclude::Exclusions;
     use rox_library::store;
 
-    /// The watcher's per-change sync: a new file on disk becomes a row, a
-    /// deleted one drops out, a deleted folder takes its subtree, and a path
-    /// equal to a root is never pruned even when it reads gone.
     #[test]
     fn watch_sync_reindexes_present_and_prunes_gone() {
         let dir = std::env::temp_dir().join("rox-watch-sync");
@@ -3002,13 +2452,11 @@ mod tests {
         let mut conn = store::open(&dir.join("library.db")).unwrap();
         store::init_schema(&conn).unwrap();
 
-        // Two real files on disk, indexed through the sync's re-read path.
         // Dummy bytes index under the filename, enough to make a row.
         let one = dir.join("Album/1.mp3");
         let two = dir.join("Album/2.mp3");
         std::fs::write(&one, b"not audio").unwrap();
         std::fs::write(&two, b"not audio").unwrap();
-        // A cover write arrives in the same batch and must not become a row.
         std::fs::write(dir.join("Album/cover.jpg"), b"jpeg").unwrap();
         let mut touched = Touched::default();
         watch_sync(
@@ -3016,21 +2464,16 @@ mod tests {
             vec![one.clone(), two.clone(), dir.join("Album/cover.jpg")],
             Vec::new(),
             &roots,
+            &Exclusions::default(),
             &mut touched,
         )
         .unwrap();
         assert_eq!(store::count(&conn).unwrap(), 2);
-        // The ids the sync touched come back with it, which is what lets the
-        // projection be patched instead of rebuilt. The cover is not a row
-        // and so is not one of them.
         touched.changed.sort_unstable();
         touched.changed.dedup();
         assert_eq!(touched.changed.len(), 2);
         assert!(touched.removed.is_empty());
 
-        // A correlated rename moves the row and keeps its id, so the moved
-        // file is not a fresh insert. The renamed-then-present path re-reads
-        // clean since the file is on disk under its new name.
         let one_id = store::id_for_path(&conn, rox_library::cue::LOCAL, one.to_str().unwrap())
             .unwrap()
             .unwrap();
@@ -3042,11 +2485,10 @@ mod tests {
             vec![one.clone(), renamed.clone()],
             vec![(one.clone(), renamed.clone())],
             &roots,
+            &Exclusions::default(),
             &mut touched,
         )
         .unwrap();
-        // A rename is a change, not a removal: the row keeps its id and
-        // changes the folder it sorts and filters under.
         assert!(touched.changed.contains(&one_id));
         assert!(touched.removed.is_empty());
         assert_eq!(s.renamed, 1);
@@ -3062,7 +2504,6 @@ mod tests {
         );
         assert_eq!(store::count(&conn).unwrap(), 2);
 
-        // Delete one file on disk, then sync its path: only its row goes.
         std::fs::remove_file(&two).unwrap();
         let mut touched = Touched::default();
         watch_sync(
@@ -3070,6 +2511,7 @@ mod tests {
             vec![two.clone()],
             Vec::new(),
             &roots,
+            &Exclusions::default(),
             &mut touched,
         )
         .unwrap();
@@ -3081,21 +2523,19 @@ mod tests {
                 .is_some()
         );
 
-        // Delete the whole Album folder, sync its path: the subtree prunes
-        // with no walk.
         std::fs::remove_dir_all(dir.join("Album")).unwrap();
         watch_sync(
             &mut conn,
             vec![dir.join("Album")],
             Vec::new(),
             &roots,
+            &Exclusions::default(),
             &mut Touched::default(),
         )
         .unwrap();
         assert_eq!(store::count(&conn).unwrap(), 0);
 
-        // Re-seed a row, then hand the sync the root path itself as if it
-        // vanished: the guard won't prune a root, so the row stays.
+        // Hand the sync the root itself as if it vanished: it must not prune.
         std::fs::create_dir_all(dir.join("Album")).unwrap();
         std::fs::write(&one, b"not audio").unwrap();
         watch_sync(
@@ -3103,6 +2543,7 @@ mod tests {
             vec![one.clone()],
             Vec::new(),
             &roots,
+            &Exclusions::default(),
             &mut Touched::default(),
         )
         .unwrap();
@@ -3113,6 +2554,7 @@ mod tests {
             vec![dir.clone()],
             Vec::new(),
             &roots,
+            &Exclusions::default(),
             &mut Touched::default(),
         )
         .unwrap();
@@ -3123,9 +2565,89 @@ mod tests {
         );
     }
 
-    /// A cue rip round-trips through an M3U: the export writes one
-    /// `image.flac#N` line per track, and the import reads each back to the
-    /// row it came from rather than collapsing the disc onto track one.
+    /// The batches carry the rename alone, so the rename handling has to do
+    /// it by itself.
+    #[test]
+    fn watch_sync_renames_across_an_exclusion() {
+        let dir = std::env::temp_dir().join(format!("rox-watch-exclude-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Album")).unwrap();
+        let roots = vec![dir.clone()];
+        let exclude = Exclusions::new(&["*.bak".to_string()]);
+
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+
+        let album = dir.join("Album");
+        let backup = dir.join("Album.bak");
+        for name in ["1.mp3", "2.mp3"] {
+            std::fs::write(album.join(name), b"not audio").unwrap();
+        }
+        watch_sync(
+            &mut conn,
+            vec![album.clone()],
+            Vec::new(),
+            &roots,
+            &exclude,
+            &mut Touched::default(),
+        )
+        .unwrap();
+        assert_eq!(store::count(&conn).unwrap(), 2);
+
+        std::fs::rename(&album, &backup).unwrap();
+        let mut touched = Touched::default();
+        let s = watch_sync(
+            &mut conn,
+            Vec::new(),
+            vec![(album.clone(), backup.clone())],
+            &roots,
+            &exclude,
+            &mut touched,
+        )
+        .unwrap();
+        assert_eq!(s.renamed, 0, "a rename into a pattern moves nothing");
+        assert_eq!(s.removed, 2);
+        assert_eq!(touched.removed.len(), 2);
+        assert_eq!(store::count(&conn).unwrap(), 0);
+
+        std::fs::write(backup.join("3.mp3"), b"not audio").unwrap();
+        watch_sync(
+            &mut conn,
+            vec![backup.join("3.mp3")],
+            Vec::new(),
+            &roots,
+            &exclude,
+            &mut Touched::default(),
+        )
+        .unwrap();
+        assert_eq!(store::count(&conn).unwrap(), 0);
+
+        std::fs::rename(&backup, &album).unwrap();
+        let s = watch_sync(
+            &mut conn,
+            Vec::new(),
+            vec![(backup.clone(), album.clone())],
+            &roots,
+            &exclude,
+            &mut Touched::default(),
+        )
+        .unwrap();
+        assert_eq!(s.renamed, 0);
+        assert_eq!(s.updated, 3);
+        assert_eq!(store::count(&conn).unwrap(), 3);
+        assert!(
+            store::id_for_path(
+                &conn,
+                rox_library::cue::LOCAL,
+                album.join("3.mp3").to_str().unwrap()
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn m3u_fragments_round_trip_a_cue_rip() {
         use rox_library::cue::TrackKey;
@@ -3143,8 +2665,7 @@ mod tests {
                 cue_row(image, 2, 180_000, Some(400_000)),
                 cue_row(image, 3, 400_000, None),
                 plain_row("/m/Album/loose.mp3"),
-                // A file whose name really ends in `#2`, the case the
-                // fragment reading must not steal.
+                // A file whose name really ends in `#2`.
                 plain_row("/m/Album/track#2"),
             ],
         )
@@ -3191,29 +2712,22 @@ mod tests {
             })
             .collect();
         assert_eq!(read, want, "each line comes back as the row it was");
-        // The two cue lines are distinct rows, which is the whole point of
-        // the fragment; without it both would read as the image's first.
         assert_ne!(read[0], read[1]);
 
-        // A relative line resolves against the sheet's folder, subsong and
-        // all, the way an exported playlist moved beside its music does.
         assert_eq!(
             resolve_m3u_entry(&conn, Path::new("/m/Album"), "disc.flac#2"),
             store::queue_meta_for_key(&conn, rox_library::cue::LOCAL, image, 2)
                 .unwrap()
                 .id,
         );
-        // An entry the library never scanned has no file to play.
         assert_eq!(
             resolve_m3u_entry(&conn, Path::new("/m/Album"), "/m/gone.flac"),
             None
         );
     }
 
-    /// The same cue rip through XSPF. Worth its own test because this is the
-    /// one place the three formats differ in a way the resolver can see: a
-    /// location is a URI, so the subsong number rides in a real URI fragment
-    /// and the path is percent-encoded on the way out.
+    /// XSPF locations are URIs: the subsong rides in a real fragment and the
+    /// path is percent-encoded.
     #[test]
     fn xspf_fragments_round_trip_a_cue_rip() {
         use rox_library::cue::TrackKey;
@@ -3257,8 +2771,6 @@ mod tests {
             })
             .collect();
         let document = xspf::to_xspf(&rows);
-        // The space is percent-encoded, the subsong is not: it is a fragment,
-        // which is exactly what the `#` means in a URI.
         assert!(
             document.contains("<location>file:///m/Album/disc%20one.flac#2</location>"),
             "{document}"
@@ -3281,7 +2793,6 @@ mod tests {
         assert_ne!(read[0], read[1]);
     }
 
-    /// A row for a plain file: the fields the fragment round trip reads.
     fn plain_row(path: &str) -> rox_library::TrackRow {
         rox_library::TrackRow {
             remote_url: String::new(),
@@ -3314,8 +2825,6 @@ mod tests {
         }
     }
 
-    /// One track of a cue rip: the same image path, its own subsong number
-    /// and span.
     fn cue_row(path: &str, sub: u16, start_ms: u32, end_ms: Option<u32>) -> rox_library::TrackRow {
         rox_library::TrackRow {
             remote_url: String::new(),

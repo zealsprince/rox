@@ -1,51 +1,36 @@
-//! The folder hierarchy behind the tree panel, reconstructed from the
-//! projection's interned folder strings. Building the trie, collapsing the
-//! dead prefix above the library, sorting the children, and folding the
-//! per-folder counts up the tree are all arithmetic over strings, so they
-//! belong here and the panel just draws what comes back.
+//! The folder hierarchy behind the tree panel, rebuilt from the projection's
+//! interned folder strings.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::MAIN_SEPARATOR;
 
 use crate::sort::natural_cmp;
 
-/// One folder in the reconstructed hierarchy. The path is the exact
-/// interned folder string, the one the subtree filter pick matches by
-/// prefix; the count is the context tracks in this subtree.
+/// `path` is the exact interned folder string the subtree pick matches by
+/// prefix.
 pub struct Node {
     pub label: String,
     pub path: String,
-    /// Every song in this subtree, whatever the query: the tree is the
-    /// full hierarchy, so this never changes with a search.
+    /// Every song in the subtree, unaffected by the query.
     pub total: u32,
-    /// Of those, how many pass the active query (text and facet). Equal to
-    /// `total` when nothing is active; a subtree with zero here is one a
-    /// filter dims or, in Hide mode, drops.
+    /// How many pass the active query; zero dims or hides the subtree.
     pub matched: u32,
     pub children: Vec<Node>,
 }
 
-/// Reconstruct the folder hierarchy from the projection's folder strings.
-/// Every path threads into a trie; the shared prefix above the first
-/// branch or the first folder holding tracks collapses away, so the tree
-/// starts where the library does instead of at the filesystem root. Node
-/// paths slice the original strings, so a pick matches the interned
-/// values exactly. Roots and children both sort naturally, case folded;
-/// two top nodes that collapse to the same name fall back to their full
-/// paths to stay apart.
+/// Thread the folder strings into a trie and collapse the shared prefix above
+/// the first branch or track-holding folder, so the tree starts where the
+/// library does. Top nodes whose names clash fall back to full paths.
 pub fn build_roots(folders: &[String]) -> Vec<Node> {
     #[derive(Default)]
     struct Trie {
-        /// Children keyed by path component, ordered for the walk.
         children: BTreeMap<String, Trie>,
-        /// The full path down to this node, sliced from an inserted string.
         path: String,
-        /// Whether this exact path is an interned folder: a directory
-        /// holding tracks itself, not just the ancestor of one.
+        /// A folder holding tracks itself, not just an ancestor of one.
         has_tracks: bool,
     }
 
-    // Bare filenames intern to the empty string; drop those.
+    // Bare filenames intern to the empty string.
     let mut root = Trie::default();
     for path in folders.iter().filter(|s| !s.is_empty()) {
         let mut node = &mut root;
@@ -70,11 +55,8 @@ pub fn build_roots(folders: &[String]) -> Vec<Node> {
             .next()
             .unwrap_or(trie.path.as_str())
             .to_string();
-        // Natural and case-folded, so "Disc 10" sorts after "Disc 2" the way
-        // the track rows in the same panel already read. natural_cmp wants
-        // lowercase in, and the key is built once per node rather than twice
-        // per comparison; the raw label breaks ties so two folders differing
-        // only in case keep a stable order.
+        // Lowercase key built once per node for natural_cmp; the raw label breaks
+        // ties so case-only differences keep a stable order.
         let mut keyed: Vec<(String, Node)> = trie
             .children
             .into_values()
@@ -98,8 +80,7 @@ pub fn build_roots(folders: &[String]) -> Vec<Node> {
         .children
         .into_values()
         .map(|mut trie| {
-            // Collapse the chain of lone, trackless ancestors: /mnt/Zeal
-            // holds nothing and branches nowhere, so the top node is Music.
+            // Collapse lone, trackless ancestors: /mnt/Zeal/Music tops out at Music.
             while !trie.has_tracks && trie.children.len() == 1 {
                 trie = trie.children.into_values().next().unwrap();
             }
@@ -127,8 +108,7 @@ pub fn build_roots(folders: &[String]) -> Vec<Node> {
     tops
 }
 
-/// The node at an exact path, descending only into the branch whose path
-/// prefixes the target so the descent stays O(depth), not O(nodes).
+/// Descends only the branch prefixing the target, so O(depth).
 pub fn node_at<'a>(nodes: &'a [Node], path: &str) -> Option<&'a Node> {
     for node in nodes {
         if node.path == path {
@@ -143,8 +123,6 @@ pub fn node_at<'a>(nodes: &'a [Node], path: &str) -> Option<&'a Node> {
     None
 }
 
-/// Fold the per-folder counts up the tree: each node's total and matched
-/// count are its own folder's plus every descendant's.
 pub fn sum_counts(node: &mut Node, by_path: &HashMap<&str, (u32, u32)>) -> (u32, u32) {
     let (mut total, mut matched) = by_path.get(node.path.as_str()).copied().unwrap_or((0, 0));
     for child in &mut node.children {
@@ -165,9 +143,6 @@ mod tests {
         paths.iter().map(|p| p.to_string()).collect()
     }
 
-    /// The tree starts where the library does: the lone, trackless chain
-    /// above the first real folder collapses into the top node, and the
-    /// nesting below reconstructs from the paths alone.
     #[test]
     fn collapses_shared_prefix_and_nests() {
         let roots = build_roots(&folders(&[
@@ -182,8 +157,6 @@ mod tests {
         assert_eq!(top.path, "/mnt/Zeal/Music");
         let labels: Vec<&str> = top.children.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["Air - Moon Safari", "Apocalyptica - Cult"]);
-        // The multi-disc album nests its discs; the disc folders hold the
-        // exact interned paths so a pick matches them.
         let cult = &top.children[1];
         assert_eq!(cult.children.len(), 2);
         assert_eq!(
@@ -192,8 +165,6 @@ mod tests {
         );
     }
 
-    /// Numbered folders read in disc order, not string order: "Disc 10"
-    /// follows "Disc 2" here the same as it does in the track rows below.
     #[test]
     fn children_sort_naturally() {
         let roots = build_roots(&folders(&[
@@ -206,8 +177,6 @@ mod tests {
         assert_eq!(labels, ["Disc 1", "Disc 2", "disc 3", "Disc 10"]);
     }
 
-    /// Top-level roots follow the same natural order the children do, so
-    /// two numbered libraries don't flip at the top of the tree.
     #[test]
     fn roots_sort_naturally() {
         let roots = build_roots(&folders(&[
@@ -220,8 +189,6 @@ mod tests {
         assert_eq!(labels, ["archive 2", "archive 10"]);
     }
 
-    /// A folder with tracks stops the collapse even with a single child,
-    /// so the top node never skips past real music.
     #[test]
     fn tracks_stop_the_collapse() {
         let roots = build_roots(&folders(["/a/b", "/a/b/c"].as_ref()));
@@ -230,8 +197,6 @@ mod tests {
         assert_eq!(roots[0].children.len(), 1);
     }
 
-    /// Two libraries that collapse to the same folder name keep their full
-    /// paths as labels so the top row stays unambiguous.
     #[test]
     fn clashing_top_labels_fall_back_to_paths() {
         let roots = build_roots(&folders(&[
@@ -246,15 +211,9 @@ mod tests {
         assert_eq!(labels, ["/home/a/Music", "/mnt/media/Music", "Vinyl"]);
     }
 
-    /// Counts fold bottom-up: a parent's count is its own tracks plus
-    /// every descendant's, folders outside the context at zero. The matched
-    /// count folds the same way, so a branch with no facet match reads zero
-    /// there while its total stays whole.
     #[test]
     fn counts_aggregate_subtrees() {
         let mut roots = build_roots(&folders(&["/m/Air", "/m/Air/Moon Safari", "/m/Empty"]));
-        // (total, matched) per folder: the nested album has songs but none
-        // match the active facet, so its matched count is zero.
         let by_path: HashMap<&str, (u32, u32)> =
             [("/m/Air", (2, 2)), ("/m/Air/Moon Safari", (10, 0))]
                 .into_iter()
@@ -262,7 +221,6 @@ mod tests {
         for root in &mut roots {
             sum_counts(root, &by_path);
         }
-        // The collapse stopped at the branch, so the top is /m itself.
         assert_eq!(roots[0].path, "/m");
         assert_eq!(roots[0].total, 12);
         assert_eq!(roots[0].matched, 2);
@@ -270,7 +228,6 @@ mod tests {
         assert_eq!(air.total, 12);
         assert_eq!(air.matched, 2);
         assert_eq!(air.children[0].total, 10);
-        // The nested album folds no matches, so Dim mode draws it faint.
         assert_eq!(air.children[0].matched, 0);
         assert_eq!(roots[0].children[1].total, 0);
     }

@@ -1,15 +1,10 @@
-//! iTunes Search (itunes.apple.com): keyless album search whose artwork
-//! URL rewrites to any size. The search returns a 100px thumbnail URL
-//! ending `100x100bb.jpg`; swapping the dimensions in that name serves the
-//! preview and a large image off the same source, so one result yields
-//! both without a second lookup.
+//! iTunes Search (itunes.apple.com): keyless album search. The artwork URL
+//! ends `100x100bb.jpg` and serves any size you rewrite that to.
 
 use super::{ArtCandidate, ArtProvider, TrackQuery, agent, net_reason, string};
 
 const API: &str = "https://itunes.apple.com/search";
 
-/// The sizes we rewrite the artwork URL to: a crisp grid preview and a
-/// large image for the embed. iTunes serves whatever is asked.
 const THUMB_PX: u32 = 256;
 const FULL_PX: u32 = 1000;
 
@@ -21,8 +16,7 @@ impl ArtProvider for Itunes {
     }
 
     fn search(&self, query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
-        // Album search needs the album name; fall back to the title when a
-        // track has no album, so a single still finds its cover.
+        // Fall back to the title so a single still finds its cover.
         let subject = if query.album.is_empty() {
             &query.title
         } else {
@@ -64,9 +58,6 @@ impl ArtProvider for Itunes {
     }
 }
 
-/// Rewrite the `100x100bb.jpg` tail of an artwork URL to a square of
-/// `px`. Leaves anything without that marker alone, so an
-/// unexpected URL shape degrades to itself rather than a broken link.
 fn resize(url: &str, px: u32) -> String {
     url.replace("100x100bb", &format!("{px}x{px}bb"))
 }

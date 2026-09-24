@@ -1,32 +1,20 @@
-//! ADR 11's listen history: an append-only events table in the library
-//! database. A listen row holds the track id, when the play began, and
-//! a snapshot of the identifying tags at play time, the deletion hedge.
-//! While a track exists, reads resolve through the live catalog, so a
-//! fixed tag re-buckets history with it; once the track is gone the
-//! snapshot keeps the row readable. Every stat is derived from these
-//! rows by SQL; nothing stores a counter as the source.
+//! ADR 11's listen history: an append-only events table. A row holds the
+//! track id, when the play began, and a tag snapshot; reads resolve live
+//! while the track exists, from the snapshot after. Every stat is derived
+//! by SQL; nothing stores a counter as the source.
 //!
-//! Rows carry where they came from, since not all of them were watched
-//! happen: an import can read Last.fm's scrobble history and file real
-//! plays at their real seconds, and where only a count survives it places
-//! the difference itself. An invented row is marked as one
-//! ([`ORIGIN_ESTIMATE`]) so nothing downstream mistakes a spread for a
-//! memory.
+//! Rows record their origin, so an import's invented plays
+//! ([`ORIGIN_ESTIMATE`]) are never mistaken for real ones.
 //!
-//! Append-only covers the event itself: when it played and what the tags
-//! said then never change. The join back to the catalog is maintenance,
-//! not history: a prune kills the track id, and when the file returns
-//! under a fresh id [`reattach`] moves the events onto it by the path
-//! recorded at play time, so a track's play count is kept across its file
-//! leaving and coming back. The path column is that join hint, nothing a
-//! view shows.
+//! Append-only covers the event: when it played and what the tags said
+//! never change. Relinking the track id after a prune ([`reattach`], by the
+//! recorded path) is maintenance, not history.
 
 use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-/// The events table beside the tracks it keys to. No foreign key here:
-/// deleting a track keeps its history, which is the snapshot's whole job.
+/// No foreign key: deleting a track keeps its history.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS listens (
@@ -43,10 +31,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The store ladder's snapshot-paths step, the listens half: events learn
-/// the path that played, the content key [`reattach`] matches on. Live
-/// rows backfill from the catalog; rows already dangling keep the empty
-/// default and rely on the tag fallback.
+/// The store ladder's snapshot-paths step, listens half. Live rows backfill
+/// from the catalog; dangling ones rely on the tag fallback.
 pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "ALTER TABLE listens ADD COLUMN path TEXT NOT NULL DEFAULT '';
@@ -56,24 +42,12 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The store ladder's listen-origin step: events learn where they came
-/// from, and the pair every import probe reads gets its own index.
+/// The store ladder's listen-origin step. Rows from before it keep the empty
+/// origin and count as rox's own: they can't be told apart.
 ///
-/// Three origins, and the default is the one that matters: an empty
-/// string is a play rox itself watched happen, which is every row written
-/// before this column existed and every row the recorder writes after it.
-/// [`ORIGIN_SCROBBLE`] is a play imported from Last.fm with the second it
-/// happened at, and [`ORIGIN_ESTIMATE`] is one this invented to make a
-/// play count add up. Rows from before this step keep the empty default
-/// and can't be told apart, which is the honest answer: the build that
-/// wrote them recorded nothing about where they came from.
-///
-/// The index is on (track_id, played_at) rather than unique on it. A
-/// unique constraint would be the tidier way to refuse a duplicate
-/// scrobble, but it can't be added to a database that already holds one,
-/// and two listens of the same track inside one second is a thing a stuck
-/// recorder can produce. The import probes the pair instead and this
-/// makes that probe an index-only lookup.
+/// The (track_id, played_at) index isn't unique: a database may already
+/// hold a duplicate (a stuck recorder), so the import probes the pair
+/// instead.
 pub(crate) fn add_origin(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "ALTER TABLE listens ADD COLUMN origin TEXT NOT NULL DEFAULT '';
@@ -81,35 +55,21 @@ pub(crate) fn add_origin(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// A play rox watched happen, the recorder's own rows and everything
-/// written before origins were recorded at all.
+/// A play rox watched, including every row from before origins existed.
 pub const ORIGIN_LOCAL: &str = "";
 
-/// A play imported from Last.fm's scrobble history, carrying the second
-/// Last.fm says it happened at.
+/// Imported from Last.fm with its real second.
 pub const ORIGIN_SCROBBLE: &str = "lastfm";
 
-/// A play this invented: the count said a track was played more often
-/// than the history accounts for, and the difference was placed rather
-/// than left missing.
+/// Invented so a play count adds up.
 pub const ORIGIN_ESTIMATE: &str = "estimate";
 
-/// Match events back to the catalog after a scan, the same maintenance
-/// [`crate::playlists::reattach`] runs for members: a pruned-and-returned
-/// file comes back under a fresh id, and the events that played its old row
-/// relink to it: by the recorded path first, then by the tag snapshot
-/// when it names exactly one track. Events with a live track just keep
-/// their path current. The event itself (played_at, the tag snapshot)
-/// never changes.
-///
-/// Returns how many events relinked, or None when nothing was dangling and
-/// the matchers never ran at all.
+/// Relink events whose track was pruned and returned: by recorded path, then
+/// by tag snapshot only when it names exactly one track. Live events refresh
+/// their path. None when nothing dangled.
 pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
-    // The snapshot key is the fragment form a TrackKey serializes to: the
-    // bare path for a plain file, path#sub for a cue track. Matching on the
-    // bare path would attach every listen of a rip to whichever of its rows
-    // sorts first, so both the refresh and the relink build the same
-    // expression the recorder wrote.
+    // Match on the fragment form (path#sub), or every listen of a rip attaches
+    // to whichever row sorts first.
     conn.execute(
         "UPDATE listens SET path =
              CASE WHEN t.sub = 0 THEN t.path ELSE t.path || '#' || t.sub END
@@ -119,11 +79,8 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
              CASE WHEN t.sub = 0 THEN t.path ELSE t.path || '#' || t.sub END",
         [],
     )?;
-    // Nothing dangling, nothing to match. The two passes below are the
-    // expensive half (the tag one joins on the tag triple and counts the
-    // matches to refuse an ambiguous one), and a healthy library runs this
-    // after every scan and every reindex, so it pays one indexed probe
-    // instead.
+    // The matchers are expensive and this runs after every scan and reindex;
+    // one indexed probe gates them.
     if !has_dangling(conn)? {
         return Ok(None);
     }
@@ -151,9 +108,6 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
     Ok(Some(by_path + by_tags))
 }
 
-/// Whether any event points at a track row that no longer exists. One
-/// indexed lookup per event and it stops at the first hit, so the answer
-/// costs nothing on a library where every play still has its file.
 fn has_dangling(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM listens
@@ -164,9 +118,8 @@ fn has_dangling(conn: &Connection) -> rusqlite::Result<bool> {
     .map(|found| found == 1)
 }
 
-/// One listen as it's recorded: the track's identity, when the play began
-/// (unix seconds), its tags at play time, and the key that played in
-/// fragment form (path#sub for a cue track), the reattach key.
+/// `path` is the fragment form that played (path#sub for a cue track), the
+/// reattach key.
 pub struct Listen {
     pub track_id: i64,
     pub played_at: i64,
@@ -177,11 +130,8 @@ pub struct Listen {
     pub path: String,
 }
 
-/// Build the listen for a playing path from the live catalog. Ok(None)
-/// when the path is not in the library: an unindexed file plays without
-/// history, since events key to track identity. Works for plain files
-/// only; a cue track's listen is built by the recorder from the row it
-/// already resolved, since a bare path can't say which span played.
+/// Ok(None) when the path isn't in the library. Plain files only: a bare
+/// path can't say which cue span played.
 pub fn listen_for_path(
     conn: &Connection,
     path: &str,
@@ -206,8 +156,8 @@ pub fn listen_for_path(
     }
 }
 
-/// Append one event row. Append-only: nothing ever updates or deletes a
-/// listen; [`reattach`] only re-ties the track join.
+/// Nothing ever updates or deletes a listen; [`reattach`] only re-ties the
+/// track join.
 pub fn append(conn: &Connection, listen: &Listen) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)
@@ -225,45 +175,31 @@ pub fn append(conn: &Connection, listen: &Listen) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Maximum imported play count allowed per track to prevent runaway insert loops
-/// from corrupted or malicious API responses.
+/// Guards against runaway inserts from a corrupt or hostile response.
 pub const MAX_IMPORTED_PLAYS: u32 = 50_000;
 
-/// Default historical offset for tracks without existing local listens (90 days).
-/// Places synthetic history far enough in the past so it does not flood
-/// recently-played views or skew recency-tiering continuation (ADR 17).
+/// Anchor for a never-played track's invented history, far enough back to
+/// stay out of recent views and ADR 17's recency tiering.
 pub const UNPLAYED_ANCHOR_OFFSET_SECS: i64 = 90 * 86_400;
 
-/// How far back an invented ladder spreads when nothing says how long the
-/// account has been listening. Five years: the point is that a thousand
-/// invented plays land in a thousand different places rather than in one
-/// bar of a weekly chart, and any span wide enough to do that is as
-/// truthful as any other, since none of these rows know their own date.
+/// How far back invented plays spread without a registration date: wide
+/// enough that they don't pile into one bar of a weekly chart.
 pub const FALLBACK_SPAN_SECS: i64 = 5 * 365 * 86_400;
 
-/// Where an invented ladder is allowed to stand: the second the import
-/// ran, and the earliest the account could possibly have listened, its
-/// Last.fm registration. Without the second one the ladder falls back to
-/// [`FALLBACK_SPAN_SECS`].
+/// Bounds an invented ladder: now, and the account's Last.fm registration.
 #[derive(Clone, Copy, Debug)]
 pub struct Ladder {
     pub now: i64,
-    /// The account's registered second, where the profile gave one up.
     pub since: Option<i64>,
 }
 
 impl Ladder {
-    /// A ladder with no registration date behind it, for the callers that
-    /// have no account to ask (the tests, and any path that only needs
-    /// the counts to add up).
+    /// No registration date.
     pub fn at(now: i64) -> Ladder {
         Ladder { now, since: None }
     }
 
-    /// The oldest second a track's ladder may reach down to. The account's
-    /// registration, unless that leaves less room than there are rows to
-    /// place: a ladder needs a second per rung to keep its rows distinct,
-    /// so a tight span is widened rather than stacked.
+    /// Widened past the registration when there's less than a second per rung.
     fn floor(&self, anchor: i64, needed: usize) -> i64 {
         let since = self
             .since
@@ -272,59 +208,36 @@ impl Ladder {
     }
 }
 
-/// The gap between two rungs: the span divided by the rows standing in
-/// it. At least a second, which is what keeps every rung its own moment.
+/// At least a second, so every rung is its own moment.
 fn ladder_step(anchor: i64, floor: i64, needed: usize) -> i64 {
     let span = anchor.saturating_sub(floor).max(needed as i64);
     (span / needed as i64).max(1)
 }
 
-/// How far into its first step a track's ladder starts, a second to a
-/// whole step, fixed by the track's own id.
-///
-/// Every ladder in an import hangs from the same anchor down to the same
-/// floor, so without this the rungs line up across tracks: every track
-/// short exactly one play lands on the same second, every track short two
-/// on the same two. That is what put twenty thousand invented listens on
-/// one afternoon in October 2020 in a library whose owner was nowhere
-/// near a stereo that day. A phase off the id spreads them, and keeping
-/// it derived rather than random means a re-import places a track where
-/// the last one did.
+/// A per-track offset into the first step, derived from the id. Without it
+/// every track short one play lands on the same second: that put twenty
+/// thousand invented listens on one afternoon. Derived, not random, so a
+/// re-import lands where the last one did.
 fn ladder_phase(track_id: i64, step: i64) -> i64 {
-    // splitmix64's finalizer. Ids are handed out in a run, and their low
-    // bits are what a modulo reads, so they need mixing before they mean
-    // anything; this is the cheapest mix that passes for random.
+    // splitmix64's finalizer: sequential ids need mixing before a modulo.
     let mut z = (track_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^= z >> 31;
-    // One step's worth, never zero: a rung on the anchor itself would
-    // claim to be as recent as the real play the ladder hangs under.
+    // Never zero: a rung on the anchor would claim to be as recent as the real
+    // play above it.
     1 + (z % step as u64) as i64
 }
 
-/// A play count folded to what a backfill will actually insert, and
-/// whether the cap had to step in. A count past [`MAX_IMPORTED_PLAYS`]
-/// isn't a listening habit, it's a response nobody should trust, so it
-/// gets clamped and the caller says so out loud.
+/// Past [`MAX_IMPORTED_PLAYS`] is a response nobody should trust: clamp, and
+/// tell the caller.
 fn capped(target: u32) -> (u32, bool) {
     (target.min(MAX_IMPORTED_PLAYS), target > MAX_IMPORTED_PLAYS)
 }
 
-/// Record plays that arrived with their own timestamps, the scrobble
-/// history import. Each `(track_id, played_at)` becomes a listen at
-/// exactly that second, tagged [`ORIGIN_SCROBBLE`], with the track's tags
-/// snapshotted beside it the way the recorder writes one.
-///
-/// Idempotent by the pair: a row already sitting at that track and that
-/// second is the same play, so a re-import adds what arrived since and
-/// nothing else. That probe is why the ladder rung adds an index on
-/// (track_id, played_at).
-///
-/// `on_progress` is called with `(processed, total)` and returns false to
-/// stop, the same contract [`backfill_plays_batch`] runs on. A stop keeps
-/// what was already written: the plays it got through are no less real
-/// for the rest going unread.
+/// The scrobble history import: each pair becomes a listen at exactly that
+/// second, tagged [`ORIGIN_SCROBBLE`]. Idempotent by the pair. A stop keeps
+/// what was written.
 pub fn import_scrobbles<F>(
     conn: &mut Connection,
     plays: &[(i64, i64)],
@@ -349,8 +262,8 @@ where
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
 
-    // One lookup per track rather than one per scrobble: a heavy account
-    // scrobbles the same few hundred tracks thousands of times.
+    // One lookup per track: a heavy account scrobbles the same few hundred
+    // tracks thousands of times.
     let mut tags: HashMap<i64, (String, String, String, String, String)> = HashMap::new();
     let mut added = 0usize;
     let total = plays.len();
@@ -373,9 +286,8 @@ where
                         row.get::<_, String>(4)?,
                     ))
                 });
-                // A track that left the library between the match and the
-                // write has nothing to snapshot, so its scrobbles wait for
-                // the next run rather than landing tagless.
+                // A track gone since the match waits for the next run rather than landing
+                // tagless.
                 let Ok(row) = row else { continue };
                 slot.insert(row)
             }
@@ -402,25 +314,10 @@ where
     Ok(added)
 }
 
-/// Backfill play history for multiple tracks up to their target play counts.
-/// For each `(track_id, target_plays)`, if the track currently has fewer listens
-/// than `target_plays`, inserts the missing listens anchored before the earliest
-/// existing listen (or well in the past if never played).
-///
-/// The inserted rows carry no real date, because the counts this works
-/// from carry none: only `user.getRecentTracks` dates a play, and this is
-/// the fallback for what it couldn't answer for. So the ladder spreads
-/// evenly down `ladder`'s span instead of stepping back an hour at a
-/// time, which is what kept a whole import inside one bar of a weekly
-/// chart, and each track's rungs start at their own offset inside the
-/// first step ([`ladder_phase`]), which is what keeps every track's
-/// ladder off every other track's seconds. The rows are tagged
-/// [`ORIGIN_ESTIMATE`], because an even spread is still a guess and
-/// anything reading them should be able to tell.
-///
-/// `on_progress` is called with `(processed_tracks, total_tracks)` and returns
-/// `false` if the operation was cancelled/stopped.
-/// Returns the number of listens inserted.
+/// Invent listens up to each target count, spread evenly below the earliest
+/// real one and phased per track ([`ladder_phase`]). Tagged
+/// [`ORIGIN_ESTIMATE`]: only `user.getRecentTracks` dates a play, and this
+/// is the fallback for counts with no dates.
 pub fn backfill_plays_batch<F>(
     conn: &mut Connection,
     targets: &[(i64, u32)],
@@ -483,9 +380,8 @@ where
             continue;
         };
 
-        // Everything this track already has sits at or above the anchor,
-        // so the ladder hangs below it and no invented row ever claims to
-        // be the most recent play of anything.
+        // Hang below every existing play, so nothing invented is ever the most
+        // recent.
         let anchor =
             min_played.unwrap_or_else(|| ladder.now.saturating_sub(UNPLAYED_ANCHOR_OFFSET_SECS));
         let floor = ladder.floor(anchor, needed);
@@ -515,9 +411,8 @@ where
     Ok(total_added)
 }
 
-/// One track's line in a history view. Recent rows hold one event each
-/// (plays 1, last_played that event's time); rollup rows aggregate a
-/// track's whole history; never-played rows have neither (both 0).
+/// Recent rows hold one event each; rollup rows aggregate; never-played
+/// rows have zero for both.
 #[derive(Clone)]
 pub struct TrackPlays {
     pub track_id: i64,
@@ -526,33 +421,22 @@ pub struct TrackPlays {
     pub title: String,
     pub artist: String,
     pub album: String,
-    /// The album grouping and column metadata, read live from the catalog;
-    /// empty or zero once the track is gone, since the snapshot keeps only
-    /// title, artist, and album.
+    /// Live-catalog only from here on; empty or zero once the track is gone.
     pub album_artist: String,
     pub year: u16,
     pub genre: String,
     pub duration_ms: u32,
     pub codec: String,
     pub bitrate_kbps: u16,
-    /// The stream's sample rate in Hz and bits per sample, for the album
-    /// headings' quality line; live-catalog only like the fields above.
     pub sample_rate_hz: u32,
     pub bit_depth: u8,
     pub rating: u8,
-    /// The file path, for the cover column's thumbnail: the live catalog's
-    /// while the track exists, the snapshot's once it is gone, so a pruned
-    /// file whose bytes are still on disk keeps its cover.
+    /// Falls back to the snapshot, so a pruned file on disk keeps its cover.
     pub path: String,
-    /// Whether the row behind the listen is a live stream. The one thing a
-    /// history view cannot work out from the columns above: a station's
-    /// listen carries the song's own title and artist, so it reads exactly
-    /// like a file's. False for a listen whose track is gone, since the
-    /// flag lives on the row.
+    /// A station's listen carries the song's own tags, so this is the only way
+    /// to tell. False once the track is gone.
     pub live: bool,
-    /// Where the track comes from, for the `source:` pin and the source
-    /// filter. Empty for a listen whose track is gone: the snapshot never
-    /// kept it.
+    /// Empty once the track is gone: the snapshot never kept it.
     pub source: String,
 }
 
@@ -579,20 +463,9 @@ fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
     })
 }
 
-/// The tag columns of a listen read: title, artist, album, and the file
-/// path from the live catalog while the track exists, the snapshot once it
-/// is gone, then the album grouping and column metadata from the live
-/// catalog only.
-///
-/// A live row inverts that for the three tags. Preferring the catalog is
-/// right for a file, where the row is the song and a retag should re-bucket
-/// every play of it; it is wrong for a station, where the row is the
-/// station and the snapshot is the song that was on. Reading the row there
-/// would file a night of radio under one name. The rest of the columns
-/// still come off the catalog, since the snapshot never held them.
-///
-/// A listen whose track is gone joins to nothing, and a NULL `remote_live`
-/// takes the ELSE branch, so the dangling case reads exactly as before.
+/// The tags resolve live, snapshot as fallback, except on a live row: there
+/// the row is the station and the snapshot is the song that was on, so the
+/// snapshot wins. A dangling listen reads the snapshot.
 const SNAPSHOT_COLUMNS: &str = "CASE WHEN t.remote_live THEN l.title
          ELSE COALESCE(t.title, l.title) END,
      CASE WHEN t.remote_live THEN l.artist
@@ -605,8 +478,7 @@ const SNAPSHOT_COLUMNS: &str = "CASE WHEN t.remote_live THEN l.title
      COALESCE(t.rating, 0), COALESCE(t.path, l.path),
      COALESCE(t.remote_live, 0), COALESCE(t.source, '')";
 
-/// The newest events at or after `since` and before `until` first, one
-/// row per event; 0 and i64::MAX read them all.
+/// Newest first; 0 and i64::MAX read everything.
 pub fn recent(
     conn: &Connection,
     since: i64,
@@ -623,9 +495,8 @@ pub fn recent(
     rows.collect()
 }
 
-/// Tracks by play count, most first. The bare snapshot columns resolve
-/// from the MAX(played_at) row, SQLite's documented min/max behavior,
-/// so a retagged-then-deleted track shows its newest snapshot.
+/// Bare snapshot columns come from the MAX(played_at) row, per SQLite's
+/// documented min/max behavior.
 pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT l.track_id, COUNT(*) AS plays, MAX(l.played_at), {SNAPSHOT_COLUMNS}
@@ -637,10 +508,7 @@ pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Trac
     rows.collect()
 }
 
-/// What the never-played read orders by. Browse is the canonical album
-/// artist, album, disc, track order [`crate::store::all_ids`] reads in;
-/// the rest sort on one column with that order as the tie-break, so equal
-/// keys stay browsable.
+/// Every non-browse key ties back to the browse order.
 #[derive(Clone, Copy, Default, PartialEq)]
 pub enum NeverOrder {
     #[default]
@@ -654,13 +522,10 @@ pub enum NeverOrder {
     Added,
 }
 
-/// The canonical browse order, and what every other key falls back to on
-/// a tie.
 const BROWSE_ORDER: &str = "album_artist, album, disc_no, track_no";
 
 impl NeverOrder {
-    /// The ORDER BY expression this key sorts on. Text sorts fold case, so
-    /// a lowercase title sorts among its peers rather than after Z.
+    /// Text sorts fold case.
     fn column(self) -> &'static str {
         match self {
             NeverOrder::Browse => BROWSE_ORDER,
@@ -675,10 +540,8 @@ impl NeverOrder {
     }
 }
 
-/// Library tracks no event has ever named. Local rows only, the bound
-/// [`crate::store::all_ids`] reads the browse order under. The order runs
-/// over the whole set before the limit cuts it, so a sort picks the top of
-/// the library rather than re-arranging the first page of the browse order.
+/// Local rows only. The sort runs before the limit, so it picks the top of
+/// the library.
 pub fn never_played(
     conn: &Connection,
     order: NeverOrder,
@@ -688,8 +551,7 @@ pub fn never_played(
     let dir = if descending { " DESC" } else { "" };
     // The fragments come from the match above, never from a caller's string.
     let by = match order {
-        // Browse is already a four-column order; reversing it means
-        // reversing each part, not appending itself as a tie-break.
+        // Reversing browse means reversing each of its four parts.
         NeverOrder::Browse if descending => {
             "album_artist DESC, album DESC, disc_no DESC, track_no DESC".to_string()
         }
@@ -708,7 +570,6 @@ pub fn never_played(
     rows.collect()
 }
 
-/// What a name rollup groups by.
 #[derive(Clone, Copy)]
 pub enum Rollup {
     Artist,
@@ -716,24 +577,17 @@ pub enum Rollup {
     Genre,
 }
 
-/// One name's line in a stats rollup. `sub` is the line's secondary
-/// text: the album rollup puts the album artist there (an album name
-/// alone reads ambiguous), the others leave it empty.
+/// `sub` is secondary text: the album artist on an album rollup.
 #[derive(Clone)]
 pub struct NamePlays {
     pub name: String,
     pub sub: String,
     pub plays: u64,
-    /// A file under the name, for the row's cover: the live catalog's
-    /// path where the group still has a local track, the snapshot's
-    /// otherwise, so a pruned file whose bytes are still on disk keeps
-    /// its art. Empty when neither has one.
+    /// A file under the name for the cover, snapshot path as fallback.
     pub art: String,
 }
 
-/// One track's listening in three numbers: when it first and last
-/// played, and how many plays landed at or after `since`. None for a
-/// track with no events at all.
+/// None for a track with no events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackSummary {
     pub first_played: i64,
@@ -741,8 +595,6 @@ pub struct TrackSummary {
     pub recent_plays: u64,
 }
 
-/// The metadata panel's listening rows for one track: one indexed pass
-/// over its events.
 pub fn track_summary(
     conn: &Connection,
     track_id: i64,
@@ -770,12 +622,8 @@ pub fn track_summary(
     })
 }
 
-/// Play counts grouped under one tag, most first, over the events at or
-/// after `since` and before `until` (0 and i64::MAX count them all), the
-/// stats panel's range knob.
-/// Grouping goes through the live catalog first, so fixing a tag
-/// re-buckets its history; untagged plays (empty name) stay out of the
-/// list.
+/// Play counts per tag value, most first, within [since, until). Groups by
+/// the live catalog first; untagged plays stay out.
 pub fn rollup(
     conn: &Connection,
     by: Rollup,
@@ -789,24 +637,16 @@ pub fn rollup(
         Rollup::Album => "album",
         Rollup::Genre => "genre",
     };
-    // The album rollup's secondary text. The snapshot has no
-    // album_artist column, so a deleted track's rows fall back to the
-    // plain artist; MAX() keeps the pick deterministic when a group
-    // spans several.
+    // A deleted track's snapshot has no album artist; fall back to the artist.
     let sub = match by {
         Rollup::Album => "MAX(COALESCE(t.album_artist, l.artist))",
         _ => "''",
     };
-    // Genre lists re-bucket their plays onto each value, and a folded
-    // library merges case variants; either way the SQL groups are only
-    // an intermediate, so they fetch unclipped and the limit applies to
-    // the merged names below.
+    // Genre lists and folded names merge after the SQL, so fetch unclipped and
+    // limit the merged list.
     let merges = fold || matches!(by, Rollup::Genre);
     let clip = if merges { i64::MAX } else { limit as i64 };
-    // The row's cover comes off one file under the name: a local track
-    // the group still has, or the newest snapshot path when every one of
-    // them is gone. Which file it is doesn't matter for an album, and for
-    // an artist or a genre one of their records is the point.
+    // Cover: a local track the group still has, else the newest snapshot path.
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT COALESCE(t.{column}, l.{column}) AS name, {sub}, COUNT(*) AS plays,
                 COALESCE(MAX(CASE WHEN t.source = 'local' THEN t.path END), MAX(l.path)) AS art
@@ -827,9 +667,7 @@ pub fn rollup(
         return rows.collect();
     }
     let groups: Vec<NamePlays> = rows.collect::<Result<_, _>>()?;
-    // Merged tally per (folded) name; the display casing and sub follow
-    // the variant with the most plays, ties to the smaller string so the
-    // list stays stable across refreshes.
+    // Display follows the most-played variant, ties to the smaller string.
     struct Merged {
         name: String,
         sub: String,
@@ -862,9 +700,7 @@ pub fn rollup(
     for group in &groups {
         match by {
             Rollup::Genre => {
-                // Aliases first, then dedup within one list, so "Rock;
-                // rock" under a folded library and "DnB; Drum & Bass"
-                // under an alias each count their plays once.
+                // Resolve aliases, then dedup within one list, so each play counts once.
                 let mut parts: Vec<String> = crate::genre::split(&group.name)
                     .map(crate::genre::resolve)
                     .collect();
@@ -896,8 +732,7 @@ pub fn rollup(
     Ok(out)
 }
 
-/// Every track's play count in one aggregate, for the projection's
-/// plays column. Tracks with no listens stay out of the map.
+/// Tracks with no listens stay out of the map.
 pub fn counts(conn: &Connection) -> rusqlite::Result<HashMap<i64, u32>> {
     let mut stmt =
         conn.prepare_cached("SELECT track_id, COUNT(*) FROM listens GROUP BY track_id")?;
@@ -907,14 +742,8 @@ pub fn counts(conn: &Connection) -> rusqlite::Result<HashMap<i64, u32>> {
     rows.collect()
 }
 
-/// When each track was last heard, unix seconds. Tracks with no listens
-/// stay out of the map, the same way [`counts`] leaves them out, so a
-/// missing key reads as never played rather than as played at the epoch.
-///
-/// The other half of what a history-weighted continuation provider (ADR 17)
-/// tiers on: [`counts`] says how often, this says how long ago, and the two
-/// together are what sinks the album you played all week behind the record
-/// you forgot you own.
+/// Tracks with no listens stay out, so a missing key means never played.
+/// ADR 17's history-weighted continuation tiers on this and [`counts`].
 pub fn last_played(conn: &Connection) -> rusqlite::Result<HashMap<i64, i64>> {
     let mut stmt =
         conn.prepare_cached("SELECT track_id, MAX(played_at) FROM listens GROUP BY track_id")?;
@@ -922,17 +751,12 @@ pub fn last_played(conn: &Connection) -> rusqlite::Result<HashMap<i64, i64>> {
     rows.collect()
 }
 
-/// When the first listen landed (unix seconds); None before any has.
-/// The all-time chart picks its span off this.
 pub fn earliest(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     conn.query_row("SELECT MIN(played_at) FROM listens", [], |row| row.get(0))
 }
 
-/// Listens bucketed over time for the chart: one count per `bucket`
-/// seconds from `since` up through `end`, empty buckets included, so the
-/// bars show the quiet stretches too. `until` bounds the events (an
-/// exclusive upper edge, i64::MAX for none); a listen stamped past `end`
-/// but under it lands in the last bar.
+/// One count per `bucket` from `since` through `end`, empty buckets
+/// included. A listen past `end` but under `until` lands in the last bar.
 pub fn histogram(
     conn: &Connection,
     since: i64,
@@ -940,7 +764,6 @@ pub fn histogram(
     end: i64,
     until: i64,
 ) -> rusqlite::Result<Vec<u64>> {
-    // A non-positive bucket has no bar width; bail before it divides.
     if bucket <= 0 {
         return Ok(Vec::new());
     }
@@ -955,19 +778,14 @@ pub fn histogram(
     })?;
     for row in rows {
         let (index, count) = row?;
-        // A listen stamped past `end` (clock skew) goes in the last bar
-        // rather than out of bounds.
         let index = (index.max(0) as usize).min(n - 1);
         counts[index] += count;
     }
     Ok(counts)
 }
 
-/// Resolve one rollup name back to its library tracks in the canonical
-/// browse order, so a stats row can queue what it counts. Live local
-/// catalog only: a deleted track's snapshot keeps its rows in the rollup
-/// but has no file left to play, and another source's row has nothing to
-/// open either.
+/// Live local tracks only: a snapshot or a non-local row has no file to
+/// queue.
 pub fn ids_for_name(
     conn: &Connection,
     by: Rollup,
@@ -980,10 +798,7 @@ pub fn ids_for_name(
         Rollup::Album => "album",
         Rollup::Genre => "genre",
     };
-    // A genre name is one value out of the "; " lists and a folded name
-    // is a casing class, neither of which SQL equality finds; read the
-    // rows in the same order and match in Rust. The exact artist and
-    // album lookups keep the indexed query.
+    // Genre values and folded names aren't SQL equality; match in Rust.
     if fold || matches!(by, Rollup::Genre) {
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT id, {column} FROM tracks WHERE source = 'local'
@@ -1012,16 +827,12 @@ pub fn ids_for_name(
         "SELECT id FROM tracks WHERE source = 'local' AND {column} = ?1
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?2"
     ))?;
-    // A caller after the whole pool passes usize::MAX, which would cast to
-    // a negative LIMIT; saturate instead of leaning on SQLite reading that
-    // as "no limit".
+    // usize::MAX would cast to a negative LIMIT.
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let rows = stmt.query_map(rusqlite::params![name, limit], |row| row.get(0))?;
     rows.collect()
 }
 
-/// How many listens landed at or after `since` and before `until` (unix
-/// seconds); 0 and i64::MAX count them all.
 pub fn count_between(conn: &Connection, since: i64, until: i64) -> rusqlite::Result<u64> {
     conn.query_row(
         "SELECT COUNT(*) FROM listens WHERE played_at >= ?1 AND played_at < ?2",
@@ -1031,31 +842,21 @@ pub fn count_between(conn: &Connection, since: i64, until: i64) -> rusqlite::Res
     .map(|n| n as u64)
 }
 
-/// What a clear is allowed to take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Clear {
-    /// Rows an import wrote: Last.fm's dated scrobbles and the ladder's
-    /// invented ones. A play rox watched happen stays, so throwing away a
-    /// bad import doesn't cost the record it was added to.
+    /// Last.fm scrobbles and invented rows. Plays rox watched stay.
     Imported,
-    /// The whole table, back to a library that has never been played.
     Everything,
 }
 
-/// How many listens there are and how many of them came out of an
-/// import, the numbers the clear asks about before it takes any.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     pub total: u64,
     pub imported: u64,
 }
 
-/// Count the table both ways in one pass.
-///
-/// Rows from before origins were recorded at all count as rox's own,
-/// which is what the empty origin means: the build that wrote them said
-/// nothing about where they came from, and calling those imported would
-/// delete history on a guess.
+/// Pre-origin rows count as rox's own: calling them imported would delete
+/// history on a guess.
 pub fn tally(conn: &Connection) -> rusqlite::Result<Tally> {
     conn.query_row(
         "SELECT COUNT(*), COUNT(*) FILTER (WHERE origin <> ?1) FROM listens",
@@ -1069,12 +870,7 @@ pub fn tally(conn: &Connection) -> rusqlite::Result<Tally> {
     )
 }
 
-/// Throw listens away, and hand back how many rows went.
-///
-/// The one delete in a module whose whole premise is append-only, so it
-/// only ever runs behind a confirm someone clicked. Nothing else here
-/// removes an event: a prune leaves the history it can no longer name,
-/// and [`reattach`] puts the names back when the file returns.
+/// The one delete in an append-only module; only ever behind a confirm.
 pub fn clear(conn: &Connection, what: Clear) -> rusqlite::Result<usize> {
     let gone = match what {
         Clear::Imported => {
@@ -1242,9 +1038,6 @@ mod tests {
         );
     }
 
-    /// A "; " genre list re-buckets its plays onto each value: the rollup
-    /// splits before ranking, and the drilldown resolves a value back to
-    /// every track whose list includes it.
     #[test]
     fn genre_rollup_splits_lists() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1272,7 +1065,6 @@ mod tests {
             [("Shoegaze", 3), ("Rock", 2)],
             "the list track counts under both of its values"
         );
-        // The limit clips the split values, not the raw list strings.
         assert_eq!(
             rollup(&conn, Rollup::Genre, 0, i64::MAX, 1, false)
                 .unwrap()
@@ -1295,8 +1087,6 @@ mod tests {
         );
     }
 
-    /// A folded rollup merges case variants under one name displaying the
-    /// most-played casing, and the drilldown resolves across casings.
     #[test]
     fn folded_rollup_merges_case_variants() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1348,16 +1138,10 @@ mod tests {
         );
     }
 
-    /// The waiting set orders by any of its tag columns, and the sort runs
-    /// in SQL so it picks the top of the library rather than re-arranging
-    /// the page the limit already cut. Ties fall back to the browse order,
-    /// which keeps a sort by year from scrambling the albums inside it.
     #[test]
     fn never_played_takes_a_sort() {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
-        // Browse order runs Zebra, Mango, apple: the two A/First tracks by
-        // track number, then the B/Second one.
         let mut zebra = track("/m/1.mp3", "Zebra", "A", "First", "rock");
         zebra.year = 2010;
         let mut mango = track("/m/2.mp3", "Mango", "A", "First", "rock");
@@ -1400,11 +1184,6 @@ mod tests {
         );
     }
 
-    /// The browse order this reads down is the local library's, so a row
-    /// from another source is not a track waiting to be heard. Nothing
-    /// writes one yet; the schema says streaming sources will add rows
-    /// rather than a table, and the first of them would otherwise turn up
-    /// in a list of files to go and play.
     #[test]
     fn another_sources_row_is_not_waiting_to_be_heard() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1427,10 +1206,6 @@ mod tests {
         );
     }
 
-    /// A rollup name resolves to tracks so a stats row can queue what it
-    /// counts, which means it can only offer rows with a file behind them.
-    /// Both lookups need the bound: the indexed one an exact artist takes,
-    /// and the row scan a genre or a folded name falls back to.
     #[test]
     fn another_sources_row_is_not_queueable() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1465,8 +1240,8 @@ mod tests {
             &mut conn,
             &[
                 track("/m/1.mp3", "One", "A", "First", "rock"),
-                // A second track keeps MAX(id) alive across the delete, so
-                // the returned file cannot just reuse its old rowid.
+                // A second track keeps MAX(id) alive, so the returned file can't reuse its
+                // rowid.
                 track("/m/2.mp3", "Two", "A", "First", "rock"),
             ],
         )
@@ -1474,8 +1249,6 @@ mod tests {
         listen(&conn, "/m/1.mp3", 100);
         listen(&conn, "/m/1.mp3", 200);
 
-        // The file's row prunes and it comes back under a fresh id; its
-        // two plays must follow rather than restart at zero.
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
         store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
         let new_id: i64 = conn
@@ -1497,9 +1270,6 @@ mod tests {
         );
     }
 
-    /// A library where every play still has its file never reaches the
-    /// matchers: they join on the tag triple and count their own matches,
-    /// which is the pass that has to stay off the scan's critical path.
     #[test]
     fn reattach_gates_on_a_library_with_nothing_dangling() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1515,11 +1285,8 @@ mod tests {
         listen(&conn, "/m/1.mp3", 100);
         listen(&conn, "/m/2.mp3", 200);
         assert_eq!(reattach(&conn).unwrap(), None, "nothing to match");
-        // Repeated passes are what a scan actually does, and they stay free.
         assert_eq!(reattach(&conn).unwrap(), None);
 
-        // One pruned file is enough to open the gate, and the pass behind it
-        // does what it always did.
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
         store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
         assert_eq!(reattach(&conn).unwrap(), Some(1));
@@ -1530,9 +1297,7 @@ mod tests {
     fn reattach_keeps_a_rips_listens_on_their_own_tracks() {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
-        // Two spans of one image with identical tags, so the tag fallback's
-        // exactly-one guard can never answer and only the fragment snapshot
-        // can say which track a listen belongs to.
+        // Identical tags, so only the fragment snapshot can relink them.
         let cue_track = |sub: u16, start_ms: u32| {
             let mut row = track("/m/disc.flac", "Untitled", "A", "Rip", "rock");
             row.sub = sub;
@@ -1546,9 +1311,7 @@ mod tests {
             });
             row
         };
-        // The keeper holds MAX(id) across the delete, the same move the
-        // plain-file reattach test makes, so the returned rip can't just
-        // reuse its old rowids and dodge the relink.
+        // Keeps MAX(id) alive so the rip can't reuse its rowids.
         store::insert_batch(
             &mut conn,
             &[
@@ -1582,7 +1345,6 @@ mod tests {
             .unwrap();
         }
 
-        // The rip prunes and returns under fresh ids, the reattach scenario.
         conn.execute("DELETE FROM tracks WHERE path = '/m/disc.flac'", [])
             .unwrap();
         store::insert_batch(&mut conn, &[cue_track(1, 0), cue_track(2, 1000)]).unwrap();
@@ -1654,7 +1416,6 @@ mod tests {
             .unwrap();
         let now = 1_700_000_000i64;
 
-        // Backfill 1000 plays for track 1 and 42 plays for track 2.
         let added = backfill_plays_batch(
             &mut conn,
             &[(track1, 1000), (track2, 42)],
@@ -1668,7 +1429,6 @@ mod tests {
         assert_eq!(count_map.get(&track1).copied(), Some(1000));
         assert_eq!(count_map.get(&track2).copied(), Some(42));
 
-        // Re-running with same targets does nothing (idempotent).
         let added_again = backfill_plays_batch(
             &mut conn,
             &[(track1, 1000), (track2, 42)],
@@ -1678,7 +1438,6 @@ mod tests {
         .unwrap();
         assert_eq!(added_again, 0);
 
-        // Updating with a higher count adds only the difference.
         let added_diff =
             backfill_plays_batch(&mut conn, &[(track1, 1005)], Ladder::at(now), |_, _| true)
                 .unwrap();
@@ -1698,10 +1457,8 @@ mod tests {
             })
             .unwrap();
 
-        // Track already played at 1_700_000_000.
         listen(&conn, "/m/1.mp3", 1_700_000_000);
 
-        // Backfill up to 10 plays at anchor 1_700_050_000.
         let added = backfill_plays_batch(
             &mut conn,
             &[(track_id, 10)],
@@ -1711,11 +1468,9 @@ mod tests {
         .unwrap();
         assert_eq!(added, 9);
 
-        // Play count is 10.
         let count_map = counts(&conn).unwrap();
         assert_eq!(count_map.get(&track_id).copied(), Some(10));
 
-        // Last played is still the real listen timestamp 1_700_000_000.
         let lp_map = last_played(&conn).unwrap();
         assert_eq!(lp_map.get(&track_id).copied(), Some(1_700_000_000));
     }
@@ -1748,7 +1503,6 @@ mod tests {
             .unwrap();
         assert_eq!(added, 5);
 
-        // Synthetic listens should be anchored 90 days before `now`, not within the last few hours.
         let lp_map = last_played(&conn).unwrap();
         let last = lp_map.get(&track_id).copied().unwrap();
         assert!(last <= now - UNPLAYED_ANCHOR_OFFSET_SECS);
@@ -1772,7 +1526,6 @@ mod tests {
             .unwrap();
 
         let now = 1_700_000_000i64;
-        // Request 1_000_000 plays, should cap to MAX_IMPORTED_PLAYS (50_000).
         let added = backfill_plays_batch(
             &mut conn,
             &[(track_id, 1_000_000)],
@@ -1813,8 +1566,6 @@ mod tests {
             3
         );
 
-        // The real seconds land as the real seconds, in the order history
-        // reads them: newest first.
         let played: Vec<i64> = recent(&conn, 0, i64::MAX, 10)
             .unwrap()
             .iter()
@@ -1823,15 +1574,12 @@ mod tests {
         assert_eq!(played, [1_700_000_000, 1_650_000_000, 1_600_000_000]);
         assert_eq!(counts(&conn).unwrap().get(&one).copied(), Some(2));
 
-        // A second run over the same history writes nothing: the pair is
-        // the identity of a play.
         assert_eq!(
             import_scrobbles(&mut conn, &history, |_, _| true).unwrap(),
             0
         );
         assert_eq!(counts(&conn).unwrap().get(&one).copied(), Some(2));
 
-        // And one that overlaps takes only what is new.
         let next = [(one, 1_700_000_000), (two, 1_710_000_000)];
         assert_eq!(import_scrobbles(&mut conn, &next, |_, _| true).unwrap(), 1);
         assert_eq!(
@@ -1870,7 +1618,6 @@ mod tests {
             .unwrap();
 
         let now = 1_700_000_000i64;
-        // An account four years old, and a hundred plays with no dates.
         let since = now - 4 * 365 * 86_400;
         let ladder = Ladder {
             now,
@@ -1899,8 +1646,6 @@ mod tests {
             "and nothing lands in the recent past"
         );
 
-        // The whole point: a hundred invented plays are a hundred
-        // different weeks, not one bar of a weekly chart.
         let weeks: std::collections::HashSet<i64> =
             played.iter().map(|at| at / (7 * 86_400)).collect();
         assert!(
@@ -1947,7 +1692,6 @@ mod tests {
             })
             .unwrap();
 
-        // An account registered this morning, with plays to place anyway.
         let now = 1_700_000_000i64;
         let ladder = Ladder {
             now,
@@ -1980,9 +1724,8 @@ mod tests {
             .map(Result::unwrap)
             .collect();
 
-        // The shape that made the bar: hundreds of tracks the history
-        // couldn't date, every one of them short the same single play, all
-        // placed in the same run against the same anchor and floor.
+        // The shape behind the one-afternoon pile-up: many tracks short one play,
+        // placed against one anchor and floor.
         let now = 1_700_000_000i64;
         let ladder = Ladder {
             now,
@@ -2003,9 +1746,6 @@ mod tests {
             distinct > 290,
             "the ladders lined up again: 300 plays on {distinct} seconds"
         );
-        // And they're spread over the account's years rather than pooling
-        // in one corner of it: no day carries a crowd, and the ladder
-        // reaches most of the way down the decade it was given.
         let busiest: i64 = conn
             .query_row(
                 "SELECT MAX(n) FROM (SELECT COUNT(*) n FROM listens GROUP BY played_at / 86400)",
@@ -2038,8 +1778,6 @@ mod tests {
             })
             .unwrap();
 
-        // One of each origin: a play rox watched, a dated scrobble, and a
-        // rung the ladder invented.
         listen(&conn, "/m/1.mp3", 1_700_000_000);
         import_scrobbles(&mut conn, &[(one, 1_600_000_000)], |_, _| true).unwrap();
         backfill_plays_batch(&mut conn, &[(one, 8)], Ladder::at(1_700_000_000), |_, _| {
@@ -2099,7 +1837,6 @@ mod tests {
             .unwrap();
 
         let now = 1_700_000_000i64;
-        // Stop after first track (idx 1 returns false).
         let added = backfill_plays_batch(
             &mut conn,
             &[(track1, 5), (track2, 5)],
@@ -2114,11 +1851,8 @@ mod tests {
         assert_eq!(count_map.get(&track2).copied(), None);
     }
 
-    /// The two halves of the snapshot rule in one walk. A file's row is the
-    /// song, so a retag re-buckets its history and the snapshot steps
-    /// aside; a station's row is the station and its snapshot is whatever
-    /// was on, so the row steps aside instead and a night of radio reads as
-    /// the songs it was rather than one line of the station's name.
+    /// A file's row is the song, so a retag re-buckets its history; a station's
+    /// row is the station, so its snapshots name the songs.
     #[test]
     fn a_live_row_reads_its_snapshots() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -2176,8 +1910,6 @@ mod tests {
             "and the flag that tells the two kinds of row apart"
         );
 
-        // The rollup side of the same read: the station's plays count
-        // together on its row, and the newest snapshot names it.
         let played = most_played(&conn, 10).unwrap();
         let station_row = played
             .iter()

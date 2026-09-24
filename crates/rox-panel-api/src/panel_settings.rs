@@ -1,11 +1,7 @@
-//! Every panel's settings window, the paged shape the app settings
-//! window set: one OS window per panel, the panel's own pages in a left
-//! sidebar, and the shared Appearance page under them editing the
-//! panel's palette override (ADR 13). Opened from the panel's dropdown; opening
-//! again focuses the existing window. Edits apply to the panel's config
-//! live (the next render picks the override up through the palette
-//! scope) and persist through the layout dump like every other
-//! per-view knob.
+//! Every panel's settings window: one OS window per panel, with a sidebar
+//! that leads with the shared Appearance, Behavior and Shader pages and
+//! follows with the panel's own. Appearance edits the panel's palette
+//! override (ADR 13). Edits apply live and persist through the layout dump.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,9 +26,8 @@ use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, PanelTheme, ROLES, Side, Sides};
 use rox_design::tokens;
 use rox_services::backdrop::WindowBackdrop;
-// The frame sliders' ceilings are defined in settings, shared with the app
-// settings window so the per-panel and app-wide frames scrub the same
-// range, every knob running from zero (off) up to its own, in px.
+// The frame sliders' ceilings are shared with the app settings window, so
+// both frames scrub the same range.
 use crate::signal_ui::{self, routes::RouteEditState};
 use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
 use rox_dock::TabPanel;
@@ -44,57 +39,44 @@ use rox_viz::signal::Route;
 
 actions!(panel_settings, [Rename, SavePreset]);
 
-/// The [`Panel::open_settings`](rox_dock::Panel::open_settings) override
-/// for a panel that has settings, so the Panel Settings chord opens the
-/// same window its dropdown row does. Drop `opens_settings!();` into the
-/// panel's `impl Panel` block.
-///
-/// A macro rather than a blanket impl because [`open`] needs the panel's
-/// concrete type and Rust has no way to specialize the trait's default on
-/// "also implements [`PanelSettings`]".
+/// The [`Panel::open_settings`](rox_dock::Panel::open_settings) override for
+/// a panel with settings. Drop `opens_settings!();` into the panel's `impl
+/// Panel` block. A macro because [`open`] needs the concrete type, and the
+/// trait's default can't specialize on [`PanelSettings`].
 #[macro_export]
 macro_rules! opens_settings {
     () => {
         fn open_settings(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
-            // Deferred: `open` reads the panel through its entity handle,
-            // and this method runs while that same entity is still
-            // leased for this update, so reading it here would panic.
+            // Deferred: this runs while the entity is leased for this update, and
+            // `open` reads it, which would panic.
             let panel = cx.entity();
             cx.defer(move |cx| $crate::panel_settings::open(panel, cx));
         }
     };
 }
 
-/// The key contexts the rename and save-as-preset windows scope their
-/// own bindings to.
 const RENAME_CONTEXT: &str = "PanelRename";
 const PRESET_CONTEXT: &str = "PanelSavePreset";
 
-/// The two dialogs' enter bindings; call once at startup. They're on
-/// each window's root rather than its field, so enter commits wherever
-/// focus is: a single-line input sees the key first and propagates it
-/// up.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([
+/// The dialogs' enter bindings. They sit on each window's root rather than
+/// its field, so enter commits wherever focus is.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("enter", Rename, Some(RENAME_CONTEXT)),
         KeyBinding::new("enter", SavePreset, Some(PRESET_CONTEXT)),
-    ]);
+    ]
 }
 
-/// The open panel settings windows, keyed by the panel they edit:
-/// opening a panel's settings again focuses its window instead of
-/// stacking a second editor over the same config. Closed windows leave a
-/// stale handle whose activate fails, so the next open falls through and
-/// replaces it, same as the app settings window.
+/// Open panel settings windows by panel, so opening again focuses the
+/// window. A closed window's stale handle fails to activate, and the next
+/// open replaces it.
 #[derive(Default)]
 struct OpenPanelSettings(HashMap<EntityId, WindowHandle<Root>>);
 
 impl Global for OpenPanelSettings {}
 
-/// The Panel Settings entry for a panel's dropdown menu: opens the
-/// panel's settings window. Sits in the panel section, above Duplicate.
-/// A panel hosted in a composite gets its host's settings row right after
-/// its own, so the container is reachable from the child inside it.
+/// The Panel Settings menu entry. A panel hosted in a composite gets its
+/// host's settings row right after, so the container is reachable.
 pub fn settings_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>, cx: &App) -> PopupMenu {
     let child = panel.entity_id();
     let panel = panel.clone();
@@ -108,22 +90,15 @@ pub fn settings_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>, cx: &
     crate::openers::host_settings_item(menu, child, cx)
 }
 
-/// The page a settings window should open on, keyed by the panel it
-/// edits. Set by [`open_page`] and taken by the window's next render, so a
-/// window that was already open jumps to the page too instead of staying
-/// on whatever was last read.
+/// The page a settings window should open on, taken by its next render so
+/// an already-open window jumps too.
 #[derive(Default)]
 struct RequestedPage(HashMap<EntityId, usize>);
 
 impl Global for RequestedPage {}
 
-/// Open a panel's settings window on one of the panel's own pages, named
-/// by the label it declares in [`PanelSettings::pages`]. What a panel body
-/// points at when it has something to say about its own config: an
-/// Inspect button opens the page holding the thing rather than
-/// Appearance, where a plain [`open`] starts.
-///
-/// A label the panel doesn't declare opens the window as usual.
+/// Open a panel's settings on one of its own pages, by its
+/// [`PanelSettings::pages`] label. An unknown label opens the window as usual.
 pub fn open_page<P: PanelSettings>(panel: Entity<P>, page: &str, cx: &mut App) {
     let index = panel
         .read(cx)
@@ -139,9 +114,8 @@ pub fn open_page<P: PanelSettings>(panel: Entity<P>, page: &str, cx: &mut App) {
     open(panel, cx);
 }
 
-/// Open a panel's settings window, or bring its open one to the front.
-/// The window holds the panel weakly, so it never keeps a closed panel
-/// alive.
+/// Open a panel's settings window, or bring its open one forward. The
+/// window holds the panel weakly.
 pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     let id = panel.entity_id();
     if let Some(handle) = cx
@@ -157,8 +131,7 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         "rox - {} settings",
         panel::display_name(panel.read(cx).panel_name())
     ));
-    // The last closed panel settings window's size, floored at MIN_SIZE so a
-    // stale small frame never opens under the layout's minimum.
+    // Floored at MIN_SIZE so a stale small frame never opens under the minimum.
     let min = settings_ui::MIN_SIZE;
     let (width, height) = settings::Settings::load()
         .windows
@@ -182,33 +155,22 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         .insert(id, handle);
 }
 
-/// The app settings page a panel asked for, by the nav key the settings
-/// window lists it under. Set by [`open_app_page`] and taken by that
-/// window, so one that was already open jumps to the page too instead of
-/// staying where it was left.
+/// The app settings page a panel asked for, taken by that window so an
+/// already-open one jumps too.
 #[derive(Default)]
 struct RequestedAppPage(Option<&'static str>);
 
 impl Global for RequestedAppPage {}
 
-/// gpui's registered name for the action that opens the app settings
-/// window. The action itself is declared up in the workspace, so this is
-/// the one place the name is spelled; the settings window holds a test
-/// against its own type so a rename can't quietly break the jump.
+/// gpui's name for the action that opens the app settings window, which is
+/// declared in the workspace. The settings window tests it against its own
+/// type so a rename can't quietly break the jump.
 pub const SETTINGS_ACTION: &str = "rox::OpenSettings";
 
-/// Open the app's settings window on the page `key` names, the nav key in
-/// the window's own page table ("settings-page-radio" and its
-/// neighbours). What a panel points at when the thing it lists is
-/// configured somewhere else entirely: the stations panel's Manage
-/// Stations lands on Radio rather than on Appearance, where a plain open
-/// starts.
-///
-/// The window lives up in the binary, so this leaves the page behind and
-/// fires the action that opens it, built by name the way the keymap's own
-/// dispatch builds one. Naming the action's type here instead would mean
-/// moving it out of the workspace, which is more than this is worth. A key
-/// the window doesn't know leaves it wherever it was.
+/// Open the app settings window on the page `key` names
+/// ("settings-page-radio" and its neighbours). The window lives in the
+/// binary, so this leaves the page behind and dispatches the action by
+/// name. A key the window doesn't know leaves it where it was.
 pub fn open_app_page(key: &'static str, window: &mut Window, cx: &mut App) {
     cx.set_global(RequestedAppPage(Some(key)));
 
@@ -220,29 +182,20 @@ pub fn open_app_page(key: &'static str, window: &mut Window, cx: &mut App) {
     window.dispatch_action(action, cx);
 }
 
-/// The page a panel asked the settings window to open on, cleared as it's
-/// read so the next open lands where the user left it.
+/// Cleared as it's read, so the next open lands where the user left it.
 pub fn requested_app_page(cx: &mut App) -> Option<&'static str> {
     cx.default_global::<RequestedAppPage>().0.take()
 }
 
-/// How much of a pending source the approval block prints. Long enough to
-/// read a real shader, short enough that a file someone pasted a novel into
-/// doesn't build ten thousand elements.
+/// Long enough to read a real shader, short enough that a file someone
+/// pasted a novel into doesn't build ten thousand elements.
 const PENDING_LINES: usize = 400;
 
-/// The approval block both shader surfaces show: what arrived, where it
-/// claims to have come from, and the two ways out. Shaders travel inside layout
-/// dumps and workspace bundles as plain WGSL, so applying somebody's look hands
-/// rox their code; this is where a person reads it before it runs.
-///
-/// Read-only. rox has no code editor, and a box that let the
-/// source be edited before approving would only be a slower way to reach
-/// the same yes.
-///
-/// Saying no parks the shader rather than deleting it: the source, the
-/// name and the routes stay on the config with the switch off, so a look
-/// somebody wasn't sure about is one toggle away rather than gone.
+/// The approval block both shader surfaces show. Shaders travel inside
+/// layout dumps and workspace bundles as plain WGSL, so applying somebody's
+/// look hands rox their code; this is where a person reads it before it
+/// runs. Read-only. Saying no parks the shader with its switch off rather
+/// than deleting it.
 pub fn pending_shader(
     id: &'static str,
     source: &str,
@@ -321,24 +274,19 @@ pub fn pending_shader(
         )
 }
 
-/// The name field behind the save row, on whichever surface is showing
-/// it. The input builds the first time the block renders rather than when
-/// the surface is constructed: a panel has a `Window` at render and not
-/// before. It's kept on the surface from then on, so a half-typed name
-/// persists across the repaint a recompile brings.
+/// The name field behind the save row. Built at first render because a
+/// panel only has a `Window` then, and kept so a half-typed name survives
+/// the repaint a recompile brings.
 #[derive(Default)]
 pub struct ShaderNameField {
     input: Option<Entity<InputState>>,
-    /// The placeholder the input was last given. Kept so the field can
-    /// follow a rename without writing one every render, which would notify
-    /// the input into a frame of its own each time.
+    /// Kept so the field follows a rename without setting it every render,
+    /// which would notify the input into a frame of its own each time.
     placeholder: String,
 }
 
 impl ShaderNameField {
-    /// The input, built on first ask against the window it renders in. The
-    /// placeholder is the name a save would use with the field left
-    /// empty, so an untouched field already shows what it will do.
+    /// The placeholder is the name a save would use with the field left empty.
     fn input(
         &mut self,
         placeholder: &str,
@@ -360,7 +308,6 @@ impl ShaderNameField {
         input
     }
 
-    /// What's typed in, trimmed. Empty is the caller's fallback name.
     fn value(&self, cx: &App) -> String {
         self.input
             .as_ref()
@@ -369,13 +316,9 @@ impl ShaderNameField {
     }
 }
 
-/// The save row: a name, and the button that puts this surface's own
-/// shader into the workspace's shaders under it. Saving is how a shader
-/// stops belonging to one panel: the workspace holds the source from
-/// there, any other panel can use the same name, and one edit reaches all
-/// of them.
-///
-/// It stays a plain row rather than an entry in the picker above. Inputs
+/// The save row: a name, and a button that puts this surface's shader into
+/// the workspace's shaders under it, where any panel can use it and one
+/// edit reaches all of them. A plain row rather than a picker entry: inputs
 /// defer and so does the picker's popup, and gpui 0.2.2 panics on a
 /// deferred element that defers again.
 fn save_block<P: 'static>(
@@ -438,14 +381,10 @@ fn save_block<P: 'static>(
     )
 }
 
-/// The runs the shader picker lists, as `(overlay, examples heading,
-/// workspace heading)`. Pulled out of the menu closure so the one rule that
-/// decides what a surface may run is a value a test can read.
-///
-/// Unfiltered, the headings name what a shader does to the surface under it,
-/// because that's the question a panel's picker leaves open. Filtered to
-/// overlays there's only one kind left to offer, so the split has nothing to
-/// tell apart and the headings go back to naming where a shader came from.
+/// The picker's runs as `(overlay, examples heading, workspace heading)`,
+/// pulled out so a test can read the rule. Unfiltered, the headings name
+/// what a shader does to the surface; filtered to overlays, they name where
+/// it came from.
 fn shader_groups(overlays_only: bool) -> Vec<(bool, SharedString, SharedString)> {
     if overlays_only {
         vec![(
@@ -469,41 +408,27 @@ fn shader_groups(overlays_only: bool) -> Vec<(bool, SharedString, SharedString)>
     }
 }
 
-/// The picker both shader surfaces lead with, and the rows that follow from
-/// whatever it's showing.
-///
-/// A shader arrives one of a few ways (a shipped example, one of the
-/// workspace's shaders, a file, or text that came in on a layout) and each
-/// of those needs a different sentence and different buttons under it. One
-/// row picks, and only the rows that selection needs come after, instead of
-/// every path's controls stacking on the page at once.
-///
-/// The actions are plain `fn` pointers rather than closures: every caller
-/// passes a method call on its own surface, and the picker's popup has to
-/// hold them across a `'static` menu closure.
+/// The picker both shader surfaces lead with, then only the rows the
+/// selection needs (an example, a workspace shader, a file, or text that
+/// came in on a layout). The actions are `fn` pointers because the popup
+/// holds them across a `'static` menu closure.
 pub struct ShaderSource<'a, P: 'static> {
-    /// Element id prefix. Two surfaces can have their settings open at
-    /// once, and a shared id would put them on one popup's state.
+    /// Element id prefix. Two surfaces can have settings open at once, and a
+    /// shared id would put them on one popup's state.
     pub id: &'static str,
     /// The workspace shader this config names, if it names one.
     pub name: Option<&'a str>,
     /// The file the source was last read from, a bookmark for reloads.
     pub path: Option<&'a Path>,
-    /// What actually runs: the workspace's copy under a name, the config's
-    /// own source otherwise, None when a name resolves to nothing.
+    /// What runs: the workspace's copy under a name, the config's own source
+    /// otherwise, None when a name resolves to nothing.
     pub resolved: Option<&'a str>,
-    /// Clearing the shader, for a surface where having none is a state
-    /// worth offering. Some puts a None entry at the top of the list.
+    /// Some puts a None entry at the top of the list.
     pub clear: Option<fn(&mut P, &mut Context<P>)>,
-    /// Offer only shaders that declare `// @overlay`. Set by every surface
-    /// that has an app underneath it to lose: the whole window, and a
-    /// panel whose own body is the thing a scene would paint over. The
-    /// Shader panel is the one caller that leaves this false, because
-    /// covering that body is the entire point of it.
-    ///
-    /// It filters what can be picked, never what's installed. A config that
-    /// arrived holding a scene keeps running and keeps its name on the
-    /// closed picker; it just isn't a thing this list offers again.
+    /// Offer only shaders that declare `// @overlay`, for every surface with an
+    /// app underneath to lose. The Shader panel is the one caller that leaves
+    /// this false. It filters what can be picked, never what's installed: a
+    /// config that arrived holding a scene keeps running.
     pub overlays_only: bool,
     pub use_example: fn(&mut P, usize, &mut Context<P>),
     pub use_named: fn(&mut P, String, &mut Context<P>),
@@ -514,7 +439,6 @@ pub struct ShaderSource<'a, P: 'static> {
     pub detach: fn(&mut P, &mut Context<P>),
     pub reload: fn(&mut P, &mut Context<P>),
     pub save: fn(&mut P, String, &mut Context<P>),
-    /// The half-typed name a save would use.
     pub field: &'a mut ShaderNameField,
     /// The name a save uses with that field left empty.
     pub fallback: &'a str,
@@ -542,11 +466,8 @@ impl<P: 'static> ShaderSource<'_, P> {
         } = self;
         let choice = shader::pick(name, path, resolved);
 
-        // The list, grouped the way the app's other grouped menus are: a
-        // label item over each run of entries. From File sits at the top
-        // with the None entry rather than under the long example list,
-        // since pointing rox at a file of your own is the authoring loop's
-        // front door and shouldn't take a scroll to reach.
+        // From File sits at the top with None rather than under the long example
+        // list: it's the authoring loop's front door.
         let pool = settings::shader_pool();
         let current = choice.clone();
         let host = cx.entity().downgrade();
@@ -583,16 +504,9 @@ impl<P: 'static> ShaderSource<'_, P> {
                     )
                     .separator();
             }
-            // Both lists split the same way, by what the shader does to
-            // the surface under it: a scene replaces it, an overlay leaves
-            // it usable. Surfacing that here keeps "where did my
-            // library go" from being how anyone learns the difference, and
-            // it's why a workspace's own shaders get the split too rather
-            // than one flat run somebody has to have read the WGSL to sort.
-            //
-            // Filtered to overlays there's only one kind left, so the split
-            // has nothing to tell apart and the headings go back to naming
-            // where a shader came from, the question still open.
+            // Both lists split by what the shader does to the surface under it: a
+            // scene replaces it, an overlay leaves it usable. That keeps "where did my
+            // library go" from being how anyone learns the difference.
             for (overlay, examples, workspace) in shader_groups(overlays_only) {
                 menu = menu.item(PopupMenuItem::label(examples));
                 for (index, preset) in shader::PRESETS.iter().enumerate() {
@@ -664,18 +578,15 @@ impl<P: 'static> ShaderSource<'_, P> {
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_SM)
-                // The editor comes first: it's the way in for someone with
-                // no editor of their own, and it edits whatever runs, the
-                // pool's copy included. A name the pool doesn't hold has
-                // no text to open on.
+                // The editor comes first: it's the way in for someone with no editor of
+                // their own. A name the pool doesn't hold has no text to open on.
                 .child(small_button(
                     rox_i18n::t!("shader-edit-here"),
                     icons::PENCIL,
                     missing,
                     cx.listener(move |this, _, window, cx| edit(this, window, cx)),
                 ))
-                // A file is already the editing surface, so a second copy
-                // of it would only be a way to drift the two apart.
+                // A file is already the editing surface; a second copy would only drift.
                 .when(file, |row| {
                     row.child(small_button(
                         rox_i18n::t!("shader-reload"),
@@ -701,8 +612,8 @@ impl<P: 'static> ShaderSource<'_, P> {
                     ))
                 })
         });
-        // Nothing to hand over when there's no source, and a shader that
-        // already belongs to the workspace is where saving would put it.
+        // Nothing to save without a source, and a workspace shader is already
+        // where saving would put it.
         let save = (!empty && !named).then(|| save_block(field, fallback, save, window, cx));
 
         div()
@@ -719,23 +630,16 @@ impl<P: 'static> ShaderSource<'_, P> {
     }
 }
 
-/// The open rename windows, keyed by the panel they rename; the same
-/// replace-a-stale-handle story as [`OpenPanelSettings`].
+/// The open rename windows, same stale-handle story as [`OpenPanelSettings`].
 #[derive(Default)]
 struct OpenRenames(HashMap<EntityId, WindowHandle<Root>>);
 
 impl Global for OpenRenames {}
 
-/// The head of a panel's dropdown tail: the Add Panel flyout above the
-/// Panel-section divider, then the section's "Panel" header, then Save As
-/// Preset and Rename. Every panel routes into its tail through here, so this
-/// one call opens the section for all of them. That's why it owns the
-/// leading separator (callers pass their content items straight in, no
-/// separator of their own) and why Add Panel, a sibling into this group
-/// rather than an op on this panel, sits above the divider that starts the
-/// section. Save As Preset is the first thing under it: it reads as the
-/// answer to the flyout above, and it's an op on this panel, so it belongs
-/// below the divider rather than beside the flyout.
+/// The head of a panel's dropdown tail: the Add Panel flyout, the Panel
+/// section's divider and header, then Save As Preset and Rename. Every
+/// panel's tail starts here, so this owns the leading separator; callers
+/// pass their content items in with no separator of their own.
 pub fn rename_item<P: PanelSettings>(
     menu: PopupMenu,
     panel: &Entity<P>,
@@ -743,10 +647,8 @@ pub fn rename_item<P: PanelSettings>(
     window: &mut Window,
     cx: &mut App,
 ) -> PopupMenu {
-    // Out of design mode the section opens on Panel Settings alone: the
-    // flyout that adds a sibling and the two rows that reshape this panel
-    // are layout edits, and the divider and header still earn their place
-    // separating the panel's own rows from the one that remains.
+    // Out of design mode the section opens on Panel Settings alone: the flyout
+    // and the two rows below are layout edits.
     if !settings::design_mode() {
         return menu.separator().label(rox_i18n::t!("panel-menu-label"));
     }
@@ -771,8 +673,6 @@ pub fn rename_item<P: PanelSettings>(
         )
 }
 
-/// Open a panel's rename window, or bring its open one to the front. The
-/// window holds the panel weakly, like the settings window.
 fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     let id = panel.entity_id();
     if let Some(handle) = cx
@@ -796,25 +696,21 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     cx.default_global::<OpenRenames>().0.insert(id, handle);
 }
 
-/// The rename window's content: one input over the panel's title. Edits
-/// apply as they're typed (the tab follows along) and Enter closes the
-/// window; clearing the field goes back to the built-in name.
+/// One input over the panel's title. Edits apply as they're typed, Enter
+/// closes, and clearing the field goes back to the built-in name.
 struct RenameWindow<P: PanelSettings> {
     panel: WeakEntity<P>,
     input: Entity<InputState>,
-    /// The shared state, for the window's own backdrop.
     state: AppState,
     backdrop: WindowBackdrop,
     _input_events: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
+    /// Its own wake on a new bake, since this window pumps its own frames.
     _backdrop_changed: Subscription,
 }
 
 impl<P: PanelSettings> RenameWindow<P> {
     fn new(panel: Entity<P>, state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // The built-in name is the placeholder, so an empty field
-        // reads as what it does: fall back to that name.
+        // The built-in name is the placeholder, so an empty field reads as the fallback.
         let (current, placeholder) = {
             let panel = panel.read(cx);
             (
@@ -849,8 +745,7 @@ impl<P: PanelSettings> RenameWindow<P> {
         }
     }
 
-    /// The window's own actions: the name was written to the panel as
-    /// it was typed, so committing is closing.
+    /// The name was written to the panel as it was typed, so committing is closing.
     fn footer(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
@@ -904,15 +799,12 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // The backdrop paints first, under the input, like every
-            // other window over the shared state.
             .children(self.backdrop.layer(&self.state.now_art, window, cx))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    // The page's own surface over the root's, the same second
-                    // pass the settings page takes: the backdrop reads through
+                    // The page's own surface over the root's, so the backdrop reads through
                     // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
@@ -936,17 +828,14 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
     }
 }
 
-/// The open save-as-preset windows, keyed by the panel being saved; the same
-/// replace-a-stale-handle story as [`OpenPanelSettings`].
+/// The open save-as-preset windows, same stale-handle story as [`OpenPanelSettings`].
 #[derive(Default)]
 struct OpenPresetSaves(HashMap<EntityId, WindowHandle<Root>>);
 
 impl Global for OpenPresetSaves {}
 
-/// Open a panel's save-as-preset window, or bring its open one to the front.
-/// Holds the panel weakly like the rename window, so closing the panel
-/// underneath the dialog leaves a window that saves nothing rather than a
-/// dangling entity.
+/// Holds the panel weakly, so closing the panel under the dialog leaves a
+/// window that saves nothing.
 fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     let id = panel.entity_id();
     if let Some(handle) = cx
@@ -970,34 +859,27 @@ fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     cx.default_global::<OpenPresetSaves>().0.insert(id, handle);
 }
 
-/// The save-as-preset window: one name field over the panel it was opened
-/// from. Committing dumps the panel exactly the way a layout save does and
-/// files that dump in the workspace's presets, so adding the preset back
-/// anywhere rebuilds this panel with its config, its rename, and whatever
-/// children a composite holds.
+/// Committing dumps the panel the way a layout save does and files it in
+/// the workspace's presets, so adding the preset back rebuilds the panel
+/// with its config, its rename and a composite's children.
 struct SavePresetWindow<P: PanelSettings> {
     panel: WeakEntity<P>,
     input: Entity<InputState>,
-    /// The panel's built-in name, what an empty field saves under.
+    /// What an empty field saves under.
     fallback: SharedString,
-    /// The preset names the workspace already holds, read once at open so
-    /// the "this replaces one" note costs a lookup rather than a file read
-    /// every time the window paints.
+    /// Read once at open, so the replaces note is a lookup rather than a file
+    /// read per paint.
     taken: Vec<String>,
-    /// The shared state, for the window's own backdrop.
     state: AppState,
     backdrop: WindowBackdrop,
     _input_events: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
+    /// Its own wake on a new bake, since this window pumps its own frames.
     _backdrop_changed: Subscription,
 }
 
 impl<P: PanelSettings> SavePresetWindow<P> {
     fn new(panel: Entity<P>, state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Start from what the panel is called: a renamed panel already
-        // has the name its preset should use, and an unnamed one gets its
-        // kind, which is at least a name you can edit rather than a blank.
+        // A renamed panel already has its preset's name; an unnamed one gets its kind.
         let (current, fallback) = {
             let panel = panel.read(cx);
             let fallback = panel::display_name(panel.panel_name());
@@ -1015,8 +897,7 @@ impl<P: PanelSettings> SavePresetWindow<P> {
                 .default_value(current)
         });
         let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
-            // The footer says whether this name replaces a preset, so
-            // it has to re-read on every keystroke.
+            // The footer's replaces note has to re-read on every keystroke.
             if let InputEvent::Change = event {
                 cx.notify()
             }
@@ -1039,8 +920,6 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         }
     }
 
-    /// The name a save uses: what's typed, or the built-in name when
-    /// the field is empty, matching the placeholder.
     fn name(&self, cx: &App) -> String {
         let typed = self.input.read(cx).value().trim().to_string();
         if typed.is_empty() {
@@ -1050,8 +929,7 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         }
     }
 
-    /// Dump the panel under the typed name and close. A panel that went away
-    /// while the dialog stood open closes without writing.
+    /// A panel that went away while the dialog stood open closes without writing.
     fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.name(cx);
         if let Some(panel) = self.panel.upgrade() {
@@ -1064,9 +942,6 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         window.remove_window();
     }
 
-    /// The window's own actions: the save, and either the shortcut for it
-    /// or the warning that this name would overwrite a preset that
-    /// already exists.
     fn footer(&self, replaces: bool, name: &str, cx: &mut Context<Self>) -> Div {
         let hint = if replaces {
             div()
@@ -1134,15 +1009,12 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // The backdrop paints first, under the input, like every
-            // other window over the shared state.
             .children(self.backdrop.layer(&self.state.now_art, window, cx))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    // The page's own surface over the root's, the same second
-                    // pass the settings page takes: the backdrop reads through
+                    // The page's own surface over the root's, so the backdrop reads through
                     // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
@@ -1158,9 +1030,7 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
                                 div()
                                     .text_xs()
                                     .text_color(palette::text_muted())
-                                    // The menu path it comes back through, in
-                                    // keycaps so the two labels read as things
-                                    // to click rather than prose.
+                                    // Keycaps, so the two menu labels read as things to click.
                                     .child(kbd_line([
                                         Seg::Text(rox_i18n::t!("preset-back-from")),
                                         Seg::Key(rox_i18n::t!("preset-back-add-panel")),
@@ -1175,9 +1045,7 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
     }
 }
 
-/// The panel's four optional size limits, read off its chrome to render the
-/// Behavior page's Size rows (each field's reset shows only when its limit is
-/// set). None means that edge is free.
+/// The chrome's size limits, for the Behavior page's Size rows.
 #[derive(Clone, Copy, Default)]
 struct SizeLimits {
     min_width: Option<f32>,
@@ -1186,9 +1054,8 @@ struct SizeLimits {
     max_height: Option<f32>,
 }
 
-/// Flatten a knob's sides onto the widest of them. A knob already
-/// uniform stays exactly as it was, override or not, so linking one that
-/// was only ever linked doesn't quietly fork it off the app default.
+/// Flatten a knob's sides onto the widest. A knob already uniform stays as
+/// it was, so linking one doesn't fork it off the app default.
 fn link_knob(own: &mut Option<Sides>, app: Sides) {
     let shown = own.unwrap_or(app);
     if shown.uniform().is_none() {
@@ -1196,22 +1063,16 @@ fn link_knob(own: &mut Option<Sides>, app: Sides) {
     }
 }
 
-/// Whether a knob opens split: the sides already differ, so the row has
-/// to show them apart or the numbers on screen would be a lie.
+/// Open split where the sides already differ, or the numbers on screen would lie.
 fn split_knob(value: Sides) -> bool {
     value.uniform().is_none()
 }
 
-/// The window content: the panel's own pages, then the shared Appearance
-/// page the window itself provides.
 struct PanelSettingsWindow<P: PanelSettings> {
     panel: WeakEntity<P>,
-    /// The picked page: an index into the panel's pages, one past the
-    /// end for Appearance. A panel with no pages of its own opens
-    /// straight on Appearance.
+    /// 0 is Appearance, 1 Behavior, 2 Shader, and the panel's own pages follow from 3.
     page: usize,
-    /// One picker per palette role, in [`ROLES`] order: the override
-    /// when one is set, the app palette's resolved color otherwise.
+    /// One per palette role, in [`ROLES`] order.
     pickers: Vec<Entity<ColorPickerState>>,
     opacity_scrub: ScrubState,
     /// The one readout being typed into across this window's sliders.
@@ -1220,25 +1081,20 @@ struct PanelSettingsWindow<P: PanelSettings> {
     padding_scrub: SidesScrub,
     rounding_scrub: ScrubState,
     border_scrub: SidesScrub,
-    /// Which four-sided knobs the user has open per side. The window's
-    /// own state, not the panel's: a knob whose sides happen to match is
-    /// still split while it's being edited that way. Seeded from the
-    /// knobs that already differ, so reopening shows what's set.
+    /// Which four-sided knobs are open per side. Window state, not the panel's,
+    /// so a knob whose sides happen to match stays split while it's edited.
     margin_split: bool,
     padding_split: bool,
     border_split: bool,
     font_scale_scrub: ScrubState,
-    /// The Shader page's route editor state: span sliders and which rows
-    /// stand open, kept in step with the panel's route list. Ephemeral:
-    /// a fold is where you are, not what you set.
+    /// The Shader page's span sliders and open rows. Ephemeral: a fold is
+    /// where you are, not what you set.
     shader_routes: RouteEditState,
-    /// One drag state per shader slot, for the Shader page's hand-set
-    /// knobs. Sized once at [`SLOTS`](shader::SLOTS), since the slot count
-    /// is the uniform block's width rather than anything the config says.
+    /// One drag state per shader slot, sized at [`SLOTS`](shader::SLOTS): the
+    /// uniform block's width, not anything the config says.
     shader_slots: Vec<ScrubState>,
-    /// The name a save-to-pool would use, while it's being typed.
     shader_name: ShaderNameField,
-    /// The size limit fields, typed in px; empty means no limit.
+    /// Typed in px; empty means no limit.
     min_width_input: Entity<InputState>,
     min_height_input: Entity<InputState>,
     max_width_input: Entity<InputState>,
@@ -1247,25 +1103,16 @@ struct PanelSettingsWindow<P: PanelSettings> {
     _min_height_events: Subscription,
     _max_width_events: Subscription,
     _max_height_events: Subscription,
-    /// The palette the swatches were last seeded from, the change check
-    /// that keeps [`sync_swatches`](Self::sync_swatches) from re-seeding
-    /// every frame. None until the appearance page first renders under
-    /// the window's tint.
+    /// The palette the swatches were last seeded from, so
+    /// [`sync_swatches`](Self::sync_swatches) doesn't re-seed every frame.
     swatch_resolve: Option<Palette>,
-    /// The page body's scroll position, shared with the scrollbar so it
-    /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
-    /// The sidebar nav's own scroll position, for a window too short to
-    /// show every page at once.
     nav_scroll: ScrollHandle,
-    /// The shared state, for the window's own backdrop.
     state: AppState,
     backdrop: WindowBackdrop,
     _picker_changes: Vec<Subscription>,
-    /// Repaints this window when the panel changes from anywhere else.
     _panel_changed: Option<Subscription>,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
+    /// Its own wake on a new bake, since this window pumps its own frames.
     _backdrop_changed: Subscription,
 }
 
@@ -1284,9 +1131,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .upgrade()
             .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        // The OS close button never runs a teardown of ours, so save the
-        // frame through the should-close hook. Shared across panels, so the
-        // last closed window wins.
+        // The OS close button runs no teardown of ours, so save the frame from the
+        // should-close hook. Shared across panels: the last closed window wins.
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             settings::Settings::update(move |s| {
@@ -1314,8 +1160,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ));
             pickers.push(picker);
         }
-        // The size limit fields, seeded from the panel's current min and max.
-        // Empty reads as no limit; "Off" is the placeholder that says so.
+        // Empty reads as no limit, which the "Off" placeholder says.
         let chrome = panel
             .upgrade()
             .map(|panel| panel.read(cx).chrome().clone())
@@ -1332,7 +1177,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let min_height_input = field(chrome.min_height, window, cx);
         let max_width_input = field(chrome.max_width, window, cx);
         let max_height_input = field(chrome.max_height, window, cx);
-        // Each field parses to px on edit and applies through its own setter.
         let watch = |input: &Entity<InputState>,
                      apply: fn(&mut Self, Option<f32>, &mut Context<Self>),
                      window: &mut Window,
@@ -1351,8 +1195,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let _min_height_events = watch(&min_height_input, Self::apply_min_height, window, cx);
         let _max_width_events = watch(&max_width_input, Self::apply_max_width, window, cx);
         let _max_height_events = watch(&max_height_input, Self::apply_max_height, window, cx);
-        // The frame rows open split where the knob's sides already differ,
-        // whether the panel set them or inherited them.
+        // The frame rows open split where the sides already differ, set or inherited.
         let app_frame = settings::app_frame();
         PanelSettingsWindow {
             panel,
@@ -1390,33 +1233,27 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Pin or unpin the panel in the dock, through the same panel entity
-    /// the theme edits flow through.
     fn set_panel_locked(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(panel) = self.panel.upgrade() {
             panel.update(cx, |panel, cx| panel.set_locked(on, cx));
         }
     }
 
-    /// Turn the panel's window-move handle on or off.
     fn set_panel_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(panel) = self.panel.upgrade() {
             panel.update(cx, |panel, cx| panel.set_anchor(on, cx));
         }
     }
 
-    /// Show or hide a composition host's corner slot controls. The toggle
-    /// reads as "show", so it stores the inverse.
+    /// The toggle reads as "show", so it stores the inverse.
     fn set_panel_controls(&mut self, shown: bool, cx: &mut Context<Self>) {
         if let Some(panel) = self.panel.upgrade() {
             panel.update(cx, |panel, cx| panel.set_hide_controls(!shown, cx));
         }
     }
 
-    // The size limits, typed straight in px and stored on the panel's chrome.
-    // A field edit strips non-digits and parses what's left; empty or zero
-    // clears the limit so the axis is free again. Each field routes its
-    // parsed value through its own setter, passed in as `apply`.
+    // The size limits, in px on the panel's chrome. Non-digits are stripped,
+    // and empty or zero clears the limit.
 
     fn size_limit_edited(
         &mut self,
@@ -1427,8 +1264,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     ) {
         let raw = input.read(cx).value().to_string();
         let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
-        // Rewrite the field only when it held non-digits, so a stray letter
-        // vanishes; the follow-up Change sees clean digits and stops.
+        // Rewrite only when it held non-digits; the follow-up Change sees clean
+        // digits and stops.
         if digits != raw {
             input.update(cx, |state, cx| state.set_value(digits.clone(), window, cx));
         }
@@ -1484,9 +1321,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.apply_max_height(None, cx);
     }
 
-    /// Every theme edit goes through here: read the panel's override,
-    /// change it, hand it back. The panel notifies, which repaints it and
-    /// this window both.
+    /// The panel notifies, which repaints it and this window both.
     fn update_theme(&mut self, edit: impl FnOnce(&mut PanelTheme), cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -1498,9 +1333,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         });
     }
 
-    /// A picker's change: the role into the override. Clearing the hex
-    /// field reads the same as the cell's reset button, back to following
-    /// the app palette, so both route into [`reset_role`](Self::reset_role).
+    /// Clearing the hex field reads the same as the cell's reset button.
     fn role_edited(
         &mut self,
         index: usize,
@@ -1517,9 +1350,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Drop one role's override: the panel follows the app palette for
-    /// that role again, and its swatch shows the inherited color. The
-    /// cell's reset button and a cleared hex field both come here.
+    /// Drop one role's override, so the panel follows the app palette for it again.
     fn reset_role(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let role = &ROLES[index];
         self.update_theme(|theme| theme.set_color(role.name, None), cx);
@@ -1527,14 +1358,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.pickers[index].update(cx, |picker, cx| picker.set_value(inherited, window, cx));
     }
 
-    /// Keep the swatches on the live palette: a swatch showing an
-    /// inherited or linked color re-seeds when the resolve it was seeded
-    /// from moves, this window's counterpart to the app editor's side
-    /// sync. Literal overrides hold as written. Runs from the appearance
-    /// page's render, inside the window tint, since every palette change
-    /// path (song theming, theme switches, palette edits) repaints all
-    /// windows; the stored resolve keeps a settled palette from
-    /// re-seeding every frame.
+    /// Re-seed the swatches showing an inherited or linked color when the
+    /// palette they were seeded from moves; literal overrides hold. Runs from
+    /// the appearance page's render, inside the window tint, since every
+    /// palette change repaints all windows.
     fn sync_swatches(&mut self, theme: &PanelTheme, window: &mut Window, cx: &mut Context<Self>) {
         let resolve = palette::resolved();
         let moved = |last: &Palette| {
@@ -1561,9 +1388,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Point one role at another app color instead of a literal. The
-    /// reference keeps tracking the live palette; the swatch takes the
-    /// target's current resolve so the cell shows what now renders.
+    /// Point one role at another app color. The reference tracks the live
+    /// palette; the swatch takes the target's current resolve.
     fn set_role_reference(
         &mut self,
         index: usize,
@@ -1579,8 +1405,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// The opacity override's switch: forking starts from the app's
-    /// current value, so nothing visibly jumps until the slider moves.
+    /// Forking starts from the app's current value, so nothing visibly jumps
+    /// until the slider moves.
     fn set_opacity_override(&mut self, on: bool, cx: &mut Context<Self>) {
         let value = on.then(palette::app_surface_opacity);
         self.update_theme(|theme| theme.surface_opacity = value, cx);
@@ -1590,13 +1416,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.update_theme(|theme| theme.surface_opacity = Some(value), cx);
     }
 
-    // The frame setters: the strip fraction mapped onto whole px, forked
-    // as this panel's own override. A side of None comes off the linked
-    // strip and sets all four; a side names the one that moved, and the
-    // rest fork at whatever the row was already showing. Zero is a real
-    // override, not a clear: it squares the panel back off over a
-    // rounded app default. The reset button is the way back to following
-    // the app.
+    // The frame setters fork the knob as this panel's own override. A side of
+    // None comes off the linked strip and sets all four. Zero is a real
+    // override, not a clear; the reset button goes back to following the app.
 
     fn set_margin(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
         let app = settings::app_frame().margin;
@@ -1618,9 +1440,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.update_theme(|theme| theme.rounding = Some(value), cx);
     }
 
-    /// The border's setter, and where an older config's edge mask stops
-    /// being a mask: what it was trimming bakes into the widths written
-    /// here, so the panel keeps its look with nothing left to fold.
+    /// Where an older config's edge mask stops being a mask: what it trimmed
+    /// bakes into the widths written here.
     fn set_border(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
         let app = settings::app_frame().border;
         self.update_theme(
@@ -1632,10 +1453,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    // The link toggles: splitting only opens the sides up, so nothing
-    // moves until one does. Linking is a real edit: it flattens the
-    // sides onto the widest of them, forking the knob if the panel was
-    // still following a split app default.
+    // Splitting only opens the sides up. Linking flattens them onto the widest,
+    // forking the knob if the panel was following a split app default.
 
     fn split_margin(&mut self, split: bool, cx: &mut Context<Self>) {
         self.margin_split = split;
@@ -1673,8 +1492,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         cx.notify();
     }
 
-    // The per-knob resets: drop just this knob's override so it follows
-    // the app frame again, the color cells' reset for geometry.
+    // The per-knob resets drop just this knob's override, back to the app frame.
 
     fn reset_margin(&mut self, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.margin = None, cx);
@@ -1698,10 +1516,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// The panel font size: the percent off the strip back into the
-    /// multiplier the theme stores, forked as this panel's own override
-    /// over the app size. The reset below sends it back to following the
-    /// app.
+    /// The strip's percent back into the multiplier the theme stores.
     fn set_font_scale(&mut self, percent: f32, cx: &mut Context<Self>) {
         let scale = percent / 100.0;
         self.update_theme(|theme| theme.font_scale = Some(scale), cx);
@@ -1711,10 +1526,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.update_theme(|theme| theme.font_scale = None, cx);
     }
 
-    /// The panel font-size row: the multiplier over its range, a percent
-    /// readout alongside. Unset, the slider rests at 100% (follow the app
-    /// size); once the panel forks its own, a reset joins on the left,
-    /// where the row grows without nudging the slider or readout.
+    /// Unset, the slider rests at 100%. The reset joins on the left, so the
+    /// slider and readout hold still when it appears.
     fn font_scale_row(&self, value: Option<f32>, cx: &mut Context<Self>) -> Div {
         let scale = value.unwrap_or(1.0);
         let slider = settings_ui::scalar(
@@ -1745,11 +1558,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(slider)
     }
 
-    /// One frame knob's slider row: the value over its 0 to `max` range,
-    /// the px readout alongside. Unset, the slider rests at the app-wide
-    /// default the panel inherits; once the panel forks its own, a reset
-    /// joins on the left of the strip, the size rows' placement, so the
-    /// slider and readout hold still when it appears.
+    /// Unset, the slider rests at the inherited app default. The reset joins on
+    /// the left, so the slider and readout hold still when it appears.
     #[allow(clippy::too_many_arguments)]
     fn frame_slider(
         &self,
@@ -1762,8 +1572,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         cx: &mut Context<Self>,
     ) -> Div {
         let shown = value.unwrap_or(inherited);
-        // The strip's top is the everyday range, not the law: a typed
-        // value runs past it and the setters take what's typed.
+        // The strip's top is the everyday range, not the law: a typed value runs
+        // past it and the setters take it.
         let slider = settings_ui::scalar(
             scrub,
             &self.value_edit,
@@ -1787,10 +1597,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(slider)
     }
 
-    /// One four-sided frame knob's row: the link toggle and its slider or
-    /// sliders, with the reset that drops the whole knob back to
-    /// following the app once it's forked. `shown` is what the row draws,
-    /// the panel's own knob or the app default under it.
+    /// `shown` is what the row draws: the panel's own knob or the app default under it.
     #[allow(clippy::too_many_arguments)]
     fn frame_sides(
         &self,
@@ -1809,8 +1616,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             &self.value_edit,
             shown,
             split,
-            // The strip's top is the everyday range, not the law: a typed
-            // value runs past it and the setters take what's typed.
             settings_ui::span(0., max, " px"),
             on_split,
             apply,
@@ -1831,10 +1636,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(control)
     }
 
-    /// Drop every color override: the panel follows the app palette
-    /// whole again, and the swatches show the inherited colors. The
-    /// frame and opacity keep their own resets, so recoloring can start
-    /// over without flattening the geometry.
+    /// Drop every color override. The frame and opacity keep their own resets,
+    /// so recoloring can start over without flattening the geometry.
     fn reset_colors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.colors.clear(), cx);
         for (role, picker) in ROLES.iter().zip(&self.pickers) {
@@ -1843,9 +1646,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// The palette this panel currently shows: the app's resolved palette
-    /// with the panel's own overrides laid over it, role for role. What
-    /// the swatches read, so Inverse starts from what's on screen.
+    /// The app's resolved palette with the panel's overrides laid over it, so
+    /// Inverse starts from what's on screen.
     fn effective_palette(&self, cx: &Context<Self>) -> Palette {
         let mut palette = palette::resolved();
         let theme = self
@@ -1861,10 +1663,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         palette
     }
 
-    /// Pin a whole palette onto the panel as color overrides, every role,
-    /// and refresh the swatches to match. The shared tail of Inverse and
-    /// Apply Song Theme: both freeze a computed palette onto the panel so
-    /// it holds under song theming and app edits.
+    /// Pin a whole palette onto the panel as overrides, so it holds under song
+    /// theming and app edits. Shared by Inverse and Apply Song Theme.
     fn override_all(&mut self, palette: Palette, window: &mut Window, cx: &mut Context<Self>) {
         self.update_theme(
             |theme| {
@@ -1880,24 +1680,19 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Flip the panel's colors light for dark, the accents held: the
-    /// panel's current look inverted and frozen onto it as overrides.
+    /// Flip the colors light for dark, accents held, frozen on as overrides.
     fn inverse_colors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let inverted = self.effective_palette(cx).inverse();
         self.override_all(inverted, window, cx);
     }
 
-    /// Freeze the song theme onto the panel: the colors the playing track
-    /// derives become this panel's own overrides, so they hold after song
-    /// theming turns off or moves to another track. Only offered while
-    /// song theming drives the colors.
+    /// Freeze the song theme onto the panel, so it holds after song theming
+    /// turns off or moves on. Only offered while song theming drives the colors.
     fn apply_song_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let themed = palette::resolved();
         self.override_all(themed, window, cx);
     }
 
-    /// Drop the frame knobs: the panel sits flush in its cell again,
-    /// square and borderless, colors untouched.
     fn reset_frame(&mut self, cx: &mut Context<Self>) {
         self.update_theme(
             |theme| {
@@ -1911,9 +1706,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// One size-limit field's row: the px input, a "px" tag, and a reset to
-    /// its left that clears the limit. The reset only appears on the row once
-    /// a limit is set, matching the frame knobs' resets.
     fn size_limit_row(
         &self,
         input: &Entity<InputState>,
@@ -1942,10 +1734,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             )
     }
 
-    /// The shared Behavior page: the lock and anchor toggles every panel
-    /// has, the size limits, then the panel's own behavior rows when it
-    /// has any. Sits second in the nav on every panel, so how a panel acts
-    /// is always in the same spot.
+    /// Second in the nav on every panel, so how a panel acts is always in the
+    /// same spot.
     #[allow(clippy::too_many_arguments)]
     fn behavior_page(
         &mut self,
@@ -1971,8 +1761,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 Some(rox_i18n::t!("panel-drag-anchor.description")),
                 panel::toggle(anchor, Self::set_panel_anchor, cx),
             ))
-            // Only the composition hosts draw these, so the row would be a
-            // dead switch on a leaf panel.
             .when(composite, |d| {
                 d.child(panel::setting_row(
                     rox_i18n::t!("panel-slot-controls"),
@@ -1980,10 +1768,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     panel::toggle(!hide_controls, Self::set_panel_controls, cx),
                 ))
             });
-        // The size limits: type a px value to hold the panel to a floor or a
-        // cap, empty to leave it free. Only the axis the panel is resized
-        // along takes effect, but both are offered since a panel can be in a
-        // row or a column. The min and max of each axis sit together.
+        // Only the axis the panel resizes along takes effect, but a panel can sit
+        // in a row or a column, so both are offered.
         let size = div()
             .flex()
             .flex_col()
@@ -2041,35 +1827,26 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .children(extra)
     }
 
-    /// The shared Shader page: a WGSL fragment stage over this panel's own
-    /// surface, and the routes feeding its sixteen signal slots.
-    ///
-    /// No countdown confirm here, unlike the app-wide screen shader. That
-    /// one exists because a hostile whole-window shader can bury the very
-    /// control that would undo it; a panel shader leaves this window, the
-    /// menus, and every other panel exactly where they were.
+    /// No countdown confirm here, unlike the app-wide screen shader. That one
+    /// guards against a shader burying the control that would undo it; a panel
+    /// shader leaves this window, the menus and every other panel alone.
     fn shader_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let Some(panel) = self.panel.upgrade() else {
             return div();
         };
-        // An edit picked up from the file while this window was closed is
-        // running but not yet written down; fold it back before anything
-        // reads the config, so what the page shows and what a layout dump
-        // saves are both the text on screen.
+        // Fold a hot edit picked up while this window was closed back in before
+        // anything reads the config, so the page and a layout dump both hold the
+        // text on screen.
         self.absorb_hot_source(cx);
         let configured = panel.read(cx).chrome().shader.clone();
-        // A panel that has never been given a shader reads as off, whatever
-        // default a fresh config would have.
+        // A panel never given a shader reads as off, whatever a fresh config defaults to.
         let enabled = configured.as_ref().is_some_and(|shader| shader.enabled);
         let shader = configured.unwrap_or_default();
-        // What actually runs, which for a named panel is the pool's copy
-        // rather than the inline text. The gate and the approval block both
-        // read this, so a shader that arrived in a bundle can't slip past
-        // them by arriving under a name with an empty source behind it.
+        // For a named panel, what runs is the pool's copy. The gate and the
+        // approval block both read this, so a bundled shader can't slip past them
+        // under a name with an empty source behind it.
         let resolved = shader::resolve_source(shader.name.as_deref(), &shader.source);
         let running = resolved.clone().unwrap_or_default();
-        // A source that arrived inside a layout or a bundle doesn't run
-        // until it's read and approved here.
         let pending = (!running.trim().is_empty() && !shader::approved(&running)).then(|| {
             let approving = running.clone();
             pending_shader(
@@ -2078,13 +1855,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 shader.path.as_deref(),
                 cx.listener(move |this, _, _, cx| {
                     shader::approve(&approving);
-                    // The path named a file on whichever machine wrote the
-                    // bundle. If this one happens to have something there,
-                    // the watch would pull it over the text just approved,
-                    // so an imported shader keeps no bookmark.
-                    //
-                    // Approving is saying run it, so it also flips a switch
-                    // an earlier Turn Off left down.
+                    // The path named a file on the machine that wrote the bundle. A file
+                    // there on this one would get pulled over the approved text, so an
+                    // imported shader keeps no bookmark. Approving also flips a switch an
+                    // earlier Turn Off left down.
                     this.edit_shader(
                         |shader| {
                             shader.path = None;
@@ -2094,28 +1868,20 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     );
                 }),
                 cx.listener(move |this, _, _, cx| {
-                    // Saying no parks the shader, it doesn't delete it. The
-                    // source, the name and the routes all stay where they
-                    // are with the switch off, so the picker still shows what
-                    // this panel had and turning it back on is one
-                    // toggle plus the approval above.
                     this.edit_shader(move |shader| shader.enabled = false, cx)
                 }),
             )
         });
-        // Only report a compile while the thing is meant to run;
-        // a message from before the switch went off is just noise.
+        // A compile message from before the switch went off is just noise.
         let error = (enabled && shader.runnable())
             .then(|| shader::error(panel.entity_id()))
             .flatten();
-        // The slot names come off what runs, so a named panel reads the
-        // pool's `// @slot n:` comments rather than the inline copy it left
-        // behind when the name went on.
+        // Slot names come off what runs, so a named panel reads the pool's
+        // `// @slot n:` comments.
         let labels = shader::slot_labels(&running);
         self.shader_routes.sync(shader.routes.len());
 
-        // The name a save would use, read before the field is
-        // borrowed for the picker block below.
+        // Read before the field is borrowed for the picker below.
         let fallback = {
             let label = panel
                 .read(cx)
@@ -2129,13 +1895,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             name: shader.name.as_deref(),
             path: shader.path.as_deref(),
             resolved: resolved.as_deref(),
-            // A panel is allowed to have no surface shader at all, unlike
-            // the Shader panel, whose whole body is the thing.
+            // A panel may have no surface shader at all, unlike the Shader panel.
             clear: Some(|this: &mut Self, cx| this.clear_shader(cx)),
-            // A shader here runs over a panel that's already drawing
-            // something (a queue, a cover, a set of transport buttons), so a
-            // scene doesn't decorate that body, it hides it. The Shader panel is
-            // where a full-cover look belongs, and it offers every shader.
+            // A scene here would hide the panel's body rather than decorate it. The
+            // Shader panel is where a full-cover look belongs.
             overlays_only: true,
             use_example: |this: &mut Self, index, cx| this.use_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_pool_shader(name, cx),
@@ -2165,10 +1928,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(picked);
-        // The filter above only decides what can be picked, so a config
-        // that arrived from a bundle or an older build can still be running
-        // a scene. Say so rather than leaving someone to wonder why the
-        // panel under it went missing.
+        // The filter only decides what can be picked, so a config from a bundle or
+        // an older build can still be running a scene. Say so.
         if enabled && !running.trim().is_empty() && !shader::overlay(&running) {
             source = source.child(
                 div()
@@ -2197,9 +1958,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ),
         ));
 
-        // The one route editor every shader surface uses, over this
-        // panel's own list: the write goes back through `edit_shader`, so
-        // the panel's config stays the only copy.
+        // The write goes back through `edit_shader`, so the panel's config stays
+        // the only copy.
         let hub = self.state.signals.clone();
         let editor = signal_ui::routes::RouteEditor {
             id: "panel-shader-route",
@@ -2217,9 +1977,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         };
         let add = editor.add_button(cx);
 
-        // The same slot list the Shader panel's Bindings page and the app's
-        // Overlay Shader section use, over this panel's own config: the
-        // routed slots read out live, the rest are hand-set knobs.
+        // The routed slots read out live; the rest are hand-set knobs.
         let slots = signal_ui::slots::SlotList {
             hub: &hub,
             routes: &shader.routes,
@@ -2249,10 +2007,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(section(rox_i18n::t!("panel-section-slots"), None, slots))
     }
 
-    /// Write a hot-reloaded source back into the panel's config, so the
-    /// layout dump holds what's actually running. The wrapper paints from
-    /// a file it can't write back through (it has the panel's id and
-    /// nothing else), so the fold happens here, where the panel is typed.
+    /// Write a hot-reloaded source back into the config, so the layout dump
+    /// holds what runs. The wrapper only has the panel's id and can't write
+    /// back, so the fold happens here where the panel is typed.
     fn absorb_hot_source(&mut self, cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -2276,9 +2033,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Edit the panel's shader config, seeding a default one on first
-    /// touch. The stored compile message goes with it: whatever it reported
-    /// was about a source that just moved.
+    /// Edit the panel's shader config, seeding a default on first touch. The
+    /// stored compile message goes too, since the source just moved.
     fn edit_shader(&mut self, edit: impl FnOnce(&mut shader::PanelShader), cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -2294,10 +2050,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             cx.notify();
         });
         cx.notify();
-        // The compile message is written where the shader paints, which is
-        // the panel's window drawing after this one, so the readout here
-        // would be a frame behind, and with a broken shader requesting no
-        // frames, stay there. One nudge once the draw has finished.
+        // The compile message is written where the shader paints, in the panel's
+        // window after this one, and a broken shader requests no frames. One nudge
+        // once the draw has finished.
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(150))
@@ -2307,11 +2062,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         .detach();
     }
 
-    /// Open the in-app editor over the panel's shader. A named one edits
-    /// the pool entry, so every panel on the name follows an apply; an
-    /// inline one edits this panel's own text, and an apply lands through
-    /// the same config write the picker's actions take, with the bookmark
-    /// kept so the working copy stays in step.
+    /// A named shader edits the pool entry, so every panel on the name follows
+    /// an apply. An inline one edits this panel's text through the same config
+    /// write the picker's actions take.
     fn edit_shader_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         use shader::edit::{EditKey, ShaderEditTarget};
 
@@ -2338,8 +2091,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                         let Some(panel) = weak.upgrade() else {
                             return;
                         };
-                        // The stored compile message was about text that
-                        // just left; the paint writes a fresh one.
+                        // The old compile message was about text that just left.
                         shader::note_error(panel.entity_id(), None);
                         panel.update(cx, |panel, cx| {
                             let shader = panel
@@ -2362,11 +2114,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         crate::openers::shader_editor(state, target, cx);
     }
 
-    /// One hand-set slot edit, straight onto the panel's shader config.
-    /// Not through [`edit_shader`](Self::edit_shader): that clears the
-    /// stored compile message because the source moved under it, and a knob
-    /// drag moves no source: a broken shader would go quiet mid-drag with
-    /// nothing to bring the message back.
+    /// Not through [`edit_shader`](Self::edit_shader): that clears the compile
+    /// message, and a knob drag moves no source, so a broken shader would go
+    /// quiet mid-drag with nothing to bring the message back.
     fn set_shader_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -2382,9 +2132,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         cx.notify();
     }
 
-    /// Browse for a shader file. The source is copied into the panel's
-    /// config on the way in, so the path is only ever a bookmark for
-    /// Reload; a layout or a workspace bundle holds the shader itself.
+    /// The source is copied into the config on the way in, so the path is only
+    /// a bookmark for Reload.
     fn pick_shader_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -2405,9 +2154,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         .detach();
     }
 
-    /// Re-read the file the shader came from. The panel watches it while it
-    /// draws, so this is for a panel that's been parked, or an
-    /// edit that arrived between stats and shouldn't have to wait.
+    /// The panel watches the file while it draws, so this is for a parked panel
+    /// or an edit that shouldn't have to wait.
     fn reload_shader(&mut self, cx: &mut Context<Self>) {
         let path = self
             .panel
@@ -2418,14 +2166,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Write the panel's shader out to a file and hand it to whatever opens
-    /// `.wgsl` on this machine. rox has no editor of its own, so this plus
-    /// the file watch is the authoring loop.
-    ///
-    /// An inline shader keeps the bookmark, which puts its file
-    /// under the panel's own watch. A named one ejects through its pool
-    /// entry instead, and the bookmark goes there: the panel is running the
-    /// workspace's shader, so the edits belong to every panel that is.
+    /// Write the shader out and hand it to whatever opens `.wgsl`, the
+    /// external-editor authoring loop. An inline shader keeps the bookmark. A
+    /// named one ejects through its pool entry, since its edits belong to every
+    /// panel running it.
     fn eject_shader(&mut self, cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -2462,13 +2206,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// Take a copy of the pool shader this panel is running and stop using
-    /// it by name. The text is the same one that was already running, so
-    /// its approval still applies and nothing has to be agreed to twice.
-    ///
-    /// No bookmark comes across. The pool entry's file belongs to the pool,
-    /// and a second watcher on it would have this panel and the workspace's
-    /// shader drift apart on the next save.
+    /// Copy the running pool shader in and stop using it by name. It's the same
+    /// text, so its approval still applies. No bookmark comes across: a second
+    /// watcher on the pool's file would drift the two apart on the next save.
     fn detach_shader(&mut self, cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -2492,34 +2232,25 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// Point the panel at one of the workspace's shaders. The inline source
-    /// goes with the bookmark: the workspace holds what runs from here, and
-    /// a second copy on the panel would only be the one that's
-    /// wrong after the next edit to the shared entry.
-    ///
-    /// Nothing is approved on the way through. A workspace shader that came
-    /// in with a bundle still has to be read before it runs, and this is
-    /// the same choice picking a name in a bundle's config would have made.
+    /// The inline source and bookmark go, since the workspace holds what runs
+    /// from here. Nothing is approved on the way through: a workspace shader
+    /// that came in with a bundle still has to be read before it runs.
     fn use_pool_shader(&mut self, name: String, cx: &mut Context<Self>) {
         self.edit_shader(
             move |shader| {
                 shader.name = Some(name);
                 shader.source = String::new();
                 shader.path = None;
-                // Picking a shader is asking to see it. A panel an earlier
-                // Turn Off parked would otherwise take the new one and go on
-                // painting nothing.
+                // Picking is asking to see it, or a panel an earlier Turn Off parked would
+                // go on painting nothing.
                 shader.enabled = true;
             },
             cx,
         );
     }
 
-    /// Load one of the shipped examples. Sits beside the file pick rather
-    /// than beside detach because it does the same thing: the panel comes
-    /// off whatever it was on and holds this source itself. The bookmark
-    /// goes, since an example has no file behind it and a stale one would
-    /// have the watch overwrite it a moment later.
+    /// The bookmark goes: an example has no file behind it, and a stale one
+    /// would have the watch overwrite it a moment later.
     fn use_shader_example(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(preset) = shader::PRESETS.get(index) else {
             return;
@@ -2536,10 +2267,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// Take the shader off this panel: no name, no source, no bookmark. The
-    /// switch is left alone, since it's the row above and its own decision.
-    /// A workspace shader the panel was using stays in the workspace for
-    /// whatever else uses it.
+    /// Take the shader off this panel. The switch is its own decision and
+    /// stays, and a workspace shader stays in the workspace.
     fn clear_shader(&mut self, cx: &mut Context<Self>) {
         self.edit_shader(
             |shader| {
@@ -2551,10 +2280,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// Promote the panel's inline shader into the workspace's shaders and
-    /// use it by name from there. The inline copy goes: the pool holds the
-    /// source now, and a second copy in the panel would only be the
-    /// one that's wrong after the next pool edit.
+    /// Promote the inline shader into the workspace's shaders and use it by
+    /// name. The inline copy goes, so the pool holds the only one.
     fn save_shader_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(panel) = self.panel.upgrade() else {
             return;
@@ -2566,8 +2293,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         if name.is_empty() || shader.source.trim().is_empty() {
             return;
         }
-        // The panel's own bookmark goes with it, so a shader that was being
-        // edited in a file keeps hot reloading through the pool's watch.
+        // The bookmark goes with it, so a file being edited keeps hot reloading
+        // through the pool's watch.
         crate::panel::shader::save_to_pool(&name, &shader.source, shader.path.clone());
         self.edit_shader(
             move |shader| {
@@ -2579,14 +2306,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// Snapshot a file into the panel's shader source. A file that won't
-    /// read shows in the same readout a failed compile does.
-    ///
-    /// Picking a file is the user putting the source there, so it approves
-    /// itself on the way in; the gate is for sources that arrive inside a
-    /// layout or a workspace bundle without anyone choosing them. It's also
-    /// how a panel comes off a pool shader by picking a different one: you
-    /// asked for this file, so the name goes and the panel holds its own
+    /// Snapshot a file into the panel's shader source; a read failure shows
+    /// where a compile error would. Picking a file approves it, since the gate
+    /// is for sources nobody chose. The name goes, so the panel holds its own
     /// source from here.
     fn load_shader_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
@@ -2612,10 +2334,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
-    /// The shared Appearance page: the panel's opacity fork, the frame
-    /// knobs, the panel's own appearance section when it has one, and
-    /// the override grid, the app palette editor's shape with inherit
-    /// as the resting state.
+    /// The opacity fork, the frame knobs, the panel's own appearance section,
+    /// and the override grid, with inherit as the resting state.
     fn appearance_page(
         &mut self,
         theme: &PanelTheme,
@@ -2719,16 +2439,14 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let weak = cx.entity().downgrade();
         let grid = settings_ui::role_grid(columns, |j| {
             let role = &ROLES[j];
-            // The picker pads a 4px margin around its swatch square; the
-            // counter-margin keeps the cell at the grid's 20px footprint.
+            // The picker pads 4px around its swatch; the counter-margin keeps the cell
+            // at the grid's 20px footprint.
             let control = ColorPicker::new(&self.pickers[j])
                 .small()
                 .m(px(-4.))
                 .into_any_element();
-            // The link ties this role to another app color: its menu lists
-            // the palette by group, the current target checked. Linked
-            // cells fill the button with the accent so a reference reads
-            // apart from a literal fork at a glance.
+            // Linked cells fill the button with the accent, so a reference reads apart
+            // from a literal fork at a glance.
             let linked = theme.reference(role.name);
             let pick = weak.clone();
             let link = Button::new(("role-link", j))
@@ -2745,8 +2463,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     menu = menu.scrollable(true).max_h(px(320.));
                     let mut group = "";
                     for target in ROLES {
-                        // A role following itself would just read as the
-                        // app value, so the cell's own role stays out.
                         if target.name == ROLES[j].name {
                             continue;
                         }
@@ -2770,9 +2486,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     menu
                 })
                 .into_any_element();
-            // Overridden roles get a reset button on the cell's right
-            // edge, so it reads at a glance which colors have forked from
-            // the app palette; the rest of the cell just follows along.
             let reset = overridden(role.name).then(|| {
                 settings_ui::icon_button(
                     icons::REFRESH_CW,
@@ -2803,16 +2516,12 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                  follow the app palette again",
             ))
             .child(grid);
-        // Each section resets its own knobs: recoloring can start over
-        // without flattening the frame, and the other way around.
         let frame_controls = small_button(
             rox_i18n::t!("panel-reset"),
             icons::REFRESH_CW,
             false,
             cx.listener(|this, _, _, cx| this.reset_frame(cx)),
         );
-        // Apply Song Theme is offered only while song theming drives the colors
-        // it would freeze in; Inverse and Reset stay open.
         let song_on = palette::art_theming();
         let color_controls = div()
             .flex()
@@ -2838,14 +2547,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
             ));
 
-        // The generic font override: any panel that doesn't draw its own
-        // font control gets a family picker here, resolving to the app font
-        // when unset. Panels with their own (the lyrics panel) opt out
-        // through `has_own_font` so the page never shows two.
         let font_section = (!own_font).then(|| {
-            // The section Reset drops both font overrides at once, inert
-            // until one is set; the size row also has its own inline
-            // reset, the frame sliders' pattern.
+            // The section Reset drops both font overrides; the size row has its own too.
             let reset = small_button(
                 rox_i18n::t!("panel-reset"),
                 icons::REFRESH_CW,
@@ -2904,9 +2607,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 frame,
             ))
             .children(font_section)
-            // The panel's own appearance rows, when it has any: knobs
-            // stored on its config rather than its theme, like the
-            // grid's art rounding.
             .children(extra)
             .child(section(
                 rox_i18n::t!("panel-section-colors"),
@@ -2920,9 +2620,6 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
 
-        // A page somebody asked for from the panel's own body, taken here
-        // rather than at construction so it works on a window that was
-        // already open.
         if let Some(panel) = self.panel.upgrade()
             && let Some(page) = cx
                 .default_global::<RequestedPage>()
@@ -2932,12 +2629,9 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
             self.page = page;
         }
 
-        // The window renders under the player's art tint like the
-        // workspace that opened it, and claims the widget theme while it
-        // holds focus, so the panel's settings read in the playing track's
-        // colors. Everything builds inside the tint: color reads resolve
-        // eagerly as the div chains build, so a nav or page built before
-        // the wrap would use the untinted base palette instead.
+        // Everything builds inside the tint: color reads resolve eagerly as the div
+        // chains build, so a nav or page built before the wrap would use the
+        // untinted base palette.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {
@@ -2952,17 +2646,11 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 Some(panel) => {
                     let pages = panel.read(cx).pages();
                     // Appearance, Behavior and Shader lead the nav on every
-                    // panel, the app settings window's order, so how a panel
-                    // looks and how it acts always sit in the same spots no
-                    // matter what pages it brings. `page` 0 is Appearance, 1
-                    // is Behavior, 2 is Shader, and the panel's own pages
-                    // follow at 3..
+                    // panel, the app settings window's order.
                     let surface_shader = panel.read(cx).surface_shader();
                     let mut picked = self.page.min(pages.len() + 2);
-                    // A panel that opted out of the shared page (the Shader
-                    // panel, whose body already is one) keeps the numbering so
-                    // its own pages stay at 3.., but slot 2 falls back to
-                    // Appearance instead of a nav item it doesn't show.
+                    // A panel that opted out of the shared Shader page keeps the numbering, so
+                    // its own pages stay at 3, and slot 2 falls back to Appearance.
                     if !surface_shader && picked == 2 {
                         picked = 0;
                     }
@@ -3021,9 +2709,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             .into_any_element(),
                         );
                     }
-                    // A panel that brings a long list of its own pages
-                    // outruns a short window; the nav scrolls rather than
-                    // hiding its tail below the edge.
+                    // The nav scrolls, so a long page list doesn't hide its tail in a short window.
                     let nav = sidebar().child(settings_ui::nav_scroll(
                         "panel-settings-nav",
                         &self.nav_scroll,
@@ -3039,9 +2725,8 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 .into_any_element()
                         }
                         1 => {
-                            // Read through chrome() so the call isn't ambiguous
-                            // between PanelSettings::locked and the dock's
-                            // Panel::locked, which share the name.
+                            // Read through chrome(), since PanelSettings::locked and the dock's
+                            // Panel::locked share the name.
                             let composite = panel.read(cx).composite();
                             let (locked, anchor, hide_controls, limits) = {
                                 let chrome = panel.read(cx).chrome();
@@ -3085,9 +2770,8 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 .text_color(palette::text_bright())
                 .text_sm()
                 .when_some(settings::app_font(), |d, font| d.font_family(font))
-                // The backdrop paints first, under the pages; without it
-                // translucent surfaces would sink into the window's own
-                // black instead of the playing track's art.
+                // Without it, translucent surfaces sink into the window's own black
+                // instead of the playing track's art.
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
                 .child(nav)
                 .child(
@@ -3096,9 +2780,8 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                         .min_w_0()
                         .h_full()
                         .relative()
-                        // The page's own surface, the window base the sidebar
-                        // sits beside: opaque at full surface opacity so the
-                        // backdrop only reads through as the surfaces thin.
+                        // Opaque at full surface opacity, so the backdrop only reads through as
+                        // the surfaces thin.
                         .bg(palette::bg_elevated())
                         .child(
                             div()
@@ -3109,7 +2792,6 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 .p(tokens::SPACE_MD)
                                 .child(body),
                         )
-                        // Fades out when idle, same as the panels.
                         .child(
                             div()
                                 .absolute()
@@ -3126,9 +2808,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
 mod tests {
     use super::*;
 
-    /// The window is the one surface a scene can't be picked for, and this
-    /// is the rule that enforces it. Read off the group table rather than
-    /// off the menu, which needs a window to build.
+    /// Read off the group table rather than the menu, which needs a window to build.
     #[test]
     fn the_window_is_only_offered_overlays() {
         let offered = |overlays_only| -> Vec<&'static str> {
@@ -3154,8 +2834,7 @@ mod tests {
                 "{scene} covers the window and mustn't be offered for it"
             );
         }
-        // A panel is welcome to run either, so its picker still lists all
-        // of them, and every example falls in exactly one run.
+        // The Shader panel lists every example, each in exactly one run.
         let panel = offered(false);
         assert_eq!(panel.len(), shader::PRESETS.len());
         for preset in shader::PRESETS {
@@ -3167,13 +2846,10 @@ mod tests {
         }
     }
 
-    /// Filtered, the split has one side left, so a heading naming it would
-    /// be labelling a distinction the list no longer draws.
     #[test]
     fn the_filtered_list_drops_the_split() {
         assert_eq!(shader_groups(true).len(), 1);
-        // Against the key rather than the English, so the assertion holds
-        // whatever locale the machine running the suite negotiated to.
+        // Against the key rather than the English, so it holds in any locale.
         assert_eq!(
             shader_groups(true)[0].1,
             rox_i18n::t!("shader-group-examples")

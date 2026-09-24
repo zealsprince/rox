@@ -7,17 +7,15 @@ fn main() {
     load_identities();
 }
 
-/// Hands the identities to the crate's compilation, from the environment when
-/// it carries them and from the workspace `.env` otherwise. Cargo doesn't watch
-/// env vars or stray files on its own, so both sides need declaring or a
-/// rotated key comes back cached.
+/// Cargo watches neither env vars nor stray files on its own, so both need
+/// declaring or a rotated key comes back cached.
 fn load_identities() {
     for key in identities::IDENTITY_KEYS {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
-    // Declared whether or not it exists right now: that's what makes cargo
-    // rebuild when a .env first appears, not just when one changes.
+    // Declared even when absent, so cargo rebuilds when a .env first
+    // appears.
     let env_file = workspace_root().join(".env");
     println!("cargo:rerun-if-changed={}", env_file.display());
 
@@ -26,7 +24,6 @@ fn load_identities() {
     }
 }
 
-/// Two levels up from `crates/rox-net`, where `.env` and `.env.template` live.
 fn workspace_root() -> PathBuf {
     let manifest =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));

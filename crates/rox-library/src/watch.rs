@@ -1,11 +1,6 @@
-//! Filesystem watching for the library roots, the live half of the library
-//! contract's `watch(on/off)`. notify runs its own OS-backed watcher thread
-//! and the debouncer folds a burst (a bulk copy, a directory deletion) into
-//! batches before it hands them here, so the library never thrashes one file
-//! at a time. Each batch of changed paths is sent over an async channel to
-//! the library entity, which maps them onto the same scan/upsert/prune path a
-//! manual rescan takes. Dropping the handle stops the watch: the debouncer's
-//! thread ends and the channel closes.
+//! Filesystem watching for the library roots. The debouncer folds bursts
+//! into batches, which go over a channel to the library entity and take the
+//! same upsert/prune path a rescan does. Dropping the handle stops the watch.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -16,46 +11,32 @@ use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, ne
 
 use crate::writer;
 
-/// How long a path has to stay quiet before the debouncer flushes it. Long
-/// enough that a bulk copy's writes fold together, short enough that a single
-/// edit reaches the library within a couple of seconds.
+/// Long enough to fold a bulk copy, short enough that an edit lands within
+/// a couple of seconds.
 const DEBOUNCE: Duration = Duration::from_millis(1000);
 
-/// One flushed batch of changes: the plain changed paths and, apart from them,
-/// the renames the debouncer managed to correlate. A correlated rename holds
-/// the (from, to) pair so the library can move the row and keep its id, rather
-/// than watch the old path die and the new one arrive fresh. Anything that
-/// isn't a correlated rename (a create, a modify, a delete, or a rename we
-/// couldn't pair) goes in `paths`.
+/// One flushed batch: plain changed paths, and the renames the debouncer
+/// correlated, kept as pairs so the row keeps its id.
 pub struct WatchBatch {
     pub paths: Vec<PathBuf>,
     pub renames: Vec<(PathBuf, PathBuf)>,
 }
 
-/// The notify debouncer plus the receiver its callback sends to. Held by the
-/// library for as long as watching is on; dropping it tears the watcher down.
 pub struct LibraryWatcher {
     _debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
     events: async_channel::Receiver<WatchBatch>,
-    /// How many roots the watch actually came up over, and how many were
-    /// asked for, so the library can report a partial watch.
     watched: usize,
     total: usize,
 }
 
 impl LibraryWatcher {
-    /// Arm a recursive watch over every root. `None` when the platform
-    /// watcher won't come up, so the app runs on without live updates
-    /// rather than failing; a root that cannot be watched (missing folder,
-    /// unplugged drive) is skipped, the others still watched.
+    /// `None` when the platform watcher won't come up; a root that can't be
+    /// watched is skipped.
     pub fn new(roots: &[PathBuf]) -> Option<LibraryWatcher> {
         let (tx, events) = async_channel::unbounded();
         let mut debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
-            // Runs on the debouncer's own thread. Access events (a plain
-            // read, the file we just played) never change the catalog, so
-            // they're dropped here; create, modify, and remove hold the
-            // paths a rescan needs to converge. Errors just skip the batch;
-            // the next real change re-triggers the sync.
+            // Access events never change the catalog. A failed batch is skipped; the
+            // next change re-triggers the sync.
             let Ok(batch) = result else {
                 return;
             };
@@ -65,28 +46,16 @@ impl LibraryWatcher {
                 if matches!(event.kind, EventKind::Access(_)) {
                     continue;
                 }
-                // Note that nothing here filters by extension. A .cue write
-                // has to go in the batch like an audio write does, since
-                // editing a sheet re-cuts the image beside it; the receiver's
-                // relevance test is [`crate::scanner::is_relevant`], which
-                // passes both, and [`crate::scanner::reindex`] knows what to
-                // do with a sheet.
-                // The debouncer correlates a rename into a single Both
-                // event holding [from, to]. Keep that as a pair so the sync
-                // moves the row and keeps its id; a Both that didn't give
-                // exactly two paths isn't a pair we can trust, so it falls
-                // back into the plain path list.
+                // No extension filter: a .cue edit re-cuts its image, and
+                // `scanner::is_relevant` passes it. A correlated rename arrives as one Both
+                // event with [from, to].
                 if matches!(
                     event.kind,
                     EventKind::Modify(ModifyKind::Name(RenameMode::Both))
                 ) && let [from, to] = event.paths.as_slice()
                 {
-                    // The writer's commit renames its working clone
-                    // over the original. That pair is a modify of the
-                    // target, not a real rename, so it goes in `paths`
-                    // where the library's self-write filter can drop
-                    // it; passed on as a rename it would slip past the
-                    // filter and force a reload per written file.
+                    // The writer's clone renamed over the original is a modify, not a rename.
+                    // Passed as a rename it would dodge the self-write filter.
                     if writer::is_clone_path(from) {
                         paths.push(to.clone());
                     } else {
@@ -94,9 +63,7 @@ impl LibraryWatcher {
                     }
                     continue;
                 }
-                // The writer's clones themselves (created, written,
-                // removed on a failed commit) are never library rows;
-                // drop them here so they cannot pump empty syncs.
+                // The writer's clones are never library rows.
                 paths.extend(
                     event
                         .paths
@@ -124,14 +91,10 @@ impl LibraryWatcher {
         })
     }
 
-    /// A receiver clone for the library's drain loop.
     pub fn events(&self) -> async_channel::Receiver<WatchBatch> {
         self.events.clone()
     }
 
-    /// How many roots the watch came up over versus how many were asked for.
-    /// A partial count means some roots failed to watch (missing folder,
-    /// unplugged drive) while the rest stay live.
     pub fn coverage(&self) -> (usize, usize) {
         (self.watched, self.total)
     }

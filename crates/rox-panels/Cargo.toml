@@ -5,62 +5,33 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Every panel is a gpui view, and its rows, menus, and inputs come off the
-# component library.
 gpui = { workspace = true }
 gpui-component = { workspace = true }
-# The seam these compile against: the shared state, the chrome, the panel
-# settings window, the shared track and query surfaces, and the openers
-# table a panel calls up into the app's windows through.
 rox-panel-api = { path = "../rox-panel-api" }
-# The widget builders the panel bodies are assembled from.
 rox-panel-kit = { path = "../rox-panel-kit" }
-# The services the views render over: the catalog, the player, the caches,
-# the selection, the history, the artist store, the peak cache.
 rox-services = { path = "../rox-services" }
-# Settings, the clock formatters, and the queue cap.
 rox-core = { path = "../rox-core" }
-# The palette, the tokens, and the embedded icons.
 rox-design = { path = "../rox-design" }
-# Every string a panel puts on screen resolves through t!.
 rox-i18n = { path = "../rox-i18n" }
-# The dock traits every panel implements.
 rox-dock = { path = "../rox-dock" }
-# The projection rows, the playlists, the lyrics store, and the tag writer
-# the editing panels drive.
 rox-library = { path = "../rox-library" }
-# The engine types the transport reads, and the continuation the library and
-# playlist panels queue through.
 rox-playback = { path = "../rox-playback" }
-# The enrichment lookups the biography, metadata, and lyrics panels make.
 rox-net = { path = "../rox-net" }
-# The PCM feed and the signal pool the audio views draw from.
 rox-viz = { path = "../rox-viz" }
-# The Milkdrop panel's engine: libprojectM on its own thread with its own GL
-# context, handing back an rgba8 frame the panel uploads (ADR 28). The heavy
-# half is the static C++ library it links, which is why it sits behind one
-# panel rather than in the panel layer generally.
+# libprojectM for the Milkdrop panel (ADR 28). The static C++ library it
+# links is why it sits behind one panel.
 rox-milkdrop = { path = "../rox-milkdrop" }
-# The metadata panel's Romanize button reads sort names out of Japanese,
-# Korean and Chinese titles the same way the library pass does. A leaf
-# crate, and the heavy half is a download rather than a link: the engine
-# adds about 520 KiB to the binary (measured in that crate's own manifest)
-# and the forty-megabyte dictionary arrives from the Models page.
+# The metadata panel's Romanize button. The engine adds about 520 KiB (measured
+# in that crate's manifest); the forty-megabyte dictionary is a download.
 rox-romanize = { path = "../rox-romanize" }
-# The filter panel's per-column count pass walks every row in the library
-# once per column, so it splits across cores the way the projection's own
-# passes do. Same version the library crate pins.
+# The filter panel's per-column count pass splits across cores. Same version
+# the library crate pins.
 rayon = "1.10"
-# Panel configs round-trip through the layout dumps as JSON.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Decodes the cover bytes the art panels draw at their own size.
 image = "0.25"
 log = "0.4"
-# The playlist panel resolves ~ for the m3u export path.
 dirs = "5"
 
 [dev-dependencies]
-# The panel tests that need a real Context<Self> drive gpui's headless
-# TestAppContext.
 gpui = { workspace = true, features = ["test-support"] }

@@ -1,12 +1,7 @@
-//! Last.fm (ws.audioscrobbler.com): the artist lookups behind the
-//! biography panel and the track counts behind the metadata panel's
-//! global rows. artist.getInfo, artist.getTopTracks, and track.getInfo
-//! are unsigned reads, so they go over the shared agent with just an api
-//! key (the build's own identity or the settings override, the
-//! scrobbler's fallback order), and no account or session enters into
-//! it. The wiki text arrives as
-//! HTML with a "Read more" anchor and a license sentence after it; both
-//! strip here so callers hold plain paragraphs.
+//! Last.fm (ws.audioscrobbler.com): the unsigned artist and track reads
+//! behind the biography and metadata panels, with just an api key (the
+//! settings override or the build's own). Wiki HTML is stripped to plain
+//! paragraphs here.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,41 +11,28 @@ use super::{ArtCandidate, ArtProvider, TrackQuery, agent, net_reason, string};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
-/// One artist as Last.fm records them, the biography panel's sheet: the
-/// wiki text as plain paragraphs, the listening stats, the genre tags,
-/// and the similar names. Serialized as the artist store's cache file;
-/// missing fields default, so an old entry still loads after the shape
-/// drifts.
+/// The artist store's cache file format; missing fields default so old
+/// entries still load.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ArtistInfo {
-    /// The name as Last.fm capitalizes it, not as the tag spelled it.
+    /// As Last.fm capitalizes it, not as the tag spelled it.
     pub name: String,
-    /// The artist's Last.fm page, the attribution link the panel shows.
     pub url: String,
-    /// The full wiki text, HTML stripped, paragraphs separated by blank
-    /// lines. Empty when the wiki has no article.
+    /// Plain paragraphs separated by blank lines.
     pub bio: String,
-    /// The links the wiki text carried, as byte ranges into `bio` with
-    /// their targets, so a panel can make them clickable. None on an
-    /// entry written before links were kept, which the store treats as
-    /// stale so they fill in without waiting out the TTL.
+    /// Byte ranges into `bio`. None on an old entry, which the store treats as
+    /// stale so links fill in without waiting out the TTL.
     pub links: Option<Vec<BioLink>>,
     pub listeners: u64,
     pub playcount: u64,
-    /// The top genre tags, most applied first.
     pub tags: Vec<String>,
-    /// The artists Last.fm files nearby, for the sheet's foot.
     pub similar: Vec<String>,
-    /// The most played tracks, most first, from the second call the store
-    /// makes after this one. None until that call has run, which is how a
-    /// cache entry written before the list existed gets it filled in
-    /// without waiting out the TTL; an empty list is a settled answer.
+    /// From a second call. None until it ran (an old entry refetches before
+    /// the TTL); an empty list is a settled answer.
     pub top_tracks: Option<Vec<TopTrack>>,
 }
 
-/// One inline link in the wiki text: where it sits in the stripped text
-/// and where it goes.
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct BioLink {
@@ -59,58 +41,41 @@ pub struct BioLink {
     pub url: String,
 }
 
-/// One of an artist's top tracks as Last.fm ranks them: the name and the
-/// two counts the ranking runs on.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TopTrack {
     pub name: String,
     pub playcount: u64,
     pub listeners: u64,
-    /// The track's Last.fm page.
     pub url: String,
 }
 
-/// One track as Last.fm counts it, the metadata panel's global rows:
-/// how many people have scrobbled it, how often, and what they tagged
-/// it. Serialized as the track stats store's cache file; missing fields
-/// default, so an old entry still loads after the shape drifts.
+/// The track stats store's cache file format; missing fields default so old
+/// entries still load.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrackStats {
-    /// The name as Last.fm capitalizes it.
     pub name: String,
-    /// The track's Last.fm page.
     pub url: String,
-    /// The album Last.fm files the track under, for the tag fallback when
-    /// the tag itself names none.
+    /// For the tag fallback when the tag names no album.
     pub album: String,
     pub listeners: u64,
     pub playcount: u64,
-    /// The top tags, most applied first. Last.fm holds tags for some
-    /// tracks and none for others, well-known ones included, so the store
-    /// falls back to the album's and then the artist's; `tags_scope`
-    /// says which these are.
+    /// Many tracks have no tags of their own, so the store falls back to the
+    /// album's, then the artist's; `tags_scope` says which.
     pub tags: Vec<String>,
-    /// Where the tags came from: "track", "album", or "artist". Empty
-    /// on an entry written before the fallback existed, which reads as
+    /// "track", "album", or "artist". Empty on an old entry, which reads as
     /// the track's own.
     pub tags_scope: String,
-    /// The asking user's own scrobble count, when the lookup went under
-    /// a username; None without one.
+    /// Only when the lookup named a user.
     pub user_plays: Option<u64>,
-    /// Whether the asking user loved the track on Last.fm.
     pub loved: bool,
 }
 
-/// How many fallback tags to keep when the track has none of its own: the
-/// count a track's own list comes back with.
+/// Matches the length of a track's own tag list.
 const FALLBACK_TAGS: usize = 5;
 
-/// The key the lookup calls with: the settings override when the user
-/// entered one, the build's own identity otherwise, the scrobbler's
-/// order. Empty when neither exists, which reads as the lookup being
-/// unavailable rather than as an error.
+/// The settings override, else the build's key. Empty means unavailable.
 fn api_key() -> String {
     let key = Settings::load().accounts.lastfm.api_key;
     if key.is_empty() {
@@ -120,26 +85,20 @@ fn api_key() -> String {
     }
 }
 
-/// Fetch an artist's info, blocking: Ok(None) is Last.fm having no such
-/// name (or no api key to ask with), Err the network or the API
-/// failing. Background executor only.
+/// Ok(None) for an unknown name or no api key.
 pub fn artist_info(name: &str, lang: &str) -> Result<Option<ArtistInfo>, String> {
     let key = api_key();
     if key.is_empty() || name.trim().is_empty() {
         return Ok(None);
     }
-    // An API error still has a JSON body worth reading, so a status
-    // failure parses like a success, the scrobbler's move.
+    // A status failure still carries a JSON error body.
     let request = agent()
         .get(API)
         .query("method", "artist.getinfo")
         .query("artist", name.trim())
         .query("autocorrect", "1")
-        // Last.fm keeps per-language wiki text and serves English when a
-        // language has none, so this narrows to the reader's language and
-        // costs nothing when it doesn't exist. Most artists only have the
-        // English text, which is why the caller records which language a
-        // cached bio came back in rather than assuming it got one.
+        // Serves English when the language has no text; the caller records
+        // which language came back.
         .query("lang", lang)
         .query("api_key", &key)
         .query("format", "json");
@@ -152,7 +111,7 @@ pub fn artist_info(name: &str, lang: &str) -> Result<Option<ArtistInfo>, String>
     };
     let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(code) = body.get("error").and_then(|e| e.as_i64()) {
-        // 6 is "artist not found": a clean miss, not a failure.
+        // 6: not found, a clean miss.
         if code == 6 {
             return Ok(None);
         }
@@ -185,9 +144,7 @@ pub fn artist_info(name: &str, lang: &str) -> Result<Option<ArtistInfo>, String>
     }))
 }
 
-/// Fetch a track's counts and tags, blocking: Ok(None) is Last.fm having
-/// no such track (or no api key to ask with), Err the network or the API
-/// failing. Background executor only.
+/// Ok(None) for an unknown track or no api key.
 pub fn track_info(
     artist: &str,
     title: &str,
@@ -205,8 +162,7 @@ pub fn track_info(
         .query("autocorrect", "1")
         .query("api_key", &key)
         .query("format", "json");
-    // Naming the user adds their own count and loved flag to the answer,
-    // still unsigned: it's public listening data, not the session's.
+    // Naming the user adds their count and loved flag, still unsigned.
     if let Some(user) = username.map(str::trim).filter(|u| !u.is_empty()) {
         request = request.query("username", user);
     }
@@ -219,7 +175,7 @@ pub fn track_info(
     };
     let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(code) = body.get("error").and_then(|e| e.as_i64()) {
-        // 6 is "track not found": a clean miss, not a failure.
+        // 6: not found, a clean miss.
         if code == 6 {
             return Ok(None);
         }
@@ -256,10 +212,8 @@ pub fn track_info(
     }))
 }
 
-/// An album's tags, most applied first, capped at the track list's
-/// length: the first fallback for a track Last.fm holds no tags on.
-/// Empty for an album it doesn't know, or on any failure, since a
-/// fallback that errors would fail a lookup that already succeeded.
+/// The first tag fallback. Fails quietly to empty: a fallback that errors
+/// would fail a lookup that already succeeded.
 pub fn album_tags(artist: &str, album: &str) -> Vec<String> {
     let key = api_key();
     if key.is_empty() || artist.trim().is_empty() || album.trim().is_empty() {
@@ -285,8 +239,7 @@ pub fn album_tags(artist: &str, album: &str) -> Vec<String> {
     tags
 }
 
-/// An artist's top tags, the second fallback. Same quiet failure as
-/// [`album_tags`].
+/// The second tag fallback, same quiet failure.
 pub fn artist_tags(artist: &str) -> Vec<String> {
     let key = api_key();
     if key.is_empty() || artist.trim().is_empty() {
@@ -308,11 +261,8 @@ pub fn artist_tags(artist: &str) -> Vec<String> {
     tags
 }
 
-/// The artist's most played tracks, most first, capped at `limit`. The
-/// same unsigned read as the info lookup, one call. A name Last.fm
-/// doesn't know, or no key to ask with, is an empty list rather than an
-/// error, since the info lookup already settled whether the artist
-/// exists. Background executor only.
+/// An unknown name is an empty list, not an error: the info lookup already
+/// settled whether the artist exists.
 pub fn top_tracks(name: &str, limit: usize) -> Result<Vec<TopTrack>, String> {
     let key = api_key();
     if key.is_empty() || name.trim().is_empty() || limit == 0 {
@@ -364,7 +314,6 @@ pub fn top_tracks(name: &str, limit: usize) -> Result<Vec<TopTrack>, String> {
     Ok(tracks)
 }
 
-/// A count the API sends as a string ("1234"), or 0 when absent or odd.
 fn count(value: Option<&serde_json::Value>) -> u64 {
     value
         .and_then(|v| v.as_str())
@@ -373,8 +322,6 @@ fn count(value: Option<&serde_json::Value>) -> u64 {
         .unwrap_or(0)
 }
 
-/// The names off one of the API's wrapped lists (`tags.tag[].name`,
-/// `similar.artist[].name`), empties dropped.
 fn names(wrapper: Option<&serde_json::Value>, key: &str) -> Vec<String> {
     wrapper
         .and_then(|w| w.get(key))
@@ -388,13 +335,9 @@ fn names(wrapper: Option<&serde_json::Value>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Last.fm's wiki HTML down to plain paragraphs, with the inline links
-/// kept as ranges into the result. The "Read more on Last.fm" anchor and
-/// the license sentence after it drop first (cut there, not at the first
-/// link, since bios have inline links whose text should stay), then tags
-/// strip with each anchor's target recorded against the text it wraps,
-/// the common entities decode, and runs of blank lines fold to one
-/// paragraph break.
+/// Wiki HTML to plain paragraphs, inline links kept as ranges. Cuts at the
+/// "Read more on Last.fm" anchor, not the first link: bios have inline links
+/// whose text should stay.
 fn parse_wiki(html: &str) -> (String, Vec<BioLink>) {
     let cut = html
         .find(">Read more on Last.fm</a>")
@@ -403,11 +346,7 @@ fn parse_wiki(html: &str) -> (String, Vec<BioLink>) {
     let html = &html[..cut];
     let mut out = String::with_capacity(html.len());
     let mut links = Vec::new();
-    // The link whose text is being written: its target and where in
-    // `out` it began.
     let mut open: Option<(String, usize)> = None;
-    // Line state, the fold: `at_line_start` skips a line's leading
-    // blanks, `blank` remembers an empty line between two with text.
     let mut at_line_start = true;
     let mut blank = false;
     let mut rest = html;
@@ -438,7 +377,6 @@ fn parse_wiki(html: &str) -> (String, Vec<BioLink>) {
         };
         rest = &rest[len..];
         if ch == '\n' {
-            // The line ends: drop its trailing blanks, note an empty one.
             let trimmed = out.trim_end().len();
             if trimmed < out.len() {
                 out.truncate(trimmed);
@@ -456,8 +394,6 @@ fn parse_wiki(html: &str) -> (String, Vec<BioLink>) {
             }
             if !out.is_empty() {
                 out.push_str(if blank { "\n\n" } else { "\n" });
-                // A link that spans the break keeps its start; the text it
-                // wraps grows across the join like any other.
             }
             blank = false;
             at_line_start = false;
@@ -476,14 +412,11 @@ fn parse_wiki(html: &str) -> (String, Vec<BioLink>) {
     (out, links)
 }
 
-/// The wiki HTML as plain paragraphs alone, the links dropped: the
-/// fixtures' view of the parse.
 #[cfg(test)]
 fn strip_wiki(html: &str) -> String {
     parse_wiki(html).0
 }
 
-/// The `href` of an anchor tag's attributes, unquoted.
 fn href(tag: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
     let at = lower.find("href=")?;
@@ -500,8 +433,6 @@ fn href(tag: &str) -> Option<String> {
     (!url.is_empty()).then(|| url.to_string())
 }
 
-/// One HTML entity at the head of `rest` decoded, with the bytes it
-/// took; a bare ampersand comes back as itself.
 fn entity(rest: &str) -> (char, usize) {
     const ENTITIES: [(&str, char); 6] = [
         ("&quot;", '"'),
@@ -597,8 +528,6 @@ impl ArtProvider for LastfmArt {
     }
 }
 
-/// Rewrite Last.fm CDN size path segments (e.g. `/300x300/` or `/174s/`) to
-/// full resolution (`/ar0/`).
 fn full_size_url(url: &str) -> String {
     for segment in &["/300x300/", "/174s/", "/64s/", "/34s/", "/mega/"] {
         if url.contains(segment) {

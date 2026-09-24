@@ -21,9 +21,9 @@ license.workspace = true
 # and the download in src/dictionary.rs is a specific release asset. Bump
 # them together or the loader opens a dictionary it can't read.
 lindera = "5.3"
-# The Mandarin reading table, which is not the thing Andrew ruled out
-# shipping: a few hundred kilobytes of per-character readings, against
-# IPADIC's forty megabytes. Default features off and `plain` alone, so the
+# The Mandarin reading table, which ships in the binary where IPADIC can't:
+# a few hundred kilobytes of per-character readings, against IPADIC's forty
+# megabytes. Default features off and `plain` alone, so the
 # binary carries one toneless spelling per character instead of four
 # spellings plus the heteronym table, none of which a search key uses.
 # Measured the same way as lindera above: 264 KiB.
@@ -35,9 +35,8 @@ sha2 = "0.10"
 # does: rox-net caps every request at ten seconds, which a ten-megabyte
 # archive can't finish inside.
 ureq = "2"
-# Unpacks the archive. Same version and the same one feature the workspace
-# unpacks theme and workspace bundles with, so this adds no crate to the
-# build.
+# Unpacks the archive. Same version and the same one feature the Windows
+# updater takes, so on Windows this adds no crate to the build.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Where the download lands: `models/`, beside the acoustic weights. The one
 # sibling dependency, exactly the one rox-acoustic takes for the same

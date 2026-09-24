@@ -1,34 +1,20 @@
-//! The Workspace settings page: the workspaces and presets sharing hub,
-//! the composition tree of the opening window's dock, and the confirm
-//! dialog for overwrites and applies. `impl SettingsWindow` methods in a
-//! child module, with access to the window's private state.
+//! The Workspace settings page: workspaces, layout presets and panel presets,
+//! the composition tree of the opening window's dock, and the confirm dialog
+//! every destructive action in the window goes through.
 
 use super::*;
 
-/// The card open under a workspace row: which workspace it belongs to, the
-/// card as the file stores it, and an input per line somebody can type in.
-/// Built when a row's details open and dropped when they close, so nothing
-/// here outlives the workspace it describes.
+/// Built when a row's details open and dropped when they close.
 pub(crate) struct CardEditor {
-    /// The workspace the card belongs to, which is also the name its file is
-    /// under.
     name: String,
-    /// The card the bundle arrived with. What the dates read out, and the
-    /// whole readout for a shipped bundle.
+    /// The card as the bundle arrived; the whole readout for a shipped bundle.
     meta: WorkspaceMeta,
-    /// One input per line of [`CARD_FIELDS`], in that order. None for a
-    /// shipped bundle: its file lives in the app's assets, where there's
-    /// nothing to write back to, so its card is a readout.
+    /// None for a shipped bundle, whose file lives in the app's assets.
     fields: Option<Vec<Entity<InputState>>>,
 }
 
-/// The card's editable lines: what each one is called, what an empty one
-/// hints at, and the field it reads and writes. Created and updated stay
-/// out of this list because nobody types a date; a save stamps them.
-///
-/// The label and placeholder are i18n keys, not display text: this is a
-/// `const` table, and a translator call isn't, so every read site resolves
-/// them through `t!`/`t_static` rather than showing them as-is.
+/// Dates stay out: a save stamps them. The label and placeholder are i18n keys,
+/// since a `const` table can't call the translator.
 type CardField = (
     &'static str,
     &'static str,
@@ -62,23 +48,18 @@ const CARD_FIELDS: [CardField; 5] = [
     ),
 ];
 
-/// How big an exported bundle gets before the export says something about
-/// it. A look is text and a few thousand lines of WGSL until it includes
-/// image assets, and those push a file into the megabytes. The limit is
-/// soft: it's a note in the log, never a refusal.
+/// Soft: past this an export logs a note, never a refusal. Image assets push a
+/// look into megabytes.
 const EXPORT_SIZE_WARN: usize = 4 * 1024 * 1024;
 
-/// Which of a confirm dialog's yes buttons was pressed. Most dialogs have
-/// one and only ever see `First`; the two that split it read `Second` as
-/// the wider of the two answers.
+/// Most dialogs only see `First`; the two that split read `Second` as the wider
+/// answer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Yes {
     First,
     Second,
 }
 
-/// An apply's first yes: the plain one, or the one that leaves the
-/// bundle's shaders out where the dialog offers both.
 fn apply_yes(split: bool) -> SharedString {
     if split {
         rox_i18n::t!("workspace-dialog-without-shaders")
@@ -87,9 +68,6 @@ fn apply_yes(split: bool) -> SharedString {
     }
 }
 
-/// An apply's second yes, the one that runs the shaders. Shaders this
-/// machine has never approved make it say so; a look whose code is
-/// already approved just names what it does.
 fn apply_second_yes(split: bool, unapproved: bool) -> Option<SharedString> {
     split.then(|| {
         if unapproved {
@@ -101,8 +79,6 @@ fn apply_second_yes(split: bool, unapproved: bool) -> Option<SharedString> {
 }
 
 impl CardEditor {
-    /// What's typed in, as a card. The dates pass through untouched: they
-    /// belong to the bundle's history, not to this form.
     fn typed(&self, cx: &App) -> WorkspaceMeta {
         let mut meta = self.meta.clone();
         let Some(fields) = self.fields.as_ref() else {
@@ -116,19 +92,13 @@ impl CardEditor {
 }
 
 impl SettingsWindow {
-    /// The Workspace page: the sharing hub. A workspace is a whole look
-    /// (layout presets, palette, appearance) traded as one file; presets are
-    /// single layouts under it. The composition tree below shows the opening
-    /// window's dock, splits and tab groups as muted structure lines, panels
-    /// as named rows with their settings a click away.
     pub(crate) fn workspace_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let live = self.workspace.upgrade().is_some();
         PageBody::new()
             .section(self.workspaces_section(q, live, cx))
             .section(self.presets_section(q, live, cx))
             .section(self.panel_presets_section(q, cx))
-            // The tree walks the live dock, so it only builds once the
-            // query keeps it.
+            // Built only once the query keeps it, since it walks the live dock.
             .section(Section::new(
                 q,
                 icons::LAYOUT_DASHBOARD,
@@ -165,14 +135,9 @@ impl SettingsWindow {
             ))
     }
 
-    /// The workspaces section: the saved and shipped bundles as a list, each
-    /// a whole look to apply, export, or delete. Saving the current state as
-    /// a named workspace, and importing one, are in the header.
     fn workspaces_section(&self, q: &Query, live: bool, cx: &mut Context<Self>) -> Section {
         let entries = crate::workspaces::all();
 
-        // Save-current-as and import are in the header, so a workspace is one
-        // name away and a shared file one pick away.
         let controls = div()
             .flex()
             .flex_row()
@@ -214,9 +179,6 @@ impl SettingsWindow {
                                     .child(rox_i18n::t!("settings-workspace-empty")),
                             );
                         } else {
-                            // A row and, for the one whose details are open,
-                            // its card right under it, so the fields stay
-                            // with the workspace they belong to.
                             list = list.child(
                                 div().flex().flex_col().children(
                                     entries
@@ -240,10 +202,6 @@ impl SettingsWindow {
         )
     }
 
-    /// One workspace's row: its name with the author under it when the card
-    /// names one, a shipped tag when it comes from the app's assets, the
-    /// details toggle, apply, and for the user's own, export, overwrite and
-    /// delete.
     fn workspace_row(
         &self,
         entry: crate::workspaces::Entry,
@@ -252,8 +210,6 @@ impl SettingsWindow {
     ) -> AnyElement {
         let name = entry.name.clone();
         let title = entry.title.clone();
-        // A shipped entry gets its author from the parse that built the
-        // list; a saved one comes out of the authors read this window holds.
         let author = entry
             .author
             .clone()
@@ -263,21 +219,16 @@ impl SettingsWindow {
             .as_ref()
             .is_some_and(|card| card.name == name);
         div()
-            // Named after the workspace, which names its buttons: every
-            // row here says Apply and Export, and ids nest, so without
-            // this they'd all be the one control to the keyboard. See
-            // `rox_panel_kit::ui::control_focus`.
+            // Named after the workspace: every row says Apply and Export, and
+            // ids nest. See `rox_panel_kit::ui::control_focus`.
             .id(ElementId::Name(format!("workspace-row:{name}").into()))
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
             .py(tokens::SPACE_XS)
-            // The card appears under the row rather than in a window of its
-            // own: it's a handful of lines about the workspace right there,
-            // and only one is open at a time. The chevron leads the row so
-            // it points at the name it expands, and so the disclosure is
-            // separate from the buttons that act on the workspace.
+            // The chevron leads so it points at the name it expands, apart from
+            // the action buttons.
             .child(icon_button(
                 if open {
                     icons::CHEVRON_DOWN
@@ -311,8 +262,6 @@ impl SettingsWindow {
                     }),
             )
             .when(entry.builtin, |d| d.child(shipped_tag()))
-            // Applying replaces the whole look, so it routes through the
-            // confirm dialog rather than acting straight off the click.
             .child(small_button(
                 rox_i18n::t!("workspace-dialog-apply"),
                 icons::CHECK,
@@ -329,11 +278,8 @@ impl SettingsWindow {
                 },
             ))
             .when(!entry.builtin, |d| {
-                // Export, overwrite and delete are the user's own workspaces
-                // only; a shipped one already lives in the app's assets, so
-                // there's nothing to save back out. Overwrite routes through
-                // the confirm dialog before the replace, matching the presets
-                // list and unlike apply and delete which are their own undo.
+                // A shipped workspace has no export, overwrite or delete.
+                // Overwrite confirms first; delete doesn't.
                 d.child(small_button(
                     rox_i18n::t!("workspace-dialog-export"),
                     icons::UPLOAD,
@@ -363,9 +309,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// The open workspace's card, shown under its row: the author's own
-    /// lines about the look, editable for a saved workspace and a readout
-    /// for a shipped one, over the dates a save stamped.
     fn workspace_card_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(card) = self.workspace_card.as_ref() else {
             return div().into_any_element();
@@ -376,8 +319,7 @@ impl SettingsWindow {
                 .text_color(palette::text_muted())
                 .child(text)
         };
-        // Indented to where the row's name starts, clear of the chevron that
-        // opened it: the icon button plus the gap behind it.
+        // Indented past the chevron to where the row's name starts.
         let mut body = div()
             .flex()
             .flex_col()
@@ -401,17 +343,14 @@ impl SettingsWindow {
                     cx.listener(|this, _, _, cx| this.save_workspace_card(cx)),
                 )));
             }
-            // A shipped bundle's file is in the app's assets, so there's
-            // nothing to write back to. Fork it with Save Current under a
-            // name of your own and the copy's card is yours to fill in.
+            // Fork a shipped bundle with Save Current to get a card of your
+            // own.
             None if card.meta.is_empty() => {
                 body = body.child(muted(rox_i18n::t!("settings-workspace-card-empty")));
             }
             None => {
-                // The blurb on a shipped look is rox's own prose and the
-                // locales carry it, so the readout resolves it the same way
-                // the apply dialog does instead of showing the English the
-                // bundle file stores. The rest of the card is the file's.
+                // A shipped look's blurb is rox's own prose, so it resolves
+                // through the locales like the apply dialog does.
                 let mut meta = card.meta.clone();
                 if let Some(blurb) = crate::workspaces::display_blurb(&card.name, &meta.description)
                 {
@@ -426,9 +365,7 @@ impl SettingsWindow {
                 }
             }
         }
-        // The dates are the bundle's own history: a save stamps them, so
-        // they read out rather than open up, on both sides of the split
-        // above.
+        // Read out on both sides: a save stamps the dates.
         let dates = match (card.meta.created.trim(), card.meta.updated.trim()) {
             ("", "") => None,
             ("", updated) => Some(rox_i18n::t!(
@@ -448,10 +385,8 @@ impl SettingsWindow {
         body.children(dates.map(muted)).into_any_element()
     }
 
-    /// Open a workspace's card, or close it when it's the one already open.
-    /// Opening reads the bundle once and seeds the inputs from it, so the
-    /// fields show what's in the file rather than what was there the last
-    /// time this window looked.
+    /// Reads the bundle once on open, so the fields show the file, not a stale
+    /// copy.
     fn toggle_workspace_card(
         &mut self,
         name: &str,
@@ -494,14 +429,9 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Write the open card back into its workspace file. Reads the bundle
-    /// fresh and replaces only its card, so a save here never touches the
-    /// layouts, palette, or shaders beside it.
-    ///
-    /// Resolving by name rather than reading the file directly matters here:
-    /// `read_bundle` is the import path and dedupes against the workspaces
-    /// already saved, which for a workspace that's one of them would rename
-    /// it out from under the edit.
+    /// Replaces only the card. Resolved by name: `read_bundle` is the import
+    /// path and dedupes, which would rename the workspace out from under the
+    /// edit.
     fn save_workspace_card(&mut self, cx: &mut Context<Self>) {
         let Some(card) = self.workspace_card.as_ref() else {
             return;
@@ -513,9 +443,8 @@ impl SettingsWindow {
             return;
         };
         bundle.meta = card.typed(cx);
-        // The list names a saved workspace after its file, so the write goes
-        // back under that name: a hand-dropped file whose bundle says
-        // something else would otherwise save to a second file beside it.
+        // Saved under the file's name, or a hand-dropped file whose bundle says
+        // otherwise would get a second file.
         bundle.name = card.name.clone();
         crate::workspaces::store(&bundle);
         if let Some(card) = self.workspace_card.as_mut() {
@@ -525,16 +454,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The presets section: the saved and shipped layouts as a list, each
-    /// with the roles the mini-player button toggles between and the ways
-    /// to apply, delete, or overwrite it. Saving the live layout as a named
-    /// preset is in the header.
     fn presets_section(&self, q: &Query, live: bool, cx: &mut Context<Self>) -> Section {
         let settings = Settings::load();
         let presets = rox_core::settings::layouts::all(&settings);
 
-        // Save-current-as and import are in the header, so a preset is one
-        // arrangement plus a name away, or one shared file away.
         let save = div()
             .flex()
             .flex_row()
@@ -591,10 +514,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The panel presets section: the saved single panels as a list. They're
-    /// made and replaced from the panel they hold (its dropdown's Save As
-    /// Preset), so this list is where you see what the look contains and drop
-    /// what you're done with.
     fn panel_presets_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let presets = crate::panel_presets::saved();
 
@@ -608,8 +527,7 @@ impl SettingsWindow {
                     &["panel", "preset", "saved", "configured", "add panel"],
                     || {
                         let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-                            // Same instruction the save dialog gives, so it uses
-                            // the same keycaps for the menu path.
+                            // The save dialog's instruction, with the same keycaps.
                             kbd_line([
                                 Seg::Text(rox_i18n::t!(
                                     "settings-workspace-panel-presets-hint-before"
@@ -645,9 +563,6 @@ impl SettingsWindow {
         )
     }
 
-    /// One panel preset's row: its name, the kind of panel inside it, and the
-    /// delete. The kind tells two presets of the same panel apart from two
-    /// of different ones once the names blur.
     fn panel_preset_row(
         &self,
         preset: rox_core::settings::PanelPreset,
@@ -696,9 +611,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// One preset's row: its name, a shipped tag when it comes from the
-    /// app's assets, the primary and mini role badges, and apply plus, for
-    /// the user's own, delete.
     fn preset_row(&self, preset: Preset, live: bool, cx: &mut Context<Self>) -> AnyElement {
         let is_primary = self.primary_layout.as_deref() == Some(preset.name.as_str());
         let is_mini = self.mini_layout.as_deref() == Some(preset.name.as_str());
@@ -751,9 +663,7 @@ impl SettingsWindow {
                     cx.listener(move |this, _, _, cx| this.export_preset(&name, cx))
                 },
             ))
-            // Overwrite the saved preset with the live layout; the dialog
-            // confirms before the replace, unlike apply and delete which are
-            // their own undo.
+            // Overwrite confirms first; apply and delete don't.
             .child(small_button(
                 rox_i18n::t!("workspace-dialog-overwrite"),
                 icons::REFRESH_CW,
@@ -773,10 +683,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// Save the workspace's live layout as a named preset, panel configs
-    /// and themes along with it. An empty name is ignored; a name that
-    /// already exists routes through the confirm dialog rather than a silent
-    /// replace. Clears the field on a fresh save.
     fn save_layout_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
@@ -807,8 +713,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Replace the pending preset's dump and window size with the live ones,
-    /// the confirm dialog's yes. Clears the name field on success.
     fn overwrite_preset(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
             let dump = workspace.read(cx).dock().read(cx).dump(cx);
@@ -829,8 +733,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The workspace window's content size, for storing with a preset. None
-    /// when that window is gone.
     fn workspace_window_size(&self, cx: &mut App) -> Option<LayoutSize> {
         self.workspace_window
             .update(cx, |_, window, _| {
@@ -843,8 +745,6 @@ impl SettingsWindow {
             .ok()
     }
 
-    /// Apply a preset to the workspace's dock, in its own window, the same
-    /// path an imported file takes.
     fn apply_preset(&mut self, name: &str, cx: &mut Context<Self>) {
         let workspace = self.workspace.clone();
         let name = name.to_string();
@@ -860,8 +760,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Point the mini-player button's primary role at a preset, or clear it
-    /// when the preset already holds the role.
     fn set_primary(&mut self, name: &str, cx: &mut Context<Self>) {
         let clear = self.primary_layout.as_deref() == Some(name);
         self.primary_layout = (!clear).then(|| name.to_string());
@@ -871,8 +769,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Point the mini role at a preset, or clear it when the preset already
-    /// holds it.
     fn set_mini(&mut self, name: &str, cx: &mut Context<Self>) {
         let clear = self.mini_layout.as_deref() == Some(name);
         self.mini_layout = (!clear).then(|| name.to_string());
@@ -882,8 +778,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Delete a user preset, dropping any role it held so the button never
-    /// points at a gone name.
     fn delete_preset(&mut self, name: &str, cx: &mut Context<Self>) {
         let name = name.to_string();
         if self.primary_layout.as_deref() == Some(name.as_str()) {
@@ -906,8 +800,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Push the current roles to the workspace so its mini-player button
-    /// reflects the edit without waiting on a reload, and repaint it.
     fn sync_roles_to_workspace(&self, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
             let primary = self.primary_layout.clone();
@@ -919,35 +811,26 @@ impl SettingsWindow {
         }
     }
 
-    /// Whether a dialog's yes splits in two, which is also what takes
-    /// Enter away from it: a split is a question, and a question gets a
-    /// click.
+    /// A split yes also takes Enter away: a question gets a click.
     fn splits_yes(&self, pending: &Pending) -> bool {
         match pending {
-            // Code nobody has approved splits an apply, and so does a look
-            // that uses shaders at all, however many times it's been
-            // applied before.
+            // Unapproved code splits an apply, and so does any look with
+            // shaders.
             Pending::ApplyWorkspace { card, .. } => card.splits_apply(),
-            // The imported rows or all of them, where there are imported
-            // rows to tell apart. Otherwise the two answers are "none of
-            // them" and "all of them", which is one answer.
+            // Only with imported rows to tell apart; otherwise "none" and "all"
+            // are one answer.
             Pending::ClearListens => self.listens().imported > 0,
             _ => false,
         }
     }
 
-    /// The listening record's two numbers, off the walk the storage page
-    /// already took: every path that reads them is reachable only from a
-    /// row that walk drew, so there's nothing to measure here.
+    /// Read off the storage walk: every path here starts from a row that walk
+    /// drew.
     fn listens(&self) -> rox_library::listens::Tally {
         self.storage.as_ref().map(|s| s.listens).unwrap_or_default()
     }
 
-    /// Enter and Escape on the confirm dialog, and whether the key was the
-    /// dialog's. Escape backs out; Enter takes the yes, except where the
-    /// yes splits in two. Choosing between running a look's shaders and
-    /// leaving them out, or between clearing an import and clearing the
-    /// whole record, is the question itself, so it gets a click.
+    /// Escape backs out; Enter takes the yes except where it splits.
     fn confirm_key(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -966,10 +849,8 @@ impl SettingsWindow {
                 cx.notify();
                 true
             }
-            // Only while the dialog itself holds the keyboard. Tab from
-            // here lands on the dialog's own buttons, and once one has
-            // focus Enter belongs to it: a yes on a focused Cancel is the
-            // opposite of what was asked for.
+            // Only while the dialog itself holds focus: Enter on a focused
+            // Cancel must not mean yes.
             "enter" if self.dialog_focus.is_focused(window) => {
                 if self.splits_yes(pending) {
                     return false;
@@ -981,31 +862,23 @@ impl SettingsWindow {
         }
     }
 
-    /// The confirm dialog, up while a destructive action waits on the user:
-    /// an overwrite or a workspace apply, each with its own wording. A scrim
-    /// occludes the page under it; the buttons and the keyboard's Enter and
-    /// Escape are the only ways out, no click-away, so the action is
-    /// deliberate.
+    /// A scrim occludes the page; only the buttons, Enter and Escape close it,
+    /// no click-away.
     pub(crate) fn confirm_overlay(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        // A workspace apply reads out what's coming before it runs: who made
-        // it, what they say it is, and any shader code inside it that this
-        // machine has never approved.
+        // An apply reads out who made the look, what it is, and any unapproved
+        // shader code.
         let card = match self.pending.as_ref()? {
             Pending::ApplyWorkspace { card, .. } => Some(card),
             _ => None,
         };
         let shaders = card.and_then(|card| card.shader_line());
         let screen = card.and_then(|card| card.screen_shader.clone());
-        // Whether the yes splits in two. Code nobody has approved splits it,
-        // and so does a look that uses shaders at all, however many times
-        // it's been applied before.
         let split = self.splits_yes(self.pending.as_ref()?);
         let listens = self.listens();
-        // Title, body, the first yes, and the second where there is one.
         let (title, body, confirm, second): (
             SharedString,
             SharedString,
@@ -1076,7 +949,6 @@ impl SettingsWindow {
                 rox_i18n::t!("settings-common-remove"),
                 None,
             ),
-            // Nothing imported: one yes, and it takes the whole record.
             Pending::ClearListens => (
                 rox_i18n::t!("listens-clear-title"),
                 rox_i18n::t!(
@@ -1093,10 +965,8 @@ impl SettingsWindow {
                 .text_color(palette::text_muted())
                 .child(text)
         };
-        // The dialog takes the keyboard while it's up, so Enter and Escape
-        // reach it from wherever focus was. Only when the focus isn't
-        // already inside it: Tab moves through the dialog's own buttons,
-        // and pulling it back here every frame would pin it to the scrim.
+        // Take focus unless it's already inside, or Tab through the buttons
+        // would snap back each frame.
         if !self.dialog_focus.contains_focused(window, cx) {
             window.focus(&self.dialog_focus);
         }
@@ -1120,9 +990,7 @@ impl SettingsWindow {
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
-                        // The shader list and the screen shader's hotkey line
-                        // both need the room; every other confirm keeps the
-                        // dialogs' shared width.
+                        // The shader list and the hotkey line need the room.
                         .w(px(if split || screen.is_some() {
                             380.
                         } else {
@@ -1138,9 +1006,8 @@ impl SettingsWindow {
                         .children(card.and_then(|card| card.byline.clone()).map(line))
                         .children(card.and_then(|card| card.description.clone()).map(line))
                         .child(line(body))
-                        // A screen shader covers the whole window, so it gets
-                        // said before the apply rather than asked about after,
-                        // and the way back off comes with it.
+                        // A screen shader covers the window, so say so before the
+                        // apply, with the way back off.
                         .children(screen.clone().map(line))
                         .children(screen.map(|_| {
                             kbd_line([
@@ -1154,11 +1021,8 @@ impl SettingsWindow {
                             .text_xs()
                         }))
                         .children(shaders.clone().map(line))
-                        // Shaders that came with a look are somebody else's
-                        // code, so the yes that runs them says so, and the yes
-                        // that doesn't is right beside it. Once they're
-                        // approved the question is only about the look, and
-                        // the line says that instead.
+                        // Shaders from a look are somebody else's code, so the
+                        // yes that runs them says so.
                         .children(split.then(|| {
                             line(if shaders.is_some() {
                                 rox_i18n::t!("workspace-apply-shaders-approve-body")
@@ -1201,12 +1065,9 @@ impl SettingsWindow {
         )
     }
 
-    /// Carry out the pending action, the confirm dialog's yes, and clear it.
-    /// `yes` says which of the two buttons a split dialog was answered
-    /// with: on an apply the second one approves the shaders the bundle
-    /// brought, which is the only thing on this path that ever writes the
-    /// approved list, and on a listens clear it widens the delete from the
-    /// imported rows to the whole record.
+    /// On an apply, `Yes::Second` approves the bundle's shaders, the only write
+    /// to the approved list on this path. On a listens clear it widens the
+    /// delete to the whole record.
     fn confirm_pending(&mut self, yes: Yes, window: &mut Window, cx: &mut Context<Self>) {
         match self.pending.take() {
             Some(Pending::OverwritePreset(name)) => self.overwrite_preset(name, window, cx),
@@ -1225,9 +1086,8 @@ impl SettingsWindow {
             Some(Pending::ClearMeasuredBpm) => self.clear_measured_bpm(cx),
             Some(Pending::RemoveSubsonic(id)) => self.remove_subsonic(id, cx),
             Some(Pending::ClearListens) => {
-                // The first yes is the imported half only where the dialog
-                // offered both; on the single-yes dialog it's everything,
-                // which is all there was to take.
+                // The first yes means imported only where the dialog offered
+                // both.
                 let split = self.listens().imported > 0;
                 self.clear_listens(
                     match yes {
@@ -1241,11 +1101,8 @@ impl SettingsWindow {
         }
     }
 
-    /// One node of the dock into rows. Walks the live stack and tab
-    /// entities rather than the dock's `DockItem` tree, which goes stale
-    /// once tabs are dragged around; `dump` serializes the live entities.
-    /// `slot` is the node's index among its siblings, so its row can
-    /// offer the reorder arrows.
+    /// Walks the live stack and tab entities, not the dock's `DockItem` tree,
+    /// which goes stale once tabs move.
     fn tree_rows(
         &self,
         node: Arc<dyn PanelView>,
@@ -1260,12 +1117,9 @@ impl SettingsWindow {
                 let stack = stack.read(cx);
                 (stack.axis(), stack.panels().to_vec(), stack.seams())
             };
-            // The split's own seams, over the app-wide Appearance toggle:
-            // the button shows the effective state and flips it, and a
-            // flip that ends up back on the app's side clears the override
-            // so the split follows the toggle again. An overriding split
-            // keeps its button at rest like a closed lock; one following
-            // the app only shows it with the row's other controls.
+            // The split's own seams over the app-wide toggle. A flip back to
+            // the app's value clears the override. An overriding split shows
+            // its button at rest.
             let effective = seams_override.unwrap_or_else(settings::seams);
             let seams_stack = stack.clone();
             let seams_button = icon_button(
@@ -1315,10 +1169,8 @@ impl SettingsWindow {
         }
         if let Ok(tabs) = view.downcast::<TabPanel>() {
             let children = tabs.read(cx).panels().to_vec();
-            // A group of one reads as just its panel; the group only
-            // earns its own line once there are tabs to speak of. The
-            // solo row inherits the group's slot, so its arrows move the
-            // enclosing tab group within the split.
+            // A group of one reads as its panel, and inherits the group's slot
+            // so its arrows move the group.
             if let [only] = children.as_slice() {
                 self.panel_rows(only.clone(), depth, slot, rows, cx);
                 return;
@@ -1343,9 +1195,6 @@ impl SettingsWindow {
         self.panel_rows(node, depth, slot, rows, cx);
     }
 
-    /// A panel's row, and under a composite host (group, overlay, drawer,
-    /// slide) its hosted children as indented rows of their own, so the
-    /// tree shows what the host holds instead of one opaque line.
     fn panel_rows(
         &self,
         panel: Arc<dyn PanelView>,
@@ -1359,9 +1208,7 @@ impl SettingsWindow {
         if let Some(children) = children {
             for child in children {
                 match child {
-                    // Recurse: a host can hold another host (a drawer
-                    // inside a drawer), and the tree should keep going
-                    // down instead of stopping at the inner line.
+                    // A host can hold another host.
                     Some(child) => self.panel_rows(child, depth + 1, TreeSlot::Hosted, rows, cx),
                     None => rows.push(chrome_row(
                         rows.len(),
@@ -1374,11 +1221,6 @@ impl SettingsWindow {
         }
     }
 
-    /// A panel's row of the tree: its name (the rename first with the
-    /// type in parens), the reorder arrows, the placement-lock toggle,
-    /// and the gear opening the same settings window the panel's own
-    /// dropdown does. Hosted children skip the arrows and the lock: the
-    /// dock never sees them, so neither applies.
     fn panel_row(
         &self,
         ix: usize,
@@ -1396,9 +1238,8 @@ impl SettingsWindow {
         let locked = panel.locked(cx);
         let lock_panel = panel.clone();
         div()
-            // Named after its place in the tree, like the structure rows
-            // above it: two panels of the same kind carry the same
-            // controls otherwise.
+            // Named after its place in the tree: same-kind panels carry the
+            // same controls.
             .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
             .flex()
             .flex_row()
@@ -1427,9 +1268,7 @@ impl SettingsWindow {
                                 cx.notify();
                             }),
                         );
-                        // A closed lock is state worth seeing at rest;
-                        // the open one only shows with the row's other
-                        // controls.
+                        // A closed lock shows at rest.
                         d.child(if locked { button } else { reveal(button) })
                     })
                     .child(reveal(icon_button(
@@ -1443,10 +1282,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// The move controls for a movable tree node: the lift-out arrow
-    /// pulling it up a layer, then up and down among its siblings, inert
-    /// where a direction has nowhere to go. None for the dock root and
-    /// hosted children, which have no siblings to move among here.
     fn move_controls(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (ix, len) = match slot {
             TreeSlot::Stack { ix, len, .. } | TreeSlot::Tabs { ix, len, .. } => (*ix, *len),
@@ -1467,10 +1302,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The lift-out arrow: pull the node one layer up. A tab leaves its
-    /// group for one of its own beside it; a split's child (a tab group
-    /// or nested split) moves out into the enclosing split. Inert where
-    /// there's no layer above: the root split's children stay put.
+    /// A tab leaves its group for a group of its own; a split's child moves
+    /// into the enclosing split. The root split's children stay put.
     fn lift_button(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> AnyElement {
         match slot {
             TreeSlot::Stack { stack, ix, .. } => {
@@ -1521,10 +1354,8 @@ impl SettingsWindow {
         }
     }
 
-    /// One reorder arrow: moves the node from its index to `to_ix` in
-    /// its parent stack or tab group. The move APIs ignore out-of-range
-    /// indices, but the ends render inert anyway so the tree telegraphs
-    /// where a row can still go.
+    /// The ends render inert even though the move APIs ignore out-of-range
+    /// indices, so the tree shows where a row can go.
     fn move_button(
         &self,
         slot: &TreeSlot,
@@ -1564,15 +1395,12 @@ impl SettingsWindow {
         }
     }
 
-    /// Export a preset to a file: its dump, panel configs and themes
-    /// included, so a single layout can leave as a shareable artifact. Works
-    /// for shipped presets too, which are dumps like any other.
     fn export_preset(&mut self, name: &str, cx: &mut Context<Self>) {
         let Some(preset) = rox_core::settings::layouts::resolve(&Settings::load(), name) else {
             return;
         };
-        // Denoise on the way out too, not just at save: a preset saved before
-        // the store-time pass still has widened f64 tails in settings.
+        // Denoise on export too: presets saved before the store-time pass still
+        // carry widened f64 tails.
         let mut dump = preset.dump;
         crate::workspace::denoise_f32(&mut dump);
         let home = dirs::home_dir().unwrap_or_default();
@@ -1589,10 +1417,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Pick a layout file and add it as a new preset, named after the file
-    /// and deduped so an import never shadows an existing preset. The file
-    /// must parse as a dock dump, the same shape export writes; anything else
-    /// is ignored.
     fn import_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1636,10 +1460,8 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Flush the workspace window's live dock to the settings file. Panel
-    /// config like the library's column arrangement only reaches disk on the
-    /// next layout dump, so without this a workspace save from here would
-    /// capture whatever's stale on disk instead of the current look.
+    /// Panel config like the library's columns only reaches disk on the next
+    /// dump, so flush before a workspace save.
     fn flush_workspace_layout(&self, cx: &mut Context<Self>) {
         let ws = self.workspace.clone();
         let _ = self.workspace_window.update(cx, |_, window, cx| {
@@ -1649,10 +1471,6 @@ impl SettingsWindow {
         });
     }
 
-    /// Save the current state as a named workspace: layouts, palette, and
-    /// appearance in one bundle. An empty name is ignored; a name that already
-    /// exists routes through the confirm dialog. Clears the field on a fresh
-    /// save.
     fn save_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.workspace_name.read(cx).value().trim().to_string();
         if name.is_empty() {
@@ -1671,20 +1489,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Replace a saved workspace with the current state, the confirm dialog's
-    /// yes. Clears the name field.
     fn overwrite_workspace(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_workspace_layout(cx);
-        // The bundle's name picks its file, so the overwrite is written back
-        // to the one the first save wrote, and the snapshot keeps the card
-        // that file already had rather than blanking it.
+        // Written back to the same file, keeping the card it already had.
         crate::workspaces::store(&crate::workspaces::snapshot(&name, &Settings::load()));
         self.workspace_name
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.workspace_authors = crate::workspaces::saved_authors();
-        // A card open on the workspace that just got replaced came out of the
-        // old file; re-read it so the fields show what the overwrite wrote.
-        // Any other workspace's card is untouched by this write.
+        // Re-read a card open on the replaced workspace.
         let reopen = self
             .workspace_card
             .as_ref()
@@ -1697,7 +1509,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Delete a user workspace. Shipped ones have no delete.
     fn delete_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
         crate::workspaces::remove(name);
         if self
@@ -1711,22 +1522,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Export a workspace bundle to a file, the whole look as one shareable
-    /// artifact. Works for shipped bundles too.
-    ///
-    /// Shader assets are stored inside the file as encoded bytes, so a look
-    /// that stamps plates weighs what its images weigh. Past [`EXPORT_SIZE_WARN`]
-    /// that's worth saying out loud, and no more than that: a legitimate look
-    /// can be big, and a hard cap would only stop one (ADR 23). The note goes
-    /// to the log, which is where this window's writes report themselves, and
-    /// the export happens regardless.
+    /// Shader assets ride inside the file as encoded bytes. Past
+    /// [`EXPORT_SIZE_WARN`] that goes to the log, never a cap (ADR 23).
     fn export_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
         let Some(mut bundle) = crate::workspaces::resolve(name) else {
             return;
         };
-        // Same denoise as the preset export: clean any widened f64 tails in the
-        // bundled layout dumps. Done in place so the bundle's own field order
-        // is kept (routing it through serde_json::Value would sort the keys).
+        // In place, so the bundle keeps its field order; a trip through
+        // serde_json::Value would sort the keys.
         for layout in &mut bundle.layouts {
             crate::workspace::denoise_f32(&mut layout.dump);
         }
@@ -1751,16 +1554,9 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Pick a workspace file and add it to the collection, named after the
-    /// file when the bundle has no name of its own and deduped so an
-    /// import never shadows an existing workspace. A bundle from a newer
-    /// format, or a file that isn't a bundle, is ignored.
-    ///
-    /// A bundle with shaders this machine has never approved opens the
-    /// apply confirm on the way in, so what arrived gets read out at the
-    /// moment it's imported rather than a week later when somebody applies
-    /// it. Backing out of that dialog is exactly the old behaviour: the file
-    /// is saved, nothing is approved, and nothing is using it.
+    /// Deduped so an import never shadows an existing workspace. A bundle with
+    /// unapproved shaders opens the apply confirm on the way in, so its code
+    /// gets read out at import; backing out leaves it saved and unapproved.
     fn import_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1795,11 +1591,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Apply a workspace: replace the live look wholesale, through the
-    /// workspace's own apply so the persist, the active-layout guard, and
-    /// the no-layout fallback to the default arrangement all go through one
-    /// flow. This window only copies the applied look into its own editor
-    /// state on top.
     fn apply_workspace(
         &mut self,
         name: &str,
@@ -1810,8 +1601,8 @@ impl SettingsWindow {
         let Some(bundle) = crate::workspaces::resolve(name) else {
             return;
         };
-        // The workspace's own apply strips its copy the same way; this one is
-        // for the no-dock fallback below and for the copy that follows it.
+        // The workspace's own apply strips its copy too; this one feeds the
+        // no-dock fallback and the editor copy.
         let bundle = match shaders {
             ApplyShaders::Wear => bundle,
             ApplyShaders::Skip => crate::workspaces::without_shaders(&bundle),
@@ -1835,16 +1626,13 @@ impl SettingsWindow {
                 })
             })
             .unwrap_or(false);
-        // The workspace window can be gone with this one still open; the
-        // look still applies and persists, there's just no dock to swap.
+        // The workspace window can be gone; the look still applies, with no
+        // dock to swap.
         if !applied {
             crate::workspaces::apply_look(&bundle, cx);
         }
-        // Copy the applied look into this window's own editor state so the
-        // swatches, pickers, and sliders show it. apply_palette re-sets the
-        // live palette, which the apply above already did; the repeat is
-        // idempotent. The apply may have flipped the theme side, so the
-        // editor re-seeds onto whichever side now renders.
+        // Mirror the applied look into the editor. The apply may have flipped
+        // the theme side.
         self.editor_mode = palette::mode();
         let mirrored = match self.editor_mode {
             palette::Mode::Dark => Palette::from_map(&bundle.palette_dark),
@@ -1857,19 +1645,14 @@ impl SettingsWindow {
         self.frame = a.frame;
         self.keep_theme = a.keep_theme;
         self.rating_style = a.rating_style;
-        // The mini-player roles; the workspace's apply already moved its own
-        // live copy along with the dock.
         self.primary_layout = bundle.primary_layout.clone();
         self.mini_layout = bundle.mini_layout.clone();
         cx.notify();
     }
 }
 
-/// One line of a shipped bundle's card, read out rather than typed in: the
-/// label in a column of its own, the value wrapping in what's left. The
-/// editable side uses `setting_row`'s inline control instead, since an input
-/// is one line high whatever's in it, while a description comes out of the
-/// file however long its author wrote it.
+/// The value wraps in its own column: a description runs as long as its author
+/// wrote it.
 fn card_readout_line(label: impl Into<SharedString>, value: String) -> Div {
     div()
         .flex()
@@ -1887,15 +1670,12 @@ fn card_readout_line(label: impl Into<SharedString>, value: String) -> Div {
         .child(div().flex_1().min_w_0().child(SharedString::from(value)))
 }
 
-/// How far a layout tree row steps in per depth.
 fn indent(depth: usize) -> Pixels {
     px(14. * depth as f32)
 }
 
-/// A layout tree node's position among its siblings, for the reorder
-/// arrows: inside a split, inside a tab group, or nowhere movable (the
-/// dock root, and a composite's hosted children, which the composite
-/// orders itself).
+/// The dock root and hosted children aren't movable here; the composite orders
+/// its own.
 #[derive(Clone)]
 enum TreeSlot {
     Root,
@@ -1912,10 +1692,6 @@ enum TreeSlot {
     Hosted,
 }
 
-/// A structure line of the layout tree: a split or tab group, muted so
-/// the panel rows lead the page, with the move controls on the right
-/// edge when the node can move. Padded to the icon buttons' height so
-/// the tree keeps one rhythm with and without controls.
 fn chrome_row(
     ix: usize,
     depth: usize,
@@ -1923,9 +1699,8 @@ fn chrome_row(
     controls: Option<AnyElement>,
 ) -> AnyElement {
     div()
-        // The tree's rows all carry the same arrows, so each is named
-        // after its place in the tree to keep them apart for the
-        // keyboard. See `rox_panel_kit::ui::control_focus`.
+        // Named after its place in the tree, since every row carries the same
+        // arrows.
         .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
         .flex()
         .flex_row()
@@ -1942,8 +1717,6 @@ fn chrome_row(
         .into_any_element()
 }
 
-/// The badge a shipped layout or workspace gets in its list row, telling
-/// the app's own read-only entries from the user's saved ones.
 fn shipped_tag() -> Div {
     div()
         .flex_none()
@@ -1956,8 +1729,6 @@ fn shipped_tag() -> Div {
         .child(rox_i18n::t!("settings-common-built-in"))
 }
 
-/// A role badge on a preset row: lit like a filled control when the preset
-/// holds the role, a plain chip otherwise. Clicking toggles the role.
 fn role_chip(
     label: &'static str,
     active: bool,

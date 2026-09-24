@@ -1,13 +1,11 @@
-//! The way up into the app's windows. Panels and the shared helpers need to
-//! open a tag editor, a stats page, a rename flyout, all of which are defined
-//! in the binary, a crate above this one. Rather than depend upward, the binary
-//! hands down a table of function pointers once at startup and everything
-//! here calls through it.
+//! The way up into the app's windows. The tag editor, the stats page and
+//! the other windows panels open live in the binary, a crate above this
+//! one, so the binary installs a table of function pointers at startup and
+//! everything here calls through it.
 //!
-//! Every entry takes and returns types this crate or one below it owns, so
-//! the table never leaks a concrete panel or a workspace. A call made before
-//! the binary installs the table logs and does nothing; that only happens in
-//! a unit test that never opens a window, so it must never panic.
+//! Entries only use types this crate or one below it owns. A call before
+//! install logs and does nothing; that only happens in a unit test with no
+//! windows, so it must never panic.
 
 use std::sync::{Arc, OnceLock};
 
@@ -24,92 +22,57 @@ use crate::panel::AppState;
 use crate::panel::shader::edit::ShaderEditTarget;
 use crate::preset_browser::PresetHost;
 
-/// The app's windows, as plain function pointers. One field per call a
-/// panel or a shared helper makes upward.
 pub struct Openers {
-    /// The tag editor over a track selection.
     pub tags_editor: fn(AppState, Vec<i64>, &mut App),
-    /// The metadata compare for one file, writing what's applied.
+    /// The metadata compare for one file.
     pub tags_matcher: fn(Entity<Library>, Entity<NowPlayingArt>, TrackKey, &mut App),
-    /// The cover editor over a track selection.
     pub cover_editor: fn(AppState, Vec<i64>, &mut App),
-    /// The rename-from-tags dialog over a track selection.
     pub rename_dialog: fn(AppState, Vec<i64>, &mut App),
-    /// The convert dialog over a track selection.
     pub convert_dialog: fn(AppState, Vec<i64>, &mut App),
-    /// Whether converting is possible on this machine at all, which is
-    /// whether ffmpeg is installed. The menus check before they offer a
-    /// "Convert...", so a machine without it never sees one.
+    /// Whether ffmpeg is installed. Menus hide "Convert..." without it.
     pub convert_available: fn() -> bool,
-    /// The new-playlist prompt, seeded with the tracks to file into it.
     pub playlist_create: fn(AppState, Vec<i64>, &mut App),
-    /// The rename prompt for an existing playlist.
     pub playlist_rename: fn(AppState, i64, String, &mut App),
-    /// The new-bookmark prompt: name and color for a mark about to be
-    /// dropped at this many seconds into the track the key names. The
-    /// position is taken at the press, not at the save, so typing a name
+    /// The position is taken at the press, not at the save, so typing a name
     /// doesn't drift the mark down the track.
     pub bookmark_new: fn(AppState, TrackKey, f64, &mut App),
-    /// The edit prompt over an existing bookmark: its name and color.
     pub bookmark_edit: fn(AppState, i64, &mut App),
-    /// The smart-playlist query editor: None for a new one, Some for the
-    /// playlist whose query is being edited.
+    /// None for a new smart playlist, Some to edit that playlist's query.
     pub smart_playlist: fn(AppState, Option<i64>, &mut App),
-    /// The equalizer window.
     pub eq_window: fn(&mut App),
-    /// The library stats page over a workspace's state.
     pub stats_window: fn(AppState, &mut App),
-    /// The library health page over a workspace's state.
     pub health_window: fn(AppState, &mut App),
-    /// The station directory, where a web radio station is searched for
-    /// and added.
     pub station_directory: fn(AppState, &mut App),
-    /// The signals window, where the shared pool is tended.
     pub signals_window: fn(&mut App),
-    /// The shader editor over one surface's source.
     pub shader_editor: fn(AppState, ShaderEditTarget, &mut App),
-    /// The Milkdrop preset picker over whatever the host shows presets on.
     pub milkdrop_picker: fn(Box<dyn PresetHost>, &mut App),
-    /// The failed-with-a-reason placeholder a panel shows in place of its
-    /// content, with the button into the console.
+    /// The failed-with-a-reason placeholder a panel shows, with a button into the console.
     pub console_notice: fn(SharedString) -> Div,
-    /// Register a lyrics panel for the reload broadcast. The handle is
-    /// type-erased on the way down and downcast on the way back up.
+    /// Register a lyrics panel for the reload broadcast. The handle is type-erased.
     pub lyrics_watch: fn(AnyWeakEntity, &mut App),
-    /// The lyrics editor over one track.
     pub lyrics_edit: fn(AppState, LyricsTarget, &mut App),
-    /// The lyrics search over one track.
     pub lyrics_matcher: fn(AppState, LyricsTarget, &mut App),
-    /// Tell every watching lyrics panel a subject's sheet changed where it
-    /// is kept.
+    /// Tell every watching lyrics panel a subject's sheet changed.
     pub lyrics_saved: fn(&Subject, &mut App),
-    /// Hand every watching lyrics panel the editor's unsaved draft, or
-    /// None to take it back. The panel shows the draft in place of the
-    /// saved sheet, so nudging the offset in the editor moves the words in
-    /// the panel while the window is still open.
+    /// Hand every watching lyrics panel the editor's unsaved draft, or None to
+    /// take it back, so offset nudges show in the panel while the editor's open.
     pub lyrics_preview: fn(&Subject, Option<&str>, &mut App),
-    /// The Add Panel flyout, built from the app's panel catalog.
     pub add_panel_submenu:
         fn(PopupMenu, Option<WeakEntity<TabPanel>>, &mut Window, &mut App) -> PopupMenu,
-    /// The "Group Settings" row a hosted panel's menu includes, so the
-    /// composite containing it is reachable from the child.
+    /// The "Group Settings" row that reaches a hosted panel's composite.
     pub host_settings_item: fn(PopupMenu, EntityId, &App) -> PopupMenu,
-    /// Put up the confirm a pinned panel's Close needs, and close from
-    /// there. Needs a workspace behind the window to float the dialog, so
-    /// it no-ops in a popout window with none.
+    /// Confirm and close a pinned panel. No-ops in a popout window, which has no
+    /// workspace to float the dialog over.
     pub confirm_close_locked: fn(Arc<dyn PanelView>, WeakEntity<TabPanel>, &mut Window, &mut App),
 }
 
 static OPENERS: OnceLock<Openers> = OnceLock::new();
 
-/// Install the app's window table. Called once from `main`, before any
-/// window opens.
+/// Called once from `main`, before any window opens.
 pub fn install(openers: Openers) {
     let _ = OPENERS.set(openers);
 }
 
-/// The installed table, or None with a line in the log. Callers fall back
-/// to doing nothing rather than failing.
 fn openers(what: &str) -> Option<&'static Openers> {
     match OPENERS.get() {
         Some(openers) => Some(openers),
@@ -120,14 +83,12 @@ fn openers(what: &str) -> Option<&'static Openers> {
     }
 }
 
-/// Open the tag editor over `ids`.
 pub fn tags_editor(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if let Some(openers) = openers("the tag editor") {
         (openers.tags_editor)(state, ids, cx);
     }
 }
 
-/// Open the metadata compare for `path`.
 pub fn tags_matcher(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
@@ -139,29 +100,25 @@ pub fn tags_matcher(
     }
 }
 
-/// Open the cover editor over `ids`.
 pub fn cover_editor(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if let Some(openers) = openers("the cover editor") {
         (openers.cover_editor)(state, ids, cx);
     }
 }
 
-/// Open the rename-from-tags dialog over `ids`.
 pub fn rename_dialog(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if let Some(openers) = openers("the rename dialog") {
         (openers.rename_dialog)(state, ids, cx);
     }
 }
 
-/// Open the convert dialog over `ids`.
 pub fn convert_dialog(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if let Some(openers) = openers("the convert dialog") {
         (openers.convert_dialog)(state, ids, cx);
     }
 }
 
-/// Whether this machine can convert audio. False before the app installs
-/// its table, which keeps the menus quiet in a unit test with no windows.
+/// False before the app installs its table, which keeps unit-test menus quiet.
 pub fn convert_available() -> bool {
     match OPENERS.get() {
         Some(openers) => (openers.convert_available)(),
@@ -169,84 +126,72 @@ pub fn convert_available() -> bool {
     }
 }
 
-/// Prompt for a new playlist holding `ids`.
 pub fn playlist_create(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if let Some(openers) = openers("the new-playlist prompt") {
         (openers.playlist_create)(state, ids, cx);
     }
 }
 
-/// Prompt to rename the playlist `id`, starting from `current`.
 pub fn playlist_rename(state: AppState, id: i64, current: String, cx: &mut App) {
     if let Some(openers) = openers("the playlist rename prompt") {
         (openers.playlist_rename)(state, id, current, cx);
     }
 }
 
-/// Prompt for a new bookmark `secs` into the track `key` names.
 pub fn bookmark_new(state: AppState, key: TrackKey, secs: f64, cx: &mut App) {
     if let Some(openers) = openers("the new-bookmark prompt") {
         (openers.bookmark_new)(state, key, secs, cx);
     }
 }
 
-/// Prompt to edit the bookmark `id`, its name and color.
 pub fn bookmark_edit(state: AppState, id: i64, cx: &mut App) {
     if let Some(openers) = openers("the bookmark edit prompt") {
         (openers.bookmark_edit)(state, id, cx);
     }
 }
 
-/// Open the smart-playlist editor, on `id` when editing one.
 pub fn smart_playlist(state: AppState, id: Option<i64>, cx: &mut App) {
     if let Some(openers) = openers("the smart playlist editor") {
         (openers.smart_playlist)(state, id, cx);
     }
 }
 
-/// Open the equalizer window.
 pub fn eq_window(cx: &mut App) {
     if let Some(openers) = openers("the equalizer window") {
         (openers.eq_window)(cx);
     }
 }
 
-/// Open the library stats page.
 pub fn stats_window(state: AppState, cx: &mut App) {
     if let Some(openers) = openers("the stats window") {
         (openers.stats_window)(state, cx);
     }
 }
 
-/// Open the library health page.
 pub fn health_window(state: AppState, cx: &mut App) {
     if let Some(openers) = openers("the health window") {
         (openers.health_window)(state, cx);
     }
 }
 
-/// Open the station directory, or bring the open one to the front.
 pub fn station_directory(state: AppState, cx: &mut App) {
     if let Some(openers) = openers("the station directory") {
         (openers.station_directory)(state, cx);
     }
 }
 
-/// Open the signals window.
 pub fn signals_window(cx: &mut App) {
     if let Some(openers) = openers("the signals window") {
         (openers.signals_window)(cx);
     }
 }
 
-/// Open the Milkdrop preset picker over `host`.
 pub fn milkdrop_picker(host: Box<dyn PresetHost>, cx: &mut App) {
     if let Some(openers) = openers("the preset picker") {
         (openers.milkdrop_picker)(host, cx);
     }
 }
 
-/// The failed-with-a-reason placeholder, empty before the app installs it.
 pub fn console_notice(message: impl Into<SharedString>) -> Div {
     match openers("the console notice") {
         Some(openers) => (openers.console_notice)(message.into()),
@@ -254,50 +199,42 @@ pub fn console_notice(message: impl Into<SharedString>) -> Div {
     }
 }
 
-/// Register a lyrics panel for the reload broadcast.
 pub fn lyrics_watch(panel: AnyWeakEntity, cx: &mut App) {
     if let Some(openers) = openers("the lyrics watch") {
         (openers.lyrics_watch)(panel, cx);
     }
 }
 
-/// Open the lyrics editor for `target`.
 pub fn lyrics_edit(state: AppState, target: LyricsTarget, cx: &mut App) {
     if let Some(openers) = openers("the lyrics editor") {
         (openers.lyrics_edit)(state, target, cx);
     }
 }
 
-/// Open the lyrics search for `target`.
 pub fn lyrics_matcher(state: AppState, target: LyricsTarget, cx: &mut App) {
     if let Some(openers) = openers("the lyrics search") {
         (openers.lyrics_matcher)(state, target, cx);
     }
 }
 
-/// Open the shader editor over `target`, or focus the one already on it.
 pub fn shader_editor(state: AppState, target: ShaderEditTarget, cx: &mut App) {
     if let Some(openers) = openers("the shader editor") {
         (openers.shader_editor)(state, target, cx);
     }
 }
 
-/// Tell every watching lyrics panel that `subject`'s sheet changed.
 pub fn lyrics_saved(subject: &Subject, cx: &mut App) {
     if let Some(openers) = openers("the lyrics reload broadcast") {
         (openers.lyrics_saved)(subject, cx);
     }
 }
 
-/// Hand every watching lyrics panel the editor's unsaved draft for
-/// `subject`, or None to take it back.
 pub fn lyrics_preview(subject: &Subject, text: Option<&str>, cx: &mut App) {
     if let Some(openers) = openers("the lyrics preview broadcast") {
         (openers.lyrics_preview)(subject, text, cx);
     }
 }
 
-/// Append the Add Panel flyout, or leave the menu as it is.
 pub fn add_panel_submenu(
     menu: PopupMenu,
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -310,7 +247,6 @@ pub fn add_panel_submenu(
     }
 }
 
-/// Append the hosting composite's settings row, or leave the menu as it is.
 pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMenu {
     match openers("the host settings row") {
         Some(openers) => (openers.host_settings_item)(menu, child, cx),
@@ -318,7 +254,6 @@ pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMe
     }
 }
 
-/// Put up the confirm behind a pinned panel's Close.
 pub fn confirm_close_locked(
     panel: Arc<dyn PanelView>,
     tabs: WeakEntity<TabPanel>,

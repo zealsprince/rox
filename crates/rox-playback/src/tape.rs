@@ -1,36 +1,21 @@
 //! The last few minutes of a live stream, kept in memory so a broadcast can
 //! be paused, resumed, and stepped back through.
 //!
-//! Radio has no cursor. The server sends what it is sending now, and a client
-//! that stops reading gets dropped or throttled, which is why pausing a
-//! station used to mean hanging up on it and rejoining at the live edge. A
-//! timeshift is the other answer: keep reading the socket whether or not
-//! anything is decoding, write the raw container bytes here, and let the
-//! decoder read from this at its own cursor. Pause stops the cursor and not
-//! the connection, so Play carries on where the listener stopped, and the
-//! distance between the cursor and the live edge is how far back they are.
-//! YouTube and Twitch behave the same way, and this is the same trick.
+//! The feed thread keeps reading the socket whether or not anything decodes
+//! and writes the station's raw container bytes here; the decoder reads at
+//! its own cursor. Pause stops the cursor, not the connection, and the
+//! cursor's distance from the live edge is how far back the listener is.
 //!
-//! Two threads share one of these. The network thread appends and never
-//! reads; the decode thread reads and never appends. Everything is under one
-//! mutex with a condvar on it, because the interesting moment is the decode
-//! thread catching up to the live edge and having to wait for bytes that only
-//! exist once the socket delivers them. No lock-free structure would help:
-//! the waiting is the point.
+//! The network thread only appends and the decode thread only reads, under
+//! one mutex with a condvar: the decode thread waiting at the live edge for
+//! bytes is the point, so lock-free wouldn't help.
 //!
-//! What's stored is the station's own container bytes, untouched, ICY
-//! metadata already stripped out by the reader above. So seeking in here is
-//! seeking in an MP3 or an ADTS stream with no index, which works because
-//! those formats resync on a frame header wherever you drop in. The two
-//! things that don't splice are marked rather than hidden: a reconnect
-//! records a gap, since the bytes either side of a dropped connection are not
-//! one decodable stream, and a seek refuses to cross one.
+//! MP3 and ADTS resync on a frame header wherever a seek lands. A reconnect
+//! records a gap, since two connections' bytes don't decode as one stream,
+//! and seeks never cross one.
 //!
-//! The cap is a length of time rather than a size, because that's what a
-//! listener is choosing when they set it. Bytes per second is measured
-//! instead of assumed: the decoder's own progress against the bytes it read
-//! is the exact answer behind the cursor, `icy-br` is the station's claim,
-//! and the wall clock is the fallback for a station that says nothing.
+//! The cap is a length of time, what the listener chose. Bytes per second is
+//! measured from the decoder's progress, else `icy-br`, else the wall clock.
 
 use std::collections::VecDeque;
 use std::io;
@@ -49,294 +34,182 @@ use crate::shared::LiveGap;
 use crate::shared::LiveMark;
 use crate::shared::Shift;
 
-/// What a window is sized against before anything is known about the rate,
-/// in bytes per second, and the floor the sizing uses either way. 128 kbps
-/// is what most stations run at, so a station that says nothing about itself
-/// gets about the window it asked for until the measurement lands.
+/// The rate assumed before anything is known, and the sizing floor. 128 kbps,
+/// what most stations run.
 const RATE_FLOOR: f64 = 16.0 * 1024.0;
 
-/// The ceiling on the sizing, from the other end: a wrong estimate here is
-/// memory, and a megabyte a second is already past any stream a listener is
-/// going to leave running in the background.
+/// Sizing ceiling: a megabyte a second is past any stream left running.
 const RATE_CEILING: f64 = 1024.0 * 1024.0;
 
-/// How much audio has to have been decoded before the exact measurement is
-/// trusted over the station's claim. The reader runs ahead of the decoder by
-/// whatever symphonia has buffered, so the ratio starts high and settles.
+/// Decoded audio needed before the measurement beats the station's claim; the
+/// reader runs ahead of the decoder, so the ratio starts high.
 const RATE_MIN_SECS: f64 = 10.0;
 
-/// How long the wall-clock estimate has to run before it's worth anything.
 const RATE_MIN_WIRE: Duration = Duration::from_secs(5);
 
-/// How far a later measurement has to sit from the settled rate to count as
-/// a disagreement at all.
+/// How far off the settled rate a measurement must be to disagree.
 const RATE_DRIFT: f64 = 0.2;
 
-/// And how long it has to keep disagreeing before the rate is settled
-/// again. Long enough that nothing short of a station really changing its
-/// encoder gets there.
+/// How long it must keep disagreeing before the rate re-settles.
 const RATE_DRIFT_SECS: Duration = Duration::from_secs(30);
 
-/// How far over the cap the tape is allowed to run before the oldest bytes
-/// come off. Trimming to the exact cap on every append would memmove the
-/// whole window per read; trimming a sixteenth at a time makes it a move
-/// every half minute or so, and keeps the published window steady rather
-/// than sawtoothing between full and half full the way a drop-half rule
-/// would.
+/// Overrun allowed before a trim. A sixteenth keeps trims to about one per
+/// half minute and the published window steady, where exact trims would
+/// memmove per read and drop-half would sawtooth.
 const TRIM_SLACK: usize = 16;
 
-/// How far behind the edge still reads as standing on it, before the chunk
-/// size is taken into account. Inside this the published distance is exactly
-/// zero, because it can't honestly be anything else: the edge arrives in
-/// socket-sized chunks, and a cursor keeping up with a station is always
-/// somewhere inside the last one.
+/// Inside this the published distance is exactly zero: the edge arrives in
+/// socket-sized chunks, so a cursor keeping up is always inside the last one.
 pub const LIVE_EDGE_SNAP_SECS: f64 = 2.0;
 
-/// The narrowest the band ever gets. The band is the resolution of anything
-/// measured against the head: the head arrives a chunk at a time, so inside
-/// a chunk's worth of it there's nothing to know.
+/// The narrowest the band gets. The band is the resolution of anything
+/// measured against the head.
 const BAND_MIN_SECS: f64 = 0.75;
 
-/// How many chunks wide the band is. Wide enough that a chunk landing a
-/// little late doesn't catch the drawn edge up against the head and stall
-/// it there.
+/// Wide enough that a late chunk doesn't stall the drawn edge against the head.
 const BAND_CHUNKS: f64 = 1.5;
 
-/// The longest a chunk is taken to be, in seconds of audio. The socket is
-/// read into a buffer of a few kilobytes, so a real one is a second or two
-/// at radio bitrates and four at the slowest anyone broadcasts music on.
-/// The cap matters because the band is measured in chunks: without it, one
-/// oversized append would hold the drawn edge that much further back.
+/// Cap on a chunk's length in seconds (the slowest music stream is ~4 s per
+/// read), so one oversized append can't hold the drawn edge back.
 const CHUNK_MAX_SECS: f64 = 4.0;
 
-/// How long the drawn edge takes to close the distance back into its span
-/// behind the head once it has strayed out of it. Inside the span nothing
-/// pulls at all, so this only decides how quickly the bar settles after a
-/// connect or a burst: a few seconds of its pace easing, never a step.
+/// How long the drawn edge takes to ease back into its span after a connect
+/// or burst. Inside the span it isn't pulled at all.
 const EDGE_SETTLE_SECS: f64 = 2.0;
 
-/// The span behind the head the drawn edge is left alone in, in bands. The
-/// head saws by a chunk and a band is at least a chunk and a half, so the
-/// saw fits inside with room for a late chunk either side.
+/// The span behind the head the drawn edge is left alone in, in bands. Wider
+/// than a chunk's saw, with room for a late chunk.
 const EDGE_NEAR_BANDS: f64 = 0.5;
 const EDGE_FAR_BANDS: f64 = 2.0;
 
-/// How far behind the head the drawn edge can fall before it gives up easing
-/// and jumps to it. The connect burst lands several seconds at once, and so
-/// does a reconnect, and easing across either would leave the bar short of
-/// the tape for most of a minute.
+/// Past this the edge jumps to the head instead of easing: easing across a
+/// connect burst would leave the bar short for most of a minute.
 const EDGE_SNAP_SECS: f64 = 4.0;
 
-/// How far the cursor may slip from the closest it has come to the edge
-/// before a live session counts as having fallen behind. A pause is the
-/// thing this catches: nobody seeked, but the broadcast ran on without the
-/// listener and the distance is real. Measured in bands, since inside one
-/// nothing about the distance is knowable anyway.
+/// How far the cursor may slip from its closest approach before a live
+/// session counts as behind. Catches a pause, where nobody seeked.
 const LIVE_SLIP_BANDS: f64 = 1.0;
 
-/// How long a read at the live edge parks before it looks at the world
-/// again. The condvar wakes it the moment bytes land, so this only bounds
-/// how stale its view of a dropped connection can get.
+/// Bounds how stale a parked read's view of a dropped connection can get; the
+/// condvar wakes it on bytes.
 const EDGE_STEP: Duration = Duration::from_millis(100);
 
-/// Where the station stands, as the network thread last left it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feed {
-    /// Connected and appending.
     Live,
-    /// The connection went away and the thread is retrying.
     Reconnecting,
-    /// The thread is gone. Nothing more will ever be appended.
+    /// Nothing more will ever be appended.
     Done,
 }
 
-/// What a seek has to land on for the container to make sense of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Snap {
-    /// Drop in anywhere. MP3 and ADTS carry a sync word on every frame, so
-    /// the decoder finds the next boundary itself.
+    /// MP3 and ADTS carry a sync word on every frame.
     Anywhere,
-    /// Ogg only reads at a page header, so a seek scans forward to the next
-    /// `OggS` capture pattern.
+    /// Ogg only reads at a page, so a seek scans forward to `OggS`.
     OggPage,
 }
 
-/// The Ogg page capture pattern, which is the only thing in a live Ogg
-/// stream that says "a container structure starts here".
 const OGGS: &[u8; 4] = b"OggS";
 
-/// How far a page scan will read before giving up and leaving the seek at
-/// the live edge. A page is a few kilobytes at most; past this the bytes
-/// aren't Ogg whatever the content type claimed.
+/// Give up past this: a page is a few kilobytes, so beyond it the bytes
+/// aren't Ogg.
 const OGG_SCAN: usize = 1 << 20;
 
 pub struct Tape {
     inner: Mutex<Inner>,
-    /// Woken on every append, on every state change, and when the network
-    /// thread gives up. The decode thread waits on it at the live edge.
+    /// Woken on append, state change, and give-up.
     wake: Condvar,
-    /// How many seconds of stream to hold, the setting's value. What the
-    /// tape actually holds is whatever has arrived so far, which is shorter
-    /// than this for the first few minutes of every station.
-    ///
-    /// An atomic rather than a plain field because the setting can move
-    /// under a station that's already playing. Both threads read it, the
-    /// engine writes it, and the buffer it sizes is behind the mutex
-    /// anyway, so nothing here needs the two to move together.
+    /// The setting's length. Atomic because the setting can move under a
+    /// playing station.
     cap_secs: AtomicU32,
-    /// What a seek has to land on, off the station's content type.
     snap: Snap,
-    /// Where the titles the stream carries go, fired by the reader as the
-    /// cursor reaches the byte they were found at rather than as they come
-    /// off the wire. Held here so a reopen over this tape inherits it
-    /// without the caller having to rebuild it.
+    /// Fired as the cursor reaches each title's byte. Held so a reopen over this
+    /// tape inherits it.
     on_title: TitleSink,
-    /// The session's "a command is waiting" flag. Read at the live edge,
-    /// where a station that has gone quiet would otherwise leave the decode
-    /// thread parked with a pause unanswered.
+    /// Read at the live edge so a quiet station can't leave a pause unanswered.
     interrupt: Arc<AtomicBool>,
 }
 
 struct Inner {
-    /// The window itself: raw container bytes, oldest first.
     buf: Vec<u8>,
-    /// The ceiling on that window in bytes, whatever length it's set to:
-    /// [`crate::memory::live_buffer_cap`], a share of what the machine has.
-    /// Read off the machine once at the open and then held, so the trim
-    /// doesn't go asking the OS anything.
+    /// [`crate::memory::live_buffer_cap`], read once at the open.
     cap_bytes: usize,
-    /// Stream offset `buf[0]` sits at. Everything else here is an absolute
-    /// offset on that same clock, so a cursor stays meaningful after the
-    /// bytes under it have been dropped.
+    /// Stream offset of `buf[0]`. Every offset here is absolute, so a cursor
+    /// survives its bytes being dropped.
     start: u64,
-    /// Where the reader has got to. Published here rather than kept to
-    /// itself because the engine needs it for the timeshift readout and to
-    /// decide where a seek is going from, and it has no other way down to
-    /// the reader.
+    /// Published for the engine's timeshift readout and seeks.
     cursor: u64,
-    /// Offsets where one connection ended and the next began. The bytes
-    /// either side don't splice into one decodable stream, so a seek lands
-    /// on the live side of the newest one it would have crossed.
-    ///
-    /// Published the way the title marks are, because a wall a click can't
-    /// get past is something the listener should see before they hit it.
+    /// Reconnect joins. A seek lands on the live side of any it would cross, and
+    /// they're published so the listener sees the wall.
     gaps: VecDeque<u64>,
-    /// Where each title the station announced was found. Kept for the whole
-    /// window, so a seek backwards resolves the title that was on then
-    /// rather than leaving the newest one standing.
+    /// Kept for the whole window, so a seek back resolves the title that was on then.
     marks: VecDeque<Mark>,
-    /// The offset of the mark the reader last published, so an unchanged
-    /// answer costs no sink call.
+    /// The last mark published, so an unchanged answer skips the sink.
     published: Option<u64>,
-    /// Whether the next title names music already in progress rather than a
-    /// song starting. True at the open and again after every reconnect.
+    /// The next title names music already playing. True at open and after a reconnect.
     joined: bool,
-    /// Whether the listener has stepped back into the buffer. Live is a
-    /// state rather than a distance: a station bursts several seconds at
-    /// connect and playing from the start of that burst is what a radio is
-    /// for, so a cursor that has never been moved reads as live however far
-    /// behind the edge it technically sits.
+    /// Live is a state, not a distance: the connect burst leaves an unmoved cursor
+    /// seconds behind, and that still reads as live.
     timeshifted: bool,
-    /// The closest the listener has come to the edge while live, in seconds.
-    /// A pause holds them still while the broadcast runs on, and that
-    /// slipping is how a session stops being live without anybody seeking.
+    /// The closest approach while live; slipping from it is how a pause stops
+    /// being live.
     live_lead: f64,
-    /// Bumped whenever the set of things drawn over the tape changes: a
-    /// song announced, a reconnect spliced, or either falling off the
-    /// back. Not for the distances moving, which every chunk does. What
-    /// the engine polls to know a republish is worth a revision of its
-    /// own.
-    ///
-    /// One counter for both sets. They're published together and they
-    /// change for the same reason, the tape taking something on or rolling
-    /// it off, and a reader that wanted only one of them would still have
-    /// to redraw the strip they share.
+    /// Bumped when the set of drawn marks or gaps changes, not when distances
+    /// slide.
     marks_rev: u64,
     state: Feed,
     rate: Rate,
-    /// How big the last chunk off the socket was. A station sends in real
-    /// time but arrives in bursts, so this is the resolution of any distance
-    /// measured against the head, and what the band is sized from.
+    /// Arrival is bursty, so this is the resolution of anything measured against
+    /// the head, and sizes the band.
     last_chunk: usize,
-    /// The live edge everything is drawn against, in stream bytes, and when
-    /// it was last moved. None until the first look.
-    ///
-    /// The head itself is no good for that. It jumps a chunk every time one
-    /// lands, so a playhead, a bar and a set of marks all measured against it
-    /// jump with it. A broadcast runs at a second a second, so this does too,
-    /// eased to stay a band or so behind the head. See [`Inner::edge`].
+    /// The live edge things are drawn against, in bytes. Never the head itself,
+    /// which jumps a chunk at a time: this runs at a second a second, eased to
+    /// sit a band or so behind it. See [`Inner::edge`].
     edge: Option<f64>,
     edge_since: Instant,
-    /// Which side of the middle of its span the edge was on when it last
-    /// strayed out of it, while it's being pulled back. None when it's
-    /// running free.
+    /// Which side of its span the edge strayed to while being pulled back.
     edge_pull: Option<f64>,
-    /// Where the listener is: the offset the reader was put at and the
-    /// seconds decoded since. The reader's own cursor won't do, because the
-    /// decoder pulls from it in blocks of up to 32 KiB, which is two seconds
-    /// of a 128 kbps station in one jump. The decoded seconds move a packet
-    /// at a time. See [`Inner::heard`].
+    /// Where the listener is: the reader's starting offset plus seconds decoded
+    /// since. Not the reader's cursor, which moves in 32 KiB jumps. See
+    /// [`Inner::heard`].
     heard_from: u64,
     heard_secs: f64,
-    /// The pair as it stood before the last reader was built, for a reopen
-    /// that failed and hands the old reader back.
+    /// The pair before the last reader was built, for a failed reopen.
     heard_was: (u64, f64),
-    /// The decoded seconds as the last look at the shift found them, which
-    /// is how that look knows whether the listener is still moving.
+    /// Last seen by the shift, to tell whether the listener is moving.
     heard_seen: f64,
-    /// How much of what has been decoded is still waiting in the output
-    /// ring, in seconds, as the engine last said. Taken off the decoded
-    /// seconds so the playhead follows the speakers rather than the decoder,
-    /// which fills the ring in steps and would saw the playhead with them.
+    /// Decoded audio still in the output ring, taken off so the playhead follows
+    /// the speakers, not the decoder's steps.
     queued_secs: f64,
-    /// The reader asked for bytes that had already been dropped, so its
-    /// cursor snapped forward to the oldest byte held. Taken by the engine,
-    /// which answers it with a re-sync: the decoder is mid-frame on bytes
-    /// that no longer follow what it was reading.
+    /// The reader fell off the back and snapped to the oldest byte. The engine
+    /// answers with a re-sync, since the decoder is mid-frame on bytes that no
+    /// longer follow.
     underran: bool,
 }
 
-/// One title the station announced, and where in the stream it said so.
 struct Mark {
-    /// The stream offset the title arrived at.
     at: u64,
     title: IcyTitle,
-    /// The title that was already playing when this connection opened,
-    /// rather than a song starting. A station announces what's on the
-    /// moment you tune in and again after every reconnect, and that
-    /// announcement is a name for music already in progress: it names the
-    /// song and it isn't a boundary, so nothing draws it.
+    /// Names what was on at connect or reconnect: not a boundary, so never drawn.
     joined: bool,
 }
 
-/// How bytes become seconds, settled once and then held.
-///
-/// Every number published about a buffer is a count of bytes divided by
-/// this, so a rate that keeps moving rescales the whole strip under the
-/// listener: the filled bar grows and shrinks, the playhead slides, a mark
-/// crosses the edge of the window and comes back. None of that is the
-/// stream doing anything. Radio is constant bitrate, so the right shape is
-/// one number decided early and left alone.
+/// How bytes become seconds, settled once and held. Every published number
+/// divides by this, so a moving rate would rescale the whole strip under
+/// the listener. Radio is constant bitrate.
 struct Rate {
-    /// The rate everything is divided by, once there's one worth keeping.
-    /// None while the first ten seconds are being measured, where the
-    /// provisional answer below stands in.
+    /// None while the first ten seconds are measured.
     held: Option<f64>,
-    /// The held rate came from `icy-br`, the station's own word, and is
-    /// never replaced. A measurement is a check on it, not a candidate.
+    /// From `icy-br` and never replaced; measurements only check it.
     stated: bool,
-    /// Bytes appended and the wall clock they arrived over, the provisional
-    /// answer before anything has been decoded.
+    /// The provisional answer before anything has decoded.
     wire_bytes: u64,
     wire_since: Instant,
-    /// Bytes the decoder read and the seconds of audio they turned into,
-    /// since the last time this window was opened. The exact answer for the
-    /// part of the tape that has actually been played.
+    /// The exact answer for the played part of the tape.
     played_bytes: u64,
     played_secs: f64,
-    /// Since when the measurement has disagreed with the held rate by more
-    /// than [`RATE_DRIFT`]. A station really changing bitrate mid-stream is
-    /// rare enough to insist on it lasting.
+    /// When the measurement started disagreeing by more than [`RATE_DRIFT`].
     drifting_since: Option<Instant>,
 }
 
@@ -355,15 +228,9 @@ impl Rate {
         }
     }
 
-    /// Take the decoder's own account of `secs` of audio, and settle the
-    /// rate off it once there's enough to settle on.
-    ///
-    /// The window is reopened at the first call rather than at the open,
-    /// because the reader runs ahead of the decoder by whatever symphonia
-    /// has buffered: counted from zero that read-ahead is a constant
-    /// sitting on top of ten seconds' worth, which on a 128 kbps stream is
-    /// half again the real rate. Measured from the first decoded chunk it
-    /// cancels, since both ends of the window carry it.
+    /// Settle the rate off the decoder's own account of `secs`. The window opens
+    /// at the first call, not at the open, so symphonia's read-ahead cancels out
+    /// instead of inflating the rate by half.
     fn played(&mut self, secs: f64) {
         if self.played_secs == 0.0 {
             self.played_bytes = 0;
@@ -378,7 +245,7 @@ impl Rate {
         self.played_bytes = 0;
         self.played_secs = 0.0;
 
-        // The first ten seconds decide it, unless the station already said.
+        // The first ten seconds decide, unless the station already said.
         let Some(held) = self.held else {
             self.held = Some(measured);
 
@@ -388,9 +255,7 @@ impl Rate {
             return;
         }
 
-        // A disagreement has to hold for half a minute before it counts.
-        // One window out of band is a station's own jitter or a decode that
-        // stalled; three in a row is a stream that really did change.
+        // A disagreement must hold for half a minute: one window off is jitter.
         if (measured - held).abs() <= held * RATE_DRIFT {
             self.drifting_since = None;
 
@@ -410,15 +275,8 @@ impl Rate {
         }
     }
 
-    /// Bytes per second: the held rate, or the socket's own average while
-    /// there's nothing better, or the default before even that means
-    /// anything.
-    ///
-    /// Unclamped on purpose. This is what turns a distance in bytes into a
-    /// distance in seconds, and holding a 128 kbps station to some floor
-    /// would have the transport report half the timeshift a listener
-    /// actually has. The clamp belongs to [`Inner::cap`], where a wrong
-    /// answer costs memory rather than a wrong readout.
+    /// Unclamped on purpose: a floor would misreport a 128 kbps station's
+    /// timeshift. The clamp lives in [`Inner::cap`], where error costs memory.
     fn bytes_per_sec(&self) -> f64 {
         if let Some(held) = self.held {
             return held;
@@ -433,23 +291,13 @@ impl Rate {
 }
 
 impl Inner {
-    /// The offset just past the newest byte held, which is the live edge.
     fn head(&self) -> u64 {
         self.start + self.buf.len() as u64
     }
 
-    /// How many bytes `window_secs` of this station comes to, and never
-    /// more than the machine can spare. The rate is held to a band here and
-    /// nowhere else: too low an estimate would make the window shorter than
-    /// the listener asked for, too high is memory spent on a station that
-    /// doesn't need it, and neither is worth inheriting from a header a
-    /// station made up.
-    ///
-    /// [`cap_bytes`](Inner::cap_bytes) is the other half of the rule. The
-    /// length is set in seconds against a bitrate nobody knows at the time,
-    /// so a fat enough station would otherwise turn twelve hours into
-    /// however much of the machine's memory it likes. Past the ceiling the
-    /// window comes up short of the length it was asked for, which is what
+    /// Bytes for `cap_secs`, never more than [`cap_bytes`](Inner::cap_bytes).
+    /// The rate is clamped here and only here: a made-up header shouldn't size
+    /// the window. Past the memory ceiling the window comes up short, which
     /// [`held_secs`](Inner::held_secs) publishes.
     fn cap(&self, cap_secs: u32) -> usize {
         let bps = self.rate.bytes_per_sec().clamp(RATE_FLOOR, RATE_CEILING);
@@ -457,14 +305,8 @@ impl Inner {
         ((bps * cap_secs as f64) as usize).min(self.cap_bytes)
     }
 
-    /// The window as it will actually be held, in seconds: the length it
-    /// was set to, or what the memory ceiling leaves of it at this
-    /// station's rate, whichever is shorter.
-    ///
-    /// This rather than the setting is what gets published, because the
-    /// strip is drawn against it. A capped window measured against the
-    /// length nobody is going to get would read as a buffer still filling,
-    /// forever.
+    /// The window as it will actually be held. Published instead of the setting
+    /// so a capped window doesn't read as filling forever.
     fn held_secs(&self, cap_secs: u32, bps: f64) -> f64 {
         let asked = cap_secs as f64;
 
@@ -474,13 +316,8 @@ impl Inner {
         }
     }
 
-    /// Make room for `incoming` bytes without letting the allocation run
-    /// away from the cap. A Vec grows by doubling, which near the ceiling
-    /// means holding twice the window the ceiling is there to bound.
-    /// Doubling is still what a tape well under its cap does, since that's
-    /// what keeps filling one cheap; only once the window is within a
-    /// sixteenth of the cap does the growth flatten into steps of that
-    /// size, which is also what the trim below hands back.
+    /// Vec doubling near the ceiling would hold twice the window, so within a
+    /// sixteenth of the cap growth steps by a sixteenth, what the trim hands back.
     fn reserve(&mut self, cap: usize, incoming: usize) {
         if self.buf.capacity() >= self.buf.len() + incoming {
             return;
@@ -490,14 +327,10 @@ impl Inner {
         self.buf.reserve_exact(incoming + step);
     }
 
-    /// Drop the oldest bytes once the window has overrun its cap, and the
-    /// gaps and title marks that went with them.
     fn trim(&mut self, cap_secs: u32) {
         self.trim_to(self.cap(cap_secs));
     }
 
-    /// The same against a cap already worked out, for the append that has
-    /// one in hand.
     fn trim_to(&mut self, cap: usize) {
         if self.buf.len() <= cap + cap / TRIM_SLACK {
             return;
@@ -509,66 +342,43 @@ impl Inner {
         self.buf.drain(..drop);
         self.start += drop as u64;
 
-        // A gap that fell off the back stops mattering: there's nothing
-        // behind it left to seek into.
+        // A gap off the back has nothing behind it to seek into.
         while self.gaps.front().is_some_and(|g| *g <= self.start) {
             self.gaps.pop_front();
         }
 
-        // Titles go the same way with one kept back. The mark before the
-        // oldest byte is the song that was playing when the window opens,
-        // so dropping it would leave a seek to the back of the tape with
-        // nothing to name.
+        // Keep the mark before the oldest byte: it names what's playing at the back.
         while self.marks.len() > 1 && self.marks[1].at <= self.start {
             self.marks.pop_front();
         }
 
-        // A song whose start has gone off the back is a song with no point
-        // on the strip to draw it at, so the set being drawn changed even
-        // though the mark may still be held for the title it names. A gap
-        // that rolled off counts the same way: the strip has one break
-        // fewer to draw.
+        // A mark or gap rolling off the back changes the drawn set.
         if self.inside_marks() != inside || self.gaps.len() != spliced {
             self.marks_rev += 1;
         }
 
-        // The drain hands back length, not memory: the allocation stays at
-        // whatever high-water mark it reached, so a window turned down from
-        // twelve hours to ten minutes would sit on the twelve hours of
-        // memory until the station ended. Hand it back once it's half a
-        // window clear of what the cap needs, which a tape at a steady cap
-        // never is, since the reserve above only ever grows it a sixteenth
-        // past the trim point.
+        // Drain frees length, not memory. Shrink once half a window clear of the
+        // cap, which a steady tape never reaches.
         let keep = cap + cap / TRIM_SLACK;
         if self.buf.capacity() > keep + cap / 2 {
             self.buf.shrink_to(keep);
         }
     }
 
-    /// How many marks still have their start inside the window, which is
-    /// the set anything drawing the buffer can show.
     fn inside_marks(&self) -> usize {
         self.marks.iter().filter(|mark| self.drawn(mark)).count()
     }
 
-    /// The resolution of anything measured against the head, in seconds: as
-    /// wide as the bursts it arrives in, and never narrower than
-    /// [`BAND_MIN_SECS`]. The drawn edge sits this far behind the head, and
-    /// a live listener has to slip this far before they count as behind.
+    /// As wide as the chunks arrive, at least [`BAND_MIN_SECS`]. The drawn edge
+    /// sits this far behind the head, and a live listener must slip this far to
+    /// count as behind.
     fn band(&self, bps: f64) -> f64 {
         BAND_MIN_SECS.max(BAND_CHUNKS * self.chunk_secs(bps))
     }
 
-    /// Move the drawn live edge up to `now` and say where it is, in stream
-    /// bytes.
-    ///
-    /// It runs at a second a second, the pace the station broadcasts at,
-    /// plus a pull back whenever it strays too near or too far behind the
-    /// head. The pull is clamped so the edge never runs backwards or at more
-    /// than double speed, and the edge never passes the head, since past it
-    /// there's nothing held to draw. That leaves the bar, the playhead's distance
-    /// and every mark moving smoothly while the chunks behind them land
-    /// whenever the socket delivers.
+    /// Move the drawn edge to `now`, in bytes: a second a second, pulled back
+    /// when it strays too near or far from the head, never backwards, never past
+    /// double speed, never past the head.
     fn edge(&mut self, now: Instant, bps: f64) -> f64 {
         let head = self.head() as f64;
         let Some(edge) = self.edge else {
@@ -581,15 +391,10 @@ impl Inner {
         let dt = now.saturating_duration_since(self.edge_since).as_secs_f64();
         self.edge_since = now;
 
-        // No pull at all while the edge sits between half a band and two
-        // behind the head. That span is wider than the saw a chunk makes, so
-        // at a steady broadcast the edge runs at exactly a second a second
-        // and nothing measured against it moves unless the listener does.
-        //
-        // Straying out of it starts a pull towards the middle, and the pull
-        // lets go once the edge crosses there. Aiming at the boundary would
-        // leave the bottom of the saw dipping over it on every chunk, each
-        // dip a small nudge to the pace.
+        // No pull between half a band and two behind the head, a span wider than a
+        // chunk's saw, so a steady broadcast runs the edge at exactly real time.
+        // Once out, pull toward the middle, not the boundary, or the saw nudges the
+        // pace every chunk.
         let band = self.band(bps);
         let gap = (head - edge) / bps;
         let mid = (EDGE_NEAR_BANDS + EDGE_FAR_BANDS) / 2.0 * band;
@@ -607,8 +412,7 @@ impl Inner {
         };
         let mut edge = (edge + dt * bps * (1.0 + pull)).min(head);
 
-        // A burst: the connect, a reconnect, or a stretch with nobody
-        // looking. Easing across it would leave the bar short for too long.
+        // A burst: jump rather than ease.
         if head - edge > EDGE_SNAP_SECS.max(2.0 * EDGE_FAR_BANDS * band) * bps {
             edge = head;
         }
@@ -617,10 +421,7 @@ impl Inner {
         edge
     }
 
-    /// Where the listener is, in stream bytes: where the reader was put plus
-    /// what has been decoded since, less what's still queued for the
-    /// speakers, held between the oldest byte and the reader's cursor,
-    /// since nothing outside those can have been heard.
+    /// Where the listener is, in bytes, held between the oldest byte and the cursor.
     fn heard(&self, bps: f64) -> f64 {
         let secs = (self.heard_secs - self.queued_secs).max(0.0);
 
@@ -629,34 +430,25 @@ impl Inner {
             .max(self.start as f64)
     }
 
-    /// How long the last chunk off the socket was, in seconds of audio, and
-    /// zero before one has landed. The resolution of everything measured
-    /// against the live edge: inside a chunk there's nothing to know.
+    /// Zero before one lands.
     fn chunk_secs(&self, bps: f64) -> f64 {
         (self.last_chunk as f64 / bps).min(CHUNK_MAX_SECS)
     }
 
-    /// Which mark the cursor sits under: the newest one at or behind it.
     fn mark_index(&self, cursor: u64) -> Option<usize> {
         self.marks.iter().rposition(|mark| mark.at <= cursor)
     }
 
-    /// Whether a mark is one a strip over the buffer can draw: inside what
-    /// the buffer holds, and a song really starting rather than the name of
-    /// what was already on when we tuned in.
+    /// Inside the buffer and a real song start, not the name of what was on at connect.
     fn drawn(&self, mark: &Mark) -> bool {
         !mark.joined && mark.at >= self.start && mark.at <= self.head()
     }
 
-    /// The newest title mark at or behind `cursor`, which is the song the
-    /// listener is actually hearing.
     fn title_at(&self, cursor: u64) -> Option<&Mark> {
         self.marks.get(self.mark_index(cursor)?)
     }
 
-    /// Where the song under the cursor started and where the next one does,
-    /// as absolute offsets. A song clock is made of the pair: how far past
-    /// the first the cursor has got, and how far apart the two are.
+    /// The song clock: offsets of the song under the cursor and the next one.
     fn song_bounds(&self, cursor: u64) -> (Option<u64>, Option<u64>) {
         let Some(i) = self.mark_index(cursor) else {
             return (None, None);
@@ -670,8 +462,7 @@ impl Inner {
 }
 
 impl Tape {
-    /// A tape holding `window_secs` of a station whose headers claimed
-    /// `stated_kbps` (zero for one that claimed nothing).
+    /// `stated_kbps` is zero when the station claimed nothing.
     pub fn new(
         cap_secs: u32,
         stated_kbps: u32,
@@ -765,8 +556,7 @@ impl Tape {
         self.wake.notify_all();
     }
 
-    /// Note a title the station announced, at the point in the stream it was
-    /// announced. Network thread only, from inside the ICY reader.
+    /// Network thread only, from inside the ICY reader.
     pub fn mark_title(&self, title: IcyTitle) {
         let mut inner = self.inner.lock().unwrap();
         let at = inner.head();
@@ -774,11 +564,8 @@ impl Tape {
             return;
         }
 
-        // The first title on a connection is the station saying what it's
-        // already playing, which the capture service knows as the joined
-        // case and answers the same way. It's kept, because it's the name of
-        // the song the listener is hearing and the clock counts from
-        // somewhere; it just isn't a boundary anybody can point at.
+        // The first title on a connection names what's already playing: kept for
+        // the song clock, but not a boundary.
         let joined = std::mem::take(&mut inner.joined);
         inner.marks.push_back(Mark { at, title, joined });
         if !joined {
@@ -786,23 +573,17 @@ impl Tape {
         }
     }
 
-    /// Record that the stream picked up again on a fresh connection. The
-    /// bytes from here on belong to a different run of the encoder, so
-    /// nothing may decode across this point.
+    /// A fresh connection: nothing may decode across this point.
     pub fn splice(&self) {
         let mut inner = self.inner.lock().unwrap();
         let at = inner.head();
         inner.gaps.push_back(at);
-        // The strips draw these, so a reconnect is a change to the set
-        // they're showing the same way a new song is.
+        // The strips draw gaps, so this changes the drawn set.
         inner.marks_rev += 1;
-        // A reconnect rejoins mid-song exactly the way the first connect
-        // did, so whatever the station announces next names music already
-        // in progress.
+        // A reconnect joins mid-song like the first connect.
         inner.joined = true;
     }
 
-    /// Say where the station stands. Network thread only.
     pub fn set_feed(&self, state: Feed) {
         let mut inner = self.inner.lock().unwrap();
         inner.state = state;
@@ -815,8 +596,7 @@ impl Tape {
         self.inner.lock().unwrap().state
     }
 
-    /// How much audio the decoder just produced, for the byte-to-second
-    /// measurement. Decode thread only, once per chunk.
+    /// Decode thread only, once per chunk.
     pub fn note_audio(&self, secs: f64) {
         if secs <= 0.0 {
             return;
@@ -827,26 +607,15 @@ impl Tape {
         inner.heard_secs += secs;
     }
 
-    /// How much decoded audio is still waiting to reach the speakers, in
-    /// seconds. Decode thread only, before each look at the shift.
+    /// Decode thread only, before each look at the shift.
     pub fn note_queued(&self, secs: f64) {
         self.inner.lock().unwrap().queued_secs = secs.max(0.0);
     }
 
-    /// Where the listener stands, in the seconds the transport draws: how
-    /// far behind the live edge they are, how much tape there is either side
-    /// of them, and how far into the song they're under.
-    ///
-    /// The song half comes off the in-band marks and nothing else. A
-    /// broadcast has no other idea when a song began, and a listener who
-    /// steps back into the middle of one should see the clock they'd have
-    /// seen the first time round rather than a fresh zero. It's None until a
-    /// title has been announced behind the listener, which is the first
-    /// seconds of every connect.
-    ///
-    /// The length is None wherever it would be a guess: at the newest song,
-    /// which hasn't ended, and at a song whose start has been trimmed off
-    /// the back, where what's left isn't the whole of it.
+    /// Where the listener stands, in seconds. The song clock comes only from the
+    /// in-band marks, so stepping back mid-song reads mid-song; None until a
+    /// title lands behind the listener. The length is None wherever it would be
+    /// a guess.
     pub fn shift(&self) -> Shift {
         self.shift_at(Instant::now())
     }
@@ -858,28 +627,16 @@ impl Tape {
         let heard = inner.heard(bps);
         let (song_at, next_at) = inner.song_bounds(heard as u64);
 
-        // Both ends move smoothly now, the edge on the clock and the
-        // listener on the decoded audio, so nothing here needs holding
-        // still. Playing along at speed, the distance between them only
-        // moves by the drift between the station's clock and ours.
+        // Both ends move smoothly, so at speed the distance only drifts with the
+        // station's clock.
         let band = inner.band(bps);
         let edge_of = LIVE_EDGE_SNAP_SECS.max(inner.chunk_secs(bps));
         let behind = (edge - heard).max(0.0) / bps;
 
-        // Live is a state rather than a distance. A station bursts several
-        // seconds of audio at the connect so the decoder has something to
-        // work with, and playing from the start of that burst is what every
-        // radio does: the listener is at the front of the broadcast, not six
-        // seconds behind it. So a listener nobody has moved reads as live
-        // however far back they technically sit, and the distance only
-        // starts meaning something once they've stepped back or a pause has
-        // let the broadcast run on without them.
-        //
-        // Slipping is the listener standing still while the broadcast runs
-        // on. While the audio keeps coming the lead follows the distance
-        // wherever it goes, which absorbs a connect burst however many reads
-        // it lands over, and a rate that hasn't settled drifting the number.
-        // Only a listener who has stopped decoding can fall behind.
+        // Live is a state, not a distance: the connect burst leaves an unmoved
+        // listener seconds back, and that still reads as live. The lead follows the
+        // distance while audio keeps coming, so only a listener who stopped
+        // decoding can slip behind.
         let moving = inner.heard_secs != inner.heard_seen;
         inner.heard_seen = inner.heard_secs;
         if moving || inner.live_lead.is_infinite() {
@@ -906,9 +663,8 @@ impl Tape {
         }
     }
 
-    /// The song boundaries still inside the window, oldest first, each as a
-    /// distance back from the live edge. The same drawn edge the shift
-    /// measures against, so a mark and the playhead slide together.
+    /// Song boundaries inside the window, measured from the same drawn edge as
+    /// the shift so marks and playhead slide together.
     pub fn live_marks(&self) -> Vec<LiveMark> {
         self.live_marks_at(Instant::now())
     }
@@ -930,19 +686,9 @@ impl Tape {
             .collect()
     }
 
-    /// Where the connection broke and picked up again, oldest first, each
-    /// placed twice: back from the live edge, the way the songs and the
-    /// playhead are, and back from the listener in seconds of audio heard.
-    ///
-    /// Two axes because two strips draw these and they don't share one.
-    /// The seek strip spans the tape and reads the first; the waveform's
-    /// trace is the last few seconds of what came out of the speakers and
-    /// reads the second. Both come off the same read of the same bytes, so
-    /// neither can be a tick out of step with the other.
-    ///
-    /// Bytes are the only unit a gap is kept in and this is the one place
-    /// that knows the rate they divide by, so the conversion happens here
-    /// rather than in the panels.
+    /// Reconnect joins, placed on both axes from one read: back from the live
+    /// edge for the seek strip, and back from the listener in heard seconds for
+    /// the waveform trace. Converted here, the one place that knows the rate.
     pub fn live_gaps(&self) -> Vec<LiveGap> {
         self.live_gaps_at(Instant::now())
     }
@@ -957,51 +703,32 @@ impl Tape {
             .gaps
             .iter()
             .map(|at| LiveGap {
-                // A splice from the last second or two sits past the drawn
-                // edge, which eases up to the head rather than jumping to
-                // it. Zero is the right answer there: the break is at the
-                // live end of the strip and slides in as the edge catches
-                // up.
+                // A splice past the drawn edge reads zero and slides in as the edge catches up.
                 behind_secs: (edge - *at as f64).max(0.0) / bps,
-                // Signed, because a listener who has stepped back has
-                // breaks ahead of them as well as behind.
+                // Signed: a listener who stepped back has breaks ahead.
                 heard_ago_secs: (heard - *at as f64) / bps,
             })
             .collect()
     }
 
-    /// The revision of those two sets, moved by a song being announced, a
-    /// reconnect, or either falling off the back, and by nothing else.
-    /// Cheap to poll; the lists above allocate.
+    /// Moves only when a mark or gap arrives or rolls off. Cheap; the lists allocate.
     pub fn marks_rev(&self) -> u64 {
         self.inner.lock().unwrap().marks_rev
     }
 
-    /// Where the reader is, in absolute stream bytes.
     pub fn cursor(&self) -> u64 {
         self.inner.lock().unwrap().cursor
     }
 
-    /// Whether a read has fallen off the back of the window since this was
-    /// last asked, and clear it. The engine answers a true by re-syncing,
-    /// since the decoder's next packet would otherwise start mid-frame on
-    /// bytes that don't follow the ones before them.
+    /// Taken once. The engine re-syncs, since the next packet would start mid-frame.
     pub fn took_underrun(&self) -> bool {
         let mut inner = self.inner.lock().unwrap();
         std::mem::replace(&mut inner.underran, false)
     }
 
-    /// The offset to start reading at for a cursor `behind` seconds back
-    /// from the live edge, held to what the tape holds and to the live side
-    /// of any gap it would have crossed.
-    ///
-    /// "Live" is never the edge itself. A cursor put right on the head has
-    /// nothing to read until the next chunk lands, and chunks land in
-    /// bursts, so the decoder starves a few times over the first second
-    /// until it has drifted a chunk back on its own. Landing that far back
-    /// to begin with is the same place it would settle, minus the stutter:
-    /// the snap distance the readout already calls "live", or one and a
-    /// half chunks on a stream whose chunks run longer than that.
+    /// The offset for a cursor `behind` seconds back, held to the tape and the
+    /// live side of any gap. "Live" lands a lead behind the head, not on it: a
+    /// cursor on the head starves until it drifts back a chunk anyway.
     pub fn seek_target(&self, behind_secs: f64) -> u64 {
         let mut inner = self.inner.lock().unwrap();
         let bps = inner.rate.bytes_per_sec();
@@ -1009,26 +736,20 @@ impl Tape {
         let back = ((behind_secs.max(0.0) * bps) as u64).max(lead);
         let head = inner.head();
 
-        // Asking for no more than the lead is asking to be live, which is
-        // what the LIVE button sends; anything further back is a listener
-        // stepping into the buffer. The state is what the readout follows,
-        // so it's set here rather than guessed from a distance later.
+        // Asking for no more than the lead is the LIVE button. The state is set
+        // here, not guessed from a distance later.
         inner.timeshifted = back > lead;
         inner.live_lead = f64::INFINITY;
 
-        // A step back is measured from the edge the strip draws, so a click
-        // lands where it was pointed. Live stays measured from the head,
-        // where the lead is what keeps the decoder fed.
+        // Step backs measure from the drawn edge so a click lands where pointed;
+        // live measures from the head to keep the decoder fed.
         let from = match inner.timeshifted {
             true => inner.edge.map_or(head, |edge| edge as u64),
             false => head,
         };
         let mut at = from.saturating_sub(back).max(inner.start);
 
-        // A gap is a splice between two connections, and no decoder reads
-        // across one. Landing on its live side gives up the older audio
-        // rather than handing over bytes that can't be played as one
-        // stream.
+        // Land on the live side of any gap in between.
         if let Some(gap) = inner.gaps.iter().rev().find(|gap| **gap > at) {
             at = *gap;
         }
@@ -1039,41 +760,30 @@ impl Tape {
         }
     }
 
-    /// Put the published cursor back where it was, for a reopen that got as
-    /// far as building a reader and then failed. The reader it built is
-    /// dropped and the old one carries on, so the number the transport reads
-    /// has to carry on with it.
+    /// For a reopen that failed after building its reader: the old reader
+    /// carries on, so the published cursor does too.
     pub fn restore_cursor(&self, at: u64) {
         let mut inner = self.inner.lock().unwrap();
         inner.cursor = at;
         (inner.heard_from, inner.heard_secs) = inner.heard_was;
 
-        // The seek that asked for this is the one that set the state, and it
-        // didn't happen. Work it back out from where the cursor really is,
-        // which is the same question the first sample after a connect
-        // answers.
+        // The seek that set the state didn't happen; work it out from the cursor.
         let bps = inner.rate.bytes_per_sec();
         let lead = (LIVE_EDGE_SNAP_SECS * bps).max(inner.last_chunk as f64 * 1.5) as u64;
         inner.timeshifted = inner.head().saturating_sub(at) > lead;
         inner.live_lead = f64::INFINITY;
     }
 
-    /// A reader over this tape starting at `at`. The engine builds one of
-    /// these to re-sync a decoder after a timeshift seek, over the same
-    /// tape the old one was reading.
+    /// For re-syncing a decoder after a timeshift seek.
     pub fn reader(self: &Arc<Self>, at: u64) -> TapeReader {
         let mut inner = self.inner.lock().unwrap();
         let at = at.clamp(inner.start, inner.head());
         inner.cursor = at;
-        // The listener starts where the reader does, and the old place is
-        // kept in case the reopen around this fails and the old reader
-        // carries on.
+        // Keep the old place in case the reopen fails.
         inner.heard_was = (inner.heard_from, inner.heard_secs);
         inner.heard_from = at;
         inner.heard_secs = 0.0;
-        // Whatever the last reader had published belonged to its own place
-        // in the stream. The new one republishes from where it lands, which
-        // for a seek backwards is an older song than the one standing.
+        // Republish from the new place, which after a step back is an older song.
         inner.published = None;
         drop(inner);
 
@@ -1084,8 +794,7 @@ impl Tape {
     }
 }
 
-/// The offset of the first Ogg page header at or after `at`, None when the
-/// scan ran out of tape without finding one.
+/// None when the scan runs out of tape.
 fn next_page(inner: &Inner, at: u64) -> Option<u64> {
     let from = at.saturating_sub(inner.start) as usize;
     let end = inner.buf.len().min(from + OGG_SCAN);
@@ -1096,17 +805,12 @@ fn next_page(inner: &Inner, at: u64) -> Option<u64> {
         .map(|off| at + off as u64)
 }
 
-/// The decode side of a tape: a cursor, and a read that waits at the live
-/// edge for the network thread to catch it up.
-///
-/// One of these at a time per tape in practice. A timeshift seek builds the
-/// replacement before dropping the source holding the old one, so the two
-/// overlap for the length of a probe, during which the new one is the only
-/// one reading.
+/// The decode side of a tape. A read at the live edge waits for the network
+/// thread. A timeshift seek overlaps two readers for one probe; only the new
+/// one reads.
 pub struct TapeReader {
     tape: Arc<Tape>,
-    /// Where this reader is. Mirrored into the tape on every move, since
-    /// the engine reads it from there.
+    /// Mirrored into the tape, where the engine reads it.
     cursor: u64,
 }
 
@@ -1119,11 +823,8 @@ impl io::Read for TapeReader {
         loop {
             let mut inner = self.tape.inner.lock().unwrap();
 
-            // The pause outlasted the window: the bytes this was reading
-            // have been dropped to make room for the broadcast that kept
-            // arriving. Snapping to the oldest byte held is the only place
-            // there is to go, and the flag is what gets the decoder rebuilt
-            // around the jump.
+            // The pause outlasted the window: snap to the oldest byte and flag it so the
+            // decoder is rebuilt around the jump.
             if self.cursor < inner.start {
                 self.cursor = inner.start;
                 inner.underran = true;
@@ -1138,11 +839,8 @@ impl io::Read for TapeReader {
                 inner.cursor = self.cursor;
                 inner.rate.played_bytes += n as u64;
 
-                // The song the cursor just moved into, if it moved into
-                // one. Resolved here and fired below, because the sink
-                // ends up in the engine and holding the tape's lock
-                // across it would put the network thread behind whatever
-                // it does.
+                // Resolve the title here, fire it after unlocking: the sink runs engine code
+                // and mustn't hold the network thread up.
                 let mark = inner
                     .title_at(self.cursor)
                     .filter(|mark| inner.published != Some(mark.at))
@@ -1161,27 +859,15 @@ impl io::Read for TapeReader {
                 return Ok(n);
             }
 
-            // At the live edge. Nothing to do but wait for the socket,
-            // which is what the condvar is for.
             match inner.state {
-                // The thread gave up. A station that ran out of reconnects
-                // is over, and the engine treats that the way it treats any
-                // track ending.
+                // Out of reconnects: the station is over, like any track ending.
                 Feed::Done => {
                     return Err(io::Error::other("the station is gone"));
                 }
 
-                // A command is waiting and the station is off the air. The
-                // decode thread is the thread that answers the transport,
-                // so waiting out a reconnect here is a pause going
-                // unanswered for as long as the station stays down. The
-                // error ends the entry and the queue moves on, which is
-                // what pressing something during a drop asks for.
-                //
-                // Deliberately not checked while the feed is live: a pause
-                // on a healthy station arrives with bytes microseconds
-                // away, and erroring out on it would kill the very stream
-                // the pause is meant to hold.
+                // A command is waiting and the station is down: end the entry rather than
+                // leave the press unanswered for the whole outage. Never checked while the
+                // feed is live, or a pause would kill the stream it means to hold.
                 Feed::Reconnecting if self.tape.interrupt.load(Ordering::Relaxed) => {
                     return Err(io::Error::other(
                         "the station is down and a command is waiting",
@@ -1197,10 +883,8 @@ impl io::Read for TapeReader {
 }
 
 impl io::Seek for TapeReader {
-    /// Move the cursor inside the window. Symphonia is told this source
-    /// isn't seekable, so nothing asks this to do the thing a file's seek
-    /// does; what it answers is the probe's small rewinds and the engine's
-    /// own arithmetic.
+    /// Only the probe's small rewinds and the engine use this; symphonia is told
+    /// the source isn't seekable.
     fn seek(&mut self, from: io::SeekFrom) -> io::Result<u64> {
         let mut inner = self.tape.inner.lock().unwrap();
         let target = match from {
@@ -1208,8 +892,6 @@ impl io::Seek for TapeReader {
 
             io::SeekFrom::Current(delta) => self.cursor.checked_add_signed(delta),
 
-            // A broadcast has no end to count back from, and won't have one
-            // later either.
             io::SeekFrom::End(_) => {
                 return Err(io::Error::other("a live stream has no end to seek from"));
             }
@@ -1248,9 +930,8 @@ mod tests {
         (0..n).map(|i| (i % 251) as u8).collect()
     }
 
-    /// Append `n` bytes the way a socket delivers them, in 16 kB reads, so
-    /// the live lead is the snap distance rather than a chunk and a half
-    /// of one oversized append.
+    /// In 16 kB reads, so the live lead is the snap distance, not a chunk and a
+    /// half of one huge append.
     fn feed(tape: &Tape, n: usize) {
         for chunk in bytes(n).chunks(16_000) {
             tape.append(chunk);
@@ -1269,12 +950,9 @@ mod tests {
         assert_eq!(tape.cursor(), 1024);
     }
 
-    /// The window is a length of time, so what it holds in bytes follows
-    /// the rate: at the station's stated 32 kB/s, ten seconds is 320 kB and
-    /// everything older comes off.
+    /// A time length: at 32 kB/s, ten seconds is 320 kB.
     #[test]
     fn the_window_drops_its_oldest_past_the_cap() {
-        // 256 kbps is 32 kB/s, so a ten second window is 320 kB.
         let tape = tape(10, 256);
         tape.append(&bytes(512 * 1024));
 
@@ -1318,9 +996,7 @@ mod tests {
         assert!(began.elapsed() >= Duration::from_millis(20), "it waited");
     }
 
-    /// The one shape of interrupt that ends a read: a command waiting while
-    /// the station is off the air. A live feed never takes this path, or a
-    /// pause would kill the stream it means to hold.
+    /// The one interrupt that ends a read: a command while the station is down.
     #[test]
     fn a_waiting_command_ends_a_read_at_a_dead_edge() {
         let interrupt = Arc::new(AtomicBool::new(false));
@@ -1349,20 +1025,15 @@ mod tests {
         assert!(reader.read(&mut out).is_err());
     }
 
-    /// A seek back over a reconnect lands on the live side of it: the bytes
-    /// before the splice belong to a connection the decoder can't carry on
-    /// from.
     #[test]
     fn a_seek_never_crosses_a_gap() {
-        // 32 kB/s, so a second is 32000 bytes.
         let tape = tape(600, 256);
         feed(&tape, 64_000);
         tape.splice();
         feed(&tape, 64_000);
 
         assert_eq!(tape.seek_target(3.0), 64_000, "held at the splice");
-        // A second back is inside the live lead, so it lands at the lead's
-        // two seconds instead: clear of the splice all the same.
+        // A second back is inside the lead, which still clears the splice.
         assert_eq!(
             tape.seek_target(1.0),
             64_000,
@@ -1382,8 +1053,7 @@ mod tests {
         feed(&tape, 64_000);
 
         assert_eq!(tape.seek_target(600.0), 0, "the oldest byte held");
-        // "Live" is a lead behind the edge (two seconds at 32 kB/s), never
-        // the edge itself, so the decoder has bytes in hand.
+        // Live is a two-second lead behind the edge.
         assert_eq!(tape.seek_target(0.0), 0, "two seconds of a two-second tape");
         feed(&tape, 64_000);
         assert_eq!(tape.seek_target(0.0), 64_000, "the edge less the lead");
@@ -1406,9 +1076,7 @@ mod tests {
         assert_eq!(tape.seek_target(1.5), 32_000, "forward to the page");
     }
 
-    /// The title the cursor is under, not the one the socket is under. A
-    /// listener ten minutes behind hears the song that was on ten minutes
-    /// ago, and that's what the transport has to name.
+    /// The title under the cursor, not under the socket.
     #[test]
     fn titles_fire_as_the_cursor_reaches_them() {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1445,23 +1113,15 @@ mod tests {
         );
     }
 
-    /// Live is a state, not a distance. Icecast opens a connection by
-    /// bursting several seconds of audio so the decoder has something to
-    /// work with, and playing from the start of that burst is what every
-    /// radio does: the listener is at the front of the broadcast. Reading
-    /// six seconds behind and jittering between six and seven is the
-    /// arithmetic being shown where the answer is simply "live".
+    /// The connect burst reads as live, not six seconds behind jittering to seven.
     #[test]
     fn a_connect_burst_reads_as_live_until_the_listener_steps_back() {
-        // 256 kbps is 32 kB/s, so six seconds of burst is 192 kB.
         let tape = tape(600, 256);
         feed(&tape, 192_000);
 
         let mut reader = tape.reader(0);
         assert_eq!(tape.shift().behind_secs, 0.0, "at the front of the burst");
 
-        // Keeping pace with it: a second of audio decoded for every second
-        // that arrives. Still live, however much of the burst is ahead.
         let t0 = Instant::now();
         for second in 1..=10 {
             feed(&tape, 32_000);
@@ -1473,8 +1133,7 @@ mod tests {
             assert_eq!(tape.shift_at(now).behind_secs, 0.0, "still live");
         }
 
-        // Stepping back is what makes the distance mean something. Ten
-        // seconds, which is well inside the sixteen this tape holds.
+        // Ten seconds back, inside the sixteen held.
         let at = tape.seek_target(10.0);
         let _reader = tape.reader(at);
         let behind = tape.shift().behind_secs;
@@ -1483,21 +1142,17 @@ mod tests {
             "ten seconds into the buffer: {behind}"
         );
 
-        // And the LIVE button puts it back, without the cursor having to
-        // reach the last byte.
+        // The LIVE button puts it back.
         let at = tape.seek_target(0.0);
         let _reader = tape.reader(at);
         assert_eq!(tape.shift().behind_secs, 0.0, "live again");
     }
 
-    /// Icecast's connect burst doesn't always land in one read. A server
-    /// that sends it over the first second, after the strip has already had
-    /// a look at the station, grows the distance while the listener plays
-    /// along at speed. That's still live, and has to read as live.
+    /// A burst spread over the first second, after the first look, still reads
+    /// as live.
     #[test]
     fn a_burst_that_lands_after_the_first_look_still_reads_as_live() {
-        // 128 kbps is 16 kB/s, so ten milliseconds of audio is 160 bytes
-        // and the 64 kB burst is four seconds.
+        // 128 kbps: 10 ms is 160 bytes, the 64 kB burst four seconds.
         let tape = tape(600, 128);
         tape.append(&bytes(4_000));
 
@@ -1507,8 +1162,6 @@ mod tests {
 
         let mut buffered = 0usize;
         for tick in 1..=2000u64 {
-            // The burst over the first 160 ms, then a chunk every quarter
-            // second at the broadcast's pace.
             if tick <= 16 {
                 tape.append(&bytes(4_000));
             } else if tick % 25 == 0 {
@@ -1528,9 +1181,7 @@ mod tests {
         }
     }
 
-    /// The other way a session stops being live: nobody seeked, the
-    /// listener paused, and the broadcast ran on without them. That
-    /// distance is real and has to show.
+    /// A pause lets the broadcast run on: that distance is real.
     #[test]
     fn a_pause_that_lets_the_broadcast_run_on_stops_reading_as_live() {
         let tape = tape(600, 256);
@@ -1539,8 +1190,6 @@ mod tests {
         let _reader = tape.reader(0);
         assert_eq!(tape.shift().behind_secs, 0.0, "live at the open");
 
-        // Thirty seconds arrive with nothing reading them, which is what a
-        // pause looks like from here.
         feed(&tape, 960_000);
 
         let behind = tape.shift().behind_secs;
@@ -1550,13 +1199,9 @@ mod tests {
         );
     }
 
-    /// The clock a listener sees while playing steadily behind the    /// What a listener sees while playing steadily behind the broadcast,
-    /// with everything arriving the way a session delivers it: the socket
-    /// lands a chunk at a time, the decoder pulls 32 KiB blocks off the
-    /// reader, and the audio comes out ten milliseconds at a time. The edge
-    /// saws by a chunk and the cursor by a block, and none of that may reach
-    /// the playhead, the bar or a mark: each moves by no more than the clock
-    /// allows between two looks, and the bar and the mark only ever one way.
+    /// Steady playback behind the broadcast, with chunked arrival, 32 KiB reads,
+    /// and 10 ms output. Neither saw may reach the playhead, bar, or marks: each
+    /// moves no more than the clock allows, the bar and marks only one way.
     #[test]
     fn the_strip_moves_smoothly_while_the_edge_and_the_reads_arrive_in_bursts() {
         let song = |title: &str| IcyTitle {
@@ -1564,21 +1209,18 @@ mod tests {
             title: title.to_string(),
         };
 
-        // 256 kbps is 32 kB/s, so ten milliseconds of audio is 320 bytes.
         for chunk_secs in [0.25, 1.0, 2.0] {
             let chunk = (chunk_secs * 32_000.0) as usize;
             let period = (chunk_secs * 100.0) as usize;
 
-            // A minute on tape with a song starting halfway through it. The
-            // first title is the one already on at the connect, which isn't
-            // a boundary.
+            // A minute on tape, a song starting halfway; the first title is the
+            // connect's, not a boundary.
             let tape = tape(600, 256);
             tape.mark_title(song("on at the connect"));
             feed(&tape, 960_000);
             tape.mark_title(song("second"));
             feed(&tape, 960_000);
 
-            // Thirty seconds back, the way the engine parks a listener there.
             let t0 = Instant::now();
             let at = tape.seek_target(30.0);
             let mut reader = tape.reader(at);
@@ -1606,9 +1248,7 @@ mod tests {
                 let ((behind, window, mark), (behind_next, window_next, mark_next)) =
                     (pair[0], pair[1]);
 
-                // The edge runs at up to twice real time and the listener at
-                // real time, so ten milliseconds apart the playhead can't
-                // have moved by more than ten of them.
+                // The edge runs at most twice real time, so 10 ms moves the playhead at most 10 ms.
                 assert!(
                     (behind_next - behind).abs() <= 0.011,
                     "the playhead jumped on a {chunk_secs}s chunk: {behind} to {behind_next}"
@@ -1623,9 +1263,7 @@ mod tests {
                 );
             }
 
-            // Past the first half, with the edge settled in behind the head,
-            // the playhead doesn't wander either: the head's saw stays out
-            // of the edge's pace entirely.
+            // Once settled, the playhead doesn't wander at all.
             let settled = seen[3000..].iter().map(|(behind, _, _)| *behind);
             let (lo, hi) = settled.fold((f64::MAX, f64::MIN), |(lo, hi), b| (lo.min(b), hi.max(b)));
             assert!(
@@ -1634,8 +1272,7 @@ mod tests {
                 hi - lo
             );
 
-            // Give or take the band the edge settles in behind the head,
-            // which the seek was measured before.
+            // Give or take the band, which the seek was measured before.
             let (behind, _, _) = seen[seen.len() - 1];
             assert!(
                 (behind - 30.0).abs() < 1.0 + 1.5 * chunk_secs,
@@ -1644,12 +1281,9 @@ mod tests {
         }
     }
 
-    /// Turning the setting down while a station plays gives the memory
-    /// back now rather than at the next connect: the tape trims to the new
-    /// length on the spot, and the shift says so.
+    /// Turning the setting down trims on the spot.
     #[test]
     fn a_smaller_cap_trims_the_window_it_already_holds() {
-        // 256 kbps is 32 kB/s, so sixty seconds is 1.92 MB.
         let tape = tape(60, 256);
         tape.append(&bytes(1_920_000));
         assert_eq!(tape.inner.lock().unwrap().buf.len(), 1_920_000);
@@ -1661,9 +1295,7 @@ mod tests {
         assert_eq!(tape.shift().cap_secs, 10.0);
     }
 
-    /// Turning it up keeps everything and just raises the ceiling. There's
-    /// no way to fetch the minutes before the listener asked for them, so
-    /// growing is the window filling into the new length from here.
+    /// Turning it up keeps every byte; the window fills into the new length.
     #[test]
     fn a_larger_cap_keeps_every_byte_it_already_had() {
         let tape = tape(60, 256);
@@ -1681,15 +1313,10 @@ mod tests {
         assert_eq!(tape.shift().cap_secs, 600.0);
     }
 
-    /// The length is set in seconds and paid for in memory, so there's a
-    /// ceiling in bytes under it: a station fat enough to spend the
-    /// machine's memory on the length asked for gets a shorter window
-    /// instead of the memory.
+    /// The memory ceiling shortens a window the setting asked for.
     #[test]
     fn the_memory_ceiling_cuts_a_window_the_setting_asked_for() {
-        // 256 kbps is 32 kB/s, so ten minutes of it is 19.2 MB. On a
-        // machine that can only spare 2 MB, those ten minutes are a minute
-        // and two seconds.
+        // Ten minutes at 32 kB/s is 19.2 MB; a 2 MB ceiling holds 62.5 seconds.
         let tape = tape(600, 256);
         tape.set_cap_bytes(2_000_000);
         feed(&tape, 19_200_000);
@@ -1703,13 +1330,10 @@ mod tests {
         assert_eq!(tape.shift().cap_secs, 62.5, "and the strip is drawn to it");
     }
 
-    /// What's allocated behind the window stays inside the ceiling too. A
-    /// Vec doubles when it runs out of room, and a doubling at the ceiling
-    /// is twice the memory the ceiling is there to bound.
+    /// The allocation stays inside the ceiling too, despite Vec doubling.
     #[test]
     fn the_allocation_stays_inside_the_ceiling() {
-        // Twice the ten minutes the tape will hold, so the growth has run
-        // well past where a doubling would have landed.
+        // Twice the window, well past where a doubling would land.
         let tape = tape(600, 256);
         feed(&tape, 38_400_000);
 
@@ -1719,9 +1343,7 @@ mod tests {
         assert!(capacity < 24_000_000, "allocation of {capacity} bytes");
     }
 
-    /// And turning the setting down hands the allocation back, not just
-    /// the length: the drain leaves the old window's memory sitting there
-    /// otherwise, which is the memory the listener just asked for back.
+    /// Turning it down hands the allocation back, not just the length.
     #[test]
     fn a_smaller_cap_hands_the_allocation_back() {
         let tape = tape(600, 256);
@@ -1736,8 +1358,6 @@ mod tests {
         assert!(capacity < 4_000_000, "allocation of {capacity} bytes");
     }
 
-    /// The rate the window is sized against rides along too, because it's
-    /// what turns a length of buffer into the megabytes it costs.
     #[test]
     fn the_shift_carries_the_rate_the_window_is_sized_at() {
         let tape = tape(600, 256);
@@ -1746,8 +1366,6 @@ mod tests {
         assert_eq!(tape.shift().bytes_per_sec, 32_000.0);
     }
 
-    /// The setting's own length rides along, so a strip can draw the whole
-    /// buffer with the part that hasn't arrived yet marked as such.
     #[test]
     fn the_shift_carries_the_buffer_length_it_was_set_to() {
         let tape = tape(600, 256);
@@ -1758,19 +1376,15 @@ mod tests {
         assert_eq!(shift.window_secs, 2.0, "and what has actually arrived");
     }
 
-    /// The song boundaries a strip over the buffer draws: one per title
-    /// still inside it, oldest first, each at its distance from the edge.
     #[test]
     fn the_marks_come_back_as_distances_from_the_edge() {
-        // 256 kbps is 32 kB/s, so a second is 32000 bytes.
         let tape = tape(600, 256);
         let song = |name: &str| IcyTitle {
             artist: "Boards of Canada".into(),
             title: name.into(),
         };
 
-        // The first title names what was already on when we tuned in, so
-        // the three after it are the three boundaries.
+        // The first title is the connect's; the three after are the boundaries.
         tape.mark_title(song("Telephasic Workshop"));
         tape.append(&bytes(32_000));
         tape.mark_title(song("Roygbiv"));
@@ -1794,14 +1408,9 @@ mod tests {
         assert!(marks.iter().all(|mark| mark.artist == "Boards of Canada"));
     }
 
-    /// The breaks the strips draw: one per reconnect still inside the
-    /// window, placed against the live edge for the strip that spans the
-    /// tape and against the listener for the one that draws what has been
-    /// heard. The set moves the revision, since a break arriving is a
-    /// change to what the strips are showing.
+    /// Gaps on both axes, and a new one moves the revision.
     #[test]
     fn the_gaps_come_back_on_both_axes() {
-        // 256 kbps is 32 kB/s, so a second is 32000 bytes.
         let tape = tape(600, 256);
         let mut reader = tape.reader(0);
 
@@ -1811,8 +1420,6 @@ mod tests {
         feed(&tape, 96_000);
         assert!(tape.marks_rev() > rev, "the reconnect changed the set");
 
-        // The listener reads three seconds past the break, which is where
-        // the reader's cursor and the decoded seconds put them.
         let mut out = vec![0u8; 160_000];
         assert_eq!(reader.read(&mut out).unwrap(), 160_000);
         tape.note_audio(5.0);
@@ -1828,9 +1435,7 @@ mod tests {
             "and three seconds of audio ago"
         );
 
-        // A second break, this one ahead of where the listener has got to:
-        // the audio distance reads negative rather than clamping to zero,
-        // since a strip drawing what has been heard has no column for it.
+        // A break ahead of the listener reads negative, not clamped.
         feed(&tape, 32_000);
         tape.splice();
 
@@ -1843,11 +1448,8 @@ mod tests {
         assert!(gaps[0].behind_secs > gaps[1].behind_secs, "oldest first");
     }
 
-    /// A break that rolled off the back of the window goes with it: there's
-    /// nothing behind it left to seek into, so there's nothing to draw.
     #[test]
     fn a_gap_trimmed_off_the_back_stops_being_published() {
-        // Ten seconds of window at 32 kB/s is 320 kB.
         let tape = tape(10, 256);
 
         feed(&tape, 64_000);
@@ -1856,19 +1458,15 @@ mod tests {
         assert_eq!(tape.live_gaps().len(), 1, "inside the window");
         let rev = tape.marks_rev();
 
-        // Ten more seconds, a whole window's worth, takes the splice with
-        // the bytes in front of it.
+        // A whole window's worth takes the splice with it.
         feed(&tape, 320_000);
         assert!(tape.live_gaps().is_empty(), "rolled off with the tape");
         assert!(tape.marks_rev() > rev, "and the set said it changed");
     }
 
-    /// A song whose start has been trimmed off the back has nowhere on the
-    /// strip to be drawn, so it stops being published even though the tape
-    /// keeps the mark to know what's playing at the back of the window.
+    /// A trimmed song start stops being drawn, though its mark is kept.
     #[test]
     fn a_mark_trimmed_off_the_back_stops_being_published() {
-        // Ten seconds of window at 32 kB/s is 320 kB.
         let tape = tape(10, 256);
         let song = |name: &str| IcyTitle {
             artist: String::new(),
@@ -1882,8 +1480,6 @@ mod tests {
         assert_eq!(tape.live_marks().len(), 2, "both still inside");
         let rev = tape.marks_rev();
 
-        // Ten more seconds, which is a window's worth: the trim takes the
-        // first song's start with it.
         tape.append(&bytes(320_000));
 
         let marks = tape.live_marks();
@@ -1891,18 +1487,14 @@ mod tests {
         assert_eq!(marks[0].title, "second");
         assert!(tape.marks_rev() > rev, "and the set said it changed");
 
-        // The song at the back of the window still has a clock, since the
-        // tape keeps the mark that names it even with its start gone.
+        // The back of the window still has a song clock.
         let _reader = tape.reader(0);
         assert!(tape.shift().song_secs.is_some());
     }
 
-    /// The song clock a station has and no other source does: where the
-    /// cursor sits between two title marks. A seek backwards lands in the
-    /// middle of a song and has to read as the middle of it.
+    /// The song clock: a seek back lands mid-song and reads mid-song.
     #[test]
     fn the_marks_say_how_far_into_a_song_the_cursor_is() {
-        // 256 kbps is 32 kB/s, so a second is 32000 bytes.
         let tape = tape(600, 256);
         let song = |title: &str| IcyTitle {
             artist: String::new(),
@@ -1914,18 +1506,16 @@ mod tests {
         tape.mark_title(song("second"));
         tape.append(&bytes(64_000));
 
-        // Nothing read yet, so the cursor is at the top of the first song.
         let shift = tape.shift();
         assert_eq!(shift.song_secs, Some(0.0));
         assert_eq!(shift.song_len_secs, Some(2.0), "mark to mark");
 
-        // A second into the first song, which is still two long.
         let mut reader = tape.reader(32_000);
         let shift = tape.shift();
         assert_eq!(shift.song_secs, Some(1.0));
         assert_eq!(shift.song_len_secs, Some(2.0));
 
-        // And into the second song, which hasn't ended, so it has no length.
+        // The newest song hasn't ended, so no length.
         let mut out = vec![0u8; 48_000];
         assert_eq!(reader.read(&mut out).unwrap(), 48_000);
         tape.note_audio(1.5);
@@ -1934,8 +1524,7 @@ mod tests {
         assert_eq!(shift.song_len_secs, None, "the newest song is unfinished");
     }
 
-    /// Before the station has announced anything there's no song to count
-    /// from, and saying zero would be a claim the tape can't make.
+    /// No marks, no song clock; zero would be a claim.
     #[test]
     fn a_stream_with_no_marks_has_no_song_clock() {
         let tape = tape(600, 256);
@@ -1946,9 +1535,7 @@ mod tests {
         assert_eq!(shift.song_len_secs, None);
     }
 
-    /// A song whose start has been trimmed off the back still says how far
-    /// in the cursor is, since the mark's offset outlives its bytes, but it
-    /// won't claim a length: what's left isn't the whole song.
+    /// A trimmed song keeps its clock but claims no length.
     #[test]
     fn a_song_trimmed_off_the_back_keeps_its_clock_and_loses_its_length() {
         let tape = tape(10, 256);
@@ -1962,7 +1549,6 @@ mod tests {
         tape.mark_title(song("second"));
         tape.append(&bytes(64_000));
 
-        // The window holds ten seconds, so the first song's start went.
         let start = tape.inner.lock().unwrap().start;
         assert!(start > 0, "the oldest bytes were dropped");
 
@@ -1976,16 +1562,10 @@ mod tests {
         assert_eq!(shift.song_len_secs, None, "and no length to claim");
     }
 
-    /// The station's own word is the rate, and a measurement never
-    /// replaces it. Every number the strip draws is bytes over this, so a
-    /// figure that keeps being revised rescales the whole picture: the
-    /// filled bar grows and shrinks, the marks slide, the playhead moves
-    /// while the music doesn't. Radio is constant bitrate, so one number
-    /// decided early and left alone is both the steadier answer and the
-    /// truer one.
+    /// A stated rate is never replaced by a measurement: every drawn number is
+    /// bytes over it, so revising it would rescale the whole strip.
     #[test]
     fn a_stated_rate_is_never_replaced_by_a_measurement() {
-        // Claims 256 kbps, which is 32 kB/s.
         let tape = tape(600, 256);
         let song = |name: &str| IcyTitle {
             artist: String::new(),
@@ -2002,8 +1582,7 @@ mod tests {
         let mark = tape.live_marks()[0].behind_secs;
         assert_eq!(window, 20.0, "twenty seconds at the stated rate");
 
-        // Twenty seconds of audio out of 480 kB, which measures 24 kB/s: a
-        // quarter off what the station said, and ignored.
+        // Measures 24 kB/s, a quarter off the claim, and is ignored.
         for _ in 0..20 {
             let mut out = vec![0u8; 24_000];
             assert_eq!(reader.read(&mut out).unwrap(), 24_000);
@@ -2015,9 +1594,7 @@ mod tests {
         assert_eq!(tape.shift().bytes_per_sec, 32_000.0);
     }
 
-    /// A station that says nothing about itself settles once, on the first
-    /// ten seconds the decoder accounts for, and holds that. The numbers
-    /// move the once, on the settle, and never again.
+    /// Unstated: the rate settles once, on the first ten decoded seconds, and holds.
     #[test]
     fn an_unstated_rate_settles_once_and_then_holds() {
         let tape = tape(600, 0);
@@ -2026,9 +1603,8 @@ mod tests {
         let mut reader = tape.reader(0);
         let mut seen = vec![tape.shift().window_secs];
 
-        // A second of audio per 32 kB read, which is the 32 kB/s the header
-        // never mentioned. The first tick opens the measurement window, the
-        // tenth after it closes it.
+        // 32 kB per decoded second. The first tick opens the window, the tenth after
+        // closes it.
         for _ in 0..16 {
             let mut out = vec![0u8; 32_000];
             assert_eq!(reader.read(&mut out).unwrap(), 32_000);
@@ -2044,10 +1620,8 @@ mod tests {
             "one settle and nothing after it: {seen:?}"
         );
 
-        // Twenty seconds of tape at the real 32 kB/s, give or take the
-        // first tick: opening the measurement window throws away what was
-        // read before it, which is the read-ahead in a real session and a
-        // whole second of it here.
+        // Twenty seconds, give or take the first tick: opening the window discards
+        // what was read before it.
         let settled = *seen.last().expect("samples");
         assert!(
             (settled - 20.0).abs() < 3.0,
@@ -2066,16 +1640,13 @@ mod tests {
         assert!(reader.seek(SeekFrom::End(-10)).is_err());
     }
 
-    /// A seek to the edge lands a snap distance behind it, so the decoder
-    /// has bytes in hand instead of blocking on the next chunk; a seek
-    /// further back than that is honoured as asked.
+    /// Live lands a snap distance behind the edge; further back is honoured as asked.
     #[test]
     fn a_seek_to_live_lands_a_chunk_behind_the_edge() {
         let tape = tape(600, 128);
         tape.set_feed(Feed::Live);
         let bps = tape.inner.lock().unwrap().rate.bytes_per_sec();
-        // A minute of stream in 16 KiB chunks, so the edge is well past
-        // the snap distance and the lead is the snap, not the chunk.
+        // Past the snap distance, so the lead is the snap, not the chunk.
         let chunk = bytes(16 * 1024);
         while (tape.inner.lock().unwrap().head() as f64) < bps * 60.0 {
             tape.append(&chunk);

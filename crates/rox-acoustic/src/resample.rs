@@ -1,40 +1,18 @@
 //! Band-limited sample rate conversion for the model front end.
 //!
-//! ## Why not the engine's resampler
+//! Going from 44.1 kHz to a model's 32 kHz, anything above the new Nyquist
+//! must be filtered, or it folds down into the band the network reads (19 kHz
+//! lands at 13 kHz) and every embedding skews by the file's source rate. So
+//! this is a windowed sinc: low-pass and resample in one kernel.
 //!
-//! `rox_playback::resample::Resampler` interpolates linearly, which the
-//! module header says outright is spike-grade. For playback it's defensible:
-//! the device rate is usually the file's rate or close to it, and a small
-//! ratio moves very little energy around. Feeding a model is the opposite
-//! case. A 44.1 kHz file going to a model's 32 kHz has 6 kHz of content
-//! above the new Nyquist, and linear interpolation doesn't remove it, it
-//! folds it back down: 19 kHz lands at 13 kHz, right in the middle
-//! of the band the network is looking at, indistinguishable from music that
-//! was actually there. Cymbals and sibilance turn into midrange, and every
-//! embedding in a library is quietly wrong in a way that depends on what
-//! rate each file happened to be at.
-//!
-//! So this is a windowed-sinc resampler: it low-passes and resamples in one
-//! kernel, which is the textbook answer and the one every serious resampler
-//! is a faster version of.
-//!
-//! ## Why it's hand-rolled
-//!
-//! rubato is the obvious dependency, and the engine's own comment says it's
-//! where the real resampler goes when playback needs one. This is not that
-//! job. It runs offline, once per excerpt, on a background worker, so the
-//! FFT-domain and SIMD tricks a real-time resampler needs buy nothing here,
-//! and the whole thing is forty lines that can be pinned to a stopband
-//! measurement in a test.
+//! Not `rox_playback::resample::Resampler`, which streams interleaved stereo
+//! for the decode thread. This takes one mono excerpt offline, in forty lines
+//! pinned to a stopband measurement.
 
-/// How many zero crossings of the sinc the kernel keeps either side of the
-/// center. More lobes means a sharper transition and deeper stopband, at a
-/// linear cost in taps. Sixteen puts the stopband far enough down that
-/// aliased content lands under the noise floor of anything the library
-/// holds, and costs about 45 taps per output sample at 44.1 to 32 kHz.
+/// Zero crossings kept either side of center. Sixteen puts aliasing under
+/// the library's noise floor, about 45 taps per output at 44.1 to 32 kHz.
 const LOBES: usize = 16;
 
-/// The sinc, with the removable singularity at zero filled in.
 fn sinc(x: f64) -> f64 {
     if x.abs() < 1e-12 {
         1.0
@@ -44,20 +22,14 @@ fn sinc(x: f64) -> f64 {
     }
 }
 
-/// Blackman window over -1..1, which is where the kernel's taper comes
-/// from. Blackman rather than a plain Hann because its sidelobes are around
-/// 30 dB further down, and sidelobes here are exactly the aliasing this
-/// module exists to prevent.
+/// Blackman rather than Hann: sidelobes ~30 dB lower, and sidelobes are the
+/// aliasing this exists to prevent.
 fn blackman(t: f64) -> f64 {
     let phase = std::f64::consts::PI * (t + 1.0);
     0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos()
 }
 
-/// Resample `input` from `from` Hz to `to` Hz.
-///
-/// Equal rates copy through untouched rather than running a kernel whose
-/// answer would be the input plus float noise. An empty input, or either
-/// rate at zero, comes back empty: there's no signal to convert.
+/// Equal rates copy through; empty input or a zero rate returns empty.
 pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to {
         return input.to_vec();
@@ -67,19 +39,15 @@ pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     }
 
     let ratio = to as f64 / from as f64;
-    // The passband edge in cycles per input sample. Downsampling has to cut
-    // at the new Nyquist, which is below the old one; upsampling has nothing
-    // above the old Nyquist to remove, so the cutoff stays there and the
-    // kernel is a pure interpolator.
+    // Cycles per input sample: the new Nyquist when downsampling, the old one
+    // when upsampling (a pure interpolator).
     let cutoff = 0.5 * ratio.min(1.0);
-    // The kernel's support, in input samples. It widens as the cutoff drops,
-    // which keeps LOBES zero crossings inside it whatever the ratio.
+    // Widens as the cutoff drops, keeping LOBES crossings inside.
     let half = (LOBES as f64 / (2.0 * cutoff)).ceil() as isize;
 
     let out_len = ((input.len() as f64) * ratio).floor() as usize;
     let mut out = Vec::with_capacity(out_len);
     for j in 0..out_len {
-        // Where this output sample is in input coordinates.
         let center = j as f64 / ratio;
         let first = (center - half as f64).ceil() as isize;
         let last = (center + half as f64).floor() as isize;
@@ -88,21 +56,15 @@ pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
         for i in first..=last {
             let offset = i as f64 - center;
             let tap = 2.0 * cutoff * sinc(2.0 * cutoff * offset) * blackman(offset / half as f64);
-            // Taps reaching past either end of the clip take no part, in
-            // this sum or in the weight beside it: a clip starts and it
-            // stops. Counting them in the divisor anyway isn't edge
-            // compensation, it's zero padding, and it swings the first
-            // and last few output samples by up to 14%.
+            // Taps past the clip's ends take no part in the sum or the weight; counting
+            // them is zero padding and swings the edges by up to 14%.
             if let Some(&sample) = input.get(i.max(0) as usize).filter(|_| i >= 0) {
                 sum += sample as f64 * tap;
                 weight += tap;
             }
         }
-        // Normalizing by the taps actually applied rather than by their
-        // ideal total: the kernel's own sum drifts a fraction of a percent
-        // with the fractional phase, and near the edges the truncation is
-        // much more than a fraction. Both show up as a gain wobble the mel
-        // front end would read as a level change.
+        // Normalize by the taps applied, or the kernel's phase-dependent sum shows
+        // up as a gain wobble the mel front end reads as level.
         out.push(if weight.abs() > 1e-12 {
             (sum / weight) as f32
         } else {
@@ -124,12 +86,9 @@ mod tests {
             .collect()
     }
 
-    /// The magnitude at one frequency, by correlating against a complex
-    /// exponential. A DFT of exactly the bin being asked about, which avoids
-    /// having to line a frequency up with an FFT grid.
+    /// One-bin DFT, so the frequency needn't sit on an FFT grid.
     fn magnitude_at(samples: &[f32], rate: u32, freq: f64) -> f64 {
-        // Skip the kernel's reach at both ends: the edge samples are correct
-        // but the window they'd need to be measured over runs off the clip.
+        // Skip the kernel's reach at both ends.
         let skip = (rate as usize / 20).min(samples.len() / 4);
         let body = &samples[skip..samples.len() - skip];
         let (mut re, mut im) = (0.0f64, 0.0f64);
@@ -162,8 +121,6 @@ mod tests {
         assert_eq!(convert(&input, 44_100, 88_200).len(), 88_200);
     }
 
-    /// A tone well inside the passband comes out at the same frequency and
-    /// the same level. This is the boring half; the next test is the point.
     #[test]
     fn a_passband_tone_survives_at_its_own_level() {
         let out = convert(&sine(44_100, 0.5, 1000.0), 44_100, 32_000);
@@ -172,25 +129,20 @@ mod tests {
             (at_tone - 1.0).abs() < 0.02,
             "a full-scale tone came out at {at_tone}"
         );
-        // And nowhere else: an octave up should be down in the dirt.
         assert!(magnitude_at(&out, 32_000, 2000.0) < 0.01);
     }
 
-    /// The whole reason this module exists. A 19 kHz tone has no home below
-    /// 32 kHz's 16 kHz Nyquist, so it must be filtered out rather than
-    /// folded down to 13 kHz. Linear interpolation fails this outright,
-    /// which is why the engine's resampler can't be used here.
+    /// The point of the module: 19 kHz must be removed, not folded to 13 kHz.
+    /// Linear interpolation fails this.
     #[test]
     fn a_tone_above_the_new_nyquist_is_removed_not_folded_down() {
         let out = convert(&sine(44_100, 0.5, 19_000.0), 44_100, 32_000);
-        // 44100 - 19000 = 25100, which reflects about 16 kHz to land at
-        // 13 kHz. That's where a naive resampler puts it.
+        // 44100 - 19000 = 25100, reflected about 16 kHz lands at 13 kHz.
         let alias = magnitude_at(&out, 32_000, 13_000.0);
         assert!(
             alias < 0.01,
             "a 19 kHz tone aliased down to 13 kHz at {alias}, which is the bug"
         );
-        // Nothing else survived either: the tone is gone, not moved.
         let energy: f64 = out.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / out.len() as f64;
         assert!(
             energy < 1e-4,
@@ -199,19 +151,9 @@ mod tests {
         );
     }
 
-    /// The shape of the transition, which decides whether the filtering is
-    /// good enough for the job.
-    ///
-    /// The passband has to be flat up to 14 kHz, because that's the top of
-    /// PANNs' own mel filterbank and therefore the highest frequency the
-    /// model ever looks at. Above that it may droop, and it does: about
-    /// -3 dB just under the new Nyquist. The stopband has to be deep by
-    /// 19 kHz, which it is, at roughly -78 dB.
-    ///
-    /// The 16 to 18 kHz band in between is the transition, and it's where
-    /// the leakage is. That's fine here rather than merely
-    /// tolerated: content in it folds down to 14 to 16 kHz, which is above
-    /// the model's fmax and never reaches a filterbank row.
+    /// Flat to 14 kHz, the top of PANNs' filterbank; about -3 dB just under the
+    /// new Nyquist; about -78 dB by 19 kHz. The 16-18 kHz transition folds to
+    /// 14-16 kHz, above the model's fmax, so it never reaches a filterbank row.
     #[test]
     fn the_passband_is_flat_where_the_model_looks_and_the_stopband_is_deep() {
         let level = |hz: f64| {
@@ -221,12 +163,7 @@ mod tests {
         assert!(level(1_000.0) > 0.99);
         assert!(level(10_000.0) > 0.99);
         assert!(level(14_000.0) > 0.95, "the model's fmax must survive");
-        // Deep enough by 19 kHz that nothing folding out of there is
-        // measurable against 16-bit audio's own noise floor. Measured over
-        // the body of the clip: the first and last few samples show the
-        // kernel's truncation against the clip's own edges, which is a
-        // boundary effect rather than something that leaked through the
-        // filter.
+        // Measured over the body: the edge samples show truncation, not leakage.
         let stopband = convert(&sine(44_100, 0.5, 19_000.0), 44_100, 32_000);
         let skip = stopband.len() / 10;
         let body = &stopband[skip..stopband.len() - skip];
@@ -235,9 +172,7 @@ mod tests {
         assert!(rms < 1e-3, "19 kHz came through at rms {rms}");
     }
 
-    /// Upsampling has nothing to remove, so inside the band it must be a
-    /// plain interpolator rather than a filter: the tone comes back at its
-    /// own level.
+    /// Upsampling interpolates the band at full level.
     #[test]
     fn upsampling_interpolates_without_dulling_the_band() {
         let out = convert(&sine(32_000, 0.5, 10_000.0), 32_000, 48_000);
@@ -245,11 +180,8 @@ mod tests {
         assert!((level - 1.0).abs() < 0.02, "came out at {level}");
     }
 
-    /// The edges are normalized by the taps that landed on the clip rather
-    /// than by the whole kernel, so a constant comes back constant from the
-    /// very first sample. Dividing by the ideal total instead swings the
-    /// kernel's reach either side, half a millisecond at each end, by up to
-    /// 14%: 0.863 at the first sample, 1.095 at the last.
+    /// Constant from the first sample; dividing by the ideal total gives 0.863
+    /// and 1.095 at the edges.
     #[test]
     fn a_constant_holds_its_level_right_up_to_the_edges() {
         let out = convert(&vec![1.0f32; 4096], 44_100, 32_000);
@@ -259,8 +191,7 @@ mod tests {
         }
     }
 
-    /// Silence in, silence out, and no NaN from the normalization when a
-    /// clip is shorter than the kernel.
+    /// No NaN when a clip is shorter than the kernel.
     #[test]
     fn short_and_silent_clips_stay_finite() {
         assert!(

@@ -1,7 +1,5 @@
-//! The language picker: the searchable field over rox-i18n's registry,
-//! System at the head. It's here rather than beside its hosts so the
-//! settings window and the welcome tour drop the same list; what differs
-//! per host, persisting the pick, stays in each host's apply.
+//! The language picker over rox-i18n's registry, shared by the settings
+//! window and the welcome tour. Persisting the pick is each host's apply.
 
 use std::sync::{Arc, Mutex};
 
@@ -9,10 +7,8 @@ use gpui::{Context, SharedString, prelude::*};
 
 use crate::search_picker::{PickRow, search_picker};
 
-/// A searchable dropdown over the shipped locales. `current` is the
-/// stored preference (a registry id, None following the OS); an id the
-/// registry no longer has reads as System, the same thing negotiation
-/// makes of it. The apply hands back the picked id the same way.
+/// `current` is a registry id, None following the OS. An id the registry no
+/// longer has reads as System.
 // `use<..>` and the named `A` for the same reason as the crate root's
 // `picker`.
 pub fn language_picker<P, A>(
@@ -49,14 +45,10 @@ where
     )
 }
 
-/// The rows: System first, then the registry in its own order, each
-/// locale shown with its flag and native name. Native names stay
-/// untranslated: a reader lost in the wrong language finds their own by
-/// its own name. Only the System head is in the active locale, so the
-/// set is cached per locale. The stable Arc doubles as the picker
-/// state's cheap changed-or-not check.
+/// Native names stay untranslated so a reader lost in the wrong language
+/// can find their own. Only the System head is localized, so the rows are
+/// cached per locale; the stable Arc is the picker's changed-or-not check.
 fn rows() -> Arc<Vec<PickRow>> {
-    /// The cache slot: which locale the rows are in, and the rows.
     type Cached = Option<(&'static str, Arc<Vec<PickRow>>)>;
     static ROWS: Mutex<Cached> = Mutex::new(None);
     let locale = rox_i18n::locale();

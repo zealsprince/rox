@@ -1,19 +1,14 @@
-//! Named workspace bundles. The list has two sources: the files the user
-//! saved under [`settings::workspaces_dir`], and the bundles shipped in the
-//! app's assets. A bundle is a whole shareable look (layout presets, the
-//! palette, the appearance) under a name; the settings window lists them and
-//! applies one to replace the live look wholesale.
+//! Named workspace bundles: a whole shareable look (layout presets, palette,
+//! appearance) under a name. Two sources: the user's files under
+//! [`settings::workspaces_dir`], and the bundles shipped in the app's assets.
 //!
-//! A saved workspace is one JSON file per bundle, so a saved workspace is
-//! already an exported one: drop a shared file in the folder and it joins the
-//! list, delete it and it's gone. The list reads names off the filenames and
-//! only parses a bundle when something actually needs its contents, which
-//! keeps a menu flyout from parsing every workspace on every frame.
+//! A saved workspace is one JSON file, so dropping a shared file in the
+//! folder adds it. The list reads names off the filenames and only parses a
+//! bundle when its contents are needed, so a menu flyout never parses every
+//! workspace per frame.
 //!
-//! A shipped bundle is a [`WorkspaceBundle`] in `assets/workspaces/<name>.json`;
-//! its file stem names it when the file has no name of its own. To ship
-//! one: set up a workspace, export it from the settings Workspace page, drop
-//! the file in that folder, rebuild.
+//! To ship one: export it from the settings Workspace page and drop the file
+//! in `assets/workspaces/`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -25,40 +20,25 @@ use rox_design::assets;
 use rox_design::palette::{self, Palette};
 use rox_panel_api::panel::shader;
 
-/// A workspace for the settings list: its name, whether it ships with the app
-/// (read-only) or the user saved it (deletable), and where to read it from.
-/// The bundle itself stays on disk until [`Entry::bundle`] asks for it, so
-/// building the list costs a directory read and nothing more.
+/// Building the list costs a directory read and nothing more.
 pub struct Entry {
-    /// The bundle's name: the lookup key everything resolves and applies
-    /// by, and what a saved file is called on disk. Never translated, so
-    /// a settings file written in one language still resolves in another.
+    /// The lookup key, never translated, so a settings file resolves in any
+    /// language.
     pub name: String,
-    /// What a list shows instead of [`Entry::name`]. Shipped bundles whose
-    /// name is a word rather than a proper name have a translation; every
-    /// other entry, including everything a user saved, reads as its name.
+    /// Translated only for shipped bundles named with a word rather than a
+    /// proper name.
     pub title: SharedString,
-    /// The saved file this entry reads from, None for a shipped bundle.
     pub path: Option<PathBuf>,
     pub builtin: bool,
-    /// Who the card says made it, for the lists that credit an author under
-    /// the name. Only shipped entries have it: their bundles are parsed to
-    /// build the list anyway, so it costs nothing there, while the saved
-    /// list is a directory read and has no bundle in hand. The settings page
-    /// fills the saved side in from [`saved_authors`], which reads them once
-    /// rather than once a frame.
+    /// Only shipped entries carry it, since their bundles are parsed anyway;
+    /// the settings page fills the saved side from [`saved_authors`].
     pub author: Option<String>,
-    /// The asset paths of the preview pictures shipped beside the bundle,
-    /// one per theme side (see [`assets::workspace_preview`]), None when
-    /// no picture ships or the user saved the bundle. The welcome window's
-    /// quick-start tiles draw the side the live theme picks.
+    /// One per theme side (see [`assets::workspace_preview`]).
     pub preview_dark: Option<SharedString>,
     pub preview_light: Option<SharedString>,
 }
 
-/// Read a bundle file, refusing one from a newer format and naming it after
-/// its file when it has no name of its own. The shared reader behind the
-/// saved list, an import, and a shipped file.
+/// Refuses a newer format; names a nameless bundle after its file.
 fn read_file(path: &Path) -> Option<WorkspaceBundle> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut bundle = serde_json::from_str::<WorkspaceBundle>(&text).ok()?;
@@ -71,48 +51,34 @@ fn read_file(path: &Path) -> Option<WorkspaceBundle> {
     Some(bundle)
 }
 
-/// A path's file stem as a name, None when there isn't a usable one.
 fn stem_of(path: &Path) -> Option<String> {
     path.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|s| !s.trim().is_empty())
 }
 
-/// A shipped bundle's own name and blurb, translated where rox ships a
-/// message for it.
-///
-/// The bundle format is shareable and third parties author it, so the
-/// translations are kept in the locale files keyed by the bundle's name rather
-/// than in a field the schema would define for everyone and nobody would
-/// fill. A bundle rox doesn't ship falls through to whatever its author
-/// wrote, which is the only honest answer for someone else's text.
-///
-/// The names themselves mostly stay as written: Foobar, Metro, Phosphor and
-/// the rest are proper names the same way the shader examples are, and
-/// `bundle.name` is the lookup key besides. `(Default)` is the exception,
-/// being a word rather than a name.
+/// The slug keying a shipped bundle's name and blurb in the locale files.
+/// Kept there rather than as a schema field, since third parties author
+/// bundles; a bundle rox doesn't ship keeps its author's own text.
 fn shipped_slug(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.trim().chars() {
         if c.is_ascii_alphanumeric() {
             out.extend(c.to_lowercase());
         } else if !out.ends_with('-') {
-            // One separator per run, or "Llama (WinAmp)" would slug with a
-            // double hyphen where the space meets the bracket.
+            // One separator per run, so "Llama (WinAmp)" doesn't get a double hyphen.
             out.push('-');
         }
     }
     out.trim_matches('-').to_string()
 }
 
-/// The display name for a bundle, translated only where rox ships one.
 pub fn display_title(name: &str) -> String {
     rox_i18n::try_translate(&format!("workspace-shipped-{}", shipped_slug(name)))
         .map(|t| t.to_string())
         .unwrap_or_else(|| name.to_string())
 }
 
-/// The blurb for a bundle, translated only where rox ships one.
 pub fn display_blurb(name: &str, own: &str) -> Option<SharedString> {
     if let Some(text) =
         rox_i18n::try_translate(&format!("workspace-shipped-{}-blurb", shipped_slug(name)))
@@ -124,7 +90,6 @@ pub fn display_blurb(name: &str, own: &str) -> Option<SharedString> {
         .map(|d| SharedString::from(d.to_string()))
 }
 
-/// A shipped bundle by name, parsed out of the assets on demand.
 fn shipped_bundle(name: &str) -> Option<WorkspaceBundle> {
     assets::shipped_workspaces()
         .into_iter()
@@ -140,11 +105,8 @@ fn shipped_bundle(name: &str) -> Option<WorkspaceBundle> {
         })
 }
 
-/// The bundles shipped in `assets/workspaces`, named after their files when
-/// the file has no name. A file from a newer format, one that doesn't
-/// parse, or one with no usable name is skipped rather than failing the list.
-/// Sorted by name for a stable order in the settings window and the welcome
-/// window's quick-start tiles.
+/// Skips any file that's from a newer format, doesn't parse, or has no
+/// usable name. Sorted by name.
 pub fn shipped() -> Vec<Entry> {
     let mut out: Vec<Entry> = assets::shipped_workspaces()
         .into_iter()
@@ -153,8 +115,7 @@ pub fn shipped() -> Vec<Entry> {
             if bundle.version > WORKSPACE_VERSION {
                 return None;
             }
-            // The pictures are keyed by the file stem, not the bundle's own
-            // name, so look them up before falling back to the stem for one.
+            // The pictures are keyed by file stem, not the bundle's name.
             let preview_dark = assets::workspace_preview(&stem, palette::Mode::Dark);
             let preview_light = assets::workspace_preview(&stem, palette::Mode::Light);
             let author = Some(bundle.meta.author.clone()).filter(|a| !a.trim().is_empty());
@@ -177,11 +138,8 @@ pub fn shipped() -> Vec<Entry> {
     out
 }
 
-/// The user's saved workspaces, one per JSON file in [`settings::workspaces_dir`],
-/// sorted by name. Named after the file rather than the bundle inside, so the
-/// list costs one directory read: a file whose bundle has a different name
-/// is a hand-edit, and the file wins so what you see matches what's on disk.
-/// A missing folder is an empty list, the state before the first save.
+/// Named after the file rather than the bundle inside, so the list is one
+/// directory read and a hand-edited name doesn't disagree with the disk.
 pub fn saved() -> Vec<Entry> {
     saved_in(&settings::workspaces_dir())
 }
@@ -197,8 +155,6 @@ fn saved_in(dir: &Path) -> Vec<Entry> {
         .filter_map(|path| {
             let name = stem_of(&path)?;
             Some(Entry {
-                // A saved workspace is the user's own; its name is theirs
-                // and reads back exactly as they typed it.
                 title: name.clone().into(),
                 name,
                 path: Some(path),
@@ -213,11 +169,8 @@ fn saved_in(dir: &Path) -> Vec<Entry> {
     out
 }
 
-/// Who made each saved workspace, by name. The one place the saved list
-/// does parse its bundles, so a caller that needs authors pays for them
-/// once and keeps the answer: the list itself stays a directory read, and
-/// a bundle is a page of layout dumps nobody should reparse per frame.
-/// Workspaces whose card names nobody drop out.
+/// The one place the saved list parses its bundles; callers read it once
+/// and keep the answer.
 pub fn saved_authors() -> BTreeMap<String, String> {
     saved_authors_in(&settings::workspaces_dir())
 }
@@ -233,17 +186,10 @@ fn saved_authors_in(dir: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The current look as a bundle under a name, ready to save: what
-/// [`WorkspaceBundle::from_settings`] snapshots, plus the card of whatever
-/// that name already holds.
-///
-/// A save and an overwrite are the same write here, and an overwrite is a
-/// new snapshot of a workspace that already exists, so the card someone
-/// filled in on it is kept (see
+/// Keeps the card an existing save under that name already has (see
 /// [`WorkspaceMeta::carry_forward`](rox_core::settings::WorkspaceMeta::carry_forward)).
-/// Only the user's own saved bundles are looked up: saving under a shipped
-/// name is a fork, and a fork has no business arriving signed by whoever
-/// made the original.
+/// Only saved bundles are looked up: saving under a shipped name is a fork,
+/// and a fork shouldn't arrive signed by the original's author.
 pub fn snapshot(name: &str, s: &Settings) -> WorkspaceBundle {
     snapshot_in(&settings::workspaces_dir(), name, s)
 }
@@ -256,15 +202,9 @@ fn snapshot_in(dir: &Path, name: &str, s: &Settings) -> WorkspaceBundle {
     bundle
 }
 
-/// Trust every shader in the build's own workspaces, once at startup and
-/// before a window can paint one.
-///
-/// A shader only registers once its hash is approved, and a shipped look's
-/// panels would otherwise come up blank asking the user to agree to code
-/// that arrived with the binary. Same argument as the panel presets:
-/// installing rox is the agreement. Bundles that don't parse are
-/// skipped the way [`shipped`] skips them, since a shipped file that's
-/// broken is a build problem and there's nobody to tell about it at startup.
+/// Trust every shader in the shipped workspaces at startup, before a window
+/// can paint one. Installing rox is the agreement; without this a shipped
+/// look's panels would come up blank asking for approval.
 pub fn trust_shipped_shaders() {
     let prints = assets::shipped_workspaces()
         .into_iter()
@@ -274,10 +214,6 @@ pub fn trust_shipped_shaders() {
     settings::trust_shipped(prints);
 }
 
-/// Every shader source in a bundle, hashed: the pool it travels with, the
-/// screen shader it installs, and the ones inlined in its layout dumps as
-/// panel chrome or as a Shader panel's config. Empty sources drop out, since
-/// there's nothing there to trust.
 fn bundle_fingerprints(bundle: &WorkspaceBundle) -> Vec<String> {
     bundle
         .shaders
@@ -301,32 +237,18 @@ fn bundle_fingerprints(bundle: &WorkspaceBundle) -> Vec<String> {
         .collect()
 }
 
-/// One shader in a bundle that this machine has never agreed to run.
-/// The unit the apply confirm lists and an Approve click steps through.
 pub struct PendingShader {
-    /// What the dialog calls it: the pool entry's name where the source is
-    /// one the bundle's author named, and the head of its hash where it's
-    /// only inlined in a layout dump and has no name of its own.
+    /// The pool entry's name, or the head of the hash for inline-only code.
     pub label: String,
-    /// The source itself, the thing an approval is over.
     pub source: String,
 }
 
-/// Every distinct shader in a bundle that this machine hasn't approved,
-/// in the order a reader would meet them: the pool first, then the screen
-/// shader, then whatever is inlined in the layout dumps.
+/// Every distinct unapproved shader in a bundle, pool first so a shared
+/// source takes its pool name.
 ///
-/// Distinct by source, so the same WGSL in the pool and inlined on the panel
-/// that runs it counts once, and the pool's pass goes first, which is where
-/// that one entry gets its name. Already-approved and builtin sources
-/// drop out through [`shader::approved`], along with empty ones: there's
-/// nothing there to agree to.
-///
-/// A panel that names a pool entry still holds whatever source it had
-/// inline before the promotion, and the dump walk can't see the name, so a
-/// stale inline copy that matches nothing in the pool is listed. That's the
-/// safe way round: it's code inside the bundle, and the approval it asks
-/// for is the one the panel would need if it ever pointed back at it.
+/// A panel that names a pool entry still holds its old inline source, which
+/// the dump walk can't tell apart, so a stale copy gets listed. That's the
+/// safe way round: it's still code inside the bundle.
 pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
     let named = bundle
         .shaders
@@ -335,9 +257,7 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
     let screen = bundle
         .post_shader
         .iter()
-        // A screen shader pointing at a pool entry runs the pool's source,
-        // which the pass above already listed. Only an inline one is code of
-        // its own.
+        // A pool name runs the pool's source, already listed above.
         .filter(|post| {
             post.name
                 .as_deref()
@@ -347,8 +267,6 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
     let backdrop = bundle
         .backdrop_shader
         .iter()
-        // The same read as the screen pass above: a pool name runs the
-        // pool's source, already listed; only inline text is its own code.
         .filter(|post| {
             post.name
                 .as_deref()
@@ -377,20 +295,12 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
     out
 }
 
-/// The line a confirm prints about a look's screen shader, or None when the
-/// bundle brings none that would actually run: no shader at all, the switch
-/// off, or a pass with nothing behind it (a pool name that resolves to
-/// nothing, an author's own file path that didn't travel). A pass that paints
-/// nothing shouldn't announce itself.
-///
-/// Separate from [`unapproved_shaders`]: that one is about trust and goes
-/// quiet once a source is approved, which every shipped look's is at startup;
-/// this one is about the look, and a screen shader covers the whole window
-/// whether or not the machine has met it before.
+/// None when nothing would actually run. Separate from
+/// [`unapproved_shaders`], which goes quiet once code is approved; this is
+/// about the look, and a screen shader covers the whole window regardless.
 fn screen_shader_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
     let post = bundle.post_shader.as_ref().filter(|post| post.enabled)?;
-    // The same resolution the runtime runs: a pool name wins and resolves
-    // exactly or not at all, the inline copy only counts with no name set.
+    // The runtime's resolution: a pool name wins, exactly or not at all.
     if let Some(name) = post.name.as_deref() {
         return bundle
             .shaders
@@ -401,28 +311,16 @@ fn screen_shader_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
     (!post.source.trim().is_empty()).then(|| rox_i18n::t!("workspace-apply-screen-shader-plain"))
 }
 
-/// Whether the look runs a shader once it's applied: the overlay over the
-/// whole window, or a panel in one of its layouts with one as chrome or being
-/// the Shader panel outright.
-///
-/// This is the question the apply confirm's two yeses hang off, and it's
-/// about what runs rather than about what this machine trusts.
-/// [`unapproved_shaders`] goes quiet the moment a source is approved, so once
-/// a look had been applied one time its shaders stopped being a choice and
-/// just came along. A shader changes how the whole thing looks whether or not
-/// you've met it before, so the choice stays.
-///
-/// The pool on its own doesn't count. It travels either way and nothing in it
-/// paints until a surface points at it.
+/// What the apply confirm's two yeses hang off. Deliberately not keyed on
+/// trust: [`unapproved_shaders`] goes quiet once code is approved, and a
+/// look would then bring its shaders along without asking. The pool alone
+/// doesn't count; nothing in it paints until a surface points at it.
 pub fn wears_shaders(bundle: &WorkspaceBundle) -> bool {
     screen_shader_line(bundle).is_some()
         || backdrop_shader_runs(bundle)
         || bundle_dumps(bundle).any(settings::dump_wears_shader)
 }
 
-/// Whether the look's backdrop shader would actually paint: switched on with
-/// a pool name that resolves or inline source of its own, the same read
-/// [`screen_shader_line`] makes for the screen pass.
 fn backdrop_shader_runs(bundle: &WorkspaceBundle) -> bool {
     let Some(config) = bundle.backdrop_shader.as_ref().filter(|c| c.enabled) else {
         return false;
@@ -433,10 +331,8 @@ fn backdrop_shader_runs(bundle: &WorkspaceBundle) -> bool {
     }
 }
 
-/// Every panel dump in a bundle: its layouts' and its panel presets'.
-/// The two are the same shape and a preset's panel takes a shader exactly
-/// like a layout's does, so everything that reads what a look would paint
-/// reads both through here.
+/// Layouts and panel presets both, since a preset's panel takes a shader
+/// the same way.
 fn bundle_dumps(bundle: &WorkspaceBundle) -> impl Iterator<Item = &serde_json::Value> {
     bundle
         .layouts
@@ -445,13 +341,8 @@ fn bundle_dumps(bundle: &WorkspaceBundle) -> impl Iterator<Item = &serde_json::V
         .chain(bundle.panel_presets.iter().map(|preset| &preset.panel))
 }
 
-/// The same look with nothing painting a shader: the overlay off and every
-/// layout's shaders parked. What the apply confirm's Without Shaders applies.
-///
-/// Everything the look brought is still there with its switch off: the pool,
-/// the screen shader, and each panel's own. Nothing paints on the way in, and
-/// every piece is one toggle away on the surface that would run it, which is
-/// the difference between a look applied quiet and a look applied gutted.
+/// The look with every shader switched off rather than removed, for the
+/// confirm's Without Shaders. Each piece stays one toggle away.
 pub fn without_shaders(bundle: &WorkspaceBundle) -> WorkspaceBundle {
     let mut bare = bundle.clone();
     if let Some(post) = bare.post_shader.as_mut() {
@@ -463,45 +354,26 @@ pub fn without_shaders(bundle: &WorkspaceBundle) -> WorkspaceBundle {
     for layout in &mut bare.layouts {
         settings::strip_dump_shaders(&mut layout.dump);
     }
-    // A saved panel is a panel of the look like any other, so a preset with
-    // a shader on it arrives parked too rather than smuggling one back in the
-    // first time it's added.
     for preset in &mut bare.panel_presets {
         settings::strip_dump_shaders(&mut preset.panel);
     }
     bare
 }
 
-/// What a confirm says about the workspace behind it: the name it applies
-/// under, the card its author filled in, and the shaders this machine would
-/// have to agree to first.
-///
-/// Built once when the dialog opens rather than read per render. A confirm
-/// paints every frame it's up, and what's behind it is a file read and a
-/// page of JSON.
+/// Built once when the dialog opens: a confirm paints every frame, and what's
+/// behind it is a file read and a page of JSON.
 pub struct ApplyCard {
-    /// The workspace the apply resolves, which is also the dialog's title.
     pub name: String,
-    /// Who made it and which version of it this is, as one line. None when
-    /// the card says neither.
     pub byline: Option<SharedString>,
-    /// The author's own line or two on the look, when they wrote one.
     pub description: Option<SharedString>,
-    /// The code inside the bundle that nobody here has agreed to run.
     pub shaders: Vec<PendingShader>,
-    /// The line about the look's screen shader, when it brings one that will
-    /// actually run. None otherwise, which is most looks.
     pub screen_shader: Option<SharedString>,
-    /// Whether anything in the look would paint a shader, trusted or not.
-    /// What splits the dialog's yes in two, every time it's applied. See
-    /// [`wears_shaders`].
+    /// Splits the dialog's yes in two, every time. See [`wears_shaders`].
     pub wears_shaders: bool,
 }
 
 impl ApplyCard {
-    /// The card for a named workspace. A name that no longer resolves still
-    /// gets a card, bare: the dialog has to render something and the apply
-    /// behind it will find the same nothing.
+    /// A name that no longer resolves still gets a bare card.
     pub fn for_name(name: &str) -> ApplyCard {
         match resolve(name) {
             Some(bundle) => ApplyCard::of(&bundle),
@@ -516,7 +388,6 @@ impl ApplyCard {
         }
     }
 
-    /// The card for a bundle in hand, the shape an import has.
     pub fn of(bundle: &WorkspaceBundle) -> ApplyCard {
         let meta = &bundle.meta;
         let mut byline = Vec::new();
@@ -540,10 +411,6 @@ impl ApplyCard {
         }
     }
 
-    /// The line naming what's coming, or None when the bundle brings no code
-    /// this machine hasn't already agreed to. Names the pool entries, since
-    /// those are what an author talks about their look in; a source that's
-    /// only inlined in a dump shows the head of its hash instead.
     pub fn shader_line(&self) -> Option<SharedString> {
         if self.shaders.is_empty() {
             return None;
@@ -560,17 +427,12 @@ impl ApplyCard {
         ))
     }
 
-    /// Whether the dialog offers two ways to say yes. Any shader the look
-    /// runs splits it, and so does code in the pool that this machine hasn't
-    /// agreed to: even with nothing pointing at it yet, installing it is
-    /// the moment to ask.
+    /// Unapproved pool code splits it too: installing it is the moment to ask.
     pub fn splits_apply(&self) -> bool {
         self.wears_shaders || !self.shaders.is_empty()
     }
 
-    /// Agree to run every shader the bundle brought. The apply side never
-    /// calls this on its own: it hangs off the dialog's Approve button, which
-    /// is the user saying yes to code that arrived from somewhere else.
+    /// Only ever called from the dialog's Approve button.
     pub fn approve_shaders(&self) {
         for shader in &self.shaders {
             shader::approve(&shader.source);
@@ -578,17 +440,10 @@ impl ApplyCard {
     }
 }
 
-/// Point a freshly applied pool back at the files its shaders were ejected
-/// to. A bundle is scrubbed of local bookmarks on the way out, so a look
-/// saved and reapplied comes back with every entry unlinked and hot reload
-/// dead, even though the working copies are still in the shaders folder.
-/// This finds them again.
-///
-/// The file has to still hold what the entry does, hash for hash. Anything
-/// else and the two have drifted apart, and pointing a reload at a file
-/// that says something different is how somebody else's WGSL ends up
-/// running under a name you trust. Returns whether anything was re-linked,
-/// which decides whether the pool is worth persisting again.
+/// Re-link a freshly applied pool to the files its shaders were ejected
+/// to, since a bundle is scrubbed of local bookmarks on the way out. The
+/// file must still hash the same as the entry: never aim a reload at text
+/// nobody approved. Returns whether anything re-linked.
 pub(crate) fn relink_ejected(workspace: &str, pool: &mut [NamedShader]) -> bool {
     relink_ejected_in(&settings::shaders_dir(), workspace, pool)
 }
@@ -609,44 +464,33 @@ fn relink_ejected_in(root: &Path, workspace: &str, pool: &mut [NamedShader]) -> 
     linked
 }
 
-/// Every workspace for the settings list: shipped first, then the user's own.
 pub fn all() -> Vec<Entry> {
     let mut list = shipped();
     list.extend(saved());
     list
 }
 
-/// The file a saved workspace is stored in.
 pub fn path_for(name: &str) -> PathBuf {
     settings::workspaces_dir().join(file_name(name))
 }
 
-/// A name as a filename. The name doubles as the file's, so it goes through
-/// the shared sanitizer that every name-as-path in the data directory does;
-/// a name of pure punctuation empties out and falls back to "workspace".
+/// A name of pure punctuation falls back to "workspace".
 fn file_name(name: &str) -> String {
     format!("{}.json", settings::safe_file_stem(name, "workspace"))
 }
 
-/// Write a bundle to its file, the save and overwrite path both. The bundle's
-/// own name picks the file, so a save under a new name writes a new file and
-/// an overwrite writes back over the same one.
 pub fn store(bundle: &WorkspaceBundle) -> bool {
     store_in(&settings::workspaces_dir(), bundle)
 }
 
-/// What a saved file's `$schema` points at: the schema written beside the
-/// workspaces folder, relative so the reference holds when the data dir
-/// moves and a stock editor resolves it against the file itself. On a
-/// machine the file traveled to, the reference dead-ends and editors just
-/// skip it, the same non-event an unknown key is to the reader.
+/// Relative, so it holds when the data dir moves. On another machine it
+/// dead-ends and editors skip it.
 const SCHEMA_REF: &str = "../schemas/workspace.schema.json";
 
 fn store_in(dir: &Path, bundle: &WorkspaceBundle) -> bool {
     ensure_schema_beside(dir);
-    // The stamp goes on during serialization rather than through a Value
-    // round-trip, so the file keeps the bundle's own field order, with
-    // `$schema` in front where editors look for it.
+    // Stamped during serialization, not via a Value round-trip, so the file
+    // keeps its field order with `$schema` first.
     #[derive(serde::Serialize)]
     struct Stamped<'a> {
         #[serde(rename = "$schema")]
@@ -666,15 +510,10 @@ fn store_in(dir: &Path, bundle: &WorkspaceBundle) -> bool {
     )
 }
 
-/// How long the disk watch keeps treating a file [`store`] wrote as our own
-/// write. Comfortably past the watch debounce, so a UI save's own event
-/// can't come back around as a reload; an outside edit that arrives inside
-/// the window on the same file is missed once and caught on its next save.
+/// Past the watch debounce, so a UI save's own event never comes back as a
+/// reload. An outside edit inside the window is caught on its next save.
 const OWN_WRITE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The files [`store`] just wrote, so the disk watch can tell a UI save
-/// from an outside edit and skip the redundant reload of a look that's
-/// already live.
 static OWN_WRITES: std::sync::Mutex<Vec<(PathBuf, std::time::Instant)>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -692,10 +531,8 @@ fn was_own_write(path: &Path) -> bool {
         .any(|(p, at)| p == path && at.elapsed() < OWN_WRITE_WINDOW)
 }
 
-/// Write the workspace schema where [`SCHEMA_REF`] resolves it, next to the
-/// workspaces folder rather than in it, since any JSON file in the folder
-/// reads as a workspace. Compared before writing so the steady state costs
-/// a read; after an update, the next save writes the new schema.
+/// Beside the workspaces folder, not in it: any JSON file in there reads as
+/// a workspace.
 fn ensure_schema_beside(dir: &Path) {
     let Some(parent) = dir.parent() else {
         return;
@@ -717,8 +554,7 @@ fn ensure_schema_beside(dir: &Path) {
     }
 }
 
-/// Delete a saved workspace's file. A missing file is a success: the list is
-/// built from a directory read, so it can be one external delete out of date.
+/// A missing file is a success: the list can be one external delete stale.
 pub fn remove(name: &str) {
     remove_in(&settings::workspaces_dir(), name);
 }
@@ -732,10 +568,8 @@ fn remove_in(dir: &Path, name: &str) {
     }
 }
 
-/// Write a workspace out of a pre-split settings file. Only the migration
-/// calls this, and it has two collisions to tell apart: the same workspace
-/// arriving twice, which a crash between the migration and the first save
-/// replays, and two different workspaces whose names fold to one filename.
+/// Only the migration calls this. It tells a replay (a crash before the
+/// first save) from two names that fold to one filename.
 pub(crate) fn migrate_saved(bundle: WorkspaceBundle) {
     migrate_saved_in(&settings::workspaces_dir(), bundle);
 }
@@ -743,11 +577,9 @@ pub(crate) fn migrate_saved(bundle: WorkspaceBundle) {
 fn migrate_saved_in(dir: &Path, mut bundle: WorkspaceBundle) {
     let path = dir.join(file_name(&bundle.name));
     match read_file(&path) {
-        // This workspace is already out: a replay, so leave the file alone.
         Some(existing) if existing.name == bundle.name => return,
-        // A different workspace holds the file its name folds to ("Live/Studio"
-        // beside "Live Studio"). It takes a file of its own and the name that
-        // matches it, rather than being dropped on the floor.
+        // A different workspace holds the file its name folds to, so this one
+        // takes a file and name of its own.
         Some(existing) => {
             let taken: Vec<String> = saved_in(dir).into_iter().map(|entry| entry.name).collect();
             let stem = stem_of(&path).unwrap_or_else(|| bundle.name.clone());
@@ -764,16 +596,11 @@ fn migrate_saved_in(dir: &Path, mut bundle: WorkspaceBundle) {
     store_in(dir, &bundle);
 }
 
-/// Apply a bundle's whole look to the running app: persist its layouts,
-/// palette, and appearance in one write, then push each appearance knob
-/// through its live static so every open window repaints. The layout swap
-/// and the mini-player roles are the caller's, since those need the
-/// workspace whose dock they change; both the settings window's Apply and
-/// the empty launcher's workspace tiles go through here for the shared
-/// half.
+/// Persist the bundle in one write and push each appearance knob live. The
+/// layout swap and mini-player roles are the caller's, since they need the
+/// workspace whose dock they change.
 pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
-    // Persist the whole replace up front; the live statics below only
-    // repaint, they don't save again.
+    // Persisted up front; the live statics below only repaint.
     let persist = bundle.clone();
     Settings::update(move |s| persist.apply_to(s));
     palette::set_palettes(
@@ -794,6 +621,8 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     settings::set_hide_menubar(a.hide_menubar, cx);
     settings::set_menubar_buttons(a.menubar_buttons, cx);
     settings::set_os_decorations(a.os_decorations);
+    settings::set_bare_child_windows(a.bare_child_windows);
+    settings::set_child_titlebar(a.child_titlebar);
     settings::set_chrome_style(a.chrome_style);
     settings::set_chrome_side(a.chrome_side);
     settings::set_resize_border(a.resize_border);
@@ -803,10 +632,7 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     crate::workspace::apply_resize_border(cx);
 }
 
-/// The file a saved workspace is actually in: the one the list matched, so a
-/// hand-dropped file keeps whatever filename it arrived under. Falls back to
-/// the name's own file for a workspace that isn't saved yet, which is where a
-/// save writes it.
+/// The file the list matched, so a hand-dropped file keeps its filename.
 fn file_of_in(dir: &Path, name: &str) -> PathBuf {
     saved_in(dir)
         .into_iter()
@@ -815,9 +641,7 @@ fn file_of_in(dir: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| dir.join(file_name(name)))
 }
 
-/// Resolve a workspace name to its bundle, the user's own first so a saved
-/// bundle shadows a shipped one of the same name. None when nothing has
-/// that name, or when the saved file has gone or no longer parses.
+/// The user's own first, so a saved bundle shadows a shipped one.
 pub fn resolve(name: &str) -> Option<WorkspaceBundle> {
     resolve_in(&settings::workspaces_dir(), name)
 }
@@ -826,9 +650,6 @@ fn resolve_in(dir: &Path, name: &str) -> Option<WorkspaceBundle> {
     read_file(&file_of_in(dir, name)).or_else(|| shipped_bundle(name))
 }
 
-/// A name not already taken, appending " (2)", " (3)"... until one is free.
-/// How an import names a preset or workspace without shadowing one already
-/// saved.
 pub(crate) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
         return base.to_string();
@@ -839,10 +660,7 @@ pub(crate) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| base.to_string())
 }
 
-/// Read a workspace bundle from a shared file, ready to add to the collection:
-/// named after the file when the bundle has no name of its own, and deduped
-/// against the current workspaces so an import never shadows one already saved.
-/// None when the file isn't a bundle or comes from a newer format.
+/// Deduped against the current workspaces, so an import never shadows one.
 pub fn read_bundle(path: &Path) -> Option<WorkspaceBundle> {
     read_bundle_in(&settings::workspaces_dir(), path)
 }
@@ -863,25 +681,15 @@ fn read_bundle_in(dir: &Path, path: &Path) -> Option<WorkspaceBundle> {
     Some(bundle)
 }
 
-/// How long the workspaces folder has to stay quiet before the watch flushes
-/// a change. An editor save is one or two writes; this folds them into one
-/// reload without making the save-and-look loop feel laggy.
 const WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Watch the workspaces folder and re-apply the active workspace when its
-/// file changes on disk (ADR 22): the schema makes an on-disk edit safe,
-/// this makes it visible, and the edit loop becomes save-and-look. Only the
-/// active workspace's own file triggers anything; a file [`store`] wrote is
-/// recognized and skipped, so a UI save never reloads the look it just
-/// persisted. Runs for the app's life; failure to come up logs and leaves
-/// rox running without the reload.
+/// Re-apply the active workspace when its file changes on disk (ADR 22).
+/// A file [`store`] wrote is skipped, so a UI save never reloads itself.
 pub(crate) fn watch(cx: &mut App) {
     use notify_debouncer_full::notify::{EventKind, RecursiveMode};
     use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 
     let dir = settings::workspaces_dir();
-    // The folder may predate the first save; watching needs it to exist,
-    // and making it here is the same create the first save would do.
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::warn!("workspace watch: creating {}: {e}", dir.display());
         return;
@@ -889,9 +697,8 @@ pub(crate) fn watch(cx: &mut App) {
     let (tx, events) = async_channel::unbounded::<Vec<PathBuf>>();
     let mut debouncer =
         match new_debouncer(WATCH_DEBOUNCE, None, move |result: DebounceEventResult| {
-            // Runs on the debouncer's own thread. Only writes matter: a
-            // delete or rename of the active file leaves the live look
-            // standing, and reads are nobody's business.
+            // On the debouncer's thread. Only writes matter: deleting the active file
+            // leaves the live look standing.
             let Ok(batch) = result else { return };
             let paths: Vec<PathBuf> = batch
                 .iter()
@@ -915,8 +722,6 @@ pub(crate) fn watch(cx: &mut App) {
     }
     log::info!("workspace watch: watching {}", dir.display());
     cx.spawn(async move |cx| {
-        // The drain task holds the debouncer; dropping it with the app
-        // tears the watch down.
         let _hold = debouncer;
         while let Ok(paths) = events.recv().await {
             if cx.update(|cx| reload_if_active(&paths, cx)).is_err() {
@@ -927,9 +732,7 @@ pub(crate) fn watch(cx: &mut App) {
     .detach();
 }
 
-/// Re-apply the active workspace if this batch of changed files touches its
-/// file. A file that no longer parses leaves the current look standing and
-/// says why; the next successful save reloads as usual.
+/// A file that no longer parses leaves the current look standing.
 fn reload_if_active(paths: &[PathBuf], cx: &mut App) {
     let active = Settings::load().look.bundle.name;
     if active.trim().is_empty() {
@@ -969,8 +772,6 @@ mod tests {
         }
     }
 
-    /// A scratch workspaces folder of this test's own, so a run never reads
-    /// or writes the folder the running app keeps its workspaces in.
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rox-ws-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -978,9 +779,8 @@ mod tests {
         dir
     }
 
-    /// Every file in `assets/workspaces` makes it through the shipped
-    /// filter. The filter drops a bundle that doesn't parse silently, so
-    /// without this a typo in a shipped file just vanishes from the list.
+    /// The filter drops an unparseable bundle silently, so a typo would just
+    /// vanish from the list.
     #[test]
     fn every_shipped_asset_parses() {
         let files = rox_design::assets::shipped_workspaces();
@@ -995,14 +795,9 @@ mod tests {
         );
     }
 
-    /// Every panel config in a shipped bundle reads back into the
-    /// panel's own config type. The parse above only proves the bundle's
-    /// shape: a panel's `info` is stored in it as an opaque value, so a piece
-    /// name that no longer exists (or never did, in a hand edit) would
-    /// ship as a panel that quietly comes up in its stock arrangement.
-    /// Track info is the one spelled out here because its pieces are the
-    /// ones the bundles write by hand; the rest take their configs from
-    /// exports.
+    /// A panel's `info` is opaque to the bundle parse, so a bad piece name would
+    /// ship as a panel quietly stuck in its stock arrangement. Track info is the
+    /// one the bundles write by hand.
     #[test]
     fn every_shipped_track_info_config_reads() {
         fn walk(node: &serde_json::Value, stem: &str) {
@@ -1029,14 +824,9 @@ mod tests {
         }
     }
 
-    /// Every pool shader in a shipped bundle splits cleanly, and every
-    /// image one declares is actually in the entry and actually decodes. The
-    /// splitter and the assets only run at registration, on a window, so
-    /// without this a mistyped `// @pass` or a mangled plate ships as a panel
-    /// that comes up blank on somebody else's machine.
-    ///
-    /// The WGSL itself is naga's gate, not this one; this is the half on our
-    /// side of the window.
+    /// The splitter and assets only run at registration, so without this a
+    /// mistyped `// @pass` or a mangled plate ships as a blank panel. The WGSL
+    /// itself is naga's gate.
     #[test]
     fn every_shipped_shader_splits_and_finds_its_images() {
         for (stem, bytes) in assets::shipped_workspaces() {
@@ -1051,8 +841,7 @@ mod tests {
                     "{where_}: a program needs at least one pass"
                 );
                 for asset in &spec.assets {
-                    // The cover binding has no bytes of its own; the player
-                    // supplies it at registration.
+                    // The cover binding has no bytes; the player supplies it.
                     if asset.is_cover() {
                         continue;
                     }
@@ -1076,10 +865,8 @@ mod tests {
                     );
                 }
             }
-            // A bundle that installs a screen shader hands the whole window
-            // to it, so that one has to be an overlay: anything else covers
-            // the app the moment the look is applied, and a shipped look is
-            // exactly the case where nobody picked the shader themselves.
+            // A shipped screen shader has to be an overlay, or it covers the app the
+            // moment someone applies a look they didn't pick the shader for.
             let Some(post) = &bundle.post_shader else {
                 continue;
             };
@@ -1103,9 +890,6 @@ mod tests {
         }
     }
 
-    /// The slug ties a shipped bundle to its message, so a name with
-    /// brackets or spaces has to resolve to the key the locale files
-    /// actually hold.
     #[test]
     fn slugs_match_the_keys_the_locales_carry() {
         assert_eq!(shipped_slug("(Default)"), "default");
@@ -1114,13 +898,10 @@ mod tests {
         assert_eq!(shipped_slug("Foobar"), "foobar");
     }
 
-    /// Proper names stay as written and only the word gets translated,
-    /// because the name is also the lookup key everything applies by.
     #[test]
     fn only_the_word_is_translated() {
         assert_eq!(display_title("Foobar"), "Foobar");
         assert_eq!(display_title("Phosphor"), "Phosphor");
-        // Not a rox bundle at all: somebody else's, left exactly alone.
         assert_eq!(display_title("Someone Else's Look"), "Someone Else's Look");
         assert_eq!(
             display_title("(Default)"),
@@ -1128,8 +909,6 @@ mod tests {
         );
     }
 
-    /// Every shipped bundle's blurb resolves, so none of them falls back
-    /// to English prose in a translated build by accident.
     #[test]
     fn every_shipped_bundle_has_a_translated_blurb() {
         for entry in shipped() {
@@ -1142,10 +921,6 @@ mod tests {
         }
     }
 
-    /// The trust pass has to find every shader in a bundle, wherever it's
-    /// stored: the pool, the screen shader, panel chrome inside a dump, and a
-    /// Shader panel's own config. One missed and that panel comes up blank on
-    /// a shipped look.
     #[test]
     fn shipped_trust_collects_every_shader_a_bundle_carries() {
         let bundle = WorkspaceBundle {
@@ -1176,7 +951,6 @@ mod tests {
                                 "shader": { "source": "// the surface one" },
                             }},
                         },
-                        // Nothing to trust in a panel with no shader on it.
                         { "panel_name": "queue", "info": { "panel": { "source": "" }}},
                     ],
                 }),
@@ -1199,15 +973,10 @@ mod tests {
             assert!(prints.contains(&print), "{prints:?}");
         }
 
-        // The shipped bundles go through the same collection, so this also
-        // says the seeding never panics on what the build actually ships.
+        // Also proves the seeding never panics on what the build ships.
         trust_shipped_shaders();
     }
 
-    /// The review a confirm reads out has to find every shader in a bundle,
-    /// count each one once, and leave out the ones this machine has
-    /// already agreed to. A miss either way is a dialog that lies: too few
-    /// and code arrives unannounced, too many and the count is noise.
     #[test]
     fn the_review_lists_each_unapproved_shader_once() {
         let agreed = "// this one is already agreed to";
@@ -1235,8 +1004,6 @@ mod tests {
             post_shader: Some(rox_core::settings::PostShaderConfig {
                 enabled: true,
                 name: Some("Grain".into()),
-                // A screen shader pointing at the pool runs the pool's entry,
-                // so this stale inline copy is not a shader of its own.
                 source: "// a stale copy of grain".into(),
                 ..Default::default()
             }),
@@ -1246,8 +1013,6 @@ mod tests {
                 dump: serde_json::json!({
                     "panel_name": "StackPanel",
                     "children": [
-                        // The pool's own shader, inlined on the panel that
-                        // runs it: the same code, so one entry.
                         {
                             "panel_name": "waveform",
                             "info": { "panel": { "shader": { "source": "// grain" }}},
@@ -1256,7 +1021,6 @@ mod tests {
                             "panel_name": "shader",
                             "info": { "panel": { "source": "// only in the dump" }},
                         },
-                        // Nothing to agree to on a panel with no shader.
                         { "panel_name": "queue", "info": { "panel": { "source": "" }}},
                     ],
                 }),
@@ -1267,8 +1031,6 @@ mod tests {
         settings::note_approved(&shader::fingerprint(agreed));
         let pending = unapproved_shaders(&bundle);
         let labels: Vec<&str> = pending.iter().map(|s| s.label.as_str()).collect();
-        // The pool comes first, so its entries keep the names their author
-        // gave them; the dump-only source has none and shows its hash.
         let hashed = shader::fingerprint("// only in the dump")[..8].to_string();
         assert_eq!(labels, ["Grain", "Bloom", hashed.as_str()], "{labels:?}");
 
@@ -1280,8 +1042,6 @@ mod tests {
         );
         assert!(line.starts_with(expected_prefix.as_ref()), "{line}");
 
-        // Agreeing to them empties the review, so the same bundle applied
-        // twice only asks once.
         for shader in &pending {
             settings::note_approved(&shader::fingerprint(&shader.source));
         }
@@ -1291,16 +1051,11 @@ mod tests {
         for source in ["// grain", "// bloom", "// only in the dump", agreed] {
             settings::forget_approved(&shader::fingerprint(source));
         }
-        // A look with no code in it asks nothing, which keeps the plain
-        // apply exactly the confirm it always was.
         assert!(unapproved_shaders(&WorkspaceBundle::default()).is_empty());
     }
 
-    /// The with-or-without choice is about the look, not about trust, so a
-    /// bundle whose shaders are all agreed to still says it runs them. This
-    /// is the regression the split fixes: the review going quiet used to take
-    /// the choice with it, and the second apply of a look just ran whatever
-    /// it brought.
+    /// The with-or-without choice is about the look, not trust, so an agreed
+    /// look still says it wears shaders.
     #[test]
     fn an_agreed_look_still_says_it_wears_shaders() {
         let source = "// worn everywhere";
@@ -1334,13 +1089,9 @@ mod tests {
         assert!(card.splits_apply(), "the dialog still offers both yeses");
         settings::forget_approved(&shader::fingerprint(source));
 
-        // A look with no shader on anything keeps the plain single yes.
         assert!(!ApplyCard::of(&WorkspaceBundle::default()).splits_apply());
     }
 
-    /// Without Shaders applies the look quiet: nothing paints, and everything
-    /// it brought is still on the config with its switch down, so each piece
-    /// is one toggle away on the surface that would run it.
     #[test]
     fn applying_without_shaders_parks_them_rather_than_dropping_them() {
         let bundle = WorkspaceBundle {
@@ -1382,8 +1133,6 @@ mod tests {
             ..WorkspaceBundle::default()
         };
 
-        // A saved panel's shader counts as one the look runs, and shows on
-        // the confirm like a layout's does.
         assert!(
             unapproved_shaders(&bundle)
                 .iter()
@@ -1392,19 +1141,14 @@ mod tests {
 
         let bare = without_shaders(&bundle);
         assert!(!wears_shaders(&bare));
-        // The preset keeps its shader, parked, the way the layouts do.
         let preset = &bare.panel_presets[0].panel["info"]["panel"]["shader"];
         assert_eq!(preset["enabled"], false);
         assert_eq!(preset["source"], "// a preset's own");
-        // The screen shader is off rather than gone, so the Shader page still
-        // says which one the look came with.
         let post = bare.post_shader.as_ref().expect("the overlay travels");
         assert!(!post.enabled);
         assert_eq!(post.name.as_deref(), Some("Lace"));
         assert_eq!(bare.shaders.len(), 1, "the pool travels either way");
         assert_eq!(bare.shaders[0].source, "// lace");
-        // The layouts themselves are kept: the painting stops, the
-        // arrangement and what it was set to don't change.
         assert_eq!(bare.layouts.len(), 1);
         let panels = bare.layouts[0].dump["children"]
             .as_array()
@@ -1419,10 +1163,7 @@ mod tests {
         assert!(wears_shaders(&bundle), "the original is left alone");
     }
 
-    /// Approval is over code, and a plate isn't code. Swapping the images on
-    /// a pool entry leaves the review empty and the trust prints
-    /// identical, so a look that only redresses its assets never reopens a
-    /// dialog somebody already answered (ADR 23).
+    /// Approval is over code, and a plate isn't code (ADR 23).
     #[test]
     fn assets_are_data_and_never_ask_for_approval() {
         let source = "// @asset plate: plate.png";
@@ -1450,15 +1191,11 @@ mod tests {
         );
 
         settings::forget_approved(&shader::fingerprint(source));
-        // Unapproved, the source asks once, and it asks for the source: the
-        // plate goes with it rather than counting as its own item.
         let pending = unapproved_shaders(&plated);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].label, "Serpent");
     }
 
-    /// The confirm reads out the bundle's card: who made it and what they
-    /// say it is, folded into a byline the dialog can print.
     #[test]
     fn a_card_reads_out_as_a_byline() {
         let mut bundle = named_bundle("Nightfall");
@@ -1481,17 +1218,11 @@ mod tests {
             Some("Warm and quiet.")
         );
 
-        // A look nobody signed says nothing rather than printing an empty
-        // line where the byline goes.
         let plain = ApplyCard::of(&named_bundle("Plain"));
         assert!(plain.byline.is_none());
         assert!(plain.description.is_none());
     }
 
-    /// The screen shader line is about the look, not about trust: it prints
-    /// whenever the bundle brings a pass that would actually run, named after
-    /// the pool entry when it points at one, and stays quiet for a pass that
-    /// paints nothing.
     #[test]
     fn the_confirm_names_the_screen_shader_a_look_wears() {
         let mut bundle = named_bundle("Inked");
@@ -1509,8 +1240,6 @@ mod tests {
         let line = ApplyCard::of(&bundle).screen_shader.expect("a shader line");
         assert!(line.contains("Dither"), "{line}");
 
-        // An inline source with no pool name still announces itself, just
-        // namelessly.
         bundle.post_shader = Some(rox_core::settings::PostShaderConfig {
             enabled: true,
             source: "// inline".into(),
@@ -1518,8 +1247,6 @@ mod tests {
         });
         assert!(ApplyCard::of(&bundle).screen_shader.is_some());
 
-        // Quiet where nothing would run: the switch off, a name that
-        // resolves to no pool entry, or no pass at all.
         bundle.post_shader = Some(rox_core::settings::PostShaderConfig {
             enabled: false,
             name: Some("Dither".into()),
@@ -1536,10 +1263,7 @@ mod tests {
         assert!(ApplyCard::of(&bundle).screen_shader.is_none());
     }
 
-    /// Saving over a workspace keeps the card the file already held, so an
-    /// overwrite from a live look that was never signed doesn't wipe what
-    /// somebody typed in. A name nobody has saved yet takes the fresh card as
-    /// it comes.
+    /// An overwrite from an unsigned live look keeps the card already on disk.
     #[test]
     fn a_save_over_a_workspace_keeps_its_card() {
         let dir = scratch("card");
@@ -1556,12 +1280,10 @@ mod tests {
         assert_eq!(again.meta.created, "2026-01-02", "the first day survives");
         assert_ne!(again.meta.updated, "2026-01-02", "today stamps updated");
 
-        // A live look with its own card signs the save itself.
         let mut mine = Settings::default();
         mine.look.bundle.meta.author = "Juniper".into();
         assert_eq!(snapshot_in(&dir, "Nightfall", &mine).meta.author, "Juniper");
 
-        // Nothing saved under that name yet: the fresh card stands alone.
         let fresh = snapshot_in(&dir, "Daybreak", &Settings::default());
         assert!(fresh.meta.author.is_empty());
         assert_eq!(fresh.meta.created, fresh.meta.updated);
@@ -1569,9 +1291,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The authors read is the one place the saved list parses its bundles.
-    /// Workspaces nobody signed stay out of it, so a row only credits an
-    /// author when there's one.
     #[test]
     fn saved_authors_reads_the_cards_that_name_somebody() {
         let dir = scratch("authors");
@@ -1587,17 +1306,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A pool entry re-links to its ejected file only when the file still
-    /// says what the entry does. A drifted file, a missing one, and an entry
-    /// that already has a bookmark are all left alone: a reload aimed at
-    /// text nobody approved is exactly what the gate exists to stop.
     #[test]
     fn relink_takes_only_a_file_that_still_matches() {
         let root = scratch("relink");
         let dir = root.join("Nightfall");
         std::fs::create_dir_all(&dir).unwrap();
-        // The eject writes with a trailing newline an editor would add
-        // anyway; the hash is over the trimmed text, so it still matches.
+        // The hash is over the trimmed text, so an editor's trailing newline
+        // still matches.
         std::fs::write(dir.join("Grain.wgsl"), "// grain\n").unwrap();
         std::fs::write(dir.join("Bloom.wgsl"), "// something else").unwrap();
 
@@ -1626,10 +1341,7 @@ mod tests {
         assert!(pool[1].path.is_none(), "a drifted file is not the entry");
         assert!(pool[2].path.is_none(), "no file, no bookmark");
 
-        // Nothing left to link is not news, so the pool doesn't get written
-        // out again for it.
         assert!(!relink_ejected_in(&root, "Nightfall", &mut pool[..1]));
-        // Another workspace's folder holds none of this look's shaders.
         let mut elsewhere = vec![pool[0].clone()];
         elsewhere[0].path = None;
         assert!(!relink_ejected_in(&root, "Daybreak", &mut elsewhere));
@@ -1637,9 +1349,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A free base name comes back as-is; a taken one gets " (2)", then
-    /// " (3)", counting up until it finds an opening. This is how an import
-    /// avoids shadowing a workspace already saved.
     #[test]
     fn unique_name_counts_up_past_collisions() {
         let taken: HashSet<&str> = ["Neon", "Neon (2)"].into_iter().collect();
@@ -1647,25 +1356,17 @@ mod tests {
         assert_eq!(unique_name("Neon", |c| taken.contains(c)), "Neon (3)");
     }
 
-    /// A name has to survive the trip through a filename and back, or a
-    /// workspace saves to one file and resolves from another. The characters
-    /// a filename can't hold fold to spaces, and a name of pure punctuation
-    /// still resolves to something rather than a dotfile or an empty name.
+    /// A name must survive the trip through a filename and back.
     #[test]
     fn file_name_folds_what_a_filename_cant_hold() {
         assert_eq!(file_name("Nightfall"), "Nightfall.json");
         assert_eq!(file_name("Drum & Bass / Neuro"), "Drum & Bass   Neuro.json");
         assert_eq!(file_name("  padded  "), "padded.json");
-        // A leading dot would hide the file; a name of nothing else takes
-        // the fallback rather than writing ".json".
         assert_eq!(file_name(".hidden"), "hidden.json");
         assert_eq!(file_name("..."), "workspace.json");
         assert_eq!(file_name(""), "workspace.json");
     }
 
-    /// A stored bundle comes back by name: the save picks the file, the list
-    /// reads it off the folder, and resolve parses it. The round trip the
-    /// whole file-backed collection rests on.
     #[test]
     fn store_lists_and_resolves_by_name() {
         let dir = scratch("store");
@@ -1681,16 +1382,11 @@ mod tests {
 
         remove_in(&dir, "Nightfall");
         assert!(saved_in(&dir).is_empty());
-        // Deleting one that's already gone is a no-op, not a panic: the list
-        // can be one external delete out of date.
         remove_in(&dir, "Nightfall");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The folder is the list: files that aren't bundles are ignored, the
-    /// order is by name whatever order the filesystem hands them back in, and
-    /// a folder that doesn't exist yet is an empty list rather than an error.
     #[test]
     fn saved_lists_json_files_by_name() {
         let dir = scratch("list");
@@ -1707,8 +1403,6 @@ mod tests {
         assert!(saved_in(&dir).is_empty());
     }
 
-    /// A saved bundle shadows a shipped one of the same name, so a local edit
-    /// wins over the built-in. An unknown name resolves to None.
     #[test]
     fn resolve_prefers_saved_over_shipped() {
         let dir = scratch("resolve");
@@ -1717,7 +1411,6 @@ mod tests {
             .map(|e| e.name.clone())
             .expect("a workspace ships");
 
-        // The shipped one resolves out of the assets while nothing shadows it.
         let built_in = resolve_in(&dir, &shipped_name).expect("shipped resolves");
         assert_eq!(built_in.name, shipped_name);
 
@@ -1734,8 +1427,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `all` lists the shipped bundles first, then the user's own, and every
-    /// saved one is flagged non-builtin.
     #[test]
     fn all_appends_user_bundles_after_shipped() {
         let list = all();
@@ -1744,21 +1435,16 @@ mod tests {
         assert!(list[cut..].iter().all(|e| !e.builtin));
     }
 
-    /// A bundle read from a file with no name of its own takes the file stem,
-    /// and a name already in use is deduped so the import never shadows a
-    /// saved workspace.
     #[test]
     fn read_bundle_names_from_stem_and_dedupes() {
         let dir = scratch("import");
         let path = dir.join("Nightfall.json");
-        // A nameless bundle on disk, the shape a hand-written file arrives in.
         std::fs::write(&path, serde_json::to_string(&named_bundle("")).unwrap()).unwrap();
 
         let empty = scratch("import-empty");
         let bundle = read_bundle_in(&empty, &path).expect("nameless bundle reads");
         assert_eq!(bundle.name, "Nightfall");
 
-        // Same file, but that name is already saved: it dedupes.
         store_in(&empty, &named_bundle("Nightfall"));
         let deduped = read_bundle_in(&empty, &path).expect("bundle reads");
         assert_eq!(deduped.name, "Nightfall (2)");
@@ -1767,9 +1453,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&empty);
     }
 
-    /// A bundle from a newer format version is refused, so an older build
-    /// never applies a file it can't understand. Refused everywhere it can
-    /// arrive: an import, and a file dropped straight in the folder.
     #[test]
     fn read_bundle_refuses_newer_format() {
         let dir = scratch("newer");
@@ -1779,17 +1462,14 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(&future).unwrap()).unwrap();
 
         assert!(read_bundle_in(&dir, &path).is_none());
-        // The folder still lists it, since the list only reads filenames;
-        // resolving is where the refusal bites.
+        // The list only reads filenames; resolving is where the refusal bites.
         assert_eq!(saved_in(&dir).len(), 1);
         assert!(resolve_in(&dir, "Future").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The migration writes a workspace out once and leaves an existing file
-    /// alone, so a crash before the first save can't duplicate every
-    /// workspace on the next launch.
+    /// A crash before the first save must not duplicate every workspace.
     #[test]
     fn migrate_skips_a_name_already_on_disk() {
         let dir = scratch("migrate");
@@ -1797,7 +1477,6 @@ mod tests {
         first.palette_dark.insert("accent".into(), "#111111".into());
         migrate_saved_in(&dir, first);
 
-        // The same name coming round a second time leaves the file alone.
         let mut second = named_bundle("Nightfall");
         second
             .palette_dark
@@ -1813,9 +1492,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Two workspaces whose names fold to one filename both come through the
-    /// migration. The skip that makes a replay safe would otherwise drop the
-    /// second one silently, which is a workspace gone on upgrade.
+    /// The skip that makes a replay safe must not drop the second one.
     #[test]
     fn migrate_keeps_both_sides_of_a_filename_collision() {
         let dir = scratch("collide");
@@ -1825,7 +1502,6 @@ mod tests {
         second
             .palette_dark
             .insert("accent".into(), "#222222".into());
-        // Both fold to the same file, so the second has to go elsewhere.
         assert_eq!(file_name(&first.name), file_name(&second.name));
 
         migrate_saved_in(&dir, first);
@@ -1833,7 +1509,6 @@ mod tests {
 
         let names: Vec<String> = saved_in(&dir).into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["Live Studio", "Live Studio (2)"]);
-        // The renamed one keeps its own look, and the first is untouched.
         assert_eq!(
             resolve_in(&dir, "Live Studio")
                 .unwrap()

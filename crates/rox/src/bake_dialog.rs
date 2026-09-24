@@ -1,21 +1,9 @@
-//! The embed dialog: which of the three stored sources to write into the
-//! files, and what that would come to.
+//! The embed dialog: which of the three stored sources (lyrics, gain,
+//! acoustic) to write into the files, and what each would come to. The save
+//! settings only apply to the next write, so this is the catch-up.
 //!
-//! The three save settings each apply to the next write and nothing else, so
-//! a library described under Database and then switched to Tags has none of
-//! it in the files. This is the catch-up, and it exists as a dialog rather
-//! than a button because the honest answer to "what would this do" is three
-//! different numbers.
-//!
-//! Every count here is real: the survey behind it reads the tags of every
-//! candidate before the checkboxes say anything, which is why the window
-//! opens counting rather than opening ready. A source with nothing to write
-//! is disabled with its number showing instead of hidden, since "no lyrics to
-//! embed" and "lyrics aren't offered here" are different answers.
-//!
-//! The run itself belongs to [`crate::bake`], which is app-global: the dialog
-//! closes on the press and the tasks window shows the progress and the Stop,
-//! the same as a conversion.
+//! The counts are real, from a survey that reads every candidate's tags, so
+//! the window opens counting. The run belongs to [`crate::bake`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,42 +22,30 @@ use rox_panel_kit::ui::{self as settings_ui, Seg, kbd_line, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
-/// The run and the survey behind this window. Aliased because
-/// [`rox_library::bake`] defines what a bake is and this drives one, and the
-/// two names would otherwise be the same word twice in every line.
+// Aliased: `bake` would otherwise name both crates' modules.
 use crate::bake as job;
 
-/// The dialog's floor. Wide enough that a source's line doesn't wrap, tall
-/// enough for the three rows and the note above them.
 const MIN: gpui::Size<gpui::Pixels> = gpui::Size {
     width: px(420.),
     height: px(280.),
 };
 
-/// How often the window repaints while the survey runs. The survey is a file
-/// open per candidate and the readout is a count, so four times a second is
-/// more than enough to read by.
 const TICK: Duration = Duration::from_millis(250);
 
 actions!(bake_dialog, [Embed]);
 
-/// The key context the window's own bindings scope to.
 const CONTEXT: &str = "BakeDialog";
 
-/// The dialog's embed binding; call once at startup. It's bound on the
-/// window root, so Enter embeds wherever focus is (a checkbox row, the
-/// window itself) rather than only where a button happens to be.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Embed, Some(CONTEXT))]);
+/// On the window root, so Enter embeds wherever focus is.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("enter", Embed, Some(CONTEXT))]
 }
 
-/// The open dialog, if any. One at a time: it works on the whole library, so
-/// a second would be the same window.
+/// One at a time: it works on the whole library.
 struct OpenBake(WindowHandle<Root>);
 
 impl Global for OpenBake {}
 
-/// Open the embed dialog, or bring the open one to the front.
 pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenBake>() {
         let handle = open.0;
@@ -99,14 +75,10 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
 
 pub struct BakeDialog {
     library: Entity<Library>,
-    /// The survey while it runs, so the readout has a count and closing the
-    /// window can call it off.
     survey: Option<Arc<job::Survey>>,
-    /// What the survey found, empty until it finishes.
     candidates: Vec<Candidate>,
-    /// Why there's nothing to show, when the survey couldn't run at all.
     error: Option<SharedString>,
-    /// One tick per source, in [`Source::ALL`] order.
+    /// In [`Source::ALL`] order.
     picked: [bool; 3],
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
@@ -125,8 +97,6 @@ impl BakeDialog {
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(this) = this.upgrade() {
                 this.update(cx, |this, cx| {
-                    // Nobody is waiting for the result any more, and the
-                    // survey is a file open per candidate.
                     if let Some(survey) = &this.survey {
                         survey.abandon();
                     }
@@ -149,12 +119,8 @@ impl BakeDialog {
         this
     }
 
-    /// Set the survey going and keep the window repainting while it runs.
-    ///
-    /// The model is read here rather than in the survey so the vectors the
-    /// dialog counts are the ones the library is actually ranking by: another
-    /// model's rows are a different description of the same tracks, and
-    /// offering them under one count would be two answers in one number.
+    /// The model is read here so the counts match the vectors the library ranks
+    /// by; another model's rows describe the same tracks differently.
     fn begin(&mut self, cx: &mut Context<Self>) {
         let db_path = self.library.read(cx).db_path();
         let model = rox_services::acoustic::acoustic_source().id().to_owned();
@@ -172,8 +138,6 @@ impl BakeDialog {
             this.update(cx, |this, cx| this.settle(found, cx)).ok();
         })
         .detach();
-        // No entity behind a background survey, so nothing would repaint the
-        // count on its own.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -189,10 +153,7 @@ impl BakeDialog {
         .detach();
     }
 
-    /// Take the survey's result and tick every source that has something to
-    /// write. Ticking them is the right default: someone who opened this
-    /// wants what rox is holding to be in the files, and the counts beside
-    /// each row are there to untick one by.
+    /// Every source with something to write starts ticked.
     fn settle(&mut self, found: Result<Vec<Candidate>, String>, cx: &mut Context<Self>) {
         self.survey = None;
         match found {
@@ -211,7 +172,6 @@ impl BakeDialog {
         bake::counts(&self.candidates, source)
     }
 
-    /// The sources currently ticked, and that have anything to write.
     fn sources(&self) -> Vec<Source> {
         Source::ALL
             .into_iter()
@@ -221,15 +181,12 @@ impl BakeDialog {
             .collect()
     }
 
-    /// Hand the picked sources to the job and get out of the way.
     fn embed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sources = self.sources();
         let items = bake::merge(&self.candidates, &sources);
         if items.is_empty() {
             return;
         }
-        // What the dialog counted as skipped for exactly these sources, so
-        // the finished line accounts for every file the checkboxes did.
         let skipped: usize = sources
             .iter()
             .map(|source| self.counts(*source).skipped)
@@ -239,8 +196,6 @@ impl BakeDialog {
         window.remove_window();
     }
 
-    /// Write the window frame into the settings file, the restore for the
-    /// next open.
     fn persist_frame(&self, window: &Window, _cx: &App) {
         let frame = window.window_bounds().get_bounds();
         Settings::update(move |s| {
@@ -251,9 +206,7 @@ impl BakeDialog {
         });
     }
 
-    /// One source's row: its tick, its name, and what it would come to. A
-    /// source with nothing to write is inert rather than gone, so the number
-    /// that makes it inert is readable.
+    /// A source with nothing to write stays visible and inert, so its count reads.
     fn source_row(&self, at: usize, source: Source, cx: &mut Context<Self>) -> Stateful<Div> {
         let counts = self.counts(source);
         let live = counts.writes > 0;
@@ -307,10 +260,6 @@ impl BakeDialog {
             )
     }
 
-    /// Why the embed won't run yet, when it won't: the read that failed, how
-    /// far the survey has got, or that there's nothing left to write. None
-    /// once the press would do something, which is when the footer shows the
-    /// shortcut instead.
     fn status(&self) -> Option<(SharedString, gpui::Rgba)> {
         if let Some(e) = &self.error {
             return Some((
@@ -337,8 +286,6 @@ impl BakeDialog {
         None
     }
 
-    /// The window's own actions, and the shortcut for them or the reason
-    /// there isn't one.
     fn footer(&self, ready: bool, cx: &mut Context<Self>) -> Div {
         let hint = match self.status() {
             Some((line, color)) => div()
@@ -397,8 +344,7 @@ impl BakeDialog {
 impl Render for BakeDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.survey.is_none() && !self.sources().is_empty();
-        // The rows count per source and a file can be in more than one of
-        // them, so the heading's number is the merge rather than the sum.
+        // A file can be in several rows, so the heading counts the merge.
         let total = ready.then(|| {
             let picked = bake::merge(&self.candidates, &self.sources()).len();
             div()
@@ -451,9 +397,6 @@ impl Render for BakeDialog {
                 div()
                     .flex_1()
                     .min_h_0()
-                    // The page's own surface over the root's, the same second
-                    // pass the settings page takes: the backdrop reads through
-                    // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
                     .child(section(rox_i18n::t_static("bake-title"), total, body)),

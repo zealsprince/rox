@@ -1,32 +1,13 @@
-//! Putting what rox already knows about a track into the track's own file.
+//! Put what rox already holds about a track into its file: lyrics from the
+//! store or a sidecar, measured ReplayGain, acoustic vectors. The catch-up
+//! for a library described before its settings were turned to Tags. Nothing
+//! is computed here.
 //!
-//! Three settings decide where new metadata goes: [`crate::lyrics`] saves a
-//! fetched sheet to the store, a sidecar or the tag; the ReplayGain pass
-//! writes its numbers to the database or the tags; the acoustic pass does the
-//! same with its vectors. All three only ever speak for the next write. Turn
-//! one to Tags after a library is already described and nothing moves, and a
-//! folder handed to another player has none of it.
+//! [`candidates`] is cheap (database and stats); [`examine`] reads a tag per
+//! candidate and is separate so the caller can run it across a pool.
 //!
-//! This is the catch-up. Nothing here computes anything: every value it
-//! writes is one the app is already holding, and a file it can't reach keeps
-//! its database row exactly as it was.
-//!
-//! ## The two halves
-//!
-//! [`candidates`] is the database and a few stats: what rox holds, and which
-//! of it has a file that could take a tag at all. [`examine`] is the
-//! expensive half, one tag read per candidate, and it's separate precisely so
-//! the caller can run it across a pool; see `rox/src/bake.rs`, which does.
-//! Skipping it leaves every candidate looking writable, which is only wrong
-//! in the direction of rewriting a file that already agreed with us.
-//!
-//! ## What gets refused
-//!
-//! [`crate::embed_tag::writable`] admits MP3 and FLAC, the two carriers the
-//! vector has a proven round trip on, so every other format keeps its row
-//! and nothing more. A cue subsong is refused for the reason
-//! [`crate::writer::writes_to_file`] gives: twelve tracks share one image, and
-//! writing one track's lyrics into it would caption the whole disc.
+//! Refused: formats [`crate::embed_tag::writable`] rejects, and cue subsongs,
+//! since writing one track's lyrics into a shared image captions the disc.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,20 +19,15 @@ use crate::lyrics;
 use crate::replaygain::ReplayGain;
 use crate::writer::{self, Change, Field};
 
-/// Where one pending write comes from, which is also how the dialog groups
-/// its checkboxes.
+/// Also how the dialog groups its checkboxes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// A sheet in the app's own store or in a sidecar beside the track.
     Lyrics,
-    /// Four numbers the measurement pass put in the database.
     Gain,
-    /// One model's vector out of the embeddings table.
     Acoustic,
 }
 
 impl Source {
-    /// Every source, in the order the dialog lists them.
     pub const ALL: [Source; 3] = [Source::Lyrics, Source::Gain, Source::Acoustic];
 
     pub fn label(self) -> &'static str {
@@ -63,26 +39,20 @@ impl Source {
     }
 }
 
-/// Why a file rox has something for gets nothing written to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Skip {
-    /// A cue track: a span inside an image the whole disc shares, so there
-    /// is no file that means this track alone.
+    /// A cue track: no file means this track alone.
     Subsong,
-    /// Not one of the two formats [`crate::embed_tag::writable`] admits.
     Format,
-    /// The file's tag already has this, so writing it would rewrite the
-    /// file to leave it as it was.
+    /// The tag already has this value.
     Present,
 }
 
-/// One value rox is holding, ready to go into a file.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    /// The sheet as its home holds it, newlines and timestamps and all.
+    /// The sheet as its home holds it, timestamps and all.
     Lyrics(String),
-    /// Whatever of the four the database has. Missing numbers stay missing:
-    /// see [`writer::replay_gain_additions`].
+    /// Missing numbers stay missing: see [`writer::replay_gain_additions`].
     Gain(ReplayGain),
     /// One model's vector, under that model's own key.
     Acoustic { model: String, vec: Vec<f32> },
@@ -98,13 +68,12 @@ impl Value {
     }
 }
 
-/// One file and one thing rox could put in it.
 #[derive(Clone, Debug)]
 pub struct Candidate {
     pub path: PathBuf,
     pub value: Value,
-    /// None while this still looks writable. [`candidates`] fills in the two
-    /// cheap refusals; [`examine`] fills in the third.
+    /// None while writable. [`candidates`] fills the two cheap refusals,
+    /// [`examine`] the third.
     pub skip: Option<Skip>,
 }
 
@@ -113,7 +82,6 @@ impl Candidate {
         self.value.source()
     }
 
-    /// The tag writes this candidate is, empty for one that's been refused.
     pub fn changes(&self) -> Vec<Change> {
         if self.skip.is_some() {
             return Vec::new();
@@ -132,16 +100,12 @@ impl Candidate {
     }
 }
 
-/// One source's tally, the pair each checkbox states.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Files this source would actually write to.
     pub writes: usize,
-    /// Files it holds something for and won't be writing to.
     pub skipped: usize,
 }
 
-/// What one source would do, over a surveyed list.
 pub fn counts(candidates: &[Candidate], source: Source) -> Counts {
     candidates
         .iter()
@@ -158,17 +122,13 @@ pub fn counts(candidates: &[Candidate], source: Source) -> Counts {
         })
 }
 
-/// One file's whole write: everything the picked sources have for it, in one
-/// commit rather than one each. A file with lyrics, a gain and a vector
-/// is rewritten once.
+/// Everything the picked sources have for one file, in one commit.
 #[derive(Clone, Debug)]
 pub struct Item {
     pub path: PathBuf,
     pub changes: Vec<Change>,
 }
 
-/// Fold a surveyed list down to one item per file, keeping only the sources
-/// that were picked and only the candidates nothing refused.
 pub fn merge(candidates: &[Candidate], sources: &[Source]) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
     let mut at: HashMap<&Path, usize> = HashMap::new();
@@ -188,8 +148,6 @@ pub fn merge(candidates: &[Candidate], sources: &[Source]) -> Vec<Item> {
     items
 }
 
-/// Write one file through [`writer::commit`], so the atomic layer applies
-/// (clone, verify, rename) and nothing but these fields moves.
 pub fn apply(item: &Item) -> Result<(), String> {
     if item.changes.is_empty() {
         return Ok(());
@@ -197,12 +155,8 @@ pub fn apply(item: &Item) -> Result<(), String> {
     writer::commit(&item.path, &item.changes)
 }
 
-/// Everything rox is holding that a file could store, with the refusals it
-/// can work out without opening anything.
-///
-/// `model` is the acoustic model whose vectors to offer, `lyrics_dir` the
-/// app's own lyrics store. Every candidate that comes back with `skip` unset
-/// still owes a [`examine`] before its count means anything.
+/// Every candidate still owes an [`examine`] before its count means
+/// anything.
 pub fn candidates(
     conn: &Connection,
     model: &str,
@@ -211,10 +165,7 @@ pub fn candidates(
     let mut out = Vec::new();
     for (path, sub) in crate::store::local_paths(conn)? {
         let file = PathBuf::from(&path);
-        // The tag read this would otherwise cost on every untouched file in
-        // the library is the whole reason for the stat first: load's own
-        // order ends at the embedded tag, and a sheet that's already there
-        // is not one this tool moves.
+        // Stat first: skips a tag read on every file without a stored sheet.
         if !has_stored_sheet(&file, lyrics_dir) {
             continue;
         }
@@ -252,30 +203,20 @@ pub fn candidates(
     Ok(out)
 }
 
-/// Look in the file and refuse a candidate whose tag already says this.
-///
-/// One file open, which is why this is its own call rather than part of
-/// [`candidates`]: over a described library it's the whole cost of a survey,
-/// and it parallelizes cleanly because every candidate is independent.
-/// A candidate already refused is left alone.
+/// One file open per candidate, so it's separate from [`candidates`] and
+/// safe to parallelize.
 pub fn examine(candidate: &mut Candidate) {
     if candidate.skip.is_some() {
         return;
     }
     let present = match &candidate.value {
-        // Same words already in the frame. Compared trimmed, since a
-        // trailing newline is the difference between two homes for the same
-        // sheet rather than between two sheets.
+        // Trimmed: a trailing newline isn't a different sheet.
         Value::Lyrics(text) => {
             lyrics::tag_lyrics(&candidate.path).is_some_and(|tag| tag.trim() == text.trim())
         }
-        // Nothing to look at: a measured row exists because the file's tags
-        // carried no gain when it was scanned, so the database is the only
-        // copy by definition.
+        // A measured row means the file had no gain, so there's nothing to compare.
         Value::Gain(_) => false,
-        // Any readable vector under this model's key is the one this would
-        // write: the value names the model and the width and is refused
-        // unless both match, so a hit can't be another model's.
+        // The value names model and width, so any hit is this model's.
         Value::Acoustic { model, vec } => {
             embed_tag::read(&candidate.path, model, vec.len()).is_some()
         }
@@ -285,7 +226,6 @@ pub fn examine(candidate: &mut Candidate) {
     }
 }
 
-/// The two refusals a path and a subsong number are enough to make.
 fn refusal(path: &Path, sub: u16) -> Option<Skip> {
     if !writer::writes_to_file(sub) {
         return Some(Skip::Subsong);
@@ -293,9 +233,8 @@ fn refusal(path: &Path, sub: u16) -> Option<Skip> {
     (!embed_tag::writable(path)).then_some(Skip::Format)
 }
 
-/// Whether a sheet is stored anywhere but the file's own tag. Stats only:
-/// this is the gate that keeps a survey off the tags of a library nobody has
-/// fetched lyrics for.
+/// Stats only: keeps a survey off the tags of a library with no fetched
+/// lyrics.
 fn has_stored_sheet(path: &Path, lyrics_dir: Option<&Path>) -> bool {
     lyrics::sidecar_candidates(path)
         .iter()
@@ -310,8 +249,6 @@ mod tests {
     use super::*;
     use crate::writer::{flac_file, mp3_file, scratch};
 
-    /// A library with one row per path, everything local and everything a
-    /// plain file unless a sub is given.
     fn library(rows: &[(&Path, u16)]) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         crate::store::init_schema(&conn).unwrap();
@@ -327,10 +264,6 @@ mod tests {
         conn
     }
 
-    /// The whole tool over one file: a gain the pass measured into the
-    /// database and a sheet the app keeps in its own store, both of them
-    /// somewhere no other player can see, come out of one commit as tags any
-    /// player reads.
     #[test]
     fn a_measured_gain_and_a_stored_sheet_land_in_the_file() {
         let dir = scratch("bake-round-trip");
@@ -366,7 +299,6 @@ mod tests {
         assert_eq!(counts(&found, Source::Lyrics).writes, 1);
         assert_eq!(counts(&found, Source::Gain).writes, 1);
 
-        // Both sources, one file, one rewrite.
         let items = merge(&found, &Source::ALL);
         assert_eq!(items.len(), 1);
         apply(&items[0]).unwrap();
@@ -375,8 +307,6 @@ mod tests {
         assert_eq!(read.track_db, Some(-7.35));
         assert_eq!(read.track_peak, Some(0.987654));
         assert_eq!(read.album_db, Some(-8.10));
-        // Never written, so never invented: the file has the three
-        // numbers the database had and nothing in the fourth slot.
         assert_eq!(read.album_peak, None);
         let tagged = writer::read(&path)
             .unwrap()
@@ -385,8 +315,6 @@ mod tests {
             .map(|(_, text)| text);
         assert_eq!(tagged.as_deref(), Some(sheet));
 
-        // And a second run has nothing left to do: the sheet is now in the
-        // tag as well, and the gain will read back off it after a rescan.
         let mut again = candidates(&conn, "builtin-v1", Some(&store)).unwrap();
         for candidate in &mut again {
             examine(candidate);
@@ -396,11 +324,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The two things this tool refuses to touch. A gain that came off the
-    /// file's own tags is already where it belongs, so it never becomes a
-    /// candidate at all; a format the writer can't open is one it says so
-    /// about, since a count that hid it would leave someone wondering which
-    /// files went missing.
     #[test]
     fn a_tag_sourced_gain_and_an_unwritable_file_are_left_alone() {
         let dir = scratch("bake-refusals");
@@ -423,9 +346,6 @@ mod tests {
             ],
         )
         .unwrap();
-        // The third row's numbers came off its own tags, which is the
-        // default source and what every row written before the measurement
-        // pass existed reads as.
         conn.execute(
             "UPDATE tracks SET rg_track_gain = -4.0, rg_source = 0 WHERE path = ?1",
             rusqlite::params![tagged.display().to_string()],
@@ -448,13 +368,10 @@ mod tests {
         let refused = found.iter().find(|c| c.path == ogg).unwrap();
         assert_eq!(refused.skip, Some(Skip::Format));
         assert!(refused.changes().is_empty(), "a refusal writes nothing");
-        // And the picked set is the one writable file.
         assert_eq!(merge(&found, &Source::ALL).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A vector the file already has, and a cue track with no file to hold
-    /// one. Both keep their database row and cost nothing.
     #[test]
     fn a_vector_already_in_the_file_and_a_cue_track_are_skipped() {
         let dir = scratch("bake-vectors");
@@ -478,8 +395,6 @@ mod tests {
 
         let mut found = candidates(&conn, "builtin-v1", None).unwrap();
         assert_eq!(found.len(), 3);
-        // The cue track is refused before anything is opened; the other two
-        // need the file read to tell apart.
         assert_eq!(
             found.iter().find(|c| c.path == image).unwrap().skip,
             Some(Skip::Subsong)
@@ -507,8 +422,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Picking one source writes that source alone, which is all the
-    /// dialog's checkboxes do.
     #[test]
     fn an_unpicked_source_writes_nothing() {
         let lyrics = Candidate {

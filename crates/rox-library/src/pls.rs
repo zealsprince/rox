@@ -1,19 +1,10 @@
-//! PLS read and write, the second interop surface for playlists (ADR 16).
-//! PLS is the Winamp-era INI shape that VLC, foobar, and most hardware
-//! streamers still emit, so a rox playlist saved as `.pls` opens in the
-//! places an M3U does not. Export writes the full `File`/`Title`/`Length`
-//! triple; import only cares about the `File` keys, because everything else
-//! in the file is display metadata the catalog already holds.
-//!
-//! Like [`crate::m3u`], this is pure string work: callers do the file IO, and
-//! the store stays the source of truth with the file as a snapshot.
+//! PLS read and write for playlist interop (ADR 16). Import only reads the
+//! `File` keys; the rest is display metadata the catalog already holds.
 
 use crate::playlists::ExportTrack;
 
-/// Serialize playable rows to a PLS document. Entry numbers are one-based and
-/// contiguous, `Title` collapses to the title alone when there is no artist,
-/// and an unknown duration writes `-1`, all matching what [`crate::m3u`] does
-/// with the same fields.
+/// A PLS document with the same `Title` and `-1` duration rules as
+/// [`crate::m3u`].
 pub fn to_pls(rows: &[ExportTrack]) -> String {
     let mut out = String::from("[playlist]\n");
     for (i, row) in rows.iter().enumerate() {
@@ -37,14 +28,10 @@ pub fn to_pls(rows: &[ExportTrack]) -> String {
     out
 }
 
-/// Pull the path entries out of a PLS document, ordered by entry number
-/// rather than by line: a hand-written file can list `File2` above `File1`
-/// and the numbers are what the format says to trust. Every other key falls
-/// away. Keys are matched case-insensitively because the Winamp lineage
-/// wrote `File1`, `file1`, and `FILE1` interchangeably.
+/// The path entries ordered by entry number rather than line, since that's
+/// what the format says to trust. Keys match case-insensitively.
 pub fn parse(text: &str) -> Vec<String> {
-    // Same BOM problem as M3U: left on, it clings to `[playlist]` and, worse,
-    // to a `File1` key if the header is missing, so the first entry is lost.
+    // A leading BOM would cling to the first key.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut entries: Vec<(u32, String)> = Vec::new();
     for line in text.lines() {

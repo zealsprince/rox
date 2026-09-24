@@ -1,22 +1,10 @@
-//! The duplicates window: find tracks the library holds more than once
-//! and move the spare copies to the OS trash. A duplicate here is a tag
-//! identity, the same title and artist within a small duration tolerance,
-//! matched over the in-memory projection, so a scan never goes to disk;
-//! the same album ripped twice or copied into two folders shows up whatever
-//! the files are named. Groups list every copy with its cover, codec, and
-//! bitrate so the user can see which version is which before deciding, and
-//! a filter box narrows a long result to one artist or folder.
+//! The duplicates window: tracks the library holds more than once, matched
+//! on title and artist within a duration tolerance over the projection, with
+//! the spare copies moved to the OS trash.
 //!
-//! The keep policy picks each group's default keeper (best quality,
-//! oldest, or newest copy) and checks the rest. A group whose copies
-//! belong to different albums is never auto-checked: those are one song on
-//! several releases, and trashing a copy would leave a hole in an album,
-//! so touching them stays a hand decision. A group can never have every
-//! member checked: checking the last unchecked copy swaps the mark onto
-//! the old keeper instead, so the tool can't take a track's last copy.
-//! Trashing goes through the `trash` crate, never a plain unlink, and the
-//! catalog rows drop through the library's prune so the panels converge
-//! without a rescan.
+//! A group whose copies span albums is never auto-checked: trashing one would
+//! leave a hole in an album. No group can have every copy checked, so the
+//! tool can't take a track's last copy. Trash only, never a plain unlink.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -42,23 +30,17 @@ use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 use rox_services::thumbs::{Thumb, Thumbs};
 
-/// One row's height. The list is a uniform_list, so headers and members
-/// agree; two lines and a cover fit either way.
 const ROW_H: f32 = 42.;
 
-/// A member row's cover tile, sized to fit inside the row with room to
-/// breathe.
 const COVER: f32 = 32.;
 
-/// Which copy of a group the auto-selection keeps; everything else in the
-/// group gets checked for the trash.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeepPolicy {
-    /// The highest bitrate, the earliest added on a tie.
+    /// Highest bitrate, earliest added on a tie.
     Quality,
-    /// The earliest added, the highest bitrate on a tie.
+    /// Earliest added, highest bitrate on a tie.
     Oldest,
-    /// The latest added, the highest bitrate on a tie.
+    /// Latest added, highest bitrate on a tie.
     Newest,
 }
 
@@ -72,54 +54,36 @@ impl KeepPolicy {
     }
 }
 
-/// One copy of a duplicated track: the row identity for the delete and
-/// the fields that tell the copies apart in the list.
 struct DupMember {
     path: PathBuf,
     name: SharedString,
-    /// The full parent directory, not just its name: duplicates are often
-    /// in folders named alike, and the path tells them apart.
+    /// The full parent path: duplicates often sit in folders named alike.
     folder: SharedString,
     codec: SharedString,
     bitrate_kbps: u16,
-    /// When the library first saw this copy, the newest/oldest policies'
-    /// key.
     added: i64,
 }
 
-/// One duplicated track: the shared identity on the header and every copy
-/// under it, the keeper first per the active policy.
 struct DupGroup {
     title: SharedString,
     artist: SharedString,
     duration_ms: u32,
-    /// Whether every copy has the same album tag. Copies spread over
-    /// different albums are one song on several releases; auto-selection
-    /// leaves those alone so no album loses a track by default.
     same_album: bool,
     members: Vec<DupMember>,
 }
 
-/// What one flattened list row shows: a group's header or one member,
-/// each addressed into `groups` by index.
 #[derive(Clone, Copy)]
 enum RowKind {
     Header(usize),
     Member(usize, usize),
 }
 
-/// The open duplicates window, if any. One at a time for the same reason
-/// as tag repair: a scan or delete in flight isn't worth losing to a
-/// second copy, so asking again brings this one forward.
+/// One at a time: a scan or delete in flight isn't worth losing to a second copy.
 #[derive(Default)]
 struct OpenDuplicates(Option<WindowHandle<Root>>);
 
 impl Global for OpenDuplicates {}
 
-/// Open the duplicates window, or bring the open one forward. Takes the
-/// shared catalog it matches over and prunes into, the thumbnail service
-/// for the member covers, and the art bake it backs with, so the settings
-/// window can open it from what it already holds.
 pub fn open(
     library: Entity<Library>,
     thumbs: Entity<Thumbs>,
@@ -147,40 +111,24 @@ pub fn open(
 pub struct Duplicates {
     library: Entity<Library>,
     thumbs: Entity<Thumbs>,
-    /// A scan is matching over the projection; the controls lock while it
-    /// runs.
     scanning: bool,
-    /// Whether a scan has finished at least once, so the list can say
-    /// "none found" rather than an empty page before the first scan.
     scanned: bool,
-    /// The duplicate groups the scan found, keeper first per the policy.
     groups: Vec<DupGroup>,
-    /// Per group, per member: whether that copy is marked for the trash.
     checked: Vec<Vec<bool>>,
-    /// Which copy the auto-selection keeps.
     policy: KeepPolicy,
-    /// The filter box and its current text, kept lowercased for the
-    /// matching.
+    /// `query` is kept lowercased.
     query_input: Entity<InputState>,
     query: String,
-    /// The flattened list the uniform_list renders: one header row per
-    /// group the filter matches, one row per member. Rebuilt whenever
-    /// `groups` or the filter changes.
+    /// Rebuilt whenever `groups` or the filter changes.
     rows: Vec<RowKind>,
-    /// A delete is moving files to the trash; the list locks under an
-    /// occluder and the count moves per file.
     trashing: bool,
     trash_done: usize,
     trash_total: usize,
-    /// The last delete's summary, held over the list after it finishes.
     result: Option<SharedString>,
-    /// A scan or delete failure, shown inline.
     error: Option<SharedString>,
     scroll: UniformListScrollHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
     _backdrop_changed: Subscription,
     _query_changed: Subscription,
 }
@@ -232,7 +180,6 @@ impl Duplicates {
         }
     }
 
-    /// Rebuild the flattened row list from the groups the filter matches.
     fn rebuild_rows(&mut self) {
         self.rows.clear();
         for (g, group) in self.groups.iter().enumerate() {
@@ -246,9 +193,6 @@ impl Duplicates {
         }
     }
 
-    /// Match the projection for duplicate identities. The grouping runs
-    /// off the UI thread over the shared projection; the id-to-path
-    /// resolution happens back on it, where the library connection is.
     fn scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.scanning || self.trashing {
             return;
@@ -272,10 +216,8 @@ impl Duplicates {
                 .spawn(async move { match_duplicates(&projection) })
                 .await;
             this.update(cx, |this, cx| {
-                // Resolve each member's id to its path on the library
-                // connection. A member whose row vanished mid-scan drops
-                // out; a group thinned under two copies is no longer a
-                // duplicate and drops with it.
+                // A member whose row vanished mid-scan drops out, and a group under two
+                // copies with it.
                 let library = this.library.read(cx);
                 for spec in specs {
                     let members: Vec<DupMember> = spec
@@ -323,8 +265,6 @@ impl Duplicates {
         .detach();
     }
 
-    /// Order every group's members keeper-first per the active policy and
-    /// reapply the default selection.
     fn apply_policy(&mut self) {
         let policy = self.policy;
         for group in &mut self.groups {
@@ -346,9 +286,7 @@ impl Duplicates {
         self.auto_select();
     }
 
-    /// Change the keep policy: reorder the groups and reset the marks to
-    /// its defaults. Held while a delete runs so the commits' targets
-    /// can't shift under them.
+    /// Held while a delete runs so the targets can't shift under it.
     fn set_policy(&mut self, policy: KeepPolicy, cx: &mut Context<Self>) {
         if self.trashing || policy == self.policy {
             return;
@@ -359,10 +297,7 @@ impl Duplicates {
         cx.notify();
     }
 
-    /// Apply the keep policy's default marks: the first member (the keeper
-    /// per the active ordering) stays, the rest are checked, except in a
-    /// group whose copies span different albums, which stays untouched so
-    /// no album loses a track without a hand pick.
+    /// The keeper stays unchecked; groups spanning albums stay untouched.
     fn auto_select(&mut self) {
         self.checked = self
             .groups
@@ -380,17 +315,14 @@ impl Duplicates {
             .collect();
     }
 
-    /// Clear every mark.
     fn select_none(&mut self) {
         for marks in &mut self.checked {
             marks.iter_mut().for_each(|c| *c = false);
         }
     }
 
-    /// Flip one member's mark. Checking what would be a group's last
-    /// unchecked copy swaps instead: this copy joins the trash picks and
-    /// the best of the others becomes the keeper, so a group always keeps
-    /// one and picking a different keeper is one click, not two.
+    /// Checking a group's last unchecked copy swaps the keeper instead, so a
+    /// group always keeps one.
     fn toggle(&mut self, g: usize, m: usize, cx: &mut Context<Self>) {
         let Some(marks) = self.checked.get_mut(g) else {
             return;
@@ -407,7 +339,6 @@ impl Duplicates {
         cx.notify();
     }
 
-    /// How many copies are marked for the trash.
     fn checked_count(&self) -> usize {
         self.checked
             .iter()
@@ -415,9 +346,7 @@ impl Duplicates {
             .sum()
     }
 
-    /// How many marks the trash pass would actually take: groups the
-    /// filter hides are skipped, the same gate trash() applies, so the
-    /// button's count never includes files that stay put.
+    /// Skips groups the filter hides, the same gate [`Self::trash`] applies.
     fn visible_checked_count(&self) -> usize {
         self.groups
             .iter()
@@ -432,20 +361,15 @@ impl Duplicates {
             .sum()
     }
 
-    /// Move every marked copy to the OS trash, one file per background hop
-    /// so the count moves and a slow disk is visibly the holdup. Trashed
-    /// files prune out of the catalog through the library; their rows drop
-    /// off the list, a group left with one copy dissolves, and failures
-    /// stay put so the user sees which.
+    /// One file per background hop so the count moves. Trashed files prune out
+    /// of the catalog; failures stay listed.
     fn trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.trashing || self.scanning {
             return;
         }
         let mut targets: Vec<(usize, usize, PathBuf)> = Vec::new();
         for (g, group) in self.groups.iter().enumerate() {
-            // Only trash what the user can see. A group the filter hides is
-            // off the list, so its marks (from a prior auto-select) must not
-            // slip through here and delete copies out of view.
+            // Never trash marks the filter hides from view.
             if !self.query.is_empty() && !group_matches(group, &self.query) {
                 continue;
             }
@@ -507,9 +431,6 @@ impl Duplicates {
                         }
                     }
                 }
-                // A closed window (the user gave up) drops the handle; the
-                // files already trashed still need their prune, so fall
-                // through to it rather than return.
                 if this
                     .update(cx, |this, cx| {
                         this.trash_done += 1;
@@ -527,8 +448,6 @@ impl Duplicates {
                     .ok();
             }
             this.update(cx, |this, cx| {
-                // Drop the trashed members; a group down to one copy is no
-                // longer a duplicate and leaves the list with them.
                 let groups = std::mem::take(&mut this.groups);
                 this.groups = groups
                     .into_iter()
@@ -570,9 +489,6 @@ impl Duplicates {
         .detach();
     }
 
-    /// The scan controls, at the heading's right edge: finding the
-    /// duplicates only ever reads the library, so it belongs with the view
-    /// rather than with the trash down in the footer.
     fn scan_controls(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.trashing;
         div()
@@ -601,14 +517,10 @@ impl Duplicates {
             ))
     }
 
-    /// The window's one destructive action, with what's marked and
-    /// whatever stands in the way of it reading left of the button.
     fn footer(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.trashing;
         let count = self.visible_checked_count();
-        // Worst news first: a failure outlives the run that raised it, and
-        // a run in flight outranks a count that's about to change under
-        // it.
+        // Worst news first: a failure, then a run in flight, then the count.
         let warn: Option<SharedString> = if let Some(error) = self.error.clone() {
             Some(error)
         } else if self.trashing {
@@ -662,8 +574,6 @@ impl Duplicates {
             ))
     }
 
-    /// The toolbar under the header: the filter box beside the keep-policy
-    /// dropdown.
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
         let policy = self.policy;
         let weak = cx.entity().downgrade();
@@ -696,14 +606,8 @@ impl Duplicates {
             )
     }
 
-    /// The results region under the toolbar, filling the rest of the
-    /// window: a centered hint before the first scan, a "none found" line
-    /// when a scan came up clean, or the count-and-select header over the
-    /// virtualized group list.
     fn results(&self, cx: &mut Context<Self>) -> Div {
         let region = div().flex_1().min_h_0().flex().flex_col();
-        // Mid-scan the header's spinner already says what's happening;
-        // the hint would just contradict it.
         if self.scanning {
             return region;
         }
@@ -763,8 +667,6 @@ impl Duplicates {
                     .relative()
                     .map(|d| {
                         if self.rows.is_empty() {
-                            // Every group filtered out; say so rather than
-                            // show a blank pane under a live count.
                             d.child(
                                 div()
                                     .size_full()
@@ -800,17 +702,13 @@ impl Duplicates {
                             )
                         }
                     })
-                    // The list locks while a delete runs: a transparent
-                    // occluder over it swallows clicks so nothing checks or
-                    // unchecks out from under the trash hops.
+                    // Lock the list while a delete runs so no mark changes under it.
                     .when(self.trashing, |d| {
                         d.child(div().absolute().inset_0().occlude())
                     }),
             )
     }
 
-    /// The visible slice of list rows: group headers showing the shared
-    /// identity, member rows each a click target around their checkbox.
     fn list_rows(
         &self,
         range: std::ops::Range<usize>,
@@ -830,9 +728,6 @@ impl Duplicates {
             .collect()
     }
 
-    /// One group's header row: the title over the artist and duration, a
-    /// note when the copies span albums, and the copy count trailing. All
-    /// but the first header get a top border so groups read apart.
     fn header_row(&self, i: usize, group: &DupGroup) -> Stateful<Div> {
         let n = group.members.len();
         div()
@@ -882,10 +777,6 @@ impl Duplicates {
             )
     }
 
-    /// One copy's row: checkbox, the file's cover, its name over its
-    /// folder, and the codec and bitrate trailing right-aligned so the
-    /// versions line up. The whole row is the click target so the box is
-    /// easy to hit.
     fn member_row(
         &self,
         i: usize,
@@ -922,7 +813,6 @@ impl Duplicates {
             .items_center()
             .gap(tokens::SPACE_SM)
             .h(palette::scaled_px(ROW_H))
-            // Indented under the group header so the copies read as its.
             .pl(px(24.))
             .pr(tokens::SPACE_XS)
             .rounded(tokens::RADIUS)
@@ -959,9 +849,7 @@ impl Duplicates {
     }
 }
 
-/// Whether a group matches the lowercased filter text: on its title or
-/// artist, or any copy's file name or folder, so a path fragment narrows
-/// to the release it names.
+/// Title, artist, or any copy's file name or folder, so a path fragment narrows.
 fn group_matches(group: &DupGroup, query: &str) -> bool {
     group.title.to_lowercase().contains(query)
         || group.artist.to_lowercase().contains(query)
@@ -970,10 +858,6 @@ fn group_matches(group: &DupGroup, query: &str) -> bool {
         })
 }
 
-/// A member's cover tile: the thumbnail once it's ready, a placeholder
-/// note glyph while it loads or when the file has none. The thumbnail
-/// store hands back the art at its own aspect, so the square box does the
-/// cropping and covers line the rows up whatever shape the sleeve is.
 fn cover_tile(thumb: Thumb) -> Div {
     let side = px(COVER);
     div().flex_none().flex().items_center().child(match thumb {
@@ -1006,9 +890,6 @@ fn cover_tile(thumb: Thumb) -> Div {
 
 impl Render for Duplicates {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The heading, toolbar, and summary stay fixed; only the group list
-        // scrolls, and it virtualizes, so a library-wide result stays
-        // responsive however many copies it turns up.
         let body = div()
             .flex_1()
             .min_h_0()
@@ -1024,9 +905,7 @@ impl Render for Duplicates {
             .flex()
             .flex_col()
             .p(tokens::SPACE_MD)
-            // The page's own surface, a second elevated layer over the
-            // window's, the same as the settings page. It stops at the page
-            // so the footer below composes against one layer, not two.
+            // Stops at the page so the footer composes against one layer, not two.
             .bg(palette::bg_elevated())
             .child(
                 section(
@@ -1045,8 +924,6 @@ impl Render for Duplicates {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // The backdrop paints first, under the page, so translucent
-            // surfaces sink into the playing track's art like every window.
             .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(
                 div()

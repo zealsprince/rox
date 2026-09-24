@@ -5,115 +5,65 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# The continuation providers (ADR 17) draw their batches straight out of the
-# library's store, listens, and vectors.
 rox-library = { path = "../rox-library" }
 cpal = "0.18"
-# The continuation mode is a settings field, and it reads leniently so one
-# word a newer build wrote can't take the session shard down with it.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Decode per ADR 2: every symphonia codec and container is pure Rust, so we
-# take the whole audio matrix (all-codecs + all-formats) without pulling a C
-# dependency.
-# The tag readers matter for probing, not just tags: without id3v2 the probe
-# cannot skip a leading ID3v2 tag, and a tag bigger than the 1 MB probe depth
-# (embedded cover art) makes the whole file unreadable.
+# Decode per ADR 2: every symphonia codec and container is pure Rust.
+# The id3v2 reader matters for probing: without it a leading ID3v2 tag bigger
+# than the 1 MB probe depth (embedded cover art) makes the file unreadable.
 symphonia = { version = "0.6", default-features = false, features = [
     "aac", "adpcm", "alac", "flac", "mp1", "mp2", "mp3", "pcm", "vorbis",
     "aiff", "caf", "isomp4", "mkv", "ogg", "wav",
     "id3v1", "id3v2", "ape",
 ] }
-# The one codec symphonia 0.6 has no decoder for. Its Ogg reader maps an Opus
-# stream to a track and then finds nothing to decode it with, which is why
-# rox's own converter could write .opus files the app refused to play. This
-# crate has no dependencies and no build script, so ADR 2's
-# no-C-in-the-decode-path line still holds. Its `unsafe` is about 130 blocks of
-# AVX2 and NEON intrinsics behind runtime feature detection, which is SIMD, not
-# C. Single-stream only here, so multichannel Opus (mapping family 1 past
-# stereo) is refused, not decoded; see crates/rox-playback/src/opus.rs.
+# The one codec symphonia 0.6 can't decode. No dependencies, no build script,
+# no C (ADR 2); its `unsafe` is SIMD intrinsics behind runtime detection.
+# Single-stream only, see src/opus.rs.
 #
-# This replaced opus-decoder 0.1.1, which panics on ordinary music. Its CELT
-# anti-collapse mask is a u8 while the block count reaches 16, so `1 << i`
-# overflows for i >= 8: a panic in debug, a silently wrong mask in release. It
-# hit all fourteen tracks of a real-music corpus, most within a second. Even
-# with that fixed it decodes about 30 dB further from libopus than this crate
-# does, and it still ships its author's LLM debug scaffolding in the hot path.
-# tests/fixtures/dense-transients.opus is the regression that catches the
-# panic; tests/fixtures/README.md has the comparison.
+# Chosen over opus-decoder 0.1.1, which panics on ordinary music (a u8 CELT
+# anti-collapse mask overflows at 16 blocks) and decodes ~30 dB further from
+# libopus. tests/fixtures/dense-transients.opus is the regression;
+# tests/fixtures/README.md has the comparison.
 opus-pure = "0.2"
-# The byte transport under the decoder for a remote source (ADR 29): range
-# requests for a seekable file, an endless body for a station. Same client
-# rox-net already uses, so the workspace carries one HTTP stack and one TLS
-# stack rather than two.
-#
-# This is the layering exception ADR 29 records. The rule is that wire calls
-# live in rox-net and run on the background executor; this one can't, because
-# the decode loop pulls bytes out of it synchronously the same way it pulls
-# them out of a File, and rox-net would have to take on symphonia's MediaSource
-# trait to host it. See crates/rox-playback/src/http.rs.
+# Byte transport for remote sources (ADR 29), the same client rox-net uses.
+# This is the layering exception ADR 29 records: the decode loop pulls bytes
+# from it synchronously, like a File. See src/http.rs.
 ureq = "2"
-# Wait-free SPSC ring for the RT boundary (ADR 3), both the sample ring and the PCM tap.
+# Wait-free SPSC ring for the RT boundary (ADR 3): the sample ring and the PCM tap.
 rtrb = "0.3"
-# ADR 19's resampler: windowed sinc from rubato, replacing the linear
-# interpolator the spike shipped with. Sinc path only; the FFT feature and its
-# realfft dependency are off because the ratio never changes mid-track.
-# Measured here at 128 taps and 256x oversampling: resampling 44.1k to 48k
-# stereo costs 0.33% of one core in release, 1.8% in the debug profile, so the
-# decode thread barely feels it and there's no reason to drop to 64 taps.
-# Construction is the expensive half, 1.6 ms release and 3.0 ms debug, because
-# it computes the whole sinc table, so a seek reuses it through
-# `Resampler::reset` instead. Only a real mid-stream rate change builds a new
-# one.
+# ADR 19's resampler, sinc path only (the ratio never changes mid-track).
+# Measured at 128 taps, 256x oversampling, 44.1k to 48k stereo: 0.33% of a
+# core in release, 1.8% in debug. Construction is 1.6 ms release / 3.0 ms
+# debug, so a seek reuses it through `Resampler::reset`.
 rubato = { version = "5", default-features = false }
-# The logging facade: decode and output errors go through log macros the host
-# app's backend (crate::logging in rox) captures. A library only declares the
-# facade, never installs a logger.
+# Libraries only declare the facade; rox_core::logging installs the logger.
 log = "0.4"
-# EBU R128 loudness and true peak for the ReplayGain measurement pass
-# (ADR 19), so a file nobody ever analyzed still gets levelled. Pure Rust
-# port of libebur128, no C to link, and it merges block histories across
-# instances, which is what album gain needs.
+# EBU R128 loudness and true peak for ReplayGain measurement (ADR 19). Pure
+# Rust, and it merges block histories across instances for album gain.
 ebur128 = "0.1.10"
-# The broadcast sink's encoder (ADR 22): MP3 is what every icecast listener
-# and browser plays, and this builds LAME from vendored source, so no
-# system library enters the build. LGPL beside our AGPL is fine.
+# Broadcast sink encoder (ADR 22). Builds LAME from vendored source, so no
+# system library enters the build. LGPL beside AGPL is fine.
 mp3lame-encoder = "0.2"
-# AcoustID's fingerprint (ADR 14), for identifying a track by its sound when
-# the tags say nothing. A port of the reference chromaprint rather than a
-# binding to it, with no build script and no C, so ADR 2's line about the
-# decode path holds here too. What it costs is an FFT the workspace didn't
-# have (rustfft 6, with realfft over it) and a second rubato at 0.16 beside
-# the 5 the engine resamples with, because the fingerprinter resamples to
-# 11025 Hz itself. Two copies of rubato is build time and binary size rather
-# than a conflict, since neither crate's types cross into the other.
+# AcoustID fingerprints (ADR 14). A pure Rust port of chromaprint, no C. It
+# pulls in rustfft and a second rubato (0.16 beside the engine's 5); the two
+# never exchange types, so that costs build time only.
 rusty-chromaprint = "0.3"
-# The icecast source handshake carries Basic auth, and AcoustID's wire form is
-# the compressed fingerprint in URL-safe base64; same 0.22 line the tree
-# already ships.
+# Icecast Basic auth and AcoustID's URL-safe fingerprint encoding.
 base64 = "0.22"
 
-# ADR 19's exclusive backend on Linux. Not a new C dependency: cpal already
-# links libasound here, so this is the same library reached directly instead
-# of through cpal's shared-mode wrapper, which cannot open `hw:` or turn
-# ALSA's own resampling off.
+# ADR 19's exclusive backend on Linux. cpal already links libasound; this
+# reaches it directly because cpal can't open `hw:` or turn ALSA resampling off.
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11"
 
-# The one call that asks macOS how much memory the machine has, which is
-# what the live buffer's ceiling is a share of. Already in the build graph
-# under half the tree's deps, so this only names it to reach the sysctl.
-# See crates/rox-playback/src/memory.rs.
+# sysctl for the machine's memory, which the live buffer ceiling is a share
+# of. Already in the dependency graph. See src/memory.rs.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
-# ADR 19's exclusive backend on Windows. cpal can't do WASAPI exclusive at
-# all, so this reaches the API directly. Same version cpal 0.18 already
-# depends on, so the two share one copy of the bindings instead of compiling
-# a second set. Features are only the modules the backend names: the audio
-# API itself, the KS/multimedia halves that hold WAVE_FORMAT_EXTENSIBLE and
-# the two sample subtypes, COM plus the property store for endpoint names,
-# and the threading/security pair the high-resolution waitable timer needs.
+# ADR 19's exclusive backend on Windows: cpal has no WASAPI exclusive. Same
+# version cpal 0.18 depends on, so the bindings compile once.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61.3", features = [
     "Win32_Devices_FunctionDiscovery",
@@ -124,8 +74,7 @@ windows = { version = "0.61.3", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
-    # GlobalMemoryStatusEx, which is how the live buffer's memory ceiling
-    # learns what the machine has. See crates/rox-playback/src/memory.rs.
+    # GlobalMemoryStatusEx, for the live buffer's memory ceiling.
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",

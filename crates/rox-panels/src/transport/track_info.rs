@@ -1,11 +1,9 @@
 //! The track info readout panel: the playing track's tags as ordered rows
-//! of pieces. The stock arrangement is the classic one-liner, the numbered
-//! title and duration with the byline behind it and the output chip at the
-//! trailing edge; the arrange editor prunes, reorders, and breaks the list
-//! into further rows, each with its own text size, so the same panel spans
-//! a transport strip to a now-playing card. The marquee crawl and the
-//! row cycle handle tight panels: the cycle shows the
-//! arrangement's rows one at a time in a single line, trading on a timer.
+//! of pieces. The stock arrangement is the classic one-liner (numbered
+//! title and duration, the byline behind, the output chip at the trailing
+//! edge); the arrange editor prunes, reorders, and breaks it into rows with
+//! their own text sizes. The marquee crawl and the row cycle handle tight
+//! panels.
 
 use std::time::Instant;
 
@@ -35,54 +33,40 @@ use crate::settings::ui as settings_ui;
 
 use super::transport_panel;
 
-/// One piece of the track line, the arrange editor's unit. The config's
-/// list holds the shown ones in display order. The text pieces compose
-/// into crawlable runs; the chip, art, spacer, and divider hold their own
-/// shape between them.
+/// The text pieces compose into crawlable runs; the chip, art, spacer,
+/// and divider hold their own shape.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InfoPiece {
-    /// The track number, zero-padded the way the classic line writes it.
+    /// Zero-padded the way the classic line writes it.
     TrackNo,
-    /// The title, or the file name for a track the library does not know.
+    /// Or the file name for a track the library doesn't know.
     Title,
-    /// The duration in parens, the classic line's "(2:17)".
+    /// In parens: the classic line's "(2:17)".
     Duration,
     Artist,
     Album,
     Year,
     Genre,
-    /// The codec, stream shape, and bitrate readout, from
-    /// [`group_head::quality`].
+    /// Codec, stream shape, and bitrate, from [`group_head::quality`].
     Quality,
-    /// What plays next off the explicit queue; empty during plain context
-    /// playback, like the queue widgets.
+    /// Off the explicit queue; empty during plain context playback.
     Next,
-    /// How deep the explicit queue stands, as "N queued".
+    /// As "N queued".
     Queued,
-    /// The negotiated-output chip, the retired toggle as a piece: it
-    /// claims its width first and never crawls.
+    /// Claims its width first and never crawls.
     Output,
-    /// The heart over the playing track, the favourite panel's toggle as
-    /// a piece, for the card that puts it in a corner.
     Favourite,
-    /// The stars over the playing track, the same write the rating panel
-    /// and the library's rating column make.
     Rating,
-    /// An inline cover square, one line tall, the header rows' small
-    /// sibling.
     Art,
-    /// A flexible gap that pushes the pieces around it apart; a row holds
-    /// as many as the layout needs.
+    /// A flexible gap; a row holds as many as the layout needs.
     Spacer,
-    /// A spacer that draws a hairline in the border color across its gap.
+    /// A spacer with a hairline across its gap.
     Divider,
-    /// The line break: everything after it drops to the next row.
     Break,
 }
 
-/// The line's full catalog in stock order: what the arrange editor offers,
-/// and where a menu toggle slots a re-shown piece back in.
+/// Stock order: where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
     panel::ArrangeSpec {
         key: "info-item-track-no",
@@ -182,11 +166,9 @@ const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
     },
 ];
 
-/// The classic line, spelled from the retired fixed shape: the numbered
-/// title and duration, the byline behind it, and the chip at the trailing
-/// edge. The spacers go where the retired align knob put the text, so a
-/// layout saved before the pieces became a list keeps its look; `chip`
-/// off leaves the text alone, the retired toggle's read.
+/// The spacers go where the retired align knob put the text, so a layout
+/// from before the list keeps its look; `chip` off is the retired
+/// toggle's read.
 fn stock_items(align: Align, chip: bool) -> Vec<InfoPiece> {
     let mut items = vec![
         InfoPiece::TrackNo,
@@ -207,50 +189,39 @@ fn stock_items(align: Align, chip: bool) -> Vec<InfoPiece> {
     items
 }
 
-/// The track info panel's per-view config: what a saved layout restores,
-/// and what the settings window edits. Deserialization routes through
-/// [`TrackInfoConfigDump`] so layouts from before the line became an
-/// ordered list still read.
+/// Reads through [`TrackInfoConfigDump`] so layouts from before the
+/// ordered list still load.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(from = "TrackInfoConfigDump")]
 pub struct TrackInfoConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
     pub align: Align,
-    /// What a line too long for the panel does; see [`MarqueeMode`].
     #[serde(default)]
     pub marquee: MarqueeMode,
-    /// The crawl's pace for the scroll and loop modes, pixels per second.
+    /// Pixels per second, for scroll and loop.
     #[serde(default = "default_marquee_speed")]
     pub marquee_speed: f32,
-    /// How long the scroll rests at each end before moving again,
-    /// seconds.
+    /// Seconds the scroll rests at each end.
     #[serde(default = "default_marquee_delay")]
     pub marquee_delay: f32,
-    /// Cycle the arrangement's rows through a single line, one at a time
-    /// with a fade between turns, so a tight strip shows a whole card's
-    /// worth of rows. A single-row arrangement has nothing to trade and
-    /// reads as itself. Independent of the marquee: the shown row still
-    /// crawls if it overflows.
+    /// Cycle the rows through a single line with a fade between turns. A
+    /// single-row arrangement reads as itself; the shown row still crawls if
+    /// it overflows.
     #[serde(default)]
     pub swap: bool,
-    /// How long each row stays fully shown before the fade, seconds.
+    /// Seconds each row stays fully shown before the fade.
     #[serde(default = "default_swap_secs")]
     pub swap_secs: f32,
-    /// Let the chip take the banner's tone colors when the output isn't
-    /// clean, or hold the muted text color whatever the state. Off suits a
-    /// transport line that needs one flat tone; the hover note still says
-    /// what's going on.
+    /// Off holds the muted color whatever the state, for a transport line
+    /// that needs one flat tone; the hover note still explains.
     #[serde(default = "default_output_tint")]
     pub output_tint: bool,
-    /// The shown pieces in display order; one not listed is hidden.
+    /// Display order; one not listed is hidden.
     pub items: Vec<InfoPiece>,
-    /// Each row's text size as a multiplier over the panel's base, indexed
-    /// like the editor's rows; a row past the list's end reads 1. What
-    /// lets a card's title line tower over its byline.
+    /// Per-row multiplier over the panel's base, indexed like the editor's
+    /// rows; a row past the end reads 1.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scales: Vec<f32>,
 }
@@ -272,9 +243,8 @@ impl Default for TrackInfoConfig {
     }
 }
 
-/// The dump shape [`TrackInfoConfig`] deserializes through: the ordered
-/// list newer layouts write, or the retired `show_output` toggle that was
-/// the chip's whole story.
+/// Newer layouts write the ordered list. Older ones had a `show_output`
+/// toggle for the chip.
 #[derive(Deserialize)]
 struct TrackInfoConfigDump {
     #[serde(flatten)]
@@ -304,19 +274,16 @@ struct TrackInfoConfigDump {
 impl From<TrackInfoConfigDump> for TrackInfoConfig {
     fn from(dump: TrackInfoConfigDump) -> Self {
         let items = match dump.items {
-            // Deduped row by row, the breaks put back after: the catalog
-            // doesn't include the break (it draws as the editor's row
-            // boundary, not a chip), and each row may hold its own copy
-            // of a piece.
+            // Deduped per row: the catalog has no break (it's the editor's row
+            // boundary), and each row may hold its own copy of a piece.
             Some(items) => items
                 .split(|i| matches!(i, InfoPiece::Break))
                 .map(|row| panel::dedup(ITEMS, row.to_vec()))
                 .collect::<Vec<_>>()
                 .join(&InfoPiece::Break),
-            // The retired fixed panel swapped its heading against its
-            // byline; the cycle trades rows, so the fold splits the
-            // classic line into those two rows, the chip on both so
-            // it never blinks out with a side.
+            // The retired panel swapped heading against byline, so the fold splits
+            // the classic line into those two rows, the chip on both so it never
+            // blinks out.
             None if dump.swap => {
                 let mut rows = vec![
                     vec![InfoPiece::TrackNo, InfoPiece::Title, InfoPiece::Duration],
@@ -347,9 +314,8 @@ impl From<TrackInfoConfigDump> for TrackInfoConfig {
     }
 }
 
-/// The chip's hover note: why it's colored, in words rather than a legend
-/// nobody would find. Only ever built for the two states that earn a color,
-/// so a plain chip has no tooltip at all.
+/// Only built for the two states that earn a color, so a plain chip has
+/// no tooltip.
 struct OutputTooltip(SharedString);
 
 impl Render for OutputTooltip {
@@ -368,93 +334,75 @@ impl Render for OutputTooltip {
     }
 }
 
-/// What a text run does when it outgrows the panel.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MarqueeMode {
-    /// Cut the line off where the room runs out.
     #[default]
     Off,
-    /// Crawl to the end, rest, crawl back, rest, repeat.
+    /// Crawl to the end, rest, crawl back, rest.
     Scroll,
-    /// Crawl one way without end, the line chasing its own tail.
+    /// Crawl one way without end.
     Loop,
 }
 
-/// The crawl speed range the settings slider spans, pixels per second.
 const MARQUEE_SPEED_MIN: f32 = 10.0;
 const MARQUEE_SPEED_MAX: f32 = 120.0;
 
-/// The default crawl pace, a comfortable read.
 fn default_marquee_speed() -> f32 {
     30.0
 }
 
-/// The swap dwell range the settings slider spans, seconds.
 const SWAP_SECS_MIN: f32 = 1.0;
 const SWAP_SECS_MAX: f32 = 15.0;
 
-/// The default dwell, long enough to read either piece.
 fn default_swap_secs() -> f32 {
     4.0
 }
 
-/// The end-rest range the settings slider spans, seconds.
 const MARQUEE_DELAY_MIN: f32 = 0.0;
 const MARQUEE_DELAY_MAX: f32 = 10.0;
 
-/// The chip is on unless a layout turns it off. Legacy-only; new layouts
-/// list the chip as a piece.
+/// Legacy-only; new layouts list the chip as a piece.
 fn default_show_output() -> bool {
     true
 }
 
-/// The chip colors itself unless a layout asks it not to.
 fn default_output_tint() -> bool {
     true
 }
 
-/// The default rest at each end of a scroll, a beat to read the edge.
 fn default_marquee_delay() -> f32 {
     2.0
 }
-/// The gap between the line's two copies in loop mode, the breather
-/// between a tail and the next head.
+/// The breather between a tail and the next head in loop mode.
 const MARQUEE_GAP: f32 = 48.0;
-/// The swap fade's length, going out and coming in.
 const SWAP_FADE_SECS: f32 = 0.4;
 
-/// The per-row text scale range the settings sliders span, over the
-/// panel's base size.
 const ROW_SCALE_MIN: f32 = 0.5;
 const ROW_SCALE_MAX: f32 = 3.0;
 
-/// A text run's crawl state while the marquee setting is on, one per run
-/// on the panel. The scroll handle owns the clipping and reports the
-/// overflow off the last layout; the rest drives the offset through it,
-/// one leg at a time.
+/// The scroll handle owns the clipping and reports the overflow off the
+/// last layout; the rest drives the offset one leg at a time.
 struct MarqueeScroll {
     handle: ScrollHandle,
-    /// How far the line is left of home, in pixels.
+    /// Pixels left of home.
     offset: f32,
     /// The scroll crawl's direction: 1 heading out, -1 heading home.
     dir: f32,
     /// Time left resting at an end before the next leg starts.
     hold: f32,
-    /// The configured rest at each end, mirrored off the panel config by
-    /// the body each frame so the crawl state can refill `hold` itself.
+    /// Mirrored off the config each frame so the crawl can refill `hold`
+    /// itself.
     delay: f32,
-    /// The last frame's clock, for the per-frame step.
     last_tick: Instant,
-    /// Loop mode's verdict off the last layout: whether one copy alone
-    /// overflows, so the line renders doubled and wraps.
+    /// Whether one copy alone overflows, so the line renders doubled and
+    /// wraps.
     looping: bool,
-    /// Whether the row cycle is driving this run's crawl this frame. The body
-    /// sets it; the crawl reads it to decide between bouncing back and
-    /// parking at the end.
+    /// Set by the body. Under the cycle the crawl parks at the end instead
+    /// of bouncing back.
     cycling: bool,
-    /// The scroll-mode handshake: the crawl finished its trip out and the
-    /// cycle may fade the row away.
+    /// Scroll mode's handshake: the trip out is done and the cycle may fade
+    /// the row.
     crawl_done: bool,
 }
 
@@ -473,8 +421,6 @@ impl MarqueeScroll {
         }
     }
 
-    /// Back home, resting: for a fresh row coming in, and for a track or
-    /// mode change starting the crawl over.
     fn reset(&mut self) {
         self.offset = 0.0;
         self.dir = 1.0;
@@ -484,12 +430,9 @@ impl MarqueeScroll {
         self.crawl_done = false;
     }
 
-    /// One frame of the scroll crawl: run the rest down, then step along
-    /// the current leg. Without `park` it turns around with a fresh rest
-    /// at each end; with it (the row cycle driving the crawl) it stays put
-    /// once it has crawled out and rested, raising `crawl_done` for the
-    /// cycle to fade the row away. The step clamps so a stalled frame
-    /// never teleports the line.
+    /// Without `park` it turns around at each end. With it (the row cycle
+    /// driving) it stays put once out and rested and raises `crawl_done`. The
+    /// step clamps so a stalled frame never teleports the line.
     fn advance(&mut self, overflow: f32, speed: f32, park: bool) {
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
@@ -515,9 +458,8 @@ impl MarqueeScroll {
         }
     }
 
-    /// One frame of the endless crawl: step left at the pace, wrapping
-    /// once a full copy and its gap have gone by, so the doubled line
-    /// reads as one unbroken loop.
+    /// Wraps once a full copy and its gap have gone by, so the doubled line
+    /// reads as one loop.
     fn advance_loop(&mut self, period: f32, speed: f32) {
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
@@ -528,9 +470,6 @@ impl MarqueeScroll {
     }
 }
 
-/// The row cycle's state while the cycle setting shows one row at a
-/// time: which of the shown rows is up, when its turn started, and the
-/// fade-out clock once the row has said its piece.
 struct RowCycle {
     ix: usize,
     at: Instant,
@@ -551,9 +490,7 @@ impl RowCycle {
     }
 }
 
-/// The text pieces resolved for the playing track, each None when its
-/// field is empty so the piece drops out of the line the way the header
-/// pieces do.
+/// Each None when its field is empty, so the piece drops out of the line.
 struct PieceTexts {
     trackno: Option<String>,
     title: Option<String>,
@@ -567,33 +504,23 @@ struct PieceTexts {
     queued: Option<String>,
 }
 
-/// One row's render plan: the crawlable text runs between the fixed
-/// pieces, in piece order.
 enum RowBit {
-    /// A contiguous stretch of text pieces composed into colored
-    /// segments: the text and whether it's muted.
+    /// Segments of text and whether each is muted.
     Run(Vec<(String, bool)>),
-    /// A piece that holds its own shape outside the crawl.
     Fixed(InfoPiece),
-    /// The source mark: a station's or a server's glyph, at the end of
-    /// the row whose text names where the track came from. Outside the
-    /// crawl so it holds its place while the line scrolls past it.
+    /// A station's or a server's glyph, outside the crawl so it holds its
+    /// place while the line scrolls.
     Glyph(&'static str),
 }
 
-/// Compose one row's pieces into its runs and fixed pieces. Same-color
-/// neighbors read as one phrase: bright pieces join with a space, the
-/// classic "05. Title (2:17)", muted ones with the byline's " - ". A
-/// piece whose field is empty just drops out of the line.
+/// Same-color neighbors read as one phrase: bright ones join with a space,
+/// "05. Title (2:17)", muted ones with the byline's " - ". An empty field
+/// drops out.
 ///
-/// `glyph` names the piece that decides which row wears the source mark
-/// and the icon to draw, None for a local track. The mark goes after that
-/// row's last run rather than beside the piece itself: a crawl scrolls a
-/// whole run as one box, so a mark dropped into the middle of a line
-/// splits it into two runs that then crawl on their own clocks, the song
-/// sliding one way while the station sits still beside it. Behind the
-/// line there is nothing to split, and the words start at the row's edge
-/// where the eye already goes for them.
+/// `glyph` names the piece whose row wears the source mark, None for a
+/// local track. The mark goes after that row's last run: a crawl scrolls a
+/// run as one box, so a mark mid-line would split it into two runs
+/// crawling on their own clocks.
 fn row_bits(
     pieces: &[InfoPiece],
     texts: &PieceTexts,
@@ -601,8 +528,7 @@ fn row_bits(
 ) -> Vec<RowBit> {
     let mut bits = Vec::new();
     let mut run: Vec<(String, bool)> = Vec::new();
-    // Whether this row draws the piece the mark belongs to. Only that row
-    // gets one, so a two-row arrangement doesn't wear two.
+    // Only the row with the marked piece gets one.
     let mut marked = false;
     for piece in pieces {
         let text = match piece {
@@ -649,9 +575,8 @@ fn row_bits(
         bits.push(RowBit::Run(run));
     }
 
-    // Behind the last run, so the mark trails the words it belongs to and
-    // anything the arrangement put after the text (the chip, a spacer)
-    // keeps its own place at the row's far edge.
+    // Behind the last run, so anything after the text (the chip, a spacer)
+    // keeps its place at the far edge.
     if let Some((_, path)) = glyph
         && marked
         && let Some(at) = bits.iter().rposition(|bit| matches!(bit, RowBit::Run(_)))
@@ -662,9 +587,7 @@ fn row_bits(
     bits
 }
 
-/// The config's list cut at the break into one piece list per row, kept
-/// as the editor shows them, empty rows included, so the per-row scales
-/// stay indexed the same on both sides.
+/// Empty rows kept, so the per-row scales stay indexed like the editor's.
 fn editor_rows(items: &[InfoPiece]) -> Vec<Vec<InfoPiece>> {
     items
         .split(|i| matches!(i, InfoPiece::Break))
@@ -672,48 +595,33 @@ fn editor_rows(items: &[InfoPiece]) -> Vec<Vec<InfoPiece>> {
         .collect()
 }
 
-/// The track info readout the playback panel's status line grew into: the
-/// playing track's tags from the library composed per the config's rows,
-/// with the session errors and the idle message in their place while
-/// nothing shows.
+/// The session errors and the idle message stand in while nothing shows.
 pub struct TrackInfoPanel {
     state: AppState,
     config: TrackInfoConfig,
-    /// The playing path's tags, or None for a file the library does not
-    /// know. Cached because the pump notifies every frame and the lookup is
-    /// a database query; cleared when the track or the catalog changes.
-    /// The station-title revision sits beside them, so a stream's turnover
-    /// re-resolves the line the way a track change does.
+    /// None for a file the library doesn't know. Cached because the pump
+    /// notifies every frame and the lookup is a query. The station-title
+    /// revision rides along, so a stream's turnover re-resolves like a track
+    /// change.
     meta: Option<(TrackKey, u64, Option<rox_library::store::TrackMeta>)>,
-    /// The explicit queue's readouts keyed on its revision: the depth and
-    /// what plays next. The snapshot pass and the library lookup only
-    /// rerun when the queue actually moves.
+    /// Keyed on the queue revision, so the snapshot pass and the lookup only
+    /// rerun when the queue moves.
     queue_info: Option<(u64, usize, Option<String>)>,
-    /// The playing track's id and favourite state for the heart piece,
-    /// cached like the tags; cleared when the catalog or the playlists
-    /// move.
+    /// Cached like the tags; cleared when the catalog or the playlists move.
     favourite: Option<(TrackKey, Option<i64>, bool)>,
-    /// The crawl states, one per text run on the panel, in row order;
-    /// rebuilt when the arrangement changes shape.
+    /// One per text run, in row order; rebuilt when the arrangement changes
+    /// shape.
     marquees: Vec<MarqueeScroll>,
-    /// Which row is up while the cycle setting trades them, and where its
-    /// turn stands.
     cycle: RowCycle,
-    /// The track the crawls belong to; a track change starts them over.
+    /// A track change starts the crawls over.
     marquee_key: Option<TrackKey>,
-    /// The settings page's speed slider strip.
     speed_scrub: ScrubState,
-    /// The settings page's end-rest delay slider strip.
     delay_scrub: ScrubState,
-    /// The settings page's swap dwell slider strip.
     swap_scrub: ScrubState,
-    /// The settings page's per-row size slider strips, grown to the row
-    /// count as the page builds.
+    /// Grown to the row count as the page builds.
     scale_scrubs: Vec<ScrubState>,
-    /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _library_changed: Subscription,
@@ -721,21 +629,19 @@ pub struct TrackInfoPanel {
 
 impl TrackInfoPanel {
     pub fn new(state: AppState, config: TrackInfoConfig, cx: &mut Context<Self>) -> Self {
-        // The track line changes when the track does, not as it plays
-        // through, so the gated observe skips the per-tick repaints.
+        // The line changes with the track, not as it plays, so the gated observe
+        // skips per-tick repaints.
         let _player_changed = observe_view(&state.player, cx);
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                // A favourites toggle here or on any other surface moves
-                // the heart; the tags stand.
+                // A favourites toggle anywhere moves the heart; the tags stand.
                 if matches!(event, LibraryEvent::PlaylistsChanged) {
                     this.favourite = None;
                     cx.notify();
                     return;
                 }
-                // A star click moves the rating, which is held in the tags
-                // cache; re-resolve it, nothing else changed.
+                // A star click moves the rating, which the tags cache holds.
                 if matches!(event, LibraryEvent::Rated) {
                     this.meta = None;
                     cx.notify();
@@ -771,23 +677,19 @@ impl TrackInfoPanel {
         }
     }
 
-    /// What the line does when it doesn't fit, the one knob worth
-    /// flipping without opening settings. Everything else stays on the
-    /// settings page: the pieces are the arrange editor's, and a context
-    /// menu with every knob in it is just a worse settings page.
+    /// The one knob worth flipping without opening settings: a context menu
+    /// with every knob is a worse settings page.
     ///
-    /// Flat checked items rather than a submenu: a plain
-    /// `.checked()` only refreshes at the top level, and a nested flyout
-    /// would show a stale tick until it was reopened.
+    /// Flat checked items rather than a submenu: a nested `.checked()` shows a
+    /// stale tick until it's reopened.
     fn config_menu(
         &self,
         menu: PopupMenu,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // Copy reads the playing track when its entry is clicked, not when
-        // the menu opens, so a track change under an open menu copies what
-        // is actually playing.
+        // Copy reads the track when clicked, not when the menu opens, so a
+        // track change under an open menu copies what's playing.
         let state = self.state.clone();
         let menu = panel::copy_submenu(
             menu,
@@ -817,9 +719,7 @@ impl TrackInfoPanel {
                         let Some(this) = weak.upgrade() else { return };
                         this.update(cx, |this, cx| {
                             this.config.marquee = mode;
-                            // A mode change leaves the crawls mid-trip, and
-                            // the offsets they're holding mean nothing to
-                            // the mode arriving.
+                            // The crawls' offsets mean nothing to the arriving mode.
                             this.reset_marquees();
                             cx.notify();
                         });
@@ -829,8 +729,6 @@ impl TrackInfoPanel {
         menu
     }
 
-    /// Every run's crawl back home and the row cycle to its first row,
-    /// for a track or mode change.
     fn reset_marquees(&mut self) {
         for marquee in &mut self.marquees {
             marquee.reset();
@@ -838,14 +736,10 @@ impl TrackInfoPanel {
         self.cycle.reset();
     }
 
-    /// One frame of the row cycle: fade in, hold while the shown row says
-    /// its piece, fade out, then the next row comes in with its crawls
-    /// back home. The hold is the dwell timer, except under scroll mode,
-    /// where the row's crawls run the clock instead: every overflowing
-    /// run has to crawl out and rest (a fitting run counts done once the
-    /// dwell passes) before the fade-out starts. Hands back the shown
-    /// row's index into the render plans and its fade. The cycle never
-    /// settles, so it keeps its own frames running.
+    /// Fade in, hold, fade out, then the next row comes in with its crawls
+    /// home. Under scroll mode the crawls run the clock: every overflowing run
+    /// crawls out and rests before the fade-out. Returns the shown row's index
+    /// and fade. The cycle never settles, so it keeps its own frames running.
     fn advance_cycle(
         &mut self,
         mode: MarqueeMode,
@@ -855,8 +749,7 @@ impl TrackInfoPanel {
     ) -> (usize, f32) {
         window.request_animation_frame();
         let smooth = |u: f32| u * u * (3.0 - 2.0 * u);
-        // An arrangement edit can shrink the row list under a standing
-        // cycle; landing back on the first row beats indexing past the end.
+        // An arrangement edit can shrink the row list under a standing cycle.
         if self.cycle.ix >= row_runs.len() {
             self.cycle.reset();
         }
@@ -895,32 +788,26 @@ impl TrackInfoPanel {
         (self.cycle.ix, smooth((t / SWAP_FADE_SECS).min(1.0)))
     }
 
-    /// Store the crawl pace, pixels per second.
     fn set_marquee_speed(&mut self, speed: f32, cx: &mut Context<Self>) {
         self.config.marquee_speed = speed;
         cx.notify();
     }
 
-    /// Store the end rest, seconds.
     fn set_marquee_delay(&mut self, delay: f32, cx: &mut Context<Self>) {
         self.config.marquee_delay = delay;
         cx.notify();
     }
 
-    /// Store the swap dwell, seconds.
     fn set_swap_secs(&mut self, secs: f32, cx: &mut Context<Self>) {
         self.config.swap_secs = secs;
         cx.notify();
     }
 
-    /// The playing track's tags, from the cache or one lookup on a miss.
     /// Keyed on the whole track, so two cue tracks of one image don't both
-    /// draw whichever of them the library sorts first.
+    /// draw whichever the library sorts first.
     fn meta_for(&mut self, key: &TrackKey, cx: &App) -> Option<&rox_library::store::TrackMeta> {
-        // A station keeps one key for hours and turns its song over
-        // underneath, so the revision is part of what makes the cache
-        // stale. It moves once a song, which is the rate the lookup then
-        // runs at.
+        // A station keeps one key for hours, so the title revision is part of
+        // staleness; the lookup runs once per song.
         let live_rev = self.state.player.read(cx).title_rev().unwrap_or(0);
         let stale = match self.meta.as_ref() {
             Some((cached, rev, _)) => cached != key || *rev != live_rev,
@@ -936,8 +823,6 @@ impl TrackInfoPanel {
         self.meta.as_ref().and_then(|(.., meta)| meta.as_ref())
     }
 
-    /// The explicit queue's depth and next line, from the cache or one
-    /// snapshot pass when the revision moved.
     fn queue_info(&mut self, cx: &App) -> (usize, Option<String>) {
         let player = self.state.player.read(cx);
         let rev = player.queue_rev().unwrap_or(0);
@@ -965,8 +850,6 @@ impl TrackInfoPanel {
         (*count, next.clone())
     }
 
-    /// The playing track's id and favourite state, from the cache or one
-    /// lookup on a track change, the favourite panel's read.
     fn favourite_for(&mut self, key: &TrackKey, cx: &App) -> (Option<i64>, bool) {
         if self.favourite.as_ref().map(|(k, ..)| k) != Some(key) {
             let library = self.state.library.read(cx);
@@ -979,10 +862,8 @@ impl TrackInfoPanel {
             .map_or((None, false), |(_, id, on)| (*id, *on))
     }
 
-    /// One heart piece: filled and accented while the playing track is
-    /// in the favourites, dimmed while nothing resolves, a click running
-    /// the same toggle the favourite panel and the library's heart column
-    /// run. Scaled with its row, so a title-row heart holds the line.
+    /// A click runs the favourite panel's toggle. Scaled with its row, so a
+    /// title-row heart holds the line.
     fn favourite_heart(
         &self,
         id: Option<i64>,
@@ -1018,8 +899,7 @@ impl TrackInfoPanel {
                                 palette::text_faint()
                             }),
                     )
-                    // Nothing to favourite: the heart stays up, dimmed and
-                    // dead, so the piece holds its place in the row.
+                    // Stays up dimmed so the piece holds its place in the row.
                     .when(id.is_none(), |d| d.opacity(0.4))
                     .when_some(id, |d, id| {
                         d.cursor_pointer()
@@ -1037,14 +917,12 @@ impl TrackInfoPanel {
             .into_any_element()
     }
 
-    /// One stars piece: the rating panel's control in the row, the same
-    /// write the library's rating column makes, so a star set here shows
-    /// everywhere else. The stars keep their stock size whatever the
-    /// row's text scale, like every other rating surface.
+    /// The stars keep their stock size whatever the row's scale, like every
+    /// other rating surface.
     fn rating_stars(&self, id: Option<i64>, value: u8, _cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.clone();
-        // Keyed by the shown track so the hover preview matches every
-        // other surface rating the same track.
+        // Keyed by the shown track so the hover preview matches every other
+        // surface rating it.
         let key = id.unwrap_or(-1) as u64;
         let control = crate::rating_ui::control(key, value, move |rating, _, cx| {
             let Some(id) = id else { return };
@@ -1056,8 +934,7 @@ impl TrackInfoPanel {
             .flex_none()
             .flex()
             .items_center()
-            // Nothing to rate: the stars stay up, dimmed, so the piece
-            // holds its place in the row.
+            // Stays up dimmed so the piece holds its place in the row.
             .when(id.is_none(), |d| d.opacity(0.4))
             .child(control)
             .into_any_element()
@@ -1107,8 +984,7 @@ impl PanelSettings for TrackInfoPanel {
             },
             cx,
         );
-        // One size slider per row, under the row's editor-side number; a
-        // single-row line just calls it the text size.
+        // A single-row line just calls it the text size.
         let sizes: Vec<AnyElement> = (0..rows.len())
             .map(|ix| {
                 let label = if rows.len() == 1 {
@@ -1280,26 +1156,18 @@ impl PanelSettings for TrackInfoPanel {
 impl Render for TrackInfoPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
 }
 
 impl TrackInfoPanel {
-    /// The output chip: what the device settled on, short enough to fit at
-    /// the end of a transport line. Muted while nothing is being converted,
-    /// taking the banner's tone colors when something is, or a muted alert
-    /// face in their place when the tint is off, so a glance says whether
-    /// what's playing is what the file holds. None when no stream has
-    /// negotiated yet. `ix` keeps two chips across rows apart for gpui.
+    /// Muted while nothing converts, the banner's tone colors when something
+    /// does, or a muted alert face with the tint off. None before a stream
+    /// negotiates. `ix` keeps two chips apart for gpui.
     ///
-    /// `live` says the thing being converted is a station rather than a
-    /// file, which only the tooltip's wording cares about: telling someone
-    /// what "this file" is doing while they listen to radio reads as the
-    /// readout talking about some other track.
+    /// `live` only changes the tooltip's wording: "this file" reads wrong
+    /// while someone listens to radio.
     fn output_chip(&self, ix: usize, live: bool, cx: &App) -> Option<Stateful<Div>> {
         let status = self.state.player.read(cx).output_status()?;
         let negotiated = &status.negotiated;
@@ -1307,10 +1175,9 @@ impl TrackInfoPanel {
         let resampling = status
             .source_rate
             .is_some_and(|source| source != negotiated.sample_rate);
-        // Shared output is the normal state, so it says nothing and colors
-        // nothing: a chip that's always lit stops being a signal. The two
-        // things worth interrupting for are a mode that was asked for and
-        // refused, and a conversion happening that didn't have to.
+        // Shared output is normal and colors nothing: a chip that's always lit
+        // stops being a signal. The two states worth flagging are a refused mode
+        // and an unneeded conversion.
         let (color, why): (Rgba, Option<SharedString>) = if let Some(reason) = &negotiated.fallback
         {
             (
@@ -1323,14 +1190,10 @@ impl TrackInfoPanel {
         } else if resampling {
             let source = group_head::khz(status.source_rate.unwrap_or_default());
             let device = group_head::khz(negotiated.sample_rate);
-            // Exclusive resamples too when the card won't take the file's
-            // rate, and that's the case worth saying out loud: the toggle is
-            // on, the claim went through, and it still isn't the file's own
-            // samples.
-            //
-            // A station is the same story about something that was never a
-            // file, so it gets the same two sentences about a stream. The
-            // wording is the whole difference.
+            // Exclusive resamples too when the card won't take the file's rate, and
+            // that's worth saying: the claim went through and it still isn't the
+            // file's own samples. A station gets the same two sentences about a
+            // stream.
             (
                 palette::tone_warn(),
                 Some(match (exclusive, live) {
@@ -1359,20 +1222,17 @@ impl TrackInfoPanel {
         } else {
             (palette::text_muted(), None)
         };
-        // The face stands in for the tint rather than doubling it: with the
-        // color on it would say the same thing twice, so it only turns up in
-        // the two flagged states once the chip has gone flat.
+        // The face stands in for the tint and only shows in the two flagged
+        // states once the chip is flat.
         let face = why.is_some() && !self.config.output_tint;
         let color = if self.config.output_tint {
             color
         } else {
             palette::text_muted()
         };
-        // "Shared" is every desktop's default and says nothing new;
-        // "Exclusive" is worth the two words because it's the state someone
-        // went looking for.
-        // The rate goes through the same speller the library column and the
-        // metadata field use, so one card reads the same everywhere.
+        // "Shared" is every desktop's default and goes unsaid; "Exclusive" is
+        // the state someone went looking for. The rate goes through the library
+        // column's speller.
         let label = format!(
             "{}{} kHz {}",
             if exclusive { "Exclusive " } else { "" },
@@ -1382,9 +1242,8 @@ impl TrackInfoPanel {
         Some(
             div()
                 .id(("output-chip", ix))
-                // flex_none is the whole point: the chip claims its width
-                // first and the line crawls in whatever is left, so it never
-                // moves with the marquee.
+                // The chip claims its width first and the line crawls in what's left,
+                // so it never moves with the marquee.
                 .flex_none()
                 .flex()
                 .flex_row()
@@ -1442,14 +1301,10 @@ impl TrackInfoPanel {
             .justify_center();
 
         let Some(now) = now else {
-            // Nothing to describe: a session still opening, or the reason
-            // there's nothing to hear. Plain idle stays blank, the chip
-            // still reporting if the arrangement has one.
-            //
-            // A reason outranks the wait. A session whose every entry was
-            // refused is still a session, so the wait alone would sit on
-            // "opening..." for as long as the queue lasted and the only
-            // account of what happened would be in the log.
+            // A session still opening, or the reason there's nothing to hear. Plain
+            // idle stays blank. A reason outranks the wait: a session whose every
+            // entry was refused would otherwise sit on "opening..." with the only
+            // account in the log.
             let line: Option<SharedString> = match error {
                 Some(error) => Some(error),
                 None if active => Some(rox_i18n::t!("track-info-opening")),
@@ -1486,16 +1341,14 @@ impl TrackInfoPanel {
             );
         };
 
-        // A fresh track starts every cycle over: crawls home, swaps back
-        // to their headings.
+        // A fresh track starts every cycle over.
         if self.marquee_key.as_ref() != Some(&now.key) {
             self.marquee_key = Some(now.key.clone());
             self.reset_marquees();
         }
 
-        // An untagged file still shows something: its file name for the
-        // title, no byline. The lookup borrow ends here; the texts own
-        // their strings so the crawl states below can borrow freely.
+        // The texts own their strings so the crawl states below can borrow
+        // freely.
         let meta = self.meta_for(&now.key, cx);
         let rating_value = meta.map(|m| m.rating).unwrap_or(0);
         let title = meta.map(|m| m.title.clone()).unwrap_or_default();
@@ -1503,8 +1356,8 @@ impl TrackInfoPanel {
             now.path()
                 .and_then(|path| path.file_stem())
                 .map(|s| s.to_string_lossy().into_owned())
-                // No file behind it, so the key's own reference is the only
-                // name there is until the source hands tags over.
+                // No file behind it: the key's own reference is the only name until the
+                // source hands tags over.
                 .unwrap_or_else(|| now.key.path.display().to_string())
         } else {
             title
@@ -1546,12 +1399,9 @@ impl TrackInfoPanel {
             texts.queued = (count > 0)
                 .then(|| rox_i18n::t!("track-info-queued-count", count = count as u64).to_string());
         }
-        // The inline art resolves only when a row includes the piece, the
-        // header lines' rule; the thumb cache does the caching.
-        // A station has no file to pull embedded art out of, so the picture
-        // comes from the same place the backdrop's does: the song on air
-        // where the lookup found a cover for it, the station's own logo
-        // otherwise.
+        // Resolves only when a row includes the piece. A station has no file to
+        // take art from, so it uses the backdrop's source: the song's cover if
+        // the lookup found one, the station logo otherwise.
         let thumb: Option<Thumb> = items.contains(&InfoPiece::Art).then(|| match now.path() {
             Some(path) => {
                 let path = path.to_path_buf();
@@ -1565,8 +1415,8 @@ impl TrackInfoPanel {
                 None => Thumb::Missing,
             },
         });
-        // The chips build ahead of the row loop, one per occurrence, so
-        // the loop below can hold the crawl states mutably.
+        // Built ahead of the row loop so the loop can hold the crawl states
+        // mutably.
         let chips: Vec<Option<Stateful<Div>>> = (0..items
             .iter()
             .filter(|i| matches!(i, InfoPiece::Output))
@@ -1574,11 +1424,9 @@ impl TrackInfoPanel {
             .map(|ix| self.output_chip(ix, now.live, cx))
             .collect();
 
-        // The source mark, for a track that didn't come off disk. It leads
-        // whichever piece names where the track is from: the album, which
-        // for a station holds its own name once the overlay has run, and
-        // the title before the first announcement, when the row's title is
-        // still the station and there is no album to lead.
+        // Marks the piece that names the source: the album, which holds a
+        // station's name once the overlay has run, or the title before the first
+        // announcement.
         let glyph = match now.origin {
             Origin::Local => None,
             Origin::Radio => Some(icons::RADIO),
@@ -1589,9 +1437,8 @@ impl TrackInfoPanel {
             false => (InfoPiece::Title, path),
         });
 
-        // The rows keep their editor indices so the scales line up even
-        // past an empty row, and each row's plan splits into crawlable
-        // runs and the fixed pieces between them.
+        // Rows keep their editor indices so the scales line up past an empty
+        // row.
         let mut plans: Vec<(usize, Vec<RowBit>)> = editor_rows(&items)
             .iter()
             .enumerate()
@@ -1607,8 +1454,8 @@ impl TrackInfoPanel {
                 _ => bits.push(RowBit::Run(vec![note])),
             }
         }
-        // Each row's slice of the crawl states, so the cycle can read and
-        // reset one row's runs by index.
+        // Each row's slice of the crawl states, so the cycle can reset one
+        // row's runs.
         let mut row_runs: Vec<std::ops::Range<usize>> = Vec::with_capacity(plans.len());
         let mut runs = 0usize;
         for (_, bits) in &plans {
@@ -1620,9 +1467,7 @@ impl TrackInfoPanel {
             self.marquees.resize_with(runs, MarqueeScroll::new);
         }
 
-        // The row cycle: the arrangement's rows take turns in a single
-        // line, so a tight strip shows a whole card's worth. Live only
-        // with something to trade; a lone row reads as itself.
+        // Live only with something to trade.
         let cycling = swap && plans.len() > 1;
         let (active, cycle_fade) = if cycling {
             self.advance_cycle(mode, dwell, &row_runs, window)
@@ -1630,9 +1475,7 @@ impl TrackInfoPanel {
             (0, 1.0)
         };
 
-        // The hearts build ahead like the chips, one per occurrence at
-        // its row's scale, so the row loop below can hold the crawl
-        // states mutably.
+        // Built ahead like the chips, at their row's scale.
         let mut hearts: Vec<AnyElement> = Vec::new();
         if items.contains(&InfoPiece::Favourite) {
             let (fav_id, fav_on) = self.favourite_for(&now.key, cx);
@@ -1655,8 +1498,7 @@ impl TrackInfoPanel {
                 .collect();
         }
         let mut heart_iter = hearts.into_iter();
-        // The stars the same way; the id comes off the heart's resolve,
-        // the value off the tags cache.
+        // The id comes off the heart's resolve, the value off the tags cache.
         let mut stars: Vec<AnyElement> = Vec::new();
         if items.contains(&InfoPiece::Rating) {
             let (rating_id, _) = self.favourite_for(&now.key, cx);
@@ -1676,10 +1518,8 @@ impl TrackInfoPanel {
         let mut run_ix = 0usize;
         let mut rows: Vec<Div> = Vec::new();
         for (row_ord, (scale_ix, bits)) in plans.into_iter().enumerate() {
-            // A row waiting its turn in the cycle renders nothing, but
-            // its runs and fixed pieces still count past, so the crawl
-            // states and the prebuilt elements stay lined up with their
-            // rows.
+            // A row waiting its turn renders nothing but still counts its bits past,
+            // so the crawl states and prebuilt elements stay lined up.
             if cycling && row_ord != active {
                 for bit in bits {
                     match bit {
@@ -1710,14 +1550,13 @@ impl TrackInfoPanel {
                 .map(|d| justify(d, align))
                 .gap(tokens::SPACE_SM)
                 .px(tokens::SPACE_MD);
-            // A stored 1 reads as follow-panel, like the theme's own font
-            // scale, so the stock line never forces a size of its own.
+            // A stored 1 reads as follow-panel, so the stock line never forces a
+            // size.
             if (scale - 1.0).abs() > 0.001 {
                 row = row.text_size(rems(scale));
             }
-            // The shown row takes the cycle's fade whole, pieces and all,
-            // so a chip or a heart trades with its row instead of sitting
-            // over the crossfade.
+            // The shown row takes the cycle's fade whole, so a chip or a heart
+            // trades with its row.
             if cycle_fade < 1.0 {
                 row = row.opacity(cycle_fade);
             }
@@ -1729,8 +1568,8 @@ impl TrackInfoPanel {
                         // Mirror the configured rest before anything
                         // refills a hold this frame.
                         marquee.delay = delay;
-                        // Under the cycle the crawl parks at the end and
-                        // hands over instead of bouncing home.
+                        // Under the cycle the crawl parks at the end and hands over instead of
+                        // bouncing home.
                         marquee.cycling = cycling;
                         row = row.child(match mode {
                             MarqueeMode::Off => run_line(&segments).into_any_element(),
@@ -1757,13 +1596,10 @@ impl TrackInfoPanel {
                     }
                     RowBit::Fixed(InfoPiece::Art) => {
                         if let Some(thumb) = thumb.clone() {
-                            // A line-tall square, scaled with its row's
-                            // text so the art keeps matching the line.
+                            // Scaled with the row's text so the art matches the line.
                             let side = palette::scaled_px(20.) * scale;
-                            // A station with no picture yet gets the radio
-                            // mark rather than the music note: the note is
-                            // the shape of a file with no cover, and this
-                            // is not a file.
+                            // The music note is the shape of a file with no cover, so a station
+                            // gets the radio mark.
                             let empty_glyph = match now.live {
                                 true => icons::RADIO,
                                 false => icons::MUSIC,
@@ -1786,8 +1622,8 @@ impl TrackInfoPanel {
                         row = row.child(div().flex_1().h(px(1.)).bg(palette::border()));
                     }
                     RowBit::Glyph(path) => {
-                        // Muted and sized with its row's text, so it reads
-                        // as part of the byline rather than a control.
+                        // Muted and sized with the text, so it reads as byline rather than a
+                        // control.
                         row = row.child(
                             svg()
                                 .path(path)
@@ -1805,11 +1641,8 @@ impl TrackInfoPanel {
     }
 }
 
-/// The art piece with no picture behind it: the mark for the kind of row
-/// that's playing, centered in the square the cover would have filled.
-/// [`group_head::art_content`] draws its own music note here, which is the
-/// right shape for a file whose cover is missing and the wrong one for a
-/// station, where there was never a file to take a cover off.
+/// [`group_head::art_content`] draws a music note here, which is wrong
+/// for a station: there was never a file to take a cover off.
 fn empty_cover(glyph: &'static str, icon_px: f32) -> AnyElement {
     div()
         .size_full()
@@ -1825,9 +1658,7 @@ fn empty_cover(glyph: &'static str, icon_px: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// One run of text sitting still: bright segments hold their width and
-/// the muted ones give way, the fixed line's behavior since it was two
-/// pieces.
+/// Bright segments hold their width and the muted ones give way.
 fn run_line(segments: &[(String, bool)]) -> Div {
     div()
         .flex()
@@ -1851,7 +1682,6 @@ fn run_line(segments: &[(String, bool)]) -> Div {
         }))
 }
 
-/// One copy of a run for the marquee's scroll box, refusing to wrap.
 fn run_row(segments: &[(String, bool)]) -> Div {
     div()
         .flex()
@@ -1869,11 +1699,8 @@ fn run_row(segments: &[(String, bool)]) -> Div {
         }))
 }
 
-/// The crawling take on a text run, for the scroll and loop modes. The
-/// scroll box does the clipping and hands back the overflow off the last
-/// layout: scroll crawls out, rests, and crawls home again, while loop
-/// doubles the line and wraps the offset for an unbroken ticker. `run_ix`
-/// keeps the boxes' element ids apart across the panel's rows.
+/// Scroll crawls out, rests, and crawls home; loop doubles the line and
+/// wraps the offset. `run_ix` keeps the boxes' ids apart across rows.
 #[allow(clippy::too_many_arguments)]
 fn marquee_line(
     marquee: &mut MarqueeScroll,
@@ -1884,17 +1711,15 @@ fn marquee_line(
     entity_id: EntityId,
     window: &mut Window,
 ) -> Stateful<Div> {
-    // Both come off the last layout and start at zero, so a fresh panel
-    // stays still until the first layout gives it real numbers.
+    // Both start at zero, so a fresh panel stays still until the first
+    // layout.
     let container = f32::from(marquee.handle.bounds().size.width);
     let overflow = f32::from(marquee.handle.max_offset().width);
     let moving = if mode == MarqueeMode::Loop {
         if marquee.looping {
-            // The layout is doubled: peel the second copy and the gap
-            // back off for the single line's width.
+            // The layout is doubled: peel the second copy and the gap back off.
             let line = (overflow + container - MARQUEE_GAP) / 2.0;
             if line <= container + 0.5 {
-                // Room came back; one copy fits again.
                 marquee.reset();
                 false
             } else {
@@ -1902,7 +1727,6 @@ fn marquee_line(
                 true
             }
         } else if overflow > 0.0 {
-            // One copy overflows: double up and start the wrap.
             marquee.looping = true;
             true
         } else {
@@ -1911,8 +1735,6 @@ fn marquee_line(
     } else {
         marquee.looping = false;
         if overflow > 0.0 {
-            // Under the row cycle the crawl parks at the end and hands
-            // over; the cycle brings the next row in back at the start.
             marquee.advance(overflow, speed, marquee.cycling);
             true
         } else {
@@ -1929,9 +1751,9 @@ fn marquee_line(
         .handle
         .set_offset(point(px(-marquee.offset), px(0.)));
 
-    // No frames run while the line fits, so a resize that steals the
-    // room would go unseen; the probe repaints with the panel and wakes
-    // it whenever the overflow no longer matches the crawl.
+    // No frames run while the line fits, so a resize stealing the room would
+    // go unseen; the probe wakes the panel when the overflow stops matching
+    // the crawl.
     let handle = marquee.handle.clone();
     let probe = canvas(
         |_, _, _| {},
@@ -1944,8 +1766,7 @@ fn marquee_line(
     .absolute()
     .inset_0();
 
-    // Loop mode shows the line twice, a gap apart, so the wrap happens on
-    // an identical picture.
+    // Twice, a gap apart, so the wrap happens on an identical picture.
     let content = if marquee.looping {
         div()
             .flex()
@@ -1958,11 +1779,9 @@ fn marquee_line(
         run_row(segments)
     };
 
-    // min_w_0 lets the box shrink below its content in the panel's row;
-    // without it the automatic minimum holds the box at the full line's
-    // width. flex makes the box size its child row at max-content, since
-    // as a default block the row would stretch to the box instead. Either
-    // way lost, there is no overflow to crawl.
+    // min_w_0 lets the box shrink below its content, and flex sizes the
+    // child row at max-content. Lose either and there's no overflow to
+    // crawl.
     div()
         .id(("track-marquee", run_ix))
         .flex()
@@ -2002,9 +1821,6 @@ mod tests {
         }
     }
 
-    /// A layout with no items field decodes to the classic line, chip and
-    /// all, and the retired toggles still read: the chip off leaves the
-    /// text alone, and a centered line keeps its leading spacer.
     #[test]
     fn legacy_shapes_fold_into_the_piece_list() {
         let config: TrackInfoConfig = serde_json::from_str("{}").unwrap();
@@ -2028,9 +1844,6 @@ mod tests {
         assert!(config.items.first() == Some(&InfoPiece::Spacer));
     }
 
-    /// The retired swap traded a heading against a byline; the cycle
-    /// trades rows, so a layout saved with it folds into those two rows.
-    /// The chip goes on both, since a row cycling away would take it along.
     #[test]
     fn legacy_swap_folds_into_two_rows() {
         let config: TrackInfoConfig =
@@ -2052,16 +1865,13 @@ mod tests {
         let rows = editor_rows(&config.items);
         assert!(rows.len() == 2);
         assert!(rows.iter().all(|row| row.contains(&InfoPiece::Output)));
-        // A spacer pins the chip to the row's end, so it holds its place
-        // as the rows trade.
+        // A spacer pins the chip to the row's end.
         assert!(rows.iter().all(|row| {
             row.iter().position(|p| *p == InfoPiece::Spacer)
                 < row.iter().position(|p| *p == InfoPiece::Output)
         }));
     }
 
-    /// A layout with the list uses it as-is, same-row duplicates
-    /// dropped, and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {
         let config: TrackInfoConfig =
@@ -2077,8 +1887,6 @@ mod tests {
         assert!(back.items == config.items);
     }
 
-    /// The classic arrangement composes into one run of two phrases: the
-    /// bright heading joined with spaces, the muted byline with " - ".
     #[test]
     fn the_stock_row_reads_as_the_classic_line() {
         let pieces = [
@@ -2101,8 +1909,6 @@ mod tests {
         );
     }
 
-    /// A fixed piece cuts the text into separate runs, and an empty field
-    /// drops its piece without leaving a seam in the joins.
     #[test]
     fn fixed_pieces_cut_runs_and_empty_fields_drop() {
         let pieces = [
@@ -2122,9 +1928,6 @@ mod tests {
         assert!(run == &vec![("USAO".to_string(), true)]);
     }
 
-    /// The source mark trails the row that names where the track came from
-    /// and leaves the text in one piece, so the whole line crawls on one
-    /// clock with the mark standing still. A local track never grows one.
     #[test]
     fn the_source_mark_trails_the_row_it_marks() {
         let pieces = [InfoPiece::Title, InfoPiece::Artist, InfoPiece::Album];
@@ -2142,25 +1945,20 @@ mod tests {
         );
         assert!(matches!(&bits[1], RowBit::Glyph(icons::RADIO)));
 
-        // Behind the words, ahead of whatever the arrangement parked at
-        // the row's far edge.
+        // Behind the words, ahead of whatever sits at the far edge.
         let trailing = [InfoPiece::Title, InfoPiece::Album, InfoPiece::Output];
         let bits = row_bits(&trailing, &texts(), Some((InfoPiece::Album, icons::RADIO)));
         assert!(matches!(&bits[1], RowBit::Glyph(icons::RADIO)));
         assert!(matches!(&bits[2], RowBit::Fixed(InfoPiece::Output)));
 
-        // A row without the marked piece keeps its own line clean.
         let elsewhere = [InfoPiece::Title, InfoPiece::Artist];
         let bits = row_bits(&elsewhere, &texts(), Some((InfoPiece::Album, icons::RADIO)));
         assert!(bits.len() == 1);
 
-        // Nothing marked at all: the whole line is one run.
         let bits = row_bits(&pieces, &texts(), None);
         assert!(bits.len() == 1);
     }
 
-    /// The editor's rows keep the empty well a trailing break makes, and
-    /// the join puts the breaks back exactly.
     #[test]
     fn editor_rows_keep_empties_and_rejoin() {
         let items = vec![InfoPiece::Title, InfoPiece::Break];

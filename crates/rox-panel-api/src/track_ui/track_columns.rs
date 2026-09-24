@@ -1,9 +1,7 @@
 //! The track columns and album grouping shared by the track-list panels
-//! (playlists, queue, history). Each panel keeps its own row type, data
-//! source, and interactions; this owns the parts that would otherwise drift
-//! across copies: the per-column cell render, the consecutive-run album
-//! grouping and its two-line heading rows, and the settings checklist and
-//! right-click Columns and Headings menus, wired through small host traits.
+//! (playlists, queue, history): the per-column cell render, the
+//! consecutive-run album grouping and its heading rows, and the Columns and
+//! Headings menus. Each panel keeps its own row type, data, and interactions.
 
 use std::path::PathBuf;
 
@@ -22,40 +20,30 @@ use rox_design::{palette, tokens};
 use rox_panel_kit::ui as settings_ui;
 use rox_services::thumbs::Thumb;
 
-/// The slider bounds for the row and header-line heights, px at the stock
-/// font size, and the stock height itself: what the rows draw at out of
-/// the box, and the height whose text is the stock 1 rem (the row and
-/// header text scale off their height's ratio to this). The album block is
-/// two rows of the stock height, so its cover tile spans a two-row square.
-/// The render sites run these through [`palette::scaled_px`] so rows,
-/// headings, and tiles grow with the app font, the same way the library
-/// table scales its rows. Shared by every panel that offers the row and
-/// header appearance knobs.
+/// Row and header-line height bounds, px at the stock font size. The stock
+/// row height carries the stock 1 rem text, and row and header text scale off
+/// their height's ratio to it. Render sites run these through
+/// [`palette::scaled_px`] so everything grows with the app font.
 pub const ROW_HEIGHT_MIN: f32 = 18.;
 pub const ROW_HEIGHT_MAX: f32 = 48.;
 pub const ROW_HEIGHT_STOCK: f32 = 30.;
 pub const HEAD_HEIGHT_MAX: f32 = 72.;
 
-/// The gap and margin sliders' ceilings, same units: the open space over
-/// and under a header block, and the cover tile's inset inside the block.
+/// Ceilings for the gap over and under a header block and the cover tile's
+/// inset inside it.
 pub const HEAD_GAP_MAX: f32 = 24.;
 pub const ART_MARGIN_MAX: f32 = 16.;
 
-/// The row spacing slider's ceiling: extra height grown into each row,
-/// which the row fills; the text keeps the size the row height sets.
+/// Extra height grown into each row. The text keeps the size the row height
+/// sets.
 pub const ROW_SPACING_MAX: f32 = 32.;
 
-/// The header text slider's range and stock value, px at the stock font
-/// size. The stock is the 1 rem the lines drew before the knob existed.
 pub const HEAD_TEXT_MIN: f32 = 8.;
 pub const HEAD_TEXT_MAX: f32 = 32.;
 pub const HEAD_TEXT_STOCK: f32 = 16.;
 
-/// How many expanded line slots the config holds and the editors show.
 pub const HEAD_LINE_SLOTS: usize = 3;
 
-/// A saved header text size read back clamped to the slider's range;
-/// nonsense in a hand-edited dump falls to the stock size.
 pub fn fold_head_text(v: f32) -> f32 {
     if v.is_finite() {
         v.clamp(
@@ -67,9 +55,8 @@ pub fn fold_head_text(v: f32) -> f32 {
     }
 }
 
-/// A saved margin knob read back clamped to the band its input allows,
-/// not the strip's own top, so a typed value is kept across a reload;
-/// nonsense in a hand-edited dump falls to zero.
+/// Clamped to the input's band, not the strip's own top, so a typed value
+/// survives a reload.
 pub fn fold_margin(v: f32, max: f32) -> f32 {
     if v.is_finite() {
         v.clamp(0., settings_ui::ceiling(0., max))
@@ -78,11 +65,8 @@ pub fn fold_margin(v: f32, max: f32) -> f32 {
     }
 }
 
-/// One saved height read back clamped to its slider's band, the ceiling
-/// the input allows rather than the strip's own top so a typed value
-/// survives a reload. Missing or nonsense falls to the default the caller
-/// hands in, which is how a panel folds the row height into the header
-/// line's default without repeating the clamp.
+/// Clamped like [`fold_margin`]. Missing or nonsense falls to `default`,
+/// which lets a panel fold the row height into the header line's default.
 pub fn fold_row_height(v: Option<f32>, default: f32, max: f32) -> f32 {
     match v {
         Some(v) if v.is_finite() => {
@@ -92,18 +76,15 @@ pub fn fold_row_height(v: Option<f32>, default: f32, max: f32) -> f32 {
     }
 }
 
-/// One toggleable column: its config key, its menu and settings label, and
-/// whether a fresh panel shows it. A panel's registry fixes the render order.
+/// A panel's registry fixes the render order.
 pub struct Column {
     pub key: &'static str,
-    /// Display text, resolved by whoever builds the registry. Owned rather
-    /// than `&'static str` so a registry can be rebuilt per locale without
-    /// each panel leaking its own copy behind a cache.
+    /// Owned so a registry can be rebuilt per locale without each panel
+    /// leaking a copy.
     pub label: SharedString,
     pub default_on: bool,
 }
 
-/// A registry's default-on keys, in order, for a fresh config.
 pub fn default_columns(columns: &[Column]) -> Vec<String> {
     columns
         .iter()
@@ -112,17 +93,15 @@ pub fn default_columns(columns: &[Column]) -> Vec<String> {
         .collect()
 }
 
-/// The common column values a shared cell draws. A panel fills this per row
-/// from its own data and draws any panel-only columns (history's plays and
-/// when) itself, falling back to [`cell`] for the shared keys.
+/// A panel draws its own columns (history's plays and when) and falls back
+/// to [`cell`] for the shared keys.
 pub struct Cell<'a> {
     pub pos: u32,
     pub title: &'a str,
     pub artist: &'a str,
     pub album: &'a str,
-    /// The three sort names, drawn after their name as a reading when the
-    /// switch is on and the name needs one. Empty where the panel has
-    /// none, which is a track the projection holds no row for.
+    /// Sort names, drawn as a reading when the switch is on. Empty where the
+    /// projection holds no row.
     pub title_reading: &'a str,
     pub artist_reading: &'a str,
     pub album_reading: &'a str,
@@ -133,21 +112,15 @@ pub struct Cell<'a> {
     pub track_id: i64,
     pub favourite: bool,
     pub playing: bool,
-    /// The total play count, for the plays column; 0 hides it.
+    /// 0 leaves the plays cell blank.
     pub plays: u32,
-    /// The track's cover thumbnail, resolved by the panel (which holds the
-    /// context and the path) when the cover column shows; None otherwise.
+    /// Resolved by the panel when the cover column shows.
     pub cover: Option<Thumb>,
 }
 
-/// Render one shared column, or None when the key is a panel's own. The text
-/// columns flex and truncate; number, year, and duration get fixed slots;
-/// rating and favourite hand off to the shared controls, which write through
-/// `state`. `row_height` is the caller's own row height at the stock font
-/// size, which only the cover square reads; a panel with no height knob
-/// hands over [`ROW_HEIGHT_STOCK`]. `compact_plays` swaps the plays column
-/// for the library's tick face; a panel without that knob passes false and
-/// keeps the plain readout.
+/// Render one shared column, or None when the key is a panel's own.
+/// `row_height` is the row height at the stock font size, which only the
+/// cover reads. `compact_plays` swaps in the library's tick face for plays.
 pub fn cell(
     key: &str,
     c: &Cell,
@@ -167,10 +140,8 @@ pub fn cell(
     let numeric = |width: f32, value: String| numeric_cell(width, palette::text_muted(), value);
     Some(match key {
         "cover" => cover_cell(&c.cover, row_height),
-        // The compact face shrinks the count and hangs a faint bar beside
-        // it, the library's "1|" playlist tick; the plain face spells the
-        // count out. Either way a never-played track reads as absence
-        // rather than a zero.
+        // The compact face is the library's "1|" playlist tick. A never-played
+        // track reads as absence rather than a zero.
         "plays" if compact_plays => div()
             .flex_none()
             .flex()
@@ -199,8 +170,7 @@ pub fn cell(
             .child(crate::panel::named(c.title, c.title_reading, readings)),
         "artist" => text(c.artist, c.artist_reading, palette::text_secondary()),
         "album" => text(c.album, c.album_reading, palette::text_secondary()),
-        // The genre column takes no reading: genres are interned without
-        // sort names, so there would never be one to draw.
+        // Genres are interned without sort names, so there's never a reading.
         "genre" => text(c.genre, "", palette::text_muted()),
         "year" => numeric(
             YEAR_WIDTH,
@@ -210,9 +180,8 @@ pub fn cell(
                 c.year.to_string()
             },
         ),
-        // A zero length reads as unknown, not a real 0:00 (the scanner
-        // leaves it zero when it can't read a file's tags), so the slot
-        // stays blank like the year does, keeping its width for alignment.
+        // The scanner leaves zero when it can't read the tags, so zero is
+        // unknown, not 0:00.
         "duration" => numeric(
             DURATION_WIDTH,
             if c.duration_ms == 0 {
@@ -229,21 +198,10 @@ pub fn cell(
     })
 }
 
-/// A small rounded cover square, the album tile cut to one row. The panel
-/// resolves the thumbnail; pending and missing use the quiet placeholder so
-/// a cover that arrives later fills without shifting the row. Shared with the library
-/// table's cover column, which draws outside [`cell`].
-///
-/// The mask is the square: `Cover` overruns the element on the art's long
-/// side, and gpui paints that overrun rather than cropping it, so a wide
-/// sleeve would run out over the title beside it. The box does that
-/// masking, not the image, which can only mask against its own overrun
-/// bounds.
-///
-/// `row_height` is the caller's row height at the stock font size, so the
-/// square follows a panel's height knob instead of a constant that only
-/// happens to match at the stock setting; the 6 px is the breathing room
-/// above and below it.
+/// A small rounded cover square, also drawn by the library table's cover
+/// column. `Cover` overruns the element on the art's long side and gpui paints
+/// that overrun rather than cropping it, so the box masks, not the image.
+/// `row_height` is at the stock font size; 6 px is the room above and below.
 pub fn cover_cell(cover: &Option<Thumb>, row_height: f32) -> Div {
     let side = palette::scaled_px(row_height - 6.);
     let content: AnyElement = match cover {
@@ -275,22 +233,16 @@ pub fn cover_cell(cover: &Option<Thumb>, row_height: f32) -> Div {
     div().flex_none().flex().items_center().child(content)
 }
 
-/// The set widths of the readout cells, px at the stock font size: the
-/// library table's defaults for the same columns, so a track reads the
-/// same width in either surface. A content-sized cell would take a
-/// different width on every row ("8m ago" against "21m ago"), and since
-/// the text columns flex to fill what's left, every column after the first
-/// would drift with it. [`numeric_cell`] scales these with the app font.
+/// Readout widths, px at the stock font size, matching the library table's
+/// defaults. A content-sized cell would vary per row ("8m ago" against
+/// "21m ago") and drag every flexing column after it.
 pub const PLAYS_WIDTH: f32 = 56.;
 pub const YEAR_WIDTH: f32 = 56.;
 pub const DURATION_WIDTH: f32 = 64.;
 pub const LAST_PLAYED_WIDTH: f32 = 84.;
 
-/// A fixed-width, right-aligned readout cell: a count, a year, a clock, or
-/// an age. The width holds across rows so the flexible text columns before
-/// it line up, and the right edge lines the digits up like the library
-/// table's numeric columns do. Anything wider than its slot clips rather
-/// than pushing the cells beside it.
+/// Right-aligned at a fixed width so the digits and the text columns before
+/// it line up. Overflow clips.
 pub fn numeric_cell(width: f32, color: gpui::Rgba, value: String) -> Div {
     div()
         .flex_none()
@@ -303,7 +255,6 @@ pub fn numeric_cell(width: f32, color: gpui::Rgba, value: String) -> Div {
         .child(SharedString::from(value))
 }
 
-/// A play count as a short readout, blank when never played.
 pub fn fmt_plays(plays: u32) -> String {
     match plays {
         0 => String::new(),
@@ -312,9 +263,7 @@ pub fn fmt_plays(plays: u32) -> String {
     }
 }
 
-/// Resolve a track's cover thumbnail for the [`Cell::cover`] slot, or None
-/// when the cover column is off or the track has no path. The panel calls
-/// this from its row build, where the context and the file path are at hand.
+/// None when the cover column is off or the track has no path.
 pub fn cover_thumb<P: 'static>(
     state: &AppState,
     path: Option<&std::path::Path>,
@@ -325,12 +274,9 @@ pub fn cover_thumb<P: 'static>(
     Some(state.thumbs.update(cx, |thumbs, cx| thumbs.get(path, cx)))
 }
 
-/// One album run's heading aggregates, what its two rows draw. Rebuilt each
-/// refresh from the run's tracks.
 pub struct AlbumGroup {
     pub album: String,
-    /// The album artist, or the first track's artist when the album artist
-    /// tag is empty, the library's fallback.
+    /// Falls back to the first track's artist, like the library.
     pub artist: String,
     pub year: u16,
     pub genre: String,
@@ -338,12 +284,10 @@ pub struct AlbumGroup {
     pub tracks: u32,
     pub total_ms: u64,
     pub first_track_id: i64,
-    /// Resolved art path, cached on the first paint: outer None not yet
-    /// resolved, inner None no art.
+    /// Cached on first paint: outer None not yet resolved, inner None no art.
     pub art: Option<Option<PathBuf>>,
 }
 
-/// One track's grouping inputs, a borrowed view a panel builds per member.
 pub struct GroupTrack<'a> {
     pub album: &'a str,
     pub album_artist: &'a str,
@@ -358,9 +302,6 @@ pub struct GroupTrack<'a> {
     pub track_id: i64,
 }
 
-/// Aggregate a run of same-album tracks into a heading group: the first
-/// track names it, the run sums the time and spans the codec, the stream
-/// shape, and the bitrate.
 pub fn album_group(run: &[GroupTrack]) -> AlbumGroup {
     let first = &run[0];
     let mut codec: Option<&str> = Some(first.codec);
@@ -370,8 +311,6 @@ pub fn album_group(run: &[GroupTrack]) -> AlbumGroup {
         if codec != Some(t.codec) {
             codec = None;
         }
-        // Depth and rate are all-or-nothing across the run, like the
-        // codec: a mixed album has no one shape to name.
         if bit_depth != t.bit_depth {
             bit_depth = 0;
         }
@@ -412,13 +351,8 @@ pub fn album_group(run: &[GroupTrack]) -> AlbumGroup {
     }
 }
 
-/// The heading look the tree panels drew before any of them had appearance
-/// knobs: the cover tile two stock rows tall, square corners hard against
-/// the block's left edge, every part shown, text at the stock rem. A panel
-/// without its own config hands this to [`album_name_row`] and
-/// [`album_meta_row`]; one that grows knobs builds its own [`HeadLook`] the
-/// way the library table does, and the shared rows keep drawing the same
-/// shape either way.
+/// The stock heading look, for a panel without its own config. The library
+/// table builds its own [`HeadLook`].
 ///
 /// [`HeadLook`]: group_head::HeadLook
 pub fn stock_head_look() -> group_head::HeadLook {
@@ -438,10 +372,8 @@ pub fn stock_head_look() -> group_head::HeadLook {
 fn head_of(g: &AlbumGroup) -> group_head::GroupHead {
     group_head::GroupHead {
         name: SharedString::from(g.artist.clone()),
-        // No readings here: an album run in the queue, history or a
-        // playlist is grouped off the tags those rows carry, which come
-        // from the store rather than the projection and so have no sort
-        // names to read.
+        // No readings: these runs group off store tags, which carry no sort
+        // names.
         name_reading: SharedString::default(),
         album: SharedString::from(g.album.clone()),
         album_reading: SharedString::default(),
@@ -455,10 +387,7 @@ fn head_of(g: &AlbumGroup) -> group_head::GroupHead {
     }
 }
 
-/// One half of an album run's cover tile, resolving the run's first track to
-/// a path once and caching it on the group, the library's route. The side,
-/// corners, inset, and which edge it hangs off all come off the look, so a
-/// panel's knobs reach the tile without this knowing about any config.
+/// Resolves the run's first track to a path once and caches it on the group.
 fn tile<P: 'static>(
     group: &mut AlbumGroup,
     state: &AppState,
@@ -469,8 +398,8 @@ fn tile<P: 'static>(
     let path = match group.art.clone() {
         Some(path) => path,
         None => {
-            // No album tag is the unknown bucket, not a real album: keep the
-            // placeholder rather than a loose track's art.
+            // No album tag is the unknown bucket: keep the placeholder rather
+            // than a loose track's art.
             let path = (!group.album.is_empty())
                 .then(|| {
                     state
@@ -489,8 +418,8 @@ fn tile<P: 'static>(
         Some(path) => state.thumbs.update(cx, |thumbs, cx| thumbs.get(&path, cx)),
         None => Thumb::Missing,
     };
-    // The block's rows each paint the whole square; the meta row's copy
-    // starts one line higher, which is what makes the two halves line up.
+    // Each row paints the whole square; the meta row's copy starts one line
+    // higher so the two halves line up.
     let lift = if bottom { look.line_px } else { px(0.) };
     group_head::tile(
         thumb,
@@ -502,33 +431,25 @@ fn tile<P: 'static>(
     )
 }
 
-/// Where one heading line sits inside the list row that carries it, plus
-/// what that line draws.
-///
-/// The tree panels hang their rows off a `uniform_list`, which lays every
-/// row out at one measured height: a heading line can't claim a row taller
-/// than a track's the way the library table's per-row height hook lets it.
-/// So the line is drawn as a strip inside the row instead: `row_px` is the
-/// row the list laid out, `content_top` where the strip starts in it (the
-/// gap over the block, or negative on a second line that has to climb back
-/// up to meet the first), and `look.line_px` how tall the strip is. What's
-/// left over shows the list through, which is what makes the gap knobs
-/// read.
+/// Where one heading line sits inside its list row. `uniform_list` lays every
+/// row out at one height, so a heading can't claim a taller row the way the
+/// library table can. The line is a strip inside the row instead: `row_px`
+/// is the laid-out row, `content_top` where the strip starts (negative on a
+/// second line climbing back to meet the first), and `look.line_px` its
+/// height.
 pub struct HeadSlot<'a> {
-    /// The composed pieces this line draws, left to right.
     pub pieces: &'a [HeadPiece],
     pub look: &'a group_head::HeadLook,
     pub row_px: Pixels,
     pub content_top: Pixels,
-    /// Draw the strip on the list background instead of the raised tint,
-    /// the library's flush headers.
+    /// The list background instead of the raised tint, the library's flush
+    /// headers.
     pub flush: bool,
 }
 
 impl<'a> HeadSlot<'a> {
-    /// The slot the tree panels drew before any of them had appearance
-    /// knobs: the line filling its whole row, hard against the top, on the
-    /// raised tint. Pairs with [`stock_head_look`].
+    /// The line filling its whole row on the raised tint. Pairs with
+    /// [`stock_head_look`].
     pub fn stock(pieces: &'a [HeadPiece], look: &'a group_head::HeadLook) -> Self {
         HeadSlot {
             pieces,
@@ -539,15 +460,9 @@ impl<'a> HeadSlot<'a> {
         }
     }
 
-    /// The strip laid over the row: the tint (skipped when it would be a
-    /// second coat of the list's own color, the library's rule) with the
-    /// composed line over it, both clipped to the slot's own height so the
-    /// gaps stay open.
     fn strip(&self, content: Div) -> Div {
-        // Flush means the list's own color, which the panel body has
-        // already painted under every row: painting it again lays a second
-        // coat, which stops matching the moment surfaces go translucent.
-        // So flush paints nothing rather than painting bg_root.
+        // Flush paints nothing: the body already painted the list color, and
+        // a second coat stops matching once surfaces go translucent.
         div()
             .absolute()
             .left_0()
@@ -559,13 +474,9 @@ impl<'a> HeadSlot<'a> {
     }
 }
 
-/// An album run's name line. Expanded opens the two-row cover tile and gives
-/// the album artist the line; Compact draws the packed line alone, no tile.
-///
-/// The look carries the whole appearance, the line height included, and the
-/// slot where the line sits in its row, so a panel that has grown knobs and
-/// one that hasn't call this the same way; the one without hands over
-/// [`stock_head_look`] and [`HeadSlot::stock`].
+/// Expanded opens the two-row cover tile; Compact draws the packed line
+/// alone. A panel without knobs hands over [`stock_head_look`] and
+/// [`HeadSlot::stock`].
 pub fn album_name_row<P: 'static>(
     ix: usize,
     group: &mut AlbumGroup,
@@ -593,8 +504,7 @@ pub fn album_name_row<P: 'static>(
         )
 }
 
-/// The run's meta line: the album, genre, quality, track count, and total
-/// time over the tile's bottom half. Only Expanded pushes this row.
+/// The meta line over the tile's bottom half. Only Expanded pushes this row.
 pub fn album_meta_row<P: 'static>(
     ix: usize,
     group: &mut AlbumGroup,
@@ -623,9 +533,6 @@ pub fn album_meta_row<P: 'static>(
         )
 }
 
-/// The stock pieces a heading's name row draws in a mode: the packed
-/// compact row, or the expanded block's name line. What a panel with no
-/// composition config of its own hands [`album_name_row`].
 pub fn stock_name_pieces(headers: Headers) -> Vec<HeadPiece> {
     if headers == Headers::Expanded {
         group_head::stock_name_line()
@@ -634,20 +541,16 @@ pub fn stock_name_pieces(headers: Headers) -> Vec<HeadPiece> {
     }
 }
 
-/// A panel that stores a shown-column set the shared menus edit.
 pub trait ColumnHost: 'static + Sized {
     fn column_shown(&self, key: &str) -> bool;
     fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>);
 }
 
-/// A panel that stores an album heading mode the shared menu edits.
 pub trait HeadingHost: 'static + Sized {
     fn headers(&self) -> Headers;
     fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>);
 }
 
-/// The View-page column checklist: a tick per registry column, a click
-/// flipping it. The panel's own registry fixes the set and order.
 pub fn checklist<P: ColumnHost>(columns: &[Column], panel: &P, cx: &mut Context<P>) -> Div {
     let mut list = div().flex().flex_col().gap(tokens::SPACE_XS);
     for col in columns {
@@ -683,8 +586,7 @@ pub fn checklist<P: ColumnHost>(columns: &[Column], panel: &P, cx: &mut Context<
     list
 }
 
-/// The right-click Columns submenu: a live-checked row per registry column,
-/// tracking the panel so a flip shows without the menu reopening.
+/// Follows the panel so a flip shows without the menu reopening.
 pub fn columns_submenu<P: ColumnHost>(
     columns: Vec<Column>,
     window: &mut Window,
@@ -710,8 +612,6 @@ pub fn columns_submenu<P: ColumnHost>(
     })
 }
 
-/// The right-click Headings submenu: Off, Compact, Expanded, one live check
-/// on the active mode, the library's Headers flyout.
 pub fn headings_submenu<P: HeadingHost>(
     window: &mut Window,
     cx: &mut Context<P>,

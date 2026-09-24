@@ -1,14 +1,6 @@
-//! The cover match window: one OS window opened from the cover editor to
-//! find album art online. It searches the art providers off the UI
-//! thread, shows the results as a thumbnail grid, and on apply fetches the
-//! full image and hands it to the editor's front slot rather than writing,
-//! so the editor stays the one writer. The query seeds from the album's
-//! artist and album and is editable, so a wrong tag can be corrected;
-//! typing re-searches after a debounce, Enter at once. Nothing is written
-//! until the editor saves.
-//!
-//! Art is picked by eye, so the grid is the whole story: each cell shows
-//! the preview, the provider, and the pixel size, the biggest first.
+//! The cover match window: searches the art providers for the cover
+//! editor's album and hands the picked image to the editor's front slot.
+//! The editor stays the one writer; nothing is written until it saves.
 
 use std::sync::Arc;
 
@@ -28,20 +20,14 @@ use rox_net::providers::{self, ArtCandidate, TrackQuery};
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
-/// The default window size: room for a few rows of preview tiles beside
-/// the query.
 const DEFAULT_SIZE: (f32, f32) = (720., 560.);
 
-/// One grid tile's square side.
 const TILE: f32 = 132.0;
 
-/// How long the query rests before an edit fires a search.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// The open match windows, keyed by the opening editor plus the query, so
-/// the same editor asking again focuses its window. Apply fills the front
-/// slot of the editor that opened it, so two editors on the same album
-/// each need their own window.
+/// Keyed by the opening editor plus the query: apply fills that editor's
+/// front slot, so two editors on one album each need their own window.
 #[derive(Default)]
 struct OpenMatchers(Vec<((EntityId, String), WindowHandle<Root>)>);
 
@@ -54,8 +40,6 @@ impl WindowRegistry for OpenMatchers {
     }
 }
 
-/// Open a cover search for `artist` and `album`, filling `editor`'s front
-/// slot on apply, or focus the one already on that query.
 pub fn open(
     now_art: Entity<NowPlayingArt>,
     editor: WeakEntity<CoverEditor>,
@@ -82,29 +66,21 @@ pub fn open(
     );
 }
 
-/// A candidate and its preview once the thumbnail downloads. None while
-/// the preview is still coming in.
 struct Loaded {
     candidate: ArtCandidate,
     thumb: Option<Arc<Image>>,
 }
 
 struct CoverMatch {
-    /// The cover editor whose front slot apply fills. Weak, so a closed
-    /// editor drops the result.
+    /// Weak, so a closed editor drops the result.
     editor: WeakEntity<CoverEditor>,
-    /// The editable query, seeded from the album's tags.
     artist_input: Entity<InputState>,
     album_input: Entity<InputState>,
-    /// The pending debounced search; replacing it cancels the last timer
-    /// and any request in flight.
+    /// Replacing it cancels the last timer and any request in flight.
     search_task: Option<Task<()>>,
     phase: Phase<Loaded>,
-    /// The highlighted tile, an index into the ready list.
     selected: Option<usize>,
-    /// A full-image fetch is in flight for apply; the buttons hold still.
     applying: bool,
-    /// A failed search or fetch, shown inline over the buttons.
     error: Option<SharedString>,
     scroll: ScrollHandle,
     now_art: Entity<NowPlayingArt>,
@@ -166,8 +142,7 @@ impl CoverMatch {
         this
     }
 
-    /// The query as the boxes stand: the art subject is the album, so it
-    /// goes in the query's album field and the title is left empty.
+    /// The subject is the album, so the title stays empty.
     fn query(&self, cx: &App) -> TrackQuery {
         TrackQuery {
             artist: self.artist_input.read(cx).value().trim().to_string(),
@@ -177,9 +152,6 @@ impl CoverMatch {
         }
     }
 
-    /// Search the art providers for the current query, debounced when a
-    /// keystroke drove it. Storing the task cancels the previous timer and
-    /// any request still running.
     fn search_soon(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let query = self.query(cx);
         self.phase = Phase::Searching;
@@ -197,8 +169,6 @@ impl CoverMatch {
         }));
     }
 
-    /// Fold a finished search into the grid and kick off the thumbnail
-    /// downloads, the first tile pre-selected.
     fn fill(&mut self, result: Result<Vec<ArtCandidate>, String>, cx: &mut Context<Self>) {
         match result {
             Ok(found) => {
@@ -222,9 +192,8 @@ impl CoverMatch {
         cx.notify();
     }
 
-    /// Fetch each result's preview off the UI thread and swap it in when it
-    /// arrives. Each load checks the tile still holds the same URL, so a
-    /// newer search's grid never takes a stale thumbnail.
+    /// Each load checks the tile still holds its URL, so a newer search never
+    /// takes a stale thumbnail.
     fn load_thumbs(&self, cx: &mut Context<Self>) {
         let Phase::Ready(loaded) = &self.phase else {
             return;
@@ -259,9 +228,6 @@ impl CoverMatch {
         }
     }
 
-    /// Fetch the selected candidate's full image and hand it to the
-    /// editor's front slot, off the UI thread, then close. A failed fetch
-    /// keeps the window open with the error.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.applying {
             return;
@@ -300,7 +266,6 @@ impl CoverMatch {
                         if set {
                             window.remove_window();
                         } else {
-                            // The editor closed under us; nothing to fill.
                             this.applying = false;
                             this.error = Some(rox_i18n::t!("cover-matcher-editor-closed"));
                             cx.notify();
@@ -318,8 +283,6 @@ impl CoverMatch {
         .detach();
     }
 
-    /// The editable query: artist and album, the two fields that steer the
-    /// art search.
     fn search_fields(&self) -> Div {
         let field = |label: SharedString, input: &Entity<InputState>| {
             div()
@@ -344,9 +307,6 @@ impl CoverMatch {
             .child(field(rox_i18n::t!("head-piece-album"), &self.album_input))
     }
 
-    /// The results as a wrapping grid of preview tiles, biggest first, the
-    /// selected one ringed. A tile still downloading shows a quiet
-    /// placeholder in its place.
     fn grid(&self, loaded: &[Loaded], cx: &mut Context<Self>) -> Div {
         let mut grid = div().flex().flex_row().flex_wrap().gap(tokens::SPACE_MD);
         for (ix, slot) in loaded.iter().enumerate() {
@@ -423,10 +383,7 @@ impl CoverMatch {
         grid
     }
 
-    /// What stands between the window and a cover, when something does.
-    /// The clauses run in the order a search clears them, so the footer
-    /// names the one step that's actually next, and Set Cover is live
-    /// exactly when nothing is left.
+    /// Ordered the way a search clears them, so the footer names the next step.
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref l) if !l.is_empty()) {
             return Some(match self.phase {
@@ -443,10 +400,8 @@ impl CoverMatch {
         None
     }
 
-    /// The window's actions, and what's in their way. No enter shortcut
-    /// here: the query boxes own the key as "search now", and a window
-    /// binding would fire on the same press and set a cover off
-    /// results the search is about to replace.
+    /// No Enter binding: the query boxes use Enter to search now, and a window
+    /// binding would apply off results that search is about to replace.
     fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
         let blocker = self.blocker();
         div()
@@ -532,8 +487,6 @@ impl Render for CoverMatch {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            // The backdrop paints first, under the page, so translucent
-            // surfaces back with the playing track's art like every window.
             .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(
                 div()
@@ -541,9 +494,6 @@ impl Render for CoverMatch {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    // The page's own surface over the root's, the same second
-                    // pass the settings page takes: the backdrop reads through
-                    // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)

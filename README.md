@@ -183,7 +183,7 @@ fallback, so add `noto-fonts-cjk-sans-static` or `google-noto-sans-cjk-fonts`.
 - `--enqueue` / `-e` - append the given files to the up-next queue instead of playing.
 - `--new-instance` - start a second rox against the same data directory. Without it a
   launch hands its files to the rox already running, which raises its window and takes
-  them. Linux and macOS only; on Windows every launch starts its own instance.
+  them.
 - `--portable` - keep all data (library, settings, caches) in a `rox-data` folder beside
   the executable for this run. To stay portable across launches, drop an empty file named
   `portable` next to the executable, or flip the toggle under Settings > Application.

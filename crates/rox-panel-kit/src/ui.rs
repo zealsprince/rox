@@ -1,9 +1,6 @@
-//! The chrome the settings windows share. The app settings window and
-//! every panel's settings window draw their shell from one set, so a
-//! page reads the same wherever it opens: the sidebar with its nav
-//! rows, titled sections, group headers, the small header buttons, the
-//! scalar slider, and the palette editor's role grid. Page content stays
-//! with each window; only the shell is here.
+//! The shell the app settings window and every panel settings window share:
+//! sidebar, sections, buttons, the scalar slider, and the role grid. Page
+//! content stays with each window.
 
 use std::rc::Rc;
 
@@ -19,26 +16,17 @@ use rox_design::assets::icons;
 use rox_design::palette::{self, ROLES, Side, Sides};
 use rox_design::tokens;
 
-/// A control was pressed. The pointer and the keyboard both arrive here,
-/// so a handler is written once and answers either.
-///
-/// Its own type rather than gpui's `ClickEvent` because these controls
-/// don't take ids: two buttons under one parent saying the same thing
-/// would share gpui's click state, and a shared pending press is a click
-/// that goes missing. A press carries nothing a handler has ever wanted
-/// anyway, so nothing is lost by saying so.
+/// A control was pressed, by pointer or keyboard. Not gpui's `ClickEvent`:
+/// these controls take no ids, and two same-named buttons under one parent
+/// would share gpui's click state and lose a press.
 pub struct Press;
 
-/// What a control does when it's pressed. Held behind an `Rc` because the
-/// pointer and the keyboard each need their own handle on it.
 pub type OnPress = Rc<dyn Fn(&Press, &mut Window, &mut App)>;
 
 use crate as panel;
 use crate::ScrubState;
 
-/// A checklist tick box: a square that fills with the accent and shows a
-/// check while on, an empty control-colored box while off. The caller wires
-/// the click on the surrounding row.
+/// The caller wires the click on the surrounding row.
 pub fn checkbox(on: bool) -> Div {
     div()
         .size(px(16.))
@@ -68,34 +56,24 @@ pub fn checkbox(on: bool) -> Div {
         })
 }
 
-/// The sidebar's width, room for a page name and no more.
 pub const SIDEBAR_W: Pixels = px(160.);
 
-/// The narrowest a color cell renders whole: the swatch, its gap, and
-/// the longest role label.
+/// The swatch, its gap, and the longest role label.
 pub const COLOR_CELL_MIN_W: Pixels = px(150.);
 
-/// The gap between a page's sections, a step over the row rhythm so a
-/// boundary reads as one.
 pub const SECTION_GAP: Pixels = px(20.);
 
-/// The floor under a settings window: the sidebar plus a colors row that
-/// still fits its labels, and enough height for a page to breathe.
 pub const MIN_SIZE: gpui::Size<Pixels> = gpui::Size {
     width: px(560.),
     height: px(400.),
 };
 
-/// How many color-grid columns fit the page beside the sidebar: as many
-/// whole cells as the window minus the sidebar and the body's insets
-/// allows, two at the window floor up to four.
+/// Two at the window floor, up to four.
 pub fn grid_columns(window: &Window) -> usize {
     let page_w = window.viewport_size().width - SIDEBAR_W - tokens::SPACE_MD * 2.;
     usize::clamp((page_w / COLOR_CELL_MIN_W) as usize, 2, 4)
 }
 
-/// The sidebar shell: the nav rows go in at the top; a window with
-/// footer actions sinks them after its own spacer.
 pub fn sidebar() -> Div {
     div()
         .w(SIDEBAR_W)
@@ -109,11 +87,8 @@ pub fn sidebar() -> Div {
         .border_color(palette::border())
 }
 
-/// The nav rows in their own scrolling column. They take the slack
-/// between whatever the sidebar pins above and below them, and a window
-/// too short for the list scrolls it instead of cutting the tail off:
-/// the sidebar is fixed to the window height, so without this the last
-/// pages are unreachable. Give the rows through `build`.
+/// The sidebar is fixed to the window height, so the nav scrolls or its
+/// last pages are unreachable.
 pub fn nav_scroll(
     id: impl Into<ElementId>,
     scroll: &ScrollHandle,
@@ -133,8 +108,6 @@ pub fn nav_scroll(
                 .overflow_y_scroll()
                 .track_scroll(scroll),
         ))
-        // Same idle-fading scrollbar the pages use, in its own bounds
-        // so it lays out over the rows rather than beside them.
         .child(
             div()
                 .absolute()
@@ -143,8 +116,6 @@ pub fn nav_scroll(
         )
 }
 
-/// A sidebar row: the page's icon leading its name; the picked page
-/// reads like an active control.
 pub fn nav_item<P: 'static>(
     label: impl Into<SharedString>,
     icon: &'static str,
@@ -155,9 +126,7 @@ pub fn nav_item<P: 'static>(
     nav_row(label, icon, picked, false, on_pick, cx)
 }
 
-/// The same row a shade back: for a page that isn't one of the subjects,
-/// so it reads as somewhere you go looking for rather than the next thing
-/// down the list.
+/// A shade back, for a page that isn't one of the subjects.
 pub fn nav_item_quiet<P: 'static>(
     label: impl Into<SharedString>,
     icon: &'static str,
@@ -198,8 +167,6 @@ fn nav_row<P: 'static>(
     }
 }
 
-/// A sidebar row's element; see [`nav_item`]. Styles applied to it go to
-/// the row.
 #[derive(IntoElement)]
 pub struct NavRow {
     id: ElementId,
@@ -251,9 +218,7 @@ impl RenderOnce for NavRow {
     }
 }
 
-/// A hairline between nav rows, for the point where the list stops being
-/// one run of pages. Inset to the row text so it starts where the labels
-/// do instead of cutting the whole sidebar.
+/// Inset to the row text rather than cutting the whole sidebar.
 pub fn nav_divider() -> Div {
     div()
         .mx(tokens::SPACE_MD)
@@ -263,7 +228,6 @@ pub fn nav_divider() -> Div {
         .bg(palette::border())
 }
 
-/// A header between setting groups, the palette listing's block names.
 pub fn header(label: impl Into<SharedString>) -> Div {
     div()
         .pt(tokens::SPACE_SM)
@@ -272,7 +236,6 @@ pub fn header(label: impl Into<SharedString>) -> Div {
         .child(label.into())
 }
 
-/// The platform's primary modifier as the shortcut labels show it.
 pub fn chord(key: &str) -> SharedString {
     if cfg!(target_os = "macos") {
         format!("Cmd+{key}")
@@ -282,13 +245,11 @@ pub fn chord(key: &str) -> SharedString {
     .into()
 }
 
-/// One piece of a [`kbd_line`]: plain copy or a key chip.
 pub enum Seg {
     Text(SharedString),
     Key(SharedString),
 }
 
-/// A keycap chip, sized to fit inline with the body copy.
 pub fn kbd(label: SharedString) -> Div {
     div()
         .flex_none()
@@ -302,8 +263,7 @@ pub fn kbd(label: SharedString) -> Div {
         .child(label)
 }
 
-/// A body line that mixes copy with keycap chips. The text splits into
-/// words so the row wraps like prose, the chips flowing along with it.
+/// Splits the copy into words so the line wraps like prose around the chips.
 pub fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
     div()
         .flex()
@@ -324,8 +284,6 @@ pub fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
         }))
 }
 
-/// A titled section of a page: the name over a hairline, an optional
-/// control on the header's right edge, the rows under it.
 pub fn section(
     label: impl Into<SharedString>,
     trailing: Option<AnyElement>,
@@ -334,8 +292,6 @@ pub fn section(
     section_with_icon(None, label, trailing, body)
 }
 
-/// [`section`] with a control beside the name on the left, for a
-/// tool that belongs to the heading itself rather than the right edge.
 pub fn section_with_control(
     label: impl Into<SharedString>,
     control: AnyElement,
@@ -345,9 +301,7 @@ pub fn section_with_control(
     build_section(None, label, Some(control), trailing, body)
 }
 
-/// [`section`] led by a header icon, the sidebar rows' grammar. The
-/// settings window's sealed path always passes one; the icon-less
-/// callers across the app stay on [`section`].
+/// Required on the settings window's sealed path so no section ships bare.
 pub fn section_with_icon(
     icon: Option<&'static str>,
     label: impl Into<SharedString>,
@@ -366,10 +320,8 @@ fn build_section(
 ) -> Stateful<Div> {
     let label = label.into();
     div()
-        // Named after its heading, which names everything inside it: ids
-        // nest, so the Clear button in one section and the Clear button in
-        // the next stop being the same control as far as the keyboard is
-        // concerned. See [`control_focus`].
+        // Named after its heading, which scopes the ids of everything inside:
+        // same-named buttons in two sections stay separate controls.
         .id(ElementId::Name(label.clone()))
         .flex()
         .flex_col()
@@ -408,10 +360,8 @@ fn build_section(
         .child(body)
 }
 
-/// The settings search query: the box's text lowercased and split on
-/// whitespace. A row matches when every term appears somewhere in its
-/// label, description, or keywords; the empty query matches everything,
-/// which is the closed-search path.
+/// A row matches when every term appears in its label, description, or
+/// keywords, case folded.
 pub struct Query {
     terms: Vec<String>,
 }
@@ -423,16 +373,13 @@ impl Query {
         }
     }
 
-    /// Whether there's anything to filter by.
     pub fn active(&self) -> bool {
         !self.terms.is_empty()
     }
 
-    /// Whether every term appears in some of `texts`, case folded.
     fn hits(&self, texts: &[&str]) -> bool {
-        // Fold once per candidate rather than once per (term, candidate):
-        // the box filters every page on each keystroke, so this runs over
-        // the whole settings tree between frames.
+        // Fold once per candidate: this runs over the whole settings tree on
+        // every keystroke.
         let folded: Vec<String> = texts.iter().map(|text| rox_i18n::fold(text)).collect();
         self.terms
             .iter()
@@ -440,14 +387,11 @@ impl Query {
     }
 }
 
-/// A page under search: the only shape the settings window's render
-/// takes back from a page builder, and it only takes [`Section`]s, whose
-/// rows all declare the words that find them. The chain is the point: a
-/// setting can't go on a page without stating its search terms, so
-/// search never silently misses a new row.
+/// The only shape the settings window takes back from a page builder, so no
+/// row can go on a page without declaring its search terms.
 ///
-/// Search builds every page each keystroke, so page builders must stay
-/// pure reads: no spawns, no entity updates outside listeners.
+/// Search builds every page each keystroke, so page builders must stay pure
+/// reads: no spawns, no entity updates outside listeners.
 pub struct PageBody {
     body: Div,
     hits: usize,
@@ -462,7 +406,6 @@ impl PageBody {
         }
     }
 
-    /// Add a section; one the query emptied adds nothing.
     pub fn section(mut self, section: Section) -> Self {
         if let Some(body) = section.body {
             self.body = self.body.child(body);
@@ -471,13 +414,11 @@ impl PageBody {
         self
     }
 
-    /// Chain conditionally, gpui's own `when` shape.
     pub fn when(self, condition: bool, then: impl FnOnce(Self) -> Self) -> Self {
         if condition { then(self) } else { self }
     }
 
-    /// How many rows the page kept; zero drops it from the results stack
-    /// and dims its sidebar entry.
+    /// Zero drops the page from the results and dims its sidebar entry.
     pub fn hits(&self) -> usize {
         self.hits
     }
@@ -487,19 +428,13 @@ impl PageBody {
     }
 }
 
-/// One titled section of a page, already filtered: the body is `None`
-/// when the query dropped every row.
 pub struct Section {
     body: Option<Stateful<Div>>,
     hits: usize,
 }
 
 impl Section {
-    /// Build a section against the query. A query hitting the section's
-    /// own label keeps the whole section; otherwise rows pass one by
-    /// one and an emptied section drops. The icon leads the header the
-    /// way the sidebar's do, and it's required here so no section on the
-    /// sealed path ships bare.
+    /// A query hitting the section's own label keeps the whole section.
     pub fn new(
         q: &Query,
         icon: &'static str,
@@ -528,8 +463,8 @@ impl Section {
     }
 }
 
-/// A section's rows, each declaring what finds it. `all` short-circuits
-/// the checks while no search is on or the section's own name matched.
+/// `all` short-circuits the checks while no search is on or the section's
+/// own name matched.
 pub struct Rows<'a> {
     q: &'a Query,
     all: bool,
@@ -538,7 +473,6 @@ pub struct Rows<'a> {
 }
 
 impl Rows<'_> {
-    /// A standard labeled row; the label and description are the terms.
     pub fn row(
         mut self,
         label: impl Into<SharedString>,
@@ -555,20 +489,9 @@ impl Rows<'_> {
         self
     }
 
-    /// [`Rows::row`] built from its message key, with extra English terms
-    /// the copy doesn't include: "gapless" on the crossfade row,
-    /// "normalization" on the gain mode.
-    ///
-    /// Taking the key rather than the rendered text lets a row pick up
-    /// search terms in the active language. The label is the key,
-    /// the description its `.description` attribute when it has one, and
-    /// its `.keywords` attribute is a whitespace-separated list of
-    /// synonyms in that language.
-    ///
-    /// `keywords` stays English and always matches, on top of whatever
-    /// the locale adds. Audio terms travel untranslated (plenty of German
-    /// users look for "gapless"), so dropping them would make a
-    /// translated build harder to search than the English one.
+    /// [`Rows::row`] from a message key, so the row matches the active
+    /// locale's `.keywords` too. `keywords` stays English and always matches:
+    /// audio terms like "gapless" travel untranslated.
     pub fn keyed(
         mut self,
         key: &'static str,
@@ -591,8 +514,7 @@ impl Rows<'_> {
         self
     }
 
-    /// A row whose description has live numbers: the query matches
-    /// the label and keywords only, never text that moves under it.
+    /// Matches the label and keywords only, never text that moves.
     pub fn row_dyn(
         mut self,
         keywords: &[&str],
@@ -610,10 +532,7 @@ impl Rows<'_> {
         self
     }
 
-    /// Anything that isn't a plain row (a table, a grid, a block with
-    /// its own chrome), declaring its terms outright. The closure only
-    /// runs when the content is kept, so a heavy section costs nothing
-    /// while filtered out.
+    /// For content that isn't a plain row. `build` only runs when kept.
     pub fn custom(mut self, keywords: &[&str], build: impl FnOnce() -> AnyElement) -> Self {
         if self.all || self.q.hits(keywords) {
             self.body = self.body.child(build());
@@ -622,13 +541,10 @@ impl Rows<'_> {
         self
     }
 
-    /// Chain conditionally, gpui's own `when` shape.
     pub fn when(self, condition: bool, then: impl FnOnce(Self) -> Self) -> Self {
         if condition { then(self) } else { self }
     }
 
-    /// [`Rows::when`] over an option, for the row that only exists while
-    /// there's something to put in it.
     pub fn when_some<T>(self, value: Option<T>, then: impl FnOnce(Self, T) -> Self) -> Self {
         match value {
             Some(value) => then(self, value),
@@ -650,10 +566,7 @@ impl Rows<'_> {
     }
 }
 
-/// One block's header inside a section's list: the label with whatever
-/// acts on the whole block on its right edge, ruled off from the rows
-/// beneath the way [`section`] rules its own. The rule is lighter than a
-/// section's, so the two levels read apart rather than alike.
+/// A block header inside a section, ruled lighter than the section's own.
 pub fn block_header(label: impl IntoElement, trailing: impl IntoElement) -> Div {
     div()
         .flex()
@@ -668,10 +581,8 @@ pub fn block_header(label: impl IntoElement, trailing: impl IntoElement) -> Div 
         .child(trailing)
 }
 
-/// A block nested under the row that owns it: an accent rail down the
-/// left edge with the content inset from it, so the block reads as
-/// belonging to the row above instead of continuing the list. What a
-/// route's editor goes in, under the knob it drives.
+/// A block nested under the row that owns it, like a route's editor under its
+/// knob.
 pub fn nested(body: impl IntoElement) -> Div {
     div()
         .flex()
@@ -688,24 +599,12 @@ pub fn nested(body: impl IntoElement) -> Div {
         .child(div().flex_1().child(body))
 }
 
-/// A control's keyboard side: the focus handle it keeps between frames,
-/// held by the window under a name the control gives itself, so calling one
-/// up doesn't mean inventing an id for it at every call site.
+/// A control's focus handle, kept by the window under the control's own name.
 ///
-/// Wearing one of these is the whole of being keyboard-reachable. gpui reads
-/// the handle to put the control in the window's tab order, and it turns
-/// Enter or Space on a focused control into a click of its own accord, so
-/// nothing here has to handle keys.
-///
-/// `FocusHandle::tab_index` and `tab_stop` are two different switches: the
-/// index alone still inserts the handle into the order, just flagged as one
-/// Tab skips over. Every call site chains both onto the handle this returns
-/// (`.tab_index(0).tab_stop(true)`) before handing it to `track_focus`, or
-/// the control sits in the tree and never gets a turn.
-///
-/// Two controls in one window under the same name share a handle: Tab stops
-/// at the first and both light. Where a page repeats a label, the caller
-/// names the control instead through the builder's `keyed`.
+/// Every call site chains `.tab_index(0).tab_stop(true)` before
+/// `track_focus`: the index alone inserts the handle but Tab skips it. Two
+/// controls under the same name share a handle, so a page that repeats a
+/// label names the control through the builder's `keyed`.
 pub fn control_focus(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> FocusHandle {
     window
         .use_keyed_state(id.into(), cx, |_, cx| cx.focus_handle())
@@ -713,26 +612,18 @@ pub fn control_focus(id: impl Into<ElementId>, window: &mut Window, cx: &mut App
         .clone()
 }
 
-/// The key context a focused control carries, so the window's bare
-/// playback chords let go of the keys the control needs: Space to press
-/// it, the arrows to move a slider. Same carve-out a focused search box
-/// gets, and it's only in the dispatch path while the control actually
-/// holds focus, so playback keeps the keys the rest of the time.
+/// Carves the keys a focused control needs out of the bare playback chords.
+/// Only in the dispatch path while the control holds focus.
 pub const CONTROL_CONTEXT: &str = "FocusedControl";
 
-/// Wire a control's press: the pointer on the way down, and Enter or
-/// Space while the control holds focus. Both go to the one handler.
-///
-/// The keys are taken here rather than left to gpui's own keyboard click,
-/// which only fires for elements carrying an id; see [`Press`] for why
-/// these don't take one.
+/// Pointer on the way down, Enter or Space while focused. The keys are taken
+/// here because gpui's keyboard click needs an id; see [`Press`].
 pub(crate) fn pressable<E: InteractiveElement>(element: E, on_press: OnPress) -> E {
     let keys = on_press.clone();
     element
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            // gpui focuses a track_focus element on the same press, so mark
-            // the focus it's about to grab a pointer one before that lands:
-            // see [`focus_visible`].
+            // gpui focuses on this same press, so mark it a pointer focus
+            // before that lands.
             note_pointer_press(cx);
             on_press(&Press, window, cx)
         })
@@ -747,48 +638,31 @@ pub(crate) fn pressable<E: InteractiveElement>(element: E, on_press: OnPress) ->
         })
 }
 
-/// Whether the app's next focus change was reached by keyboard, gpui's
-/// stand-in for CSS's `:focus-visible`: gpui itself doesn't tell a keyboard
-/// focus from a pointer one apart, so this tracks it by hand. A keystroke
-/// anywhere sets it, [`pressable`]'s own press clears it, so tabbing through
-/// a page rings every stop while a click on one shows nothing but the click.
-///
-/// App-wide rather than per-window: whichever window last took a key or a
-/// click is the one the user's hands were just at, and every window's
-/// controls read the one flag.
+/// gpui's stand-in for `:focus-visible`: a keystroke sets it, a pointer press
+/// clears it. App-wide, since every window's controls read the one flag.
 struct FocusVisible(bool);
 
 impl Global for FocusVisible {}
 
-/// Arms the focus-visible tracking [`focus_ring`] reads. Call once at
-/// startup; the interceptor runs for the app's life.
+/// Call once at startup.
 pub fn init(cx: &mut App) {
     cx.set_global(FocusVisible(true));
     cx.intercept_keystrokes(|_, _, cx| cx.set_global(FocusVisible(true)))
         .detach();
 }
 
-/// Whether a control that holds focus should show for it. Reads true before
-/// [`init`] runs (tests, and the sliver of startup before it's called),
-/// since showing a ring nobody asked to hide is the safe default.
+/// True before [`init`] runs, since showing a ring is the safe default.
 fn focus_visible(cx: &App) -> bool {
     cx.try_global::<FocusVisible>().map(|v| v.0).unwrap_or(true)
 }
 
-/// Marks the next focus a pointer one, so the ring it lands on stays dark.
-/// [`pressable`] calls this itself; a control that wires its own mouse down
-/// instead of going through `pressable` (the settings slider's drag) calls
-/// it directly.
+/// For a control that wires its own mouse down instead of going through
+/// `pressable`.
 pub(crate) fn note_pointer_press(cx: &mut App) {
     cx.set_global(FocusVisible(false));
 }
 
-/// The ring a focused control wears, as a child that sits just outside its
-/// bounds. Outside rather than a border of its own so a control is the same
-/// size focused as not: a ring that pushed the layout around would make
-/// tabbing through a page shuffle it. Only wears it while focus is visible
-/// (see [`focus_visible`]); a mouse click still focuses the control, just
-/// without a ring nothing else marks.
+/// Sits outside the bounds so focusing never shifts the layout.
 pub fn focus_ring(focused: bool, radius: Pixels, cx: &App) -> Option<Div> {
     (focused && focus_visible(cx)).then(|| {
         div()
@@ -801,12 +675,8 @@ pub fn focus_ring(focused: bool, radius: Pixels, cx: &App) -> Option<Div> {
     })
 }
 
-/// How wide the focus ring draws, and how far outside the control it sits.
 const RING: Pixels = px(1.5);
 
-/// The settings windows' text button, at the section header's scale
-/// where they all appear: an icon leading its label; inert ones
-/// dim and drop the click.
 pub fn small_button(
     label: impl Into<SharedString>,
     icon: &'static str,
@@ -815,8 +685,6 @@ pub fn small_button(
 ) -> SmallButton {
     let label = label.into();
     SmallButton {
-        // The label and the glyph together name the button, which is what
-        // the focus handle is kept under.
         id: ElementId::Name(format!("{label}:{icon}").into()),
         base: div()
             .flex()
@@ -837,8 +705,6 @@ pub fn small_button(
     }
 }
 
-/// [`small_button`]'s element. Styles applied to it go to the button
-/// itself, so a caller wanting a different fill just says `.bg(..)`.
 #[derive(IntoElement)]
 pub struct SmallButton {
     id: ElementId,
@@ -850,8 +716,8 @@ pub struct SmallButton {
 }
 
 impl SmallButton {
-    /// Name this button, for a page that has more than one button saying the
-    /// same thing. See [`control_focus`].
+    /// For a page with more than one button saying the same thing. See
+    /// [`control_focus`].
     pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
         self.id = id.into();
         self
@@ -901,9 +767,7 @@ impl RenderOnce for SmallButton {
     }
 }
 
-/// A confirm-dialog button: the primary one reads as a filled accent
-/// control, the rest as plain controls. Shared with the pass prompt, which
-/// is a dialog the settings window no longer owns alone.
+/// The primary one fills with the accent.
 pub fn dialog_button(
     label: impl Into<SharedString>,
     primary: bool,
@@ -932,7 +796,6 @@ pub fn dialog_button(
     }
 }
 
-/// [`dialog_button`]'s element. Styles applied to it go to the button.
 #[derive(IntoElement)]
 pub struct DialogButton {
     id: ElementId,
@@ -943,7 +806,6 @@ pub struct DialogButton {
 }
 
 impl DialogButton {
-    /// Name this button; see [`SmallButton::keyed`].
     pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
         self.id = id.into();
         self
@@ -984,9 +846,7 @@ impl RenderOnce for DialogButton {
     }
 }
 
-/// A [`dialog_button`] with a leading icon, for the secondary action that
-/// goes in a dialog's footer beside the confirm pair and has to read as
-/// their equal. Inert ones dim and drop the click.
+/// For the secondary action in a dialog's footer beside the confirm pair.
 pub fn dialog_icon_button(
     label: impl Into<SharedString>,
     icon: &'static str,
@@ -1014,7 +874,6 @@ pub fn dialog_icon_button(
     }
 }
 
-/// [`dialog_icon_button`]'s element. Styles applied to it go to the button.
 #[derive(IntoElement)]
 pub struct DialogIconButton {
     id: ElementId,
@@ -1026,7 +885,6 @@ pub struct DialogIconButton {
 }
 
 impl DialogIconButton {
-    /// Name this button; see [`SmallButton::keyed`].
     pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
         self.id = id.into();
         self
@@ -1076,33 +934,19 @@ impl RenderOnce for DialogIconButton {
     }
 }
 
-/// How wide a select field draws unless the caller says otherwise: room
-/// for a signal's derived name ("Band 30 - 1.5k Hz") without the list
-/// pushing the row's label off its own line.
+/// Room for a signal's derived name without pushing the row's label off its
+/// line.
 pub const SELECT_W: Pixels = px(190.);
 
-/// A select field: the bordered control that shows what's picked and drops
-/// its list under itself. The app's field styling rather than a button's,
-/// because a pick from a list is a value the row holds, not an action the
-/// row takes, and a button reads as the second thing.
+/// A bordered field that drops its list, styled as a value the row holds
+/// rather than an action. Attach the list with `DropdownMenu::dropdown_menu`.
 ///
-/// Reach for it wherever [`crate::picker`] would otherwise put a
-/// small outline button in a settings row. Attach the list with
-/// gpui-component's `DropdownMenu::dropdown_menu`, which this implements:
-///
-/// ```ignore
-/// select_field("route-signal-0", "Kick", false)
-///     .dropdown_menu(move |mut menu, _, _| { .. })
-/// ```
-///
-/// The list is a `PopupMenu`, so arrow keys, Enter, Escape and a scrollbar
-/// past a screenful come with it. The popup defers, so don't host one
-/// inside another deferred overlay: gpui 0.2.2 panics on nested deferred.
+/// The popup defers, so never host one inside another deferred overlay:
+/// gpui 0.2.2 panics on nested deferred.
 pub fn select_field(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
-    // Whether the label is a prompt rather than a pick, drawn muted the
-    // way an empty input's placeholder is.
+    // A prompt rather than a pick, drawn muted like a placeholder.
     placeholder: bool,
 ) -> SelectField {
     SelectField {
@@ -1128,8 +972,6 @@ pub fn select_field(
     }
 }
 
-/// [`select_field`]'s element. Styles applied to it go to the field
-/// itself, so a caller wanting a wider one just says `.w(px(240.))`.
 #[derive(IntoElement)]
 pub struct SelectField {
     base: Stateful<Div>,
@@ -1150,8 +992,6 @@ impl InteractiveElement for SelectField {
     }
 }
 
-/// What the popover uses to tell the field its list is open, so the border
-/// and the caret light with it.
 impl Selectable for SelectField {
     fn selected(mut self, selected: bool) -> Self {
         self.open = selected;
@@ -1186,8 +1026,7 @@ impl RenderOnce for SelectField {
                 .when(placeholder, |d| d.text_color(palette::text_muted()))
                 .child(label),
         )
-        // One caret either way: there's no up chevron in the icon set, and
-        // the lit border already says the list is down.
+        // No up chevron in the icon set; the lit border says it's open.
         .child(
             svg()
                 .path(icons::CHEVRON_DOWN)
@@ -1202,16 +1041,8 @@ impl RenderOnce for SelectField {
     }
 }
 
-/// A button that drops a menu: [`small_button`]'s look with a caret after
-/// the label, for an action with kinds to pick between, like adding a
-/// source that can be a folder or a server. Attach the list with
-/// gpui-component's `DropdownMenu::dropdown_menu`, the way [`select_field`]
-/// takes one. An empty label draws the glyph and the caret alone, for the
-/// add slot at the foot of a table.
-///
-/// There's no inert state: the popover owns the click. An action that can't
-/// run right now disables its menu items instead, which also says which
-/// kind is blocked.
+/// An action with kinds to pick between. There's no inert state since the
+/// popover owns the click: disable the menu items instead.
 pub fn menu_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -1237,7 +1068,6 @@ pub fn menu_button(
     }
 }
 
-/// [`menu_button`]'s element. Styles applied to it go to the button.
 #[derive(IntoElement)]
 pub struct MenuButton {
     base: Stateful<Div>,
@@ -1258,8 +1088,6 @@ impl InteractiveElement for MenuButton {
     }
 }
 
-/// What the popover uses to tell the button its menu is open, so the caret
-/// lights with it.
 impl Selectable for MenuButton {
     fn selected(mut self, selected: bool) -> Self {
         self.open = selected;
@@ -1306,18 +1134,12 @@ impl RenderOnce for MenuButton {
     }
 }
 
-/// An icon-only button for table rows: the glyph alone at rest, a soft
-/// pill behind it on hover, dimmed and inert like the text buttons.
-/// [`IconButton::filled`] gives it a resting fill where a flat glyph
-/// would read as decoration.
 pub fn icon_button(
     icon: &'static str,
     inert: bool,
     on_click: impl Fn(&Press, &mut Window, &mut App) + 'static,
 ) -> IconButton {
     IconButton {
-        // A glyph and nothing else, so the glyph is the name. A row of
-        // these repeating down a table is the case `keyed` exists for.
         id: ElementId::Name(icon.into()),
         base: div()
             .flex_none()
@@ -1331,7 +1153,6 @@ pub fn icon_button(
     }
 }
 
-/// [`icon_button`]'s element. Styles applied to it go to the button.
 #[derive(IntoElement)]
 pub struct IconButton {
     id: ElementId,
@@ -1343,16 +1164,12 @@ pub struct IconButton {
 }
 
 impl IconButton {
-    /// Name this button; see [`SmallButton::keyed`].
     pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
         self.id = id.into();
         self
     }
 
-    /// Give the button a resting fill, [`small_button`]'s chrome without
-    /// its label. For one standing beside filled controls, where a glyph
-    /// on bare background reads as decoration rather than something to
-    /// press. The hover moves up a step to match.
+    /// For one beside filled controls, where a bare glyph reads as decoration.
     pub fn filled(mut self) -> Self {
         self.filled = true;
         self.base = self.base.bg(palette::bg_control());
@@ -1377,8 +1194,6 @@ impl RenderOnce for IconButton {
         let focus = control_focus(self.id.clone(), window, cx);
         let focused = focus.is_focused(window);
         let inert = self.inert;
-        // A flat button's hover is the fill arriving; a filled one already
-        // has it, so its hover is the next step up.
         let hover = if self.filled {
             palette::bg_control_hover()
         } else {
@@ -1409,27 +1224,15 @@ impl RenderOnce for IconButton {
     }
 }
 
-/// How far past a strip's top a typed value may go, as a multiple of
-/// the span: the strip covers the sensible everyday range, the input
-/// covers conviction.
+/// How far past a strip's top a typed value may go, as a multiple of the span.
 pub const OVER: f32 = 4.0;
 
-/// How far one arrow key moves a log strip, as a fraction of it.
-///
-/// A press has to be worth a whole rounding step wherever it's made, or
-/// the readout lands back on the number it started from and the key reads
-/// as dead. The binding case is the bottom of the strip, where the values
-/// are small and the rounding is finest: on the live buffer's 30 s to
-/// 12 h, moving 30 s to the next multiple of five wants a ratio of 7 to 6,
-/// which is a fortieth of the strip. Forty presses to cross a range that
-/// wide is a fair trade for never pressing one that does nothing.
+/// A press must be worth a whole rounding step anywhere on the strip or the
+/// key reads dead. The tightest case, 30 s on the 30 s to 12 h buffer, needs a
+/// ratio of 7 to 6: a fortieth of the strip.
 const LOG_STEP: f32 = 0.025;
 
-/// A scalar knob's span and how its number reads: the range the strip
-/// scrubs across, the suffix trailing the value (its leading space
-/// included, so `" px"` stands off the number and `"%"` glues to it), the
-/// decimals the readout and the applied value keep, and how far a typed
-/// value may run past the top.
+/// `unit` includes its leading space where it wants one: `" px"`, `"%"`.
 #[derive(Clone, Copy)]
 pub struct Span {
     min: f32,
@@ -1437,24 +1240,16 @@ pub struct Span {
     unit: &'static str,
     decimals: usize,
     over: f32,
-    /// Read the number as a length of time rather than a count of `unit`s,
-    /// which is [`span_secs`] and nothing else.
     duration: bool,
-    /// Lay the strip out by ratio rather than by amount. See [`Span::log`].
     log: bool,
 }
 
-/// The highest a typed value may go over a strip running `min` to
-/// `max`. What a saved knob has to be read back inside: folded to the
-/// strip's own top on load, every typed value would drop the moment the
-/// app restarts.
+/// Where a saved knob is clamped on load. Folding to the strip's own top
+/// would drop every typed value on restart.
 pub fn ceiling(min: f32, max: f32) -> f32 {
     min + (max - min) * OVER
 }
 
-/// A span from `min` to `max` reading in whole `unit`s, with the typed
-/// headroom a soft ceiling gets. [`Span::decimals`] and [`Span::hard`]
-/// refine it.
 pub fn span(min: f32, max: f32, unit: &'static str) -> Span {
     Span {
         min,
@@ -1467,17 +1262,8 @@ pub fn span(min: f32, max: f32, unit: &'static str) -> Span {
     }
 }
 
-/// A span of seconds whose readout reads as a length of time: `45 s`,
-/// `10 min`, `1 h 30 min`. Three thousand six hundred is not a number
-/// anyone thinks in, and a strip that prints it is handing the reader
-/// arithmetic the app already knows the answer to. The typed input takes
-/// the same forms back, plus a bare number of seconds.
-///
-/// The value the strip lands on is rounded to a step that suits its size,
-/// five seconds at the bottom and up to fifteen minutes at the top, so
-/// the readout stops on numbers a person would have chosen rather than on
-/// 1 h 7 min 13 s. That's also what makes the readout and the input exact
-/// inverses of each other.
+/// Seconds read as `45 s`, `10 min`, `1 h 30 min`. Values round to a step
+/// that grows with size, which also makes readout and input exact inverses.
 pub fn span_secs(min: f32, max: f32) -> Span {
     Span {
         min,
@@ -1490,14 +1276,8 @@ pub fn span_secs(min: f32, max: f32) -> Span {
     }
 }
 
-/// Seconds as a length of time, the readout [`span_secs`] draws. The
-/// largest unit that fits leads and the one under it follows when there's
-/// a remainder, which is as far as anyone reads a duration off a slider;
-/// an hours value with stray seconds under the minutes drops them.
-///
-/// `s`, `min` and `h` stay as they are in every locale. They're the
-/// symbols rather than the words, the same way the other spans' units
-/// travel, and no locale rox ships writes them differently.
+/// Two units at most, the way a duration is read off a slider. The unit
+/// symbols are the same in every locale rox ships.
 pub fn fmt_duration_secs(secs: f32) -> String {
     let total = secs.max(0.0).round() as u64;
     let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
@@ -1519,12 +1299,8 @@ pub fn fmt_duration_secs(secs: f32) -> String {
     format!("{seconds} s")
 }
 
-/// The readout typed back, and the shorthand a person reaches for on the
-/// way: `600`, `600s`, `10 min`, `1 h 30 min`, `1,5 min`. A run of
-/// number-and-unit pairs added together, with a number carrying no unit
-/// counted as seconds, since that's what a bare number in a seconds field
-/// has always meant. Anything else is refused rather than guessed at, so
-/// a typo leaves the setting where it was.
+/// Number-and-unit pairs summed; a bare number is seconds. Anything else is
+/// refused, so a typo leaves the setting alone.
 pub fn parse_duration_secs(text: &str) -> Option<f32> {
     let text = text.trim().replace(',', ".").to_ascii_lowercase();
     let mut rest = text.as_str();
@@ -1534,8 +1310,6 @@ pub fn parse_duration_secs(text: &str) -> Option<f32> {
     while !rest.trim_start().is_empty() {
         rest = rest.trim_start();
 
-        // The number, then whatever letters follow it. Either may end the
-        // string, which is what the length fallbacks are for.
         let digits = rest
             .find(|c: char| !c.is_ascii_digit() && c != '.')
             .unwrap_or(rest.len());
@@ -1559,12 +1333,8 @@ pub fn parse_duration_secs(text: &str) -> Option<f32> {
     read.then_some(total)
 }
 
-/// The step a duration strip rounds to at `secs`: fine enough down at the
-/// bottom that a small buffer can be set precisely, coarse enough at the
-/// top that twelve hours doesn't come with a minutes column nobody asked
-/// for. The ladder climbs gently on purpose, since a jump from five
-/// seconds straight to a minute would leave an arrow key unable to move
-/// the value at all just above the boundary.
+/// The ladder climbs gently: a jump from five seconds straight to a minute
+/// would leave an arrow key unable to move the value above the boundary.
 fn duration_step(secs: f32) -> f32 {
     match secs {
         s if s < 120.0 => 5.0,
@@ -1576,56 +1346,38 @@ fn duration_step(secs: f32) -> f32 {
 }
 
 impl Span {
-    /// Keep `n` decimals, in the readout and in the value that's applied.
     pub fn decimals(mut self, n: usize) -> Self {
         self.decimals = n;
         self
     }
 
-    /// The strip's range is the law rather than a reach: a typed value
-    /// clamps to it. For the knobs whose top means something, a full
-    /// percent or a circle, instead of a comfortable ceiling.
+    /// Typed values clamp to the strip, for knobs whose top means something.
     pub fn hard(mut self) -> Self {
         self.over = 1.0;
         self
     }
 
-    /// Lay the strip out by ratio rather than by amount: every step along
-    /// it is the same multiple of the one before, so the small end of the
-    /// range gets as much room as the large end.
+    /// Lay the strip out by ratio, for spans whose ends are orders apart. Only
+    /// the mapping changes; values stay in real units.
     ///
-    /// For the spans whose ends are orders apart. Thirty seconds to twelve
-    /// hours drawn evenly puts the whole first hour inside the first two
-    /// percent of the strip, which is a slider that can't be set to ten
-    /// minutes. Only the mapping changes: the readout and every value that
-    /// reaches the setter are in real units the way they always were.
-    ///
-    /// The soft ceiling goes with it, because the two don't compose. The
-    /// headroom in [`OVER`] is a multiple of the fraction, and a fraction
-    /// past one on a log strip multiplies the ratio instead of the value,
-    /// so four times the span of a strip running 30 to 43200 would let
-    /// someone type thirty thousand years. A log span is hard, and what's
-    /// on the strip is the whole of what the setting takes.
-    ///
-    /// `min` has to be above zero. A ratio from nothing isn't a ratio.
+    /// Also makes the span hard: [`OVER`] multiplies the fraction, which on a
+    /// log strip multiplies the ratio and would allow absurd values. `min`
+    /// must be above zero.
     pub fn log(mut self) -> Self {
         self.log = true;
         self.over = 1.0;
         self
     }
 
-    /// `value` as a fraction of the strip. Values past the top pin it
-    /// full; the readout still reads the real number.
     fn fraction(&self, value: f32) -> f32 {
         self.unclamped(value).clamp(0.0, 1.0)
     }
 
-    /// The typed value's place on the strip, past the top included: the
-    /// input's own headroom is applied downstream, against `over`.
+    /// Past the top included; the input's headroom is applied downstream.
     fn unclamped(&self, value: f32) -> f32 {
         if self.log {
-            // Floored just above zero so a typed nothing lands off the
-            // bottom of the strip instead of at an infinity.
+            // Floored above zero so a typed nothing lands off the bottom
+            // rather than at infinity.
             let ratio = (value / self.min).max(f32::MIN_POSITIVE);
 
             return ratio.ln() / (self.max / self.min).ln();
@@ -1634,10 +1386,8 @@ impl Span {
         (value - self.min) / (self.max - self.min)
     }
 
-    /// How far one arrow key moves this strip: the smallest step its
-    /// readout can show, since a press that doesn't change the number
-    /// reads as a dead key. Never finer than a hundredth of the span
-    /// either, or crossing a wide range would be a hundred presses.
+    /// The smallest step the readout can show, so no press reads dead, but no
+    /// finer than a hundredth of the span.
     fn step(&self) -> f32 {
         if self.log {
             return LOG_STEP;
@@ -1647,8 +1397,7 @@ impl Span {
         smallest.max(0.01)
     }
 
-    /// The value a strip fraction stands for, rounded to what the readout
-    /// shows, so the applied value matches the one on screen.
+    /// Rounded to what the readout shows, so the applied value matches.
     fn value(&self, fraction: f32) -> f32 {
         let raw = match self.log {
             true => self.min * (self.max / self.min).powf(fraction),
@@ -1665,16 +1414,13 @@ impl Span {
         (raw * step).round() / step
     }
 
-    /// The number as the strip shows it.
     fn readout(&self, value: f32) -> String {
         if self.duration {
             return fmt_duration_secs(value);
         }
 
-        // The readout is read, so its decimal mark follows the locale:
-        // a German build shows 0,5 where an English one shows 0.5. The
-        // unit includes its own leading space where it needs one, so it
-        // concatenates rather than going through format_unit.
+        // The unit carries its own leading space, so this concatenates
+        // rather than going through format_unit.
         format!(
             "{}{}",
             rox_i18n::format::format_float(value as f64, self.decimals as u8),
@@ -1682,10 +1428,8 @@ impl Span {
         )
     }
 
-    /// What the readout's input opens with. A duration seeds with the
-    /// readout itself, so the forms on screen are the forms it takes
-    /// back; everything else seeds with a bare ASCII number, since the
-    /// localized readout would have to be retyped to parse.
+    /// A duration seeds with its readout; anything else with a bare ASCII
+    /// number, since the localized readout wouldn't parse back.
     fn edit_text(&self, value: f32) -> String {
         if self.duration {
             return fmt_duration_secs(value);
@@ -1694,7 +1438,6 @@ impl Span {
         format!("{:.*}", self.decimals, value)
     }
 
-    /// How the typed text is read back into the setting's own unit.
     fn parse(&self) -> panel::ParseTyped {
         match self.duration {
             true => parse_duration_secs,
@@ -1703,10 +1446,7 @@ impl Span {
     }
 }
 
-/// A scalar setting's control: the strip scrubbing its span with the
-/// readout beside it doubling as an input. Click the number, type, Enter.
-/// `value` and what `apply` receives are both in the setting's own unit,
-/// so no caller maps a fraction by hand.
+/// `value` and what `apply` receives are in the setting's own unit.
 pub fn scalar<P: 'static>(
     scrub: &ScrubState,
     edit: &panel::ValueEdit,
@@ -1726,8 +1466,6 @@ pub fn scalar<P: 'static>(
     )
 }
 
-/// [`scalar`] with the strip's width said out loud. Pages take the fixed
-/// control column; a dialog builds its own row and asks the strip to fill it.
 #[allow(clippy::too_many_arguments)]
 pub fn scalar_sized<P: 'static>(
     scrub: &ScrubState,
@@ -1754,16 +1492,13 @@ pub fn scalar_sized<P: 'static>(
     )
 }
 
-/// The scrub strips a four-sided knob needs: one for the linked slider,
-/// one per side for while it's split. The two sets never draw at once, so
-/// each strip still owns its own bounds.
+/// The two sets never draw at once, so each strip owns its own bounds.
 #[derive(Default)]
 pub struct SidesScrub {
     linked: ScrubState,
     sides: [ScrubState; 4],
 }
 
-/// The icon each side uses in a split knob, in [`Side::ALL`] order.
 const SIDE_ICONS: [&str; 4] = [
     icons::PANEL_TOP,
     icons::PANEL_RIGHT,
@@ -1771,17 +1506,9 @@ const SIDE_ICONS: [&str; 4] = [
     icons::PANEL_LEFT,
 ];
 
-/// A four-sided frame knob's control: the link toggle, then either one
-/// strip driving all four sides or a strip per side. Linked is the
-/// everyday shape and reads exactly like any other scalar row; splitting
-/// stacks the sides under each other, clockwise from the top the way CSS
-/// writes them.
-///
-/// `apply` takes the side that moved, or None for the linked strip, so a
-/// caller wires one setter per knob instead of five. `split` is the
-/// caller's own state rather than something read back off the value: a
-/// knob whose sides happen to match is still split while the user has it
-/// open that way.
+/// `apply` takes the side that moved, or None for the linked strip. `split`
+/// is the caller's state, not read off the value: matching sides can still be
+/// open split.
 #[allow(clippy::too_many_arguments)]
 pub fn sides_control<P: 'static>(
     scrub: &SidesScrub,
@@ -1793,8 +1520,6 @@ pub fn sides_control<P: 'static>(
     apply: impl Fn(&mut P, Option<Side>, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    // One segment, so the group reads as a toggle: filled while the sides
-    // are linked, hollow while they're apart.
     const LINK: &[(&str, ())] = &[(icons::LINK, ())];
     let link = panel::icon_toggles(
         LINK,
@@ -1831,8 +1556,6 @@ pub fn sides_control<P: 'static>(
         }
         column
     } else {
-        // Linked, every side holds the same number, so the top one
-        // stands for all four.
         scalar(
             &scrub.linked,
             edit,
@@ -1851,9 +1574,6 @@ pub fn sides_control<P: 'static>(
         .child(control)
 }
 
-/// A percent slider whose readout doubles as an input: click, type,
-/// Enter. Percent knobs stay bounded at 100; the strip's range is the law
-/// here.
 pub fn slider_edit<P: 'static>(
     scrub: &ScrubState,
     edit: &panel::ValueEdit,
@@ -1873,10 +1593,6 @@ pub fn slider_edit<P: 'static>(
     )
 }
 
-/// One cell of a color grid: the swatch control with its role label
-/// beside it. `marked` brightens the label, how the panel editor points
-/// out the roles it overrides. `trailing` goes on the cell's right edge,
-/// where the panel editor hangs a role's reset button.
 pub fn color_cell(
     control: AnyElement,
     label: impl Into<SharedString>,
@@ -1907,9 +1623,6 @@ pub fn color_cell(
         .when_some(trailing, |d, trailing| d.child(trailing))
 }
 
-/// The color grid's frame: each listing group under its header,
-/// `columns` cells to a row, the last row padded so cells keep their
-/// width. The cell for a role index is the caller's.
 pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> Div {
     let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
     let mut i = 0;
@@ -1941,10 +1654,6 @@ pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> D
 mod tests {
     use super::{OVER, Query, ceiling, fmt_duration_secs, parse_duration_secs, span, span_secs};
 
-    /// The forms the live buffer's readout is written in, each one read
-    /// straight back off the screen. Retyping what the strip shows is the
-    /// whole contract of an editable readout, so every shape it can print
-    /// has to survive the round trip.
     #[test]
     fn a_duration_reads_back_as_the_seconds_it_was_written_from() {
         for secs in [30.0, 45.0, 120.0, 600.0, 3600.0, 5400.0, 10800.0, 43200.0] {
@@ -1960,9 +1669,6 @@ mod tests {
         assert_eq!(fmt_duration_secs(95.0), "1 min 35 s");
     }
 
-    /// The shorthand around the readout's own forms: a bare number is
-    /// seconds, the space is optional, the decimal mark is either, and
-    /// anything that isn't a duration is refused rather than guessed at.
     #[test]
     fn the_duration_input_takes_what_a_person_would_type() {
         assert_eq!(parse_duration_secs("600"), Some(600.0));
@@ -1976,30 +1682,21 @@ mod tests {
         assert_eq!(parse_duration_secs("10 fortnights"), None);
     }
 
-    /// A log strip's ends are its real ends, and its middle is the
-    /// geometric mean rather than the average. Thirty seconds to twelve
-    /// hours puts half an hour at the halfway mark, which is the whole
-    /// point: the same range drawn evenly would have it at four percent.
     #[test]
     fn a_log_strip_puts_the_middle_at_the_geometric_mean() {
         let span = span_secs(30.0, 43200.0).log();
         assert_eq!(span.value(0.0), 30.0);
         assert_eq!(span.value(1.0), 43200.0);
 
-        // sqrt(30 * 43200) is 1138 seconds, which the duration rounding
-        // takes to the nearest minute.
+        // sqrt(30 * 43200) is 1138 s, rounded to the nearest minute.
         assert_eq!(span.value(0.5), 1140.0);
         assert!((span.fraction(1140.0) - 0.5).abs() < 0.01);
 
-        // And the mapping is its own inverse at every point on it.
         for secs in [30.0, 300.0, 1800.0, 7200.0, 43200.0] {
             assert_eq!(span.value(span.fraction(secs)), secs);
         }
     }
 
-    /// One arrow press has to move the number wherever it's standing. The
-    /// rounding is finest at the bottom of the strip, so that's where a
-    /// press is likeliest to land back on the value it started from.
     #[test]
     fn an_arrow_press_moves_a_log_strip_everywhere_on_it() {
         let span = span_secs(30.0, 43200.0).log();
@@ -2011,7 +1708,6 @@ mod tests {
         }
     }
 
-    /// Every term must appear somewhere, any field counts, case folded.
     #[test]
     fn a_query_needs_every_term_in_some_text() {
         let q = Query::parse("  Cross Fade ");
@@ -2022,7 +1718,6 @@ mod tests {
         assert!(!q.hits(&[]));
     }
 
-    /// The empty query is search-off: inactive, and it matches anything.
     #[test]
     fn the_empty_query_matches_everything() {
         let q = Query::parse("   ");
@@ -2031,9 +1726,6 @@ mod tests {
         assert!(q.hits(&[]));
     }
 
-    /// A number typed into a readout comes back as itself: the strip
-    /// fraction it maps to resolves to the same value, inside the range
-    /// and out in the input's headroom.
     #[test]
     fn typed_values_round_trip_through_the_strip() {
         let px = span(0., 24., " px");
@@ -2052,8 +1744,6 @@ mod tests {
         }
     }
 
-    /// The strip pins full past its top while the readout keeps the real
-    /// number, and a value under the floor pins empty.
     #[test]
     fn the_strip_pins_at_its_ends() {
         let px = span(0., 24., " px");
@@ -2062,8 +1752,6 @@ mod tests {
         assert_eq!(px.fraction(-8.), 0.0);
     }
 
-    /// The read-back ceiling matches the headroom the input actually
-    /// allows, so nothing typed is folded away on the next load.
     #[test]
     fn the_ceiling_is_the_input_headroom() {
         let px = span(18., 72., " px");
@@ -2071,7 +1759,6 @@ mod tests {
         assert_eq!(ceiling(0., 24.), 96.);
     }
 
-    /// A hard span holds the input to the strip's own top.
     #[test]
     fn hard_spans_stop_at_the_top() {
         let percent = span(0., 100., "%").hard();
@@ -2084,8 +1771,6 @@ mod tests {
 mod search_tests {
     use super::Query;
 
-    /// Folding both sides makes a translated row findable by someone
-    /// who types without the accents, which is most people.
     #[test]
     fn accents_do_not_have_to_be_typed() {
         assert!(Query::parse("prereglages").hits(&["Préréglages"]));
@@ -2100,7 +1785,6 @@ mod search_tests {
         assert!(!Query::parse("row missing").hits(&["Row Height", "gap spacing"]));
     }
 
-    /// The empty query is the closed-search path and keeps everything.
     #[test]
     fn an_empty_query_is_not_a_filter() {
         assert!(!Query::parse("   ").active());

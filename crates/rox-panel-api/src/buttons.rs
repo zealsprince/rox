@@ -1,42 +1,18 @@
-//! The declared table of player state a custom button's look can follow.
-//! Every entry names a readable piece of the player, the finite list of
-//! cases it can be in, and a stock icon and colour role per case. The
-//! button editor generates one row per case off this table, so a user
-//! picks from lists and never writes an expression; the catalog is what
-//! makes that possible, since a state with an open-ended value has no
-//! rows to generate.
+//! The declared table of player state a custom button's look can follow:
+//! every entry names a readable piece of state, its finite list of cases, and
+//! a stock icon and colour role per case. The button editor generates one row
+//! per case, so a user picks from lists and never writes an expression.
 //!
-//! Read-only, and deliberately free of [`gpui`]: a reader is a plain
-//! `fn(&Player) -> &'static str`, which keeps the table testable without
-//! a context and keeps the resolution at draw down to a slice scan and a
-//! call. Colours are [`palette::ROLES`] names rather than baked `Rgba`,
-//! so a workspace that re-themes the palette carries through to buttons
-//! the user built under the old one.
+//! Free of [`gpui`] so the table tests without a context. Colours are
+//! [`palette::ROLES`] names, so a re-themed palette carries through to buttons
+//! built under the old one. The `player.` ids read the player and the `app.`
+//! ids read a global, and both are persisted in saved layouts forever.
 //!
-//! Not everything a button can follow lives on the player. The theme side,
-//! design mode, the menubar and their neighbours are app-wide flags behind
-//! free getters in `rox-core` and `rox-design`, and their readers take the
-//! `&Player` and ignore it rather than splitting the signature in two: one
-//! shape means the draw path stays a single call. The `player.` ids read
-//! the player, the `app.` ids read a global. Both are persisted in saved
-//! layouts forever, so an id gets picked once.
-//!
-//! The stock look is seed data. It exists so a new button starts as a
-//! working clone of the native transport control instead of a blank, and
-//! nothing in `rox-panels` renders through here: the native buttons keep
-//! computing their own icons and colours inline. Two things they draw are
-//! outside what a case table can say, and are left out rather than
-//! approximated. A-B's wait for B breathes a dot in the button's corner,
-//! which is an animation over a case rather than a case. The play button's
-//! accent fill is a background shape the strip's own config picks, and a
-//! custom button has no such knob. Mute's speaker glyph also splits by
-//! level below and above half, which is not a case of `muted` at all, so
-//! the unmuted seed takes the louder of the two.
-//!
-//! What's still out: favourite and rating are track-scoped and need the
-//! catalog and the selection alongside the player, the mini layout is
-//! owned by the workspace, and the post shader's live flag lives in the
-//! `rox` binary. None of the three is readable from here.
+//! The stock look is seed data that makes a new button a working clone of the
+//! native control. Nothing in `rox-panels` renders through here. Left out:
+//! A-B's breathing dot, the play button's accent fill, and mute's level split,
+//! which no case can say; favourite, rating, the mini layout, and the post
+//! shader's live flag, which aren't readable from here.
 
 use rox_core::continuation;
 use rox_core::settings::{self, GainModeSetting, ShuffleMode};
@@ -44,22 +20,18 @@ use rox_design::assets::icons;
 use rox_design::palette;
 use rox_services::player::{self, AbState, LoopMode, Player};
 
-/// One readable piece of player state a button's appearance can follow.
 pub struct StateSpec {
     /// Stable forever: it is what a saved layout holds. "player.repeat".
     pub id: &'static str,
     pub label_key: &'static str,
-    /// Every case, in the order the editor lists them. Exhaustive: `read`
-    /// always returns one of these ids.
+    /// In editor order. Exhaustive: `read` always returns one of these ids.
     pub cases: &'static [StateCase],
-    /// The command this state's obvious click is, prefilled when the user
-    /// picks the state. Empty when there is no single obvious one.
+    /// Prefilled when the user picks the state. Empty when there's no one
+    /// obvious command.
     pub action: &'static str,
     pub read: fn(&Player) -> &'static str,
 }
 
-/// One case of a state, and the stock look for it so a new button starts as
-/// a working clone of the native control rather than a blank.
 pub struct StateCase {
     pub id: &'static str,
     pub label_key: &'static str,
@@ -69,15 +41,15 @@ pub struct StateCase {
     pub color: &'static str,
 }
 
-/// Everything a button can follow, in the order the state picker lists it.
+/// In the order the state picker lists them.
 pub const STATES: &[StateSpec] = &[
     StateSpec {
         id: "player.playback",
         label_key: "button-state-playback",
         action: "toggle_playback",
         read: read_playback,
-        // The glyph is the action, not the state: playing shows the pause
-        // it would do, which is what the native play button draws.
+        // The glyph is the action: playing shows the pause, like the native
+        // play button.
         cases: &[
             StateCase {
                 id: "playing",
@@ -98,8 +70,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-repeat",
         action: "cycle_loop",
         read: read_repeat,
-        // Dim while off and the accent while on, with the one-track glyph
-        // for single-track loop.
         cases: &[
             StateCase {
                 id: "off",
@@ -126,10 +96,8 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-shuffle",
         action: "cycle_shuffle_mode",
         read: read_shuffle,
-        // The order shuffle puts the queue in, which in the native strip
-        // picks the glyph while the colour comes from the on/off state
-        // below. Split apart here, so the mode alone has no dim case and
-        // both seeds take the plain text role.
+        // The native strip takes this glyph but its colour from shuffle_on, so
+        // both seeds here take plain text.
         cases: &[
             StateCase {
                 id: "random",
@@ -150,8 +118,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-shuffling",
         action: "toggle_shuffle",
         read: read_shuffle_on,
-        // Off gets the numbered list, since that is what the queue plays
-        // in when nothing is shuffling it.
         cases: &[
             StateCase {
                 id: "on",
@@ -192,9 +158,8 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-stop-after",
         action: "toggle_stop_after",
         read: read_stop_after,
-        // Armed takes the solid square: the dashed one is also what an
-        // unconfigured button wears, so a lit button would otherwise read
-        // as one nobody finished setting up.
+        // Armed takes the solid square: the dashed one is what an unconfigured
+        // button wears.
         cases: &[
             StateCase {
                 id: "armed",
@@ -215,9 +180,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-ab-repeat",
         action: "ab_repeat",
         read: read_ab_repeat,
-        // A glyph per step of the cycle, so the button says which one it
-        // is at a glance: the span with no marks on it, the flag planted
-        // at A and waiting for B, the loop once both ends are in.
         cases: &[
             StateCase {
                 id: "off",
@@ -244,9 +206,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-continuation",
         action: "toggle_continuation",
         read: read_continuation,
-        // Both live strategies keep the one glyph, the way the native
-        // button does: Continue and Weighted mean the same thing to the
-        // ear and differ only in taste.
         cases: &[
             StateCase {
                 id: "off",
@@ -273,9 +232,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-stop",
         action: "stop_playback",
         read: read_stop,
-        // A Stop button that dims when there is nothing to stop, which is
-        // what the native one does. Both cases keep the square: the state
-        // is whether the press would do anything, not what it would do.
         cases: &[
             StateCase {
                 id: "active",
@@ -316,8 +272,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-crossfade-albums",
         action: "toggle_crossfade_albums",
         read: read_crossfade_albums,
-        // The same glyph as the crossfade itself, since this is the same
-        // fade with one more boundary to run at.
         cases: &[
             StateCase {
                 id: "off",
@@ -336,8 +290,8 @@ pub const STATES: &[StateSpec] = &[
     StateSpec {
         id: "player.sleep",
         label_key: "button-state-sleep",
-        // Arming the timer carries a length, which a command can't hold,
-        // so the one command here is the cancel.
+        // Arming carries a length a command can't hold, so the command is the
+        // cancel.
         action: "sleep_off",
         read: read_sleep,
         cases: &[
@@ -380,8 +334,8 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-exclusive-output",
         action: "toggle_exclusive_output",
         read: read_exclusive_output,
-        // What was asked for, not what the device granted. A claim that
-        // failed still reads as on here, the same as the settings page.
+        // What was asked for, not what the device granted, same as the
+        // settings page.
         cases: &[
             StateCase {
                 id: "on",
@@ -402,9 +356,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-replaygain",
         action: "cycle_replaygain_mode",
         read: read_replaygain,
-        // One gauge across the three, lit for either gain: which of the
-        // two a file is levelled by is a preference, and both mean the
-        // same thing to whoever is looking at the button.
         cases: &[
             StateCase {
                 id: "off",
@@ -431,9 +382,8 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-theme",
         action: "toggle_theme",
         read: read_theme,
-        // The side in effect, unlike the theme toggle panel, which draws
-        // the side a click goes to. A button here can follow the state or
-        // swap the two seeds itself, and the state is the honest default.
+        // The side in effect, unlike the theme toggle panel, which draws the
+        // side a click goes to.
         cases: &[
             StateCase {
                 id: "dark",
@@ -494,9 +444,8 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-menubar",
         action: "toggle_menubar",
         read: read_menubar,
-        // The case names what the menubar is doing, not what the setting
-        // is called: the flag behind it is hide_menubar, and a button
-        // reading "hidden: on" would be a riddle.
+        // Named for what the menubar does: the flag is hide_menubar, and a
+        // button reading "hidden: on" would be a riddle.
         cases: &[
             StateCase {
                 id: "shown",
@@ -537,9 +486,7 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-art-theming",
         action: "toggle_art_theming",
         read: read_art_theming,
-        // The disc rather than the palette: what is switched on is the
-        // cover driving the colours, and the palette glyph belongs to the
-        // theme it would be confused with.
+        // The disc, since the palette glyph belongs to the theme.
         cases: &[
             StateCase {
                 id: "on",
@@ -580,8 +527,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-seams",
         action: "toggle_seams",
         read: read_seams,
-        // The two-column split is the one catalog glyph that draws a line
-        // between panels, which is the whole of what a seam is.
         cases: &[
             StateCase {
                 id: "on",
@@ -602,8 +547,6 @@ pub const STATES: &[StateSpec] = &[
         label_key: "button-state-readings",
         action: "toggle_readings",
         read: read_readings,
-        // Reading names are a text setting, and the two A's are the
-        // catalog's mark for type.
         cases: &[
             StateCase {
                 id: "on",
@@ -621,18 +564,15 @@ pub const STATES: &[StateSpec] = &[
     },
 ];
 
-/// The live case id for `state`, or None when the id is unknown. Unknown
-/// ids go quiet rather than misfiring, the same contract `RouteTargets`
-/// gives unknown target ids: a layout written by a newer build draws its
-/// fallback instead of taking the panel down.
+/// None for an unknown id, so a layout written by a newer build draws its
+/// fallback instead of misfiring.
 pub fn read_state(id: &str, player: &Player) -> Option<&'static str> {
     let spec = spec(id)?;
 
     Some((spec.read)(player))
 }
 
-/// The entry `id` names. Split out of [`read_state`] so the unknown-id
-/// answer can be tested without a live player.
+/// Split out so the unknown-id case tests without a live player.
 fn spec(id: &str) -> Option<&'static StateSpec> {
     STATES.iter().find(|spec| spec.id == id)
 }
@@ -732,8 +672,7 @@ fn read_exclusive_output(player: &Player) -> &'static str {
     }
 }
 
-/// The EQ hangs off atomics rather than the player entity, so this one
-/// reads the free getter. Same for every `app.` reader below.
+/// The EQ reads a free getter over atomics, like the `app.` readers below.
 fn read_eq(_player: &Player) -> &'static str {
     if player::eq_enabled() { "on" } else { "off" }
 }
@@ -803,9 +742,7 @@ mod tests {
 
     use rox_design::palette;
 
-    /// A state with no cases generates no editor rows, and a duplicate
-    /// case id shadows whichever row the user edits second. Both are
-    /// copy-paste slips the table is wide enough to hide.
+    /// A duplicate case id shadows whichever row the user edits second.
     #[test]
     fn every_state_case_is_reachable() {
         for spec in STATES {
@@ -818,9 +755,8 @@ mod tests {
         }
     }
 
-    /// The one that matters. `CATALOG` is what the icon picker offers, so
-    /// a seed outside it is an icon the user can see on a fresh button and
-    /// never choose again once they have edited it away.
+    /// A seed outside `CATALOG` is an icon the user can never pick again once
+    /// they've edited it away.
     #[test]
     fn stock_icons_are_in_the_catalog() {
         for spec in STATES {
@@ -836,8 +772,6 @@ mod tests {
         }
     }
 
-    /// A colour that names no role resolves to nothing at draw, and the
-    /// role names move when the palette gains or loses one.
     #[test]
     fn stock_colours_name_real_roles() {
         for spec in STATES {
@@ -853,8 +787,6 @@ mod tests {
         }
     }
 
-    /// Every state id is distinct, since a saved layout holds the id and
-    /// the lookup takes the first match.
     #[test]
     fn state_ids_are_unique() {
         for (i, spec) in STATES.iter().enumerate() {
@@ -863,9 +795,6 @@ mod tests {
         }
     }
 
-    /// A state the build does not have is the shape of a layout written
-    /// by a newer rox, so the lookup answers None and [`read_state`] hands
-    /// that straight back rather than guessing a case.
     #[test]
     fn read_state_refuses_an_unknown_id() {
         assert!(spec("player.nonsense").is_none());

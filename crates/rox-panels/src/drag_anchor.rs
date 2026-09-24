@@ -1,8 +1,5 @@
-//! The drag anchor panel: a grip that moves the OS window it's in.
-//! Layouts without OS decorations (the mini player especially) keep a
-//! handle to drag by; the whole strip is the grab surface, not just the
-//! icon. The move is the compositor's, so it works wherever
-//! `start_window_move` does.
+//! The drag anchor panel: a grip that moves the OS window it's in, for
+//! layouts without OS decorations. The move is the compositor's.
 
 use gpui::{
     AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels,
@@ -17,12 +14,8 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, Align, AppState, PanelChrome, PanelSettings, align_row, justify};
 use crate::panel_settings;
 
-/// The drag anchor panel's per-view config: what a saved layout restores,
-/// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct DragAnchorConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
@@ -33,7 +26,6 @@ pub struct DragAnchorPanel {
     state: AppState,
     config: DragAnchorConfig,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
 
@@ -56,7 +48,6 @@ impl DragAnchorPanel {
             .map(|d| justify(d, self.config.align))
             .px(tokens::SPACE_MD)
             .cursor_grab()
-            // The whole strip hands the pointer to the compositor's move.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
             .child(
                 svg()
@@ -115,9 +106,7 @@ impl PanelSettings for DragAnchorPanel {
 impl Render for DragAnchorPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
+        // A focus stop, which puts its tab group on the tab-cycle chord's path.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body().track_focus(&focus))
     }
@@ -162,7 +151,6 @@ impl Panel for DragAnchorPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-        // The grip plus the strip's padding, raised by any user floor.
         crate::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(px(40.), rox_dock::resizable::PANEL_MIN_SIZE),
@@ -173,8 +161,6 @@ impl Panel for DragAnchorPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(

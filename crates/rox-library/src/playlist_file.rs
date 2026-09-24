@@ -1,22 +1,13 @@
-//! One door in front of the three playlist formats rox reads and writes
-//! (ADR 16): M3U/M3U8, PLS, and XSPF. Everything above this module deals in
-//! "a playlist file" and lets the dispatcher decide which parser runs, so the
-//! panel's import path, the command line, and a window drop all gained the
-//! two new formats at once.
+//! One door in front of the playlist formats (ADR 16): M3U/M3U8, PLS, XSPF.
 //!
-//! Reading sniffs the content rather than trusting the extension. A `.m3u`
-//! holding a PLS body is a thing that exists in the wild, and getting it
-//! wrong means an import that silently produces an empty playlist. Writing
-//! goes the other way and takes the extension, because on export the name the
-//! user typed in the save dialog is the only format signal there is.
+//! Reading sniffs the content, since a `.m3u` holding a PLS body exists in
+//! the wild. Writing takes the extension, the only signal on export.
 
 use std::path::Path;
 
 use crate::playlists::ExportTrack;
 
-/// The playlist formats rox speaks. Not a list of everything the Wikipedia
-/// table names: ASX and WPL are Windows Media shapes whose files have mostly
-/// stopped being written, and adding them costs a parser each.
+/// ASX and WPL are left out: mostly dead formats, a parser each.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
     M3u,
@@ -25,10 +16,8 @@ pub enum Format {
 }
 
 impl Format {
-    /// Every format, in the order a picker lists them.
     pub const ALL: [Format; 3] = [Format::M3u, Format::Pls, Format::Xspf];
 
-    /// The name a picker shows for the format.
     pub fn label(self) -> &'static str {
         match self {
             Format::M3u => "M3U",
@@ -37,8 +26,6 @@ impl Format {
         }
     }
 
-    /// The format an extension claims, case-insensitively. `None` for
-    /// anything that is not a playlist name at all.
     pub fn from_path(path: &Path) -> Option<Format> {
         let ext = path.extension()?.to_str()?;
         if ext.eq_ignore_ascii_case("m3u") || ext.eq_ignore_ascii_case("m3u8") {
@@ -52,11 +39,8 @@ impl Format {
         }
     }
 
-    /// The format a document's own first line claims. A `[playlist]` header
-    /// is PLS, an opening angle bracket is XML and so XSPF (the `<?xml`
-    /// declaration counts, since that is what an XSPF file actually starts
-    /// with), and everything else falls to M3U, which is the permissive one:
-    /// a bare list of paths is a valid M3U and nothing else.
+    /// `[playlist]` is PLS, `<` is XSPF, and everything else is M3U, which
+    /// accepts a bare path list.
     pub fn sniff(text: &str) -> Format {
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let first = text
@@ -76,8 +60,6 @@ impl Format {
         }
     }
 
-    /// The extension to save this format under. M3U writes `m3u8` because
-    /// what the writer emits is UTF-8 and the `.m3u8` name is what says so.
     pub fn extension(self) -> &'static str {
         match self {
             Format::M3u => "m3u8",
@@ -87,16 +69,12 @@ impl Format {
     }
 }
 
-/// Every extension that names a playlist file, for the open and drop paths.
 pub const EXTENSIONS: &[&str] = &["m3u", "m3u8", "pls", "xspf"];
 
-/// True for a file whose extension rox recognizes as a playlist.
 pub fn is_playlist_file(path: &Path) -> bool {
     Format::from_path(path).is_some()
 }
 
-/// Pull the path entries out of a playlist document, whichever of the three
-/// formats it is. Order is the file's order in every case.
 pub fn parse(text: &str) -> Vec<String> {
     match Format::sniff(text) {
         Format::M3u => crate::m3u::parse(text),
@@ -105,7 +83,6 @@ pub fn parse(text: &str) -> Vec<String> {
     }
 }
 
-/// Serialize playable rows in the named format.
 pub fn write(format: Format, rows: &[ExportTrack]) -> String {
     match format {
         Format::M3u => crate::m3u::to_m3u8(rows),
@@ -160,7 +137,6 @@ mod tests {
 
     #[test]
     fn parse_dispatches_on_the_sniffed_format() {
-        // The case sniffing exists for: a .m3u name over a PLS body.
         let entries = parse("[playlist]\nFile1=/m/a.mp3\nNumberOfEntries=1\n");
         assert_eq!(entries, ["/m/a.mp3"]);
     }

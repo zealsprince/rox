@@ -1,6 +1,6 @@
-//! The MCP settings page (ADR 22): the switch that lets rox-mcp serve
-//! requests, and the config snippet a client pastes, built for however this
-//! copy of rox was installed.
+//! The MCP settings page (ADR 22): the switch that lets rox-mcp serve requests,
+//! and the config snippet a client pastes, built for however this copy was
+//! installed.
 
 use super::*;
 
@@ -11,13 +11,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The MCP page (ADR 22): where an MCP client is pointed at rox. The
-    /// server is the rox-mcp binary beside the executable, proxying the
-    /// control socket, so the page holds the switch that lets it serve
-    /// requests and the copy-ready config snippet. Only in the sidebar while
-    /// AI features are on, and off at its own toggle even then: revealing
-    /// the page is not the same as opening the door. The socket itself is on
-    /// the Application page; it's rox's surface, not MCP's.
+    /// Only in the sidebar while AI features are on, and off at its own toggle
+    /// even then: revealing the page isn't opening the door.
     pub(super) fn mcp_page(
         &self,
         q: &Query,
@@ -25,9 +20,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> PageBody {
         let snippet = mcp_config_snippet();
-        // A TextView rather than a styled div so the snippet can actually be
-        // selected and copied in place; the markdown code block brings its
-        // own frame, and the header button still copies the whole thing.
+        // A TextView so the snippet can be selected in place.
         let block =
             TextView::markdown("mcp-config", format!("```json\n{snippet}\n```"), window, cx)
                 .selectable(true)
@@ -37,9 +30,7 @@ impl SettingsWindow {
             q,
             icons::LINK,
             rox_i18n::t!("settings-page-mcp"),
-            // The header's one-click copy only while the server is on: a
-            // grab-this button on a switched-off surface reads as an
-            // invitation the toggle just declined.
+            // Copy only while the server is on.
             self.mcp_enabled.then(|| {
                 small_button(
                     rox_i18n::t!("settings-common-copy"),
@@ -78,23 +69,13 @@ impl SettingsWindow {
     }
 }
 
-/// The MCP page's copy-ready client config, in the mcpServers shape every
-/// stdio client reads. Which command it names depends on how rox was
-/// installed:
+/// The client config in the mcpServers shape.
 ///
-/// - Bare: the rox-mcp binary beside this executable.
-/// - Flatpak: `flatpak run --command=rox-mcp com.zealsprince.rox`. The
-///   binary lives in /app/bin, which the host can't reach, and the runtime
-///   dir the socket sits in is only shared among processes of that app id,
-///   so the proxy has to start inside the sandbox.
-/// - AppImage: the .AppImage itself with `--mcp`, which AppRun turns into
-///   rox-mcp. The mount the executable runs from gets a new random path
-///   every launch, so a path into it would be stale by the next start.
-///
-/// A portable run points the proxy at its own data folder, since the
-/// socket is keyed to it; the stock run needs no arguments at all. A
-/// Flatpak never runs portable (/app/bin fails the write probe), so its
-/// args stay fixed.
+/// Flatpak runs `flatpak run --command=rox-mcp`: /app/bin is out of the host's
+/// reach and the socket's runtime dir is only shared within the app id.
+/// AppImage runs the .AppImage with `--mcp`, since its mount path changes every
+/// launch. A portable run adds its data folder, which the socket is keyed to; a
+/// Flatpak never runs portable.
 fn mcp_config_snippet() -> String {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("rox"));
     let portable = settings::portable().then(settings::data_dir);
@@ -106,9 +87,7 @@ fn mcp_config_snippet() -> String {
     )
 }
 
-/// The snippet over its inputs, so the three shapes can be tested without
-/// an environment to fake. `portable_data` is the data dir when this is a
-/// portable run.
+/// Split out from the environment so the shapes can be tested.
 fn mcp_config_for(
     kind: rox_core::install::Kind,
     exe: &Path,
@@ -129,8 +108,7 @@ fn mcp_config_for(
             image.display().to_string()
         }
 
-        // Bare, or an AppImage that lost its own path: the binary beside
-        // this executable, the name alone if even that can't be read.
+        // Bare, or an AppImage that lost its own path.
         _ => {
             let binary = format!("rox-mcp{}", std::env::consts::EXE_SUFFIX);
             exe.parent()
@@ -139,8 +117,7 @@ fn mcp_config_for(
         }
     };
 
-    // The portable pair rides along on every channel that can run
-    // portable, after whatever the command needs first.
+    // The portable pair goes after whatever the command needs first.
     if kind != Kind::Flatpak
         && let Some(data) = portable_data
     {
@@ -195,8 +172,7 @@ mod mcp_config_tests {
         );
     }
 
-    /// The Flatpak shape is fixed: a portable data dir can't happen there
-    /// and is ignored if handed in.
+    /// A portable data dir can't happen in a Flatpak and is ignored.
     #[test]
     fn flatpak_runs_the_proxy_inside_the_sandbox() {
         let snippet = mcp_config_for(
@@ -249,8 +225,6 @@ mod mcp_config_tests {
         );
     }
 
-    /// An AppImage kind without its path is the bare shape, which at
-    /// least names something rather than an empty command.
     #[test]
     fn appimage_without_its_path_falls_back_to_bare() {
         let snippet = mcp_config_for(

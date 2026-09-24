@@ -1,36 +1,16 @@
 //! The Japanese dictionary: what it is, whether it's installed, and the
 //! download that installs it.
 //!
-//! ## Why nothing is bundled
+//! Kanji needs a morphological dictionary, and IPADIC is ten megabytes on the
+//! wire and forty on disk. The feature exists on the condition that it never
+//! ships in the binary, so it downloads like the PANNs weights
+//! (`rox_acoustic::models`, which this module is shaped after), into
+//! `models/lindera-ipadic/` inside [`rox_core::settings::data_dir`].
 //!
-//! Kana, hangul and pinyin are tables, small enough to compile in and
-//! never absent. Kanji isn't: reading 東京 as `toukyou` needs a
-//! morphological dictionary that segments the text and hands back a
-//! reading per word, and IPADIC is ten megabytes on the wire and forty on
-//! disk. Andrew's condition on this whole feature was that the dictionary
-//! doesn't ship in the binary, so it lands the same way the PANNs weights
-//! do ([`rox_acoustic::models`], which this module is shaped after): a
-//! button on the Models page, a checksum, and an app that stays the size
-//! it was for everyone who doesn't press it.
-//!
-//! ## Where it goes
-//!
-//! `models/lindera-ipadic/` inside [`rox_core::settings::data_dir`],
-//! beside the acoustic weights, so a portable install carries it and a
-//! wiped data folder takes it along.
-//!
-//! ## Verification
-//!
-//! The archive's size and SHA-256 are stated here and both are checked as
-//! the bytes arrive, before anything is unpacked. A truncated download is
-//! the failure this guards: Lindera's loader would open a short dictionary
-//! and either fail somewhere deep or, worse, read wrong entries out of it.
-//! The hash also pins the exact GitHub release asset, which can be
-//! replaced under a tag.
-//!
-//! Unlike a weights file there's nothing to re-hash afterwards, because
-//! what's installed is an unpacked directory rather than the archive. The
-//! archive is checked once, on the way in, and deleted after it unpacks.
+//! Size and SHA-256 are checked as the bytes arrive, before anything unpacks:
+//! Lindera would open a truncated dictionary and read wrong entries. The hash
+//! also pins the release asset, which can be replaced under a tag. The archive
+//! is checked once and deleted after it unpacks.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -40,45 +20,30 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-/// One dictionary the romanizer can read kanji with. Static data for the
-/// same reason the acoustic catalog is: the checksum is the security
-/// boundary, and a checksum fetched alongside the thing it checks isn't
-/// one.
+/// Static data: the checksum is the security boundary, and one fetched with
+/// the thing it checks isn't one.
 pub struct Dictionary {
-    /// Stable forever once shipped: the settings row and the log lines
-    /// name it.
+    /// Stable forever once shipped: the settings row and logs name it.
     pub id: &'static str,
     pub label: &'static str,
-    /// One line for the settings row, in plain language.
     pub summary: &'static str,
     pub url: &'static str,
-    /// The directory it unpacks into inside `models/`, which is also the
-    /// top-level directory inside the archive.
+    /// Inside `models/`, and also the archive's top-level directory.
     pub folder: &'static str,
-    /// Bytes of the archive on the wire, not of the unpacked directory.
+    /// The archive on the wire, not the unpacked directory.
     pub bytes: u64,
-    /// Lowercase hex SHA-256 of the archive at `bytes` length.
     pub sha256: &'static str,
-    /// The licence the data is under, stated because the user is the one
-    /// fetching it.
+    /// Stated because the user is the one fetching it.
     pub licence: &'static str,
     pub source: &'static str,
 }
 
-/// The one dictionary rox offers, pinned to Lindera's v5.3.0 release.
+/// Pinned to Lindera's v5.3.0 release: the binary format is Lindera's own.
+/// Bumping `lindera` means bumping this asset, size and hash together, and
+/// nothing checks them against each other but care.
 ///
-/// Pinned to a release rather than tracking the latest, because the binary
-/// dictionary format is Lindera's own and a dictionary built by a newer
-/// release is not guaranteed to load in the version rox links. Bumping the
-/// `lindera` dependency means bumping this asset, its size and its hash
-/// together, and the three are checked against each other by nothing but
-/// care.
-///
-/// IPADIC rather than NEologd or UniDic, both of which read modern titles
-/// better: NEologd is 140 MB against this 10 MB and UniDic 46 MB, and
-/// neither difference buys enough on a search key to spend a user's
-/// download on by default. This descriptor is what makes a second one an
-/// entry rather than a redesign.
+/// IPADIC over NEologd (140 MB) or UniDic (46 MB): both read modern titles
+/// better, not by enough to justify the download by default.
 pub static IPADIC: Dictionary = Dictionary {
     id: "lindera-ipadic",
     label: "IPADIC",
@@ -88,40 +53,31 @@ pub static IPADIC: Dictionary = Dictionary {
     folder: "lindera-ipadic",
     bytes: 10_519_545,
     sha256: "6c361500b091abc1143c1d5abdd66a69463ab911685daf6ba74d6aeee7e180fe",
-    // The data is mecab-ipadic-2.7.0-20070801, NAIST's, redistributed by
-    // Lindera under its own three-clause notice; the archive carries that
-    // notice as NOTICE.txt and unpacking keeps it beside the data.
+    // mecab-ipadic-2.7.0-20070801 (NAIST), redistributed by Lindera; the
+    // archive's NOTICE.txt stays beside the data.
     licence: "Dictionary mecab-ipadic-2.7.0-20070801 (NAIST, BSD-3-Clause), engine MIT (Lindera)",
     source: "https://github.com/lindera/lindera",
 };
 
-/// Where downloaded data lives. The same `models/` the acoustic weights
-/// use, deliberately: one folder a user can delete to get their disk back.
+/// Shared with the acoustic weights: one folder to delete to get the disk back.
 pub fn dir() -> PathBuf {
     rox_core::settings::data_dir().join("models")
 }
 
-/// The two files every Lindera dictionary directory has, and the ones a
-/// half-unpacked archive would be missing. Checked rather than the
-/// directory's mere existence, so an interrupted unpack doesn't read as
-/// installed.
+/// Checked instead of the directory, so an interrupted unpack isn't installed.
 const MARKERS: [&str; 2] = ["metadata.json", "dict.trie"];
 
 impl Dictionary {
-    /// The directory this dictionary unpacks into.
     pub fn path(&self) -> PathBuf {
         dir().join(self.folder)
     }
 
-    /// Whether the dictionary is there to be loaded.
     pub fn installed(&self) -> bool {
         let path = self.path();
         MARKERS.iter().all(|file| path.join(file).is_file())
     }
 
-    /// What the unpacked dictionary weighs, for the settings readout. Zero
-    /// when nothing is installed. One directory read rather than a walk:
-    /// Lindera's layout is flat.
+    /// One directory read: Lindera's layout is flat.
     pub fn size_on_disk(&self) -> u64 {
         let Ok(entries) = std::fs::read_dir(self.path()) else {
             return 0;
@@ -134,27 +90,22 @@ impl Dictionary {
             .sum()
     }
 
-    /// Remove the unpacked dictionary. Whatever it already romanized stays
-    /// in the library's tables: those rows are still the best answer rox
-    /// has, and deleting a directory shouldn't cost a re-run of the pass.
+    /// What it already romanized stays in the library: still the best answer,
+    /// and a delete shouldn't cost a re-run.
     pub fn delete(&self) -> Result<(), String> {
         let path = self.path();
         match std::fs::remove_dir_all(&path) {
             Ok(()) => Ok(()),
-            // Already gone is the state the caller asked for.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
     }
 }
 
-/// Live progress of a download: the worker writes it, the UI polls it.
-/// The same shape [`rox_acoustic::models::Progress`] has, so the settings
-/// window's model row can sample either one.
+/// The same shape as `rox_acoustic::models::Progress`, so the settings row
+/// can sample either.
 #[derive(Default)]
 pub struct Progress {
-    /// Which dictionary is coming down, so a UI can tell whose row to
-    /// light up.
     dictionary: Mutex<String>,
     done: AtomicU64,
     total: AtomicU64,
@@ -163,9 +114,6 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// A fresh readout for a download of `dictionary`. The total comes off
-    /// the descriptor rather than off the response, for the reason
-    /// [`Progress::total`] gives.
     pub fn new(dictionary: &Dictionary) -> Self {
         let progress = Progress::default();
         *progress.dictionary.lock().unwrap() = dictionary.id.to_string();
@@ -173,8 +121,7 @@ impl Progress {
         progress
     }
 
-    /// Ask the running download to stop. The part file goes with it, so a
-    /// stop leaves nothing half-written behind.
+    /// The part file goes with it.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -187,14 +134,12 @@ impl Progress {
         self.done.load(Ordering::Relaxed)
     }
 
-    /// Bytes expected, from the descriptor rather than from the response:
-    /// a server that lies about Content-Length, or omits it, must not be
-    /// able to move the bar's denominator.
+    /// From the descriptor, never the response: a lying Content-Length must
+    /// not move the bar's denominator.
     pub fn total(&self) -> u64 {
         self.total.load(Ordering::Relaxed)
     }
 
-    /// How far along, 0 to 1.
     pub fn fraction(&self) -> f32 {
         let total = self.total();
         if total == 0 {
@@ -212,11 +157,8 @@ impl Progress {
     }
 }
 
-/// The agent this download uses. Its own rather than rox-net's, for the
-/// reason the acoustic one gives: a ten-second cap on the whole request is
-/// right for a metadata lookup and guarantees failure on a ten-megabyte
-/// file. The connect and each read are bounded instead, so a stalled
-/// connection gives up and a slow one is allowed to finish.
+/// Its own agent: rox-net caps a whole request at ten seconds, a sure failure
+/// on ten megabytes. Connect and each read are bounded instead.
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -232,12 +174,8 @@ fn agent() -> &'static ureq::Agent {
     })
 }
 
-/// The blocking half: stream the archive to a `.part` file, check its size
-/// and hash, unpack it, then delete the archive.
-///
-/// The hash is computed as the bytes go by rather than by re-reading the
-/// file, which halves the IO and means a mismatch is caught before
-/// anything is unpacked.
+/// Hashed as the bytes go by, so a mismatch is caught before anything
+/// unpacks.
 pub fn fetch(dictionary: &Dictionary, progress: &Progress) -> Result<(), String> {
     let dir = dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -248,10 +186,8 @@ pub fn fetch(dictionary: &Dictionary, progress: &Progress) -> Result<(), String>
         .call()
         .map_err(|e| e.to_string())?;
 
-    // Guard the length before a byte is written: a redirect to an error
-    // page, or a release whose asset was replaced, shows up here as a
-    // wildly different size, and there's no point streaming megabytes to
-    // find that out.
+    // A replaced asset or an error page shows as a different size; refuse
+    // before streaming megabytes.
     if let Some(claimed) = response
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok())
@@ -265,20 +201,15 @@ pub fn fetch(dictionary: &Dictionary, progress: &Progress) -> Result<(), String>
 
     let outcome = stream(response.into_reader(), &part_path, dictionary, progress)
         .and_then(|()| unpack(&part_path, &dir, dictionary));
-    // The archive is scratch either way: it unpacked, or it didn't and
-    // nothing should mistake it for a download to resume.
+    // The archive is scratch either way; never mistake it for a resumable download.
     let _ = std::fs::remove_file(&part_path);
     if outcome.is_err() {
-        // A failed unpack can leave a half-written directory, which
-        // `installed` would already refuse; remove it so a retry starts
-        // clean.
+        // A failed unpack can leave a half-written directory.
         let _ = dictionary.delete();
     }
     outcome
 }
 
-/// Copy the body into the part file, hashing and counting as it goes, then
-/// check what arrived against the descriptor.
 fn stream(
     mut body: impl Read,
     part_path: &Path,
@@ -300,8 +231,7 @@ fn stream(
         if read == 0 {
             break;
         }
-        // Refuse to keep writing past what the descriptor states, so a
-        // server streaming forever can't fill the disk.
+        // A server streaming forever can't fill the disk.
         done += read as u64;
         if done > dictionary.bytes {
             return Err("the download ran past the size the catalog states".into());
@@ -329,13 +259,8 @@ fn stream(
     Ok(())
 }
 
-/// Unpack the checked archive into `dir`.
-///
-/// Every entry has to sit under the descriptor's own folder. The checksum
-/// already pins the archive's contents byte for byte, so this can't be
-/// reached by a hostile zip; it's here because a future descriptor could
-/// name an asset laid out differently, and an archive that quietly writes
-/// outside `models/` is not a mistake worth being able to make.
+/// Every entry has to sit under the descriptor's folder. The checksum rules
+/// out a hostile zip; this guards a future descriptor laid out differently.
 fn unpack(archive_path: &Path, dir: &Path, dictionary: &Dictionary) -> Result<(), String> {
     let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut archive =
@@ -377,10 +302,8 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// The descriptor is a promise about a file on the internet, so the
-    /// half of it that can be checked without the network gets checked
-    /// here: the URL is the release the comment names, the hash is the
-    /// right shape, and the folder can't escape `models/`.
+    /// The half of the descriptor checkable offline: release URL, hash shape,
+    /// and a folder that can't escape `models/`.
     #[test]
     fn the_descriptor_is_well_formed() {
         assert!(
@@ -410,8 +333,6 @@ mod tests {
         assert_eq!(hex(&[0x00, 0x0f, 0xff, 0xa5]), "000fffa5");
     }
 
-    /// A truncated or substituted archive is refused before anything
-    /// unpacks, which is the failure the whole descriptor exists for.
     #[test]
     fn a_short_or_wrong_body_never_gets_unpacked() {
         let dir = std::env::temp_dir().join(format!("rox-dictionary-test-{}", std::process::id()));
@@ -440,8 +361,6 @@ mod tests {
         let wrong = stream(&b"abd"[..], &part, &descriptor, &progress).unwrap_err();
         assert!(wrong.contains("checksum"), "{wrong}");
 
-        // A server that never stops sending is cut off at the stated size
-        // rather than filling the disk.
         let flood = stream(&b"abcdefgh"[..], &part, &descriptor, &progress).unwrap_err();
         assert!(flood.contains("ran past"), "{flood}");
 
@@ -465,11 +384,8 @@ mod tests {
         assert_eq!(progress.fraction(), 1.0);
     }
 
-    /// The real download, end to end. Ignored, so `cargo test` never
-    /// touches the network or writes forty megabytes into the data folder;
-    /// run it by hand (`cargo test -p rox-romanize -- --ignored fetches`)
-    /// when the descriptor changes, since a wrong URL, size or checksum is
-    /// exactly the mistake that only shows up against the server.
+    /// Ignored: hits the network and writes forty megabytes. Run by hand when
+    /// the descriptor changes.
     #[test]
     #[ignore = "hits the network and writes into the data folder"]
     fn fetches_the_dictionary_it_describes() {

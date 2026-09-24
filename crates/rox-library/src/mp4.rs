@@ -1,49 +1,27 @@
-//! The MP4 box walk rox does for itself, where lofty leaves it nothing to
-//! read.
+//! The MP4 box walk rox does for itself, where lofty leaves nothing to read:
+//! a fragmented file's length, and the structure questions the tag writer
+//! asks ([`stream_spans`], [`has_absolute_fragment_offsets`]).
 //!
-//! Three questions come off the same walk. The first is how long a
-//! fragmented file runs; the other two belong to the tag writer, and both
-//! are about the file's structure rather than its metadata. [`stream_spans`]
-//! says where the audio and its fragment headers sit, so a write that moves
-//! them can still be checked against them, and
-//! [`has_absolute_fragment_offsets`] answers the question
-//! `writer::file_type` turns a file down on.
-//!
-//! A fragmented MP4, the shape anything assembled out of DASH segments
-//! comes down in, leaves the `moov` sample tables empty. No `stts`
-//! entries, `mvhd` and `mdhd` durations both zero, and the samples
-//! themselves out in `moof`/`mdat` pairs past the header. Such a file
-//! states its length in the `mehd` box's `fragment_duration`, or in a
-//! `sidx` segment index, and lofty reads neither: `properties().duration()`
-//! comes back 0ms. symphonia (through 0.6) reads the `sidx` but falls back
-//! to `mdhd` when a file has none, which is the zero again.
-//!
-//! So both the scan and the playback open come away not knowing how long
-//! the track is, which costs the seek bar its range and prints the
-//! remaining time as -0:00. This reads the `mehd` directly: a walk of box
-//! headers off the front of the file, a handful of seeks, no decode. A
-//! fragmented file with neither `mehd` nor `sidx` still can't be
-//! measured short of decoding it.
+//! A fragmented MP4 (anything assembled from DASH segments) leaves the
+//! `moov` sample tables empty and states its length in `mehd` or `sidx`.
+//! lofty reads neither and reports 0ms; symphonia (through 0.6) reads `sidx`
+//! but falls back to the zero `mdhd` without one. This reads `mehd` directly.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::{ControlFlow, Range};
 use std::path::Path;
 
-/// The playable length of a fragmented MP4, in seconds. None where the file
-/// isn't an MP4, isn't fragmented, or is fragmented without ever saying how
-/// long its fragments run.
+/// None where the file isn't a fragmented MP4 or never says how long its
+/// fragments run.
 pub fn fragment_duration_secs(path: &Path) -> Option<f64> {
     let mut file = File::open(path).ok()?;
     let end = file.seek(SeekFrom::End(0)).ok()?;
 
     let moov = find(&mut file, 0..end, b"moov")?;
-    // `mehd` counts in movie ticks, and `mvhd` is the only box that says
-    // how many of those go in a second.
+    // `mehd` counts in movie ticks; only `mvhd` says how many go in a second.
     let mvhd = find(&mut file, moov.clone(), b"mvhd")?;
     let timescale = mvhd_timescale(&mut file, mvhd)?;
-    // No `mvex` means no fragments, so nothing here applies: a plain MP4
-    // that reports no duration is broken in some other way.
     let mvex = find(&mut file, moov, b"mvex")?;
     let mehd = find(&mut file, mvex, b"mehd")?;
     let duration = mehd_duration(&mut file, mehd)?;
@@ -51,19 +29,9 @@ pub fn fragment_duration_secs(path: &Path) -> Option<f64> {
     (duration > 0 && timescale > 0).then(|| duration as f64 / f64::from(timescale))
 }
 
-/// Every top-level `mdat` and `moof` payload, in file order: where an MP4
-/// keeps its audio, and the headers that say where each fragment's samples
-/// start. None where the file isn't an MP4, holds no `mdat` at all, or
-/// stops parsing partway.
-///
-/// One range would do for a plain file, which has a single `mdat` with the
-/// whole stream in it. A fragmented file has one per fragment with a
-/// `moof` between each pair, and hashing only the first would make the
-/// writer's verify step a rubber stamp over most of the audio. The `moof`
-/// payloads are in the list because a tag write is only safe on a
-/// fragmented file if it leaves them alone: their sample offsets count
-/// from the `moof` itself, so shifting one is fine and patching one is
-/// not, and a hash over the payload tells the two apart.
+/// Every top-level `mdat` and `moof` payload, in file order. Hashing only
+/// the first `mdat` would rubber-stamp most of a fragmented file. The
+/// `moof`s are included because a write may shift one but never patch it.
 pub(crate) fn stream_spans(path: &Path) -> Option<Vec<Range<u64>>> {
     let mut file = File::open(path).ok()?;
     let end = file.seek(SeekFrom::End(0)).ok()?;
@@ -79,18 +47,10 @@ pub(crate) fn stream_spans(path: &Path) -> Option<Vec<Range<u64>>> {
     audio.then_some(spans)
 }
 
-/// Whether any of the file's fragments locate their samples by an absolute
-/// file position, which a tag write that resizes the `moov` would leave
-/// stale. That's a `tfhd` with the base-data-offset flag, or a `sidx`
-/// index, whose references count from its own end but which nothing
-/// rewrites either. A fragment without the flag counts from its own
-/// `moof`, and moves with it.
-///
-/// A file this says yes to is one the tag writer turns down. A file it
-/// says no to, including a plain MP4 and anything that isn't an MP4 at
-/// all, is left to the caller's own checks; a walk that stops partway
-/// says no as well, since the writer's own parse and its stream hash both
-/// refuse a file they can't walk.
+/// Whether any fragment locates its samples by absolute file position (a
+/// `tfhd` base-data-offset flag, or a `sidx`), which a resized `moov` would
+/// leave stale. The tag writer refuses such files. A walk that stops partway
+/// says no; the writer's own checks refuse those.
 pub(crate) fn has_absolute_fragment_offsets(path: &Path) -> bool {
     let Ok(mut file) = File::open(path) else {
         return false;
@@ -98,9 +58,8 @@ pub(crate) fn has_absolute_fragment_offsets(path: &Path) -> bool {
     let Ok(end) = file.seek(SeekFrom::End(0)) else {
         return false;
     };
-    // The fragments are collected first and looked into after, because
-    // the walk keeps its own place in the file and a seek from inside the
-    // visit would lose it.
+    // Collect first, inspect after: a seek inside the visit would lose the
+    // walk's place.
     let mut sidx = false;
     let mut moofs = Vec::new();
     let _ = walk(&mut file, 0..end, |kind, body| {
@@ -120,8 +79,7 @@ pub(crate) fn has_absolute_fragment_offsets(path: &Path) -> bool {
         .any(|moof| moof_has_base_offset(&mut file, moof))
 }
 
-/// Whether any `tfhd` inside a `moof` carries the base-data-offset flag,
-/// the low bit of the three flag bytes behind the version byte.
+/// The base-data-offset flag is the low bit of the flag bytes.
 fn moof_has_base_offset(file: &mut File, moof: Range<u64>) -> bool {
     let mut trafs = Vec::new();
     let _ = walk(file, moof, |kind, body| {
@@ -144,8 +102,6 @@ fn moof_has_base_offset(file: &mut File, moof: Range<u64>) -> bool {
     false
 }
 
-/// The payload range of the first box of type `want` sitting directly
-/// inside `within`.
 fn find(file: &mut File, within: Range<u64>, want: &[u8; 4]) -> Option<Range<u64>> {
     let mut found = None;
     let _ = walk(file, within, |kind, body| {
@@ -158,16 +114,9 @@ fn find(file: &mut File, within: Range<u64>, want: &[u8; 4]) -> Option<Range<u64
     found
 }
 
-/// Hand every box sitting directly inside `within` to `visit`, as its
-/// four-byte type and its payload range. Boxes are walked by their stated
-/// size, so this seeks header to header rather than reading the range
-/// through.
-///
-/// None where a box doesn't cover its own header or runs past the parent
-/// holding it: a file to stop trusting rather than one to keep looping
-/// over. A `visit` that breaks stops the walk where it stands and comes
-/// back Some, so a caller that already has what it came for never fails
-/// over bytes further down the file it was never going to read.
+/// Hand every box directly inside `within` to `visit` as (type, payload).
+/// None for a box that doesn't fit its parent. A `visit` that breaks returns
+/// Some, so an early answer never fails on bytes further down.
 fn walk(
     file: &mut File,
     within: Range<u64>,
@@ -181,20 +130,19 @@ fn walk(
 
         let stated = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
         let (size, body) = match stated {
-            // A 1 puts the real size in the eight bytes behind the header.
             1 => {
                 let mut large = [0u8; 8];
                 file.read_exact(&mut large).ok()?;
                 (u64::from_be_bytes(large), at + 16)
             }
-            // A 0 is the last box in its parent, running to the parent's end.
+            // A 0 size runs to the parent's end.
             0 => (within.end - at, at + 8),
             size => (u64::from(size), at + 8),
         };
 
-        // A box that doesn't cover its own header, or that runs past the
-        // parent holding it, is a file to stop trusting rather than one to
-        // keep looping over.
+        // Box sizes come from the file and aren't trusted. One that doesn't
+        // cover its header or overruns its parent ends the walk, so junk
+        // bytes can't loop it or read past the parent.
         let box_end = at.checked_add(size)?;
         if body > box_end || box_end > within.end {
             return None;
@@ -208,8 +156,7 @@ fn walk(
     Some(())
 }
 
-/// The movie timescale, in ticks per second. Version 1 widens the creation
-/// and modification times either side of it to 64 bits, which moves it.
+/// Version 1 widens the times either side of it, which moves it.
 fn mvhd_timescale(file: &mut File, at: Range<u64>) -> Option<u32> {
     let buf = head(file, at, 24)?;
     let off = match *buf.first()? {
@@ -222,8 +169,6 @@ fn mvhd_timescale(file: &mut File, at: Range<u64>) -> Option<u32> {
         .map(u32::from_be_bytes)
 }
 
-/// How long the fragments run, on the movie clock. Version 1 widens the
-/// field itself to 64 bits.
 fn mehd_duration(file: &mut File, at: Range<u64>) -> Option<u64> {
     let buf = head(file, at, 12)?;
     match *buf.first()? {
@@ -239,8 +184,6 @@ fn mehd_duration(file: &mut File, at: Range<u64>) -> Option<u64> {
     }
 }
 
-/// The first `len` bytes of a box's payload, or all of it where it's
-/// shorter than that.
 fn head(file: &mut File, at: Range<u64>, len: usize) -> Option<Vec<u8>> {
     let len = len.min((at.end - at.start).try_into().ok()?);
     file.seek(SeekFrom::Start(at.start)).ok()?;
@@ -254,7 +197,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// One box: its total size, its four-byte type, then the payload.
     fn atom(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut out = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
         out.extend_from_slice(kind);
@@ -262,8 +204,6 @@ mod tests {
         out
     }
 
-    /// The same box written with a 64-bit size, the shape a large `mdat`
-    /// takes and the walk has to step over to reach anything behind it.
     fn large_atom(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut out = 1u32.to_be_bytes().to_vec();
         out.extend_from_slice(kind);
@@ -272,25 +212,19 @@ mod tests {
         out
     }
 
-    /// A version 0 `mvhd` with only its timescale filled in, the way a
-    /// fragmented file writes one: every duration in it stays zero.
     fn mvhd(timescale: u32) -> Vec<u8> {
         let mut payload = vec![0u8; 100];
         payload[12..16].copy_from_slice(&timescale.to_be_bytes());
         atom(b"mvhd", &payload)
     }
 
-    /// A version 0 `mehd`: version and flags, then a 32-bit duration.
     fn mehd(duration: u32) -> Vec<u8> {
         let mut payload = vec![0u8; 8];
         payload[4..8].copy_from_slice(&duration.to_be_bytes());
         atom(b"mehd", &payload)
     }
 
-    /// A `moof` holding one `traf` with a `tfhd` of the given flags. The
-    /// flag word is the low three bytes of the box's first four; a flag
-    /// of 1 is a base data offset, which a real one follows with eight
-    /// bytes of position.
+    /// Flag 1 is a base data offset, followed by eight bytes of position.
     fn moof(tfhd_flags: u32) -> Vec<u8> {
         let mut tfhd = tfhd_flags.to_be_bytes().to_vec();
         tfhd.extend_from_slice(&1u32.to_be_bytes());
@@ -300,15 +234,12 @@ mod tests {
         atom(b"moof", &atom(b"traf", &atom(b"tfhd", &tfhd)))
     }
 
-    /// A version 1 `mehd`, the one a long file needs.
     fn mehd64(duration: u64) -> Vec<u8> {
         let mut payload = vec![1u8, 0, 0, 0];
         payload.extend_from_slice(&duration.to_be_bytes());
         atom(b"mehd", &payload)
     }
 
-    /// A whole file: `ftyp`, a `moov` holding the boxes given, then a
-    /// fragment, where the samples of a real one are stored.
     fn file(moov_children: &[Vec<u8>]) -> Vec<u8> {
         let mut moov = Vec::new();
         for child in moov_children {
@@ -329,7 +260,6 @@ mod tests {
         path
     }
 
-    /// The common shape: sample tables empty, the length only in `mehd`.
     #[test]
     fn reads_the_fragment_duration() {
         let mvex = atom(b"mvex", &mehd(5_722_380));
@@ -338,8 +268,6 @@ mod tests {
         assert!((secs - 129.759_183).abs() < 1e-5, "{secs}");
     }
 
-    /// A 64-bit `mehd`, and a 64-bit box in front of the `moov` to step
-    /// over on the way to it.
     #[test]
     fn reads_a_64_bit_duration_past_a_64_bit_box() {
         let mvex = atom(b"mvex", &mehd64(88_200));
@@ -349,17 +277,12 @@ mod tests {
         assert_eq!(fragment_duration_secs(&path), Some(2.0));
     }
 
-    /// A plain MP4 has no `mvex` at all, so there's nothing here to say
-    /// about it. Its length comes off the sample tables like always.
     #[test]
     fn plain_mp4_reads_nothing() {
         let path = written("plain.m4a", &file(&[mvhd(44_100)]));
         assert_eq!(fragment_duration_secs(&path), None);
     }
 
-    /// A fragmented file whose `mehd` is zero knows no more than the
-    /// sample tables did, and saying "zero seconds" would be worse than
-    /// saying nothing.
     #[test]
     fn a_zero_duration_is_no_answer() {
         let mvex = atom(b"mvex", &mehd(0));
@@ -367,8 +290,6 @@ mod tests {
         assert_eq!(fragment_duration_secs(&path), None);
     }
 
-    /// Fragmented, but the `mvex` holds only the `trex` defaults with no
-    /// `mehd` beside them. Nothing to read, and nothing to invent.
     #[test]
     fn no_mehd_reads_nothing() {
         let mvex = atom(b"mvex", &atom(b"trex", &[0u8; 24]));
@@ -376,20 +297,12 @@ mod tests {
         assert_eq!(fragment_duration_secs(&path), None);
     }
 
-    /// Not an MP4, and a box walk over arbitrary bytes has to end rather
-    /// than run the file twice looking for a `moov`.
     #[test]
     fn junk_reads_nothing() {
         let path = written("junk.m4a", &[0xFFu8; 4096]);
         assert_eq!(fragment_duration_secs(&path), None);
     }
 
-    /// The writer's question about where the audio is. [`file`] writes one
-    /// fragment, so a second one has to show up as its own pair of spans
-    /// rather than being lost behind the first: a single range would
-    /// describe only a quarter of this file, and the hash taken over it
-    /// would pass no matter what happened to the rest. The `moof` in front
-    /// of each `mdat` is in the list too, in file order.
     #[test]
     fn every_fragment_is_a_span_of_its_own() {
         let mut bytes = file(&[mvhd(44_100)]);
@@ -405,10 +318,6 @@ mod tests {
         assert_eq!(spans[3], (second + 24 + 8)..(second + 24 + 8 + 32));
     }
 
-    /// A file with no audio box at all reads as nothing rather than an
-    /// empty list, so the writer can tell it apart from a file it hashed.
-    /// A `moof` with no `mdat` behind it is the same nothing: headers for
-    /// samples that aren't there.
     #[test]
     fn no_mdat_is_no_span() {
         let path = written("tagless.m4a", &atom(b"ftyp", b"isom\0\0\0\0iso5"));
@@ -418,12 +327,6 @@ mod tests {
         assert_eq!(stream_spans(&written("headless.m4a", &headless)), None);
     }
 
-    /// The writer's other question. A fragment that counts from its own
-    /// `moof` is fine to shift, so the common shape (default-base-is-moof,
-    /// no `sidx`) says no, and so does a plain file, which has no
-    /// fragments to ask about. The flag says yes wherever it turns up,
-    /// not only on the first fragment, since that's the one lofty would
-    /// have patched anyway.
     #[test]
     fn absolute_offsets_are_the_tfhd_flag_or_a_sidx() {
         let mvex = atom(b"mvex", &mehd(5_722_380));

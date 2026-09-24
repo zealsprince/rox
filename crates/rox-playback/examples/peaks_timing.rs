@@ -1,18 +1,13 @@
-//! Decode diagnostics from the command line. Two modes:
+//! Decode diagnostics:
 //!
 //!   peaks_timing <file>...            time decode_peaks, then a full decode
 //!   peaks_timing --probe-scan < paths probe every path on stdin, log failures
-//!
-//! The first answers "why is the waveform slow" with numbers, the second
-//! answers "which files in a library can we not read". Build it the way the
-//! app is built; the dev profile is what `cargo run` uses.
 
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// Probe-only sweep: paths on stdin, one failure line per unprobeable file,
-/// then a total. Mirrors the hint construction in engine::Source::open.
+/// Mirrors the hint construction in engine::Source::open.
 fn probe_scan() {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::formats::probe::Hint;
@@ -89,8 +84,6 @@ fn main() {
             }
         }
 
-        // Prove the file actually decodes through the playback path too, by
-        // counting the frames of a full decode.
         let start = Instant::now();
         match rox_playback::engine::count_frames(&path) {
             Ok((decoded, claimed)) => println!(

@@ -1,11 +1,7 @@
 //! The search panel: a dockable box that drives the shared app-wide query
-//! ([`crate::query::shared_query`]). Its whole job is the box: typing here filters
-//! every panel set to follow the shared query, so a library and a couple of
-//! grids can stay query-less and clean while this one controls them all. The
-//! query is stored in the shared entity, not this panel's config, so two search
-//! panels and a popped-out one all edit and show the same value. Suggestions
-//! come from the projection's tag values, reattached on each scan the way the
-//! play launcher does.
+//! ([`crate::query::shared_query`]). The query lives in the shared entity
+//! rather than this panel's config, so every search panel edits and shows
+//! the same value.
 
 use gpui::{
     App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
@@ -23,8 +19,6 @@ use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::SharedQueryEvent;
 use rox_panel_api::suggest;
 
-/// Where the search panel puts the shared filter's chips: inline, trailing
-/// the box on the same line, or on their own row below it.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChipsPlacement {
@@ -33,16 +27,10 @@ pub enum ChipsPlacement {
     Below,
 }
 
-/// The search panel's per-view config. The query isn't here (it's stored in
-/// the shared entity), so a saved layout only restores the rename, the
-/// panel's look, and where the filter chips go.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SearchConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Where the active-filter chips go relative to the box.
     #[serde(default)]
     pub chips: ChipsPlacement,
 }
@@ -50,16 +38,12 @@ pub struct SearchConfig {
 pub struct SearchPanel {
     state: AppState,
     config: SearchConfig,
-    /// The query editor bound to the shared query: it writes on change and
-    /// copies the shared value back in.
     search: Entity<SearchBox>,
-    /// The panel's own focus, the escape ladder's target so a bare escape
-    /// hands the playback keys back to the workspace.
+    /// The escape ladder's target: a bare escape hands the playback keys back
+    /// to the workspace.
     focus: FocusHandle,
-    /// A pending box reset from a shared-query change; applied on the next
-    /// render, where a window exists to set the input's text.
+    /// Applied on the next render, where a window exists to set the input.
     resync_box: bool,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _search_events: Subscription,
     _query_changed: Subscription,
@@ -76,9 +60,7 @@ impl SearchPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let initial = state.query.read(cx).text().to_string();
-        // Bare and a single font line tall: the panel frames the box itself,
-        // so drop the input's border and rounding and let it collapse to a
-        // thin bar.
+        // Bare and one line tall: the panel frames the box itself.
         let search = cx.new(|cx| {
             SearchBox::new(rox_i18n::t!("search-placeholder"), &initial, window, cx)
                 .bare()
@@ -86,9 +68,8 @@ impl SearchPanel {
                 .icon()
         });
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // Copy the shared query back in when another box changes it, so two
-        // search panels and a popped-out one stay in sync. The reset needs a
-        // window, so it's deferred through the resync flag.
+        // Mirror another box's edits. The reset needs a window, so it waits for
+        // the next render.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| {
@@ -97,7 +78,6 @@ impl SearchPanel {
                 panel::refresh_tab_panel(&this.tab_panel, cx);
             },
         );
-        // A scan produces a new projection; point the suggestions at it.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -106,8 +86,7 @@ impl SearchPanel {
                 }
             },
         );
-        // Count this panel while it exists so a jump-to from a follower can
-        // tell the shared query has a box to show it, and stop on release.
+        // Counted so a follower's jump-to knows a box exists to show it.
         state.query.update(cx, |q, _| q.register_box());
         let query = state.query.clone();
         let _query_boxes = cx.on_release(move |_, cx| {
@@ -129,17 +108,14 @@ impl SearchPanel {
         this
     }
 
-    /// Point the box's suggestion menu at the current projection; at open and
-    /// again whenever a scan produces a new one.
     fn attach_suggestions(&self, cx: &mut Context<Self>) {
         let provider = suggest::query_provider(&self.state.library, cx);
         self.search
             .update(cx, |search, cx| search.set_completions(provider, cx));
     }
 
-    /// Reset the box to the shared query, cursor to the end. Guarded on drift
-    /// so the box the user is typing in keeps its cursor, which also stops the
-    /// mirror echo.
+    /// Guarded on drift, so the box being typed in keeps its cursor and
+    /// doesn't echo.
     fn sync_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.state.query.read(cx).text().to_string();
         self.search.update(cx, |search, cx| {
@@ -157,8 +133,6 @@ impl SearchPanel {
         cx: &mut Context<Self>,
     ) {
         match event {
-            // Publish to the shared query; the followers and any other search
-            // box rebuild off the shared-query subscription.
             SearchEvent::Changed => {
                 let text = search.read(cx).query().to_string();
                 self.state.query.update(cx, |q, cx| q.set(text, cx));
@@ -169,8 +143,6 @@ impl SearchPanel {
                 cx.notify();
                 panel::refresh_tab_panel(&self.tab_panel, cx);
             }
-            // Escape on an empty query leaves the box, handing the playback
-            // keys back to the workspace.
             SearchEvent::Dismissed => {
                 window.focus(&self.focus);
                 cx.notify();
@@ -180,8 +152,6 @@ impl SearchPanel {
         }
     }
 
-    /// The Filter Chips submenu: where the active-filter chips go relative
-    /// to the box, inline or below.
     fn chips_menu(
         &self,
         menu: PopupMenu,
@@ -218,7 +188,7 @@ impl SearchPanel {
 impl EventEmitter<PanelEvent> for SearchPanel {}
 
 impl Focusable for SearchPanel {
-    /// Activating the tab focuses the box, since typing is the whole point.
+    /// Activating the tab focuses the box.
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.search.read(cx).focus_handle(cx)
     }
@@ -266,9 +236,8 @@ impl Panel for SearchPanel {
         self.config.chrome.locked
     }
 
-    /// The box is one line tall, so let the panel shrink to about a tab's
-    /// height instead of holding the global 40px floor: the xsmall control
-    /// plus a hair of air top and bottom. Width keeps the global floor.
+    /// Shrinks to about a tab's height instead of the 40px floor; the width
+    /// keeps the floor.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -283,8 +252,6 @@ impl Panel for SearchPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump stores the panel's config; the builder registered in
-    /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -319,7 +286,6 @@ impl Panel for SearchPanel {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
-        // The copy gets the config; the two boxes then drive and show the one shared query.
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),
@@ -351,14 +317,11 @@ impl Render for SearchPanel {
 
 impl SearchPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset from a shared-query change is applied here,
-        // where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_box(window, cx);
         }
         let input = self.search.update(cx, |search, cx| search.element(cx));
-        // The active-filter chips, shown only when something is filtered.
         let chips = crate::query::shared_query::filter_chips(&self.state.query, cx);
         let base = div()
             .track_focus(&self.focus)
@@ -366,16 +329,12 @@ impl SearchPanel {
             .bg(palette::bg_root())
             .px(tokens::SPACE_SM);
         match self.config.chips {
-            // Inline: the box takes the line, the chips trail it, so the
-            // magnifier keeps the left and the bar stays one row.
             ChipsPlacement::Inline => base
                 .flex()
                 .items_center()
                 .gap(tokens::SPACE_SM)
                 .child(input.flex_1())
                 .when_some(chips, |d, chips| d.child(chips.flex_none())),
-            // Below: the box on top, the chips wrapping on their own row
-            // under it. Centered so a taller slot splits the air evenly.
             ChipsPlacement::Below => base
                 .flex()
                 .flex_col()

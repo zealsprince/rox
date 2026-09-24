@@ -1,61 +1,32 @@
-//! A one-line expression language, for the places a panel has to draw a
-//! shape nobody handed it any data for. A radio stream has no file to
-//! decode and no length to draw against, so a strip pointed at one can
-//! either trace the audio tap or make a shape up. Making one up wants a
-//! formula, and a formula somebody can change without a rebuild wants a
-//! parser.
+//! A one-line expression language for shapes a panel has no data for, like a
+//! strip pointed at a radio stream. Numbers, `x`, `t`, `pi`, `+ - * / ^`,
+//! parentheses, and a dozen functions; one number out, meaning left to the
+//! caller.
 //!
-//! The grammar is what fits in a settings field: numbers, the two
-//! variables a panel feeds it, `pi`, the four operators with `^` above
-//! them, parentheses, and a dozen functions. No bindings, no statements,
-//! no strings, no way to name anything new. What comes back is one
-//! number, and the caller decides what that number means; nothing here
-//! knows about pixels or seconds.
-//!
-//! Parsing happens when the text changes and never while painting. The
-//! result is a postfix run of ops walked over a fixed stack, so
-//! evaluating costs no allocation at all: a strip calls this once per bar
-//! per frame, a few hundred times at sixty frames a second, and anything
-//! that touched the allocator in there would show up as jitter.
-//!
-//! Errors carry the byte offset they happened at, because the field this
-//! is typed into is one line long and "that doesn't parse" is useless
-//! when there are three sines in it. Nothing here is fallible past the
-//! parse: evaluation always yields a number, though a division or a
-//! square root is free to make it infinite or NaN, and the caller is
-//! expected to sanitize before it draws.
+//! Parse on text change, never while painting. Evaluation walks a postfix run
+//! over a fixed stack with no allocation: a strip calls it a few hundred times
+//! a frame. Errors carry a byte offset. Evaluation never fails but can return
+//! infinity or NaN, which the caller sanitizes.
 
 use std::fmt;
 
-/// How deep the parser will recurse. Every nesting path in the grammar
-/// funnels through `unary`, so counting there covers parentheses, call
-/// arguments, and a run of unary minuses alike. Without the cap a
-/// hand-edited config holding a thousand open parens walks the thread's
-/// stack down.
+/// Every nesting path funnels through `unary`, so the cap counts there. Without
+/// it a hand-edited config full of open parens overflows the thread's stack.
 const NEST: usize = 32;
 
-/// How tall the evaluation stack is allowed to get. The parse measures
-/// the run it built against this, which is what lets [`Expr::eval`] keep
-/// its stack in a fixed array. Four values per nesting level covers the
-/// worst shape the grammar allows, a three-argument call nested to the
+/// The parse checks the run against this so [`Expr::eval`] can use a fixed
+/// array. Four per nesting level covers a three-argument call nested to the
 /// floor.
 const STACK: usize = NEST * 4;
 
-/// How long the text may be. A layout file is shared and hand-editable,
-/// and the run this builds is walked once per bar per frame, so a
-/// pathological expression is a slow panel rather than anything worse;
-/// this keeps even that off the table. Far past what fits a settings
-/// field.
+/// Keeps a pathological expression in a shared layout from slowing a panel.
 pub const MAX_LEN: usize = 512;
 
-/// A parsed expression, ready to evaluate as many times as anyone wants.
 pub struct Expr {
-    /// The postfix run: operands push, operators pop and push.
     ops: Vec<Op>,
 }
 
 impl Expr {
-    /// Parse `src`, or say where it stopped making sense.
     pub fn parse(src: &str) -> Result<Expr, ParseError> {
         if src.len() > MAX_LEN {
             return Err(ParseError {
@@ -74,8 +45,6 @@ impl Expr {
         };
         parser.expr()?;
 
-        // Everything the grammar accepts is behind us, so anything left
-        // is the user's typo rather than a feature this doesn't have.
         if parser.at < parser.toks.len() {
             return Err(ParseError {
                 at: parser.here(),
@@ -94,15 +63,8 @@ impl Expr {
         })
     }
 
-    /// The expression at `x` and `t`. Infallible, and the result is
-    /// whatever the arithmetic gave: a division by zero comes back
-    /// infinite and the square root of a negative comes back NaN, both
-    /// of which the caller has to handle before it means anything on
-    /// screen.
     pub fn eval(&self, x: f32, t: f32) -> f32 {
-        // The parse proved this run never stacks deeper than `STACK`, so
-        // every index below is in bounds and the whole evaluation is one
-        // walk over an array that never grows.
+        // The parse proved the run never stacks deeper than `STACK`.
         let mut stack = [0.0f32; STACK];
         let mut top = 0usize;
 
@@ -164,8 +126,7 @@ impl Expr {
     }
 }
 
-/// Where an expression stopped making sense, and what about it did. The
-/// offset is a byte index into the source that was parsed.
+/// `at` is a byte offset into the parsed source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub at: usize,
@@ -178,30 +139,19 @@ impl fmt::Display for ParseError {
     }
 }
 
-/// What the parser objected to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
-    /// A character with no place in the grammar.
     Stray,
-    /// A name that isn't a variable, `pi`, or one of the functions.
     Unknown,
-    /// A function given the wrong number of arguments.
     Arity,
-    /// An opening parenthesis nothing closed.
     Unclosed,
-    /// The text ran out where a value was expected.
     Ended,
-    /// Text left over after a complete expression.
     Trailing,
-    /// Nested past what the evaluator will run.
     TooDeep,
-    /// Longer than [`MAX_LEN`].
     TooLong,
 }
 
 impl Problem {
-    /// The complaint in English. It goes beside the offset in a settings
-    /// field, so it stays short enough to read on one line.
     fn text(self) -> &'static str {
         match self {
             Problem::Stray => "unexpected character",
@@ -216,7 +166,6 @@ impl Problem {
     }
 }
 
-/// One step of the postfix run.
 #[derive(Clone, Copy)]
 enum Op {
     Num(f32),
@@ -232,7 +181,6 @@ enum Op {
 }
 
 impl Op {
-    /// How many values this takes off the stack before it pushes its one.
     fn pops(self) -> usize {
         match self {
             Op::Num(_) | Op::X | Op::T => 0,
@@ -243,9 +191,6 @@ impl Op {
     }
 }
 
-/// The functions the grammar knows. A dozen is the whole list: enough to
-/// build a wave, a ramp, or an envelope out of, and short enough that the
-/// settings row can name every one of them in a line.
 #[derive(Clone, Copy)]
 enum Func {
     Sin,
@@ -302,19 +247,14 @@ impl Func {
             Func::Floor => args[0].floor(),
             Func::Min => args[0].min(args[1]),
             Func::Max => args[0].max(args[1]),
-            // Not f32::clamp, which panics when the bounds arrive
-            // reversed. A typed clamp(x, 1, 0) reaching a paint pass
-            // would take the window down; this yields the ceiling there
-            // and draws something.
+            // Not f32::clamp, which panics on reversed bounds and would take
+            // the window down from a paint pass.
             Func::Clamp => args[0].max(args[1]).min(args[2]),
             Func::Mix => args[0] + (args[1] - args[0]) * args[2],
         }
     }
 }
 
-/// The run under construction, carrying how tall the stack gets as it
-/// grows. Tracked here because the moment an op is emitted is the one
-/// place its net effect on the stack is known.
 #[derive(Default)]
 struct Ops {
     ops: Vec<Op>,
@@ -330,7 +270,6 @@ impl Ops {
     }
 }
 
-/// A lexed token and, alongside it in the stream, the byte it started at.
 #[derive(Clone, Copy, PartialEq)]
 enum Tok<'a> {
     Num(f32),
@@ -345,9 +284,7 @@ enum Tok<'a> {
     Comma,
 }
 
-/// Cut the source into tokens. Everything the grammar accepts is ASCII,
-/// so this walks bytes and the offsets it reports are byte offsets
-/// whatever else is in the string.
+/// Everything the grammar accepts is ASCII, so offsets are byte offsets.
 fn lex(src: &str) -> Result<Vec<(usize, Tok<'_>)>, ParseError> {
     let bytes = src.as_bytes();
     let mut out = Vec::new();
@@ -360,9 +297,7 @@ fn lex(src: &str) -> Result<Vec<(usize, Tok<'_>)>, ParseError> {
             continue;
         }
 
-        // A number, leading dot allowed. Two dots in one run reach the
-        // parse below and fail there, at the start of the run, which is
-        // where someone would look for them.
+        // Two dots in one run fail in the parse, at the start of the run.
         if c.is_ascii_digit() || c == b'.' {
             let from = i;
             while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
@@ -376,8 +311,6 @@ fn lex(src: &str) -> Result<Vec<(usize, Tok<'_>)>, ParseError> {
             continue;
         }
 
-        // A name: a variable, a constant, or a function about to be
-        // called. Which one it is, is the parser's problem.
         if c.is_ascii_alphabetic() {
             let from = i;
             while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
@@ -410,12 +343,9 @@ fn lex(src: &str) -> Result<Vec<(usize, Tok<'_>)>, ParseError> {
     Ok(out)
 }
 
-/// Recursive descent over the token stream, emitting postfix as it goes.
 struct Parser<'a> {
     toks: Vec<(usize, Tok<'a>)>,
     at: usize,
-    /// The source's length, which is where an error that ran out of
-    /// tokens points.
     end: usize,
     ops: Ops,
     nest: usize,
@@ -426,7 +356,6 @@ impl<'a> Parser<'a> {
         self.toks.get(self.at).map(|(_, tok)| *tok)
     }
 
-    /// The byte offset of the next token, or the end of the source.
     fn here(&self) -> usize {
         self.toks
             .get(self.at)
@@ -443,7 +372,6 @@ impl<'a> Parser<'a> {
         false
     }
 
-    /// Sums and differences, left to right.
     fn expr(&mut self) -> Result<(), ParseError> {
         self.term()?;
         loop {
@@ -458,7 +386,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Products and quotients, left to right.
     fn term(&mut self) -> Result<(), ParseError> {
         self.unary()?;
         loop {
@@ -473,8 +400,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Every recursive path in the grammar comes back through here, so
-    /// this is where the nesting cap lives.
+    /// Every recursive path comes back through here, so the nesting cap does too.
     fn unary(&mut self) -> Result<(), ParseError> {
         if self.nest >= NEST {
             return Err(ParseError {
@@ -500,10 +426,8 @@ impl<'a> Parser<'a> {
         self.power()
     }
 
-    /// Exponentiation, binding tighter than a unary minus on its left and
-    /// looser than one on its right: `-2^2` is `-4` and `2^-1` is a half.
-    /// The right side is a unary rather than a power, which is what makes
-    /// a chain of them associate to the right.
+    /// `-2^2` is `-4` and `2^-1` is a half. The right side is a unary rather
+    /// than a power, which makes a chain associate to the right.
     fn power(&mut self) -> Result<(), ParseError> {
         self.atom()?;
         if self.eat(Tok::Caret) {
@@ -532,9 +456,7 @@ impl<'a> Parser<'a> {
                 self.at += 1;
                 self.expr()?;
                 if !self.eat(Tok::Close) {
-                    // Pointed at the bracket that never closed rather
-                    // than at the end of the line, which is where the
-                    // fix goes.
+                    // Point at the bracket that never closed, where the fix goes.
                     return Err(ParseError {
                         at,
                         what: Problem::Unclosed,
@@ -556,7 +478,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A name already consumed: a variable, `pi`, or a call.
     fn name(&mut self, name: &str, at: usize) -> Result<(), ParseError> {
         match name {
             "x" => {
@@ -605,9 +526,8 @@ impl<'a> Parser<'a> {
             });
         }
 
-        // The count is checked against the function rather than the
-        // parse being steered by it, so `min(1)` complains about the
-        // call instead of about the bracket that follows.
+        // Checked after the parse, so `min(1)` blames the call, not the
+        // bracket after it.
         if count != func.arity() {
             return Err(ParseError {
                 at,
@@ -625,8 +545,6 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
-    /// An expression at one point, for the cases where x and t don't
-    /// matter.
     fn at(src: &str, x: f32, t: f32) -> f32 {
         Expr::parse(src)
             .unwrap_or_else(|e| panic!("{src:?} should parse: {e}"))
@@ -643,8 +561,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{src:?} should not parse"))
     }
 
-    /// Multiplication binds tighter than addition, brackets beat both,
-    /// and the chains run left to right.
     #[test]
     fn precedence_and_association_follow_arithmetic() {
         assert_eq!(value("1 + 2 * 3"), 7.0);
@@ -654,9 +570,6 @@ mod tests {
         assert_eq!(value("1 + 2 - 3 * 4 / 2"), -3.0);
     }
 
-    /// The exponent is the one operator that associates to the right,
-    /// and it outranks a minus on its left while taking one on its
-    /// right, the way it reads on paper.
     #[test]
     fn the_exponent_associates_right_and_outranks_a_leading_minus() {
         assert_eq!(value("2 ^ 3 ^ 2"), 512.0);
@@ -665,8 +578,6 @@ mod tests {
         assert_eq!(value("2 * 3 ^ 2"), 18.0);
     }
 
-    /// A minus with nothing on its left negates what follows, however
-    /// many of them are stacked up.
     #[test]
     fn a_unary_minus_negates_what_follows_it() {
         assert_eq!(value("-3"), -3.0);
@@ -676,7 +587,6 @@ mod tests {
         assert_eq!(value("-(1 + 2)"), -3.0);
     }
 
-    /// The variables and the one constant.
     #[test]
     fn x_and_t_and_pi_read_their_values() {
         assert_eq!(at("x", 0.25, 9.0), 0.25);
@@ -685,8 +595,6 @@ mod tests {
         assert_eq!(at("x * t", 3.0, 4.0), 12.0);
     }
 
-    /// Every function in the grammar, at a point where a wrong one would
-    /// give a different answer.
     #[test]
     fn every_function_computes_its_own_thing() {
         let near = |src: &str, want: f32| {
@@ -710,9 +618,6 @@ mod tests {
         near("mix(0, 10, 0.25)", 2.5);
     }
 
-    /// A parse error points at the byte the trouble starts on, which is
-    /// the whole reason it carries an offset: the field this is typed
-    /// into is one line long.
     #[test]
     fn a_parse_error_names_the_byte_it_stopped_at() {
         assert_eq!(
@@ -729,8 +634,6 @@ mod tests {
                 what: Problem::Unknown
             }
         );
-        // Pointed at the call rather than at the end of the line: the
-        // bracket that never closed is the one that opened.
         assert_eq!(
             error("1 + sin(x"),
             ParseError {
@@ -762,11 +665,7 @@ mod tests {
         assert_eq!(error("").what, Problem::Ended);
     }
 
-    /// The waveform panel's default shape, kept in step with the literal
-    /// in that panel by eye. Two sines at different rates against each
-    /// other: the point of it is that it moves, so the same x reads
-    /// differently a second later, and the strip isn't a still picture
-    /// with a clock attached.
+    /// Kept in step with the waveform panel's literal by eye.
     #[test]
     fn the_default_shape_moves_with_time() {
         const DEFAULT: &str = "0.5 * sin(6.28 * x - 1.2 * t) + 0.25 * sin(12.6 * x + 0.7 * t)";
@@ -794,16 +693,12 @@ mod tests {
         );
     }
 
-    /// A pathological expression out of a hand-edited config is a parse
-    /// error rather than a stack walked off the end of the thread.
     #[test]
     fn nesting_past_the_cap_is_refused() {
         let deep = format!("{}1{}", "(".repeat(200), ")".repeat(200));
         assert_eq!(error(&deep).what, Problem::TooDeep);
     }
 
-    /// A shared layout file can hold any text; past the cap it's refused
-    /// at parse, before the run it would build is ever walked.
     #[test]
     fn an_expression_past_the_cap_is_refused() {
         let long = "1+".repeat(MAX_LEN) + "1";

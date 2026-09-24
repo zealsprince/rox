@@ -21,8 +21,8 @@ glutin = "0.32"
 # to 0.6 because that is glutin 0.32's own major.
 raw-window-handle = "0.6"
 # Worker mailbox. Preferred over std::sync::mpsc for the disconnect-aware
-# recv_deadline the render loop paces itself with; already in the lock
-# through notify, so it costs no new compilation.
+# recv_deadline the render loop paces itself with. The Windows build already
+# has it through tray-icon.
 crossbeam-channel = "0.5"
 # Preset scanning walks user-pointed directories, so it has to not follow
 # symlinks into a loop. Already in the lock through notify.

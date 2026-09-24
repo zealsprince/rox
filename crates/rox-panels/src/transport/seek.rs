@@ -4,11 +4,9 @@
 //!
 //! A station draws on the same line once the engine holds a timeshift tape
 //! for it. The strip spans the whole buffer the setting allows, the live
-//! edge is its right end, and a click lands in the past rather than at a
-//! position. What hasn't taped yet is a dashed lead-in on the left and
-//! can't be reached. Everything keyed to a track position (bookmarks, the
-//! scrobble threshold, A-B) stays off there, since a broadcast has no such
-//! position.
+//! edge is its right end, and the untaped part is an unreachable dashed
+//! lead-in. Anything keyed to a track position (bookmarks, the scrobble
+//! threshold, A-B) stays off there.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -41,36 +39,27 @@ use crate::settings::ui as settings_ui;
 
 use super::{default_true, transport_panel};
 
-/// One piece of the seek row, the arrange editor's unit. The config's
-/// list holds the shown ones in display order.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SeekItem {
-    /// The elapsed clock.
     Elapsed,
-    /// The track line itself, click or drag to seek.
     Strip,
-    /// The ending clock: time left, or the full duration when toggled.
     Ending,
-    /// The full length, always: pairs with the elapsed clock for the
-    /// classic "elapsed, total" read without giving up the countdown.
+    /// Pairs with the elapsed clock for "elapsed, total" without giving up
+    /// the countdown.
     Duration,
-    /// A flexible gap that pushes the pieces around it apart; a row
-    /// holds as many as the layout needs.
+    /// A flexible gap; a row holds as many as the layout needs.
     Spacer,
-    /// A spacer that draws a hairline in the border color across its gap.
+    /// A spacer with a hairline across its gap.
     Divider,
-    /// The line break: everything after it drops to a second row. The
-    /// stacked layouts, where the strip runs the full width with its
-    /// clocks over or under it instead of beside.
+    /// Everything after it drops to a second row: the stacked layouts.
     Break,
 }
 
-/// The two clocks, what the quick Show Timings toggle moves as a pair.
+/// What the quick Show Timings toggle moves as a pair.
 const CLOCKS: [SeekItem; 2] = [SeekItem::Elapsed, SeekItem::Ending];
 
-/// The row's full catalog in stock order: what the arrange editor offers,
-/// and where a menu toggle slots a re-shown piece back in.
+/// Stock order: where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
     panel::ArrangeSpec {
         key: "seek-item-elapsed",
@@ -110,65 +99,45 @@ const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
     },
 ];
 
-/// What the strip does with the part of the live buffer that hasn't taped
-/// yet, the stretch left of the tape on a station's strip.
+/// The untaped part of a station's buffer, left of the tape.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LeadIn {
-    /// A broken line: buffer that exists as a setting and not yet as
-    /// bytes. The default, since it says outright that the bar isn't
-    /// growing, it's filling.
+    /// The default: it says the bar is filling, not growing.
     #[default]
     Dashed,
-    /// A solid line, fainter than the tape's wash. The same statement
-    /// without the texture, for a thin strip where dashes read as noise.
+    /// For a thin strip where dashes read as noise.
     Faint,
-    /// Nothing at all, so the bar is only ever as long as the tape. Back
-    /// to a strip that grows, for anyone who preferred it.
+    /// The bar is only ever as long as the tape: a strip that grows.
     Hidden,
 }
 
-/// The seek panel's per-view config: what a saved layout restores, and
-/// what the panel's dropdown menu edits. Deserialization routes through
-/// [`SeekConfigDump`] so layouts from before the row became an ordered
-/// list still read.
+/// Reads through [`SeekConfigDump`] so layouts from before the ordered
+/// list still load.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(from = "SeekConfigDump")]
 pub struct SeekConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The ending clock shows the full duration instead of the time left;
-    /// the panel settings' Ending row flips it.
+    /// The Ending clock shows the full duration instead of the time left.
     pub show_total: bool,
-    /// A thin line at the scrobble threshold, where the playing track
-    /// counts as listened for Last.fm. Only draws while scrobbling is
-    /// connected and on.
+    /// The Last.fm scrobble threshold. Only draws while scrobbling is on.
     pub scrobble_marker: bool,
-    /// The playing track's bookmarks as chevrons under the line, each one
-    /// a seek and a right-click menu.
+    /// Chevrons under the line, each a seek and a right-click menu.
     pub bookmarks: bool,
-    /// The track line's height in px.
     pub thickness: f32,
-    /// The track line's corner radius in px, capped at a pill.
     pub rounding: f32,
-    /// The playhead's width in px.
     pub playhead_width: f32,
     /// The playhead spans the strip's full height; off, it hugs the line.
     pub playhead_full: bool,
-    /// Cap the full playhead's height in px, kept centered on the line;
-    /// 0 lets it fill the panel.
+    /// Centered on the line; 0 lets it fill the panel.
     pub playhead_max: f32,
-    /// What the unfilled part of a station's buffer looks like.
     pub live_lead_in: LeadIn,
-    /// The lead-in dash's length in px, the gap after it to match.
+    /// The gap after each dash matches it.
     pub live_dash_len: f32,
-    /// A band of extra weight travels along the lead-in, the way a loading
-    /// bar's does. Off by stock: a strip that moves on its own is a thing
-    /// to ask for, not a thing to find running.
+    /// Off by stock: a strip that moves on its own should be asked for.
     pub live_sweep: bool,
-    /// The shown pieces in display order; one not listed is hidden.
+    /// Display order; one not listed is hidden.
     pub items: Vec<SeekItem>,
 }
 
@@ -192,9 +161,8 @@ impl Default for SeekConfig {
     }
 }
 
-/// The dump shape [`SeekConfig`] deserializes through: the ordered list
-/// newer layouts write, or the retired `timings` toggle that was both
-/// clocks around the strip.
+/// Newer layouts write the ordered list. Older ones had a `timings`
+/// toggle for both clocks.
 #[derive(Deserialize)]
 struct SeekConfigDump {
     #[serde(flatten)]
@@ -235,11 +203,8 @@ fn default_playhead_width() -> f32 {
     tokens::PLAYHEAD_W
 }
 
-/// The lead-in dash's stock length in px, and the band the slider picks
-/// across. Four is a dash at the strip's usual thickness rather than a row
-/// of pills; past the top the line reads as a measure rather than a
-/// texture. The floor is a single pixel, where the dashes stop reading as
-/// dashes and turn into a comb.
+/// Four is a dash at the usual thickness. Past the top it reads as a
+/// measure, and at one pixel it turns into a comb.
 const DASH_LEN_DEFAULT: f32 = 4.0;
 const DASH_LEN_MIN: f32 = 1.0;
 const DASH_LEN_MAX: f32 = 24.0;
@@ -251,10 +216,8 @@ fn default_dash_len() -> f32 {
 impl From<SeekConfigDump> for SeekConfig {
     fn from(dump: SeekConfigDump) -> Self {
         let items = match dump.items {
-            // Deduped row by row, the breaks put back after: the catalog
-            // doesn't include the break (it draws as the editor's row
-            // boundary, not a chip), and each row may hold its own copy
-            // of a piece.
+            // Deduped per row: the catalog has no break (it's the editor's row
+            // boundary), and each row may hold its own copy of a piece.
             Some(items) => items
                 .split(|i| matches!(i, SeekItem::Break))
                 .map(|row| panel::dedup(ITEMS, row.to_vec()))
@@ -283,59 +246,39 @@ impl From<SeekConfigDump> for SeekConfig {
     }
 }
 
-/// The seek strip: the waveform minus the peaks, a track line with the
-/// played side in the accent and a playhead, click or drag to seek, the
-/// elapsed and remaining clocks at its ends. Position and seek come off
-/// the player the same way the waveform's do.
 pub struct SeekStripPanel {
     state: AppState,
     config: SeekConfig,
-    /// The strip's painted bounds and drag state, for scrub mapping.
     scrub: ScrubState,
-    /// The settings page's scalar strips, with the shared readout edit.
     thickness_scrub: ScrubState,
     rounding_scrub: ScrubState,
     playhead_scrub: ScrubState,
     playhead_max_scrub: ScrubState,
     value_edit: ValueEdit,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The row as it stood when the quick Show Timings toggle last hid the
-    /// clocks, so turning them back on returns them to where they were
-    /// rather than their catalog rank. Held on the panel and not the config
-    /// because it's the undo for one toggle, not a layout anybody saves.
+    /// The row before Show Timings hid the clocks, so turning them back on
+    /// restores their place. Panel state, not config.
     timings_stash: Option<Vec<SeekItem>>,
-    /// The playing track's bookmarks and which track they were read for,
-    /// re-read on a track change and on a bookmark edit rather than on
-    /// every pump tick the strip repaints on.
+    /// Re-read on a track change or a bookmark edit, not every pump tick.
     marks: Vec<Bookmark>,
     marks_key: Option<TrackKey>,
-    /// The bookmark ribbon the pointer is on, for its readout.
     hover_mark: Option<i64>,
-    /// The playing track's session cues, cached on the same terms as the
-    /// bookmarks above and for the same reason.
+    /// Cached like the bookmarks.
     cues: Vec<Cue>,
     cues_key: Option<TrackKey>,
-    /// The cue chevron the pointer is on, for its readout.
     hovered_cue: Option<u64>,
-    /// The station song chevron the pointer is on, for its readout. Its
-    /// own field rather than the cue's: a station has no cues, but the two
-    /// hover states outlive one render apiece and mixing them would leave
-    /// a stale id behind on the switch from a file to a stream.
+    /// Kept apart from the cue hover: both outlive a render, and sharing
+    /// would leave a stale id on a switch from a file to a stream.
     hovered_song: Option<u64>,
-    /// Where the pointer last was along the strip, 0 to 1. Only the song
-    /// chevrons write it, because they're the only marks that move.
+    /// Only the song chevrons write it: they're the only marks that move.
     pointer_at: Option<f32>,
-    /// The dash length slider's scrub, the settings page's Live section.
     dash_scrub: ScrubState,
-    /// Where the last right click on bare strip landed, as a position in
-    /// the track. The insert menu builds a frame after the press and never
-    /// sees the event, so the position is parked here on the way past.
+    /// The insert menu builds a frame after the press and never sees the
+    /// event, so the position is parked here.
     insert_at_ms: Arc<AtomicU32>,
-    /// Time zero for the LIVE mark's pulse. The strip has no clock of its
-    /// own otherwise: it redraws off the pump, and a stream that hasn't
-    /// opened yet isn't moving the pump.
+    /// Time zero for the LIVE pulse. The strip redraws off the pump, and a
+    /// stream that hasn't opened isn't moving it.
     epoch: Instant,
     _player_changed: Subscription,
     _library_changed: Subscription,
@@ -344,11 +287,10 @@ pub struct SeekStripPanel {
 
 impl SeekStripPanel {
     pub fn new(state: AppState, config: SeekConfig, cx: &mut Context<Self>) -> Self {
-        // The clock and the playhead move every tick, so this one uses the
-        // raw per-pump notify, not the gated observe the other panels use.
+        // The clock and playhead move every tick, so this uses the raw per-pump
+        // notify, not the gated observe.
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
-        // A bookmark edit anywhere (the M key, the panel, this strip's own
-        // menu) drops the cached marks so the next paint reads them again.
+        // A bookmark edit anywhere drops the cached marks.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -361,9 +303,7 @@ impl SeekStripPanel {
                 }
             },
         );
-        // A cue dropped or taken off the track this strip is drawing. The
-        // event names its track, so a strip on a different song ignores it
-        // rather than throwing away a set that didn't move.
+        // The event names its track, so a strip on another song keeps its set.
         let _cues_changed = cx.subscribe(
             &state.cues,
             |this: &mut Self, _, event: &CuesChanged, cx| {
@@ -402,8 +342,8 @@ impl SeekStripPanel {
         }
     }
 
-    /// The playing track's bookmarks, read once per track (and again after
-    /// an edit), so the per-tick repaint never touches the database.
+    /// Once per track and after an edit, so the per-tick repaint never
+    /// touches the database.
     fn marks_for(&mut self, key: &TrackKey, cx: &App) -> &[Bookmark] {
         if self.marks_key.as_ref() != Some(key) {
             self.marks = self.state.library.read(cx).bookmarks_for(key);
@@ -413,8 +353,6 @@ impl SeekStripPanel {
         &self.marks
     }
 
-    /// The playing track's session cues, on the same terms as the
-    /// bookmarks above: read once per track and again after an edit.
     fn cues_for(&mut self, key: &TrackKey, cx: &App) -> &[Cue] {
         if self.cues_key.as_ref() != Some(key) {
             self.cues = self.state.cues.read(cx).for_key(key);
@@ -425,11 +363,9 @@ impl SeekStripPanel {
         &self.cues
     }
 
-    /// Apply a fraction along the strip. On a track that's a position, on a
-    /// station it's a point in the timeshift tape, measured back from the
-    /// live edge at the right end. Read fresh off the player rather than
-    /// off the frame that armed the handler: a drag outlives the paint that
-    /// started it, and the entry underneath can change mid-drag.
+    /// On a station the fraction is a point in the tape, measured back from
+    /// the live edge. Read fresh off the player: a drag outlives the paint
+    /// that started it.
     fn seek_at(&self, fraction: f32, cx: &App) {
         let player = self.state.player.read(cx);
         match player.now_playing().and_then(|now| now.shift) {
@@ -439,24 +375,16 @@ impl SeekStripPanel {
         }
     }
 
-    /// Drop a song hover the pointer isn't on any more.
-    ///
-    /// Every other mark in this panel is nailed to a position in a track,
-    /// so it only leaves the pointer when the pointer leaves it and the
-    /// hover-out clears the readout. A station's marks walk left as the
-    /// broadcast rolls on, under a pointer that never moved, and nothing
-    /// fires when they do: the readout would sit there naming a song that
-    /// has since slid out from under the cursor. So the hover is checked
-    /// against where the pointer actually is on every paint instead of
-    /// waiting for an event that isn't coming.
+    /// A station's marks walk left under a still pointer and fire no event,
+    /// so the hover is checked against the pointer on every paint instead of
+    /// waiting for a hover-out.
     fn settle_song_hover(&mut self, marks: &[cue_ui::CueMark]) {
         let Some(id) = self.hovered_song else {
             return;
         };
 
-        // In fractions rather than pixels, since that's what both the
-        // pointer and the mark are kept in; the slot's half width is the
-        // only thing that has to cross over.
+        // In fractions, like the pointer and the mark; only the slot's half
+        // width crosses over.
         let still_on = match (self.pointer_at, self.scrub.width()) {
             (Some(at), Some(width)) if width > 0.0 => marks
                 .iter()
@@ -471,8 +399,6 @@ impl SeekStripPanel {
         }
     }
 
-    /// Whether either clock is on the row, what the quick timings toggle
-    /// reads and flips.
     fn timings_shown(&self) -> bool {
         self.config
             .items
@@ -480,16 +406,13 @@ impl SeekStripPanel {
             .any(|i| matches!(i, SeekItem::Elapsed | SeekItem::Ending))
     }
 
-    /// Both clocks on or off in one move, the row they were in kept across
-    /// the round trip.
+    /// The row they were in survives the round trip.
     fn toggle_timings(&mut self) {
         self.config.items =
             panel::toggled_stashed(ITEMS, &self.config.items, &mut self.timings_stash, &CLOCKS);
     }
 
-    /// The panel's own dropdown entries: the quick timings and marker
-    /// toggles. Timings still means both clocks at once; the settings
-    /// window's arrange editor splits and reorders them.
+    /// Timings means both clocks at once; the arrange editor splits them.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -706,9 +629,8 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ));
 
-        // The station rows sit in their own section: they draw nothing at
-        // all off a stream, and mixing them into the list above would have
-        // most of a page that only applies some of the time.
+        // The station rows draw nothing off a stream, so they get their own
+        // section.
         let live = div()
             .flex()
             .flex_col()
@@ -776,7 +698,6 @@ impl PanelSettings for SeekStripPanel {
     }
 }
 
-/// The strip's paint knobs, copied off the config for the paint closure.
 #[derive(Clone, Copy)]
 struct StripLook {
     thickness: f32,
@@ -784,18 +705,13 @@ struct StripLook {
     playhead_width: f32,
     playhead_full: bool,
     playhead_max: f32,
-    /// What the unfilled buffer looks like on a station's strip, and the
-    /// dash it's drawn with when that's dashes.
     lead_in: LeadIn,
     dash_len: f32,
-    /// Where the lead-in's sweep has got to, or None with the sweep off.
-    /// The config says whether the band runs, the panel's own clock says
-    /// where it is, so this is set at the call rather than copied.
+    /// The panel's own clock sets it at the call; it isn't copied off the
+    /// config.
     sweep: Option<Sweep>,
-    /// Halve every alpha: what a paused station's line looks like. The one
-    /// knob here that isn't the config's. It rides along anyway, because on
-    /// screen it's part of how the line looks, and the paint already takes
-    /// this bag rather than a knob per argument.
+    /// A paused station's line. Not a config knob, but part of how the line
+    /// looks.
     dim: bool,
 }
 
@@ -815,19 +731,14 @@ impl From<&SeekConfig> for StripLook {
     }
 }
 
-/// The track line centered in whatever height the panel gets: unplayed side
-/// dim, played side solid, the waveform's playhead on top. `look` holds
-/// the config's line and playhead knobs, the radius capped at a pill.
-/// `marker` draws the scrobble threshold as a thin full-height line under
-/// the playhead, `ab` the repeat section's ends and wash under that,
-/// `marks` the bookmark ribbons along the bottom edge and `cues` the
-/// session chevrons along the top.
+/// `look` holds the line and playhead knobs, the radius capped at a pill.
+/// `marker` draws the scrobble threshold, `ab` the repeat section,
+/// `marks` the bookmark ribbons along the bottom and `cues` the chevrons
+/// along the top.
 ///
-/// A dimmed look halves every alpha, the same statement the live marks make
-/// for a paused station: nothing is on air, and the strip shouldn't sit
-/// there at full strength saying otherwise. Everything stays where it is
-/// rather than dropping out, since the tape behind the playhead is still
-/// there to be scrubbed through while the station is hung up.
+/// A dimmed look halves every alpha for a paused station. Nothing drops
+/// out: the tape behind the playhead can still be scrubbed while the
+/// station is hung up.
 #[allow(clippy::too_many_arguments)]
 fn paint_strip(
     progress: f32,
@@ -894,10 +805,8 @@ fn paint_strip(
     paint_playhead(head_x, look, bounds, window);
 }
 
-/// The playhead `head_x` px into the strip: the panel's full height, capped
-/// when the config says so, or the line's when it hugs. Either way it
-/// centers on the line. Its own function because the station's strip draws
-/// the same head over a different bar.
+/// Full height, capped when configured, or the line's height when it
+/// hugs; centered either way. The station strip draws the same head.
 fn paint_playhead(head_x: f32, look: StripLook, bounds: Bounds<Pixels>, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
@@ -928,9 +837,7 @@ fn paint_playhead(head_x: f32, look: StripLook, bounds: Bounds<Pixels>, window: 
     );
 }
 
-/// The config's list cut at the break into one piece list per row. No
-/// break reads as the single row the panel has always drawn, and a break
-/// with nothing on a side drops the empty row rather than rendering it.
+/// No break is a single row, and an empty side drops its row.
 fn split_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
     items
         .split(|i| matches!(i, SeekItem::Break))
@@ -939,8 +846,8 @@ fn split_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
         .collect()
 }
 
-/// [`split_rows`] for the rows editor, empty rows kept: an added row's
-/// well shows until a piece lands or its x drops it.
+/// [`split_rows`] with empty rows kept: an added row's well shows until a
+/// piece lands or its x drops it.
 fn editor_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
     items
         .split(|i| matches!(i, SeekItem::Break))
@@ -948,14 +855,11 @@ fn editor_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
         .collect()
 }
 
-/// Tabular digits for the clock, built once: [`clock`] runs twice per
-/// pump tick while playing, so the feature list shouldn't reallocate
-/// every call.
+/// Built once: [`clock`] runs twice per pump tick while playing.
 static TNUM: LazyLock<FontFeatures> =
     LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
 
-/// A clock beside the strip: muted, fixed in the row, digits tabular so a
-/// tick never changes the text width.
+/// Tabular digits so a tick never changes the text width.
 fn clock(text: String) -> Div {
     let mut clock = div().flex_none().text_color(palette::text_muted());
     clock
@@ -965,72 +869,54 @@ fn clock(text: String) -> Div {
     clock.child(text)
 }
 
-/// How long one breath of the opening pulse takes, seconds. Slow enough to
-/// read as waiting rather than as something wrong; a fast blink is an
-/// alarm, and a stream taking a second to open is not one.
+/// Slow enough to read as waiting: a fast blink is an alarm.
 const PULSE_SECS: f32 = 1.6;
 
-/// The pulse's weight at `t` seconds in: a sine eased between a dim floor
-/// and full, so the mark breathes instead of flashing.
+/// A sine eased between a dim floor and full, so the mark breathes.
 fn pulse(t: f32) -> f32 {
     let phase = t / PULSE_SECS * std::f32::consts::TAU;
     0.45 + 0.55 * (phase.sin() * 0.5 + 0.5)
 }
 
-/// How long the lead-in's sweep takes to cross it once, seconds. Slow
-/// enough to read as one band walking across a bar that's filling, rather
-/// than as a flicker over it.
+/// Slow enough to read as one band walking across, not a flicker.
 const SWEEP_SECS: f32 = 2.2;
 
-/// How far the band reaches either side of its crest, as a share of the
-/// lead-in's length.
+/// As a share of the lead-in's length.
 const SWEEP_BAND: f32 = 0.25;
 
-/// What the crest adds on top of the lead-in's resting weight, as a
-/// multiple of it.
+/// As a multiple of the lead-in's resting weight.
 const SWEEP_GAIN: f32 = 1.6;
 
-/// The longest stretch of lead-in drawn as one quad while the sweep runs,
-/// px. A quad shades between its two ends and nowhere else, so a wider one
-/// would flatten the crest sitting inside it.
+/// A quad shades only between its ends, so a wider one would flatten the
+/// crest inside it.
 const SWEEP_STEP: f32 = 8.0;
 
-/// Where the sweep's crest sits along the lead-in right now: 0 at the left
-/// end of the unfilled stretch, 1 where the tape starts.
+/// 0 at the left end of the unfilled stretch, 1 where the tape starts.
 #[derive(Clone, Copy)]
 struct Sweep(f32);
 
 impl Sweep {
-    /// The crest's place at `phase` seconds in. It sets off a band's reach
-    /// short of the left end and finishes the same distance past the right,
-    /// so the band walks on and off instead of appearing mid-line.
+    /// It sets off a band's reach short of the left end and finishes as far
+    /// past the right, so the band walks on and off.
     fn at(phase: f32) -> Self {
         let trip = (phase / SWEEP_SECS).rem_euclid(1.0);
         Sweep(-SWEEP_BAND + trip * (1.0 + 2.0 * SWEEP_BAND))
     }
 
-    /// The alpha the lead-in draws at `along` it, 0 to 1: its resting
-    /// weight plus the band's, wherever the band reaches.
     fn alpha(self, base: u8, along: f32) -> u8 {
         let reach = ((along - self.0).abs() / SWEEP_BAND).min(1.0);
-        // A cosine rather than a straight ramp, so the band's edges taper
-        // off instead of ending on a line you can see.
+        // A cosine so the band's edges taper instead of ending on a visible line.
         let weight = 0.5 * (1.0 + (reach * std::f32::consts::PI).cos());
         (f32::from(base) * (1.0 + SWEEP_GAIN * weight)).min(255.0) as u8
     }
 }
 
-/// How dim the live marks go while the station is paused. Steady rather
-/// than breathing: nothing is being waited for, the stream is simply off.
+/// Steady rather than breathing: nothing is being waited for.
 const PAUSED_OPACITY: f32 = 0.4;
 
-/// How a live stream's mark looks in the state it's in: the color, and the
-/// opacity the pulse has it at. Shared with the waveform panel's corner
-/// mark, so a stream that's reconnecting reads the same way on both.
-///
-/// Paused wins over the stream state. A pause hangs the station up, so
-/// there's no audio arriving and nothing to wait for, and a mark still in
-/// the accent would say "on air" about a silent strip.
+/// Shared with the waveform's corner mark so both read the same. Paused
+/// wins: a hung-up station has nothing to wait for, and the accent would
+/// say "on air" about a silent strip.
 pub(crate) fn live_tint(stream: Option<StreamState>, paused: bool, t: f32) -> (gpui::Rgba, f32) {
     if paused {
         return (palette::text_muted(), PAUSED_OPACITY);
@@ -1043,47 +929,39 @@ pub(crate) fn live_tint(stream: Option<StreamState>, paused: bool, t: f32) -> (g
 
         Some(StreamState::Dropped) => (palette::tone_bad(), 1.0),
 
-        // Live, and the moment before the first report lands: the mark the
-        // strip has always drawn.
+        // Live, and the moment before the first report lands.
         Some(StreamState::Live) | None => (palette::accent(), 1.0),
     }
 }
 
-/// Whether the playhead is standing on the live edge. An exact compare,
-/// because the engine snaps the distance to zero at the edge: rounding a
-/// near-zero off on this side too would put a second boundary next to that
-/// one, and the clock would flicker across it.
+/// An exact compare: the engine snaps the distance to zero at the edge,
+/// and rounding here too would add a second boundary for the clock to
+/// flicker across.
 fn at_live_edge(behind_secs: f64) -> bool {
     behind_secs <= 0.0
 }
 
-/// Whether the station is playing out of its tape rather than off the edge.
-/// Shared with the waveform's corner mark, so both say the same thing about
-/// where the playhead is.
+/// Shared with the waveform's corner mark.
 pub(crate) fn behind_live(shift: Option<&Shift>) -> bool {
     shift.is_some_and(|shift| !at_live_edge(shift.behind_secs))
 }
 
-/// Where the playhead sits on a timeshift strip. The strip spans the whole
-/// buffer the setting allows, not the seconds taped so far, so the bar
-/// keeps its meaning while the tape fills instead of stretching under the
-/// playhead for the first ten minutes of a station.
+/// The strip spans the whole buffer the setting allows, so the bar keeps
+/// its meaning while the tape fills.
 fn shift_progress(shift: &Shift) -> f32 {
     if shift.cap_secs <= 0.0 {
         return 1.0;
     }
 
-    // Held to the tape: the head belongs on the recorded side of the line,
-    // and a report a hair past the oldest byte would put it in the lead-in
-    // where nothing can be played from.
+    // Held to the tape, so a report a hair past the oldest byte can't put
+    // the head in the lead-in.
     let behind = shift.behind_secs.clamp(0.0, shift.window_secs);
 
     (1.0 - behind / shift.cap_secs).clamp(0.0, 1.0) as f32
 }
 
-/// How much of the strip is tape: the seconds held against the cap, sitting
-/// against the right end. What's left of it is buffer the connection hasn't
-/// filled yet, which the strip draws as a dashed lead-in.
+/// The seconds held against the cap, sitting against the right end; the
+/// rest is the lead-in.
 fn shift_held(shift: &Shift) -> f32 {
     if shift.cap_secs <= 0.0 {
         return 1.0;
@@ -1092,21 +970,16 @@ fn shift_held(shift: &Shift) -> f32 {
     (shift.window_secs / shift.cap_secs).clamp(0.0, 1.0) as f32
 }
 
-/// The mapping backwards: a fraction along the strip as how far behind the
-/// live edge the point under it is, which is what a click or a drag seeks
-/// to. Held to what the tape has, so a grab at the dashed lead-in lands on
-/// the oldest thing there is to play rather than in a silence that was
-/// never recorded.
+/// Held to what the tape has, so a grab at the lead-in lands on the
+/// oldest thing there is to play.
 fn shift_behind(fraction: f32, shift: &Shift) -> f64 {
     let behind = (1.0 - fraction.clamp(0.0, 1.0) as f64) * shift.cap_secs.max(0.0);
 
     behind.min(shift.window_secs.max(0.0))
 }
 
-/// Where a right click on the strip points, in milliseconds into the
-/// track: the fraction under the pointer against the length. Its own
-/// function because it's the whole contract between a press and the mark
-/// the insert menu drops, and the only part of that worth a test.
+/// Its own function because it's the whole contract between a press and
+/// the mark the insert menu drops.
 pub(crate) fn insert_position_ms(fraction: f32, duration_secs: f64) -> u32 {
     let secs = fraction.clamp(0.0, 1.0) as f64 * duration_secs.max(0.0);
 
@@ -1115,23 +988,16 @@ pub(crate) fn insert_position_ms(fraction: f32, duration_secs: f64) -> u32 {
     (secs * 1000.0).round().clamp(0.0, u32::MAX as f64) as u32
 }
 
-/// The strip's own right click: an inert layer over the whole strip that
-/// parks the position under the pointer and opens the insert menu there.
-/// Both strips host it, which is why it lives here rather than in either
-/// of their bodies.
+/// Both strips host it. Three orderings hold it together, all of them
+/// registration order during paint. The menu builds a frame after the
+/// press and never sees the event, so the press stores the position. The
+/// press stops, or the dock's body handler opens the panel dropdown over
+/// the menu. And the layer goes in before the mark overlays, so a right
+/// click on a chevron reaches that mark's own menu instead.
 ///
-/// Three orderings hold this together, all of them registration order
-/// during paint. The menu builds a frame after the press and never sees
-/// the event, so the press stores the position for it. The press then
-/// stops, because the dock's body handler would otherwise open the panel
-/// dropdown stacked over the menu. And the layer goes in before the mark
-/// overlays, so a right click on a chevron reaches that mark's own menu
-/// and this one never runs.
-///
-/// Stopping the press is also why the panel's own dropdown gets appended
-/// here: the body handler that would have opened it never runs, and a
-/// right click on the strip that offered nothing but the two mark rows
-/// would put the panel's settings out of reach over most of the panel.
+/// Stopping the press is why the panel's dropdown is appended here:
+/// otherwise a right click on the strip would put the panel's settings
+/// out of reach.
 pub(crate) fn insert_layer<V: Panel>(
     state: &AppState,
     key: &TrackKey,
@@ -1182,16 +1048,9 @@ pub(crate) fn insert_layer<V: Panel>(
         })
 }
 
-/// The station's song changes placed along its strip: one chevron per
-/// title the tape is publishing, mapped back from the live edge against
-/// the whole buffer the way the playhead is.
-///
-/// Everything that arrives is drawn. The tape clips the list to what it
-/// still holds and measures it against the playhead's own edge, so a mark
-/// whose audio has been trimmed off the back never reaches here, and a second
-/// opinion on that in the panel would only be a second place for the two
-/// to disagree. The id is the index, which is all the hover layer needs to
-/// tell one mark from another.
+/// Everything that arrives is drawn: the tape already clips the list to
+/// what it holds, and a second check here would only be a second place
+/// to disagree. The id is the index.
 fn tape_marks(songs: &[LiveMark], shift: &Shift) -> Vec<cue_ui::CueMark> {
     if shift.cap_secs <= 0.0 {
         return Vec::new();
@@ -1203,20 +1062,15 @@ fn tape_marks(songs: &[LiveMark], shift: &Shift) -> Vec<cue_ui::CueMark> {
         .map(|(i, song)| cue_ui::CueMark {
             id: i as u64,
             fraction: (1.0 - song.behind_secs / shift.cap_secs).clamp(0.0, 1.0) as f32,
-            // The chevron carries no time of its own: the readout over it
-            // is the song's name, and the click seeks by the distance the
-            // mark itself holds.
+            // No time of its own: the readout is the song's name, and the click
+            // seeks by the mark's distance.
             position_ms: 0,
         })
         .collect()
 }
 
-/// The station's reconnects placed along its strip, the same mapping back
-/// from the live edge the songs take.
-///
-/// A fraction and nothing else. There's no hover on these and nothing to
-/// click: a break is the one place on the strip a seek won't go, so the
-/// only thing it has to do is be visible before somebody aims past it.
+/// A fraction only: a break is the one place a seek won't go, so it just
+/// has to be visible.
 fn tape_gaps(gaps: &[LiveGap], shift: &Shift) -> Vec<f32> {
     if shift.cap_secs <= 0.0 {
         return Vec::new();
@@ -1227,13 +1081,8 @@ fn tape_gaps(gaps: &[LiveGap], shift: &Shift) -> Vec<f32> {
         .collect()
 }
 
-/// What the ending slot holds while a station plays: the distance back to
-/// the live edge once the playhead has left it. None at the edge, where the
-/// LIVE mark stands instead.
-///
-/// Whole seconds, floored. The distance slides with the drawn edge, so a
-/// floor ticks once a second the way a countdown does, and rounding would
-/// only move the tick half a second earlier.
+/// None at the edge, where the LIVE mark stands. Floored, so it ticks
+/// once a second like a countdown.
 fn behind_clock(shift: Option<&Shift>, digits: usize) -> Option<String> {
     let shift = shift.filter(|shift| !at_live_edge(shift.behind_secs))?;
 
@@ -1243,11 +1092,8 @@ fn behind_clock(shift: Option<&Shift>, digits: usize) -> Option<String> {
     ))
 }
 
-/// The LIVE mark's face: [`live_tint`] plus where the playhead is. Back in
-/// the tape the mark stops reporting the stream and starts offering the way
-/// forward, so it gives up the accent for a plain muted face. What the
-/// stream itself is doing still wins, since a reconnect or a drop is the
-/// bigger news either way.
+/// Back in the tape the mark drops the accent and becomes the way
+/// forward. A reconnect or a drop still wins.
 pub(crate) fn live_mark_tint(
     stream: Option<StreamState>,
     paused: bool,
@@ -1262,17 +1108,15 @@ pub(crate) fn live_mark_tint(
     live_tint(stream, paused, t)
 }
 
-/// What stands where the ending clock stands while a station plays. The
-/// clock's own shape so the row's widths don't jump between a file and a
-/// stream, and its color says where the stream stands: the accent while
-/// audio is arriving, muted and breathing while it's being waited for, the
-/// bad tone once the reconnects have run out. The three states that aren't
-/// plain playback carry a tooltip, since a color is not a sentence.
+/// The clock's shape, so row widths don't jump between a file and a
+/// stream. The accent while audio arrives, muted and breathing while
+/// waiting, the bad tone once reconnects run out; the non-playing states
+/// carry a tooltip.
 ///
-/// It's also the button back to the live edge, wherever it's drawn. At the
-/// edge the click does nothing, and the mark is a button there anyway: one
-/// that appears the moment it would work is one nobody knows is there. Two
-/// slots can draw a mark at once, so each passes its own element id.
+/// Also the button back to the live edge. It stays a button at the edge,
+/// where the click does nothing: one that only appears once it works is
+/// one nobody knows about. Two slots can draw it, so each passes its own
+/// id.
 fn live_mark(
     id: &'static str,
     stream: Option<StreamState>,
@@ -1307,13 +1151,9 @@ fn live_mark(
     }
 }
 
-/// The ending slot once the playhead has left the live edge: how far back
-/// it sits, in the clock's own shape, and the button back to the edge.
-///
-/// The clock takes the mark's job here because it has taken the mark's
-/// place. On the stock row this slot is the only live control on screen,
-/// and a distance from the edge with no way to close it is a readout of a
-/// problem. So the minus sign says where you are and the click undoes it.
+/// On the stock row this slot is the only live control, so the distance
+/// is also the way back: the minus sign says where you are and the click
+/// undoes it.
 fn behind_mark(text: String, player: &Entity<Player>) -> AnyElement {
     let tip = rox_i18n::t!("transport-live-jump");
     let player = player.clone();
@@ -1328,10 +1168,9 @@ fn behind_mark(text: String, player: &Entity<Player>) -> AnyElement {
         .into_any_element()
 }
 
-/// The song on air as one line. A station that sends one unsplittable
-/// field leaves the artist empty, and the title alone is then the whole of
-/// what it said. The stations panel spells this the same way; it's five
-/// lines and neither module owns the other.
+/// A station sending one unsplittable field leaves the artist empty. The
+/// stations panel spells this the same way; neither module owns the
+/// other.
 fn song_text(artist: &str, title: &str) -> String {
     if artist.is_empty() {
         return title.to_string();
@@ -1340,11 +1179,8 @@ fn song_text(artist: &str, title: &str) -> String {
     format!("{artist} - {title}")
 }
 
-/// The interactive layer over a station's song marks: a hit target per
-/// chevron that reports its hover and, on a click, plays the tape from
-/// that song's first second. [`cue_ui::overlay`]'s shape, with the song's
-/// name in the readout instead of a time and none of the editing, because
-/// these marks are the station's and there's nothing here to remove.
+/// [`cue_ui::overlay`]'s shape, with the song's name in the readout and
+/// none of the editing: these marks are the station's.
 fn song_overlay(
     songs: &[LiveMark],
     marks: &[cue_ui::CueMark],
@@ -1367,12 +1203,8 @@ fn song_overlay(
             .id(("song-mark", id))
             .size_full()
             .cursor_pointer()
-            // The strip's own preview would keep tracking the pointer under
-            // the chevron; clearing it here leaves the song's readout as
-            // the only one showing. The pointer's place is kept anyway,
-            // because the tape walks marks out from under a still pointer
-            // and [`SeekStripPanel::settle_song_hover`] needs somewhere to
-            // check it against.
+            // Clears the strip's own preview so the song readout is the only one.
+            // The pointer's place is kept for `settle_song_hover`.
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                 hover_scrub.set_hover(None);
                 this.pointer_at = hover_scrub.fraction(event.position.x);
@@ -1382,8 +1214,8 @@ fn song_overlay(
                 this.hovered_song = hovered.then_some(id);
                 cx.notify();
             }))
-            // The click lands on the song's own mark rather than the pixel
-            // under the pointer, and the strip's seek stays out of it.
+            // Seeks to the song's own mark, not the pixel, and the strip's seek
+            // stays out of it.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, _: &gpui::MouseDownEvent, _, cx| {
@@ -1421,14 +1253,11 @@ fn song_overlay(
     layer
 }
 
-/// The hit target around a song chevron, wider than the drawing so a
-/// pointer finds it without aiming. The cue layer's width, since the two
-/// draw the same chevron.
+/// Wider than the drawing so a pointer finds it; the cue layer's width,
+/// since both draw the same chevron.
 const SONG_HIT_W: f32 = 16.0;
 
-/// The hovered song's readout: its name in the seek preview's pill, under
-/// the chevron rather than over it, since the chevron is already sitting on
-/// the top edge.
+/// Under the chevron, which already sits on the top edge.
 fn song_readout(fraction: f32, text: String) -> Div {
     div()
         .absolute()
@@ -1454,11 +1283,9 @@ fn song_readout(fraction: f32, text: String) -> Div {
         )
 }
 
-/// The seek preview over a station's strip: how far behind the live edge
-/// the point under the pointer is, held to what the tape has, so the pill
-/// over the dashed lead-in reads the oldest second and stops moving.
-/// [`panel::seek_hover`]'s shape and behavior with the tape's clock in it,
-/// since a point on a broadcast has no absolute time to name it by.
+/// Held to what the tape has, so the pill over the lead-in stops at the
+/// oldest second. [`panel::seek_hover`]'s shape with the tape's clock,
+/// since a broadcast has no absolute time.
 fn shift_hover(
     scrub: &ScrubState,
     shift: Shift,
@@ -1477,8 +1304,7 @@ fn shift_hover(
                 cx.notify();
             }
         }))
-        // The pointer leaving the strip stops the moves, so the leave has
-        // to clear the readout itself.
+        // The leave stops the moves, so it has to clear the readout itself.
         .on_hover(cx.listener(move |_, hovered: &bool, _, cx| {
             if !hovered && left.set_hover(None) {
                 cx.notify();
@@ -1489,9 +1315,7 @@ fn shift_hover(
         })
 }
 
-/// The timeshift preview label: how far back the point at `fraction` sits,
-/// a pill centered over it near the top of the strip. The right end says
-/// LIVE rather than -0:00, which is where a click there lands.
+/// The right end says LIVE rather than -0:00.
 fn shift_pill(fraction: f32, behind_secs: f64) -> Div {
     let text = if at_live_edge(behind_secs) {
         rox_i18n::t!("transport-live").to_string()
@@ -1510,8 +1334,8 @@ fn shift_pill(fraction: f32, behind_secs: f64) -> Div {
         .child(
             div()
                 .flex_none()
-                // The zero-width column above gives the text no room, so
-                // the time would wrap to one glyph per line without this.
+                // The zero-width column gives the text no room, so without this it
+                // wraps one glyph per line.
                 .whitespace_nowrap()
                 .px(tokens::SPACE_SM)
                 .py(px(2.))
@@ -1525,27 +1349,22 @@ fn shift_pill(fraction: f32, behind_secs: f64) -> Div {
         )
 }
 
-/// The lead-in's line: where it sits on screen, and how long the whole
-/// unfilled stretch is. The length is what the sweep is measured against,
-/// so every dash in the run shades off the same band rather than each one
-/// carrying a band of its own.
+/// The sweep measures against the whole span, so every dash shades off
+/// the same band.
 #[derive(Clone, Copy)]
 struct LeadLine {
     /// The strip's left edge and the line's top, in window space.
     left: Pixels,
     top: Pixels,
-    /// The line's height and corner radius, px.
     height: f32,
     radius: f32,
-    /// How far the unfilled stretch runs, px.
     span: f32,
     sweep: Option<Sweep>,
 }
 
 impl LeadLine {
-    /// Paint one stretch of it: a dash, or the whole lead-in when the line
-    /// is the solid kind. `x` and `width` are px in from the strip's left
-    /// edge, `alpha` the weight it rests at with no band on it.
+    /// `x` and `width` are px from the strip's left edge; `alpha` is the
+    /// resting weight with no band on it.
     fn piece(self, x: f32, width: f32, alpha: u8, window: &mut Window) {
         let radius = self.radius.min(width / 2.0);
         let quad = |x: f32,
@@ -1571,11 +1390,9 @@ impl LeadLine {
             return;
         };
 
-        // A quad shades between its own two ends and nowhere in between, so
-        // a wide stretch is cut up first: the crest has to be able to sit
-        // inside the line rather than only at one end of it. The cuts keep
-        // the radius on the stretch's outer corners and stay square at the
-        // seams, so a rounded dash still reads as one dash.
+        // A quad shades only between its ends, so a wide stretch is cut up for
+        // the crest to sit inside it. The cuts keep the outer corners rounded
+        // and the seams square, so a dash still reads as one.
         let cuts = (width / SWEEP_STEP).ceil().max(1.0);
         let step = width / cuts;
         let cuts = cuts as usize;
@@ -1605,38 +1422,23 @@ impl LeadLine {
     }
 }
 
-/// How wide the break a reconnect cuts in the bar is, px: the hole taken
-/// out of it, and the line standing in the middle of the hole. Narrow on
-/// purpose. It marks a splice the listener can't cross, not a stretch of
-/// missing time, and a wide block would read as a length of silence that
-/// the tape is holding.
+/// Narrow on purpose: it marks a splice the listener can't cross, not a
+/// stretch of silence.
 const GAP_BREAK_W: f32 = 5.0;
 const GAP_LINE_W: f32 = 1.5;
-/// The notch over the break: how wide it is and how far above the bar it
-/// stands. Enough to catch the eye on a bar three pixels thick, where the
-/// break alone is a missing pixel or two. The height is public to the
-/// crate because the waveform has to leave the notch room at the top of
-/// its own strip before it hands the band over.
+/// Enough to catch the eye on a three-pixel bar. The height is
+/// crate-public because the waveform leaves the notch room above its
+/// strip.
 const GAP_NOTCH_W: f32 = 5.0;
 pub(crate) const GAP_NOTCH_H: f32 = 3.0;
-/// The break's alpha at full weight.
 const GAP_ALPHA: u8 = 0xcc;
 
-/// Draw the tape's reconnects over a strip: each one a break cut out of
-/// the bar, a thin line standing in the break, and a notch across the top
-/// of it.
+/// A gap goes through the middle, touching neither edge: cues own the
+/// top and bookmarks the bottom. Muted rather than the accent, since
+/// nobody put it there.
 ///
-/// Its own shape in its own place, which is the rule the other marks on
-/// these strips already keep. Session cues hang off the top edge as
-/// chevrons and bookmarks off the bottom as ribbons, so a gap goes through
-/// the middle and touches neither edge, and it stays in the muted tone
-/// rather than the accent: nobody put it there, it's the broadcast
-/// missing.
-///
-/// `band` is the top and the height of the cut in strip-local px, the line
-/// itself on the seek strip and most of the panel on the waveform.
-/// `weight` scales the alpha the way the mark painters' does, for a strip
-/// that has dimmed.
+/// `band` is the cut's top and height in strip-local px; `weight` scales
+/// the alpha for a dimmed strip.
 pub(crate) fn paint_gaps(
     gaps: &[f32],
     band: (f32, f32),
@@ -1656,8 +1458,7 @@ pub(crate) fn paint_gaps(
     }
 
     let color = palette::alpha(palette::text_muted(), alpha);
-    // The notch takes whatever room there is above the cut, so a strip too
-    // short for the full height gets a shorter one instead of losing it.
+    // A strip too short for the full notch gets a shorter one.
     let notch_h = GAP_NOTCH_H.min(top);
     let quad = |x: f32, w: f32, y: f32, h: f32, color, window: &mut Window| {
         window.paint_quad(fill(
@@ -1672,9 +1473,8 @@ pub(crate) fn paint_gaps(
     for gap in gaps {
         let x = gap.clamp(0.0, 1.0) * w;
 
-        // The hole first, in the panel's own background: the break has to
-        // read as the bar stopping rather than as something drawn on top
-        // of a bar that carries on underneath.
+        // The hole first, in the panel's background, so the bar reads as
+        // stopping rather than carrying on under a mark.
         quad(
             x - GAP_BREAK_W / 2.0,
             GAP_BREAK_W,
@@ -1698,15 +1498,9 @@ pub(crate) fn paint_gaps(
     }
 }
 
-/// A station's strip: the whole buffer the setting allows, with the tape
-/// held against its right end, where the live edge is.
-///
-/// The dashes on the left are buffer that exists as a number in settings
-/// and not yet as bytes. A fresh station is all dashes and fills in
-/// leftwards as it tapes, so the bar reads the same from the first second
-/// instead of growing out of nothing under the playhead. Nothing there is
-/// reachable: a click in it lands on the oldest thing held, and the head
-/// never crosses into it.
+/// The dashes on the left are buffer the setting allows and the
+/// connection hasn't filled. A fresh station fills in leftwards, so the
+/// bar reads the same from the first second. Nothing there is reachable.
 fn paint_shift_strip(
     shift: &Shift,
     songs: &[cue_ui::CueMark],
@@ -1726,13 +1520,10 @@ fn paint_shift_strip(
     let line_y = bounds.origin.y + px((h - line_h) / 2.0);
     let wash_alpha = if look.dim { 0x1a } else { 0x33 };
     let wash = palette::alpha(palette::accent(), wash_alpha);
-    // Where the tape starts, and where in it the playhead is.
     let tape_x = (1.0 - shift_held(shift)) * w;
     let head_x = (shift_progress(shift) * w).max(tape_x);
 
-    // The lead-in: dashes, a fainter solid line, or nothing, whichever the
-    // config asks for. The dash's gap matches its length, so one number
-    // sets the texture.
+    // The dash's gap matches its length, so one number sets the texture.
     let line = LeadLine {
         left: bounds.origin.x,
         top: line_y,
@@ -1756,15 +1547,12 @@ fn paint_shift_strip(
             window,
         ),
 
-        // A dash the width of the whole lead-in is a solid line, at half
-        // the tape's weight so the two still read apart.
+        // Half the tape's weight so the two still read apart.
         LeadIn::Faint => lead(tape_x, if look.dim { 0x0d } else { 0x1a }, window),
 
         LeadIn::Hidden => {}
     }
 
-    // The tape: the wash across everything held, the accent over the part
-    // of it that has been heard.
     window.paint_quad(
         fill(
             Bounds::new(
@@ -1793,10 +1581,8 @@ fn paint_shift_strip(
         .corner_radii(px(radius.min(heard / 2.0))),
     );
 
-    // Where the connection broke: the bar stops and starts again. It goes
-    // on after both fills, since a break in the tape is a break in
-    // whichever of them covers it, and before the playhead, which crosses
-    // over it the way it crosses everything else.
+    // After both fills, since a break cuts whichever covers it, and before
+    // the playhead, which crosses it.
     paint_gaps(
         gaps,
         (f32::from(line_y - bounds.origin.y), line_h),
@@ -1805,19 +1591,13 @@ fn paint_shift_strip(
         window,
     );
 
-    // The station's own marks, where its songs turned over. Chevrons off
-    // the top edge, the same ones a track's cues get: a point in what's
-    // playing that somebody else put there.
+    // Off the top edge, the same chevrons a track's cues get.
     cue_ui::paint_marks(songs, 1.0, bounds, window);
     paint_playhead(head_x, look, bounds, window);
 }
 
-/// The strip while a station plays with no tape behind it yet: the line at
-/// full width and nothing moving along it. Same thickness and rounding the
-/// config gives the real strip, so the row keeps its shape; what goes is
-/// the played side, the playhead, and every mark that needs a fraction to
-/// sit at. The first seconds of a stream draw this, and it's what a station
-/// looked like before the buffer existed.
+/// The line at full width with nothing moving along it, so the row keeps
+/// its shape through a stream's first seconds.
 fn paint_live_strip(look: StripLook, bounds: Bounds<Pixels>, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
@@ -1825,8 +1605,7 @@ fn paint_live_strip(look: StripLook, bounds: Bounds<Pixels>, window: &mut Window
         return;
     }
 
-    // The bar dims with the marks: a paused station is a station with
-    // nothing on air, and the line says so at the same strength.
+    // Dims with the marks on a paused station.
     let alpha = if look.dim { 0x2a } else { 0x66 };
     let line_h = look.thickness.clamp(1.0, h);
     let radius = look.rounding.clamp(0.0, line_h / 2.0);
@@ -1845,9 +1624,6 @@ fn paint_live_strip(look: StripLook, bounds: Bounds<Pixels>, window: &mut Window
 impl Render for SeekStripPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
@@ -1859,12 +1635,9 @@ impl SeekStripPanel {
         let now = player.now_playing();
         let ab = player.ab_state();
 
-        // No frame polling: the raw observe in `new` re-renders the strip
-        // on every pump tick while audio moves, which is the rate the clock
-        // and playhead actually change at. A per-frame request on top only
-        // redraws identical pixels. It also kept the whole window repainting
-        // at refresh rate through a paused session. Scrub drags notify on
-        // their own through the mouse handlers.
+        // No frame polling: the raw observe in `new` re-renders on every pump
+        // tick, the rate the clock and playhead change at. A per-frame request
+        // would keep the window repainting through a paused session.
 
         let root = div()
             .size_full()
@@ -1874,26 +1647,20 @@ impl SeekStripPanel {
             .justify_center();
 
         let Some(now) = now else {
-            // Idle: the strip stays blank until a session brings a track.
+            // Idle until a session brings a track.
             return root;
         };
 
-        // A station has no timeline of its own. There is no fraction for a
-        // mark to sit at and no end for a countdown to count towards, so
-        // everything that draws against a track's length drops out rather
-        // than drawing against a zero.
+        // A station has no timeline, so everything drawn against a track's
+        // length drops out rather than drawing against a zero.
         let live = now.live;
-        // The timeshift tape the engine holds behind the stream: how long
-        // it is, and how far back in it the playhead has fallen. None off a
-        // station, and for the first seconds of one, before the tape has a
-        // byte to scrub through.
+        // None off a station, and for its first seconds before the tape holds
+        // a byte.
         let shift = now.shift;
-        // Where the stream stands, and the pulse phase the mark breathes
-        // on. A stream waiting to open moves nothing else on the strip, so
-        // this is the one thing here that asks for frames of its own.
+        // A stream waiting to open moves nothing else, so the pulse asks for
+        // its own frames.
         let stream = now.stream;
-        // A paused station is hung up, so the marks dim to a steady muted
-        // face and nothing breathes: there's nothing being waited for.
+        // A paused station is hung up: the marks dim and nothing breathes.
         let paused = live && !player.is_playing();
         let waiting = live
             && !paused
@@ -1901,13 +1668,9 @@ impl SeekStripPanel {
                 stream,
                 Some(StreamState::Opening) | Some(StreamState::Reconnecting)
             );
-        // The lead-in's band moves on the clock rather than on the pump, so
-        // it asks for frames the same way the opening pulse does. A paused
-        // station gets none: nothing is filling, so nothing is loading. Nor
-        // does a tape that has filled the bar, or one that hasn't started,
-        // since neither draws a lead-in for the band to walk along, and a
-        // station left playing overnight shouldn't hold the window at
-        // refresh rate for a stretch of strip that isn't there.
+        // The lead-in band moves on the clock, so it asks for frames. Not while
+        // paused, and not without a lead-in (a full or unstarted tape): a
+        // station left on overnight shouldn't hold the window at refresh rate.
         let sweeping = live
             && !paused
             && self.config.live_sweep
@@ -1923,8 +1686,8 @@ impl SeekStripPanel {
             .filter(|d| *d > 0.0)
             .map(|d| (now.position_secs / d) as f32)
             .unwrap_or(0.0);
-        // The marker only shows where a scrobble could actually happen: the
-        // toggle on and some destination armed.
+        // Only where a scrobble could happen: the toggle on and a destination
+        // armed.
         let marker = (!live && self.config.scrobble_marker)
             .then(|| self.state.scrobble_marker(cx))
             .flatten();
@@ -1932,28 +1695,23 @@ impl SeekStripPanel {
         let ab = (!live)
             .then(|| panel::ab_fractions(ab, now.duration_secs))
             .flatten();
-        // Everything keyed to a position in the track drops out together
-        // while a station plays: the marks, the layer that drops new ones,
-        // and the menus over both.
+        // Everything keyed to a track position drops out together on a station:
+        // the marks, the insert layer, and their menus.
         let positional = !live && position_bound::allowed(&self.state, cx);
-        // The track's bookmarks, placed along the strip.
         let marks = if self.config.bookmarks && positional {
             bookmark_ui::marks(self.marks_for(&now.key, cx), now.duration_secs)
         } else {
             Vec::new()
         };
         let hover_mark = self.hover_mark;
-        // The track's session cues, on the top edge opposite them.
         let cues = if positional {
             cue_ui::marks(self.cues_for(&now.key, cx), now.duration_secs)
         } else {
             Vec::new()
         };
         let hovered_cue = self.hovered_cue;
-        // The station's song changes, off the tape rather than the library.
-        // Read every paint and not cached on the title revision: each mark's
-        // distance from the live edge grows with the broadcast, so a set
-        // held from the last title would slide out of place under the bar.
+        // Read every paint, not cached on the title revision: each mark's
+        // distance from the live edge grows with the broadcast.
         let songs = if shift.is_some() {
             self.state.player.read(cx).live_marks()
         } else {
@@ -1965,24 +1723,17 @@ impl SeekStripPanel {
             .unwrap_or_default();
         self.settle_song_hover(&song_marks);
         let hovered_song = self.hovered_song;
-        // The station's reconnects, read and mapped on the same terms as
-        // the songs: the tape publishes both against one edge, and the two
-        // would drift apart if the strip took them a tick apart.
+        // Mapped on the same tick as the songs, or the two would drift apart.
         let gap_marks = shift
             .as_ref()
             .map(|shift| tape_gaps(&self.state.player.read(cx).live_gaps(), shift))
             .unwrap_or_default();
-        // The seek click is on the track alone so the clocks beside it
-        // stay inert.
-        // The seek preview shows once the duration resolves; before that a
-        // fraction maps to nothing.
+        // The seek click is on the track alone, so the clocks stay inert. The
+        // preview waits for the duration.
         let hover_duration = now.duration_secs.filter(|d| *d > 0.0 && !live);
-        // A file always maps, and a station maps once it has a tape: the
-        // strip is the buffer then, and a point on it is a point in what's
-        // been held.
+        // A station maps once it has a tape: the strip is the buffer then.
         let seekable = !live || shift.is_some();
-        // The insert layer needs a length to map a press onto, so it waits
-        // for the duration the same way the seek preview does.
+        // Waits for the duration, like the seek preview.
         let insert = now
             .duration_secs
             .filter(|_| positional)
@@ -2036,19 +1787,15 @@ impl SeekStripPanel {
                         let songs = song_marks.clone();
                         let gaps = gap_marks.clone();
                         move |bounds, _, window, _| {
-                            // A station with nothing held yet: the flat bar,
-                            // and no drag to arm over it.
+                            // Nothing held yet: the flat bar, and no drag to arm.
                             if live && shift.is_none() {
                                 paint_live_strip(look, bounds, window);
                                 return;
                             }
 
                             match &shift {
-                                // The buffer: dashed where it hasn't filled,
-                                // heard behind the playhead, held and unheard
-                                // ahead of it, live at the right end. No
-                                // marks, since none of them have a position
-                                // on a broadcast to sit at.
+                                // The buffer, with the station's songs and breaks on it. No track
+                                // marks: nothing has a position on a broadcast.
                                 Some(shift) => {
                                     paint_shift_strip(shift, &songs, &gaps, look, bounds, window)
                                 }
@@ -2076,13 +1823,12 @@ impl SeekStripPanel {
             .when_some(hover_duration, |d, duration| {
                 d.child(panel::seek_hover(&self.scrub, duration, cx))
             })
-            // The station's own preview, reading back from the live edge
-            // rather than forward from a track's start.
+            // Reads back from the live edge rather than forward from a track's
+            // start.
             .when_some(shift, |d, shift| {
                 d.child(shift_hover(&self.scrub, shift, cx))
             })
-            // The marks' hit layers go over the seek readout's, so a
-            // pointer on a mark reads the mark.
+            // Over the seek readout's layer, so a pointer on a mark reads the mark.
             .when(!marks.is_empty(), |d| {
                 d.child(bookmark_ui::overlay(
                     &self.state,
@@ -2105,8 +1851,7 @@ impl SeekStripPanel {
                     cx,
                 ))
             })
-            // The station's songs, on the same edge the cues use, which a
-            // station never has any of.
+            // On the cues' edge, which a station never uses.
             .when(!song_marks.is_empty(), |d| {
                 d.child(song_overlay(
                     &songs,
@@ -2118,18 +1863,14 @@ impl SeekStripPanel {
                 ))
             });
 
-        // The clocks around the strip: the ending one counts down, or
-        // shows the full duration when toggled, and "-:--" until the
-        // duration resolves. Minutes pad to the duration's digits so
-        // neither clock changes width mid-track and wiggles the strip.
+        // Minutes pad to the duration's digits so neither clock changes width
+        // mid-track.
         let digits = now
             .duration_secs
             .map(|d| (d as u64 / 60).to_string().len())
             .unwrap_or(1);
-        // A station's position counts the whole listen, and the clock over
-        // it shows the song: it goes back to zero when the stream says the
-        // next one started. Off a station there is no song start and this is
-        // the position it always was.
+        // A station's clock shows the song, going back to zero when the stream
+        // says the next one started.
         let elapsed = song_clock(now.position_secs, now.song_start_secs);
         let ending = match now.duration_secs {
             Some(d) if self.config.show_total => fmt_time_padded(d, digits),
@@ -2139,16 +1880,12 @@ impl SeekStripPanel {
             ),
             None => "-:--".into(),
         };
-        // A station's ending slot counts back to the live edge the way a
-        // track's counts down to its end. None at the edge, where the LIVE
-        // mark has the slot instead.
+        // Counts back to the live edge. None at the edge, where the LIVE mark
+        // has the slot.
         let behind = behind_clock(shift.as_ref(), digits);
 
-        // The config's list draws in order, cut into rows at the break:
-        // each shown piece in its place, whatever order the arrange
-        // editor left them in. The strip's row takes whatever height the
-        // others leave, so a stacked layout keeps the strip broad and its
-        // clocks in a thin line over or under it.
+        // The strip's row takes whatever height the others leave, so a stacked
+        // layout keeps the strip broad.
         let mut track = Some(track);
         let mut piece = |item: &SeekItem| -> Option<AnyElement> {
             match item {
@@ -2156,11 +1893,9 @@ impl SeekStripPanel {
                     Some(clock(fmt_time_padded(elapsed, digits)).into_any_element())
                 }
                 SeekItem::Strip => track.take().map(|t| t.into_any_element()),
-                // A station's ending slot says LIVE while the playhead is
-                // at the edge, since a countdown to an end that never comes
-                // is worse than no clock at all, and counts back to the
-                // edge once the playhead has left it. Either face is the
-                // button back to live.
+                // LIVE at the edge, since a countdown to an end that never comes is
+                // worse than none, then the distance back. Either face is the button
+                // back to live.
                 SeekItem::Ending if live => Some(match &behind {
                     Some(behind) => behind_mark(behind.clone(), &self.state.player),
 
@@ -2173,9 +1908,8 @@ impl SeekStripPanel {
                         &self.state.player,
                     ),
                 }),
-                // The duration slot keeps the mark whatever the playhead is
-                // doing, so a row showing both has the way back to the edge
-                // beside the distance from it.
+                // The duration slot keeps the mark regardless, so a row with both has
+                // the way back beside the distance.
                 SeekItem::Duration if live => Some(live_mark(
                     "transport-live-duration",
                     stream,
@@ -2206,8 +1940,8 @@ impl SeekStripPanel {
         let rows: Vec<Div> = split_rows(&self.config.items)
             .into_iter()
             .map(|items| {
-                // Any clock brings its row's padding in; a row of the
-                // strip alone (spacers included) runs edge to edge.
+                // Any clock brings its row's padding in; a strip-only row runs edge to
+                // edge.
                 let has_clock = items.iter().any(|i| {
                     matches!(i, SeekItem::Elapsed | SeekItem::Ending | SeekItem::Duration)
                 });
@@ -2257,52 +1991,38 @@ mod tests {
         }
     }
 
-    /// Where a right click drops a mark: the fraction under the pointer
-    /// read against the track's length, with the ends held on the strip.
     #[test]
     fn a_right_click_lands_at_its_fraction_of_the_track() {
         assert_eq!(insert_position_ms(0.0, 120.0), 0);
         assert_eq!(insert_position_ms(0.5, 120.0), 60_000);
         assert_eq!(insert_position_ms(1.0, 120.0), 120_000);
 
-        // Sub-millisecond aim rounds rather than truncating, so the mark
-        // sits where the pointer was and not a hair before it.
+        // Rounds rather than truncating, so the mark sits where the pointer was.
         assert_eq!(insert_position_ms(0.5, 0.001), 1);
 
-        // A drag that overshot the ends, and a length that never resolved:
-        // both land on the strip rather than off it.
         assert_eq!(insert_position_ms(-0.5, 120.0), 0);
         assert_eq!(insert_position_ms(1.5, 120.0), 120_000);
         assert_eq!(insert_position_ms(0.5, 0.0), 0);
         assert_eq!(insert_position_ms(0.5, -30.0), 0);
 
-        // A garbage duration can't wrap the position round to a small one.
         assert_eq!(insert_position_ms(1.0, 1.0e12), u32::MAX);
     }
 
-    /// The playhead rides the right end at the live edge and walks left as
-    /// it falls behind, measured against the whole buffer rather than the
-    /// part of it that has filled.
     #[test]
     fn the_playhead_sits_where_the_tape_has_been_heard() {
         assert!(shift_progress(&tape(0.0, 600.0, 600.0)) == 1.0);
         assert!(shift_progress(&tape(150.0, 600.0, 600.0)) == 0.75);
         assert!(shift_progress(&tape(600.0, 600.0, 600.0)) == 0.0);
 
-        // Half a buffer's worth taped: the edge is still the right end and
-        // the oldest second held is the middle of the strip, which is where
-        // the head stops rather than running on into the lead-in.
+        // Half a buffer taped: the head stops at the middle, the oldest second
+        // held.
         assert!(shift_progress(&tape(0.0, 300.0, 600.0)) == 1.0);
         assert!(shift_progress(&tape(300.0, 300.0, 600.0)) == 0.5);
         assert!(shift_progress(&tape(400.0, 300.0, 600.0)) == 0.5);
 
-        // A buffer of no length at all is the live edge and nothing else,
-        // rather than a division by zero.
         assert!(shift_progress(&tape(0.0, 0.0, 0.0)) == 1.0);
     }
 
-    /// How much of the strip is tape: the bar fills leftwards towards the
-    /// cap instead of the strip growing as the connection tapes.
     #[test]
     fn the_tape_fills_the_bar_rather_than_growing_it() {
         assert!(shift_held(&tape(0.0, 0.0, 600.0)) == 0.0);
@@ -2311,8 +2031,6 @@ mod tests {
         assert!(shift_held(&tape(0.0, 0.0, 0.0)) == 1.0);
     }
 
-    /// A fraction along the strip reads back as a distance from the live
-    /// edge, which is what a click and a drag seek to.
     #[test]
     fn a_fraction_maps_back_to_a_distance_from_live() {
         let full = tape(0.0, 600.0, 600.0);
@@ -2320,30 +2038,22 @@ mod tests {
         assert!(shift_behind(0.5, &full) == 300.0);
         assert!(shift_behind(0.0, &full) == 600.0);
 
-        // Overshoot clamps rather than seeking past either end: a drag runs
-        // off the strip all the time.
         assert!(shift_behind(1.5, &full) == 0.0);
         assert!(shift_behind(-0.5, &full) == 600.0);
 
-        // The dashed lead-in is unreachable: anything left of the tape's
-        // start lands on the oldest second there is.
         let half = tape(0.0, 300.0, 600.0);
         assert!(shift_behind(0.5, &half) == 300.0);
         assert!(shift_behind(0.25, &half) == 300.0);
         assert!(shift_behind(0.0, &half) == 300.0);
     }
 
-    /// The ending slot leaves itself to the LIVE mark at the edge, and
-    /// counts back to it in whole floored seconds once the playhead is
-    /// behind. The edge is exact: the engine snaps it there.
     #[test]
     fn the_ending_slot_counts_back_only_once_it_is_behind() {
         assert!(behind_clock(None, 1).is_none());
         assert!(behind_clock(Some(&tape(0.0, 600.0, 600.0)), 1).is_none());
 
         assert!(behind_clock(Some(&tape(0.4, 600.0, 600.0)), 1).as_deref() == Some("-0:00"));
-        // Floored, never rounded: a value sitting on a half second can't
-        // tick between two readings of itself.
+        // Floored, so a value on a half second can't tick between two readings.
         assert!(behind_clock(Some(&tape(65.9, 600.0, 600.0)), 1).as_deref() == Some("-1:05"));
         assert!(behind_clock(Some(&tape(65.0, 600.0, 600.0)), 2).as_deref() == Some("-01:05"));
     }
@@ -2356,9 +2066,6 @@ mod tests {
         }
     }
 
-    /// A station's song marks sit where their songs began, measured back
-    /// from the live edge against the whole buffer, exactly as many as the
-    /// tape published.
     #[test]
     fn song_marks_sit_where_the_tape_put_them() {
         let shift = tape(0.0, 300.0, 600.0);
@@ -2366,20 +2073,13 @@ mod tests {
         assert!(marks.len() == 3);
         assert!(marks[0].fraction == 1.0);
         assert!(marks[1].fraction == 0.75);
-        // The oldest second held is the tape's own start, half way along a
-        // buffer that's half full.
         assert!(marks[2].fraction == 0.5);
-        // The ids are the places in the list the readout looks the song up
-        // by, not anything the engine hands out.
+        // The ids are list indexes, not engine ids.
         assert!(marks[2].id == 2);
 
-        // A buffer of no length has nowhere to put anything.
         assert!(tape_marks(&[song(0.0)], &tape(0.0, 0.0, 0.0)).is_empty());
     }
 
-    /// The lead-in's look, dash and sweep ride in the layout, and a layout
-    /// saved before any of them existed comes back as the still dashes
-    /// everyone has now.
     #[test]
     fn the_lead_in_defaults_to_dashes_and_round_trips() {
         let config: SeekConfig = serde_json::from_str("{}").unwrap();
@@ -2402,32 +2102,20 @@ mod tests {
         assert!(back.live_sweep);
     }
 
-    /// The sweep's band walks the lead-in end to end and starts over: it's
-    /// off the line at both ends of a trip, crests somewhere along it in
-    /// between, and lifts the resting weight only where it reaches.
     #[test]
     fn the_sweep_walks_the_lead_in_and_starts_over() {
         let base = 0x33;
-        // A trip's start and its end have the band clear of the line, so
-        // both ends of it rest at the weight they'd have with no sweep.
         let start = Sweep::at(0.0);
         assert!(start.alpha(base, 0.5) == base);
         assert!(start.alpha(base, 1.0) == base);
-        // Half way through, the crest is mid-line and the far end is still
-        // untouched.
         let middle = Sweep::at(super::SWEEP_SECS / 2.0);
         assert!(middle.alpha(base, 0.5) > base);
         assert!(middle.alpha(base, 0.0) == base);
-        // The crest's lift is the gain, and no piece of the line is ever
-        // lifted further than that.
         let crest = f32::from(base) * (1.0 + super::SWEEP_GAIN);
         assert!(middle.alpha(base, 0.5) == crest as u8);
-        // And the trip repeats: a whole period on is the same band again.
         assert!(Sweep::at(super::SWEEP_SECS).alpha(base, 0.5) == start.alpha(base, 0.5));
     }
 
-    /// A layout with no fields decodes to the stock row, and the retired
-    /// timings toggle still reads: off leaves the strip alone.
     #[test]
     fn legacy_timings_folds_into_the_item_list() {
         let config: SeekConfig = serde_json::from_str("{}").unwrap();
@@ -2437,16 +2125,13 @@ mod tests {
         assert!(config.items == vec![SeekItem::Strip]);
     }
 
-    /// A layout with the list uses it as-is, duplicates dropped,
-    /// and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {
         let config: SeekConfig =
             serde_json::from_str(r#"{"items": ["strip", "elapsed", "strip"]}"#).unwrap();
         assert!(config.items == vec![SeekItem::Strip, SeekItem::Elapsed]);
 
-        // Uniqueness is per row: a copy on the other side of a break is
-        // kept through the load, only same-row repeats collapse.
+        // Uniqueness is per row: a copy across a break survives the load.
         let config: SeekConfig =
             serde_json::from_str(r#"{"items": ["elapsed", "break", "elapsed"]}"#).unwrap();
         assert!(config.items == vec![SeekItem::Elapsed, SeekItem::Break, SeekItem::Elapsed]);
@@ -2456,8 +2141,6 @@ mod tests {
         assert!(back.items == config.items);
     }
 
-    /// A break reads from a layout and cuts the list into rows, with an
-    /// empty side dropping its row instead of drawing one.
     #[test]
     fn break_cuts_the_list_into_rows() {
         let config: SeekConfig =
@@ -2477,8 +2160,6 @@ mod tests {
         assert!(rows == vec![SeekConfig::default().items]);
     }
 
-    /// The editor's rows keep the empty well a trailing break makes, and
-    /// the join puts the breaks back exactly.
     #[test]
     fn editor_rows_keep_empties_and_rejoin() {
         let items = vec![SeekItem::Strip, SeekItem::Break];

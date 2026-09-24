@@ -1,7 +1,5 @@
-//! The playlist name modal: a small window with one name field. Enter creates
-//! a playlist (adding any tracks the caller passed, the Add to Playlist menu's
-//! "New Playlist...") or renames an existing one. Modeled on the panel rename
-//! window.
+//! The playlist name modal: one name field. Enter creates a playlist, adding
+//! any tracks the caller passed, or renames an existing one.
 
 use gpui::{
     App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, SharedString,
@@ -17,25 +15,19 @@ use rox_services::backdrop::WindowBackdrop;
 
 actions!(playlist_create, [Save]);
 
-/// The key context the window's own bindings scope to.
 const CONTEXT: &str = "PlaylistName";
 
-/// The modal's save binding; call once at startup. It's bound on the window
-/// root rather than the field, so Enter commits wherever focus is. The
-/// single-line input sees the key first and propagates it up here.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Save, Some(CONTEXT))]);
+/// Bound on the window root so Enter commits wherever focus is; the single-line
+/// input propagates it up.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("enter", Save, Some(CONTEXT))]
 }
 
-/// What the modal commits on Enter.
 enum Action {
-    /// Create a playlist and add these tracks (empty to just create one).
     Create(Vec<i64>),
-    /// Rename this playlist.
     Rename(i64),
 }
 
-/// Open the create modal. `ids` are tracks to add to the new playlist.
 pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     open_modal(
         state,
@@ -46,7 +38,6 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     );
 }
 
-/// Open the rename modal, seeded with the current name.
 pub fn open_rename(state: AppState, id: i64, current: String, cx: &mut App) {
     open_modal(
         state,
@@ -71,8 +62,6 @@ struct PlaylistNameWindow {
     input: Entity<InputState>,
     backdrop: WindowBackdrop,
     _input_events: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own wake on
-    /// a new bake.
     _backdrop_changed: Subscription,
 }
 
@@ -89,8 +78,6 @@ impl PlaylistNameWindow {
                 .placeholder(rox_i18n::t!("playlist-create-placeholder"))
                 .default_value(current)
         });
-        // The name gates the save, so the footer follows it keystroke by
-        // keystroke.
         let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
             if let InputEvent::Change = event {
                 cx.notify();
@@ -108,14 +95,10 @@ impl PlaylistNameWindow {
         }
     }
 
-    /// Whether the name is enough to save. A blank field is the only thing
-    /// that blocks it.
     fn savable(&self, cx: &App) -> bool {
         !self.input.read(cx).value().trim().is_empty()
     }
 
-    /// Commit the name and close. An empty name does nothing, which the
-    /// footer shows in place of the shortcut so the block isn't silent.
     fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.input.read(cx).value().trim().to_string();
         if name.is_empty() {
@@ -136,7 +119,6 @@ impl PlaylistNameWindow {
         window.remove_window();
     }
 
-    /// The window's own actions: the save, and the shortcut for it.
     fn footer(&self, savable: bool, cx: &mut Context<Self>) -> Div {
         let hint = if savable {
             kbd_line([
@@ -206,9 +188,6 @@ impl Render for PlaylistNameWindow {
             .text_color(palette::text_bright())
             .text_sm()
             .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            // The body's own surface, a second elevated layer over the
-            // window's, the same as the settings page. The backdrop reads
-            // through two layers everywhere.
             .child(
                 div()
                     .flex_1()

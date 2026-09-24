@@ -1,15 +1,8 @@
-//! The Keymap settings page: every chord rox binds, one row per command,
-//! grouped the way the registry groups them. `impl SettingsWindow`
-//! methods in a child module, with access to the window's private state,
-//! the Workspace page's shape.
+//! The Keymap settings page: every chord rox binds, one row per command.
 //!
-//! A row is its chords as keycap chips, each with a way off, plus a
-//! button that records another. Recording is the only unusual part: the
-//! keys someone wants to bind are mostly keys that already do something,
-//! so a plain key listener would never see them, since the binding fires
-//! first. The window instead holds a keystroke interceptor, which runs
-//! ahead of binding resolution, and swallows the press while a row is
-//! waiting for one.
+//! Recording needs a keystroke interceptor, which runs ahead of binding
+//! resolution: the keys worth binding mostly already do something, so a plain
+//! listener would never see them.
 
 use super::*;
 
@@ -73,8 +66,6 @@ impl SettingsWindow {
         ))
     }
 
-    /// One command's row: the chips, the record button, the reset, and the
-    /// clash note underneath when two commands are bound to the same keys.
     fn command_row<'a>(
         &self,
         command: &'static Command,
@@ -82,10 +73,8 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Rows<'a> {
         let chords = keymap::chords(command, &self.keymap);
-        // The row renders through `custom`, which matches keywords only, so
-        // the label and description go in by hand or search never sees them.
-        // The chords find the row too, both as typed and as printed, so
-        // searching "ctrl-p" and searching "Ctrl+P" both turn it up.
+        // `custom` matches keywords only, so the label, description and chords
+        // (typed and printed) go in by hand.
         let mut keywords: Vec<String> = vec![command.label.into(), command.description.into()];
         keywords.extend(chords.iter().map(|chord| chord.to_string()));
         keywords.extend(chords.iter().map(|chord| keymap::display(chord)));
@@ -96,8 +85,7 @@ impl SettingsWindow {
 
         let recording = self.recording == Some(command.id);
         let is_default = keymap::is_default(command, &self.keymap);
-        // A clash is worth saying out loud per chord, since only one of a
-        // row's chords may be the shadowed one.
+        // Per chord, since only one of a row's chords may be shadowed.
         let clashes: Vec<(String, &'static str)> = chords
             .iter()
             .filter_map(|chord| {
@@ -126,7 +114,6 @@ impl SettingsWindow {
         })
     }
 
-    /// The right-hand side of a command's row.
     fn chord_control(
         &self,
         command: &'static Command,
@@ -135,19 +122,15 @@ impl SettingsWindow {
         is_default: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // No wrap here: a setting row's control slot is content-sized, and
-        // a wrapping box with no definite width lays its children out one
-        // per line. A command has a chord or two plus the two buttons,
-        // which fits a line at any window width the settings page opens at.
+        // No wrap: a content-sized slot with a wrapping box lays children out
+        // one per line.
         let mut control = div()
             .flex()
             .flex_row()
             .flex_none()
             .items_center()
             .gap(tokens::SPACE_XS);
-        // The chords stay up while a row records, because recording is
-        // adding to them: someone needs to see what's already bound to
-        // pick a chord that isn't taken.
+        // The chords stay up while recording, so the user sees what's taken.
         if chords.is_empty() {
             control = control.child(
                 div()
@@ -202,9 +185,6 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// One keycap chip with the way to take it off. The × goes inside the
-    /// chip rather than beside it, so a row of three chords doesn't read
-    /// as six separate controls.
     fn chord_chip(&self, command: &'static Command, chord: &str, cx: &mut Context<Self>) -> Div {
         let held = chord.to_string();
         kbd(keymap::display(chord).into())
@@ -227,8 +207,7 @@ impl SettingsWindow {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
-                            // An edit on top of a reset outdates the undo
-                            // snapshot; undoing here would eat this change.
+                            // An edit after a reset outdates the undo snapshot.
                             this.keymap_undo = None;
                             keymap::remove(command.id, &held, cx);
                             this.keymap_changed(cx);
@@ -237,24 +216,17 @@ impl SettingsWindow {
             )
     }
 
-    /// Re-read the file after an edit. The page draws off this copy
-    /// rather than loading settings per render, the way every other page
-    /// that reads a setting does.
     pub(super) fn keymap_changed(&mut self, cx: &mut Context<Self>) {
         self.keymap = Settings::load().keymap;
         cx.notify();
     }
 
-    /// The interceptor that catches a keystroke for a recording row. Runs
-    /// ahead of binding resolution, which is the only place a key that's
-    /// already bound can be seen, and stops the press from reaching what
-    /// it's bound to.
     pub(super) fn record_keys(window: &mut Window, cx: &mut Context<Self>) -> gpui::Subscription {
         let this = cx.weak_entity();
         let handle = window.window_handle();
         cx.intercept_keystrokes(move |event, window, cx| {
-            // Only this window records, so a chord pressed in the
-            // workspace while the page is open still plays music.
+            // Only this window records, so a chord pressed in the workspace
+            // still plays music.
             if window.window_handle() != handle {
                 return;
             }
@@ -265,9 +237,8 @@ impl SettingsWindow {
                 return;
             }
             let keystroke = event.keystroke.clone();
-            // Tapping a modifier on its own arrives as a keystroke of its
-            // own. Nobody means to bind it, and swallowing it would make
-            // reaching for Ctrl look like the recording had stopped.
+            // A lone modifier arrives as its own keystroke; swallowing it would
+            // look like recording stopped.
             if matches!(
                 keystroke.key.as_str(),
                 "control" | "shift" | "alt" | "platform" | "function"
@@ -279,14 +250,12 @@ impl SettingsWindow {
                 let Some(id) = this.recording.take() else {
                     return;
                 };
-                // A bare Escape backs out. Modified, it's a chord like any
-                // other: Shift+Escape is already one of the defaults.
+                // Only a bare Escape backs out: Shift+Escape is already a
+                // default chord.
                 if keystroke.key == "escape" && !keystroke.modifiers.modified() {
                     cx.notify();
                     return;
                 }
-                // Same as the chip's remove: a fresh recording outdates
-                // the undo snapshot.
                 this.keymap_undo = None;
                 keymap::add(id, keystroke.unparse(), cx);
                 this.keymap_changed(cx);

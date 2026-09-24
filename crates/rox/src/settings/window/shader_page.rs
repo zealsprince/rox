@@ -1,16 +1,14 @@
 //! The Shader settings page: the whole-window post-process and the backdrop
-//! shader, each with its source, the shared pool, the in-app editor, and its
-//! signal routes.
+//! shader, each with its source, the shared pool, the in-app editor and its
+//! signal routes. Its own page because each is a program run every frame,
+//! matching the panel settings window's Shader page.
 
 use super::*;
 
 impl SettingsWindow {
-    /// Catch the Shader page's copies up to a config this window didn't
-    /// write: a workspace apply swaps the screen shader wholesale, and the
-    /// picker kept naming the one the old look used. Runs from render off
-    /// the workspace's apply counter, `sync_editor_side`'s shape, since
-    /// every apply repaints all windows. This window's own edits move the
-    /// counter too, and end up back on the values they just wrote.
+    /// A workspace apply swaps the screen shader wholesale, so re-seed the
+    /// copies off the apply counter at render. This window's own edits move the
+    /// counter too, landing back on what they wrote.
     pub(super) fn sync_post_shader(&mut self) {
         let generation = crate::workspace::post_shader_gen();
         if generation == self.post_shader_gen {
@@ -25,21 +23,12 @@ impl SettingsWindow {
         self.post_shader_path = config.path;
         self.post_shader_all_windows = config.all_windows;
         self.post_shader_run_idle = config.run_when_idle;
-        // The routes and hand-set slots update too: the apply already
-        // pushed the file's copies into the live feed the shader reads, so
-        // leaving the editor on the old lists would show one thing and
-        // drive another.
+        // The apply already pushed the file's lists into the live feed, so the
+        // editor has to show them too.
         self.post_shader_routes = config.routes;
         self.post_shader_manual = config.manual;
     }
 
-    /// The Shader page: the whole-window post-process and what drives it.
-    /// Its own page rather than a section under Appearance because it
-    /// isn't a look setting: it's a program the app runs over every
-    /// frame, with a file, a compile error, and sixteen signal routes,
-    /// and it had already outgrown sitting between Transparency and
-    /// Frame. Matches the panel settings window, where a panel's shader
-    /// is its own page under the same icon.
     pub(super) fn shader_page(
         &mut self,
         q: &Query,
@@ -51,11 +40,6 @@ impl SettingsWindow {
             .section(self.backdrop_shader_section(q, window, cx))
     }
 
-    /// The Screen Shader section: a WGSL post-process over the whole
-    /// window, run by the workspace's driver. The toggle and source are
-    /// written to settings and reapply everywhere; the error line reads
-    /// the driver's live readout, so a broken edit caught by the hot
-    /// reload shows here without a round trip through this window.
     fn screen_shader_section(
         &mut self,
         q: &Query,
@@ -67,14 +51,10 @@ impl SettingsWindow {
         let run_idle = self.post_shader_run_idle;
         let error = crate::workspace::post_shader_error();
 
-        // The picker the panel shader pages lead with, over the app-wide
-        // config, so the examples and the workspace's shaders are one list
-        // wherever a shader gets picked. The file case diverges from the
-        // panels in one way: the driver reads and watches the file itself,
-        // and an inline source wins over the bookmark, so the bookmark only
-        // reads as the file choice while nothing is inlined over it. The
-        // picker only checks whether something resolves, so a stand-in
-        // spares the section a file read per render.
+        // The driver reads and watches the file itself, and an inline source
+        // wins over the bookmark, so the bookmark only reads as the file choice
+        // with nothing inlined. The picker only checks that something resolves,
+        // so a stand-in spares a file read per render.
         let name = self.post_shader_name.clone();
         let file_mode = name.is_none()
             && self.post_shader_source.trim().is_empty()
@@ -94,9 +74,8 @@ impl SettingsWindow {
             path: path.as_deref(),
             resolved: resolved.as_deref(),
             clear: Some(|this: &mut Self, cx| this.clear_post_shader_source(cx)),
-            // The whole window is the one surface where a scene doesn't
-            // decorate the app, it replaces it, so the list only offers
-            // shaders that declare they leave it usable.
+            // A scene over the whole window replaces the app, so only shaders
+            // that declare they leave it usable are offered.
             overlays_only: true,
             use_example: |this: &mut Self, index, cx| this.use_post_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_post_shader_pool(name, cx),
@@ -110,23 +89,14 @@ impl SettingsWindow {
             fallback: rox_i18n::t_static("settings-shader-screen-fallback-name"),
         }
         .render(window, cx);
-        // A scene over the whole window hides the app, this row included.
-        // The countdown is the way back out and stays the real safety net;
-        // this line means nobody has to find that out by watching their
-        // library disappear. Read off what's installed, so it applies to
-        // the file the driver compiled as well as to a source this window
-        // can see.
+        // Warns before a scene hides the app, this row included; the confirm
+        // window stays the real way out. Read off what the driver compiled.
         let covers = enabled && crate::workspace::post_shader_overlay() == Some(false);
-        // The same route editor the panel Shader page and the Shader
-        // panel's Bindings page use, over the app-wide list. Its slot
-        // names come off the file the workspace compiled, so a shader that
-        // declares them reads the same here as it does on a panel.
+        // Slot names come off the file the workspace compiled.
         let hub = self.signals.clone();
         let labels = crate::workspace::post_shader_slot_labels();
-        // The Bindings page's slot list over the app-wide config: a routed
-        // slot shows the value going to the shader, an unrouted one is a
-        // hand-set knob, which is how a screen shader's named parameters get
-        // tuned without editing WGSL.
+        // An unrouted slot is a hand-set knob, which is how a screen shader's
+        // named parameters get tuned.
         let slots = signal_ui::slots::SlotList {
             hub: &hub,
             routes: &self.post_shader_routes,
@@ -173,8 +143,6 @@ impl SettingsWindow {
                     ],
                     panel::toggle(enabled, Self::set_post_shader_enabled, cx),
                 );
-                // The source, its scope and its error are all about a
-                // shader that's running; off, the switch is the whole row.
                 if !enabled {
                     return rows;
                 }
@@ -212,12 +180,8 @@ impl SettingsWindow {
                     );
                 rows = match error {
                     Some(error) => rows.custom(&["shader", "error", "compile"], || {
-                        // The callout the output section shows for a failed
-                        // device, for the same reason: the switch above reads as
-                        // on, and a muted line under it is not enough to say that
-                        // nothing behind it is running. A backend with no shader
-                        // pipeline rejects every source with one word, which
-                        // on its own reads as a stray label rather than a reason.
+                        // A banner rather than a muted line: the switch above
+                        // reads as on while nothing runs.
                         match panel::shader::unsupported(&error) {
                             true => panel::banner(
                                 panel::Tone::Bad,
@@ -253,10 +217,8 @@ impl SettingsWindow {
                             .gap(tokens::SPACE_MD)
                             .child(editor.list(cx));
                         if legacy {
-                            // Nothing routed is not nothing happening here, and
-                            // saying so is the only way the first route someone
-                            // adds doesn't look like it broke the other fifteen
-                            // slots.
+                            // Without this, the first route added would look like it
+                            // broke the other fifteen slots.
                             body = body.child(
                                 div()
                                     .text_xs()
@@ -287,11 +249,8 @@ impl SettingsWindow {
         )
     }
 
-    /// One edit to the screen shader's routes: into this window's copy,
-    /// into the workspace's live feed so the shader follows the drag, and
-    /// into the file once the burst settles. The file write waits because
-    /// it reloads and reserializes every shard, dock dumps and all, which
-    /// is not what a slider tick should cost.
+    /// The file write waits for the burst to settle: it reserializes every
+    /// shard, dock dumps and all.
     fn edit_post_shader_routes(
         &mut self,
         edit: &mut dyn FnMut(&mut Vec<Route>),
@@ -300,9 +259,8 @@ impl SettingsWindow {
         edit(&mut self.post_shader_routes);
         let routes = self.post_shader_routes.clone();
         crate::workspace::set_post_shader_routes(routes.clone());
-        // Its own generation, not the appearance one: a route drag must not
-        // cancel a pending palette write, and the two bursts overlap the
-        // moment someone tunes a shader against a color.
+        // Its own generation, so a route drag never cancels a pending palette
+        // write.
         self.route_persist_gen += 1;
         let generation = self.route_persist_gen;
         cx.spawn(async move |this, cx| {
@@ -320,9 +278,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// One hand-set slot edit: into this window's copy, into the
-    /// workspace's live feed so the shader follows the drag, and into the
-    /// file once the burst settles, the routes' exact write path.
     fn set_post_shader_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
         match self
             .post_shader_manual
@@ -351,18 +306,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The shader switch: into the file, then every shaded window
-    /// reapplies, which also clears the pass when it goes off.
-    /// Turning it on runs the countdown confirm; a shader can bury the
-    /// very toggle that would undo it, so the change has to prove itself
-    /// or roll back on its own. Off needs no proof.
+    /// Turning it on raises the Keep or Revert confirm: a shader can bury the
+    /// toggle that would undo it.
     fn set_post_shader_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         let prior = Settings::load().post_shader;
         Settings::update(move |s| s.post_shader.enabled = on);
         crate::workspace::apply_post_shader(cx);
-        // Anything that resolves to a source is worth proving, whether it
-        // came from a file, from a bundle's inline copy, or from the
-        // workspace's pool. Nothing to run needs no countdown.
+        // Anything that resolves to a source needs the confirm, whatever it
+        // came from.
         if on
             && crate::workspace::post_shader_source(&prior)
                 .ok()
@@ -374,8 +325,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The all-windows switch: no confirm of its own, the countdown window
-    /// stays out of the shading regardless.
     fn set_post_shader_all_windows(&mut self, on: bool, cx: &mut Context<Self>) {
         self.post_shader_all_windows = on;
         Settings::update(move |s| s.post_shader.all_windows = on);
@@ -390,12 +339,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// One edit to the screen shader's source trio: the copies, the file,
-    /// the reapply, and the countdown when the change applies to a running
-    /// shader. Every picker action funnels through here; `confirm` is
-    /// false for the moves that change where the text is stored without
-    /// changing what draws (detach, eject, save), which have nothing for
-    /// a countdown to revert.
+    /// `confirm` is false for moves that change where the text lives without
+    /// changing what draws (detach, eject, save).
     fn edit_post_shader_source(
         &mut self,
         name: Option<String>,
@@ -420,14 +365,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Take the screen shader off whatever it was on: no name, no source,
-    /// no bookmark. The switch above stays its own decision, the panel
-    /// pages' split.
     fn clear_post_shader_source(&mut self, cx: &mut Context<Self>) {
         self.edit_post_shader_source(None, String::new(), None, false, cx);
     }
 
-    /// Load one of the shipped examples. Builtin, so nothing to approve.
     fn use_post_shader_example(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(preset) = panel::shader::PRESETS.get(index) else {
             return;
@@ -435,21 +376,16 @@ impl SettingsWindow {
         self.edit_post_shader_source(None, preset.source.to_string(), None, true, cx);
     }
 
-    /// Point the screen at one of the workspace's shaders. Nothing is
-    /// approved on the way through, the same as a panel picking a name: a
-    /// pool entry that arrived with a bundle still has to be read first.
+    /// Nothing is approved on the way through: a pool entry from a bundle still
+    /// has to be read first.
     fn use_post_shader_pool(&mut self, name: String, cx: &mut Context<Self>) {
         self.edit_post_shader_source(Some(name), String::new(), None, true, cx);
     }
 
-    /// Open the in-app editor over the screen shader. A named one edits
-    /// the pool entry; anything else edits the inline text, seeded from
-    /// the file in file mode, and an apply lands as an inline source with
-    /// the file kept as its bookmark. The write goes straight to the
-    /// settings and the reapply rather than through this window, since
-    /// the editor outlives it; the generation counter brings this page's
-    /// copies along. No countdown: an apply is the user's own text, the
-    /// same trust a hot reload from their editor gets.
+    /// A named shader edits the pool entry; anything else edits the inline
+    /// text, seeded from the file in file mode. The write goes straight to
+    /// settings, since the editor outlives this window. No confirm: an apply is
+    /// the user's own text.
     fn edit_post_shader_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         use panel::shader::edit::{EditKey, ShaderEditTarget};
 
@@ -487,16 +423,13 @@ impl SettingsWindow {
         let Some(target) = target else {
             return;
         };
-        // The front workspace's state, the same bundle every other window
-        // opened from here runs on.
         let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) else {
             return;
         };
         crate::shader_editor::open(state, target, cx);
     }
 
-    /// Take a private copy of the pool shader the screen is using. The
-    /// same text keeps running, so there's nothing for a countdown to do.
+    /// The same text keeps running, so nothing to confirm.
     fn detach_post_shader(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self
             .post_shader_name
@@ -508,12 +441,8 @@ impl SettingsWindow {
         self.edit_post_shader_source(None, entry.source, None, false, cx);
     }
 
-    /// Write the screen shader out to a file and hand it to whatever opens
-    /// `.wgsl`, the panel pages' authoring loop. A named shader ejects
-    /// through its pool entry, so the edits apply to every surface using
-    /// the name; an inline one is written under the live workspace's
-    /// shaders and the config moves onto the file, the one mode the
-    /// screen driver's own watch hot reloads.
+    /// A named shader ejects through its pool entry. An inline one moves onto
+    /// the written file, the one mode the screen driver's watch hot reloads.
     fn eject_post_shader(&mut self, cx: &mut Context<Self>) {
         let config = Settings::load().post_shader;
         let ejected = match config.name.as_deref() {
@@ -546,11 +475,8 @@ impl SettingsWindow {
         }
     }
 
-    /// Promote the screen shader's own source into the workspace's shaders
-    /// and use it by name from there, the panel pages' move. A file-mode
-    /// config hands over the file's text and the bookmark moves onto the
-    /// pool entry, so the authoring loop carries on through the pool's
-    /// watch.
+    /// A file-mode config hands over the file's text, and the bookmark moves
+    /// onto the pool entry.
     fn save_post_shader_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
         let config = Settings::load().post_shader;
         let name = name.trim().to_string();
@@ -578,11 +504,8 @@ impl SettingsWindow {
         self.edit_post_shader_source(Some(name), String::new(), None, false, cx);
     }
 
-    /// Browse for the shader file. Picking one turns nothing on by itself;
-    /// the toggle stays the one switch. A pick made while the shader
-    /// runs takes visible effect, so that path runs the confirm too. The
-    /// name and inline source go with it: both would win over the file at
-    /// resolve time, so leaving either behind would make the pick a no-op.
+    /// A pick turns nothing on by itself. The name and inline source are
+    /// cleared, since both would win over the file.
     fn pick_post_shader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -605,8 +528,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Put the just-applied shader on the countdown clock, with this
-    /// window's copies refreshed if the clock wins.
     fn confirm_post_shader(&mut self, prior: settings::PostShaderConfig, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         crate::settings::shader_confirm::open(
@@ -627,18 +548,13 @@ impl SettingsWindow {
         );
     }
 
-    /// Recompile the file as it stands, for shader edits the mtime watch
-    /// missed (a same-second rewrite) or a nudge after fixing an error.
     fn reload_post_shader(&mut self, cx: &mut Context<Self>) {
         crate::workspace::apply_post_shader(cx);
         cx.notify();
     }
 
-    /// The backdrop shader as the look holds it, the base of every read
-    /// and edit on the Backdrop section. Absent reads as an untouched
-    /// default with All Windows on: shading every backdrop is the whole-app
-    /// read, and a look that leaves its children bare turns it off
-    /// explicitly, the way Diffuse does.
+    /// Absent reads as default with All Windows on; a look that leaves its
+    /// children bare turns it off explicitly.
     fn backdrop_config() -> settings::PostShaderConfig {
         settings::backdrop_shader().unwrap_or_else(|| settings::PostShaderConfig {
             all_windows: true,
@@ -646,14 +562,9 @@ impl SettingsWindow {
         })
     }
 
-    /// One write to the backdrop config: the cache the workspace roots
-    /// read, the look's bundle in the file, and a repaint so the shader
-    /// follows the knob. No countdown confirm anywhere on this page: the
-    /// panels paint over this pass whatever it does, so it can never bury
-    /// the switch that would undo it.
-    ///
-    /// A config cleared all the way back to nothing collapses to None, so
-    /// clearing the shader leaves no empty block in the look's exports.
+    /// No confirm for the backdrop: the panels paint over it, so it can never
+    /// bury its own switch. A config cleared back to nothing collapses to None,
+    /// so exports carry no empty block.
     fn write_backdrop(&mut self, config: settings::PostShaderConfig, cx: &mut Context<Self>) {
         let config =
             (config.configured() || !config.routes.is_empty() || !config.manual.is_empty())
@@ -682,8 +593,6 @@ impl SettingsWindow {
         self.write_backdrop(config, cx);
     }
 
-    /// One edit to the backdrop's source trio. Every picker action funnels
-    /// through here, the screen shader's shape without the countdown.
     fn edit_backdrop_source(
         &mut self,
         name: Option<String>,
@@ -713,11 +622,9 @@ impl SettingsWindow {
         self.edit_backdrop_source(Some(name), String::new(), None, cx);
     }
 
-    /// Open the in-app editor over the backdrop shader, the screen
-    /// shader's twin: a name edits the pool entry, anything else the
-    /// inline text, written through the same cache-file-repaint trio as
-    /// [`write_backdrop`](Self::write_backdrop), outside this window so
-    /// the editor outlives it.
+    /// Written through the same cache, file and repaint as
+    /// [`write_backdrop`](Self::write_backdrop), outside this window since the
+    /// editor outlives it.
     fn edit_backdrop_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         use panel::shader::edit::{EditKey, ShaderEditTarget};
 
@@ -756,15 +663,12 @@ impl SettingsWindow {
         let Some(target) = target else {
             return;
         };
-        // The front workspace's state, the same bundle every other window
-        // opened from here runs on.
         let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) else {
             return;
         };
         crate::shader_editor::open(state, target, cx);
     }
 
-    /// Take a private copy of the pool shader the backdrop is using.
     fn detach_backdrop(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = Self::backdrop_config()
             .name
@@ -776,10 +680,8 @@ impl SettingsWindow {
         self.edit_backdrop_source(None, entry.source, None, cx);
     }
 
-    /// Write the backdrop shader out to a file and hand it to whatever
-    /// opens `.wgsl`. A named shader ejects through its pool entry; an
-    /// inline one keeps its source and takes the file as a bookmark, which
-    /// puts it under the surface's own watch, the panel pages' loop.
+    /// An inline shader keeps its source and takes the file as a bookmark,
+    /// which puts it under the surface's own watch.
     fn eject_backdrop(&mut self, cx: &mut Context<Self>) {
         let config = Self::backdrop_config();
         match config.name.as_deref() {
@@ -817,8 +719,6 @@ impl SettingsWindow {
         }
     }
 
-    /// Promote the backdrop's own source into the workspace's shaders and
-    /// use it by name from there.
     fn save_backdrop_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
         let config = Self::backdrop_config();
         let name = name.trim().to_string();
@@ -849,10 +749,8 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Read a file into the config's inline source, with the path as the
-    /// bookmark the surface watches. Inline rather than file-mode: the
-    /// backdrop runs through the panel surface machinery, which resolves
-    /// a name or an inline source and nothing else.
+    /// Inline rather than file mode: the panel surface machinery resolves a
+    /// name or an inline source and nothing else.
     fn load_backdrop_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(source) => {
@@ -869,15 +767,12 @@ impl SettingsWindow {
         }
     }
 
-    /// Re-read the file behind the shader, for an edit the watch missed.
     fn reload_backdrop(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = Self::backdrop_config().path {
             self.load_backdrop_file(path, cx);
         }
     }
 
-    /// One edit to the backdrop's routes: into the cache so the shader
-    /// follows the drag, into the file once the burst settles.
     fn edit_backdrop_routes(
         &mut self,
         edit: &mut dyn FnMut(&mut Vec<Route>),
@@ -904,7 +799,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// One hand-set slot edit, the routes' exact write path.
     fn set_backdrop_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
         let mut config = Self::backdrop_config();
         panel::shader::set_manual_value(&mut config.manual, slot, value);
@@ -927,10 +821,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Backdrop Shader section: the same surface machinery a panel
-    /// uses, painted between the art wash and the panels, so whatever it
-    /// does stays under the whole window. It's stored in the look's bundle
-    /// rather than the machine settings and travels with the workspace.
+    /// Painted between the art wash and the panels, so it stays under
+    /// everything. Stored in the look's bundle and travels with the workspace.
     fn backdrop_shader_section(
         &mut self,
         q: &Query,
@@ -954,8 +846,8 @@ impl SettingsWindow {
             path: path.as_deref(),
             resolved: resolved.as_deref(),
             clear: Some(|this: &mut Self, cx| this.clear_backdrop_source(cx)),
-            // Everything here paints under the panels, so nothing it does
-            // can take the app: the list stays unfiltered, scenes and all.
+            // Under the panels, nothing can take the app, so the list stays
+            // unfiltered.
             overlays_only: false,
             use_example: |this: &mut Self, index, cx| this.use_backdrop_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_backdrop_pool(name, cx),
@@ -1007,9 +899,6 @@ impl SettingsWindow {
                     &["shader", "wgsl", "backdrop", "wash", "art", "bokeh"],
                     panel::toggle(enabled, Self::set_backdrop_enabled, cx),
                 );
-                // The source, its scope, its error and its routes are all
-                // about a shader that's running; off, the switch is the
-                // whole row.
                 if !enabled {
                     return rows;
                 }

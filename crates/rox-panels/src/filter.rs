@@ -1,12 +1,9 @@
-//! The filter panel: the library's field values as cascading columns,
-//! each one filter field (artist, album artist, album, genre, or year)
-//! listing every distinct value with its track count. Picking values
-//! writes the shared query's structured filter, so every global-following
-//! panel narrows with it, and each column here narrows by the picks in
-//! the columns left of it, the column-browser cascade. The shared text
-//! query narrows the value lists too, so the panel and the search boxes
-//! read the same library. Columns are per-panel config; the picks are the
-//! one app-wide filter, so two filter panels share them.
+//! The filter panel: the library's field values as cascading columns, each
+//! listing every distinct value with its track count. Picking values writes
+//! the shared query's structured filter, so every global-following panel
+//! narrows with it, and each column narrows by the picks left of it. Columns
+//! are per-panel config; the picks are the one app-wide filter, so two
+//! filter panels share them.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -34,36 +31,24 @@ use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::query::shared_query::SharedQueryEvent;
 
-/// One value row's height; the lists are uniform_lists, so every row is
-/// the same.
 const ROW_H: f32 = 26.;
 
-/// The most values one column lists. A library big enough to pass this
-/// has more distinct albums than anyone scrolls through, and the values
-/// past the cap cost real memory (a `SharedString` and a `String` each)
-/// for a list nobody reads to the end of. Over the cap the column keeps
-/// the most-used values and says how many it left out, which is a
-/// narrower answer than the truth but a usable one; typing in the search
-/// box narrows the context until everything fits again.
+/// The most values one column lists. Past this the values cost real memory
+/// for a list nobody reads to the end, so the column keeps the most-used and
+/// says how many it left out.
 const VALUE_CAP: usize = 5000;
 
-/// How many rows one core counts at a time. The work per row is an array
-/// index and an increment, so the chunk has to be big or the split costs
-/// more than the pass; each chunk also holds its own counter table, which
-/// is what keeps this from being a chunk per thousand rows.
+/// The per-row work is an index and an increment, so the chunk has to be big
+/// or the split costs more than the pass. Each chunk holds its own counters.
 const COUNT_CHUNK: usize = 256 * 1024;
 
-/// How long a keystroke-driven rebuild waits for the next keystroke. The
-/// picks don't wait: a click has nothing more coming behind it, and the
-/// row it lit up should fill in on the same frame it was clicked.
+/// Picks don't wait: the row a click lit up should fill in on the same
+/// frame.
 const REBUILD_DEBOUNCE: Duration = Duration::from_millis(100);
 
-/// How long a type-ahead phrase keeps growing before the next keystroke
-/// starts a fresh jump.
+/// How long a type-ahead phrase keeps growing between keystrokes.
 const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 
-/// A column's filter field, the per-panel half of the story; the picks
-/// themselves are stored on the shared query.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ColumnKind {
@@ -72,13 +57,11 @@ pub enum ColumnKind {
     Album,
     Genre,
     Year,
-    /// Where tracks come from: the folders on disk as one value, and each
-    /// server as its own.
+    /// The folders on disk as one value, and each server as its own.
     Source,
 }
 
 impl ColumnKind {
-    /// Every pickable kind, in the menus' order.
     pub const ALL: [ColumnKind; 6] = [
         ColumnKind::Artist,
         ColumnKind::AlbumArtist,
@@ -111,17 +94,11 @@ impl ColumnKind {
     }
 }
 
-/// The filter panel's per-view config: what a saved layout restores. The
-/// columns only; the picks are shared app state, transient like the
-/// query text.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilterConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// The column layout, one filter field per column, left to right.
     pub columns: Vec<ColumnKind>,
 }
 
@@ -134,8 +111,6 @@ impl Default for FilterConfig {
     }
 }
 
-/// One value row: the display label, the exact value the filter matches,
-/// how many context tracks have it, and whether it's picked.
 struct Value {
     label: SharedString,
     value: String,
@@ -143,16 +118,12 @@ struct Value {
     selected: bool,
 }
 
-/// A header drag in flight: the column it started from, so a drop on
-/// another header can tell what to move. The label comes along for the
-/// preview.
 #[derive(Clone)]
 struct ColumnDrag {
     from: usize,
     label: SharedString,
 }
 
-/// The chip that floats under the pointer while a column is dragged.
 struct ColumnDragPreview {
     label: SharedString,
 }
@@ -172,45 +143,28 @@ impl Render for ColumnDragPreview {
 pub struct FilterPanel {
     state: AppState,
     config: FilterConfig,
-    /// Per column: its value rows, rebuilt when the library, the shared
-    /// query, or the picks change, never per frame.
     columns: Vec<Vec<Value>>,
-    /// Per column: how many values [`VALUE_CAP`] left out, zero while the
-    /// column lists everything it found. What the notice row under the
-    /// list counts.
+    /// Per column: how many values [`VALUE_CAP`] left out.
     over_cap: Vec<usize>,
-    /// Per column: whether its values are a rebuild behind, because the
-    /// column was just added or its field just changed. The lists move
-    /// with the config the moment it changes, so a header never sits over
-    /// another field's values; this is what tells a click that the empty
-    /// list under it is waiting rather than genuinely empty.
+    /// Per column: whether its values are a rebuild behind its field, so a
+    /// click can tell a waiting list from an empty one.
     pending: Vec<bool>,
-    /// Bumped per scheduled rebuild; a pass whose number has moved on by
-    /// the time it lands is a pass whose answer is already stale.
     rebuild_gen: u64,
-    /// The query text the current lists were built from, so an arriving
-    /// change can tell typing (which waits for the pause) from a pick
-    /// (which doesn't).
+    /// The query text the lists were built from, so a change can tell typing
+    /// (which waits for the pause) from a pick (which doesn't).
     applied_text: String,
     scrolls: Vec<UniformListScrollHandle>,
-    /// The column the keyboard drives: type-ahead and arrows move within
-    /// it, and the cursor highlight is in it. Set by clicking a value or
-    /// stepping left and right.
+    /// The column the keyboard drives, set by clicking a value.
     active_col: usize,
-    /// The keyboard cursor, a row index in the active column: where arrows
-    /// move from and enter toggles. None until a key or click sets one.
     cursor: Option<usize>,
-    /// The type-ahead phrase and when its last keystroke arrived, so a quick
-    /// run of letters jumps to a value by prefix.
     type_ahead: String,
     type_ahead_at: Option<Instant>,
     focus: FocusHandle,
-    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _query_changed: Subscription,
-    /// Drops the phrase when focus leaves the panel, so tab goes back to
-    /// walking panels instead of cycling a phrase from a past visit.
+    /// Drops the phrase when focus leaves, so tab goes back to walking
+    /// panels.
     _type_ahead_blur: Subscription,
 }
 
@@ -229,9 +183,8 @@ impl FilterPanel {
                 }
             },
         );
-        // The picks arrive here too: a toggle writes the shared filter, the
-        // Changed comes back around, and the cascade rebuilds once. Only
-        // the text half is typed, so only it waits out the debounce.
+        // The picks arrive here too. Only the typed text waits out the
+        // debounce.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, query, _: &SharedQueryEvent, cx| {
@@ -240,8 +193,6 @@ impl FilterPanel {
             },
         );
         let focus = cx.focus_handle().tab_stop(true);
-        // The phrase outlives its badge, so it needs an end: leaving the
-        // panel drops it, which is also what hands tab back to traversal.
         let panel = cx.weak_entity();
         let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
             panel
@@ -273,19 +224,14 @@ impl FilterPanel {
         this
     }
 
-    /// Browse from the keyboard while the panel is focused: up and down move
-    /// the active column's cursor, enter toggles the cursor's value, and
-    /// plain typing jumps to the next value by prefix. The active column is
-    /// the last one clicked. Left and right stay the workspace's seek, and
-    /// space its play/pause unless a phrase is mid-flight.
+    /// Left and right stay the workspace's seek, and space its play/pause
+    /// unless a phrase is mid-flight.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
         match keystroke.key.as_str() {
-            // Escape drops a phrase, which is what hands tab back to
-            // panel traversal.
             "escape" => {
                 self.clear_type_ahead(cx);
             }
@@ -307,27 +253,21 @@ impl FilterPanel {
                 let Some(text) = &keystroke.key_char else {
                     return;
                 };
-                // Space plays/pauses unless a phrase is actually mid-flight. The
-                // phrase never clears on its own, so an emptiness test alone
-                // would treat a phrase typed minutes ago as live and keep
-                // swallowing space. Gate on the type-ahead window instead.
+                // The phrase never clears on its own, so gate space on the
+                // type-ahead window, not on the phrase being empty.
                 let phrase_live =
                     !self.type_ahead.is_empty() && panel::type_ahead_live(self.type_ahead_at);
                 if !phrase_live && text == " " {
                     return;
                 }
-                // Consumed as type-ahead text: stop it here so it doesn't
-                // also match the workspace's space-bound TogglePlayback
-                // binding, which this panel otherwise inherits unscoped.
+                // Stop it so it doesn't also fire the workspace's space-bound
+                // TogglePlayback, which this panel inherits unscoped.
                 cx.stop_propagation();
                 self.type_to(text.clone(), cx);
             }
         }
     }
 
-    /// Grow or restart the type-ahead phrase and jump to its next match in
-    /// the active column. A grown phrase re-tests the cursor's own row first
-    /// so refining a match stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let now = Instant::now();
         let grown = self
@@ -339,8 +279,7 @@ impl FilterPanel {
             self.type_ahead = text;
         }
         self.type_ahead_at = Some(now);
-        // The badge shows the phrase now and leaves when the window
-        // lapses; a miss below still updated it, so repaint either way.
+        // A miss below still updated the badge, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let Some(values) = self.columns.get(self.active_col) else {
@@ -363,8 +302,7 @@ impl FilterPanel {
         }
     }
 
-    /// Drop the phrase, handing tab back to Root's panel traversal. True
-    /// when there was one, for the escape ladder.
+    /// True when there was a phrase, for the escape ladder.
     fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
         if self.type_ahead.is_empty() {
             return false;
@@ -375,10 +313,8 @@ impl FilterPanel {
         true
     }
 
-    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
-    /// off the cycle-scoped tab bindings. Deliberately leaves the window
-    /// stamp alone: the badge and the letter grouping belong to typing,
-    /// so a run of tabs steps silently rather than reviving them.
+    /// Leaves the window stamp alone, so a run of tabs steps silently rather
+    /// than reviving the badge.
     fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
         if self.type_ahead.is_empty() {
             return;
@@ -398,18 +334,14 @@ impl FilterPanel {
         }
     }
 
-    /// The active column's value count.
     fn active_len(&self) -> usize {
         self.columns.get(self.active_col).map(Vec::len).unwrap_or(0)
     }
 
-    /// One column's value string at a row, for toggling from the keyboard.
     fn value_at(&self, col: usize, ix: usize) -> Option<String> {
         self.columns.get(col)?.get(ix).map(|v| v.value.clone())
     }
 
-    /// Step the cursor within the active column; the first press with no
-    /// cursor starts at the edge it heads toward.
     fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
         let len = self.active_len();
         if len == 0 {
@@ -423,7 +355,6 @@ impl FilterPanel {
         self.set_cursor(ix, cx);
     }
 
-    /// Put the cursor on a row of the active column and scroll it into view.
     fn set_cursor(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.active_len() {
             return;
@@ -435,17 +366,12 @@ impl FilterPanel {
         cx.notify();
     }
 
-    /// Rebuild every column's values right away, for the changes that
-    /// aren't typed: a rescan, a column added or dropped, a pick. The
-    /// cascade itself is [`build_columns`].
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.schedule_refresh(false, cx);
     }
 
-    /// Schedule the cascade. The counting pass walks every row in the
-    /// context, which is the whole library on an unfiltered panel, so it
-    /// runs on the background executor and the old lists stay up until it
-    /// lands. `debounce` waits out the typing burst first.
+    /// The counting pass walks the whole library on an unfiltered panel, so
+    /// it runs in the background and the old lists stay up until it lands.
     fn schedule_refresh(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let (text, filter) = {
             let query = self.state.query.read(cx);
@@ -455,11 +381,8 @@ impl FilterPanel {
         let generation = self.rebuild_gen;
         self.applied_text = text.clone();
         let kinds = self.config.columns.clone();
-        // A slot per configured column in everything indexed by the strip,
-        // now rather than when the values land: a column added this frame
-        // renders before the rebuild comes back, and it renders through
-        // these. The column changes carry their own structural edit, so
-        // this only ever pads out the lists a first build hasn't filled.
+        // A slot per column now, not when the values land: a column added
+        // this frame renders before the rebuild comes back.
         self.scrolls
             .resize_with(kinds.len(), UniformListScrollHandle::new);
         self.columns.resize_with(kinds.len(), Vec::new);
@@ -503,8 +426,6 @@ impl FilterPanel {
         .detach();
     }
 
-    /// Keep the active column and cursor inside the rebuilt lists, so a
-    /// rescan or a narrowed context never leaves them pointing off the end.
     fn clamp_cursor(&mut self) {
         let cols = self.config.columns.len();
         if cols == 0 {
@@ -518,12 +439,9 @@ impl FilterPanel {
         }
     }
 
-    /// Toggle one value on the shared filter; the Changed subscription
-    /// rebuilds the cascade and wakes every follower.
     fn toggle(&mut self, col: usize, value: String, cx: &mut Context<Self>) {
-        // The column's values haven't caught up with its field yet, so a
-        // value picked out of it belongs to the field that was there a
-        // moment ago and would pin a filter nobody asked for.
+        // A column a rebuild behind still lists the old field's values, so a
+        // pick out of it would pin a filter nobody asked for.
         if self.pending.get(col).copied().unwrap_or(false) {
             return;
         }
@@ -537,7 +455,6 @@ impl FilterPanel {
         });
     }
 
-    /// The All row: drop every pick for the column's field.
     fn clear_column(&mut self, col: usize, cx: &mut Context<Self>) {
         let Some(&kind) = self.config.columns.get(col) else {
             return;
@@ -552,22 +469,17 @@ impl FilterPanel {
         });
     }
 
-    /// Drop every pick, every field: the panel menu's reset.
     fn clear_all(&mut self, cx: &mut Context<Self>) {
         self.state.query.clone().update(cx, |query, cx| {
             query.set_filter(FilterSet::default(), cx);
         });
     }
 
-    /// The Columns flyout's toggle: on appends the column, off removes
-    /// every column of the field along with its picks.
     fn toggle_kind(&mut self, kind: ColumnKind, cx: &mut Context<Self>) {
         if !self.config.columns.contains(&kind) {
             self.add_column(kind, cx);
             return;
         }
-        // Right to left, so the indices ahead of each drop still point at
-        // the columns they did when the sweep started.
         for col in (0..self.config.columns.len()).rev() {
             if self.config.columns[col] == kind {
                 self.detach_column(col);
@@ -587,9 +499,7 @@ impl FilterPanel {
         };
         let old = std::mem::replace(slot, kind);
         // The header names the new field from this frame on, so the old
-        // field's values go now rather than when the rebuild lands. An
-        // empty column for a beat beats a column labelled one thing and
-        // listing another.
+        // field's values go now.
         if let Some(values) = self.columns.get_mut(col) {
             values.clear();
         }
@@ -613,9 +523,7 @@ impl FilterPanel {
         self.refresh(cx);
     }
 
-    /// Append a column of the field: the + button's and empty state's add.
-    /// Twins are allowed, same as a header's kind pick, so the + can stack
-    /// a second Album column if you want one.
+    /// Twins are allowed, same as a header's kind pick.
     fn add_column(&mut self, kind: ColumnKind, cx: &mut Context<Self>) {
         self.config.columns.push(kind);
         self.columns.push(Vec::new());
@@ -625,28 +533,22 @@ impl FilterPanel {
         self.refresh(cx);
     }
 
-    /// Move a column to another slot, what a header drop does. Picks come
-    /// along untouched since every field keeps its column.
     fn move_column(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let len = self.config.columns.len();
         if from >= len || to >= len || from == to {
             return;
         }
         let kind = self.config.columns.remove(from);
-        // `to` is the target header's index. After removing `from`, a target
-        // that was ahead of it slid back one, so inserting at `to` puts the
-        // column past the target on a rightward drag and before it on a
-        // leftward one, which is what dropping onto that header should do.
-        // The removal also caps `to` at the new length, so the last slot stays
-        // reachable.
+        // With `from` removed, inserting at `to` lands past the target on a
+        // rightward drag and before it on a leftward one. The min keeps the
+        // last slot reachable.
         let dest = to.min(self.config.columns.len());
         self.config.columns.insert(dest, kind);
         move_slot(&mut self.columns, from, dest);
         move_slot(&mut self.over_cap, from, dest);
         move_slot(&mut self.pending, from, dest);
         move_slot(&mut self.scrolls, from, dest);
-        // The keyboard follows the column it was in rather than the slot
-        // it used to sit in.
+        // The keyboard follows the column, not the slot.
         if self.active_col == from {
             self.active_col = dest;
         } else if from < self.active_col && self.active_col <= dest {
@@ -657,10 +559,8 @@ impl FilterPanel {
         self.refresh(cx);
     }
 
-    /// Drop one column out of the config and out of everything indexed by
-    /// it, in one step, and hand back the field it held. The caller sheds
-    /// the picks and schedules the rebuild; this is the bookkeeping both
-    /// removal paths share.
+    /// The bookkeeping both removal paths share. The caller sheds the picks
+    /// and schedules the rebuild.
     fn detach_column(&mut self, col: usize) -> Option<ColumnKind> {
         if col >= self.config.columns.len() {
             return None;
@@ -670,9 +570,6 @@ impl FilterPanel {
         remove_slot(&mut self.over_cap, col);
         remove_slot(&mut self.pending, col);
         remove_slot(&mut self.scrolls, col);
-        // Everything right of the drop slid one left, the keyboard's
-        // column with it; the cursor in the dropped column has nowhere to
-        // be.
         if col < self.active_col {
             self.active_col -= 1;
         } else if col == self.active_col {
@@ -681,9 +578,8 @@ impl FilterPanel {
         Some(old)
     }
 
-    /// A field that just lost its last column sheds its picks, so a
-    /// removed column doesn't keep filtering the app invisibly. A twin
-    /// column of the same field keeps them.
+    /// So a removed column doesn't keep filtering the app invisibly. A twin
+    /// column of the same field keeps the picks.
     fn drop_picks_if_unused(&mut self, kind: ColumnKind, cx: &mut Context<Self>) {
         if self.config.columns.contains(&kind) {
             return;
@@ -698,10 +594,6 @@ impl FilterPanel {
         });
     }
 
-    /// One column's header: the field as a plain left-aligned label that
-    /// drops the kind pick, clear, and remove, then a grip to reorder by.
-    /// The whole header is a drop target, so a column dragged by its grip
-    /// can be dropped anywhere on it.
     fn header(
         &self,
         col: usize,
@@ -739,10 +631,8 @@ impl FilterPanel {
             .child(
                 Button::new(("filter-kind", col))
                     .label(kind.label())
-                    // Ghost, full width, left-aligned: reads as a plain
-                    // heading, not a boxed button, and lines up with the
-                    // value rows below. The ghost's own left padding matches
-                    // the rows' SPACE_SM.
+                    // Ghost and left-aligned, so it reads as a plain heading
+                    // lined up with the value rows.
                     .small()
                     .ghost()
                     .flex_1()
@@ -800,10 +690,6 @@ impl FilterPanel {
             )
     }
 
-    /// The add-column control: a + that drops a menu of every field. Shown
-    /// trailing the strip and, labelled, in the empty state, so a column
-    /// can be added without the panel menu. Twins are fine here, matching a
-    /// header's kind pick.
     fn add_button(&self, labelled: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let weak = cx.entity().downgrade();
         let button = Button::new("filter-add")
@@ -828,8 +714,6 @@ impl FilterPanel {
         })
     }
 
-    /// The fixed All row over a column's list: the whole field, picked
-    /// style while nothing narrows it, a click back to it.
     fn all_row(&self, col: usize, cx: &mut Context<Self>) -> Div {
         let picked = self
             .config
@@ -880,10 +764,8 @@ impl FilterPanel {
             )
     }
 
-    /// The line under a column that held more values than it lists: what
-    /// the cap left out, and the way to see it. Sits below the list rather
-    /// than in it, so the row indices the cursor and the type-ahead walk
-    /// stay the values' own.
+    /// Below the list rather than in it, so the row indices the cursor and
+    /// the type-ahead walk stay the values' own.
     fn over_cap_row(&self, col: usize) -> Option<Div> {
         let dropped = *self.over_cap.get(col)?;
         if dropped == 0 {
@@ -904,7 +786,6 @@ impl FilterPanel {
         )
     }
 
-    /// The visible slice of one column's list.
     fn list_rows(
         &mut self,
         col: usize,
@@ -932,8 +813,7 @@ impl FilterPanel {
                         .when(value.selected, |d| {
                             d.bg(palette::alpha(palette::accent(), 0x26))
                         })
-                        // The keyboard cursor: a faint outline so it reads as
-                        // "where typing went" without stealing the picked
+                        // An outline, so the cursor doesn't steal the picked
                         // rows' fill.
                         .when(cursor == Some(ix), |d| {
                             d.border_1().border_color(palette::accent())
@@ -970,16 +850,9 @@ impl FilterPanel {
             .collect()
     }
 
-    /// The column toggles: one row per filter field, ticked while a
-    /// column shows it, the library's header-menu toggles' shape. Flat
-    /// top-level rows under a label, not a flyout: a submenu built from a
-    /// panel's `dropdown_menu` runs in the panel's context, so it can't
-    /// wire the parent link the `PopupMenu::submenu` builder sets, and a
-    /// leaf click would dead-end there: the tab-owned root never gets
-    /// the dismiss and the menu hangs open with its checks frozen. Flat
-    /// rows dismiss the root cleanly, so the next open reads the change. A
-    /// twin column made through a header's kind pick still counts as
-    /// shown.
+    /// Flat rows under a label, never a flyout: a submenu built from a
+    /// panel's `dropdown_menu` can't wire the parent link, so a leaf click
+    /// never dismisses the root and the menu hangs open with its checks frozen.
     fn columns_menu(&self, mut menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let shown = self.config.columns.clone();
         menu = menu.label(rox_i18n::t!("library-columns"));
@@ -1052,8 +925,6 @@ impl Panel for FilterPanel {
         false
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -1150,29 +1021,20 @@ impl FilterPanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Scopes the workspace's space-bound playback binding out while
-            // a type-ahead phrase is mid-flight, the same way the search
-            // box's own context does: bindings win over key listeners, so
-            // without this a space continuing a phrase would also toggle
-            // playback before on_panel_key ever saw the keystroke.
-            // While a phrase is up the panel carries its contexts, which
-            // scope the workspace's space binding out (only while the
-            // phrase is still taking keystrokes) and Root's tab traversal
-            // out (for as long as there's a phrase to cycle).
+            // Bindings win over key listeners, so while a phrase is up the
+            // panel carries contexts that scope out the workspace's space
+            // binding and Root's tab traversal.
             .when_some(
                 panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
                 |d, context| d.key_context(context),
             )
-            // A press anywhere in the panel ends the phrase: the cursor
-            // has moved by hand, so the cycle it was stepping is stale,
-            // and tab belongs back with panel traversal. Capture phase,
-            // so rows and tiles that stop the press can't hide it.
+            // A press anywhere ends the phrase. Capture phase, so rows that
+            // stop the press can't hide it.
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 this.clear_type_ahead(cx);
             }))
-            // Tab cycles the live phrase's matches, off the bindings the
-            // TypeAhead context above scopes in; with no phrase up, tab
-            // stays Root's focus traversal.
+            // Tab cycles the phrase's matches, off the bindings the TypeAhead
+            // context scopes in.
             .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
             .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             .on_key_down(
@@ -1241,8 +1103,6 @@ impl FilterPanel {
                     .children(self.over_cap_row(col)),
             );
         }
-        // The trailing add rail: a slim column whose header cell holds the +,
-        // so more fields go on without the panel menu.
         cols = cols.child(
             div()
                 .flex_none()
@@ -1269,21 +1129,15 @@ impl FilterPanel {
     }
 }
 
-/// The rows a column counts over. The unqueried case is every browsable
-/// row in the library, and naming it beats materializing it:
-/// `(0..len).collect()` on a ten-million-row projection is forty megabytes
-/// allocated per rebuild to hold the numbers zero through ten million. It
-/// carries the projection rather than a length so the walk can ask which
-/// rows browse; every other way in here already excludes the rest.
+/// Naming the whole library beats materializing it: `(0..len).collect()` on
+/// a ten-million-row projection is forty megabytes per rebuild. `All` keeps
+/// the projection so the walk can skip rows that don't browse.
 enum RowSet<'a> {
     All(&'a Projection),
     Only(Vec<u32>),
 }
 
 impl RowSet<'_> {
-    /// One counter per symbol over the set, in parallel chunks: the rows
-    /// far outnumber the symbols, so each chunk tallies into its own
-    /// counters and the chunks' sums fold together at the end.
     fn count_with(&self, symbols: usize, sym: impl Fn(usize) -> usize + Sync) -> Vec<u32> {
         let empty = || vec![0u32; symbols];
         let merge = |mut a: Vec<u32>, b: Vec<u32>| {
@@ -1314,11 +1168,10 @@ impl RowSet<'_> {
         }
     }
 
-    /// The set narrowed by a mask, the cascade's step between columns.
     fn narrow(self, mask: &[bool]) -> Self {
         match self {
             // The mask is false at every tombstone and every station, so
-            // this drops them with the rows the filter rules out.
+            // this drops them too.
             RowSet::All(projection) => RowSet::Only(
                 (0..projection.len() as u32)
                     .into_par_iter()
@@ -1334,10 +1187,8 @@ impl RowSet<'_> {
     }
 }
 
-/// Every column's values in one pass, left to right: the context starts as
-/// the text query's hits and each column's own picks narrow it for the
-/// columns after it. Blocking and allocation-heavy over a big library, so
-/// it runs off the UI thread; nothing in it touches a window or an entity.
+/// The context starts as the text query's hits, and each column's picks
+/// narrow it for the columns after it.
 fn build_columns(
     projection: &Projection,
     kinds: &[ColumnKind],
@@ -1353,8 +1204,6 @@ fn build_columns(
     for (ix, &kind) in kinds.iter().enumerate() {
         let picks = filter.values(kind.field());
         out.push(column_values(projection, kind, &rows, picks));
-        // The last column's picks narrow nothing, since no column reads
-        // the context after it.
         if picks.is_empty() || ix + 1 == kinds.len() {
             continue;
         }
@@ -1367,12 +1216,8 @@ fn build_columns(
     out
 }
 
-/// One column's value rows out of its context: every distinct value with
-/// its track count, alphabetical for the interned fields, ascending for
-/// years. A pick whose value fell out of the context (the text query
-/// moved on) stays listed at zero so it can still be cleared. Comes back
-/// with how many values [`VALUE_CAP`] left out, zero when it listed
-/// everything.
+/// A pick whose value fell out of the context stays listed at zero so it can
+/// still be cleared.
 fn column_values(
     projection: &Projection,
     kind: ColumnKind,
@@ -1380,9 +1225,8 @@ fn column_values(
     picks: &[String],
 ) -> (Vec<Value>, usize) {
     let out = match kind {
-        // A year is its own symbol: two bytes wide, so one counter per
-        // possible year is a quarter of a megabyte and the values come out
-        // in order with no sort behind them.
+        // One counter per possible year is a quarter of a megabyte, and the
+        // values come out in order with no sort.
         ColumnKind::Year => {
             let counts = rows.count_with(u16::MAX as usize + 1, |i| projection.year[i] as usize);
             counts
@@ -1401,26 +1245,20 @@ fn column_values(
                 })
                 .collect::<Vec<_>>()
         }
-        // Genre symbols are "; " lists, and the column lists their
-        // values: counts aggregate per symbol first (cheap over rows),
-        // then fan out onto each symbol's values. A symbol with no
-        // values at all is the untagged bucket, the "" row. A folded
-        // library merges case variants here too (the symbols only
-        // folded whole lists), showing the casing most rows use.
+        // Genre symbols are "; " lists: counts aggregate per symbol, then fan
+        // out onto each symbol's values. A folded library merges case
+        // variants here, showing the casing most rows use.
         ColumnKind::Genre => {
             let fold = crate::settings::fold_case();
             let (column, table) = sym_source(projection, kind);
             let sym_counts = rows.count_with(table.strings.len(), |i| column[i] as usize);
-            // (Folded) value -> per-casing counts, so the display can
-            // follow the rows once every symbol has fanned out.
             let mut counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
             for (sym, &count) in sym_counts.iter().enumerate() {
                 if count == 0 {
                     continue;
                 }
-                // Aliases first, then dedup within one symbol, so a
-                // degenerate "Rock; Rock" (or "Rock; rock" folded, or an
-                // alias pair) still counts its tracks once.
+                // Aliases first, then dedup, so "Rock; Rock" or an alias pair
+                // still counts its tracks once.
                 let mut parts: Vec<String> = rox_library::genre::split(&table.strings[sym])
                     .map(rox_library::genre::resolve)
                     .collect();
@@ -1466,9 +1304,8 @@ fn column_values(
                 })
                 .collect()
         }
-        // Listed by the name each source shows under and picked by its
-        // stored string, which for a server is a digest nobody would
-        // recognize, so the order and the labels both come off the name.
+        // Picked by the stored string, which for a server is a digest, so the
+        // order and the labels come off the name.
         ColumnKind::Source => {
             let (column, table) = sym_source(projection, kind);
             let counts = rows.count_with(table.strings.len(), |i| column[i] as usize);
@@ -1533,10 +1370,8 @@ fn column_values(
     (out, dropped)
 }
 
-/// A column's values cut down to `cap`, keeping the ones the most tracks
-/// carry and leaving the rest in the order they came in. Comes back with
-/// how many it dropped. Picked values are never dropped: a pick the panel
-/// stopped listing is a filter nothing on screen could clear.
+/// Picked values are never dropped: a pick the panel stopped listing is a
+/// filter nothing on screen could clear.
 fn cap_values(values: Vec<Value>, cap: usize) -> (Vec<Value>, usize) {
     if values.len() <= cap {
         return (values, 0);
@@ -1554,7 +1389,6 @@ fn cap_values(values: Vec<Value>, cap: usize) -> (Vec<Value>, usize) {
     (kept, dropped)
 }
 
-/// The interned column and table one kind reads; years go their own way.
 fn sym_source(projection: &Projection, kind: ColumnKind) -> (&[u32], &SymTable) {
     match kind {
         ColumnKind::Artist => (&projection.artist, &projection.artists),
@@ -1566,8 +1400,6 @@ fn sym_source(projection: &Projection, kind: ColumnKind) -> (&[u32], &SymTable) 
     }
 }
 
-/// An untagged value shows as Unknown but filters as its real empty
-/// string, so the pick still matches exactly.
 fn sym_label(value: &str) -> SharedString {
     if value.is_empty() {
         rox_i18n::t!("filter-unknown")
@@ -1585,19 +1417,13 @@ fn year_label(year: u16) -> SharedString {
     }
 }
 
-/// Drop the slot a removed column held out of one of the lists indexed
-/// by the column strip. The lists are only as long as the last rebuild
-/// made them, so an index past the end is a column whose values never
-/// landed and there's nothing to drop.
+/// An index past the end is a column whose values never landed.
 fn remove_slot<T>(slots: &mut Vec<T>, ix: usize) {
     if ix < slots.len() {
         slots.remove(ix);
     }
 }
 
-/// Carry one slot from `from` to `dest`, the same walk the config's own
-/// columns take on a header drop, so a moved column keeps its values, its
-/// cap notice and its scroll position.
 fn move_slot<T>(slots: &mut Vec<T>, from: usize, dest: usize) {
     if from >= slots.len() {
         return;
@@ -1655,9 +1481,6 @@ mod tests {
         values.iter().map(|v| (v.value.clone(), v.count)).collect()
     }
 
-    /// Naming the whole library instead of listing it counts the same
-    /// values with the same totals, for the interned columns and for
-    /// years, which count their own way.
     #[test]
     fn the_all_rows_sentinel_counts_what_the_listed_rows_do() {
         let p = projection(&[
@@ -1676,9 +1499,8 @@ mod tests {
         }
     }
 
-    /// A row a patch tombstoned counts for nothing. The sentinel walks
-    /// the columns by index, so it's the one way into the counts that
-    /// has to check liveness itself.
+    /// The sentinel walks the columns by index, so it's the one way into the
+    /// counts that has to check liveness itself.
     #[test]
     fn the_all_rows_sentinel_skips_tombstoned_rows() {
         let mut p = projection(&[
@@ -1701,8 +1523,6 @@ mod tests {
         assert_eq!(read(&years), vec![("1999".into(), 1), ("2001".into(), 1)]);
     }
 
-    /// Over the cap a column keeps the values the most tracks carry, in
-    /// the order it built them, and says how many it left out.
     #[test]
     fn the_cap_keeps_the_biggest_values_in_place() {
         let value = |name: &str, count: u32, selected: bool| Value {
@@ -1724,9 +1544,6 @@ mod tests {
         assert_eq!(read(&kept), vec![("b".into(), 9), ("c".into(), 4)]);
     }
 
-    /// The lists indexed by the column strip take the same edit the
-    /// config's columns do, so a dropped or moved column takes its values
-    /// with it instead of leaving everything right of it off by one.
     #[test]
     fn the_value_lists_follow_the_columns_they_belong_to() {
         let pairs = |columns: &[&'static str], values: &[&'static str]| {
@@ -1739,7 +1556,6 @@ mod tests {
         let mut columns = vec!["artist", "album", "genre", "year"];
         let mut values = vec!["a", "b", "g", "y"];
 
-        // A drop out of the middle.
         columns.remove(1);
         remove_slot(&mut values, 1);
         assert_eq!(
@@ -1747,8 +1563,7 @@ mod tests {
             vec![("artist", "a"), ("genre", "g"), ("year", "y")]
         );
 
-        // A header drop rightward, walked the way `move_column` walks
-        // the config: past the target.
+        // A header drop rightward, walked the way `move_column` walks it.
         let kind = columns.remove(0);
         let dest = 2.min(columns.len());
         columns.insert(dest, kind);
@@ -1758,8 +1573,7 @@ mod tests {
             vec![("genre", "g"), ("year", "y"), ("artist", "a")]
         );
 
-        // And leftward, back where it came from. The clamp `move_column`
-        // applies is a no-op at the head, so the drop index is the target's.
+        // And leftward, back where it came from.
         let kind = columns.remove(2);
         columns.insert(0, kind);
         move_slot(&mut values, 2, 0);
@@ -1768,16 +1582,13 @@ mod tests {
             vec![("artist", "a"), ("genre", "g"), ("year", "y")]
         );
 
-        // A column added before the first rebuild has no list yet, so an
-        // edit past the end is a no-op rather than a panic.
+        // A column added before the first rebuild has no list yet.
         let mut unbuilt: Vec<&str> = Vec::new();
         remove_slot(&mut unbuilt, 2);
         move_slot(&mut unbuilt, 1, 0);
         assert!(unbuilt.is_empty());
     }
 
-    /// A picked value survives the cap however few tracks carry it, or
-    /// the pick would be a filter with no row left to clear it from.
     #[test]
     fn the_cap_never_drops_a_pick() {
         let value = |name: &str, count: u32, selected: bool| Value {

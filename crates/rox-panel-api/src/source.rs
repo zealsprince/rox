@@ -1,8 +1,6 @@
 //! Which track a display panel describes: the playing one, or the app-wide
-//! selection (the shared selection). Panels that show a single track (cover
-//! art today, richer track views later) store a [`TrackSource`] in their
-//! per-view config and resolve it here at render time; the setting row is
-//! shared so the knob reads the same in every customize window.
+//! selection. Single-track panels like cover and lyrics store a
+//! [`TrackSource`] in their per-view config and resolve it here.
 
 use gpui::{App, Context, Div, Entity, Window};
 use gpui_component::Side;
@@ -13,7 +11,6 @@ use crate::panel::{self, AppState};
 use rox_design::assets::icons;
 use rox_library::cue::TrackKey;
 
-/// The two places a displayed track can come from.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackSource {
@@ -23,9 +20,8 @@ pub enum TrackSource {
 }
 
 impl TrackSource {
-    /// The track the source currently points at: the playing one, or the
-    /// first of the selection. A key rather than a path, so a panel drawing
-    /// one track of a cue rip describes that track and not its image.
+    /// A key rather than a path, so one track of a cue rip resolves to that
+    /// track and not its image.
     pub fn resolve(self, state: &AppState, cx: &App) -> Option<TrackKey> {
         match self {
             TrackSource::Playing => state.player.read(cx).now_playing().map(|now| now.key),
@@ -37,18 +33,15 @@ impl TrackSource {
     }
 }
 
-/// A per-view cache over [`TrackSource::resolve`], for panels that render
-/// every frame while a session runs: the selection side is a database
-/// query, so it only re-runs after [`ResolvedTrack::invalidate`]. Call
-/// that from the selection and library subscriptions. The playing side
-/// stays uncached, it reads shared atomics.
+/// Caches the selection side of [`TrackSource::resolve`], which is a
+/// database query. Call [`ResolvedTrack::invalidate`] from the selection and
+/// library subscriptions.
 #[derive(Default)]
 pub struct ResolvedTrack {
     selected: Option<Option<TrackKey>>,
 }
 
 impl ResolvedTrack {
-    /// The selection or the catalog changed; the next get re-resolves.
     pub fn invalidate(&mut self) {
         self.selected = None;
     }
@@ -64,9 +57,7 @@ impl ResolvedTrack {
     }
 }
 
-/// The track source as a "Track" flyout on a panel's dropdown menu: one
-/// checked entry per source, the same knob as [`source_row`], so the follow
-/// mode reads the same everywhere.
+/// The track source as a "Track" flyout on a panel's dropdown menu.
 pub fn source_flyout<P: 'static>(
     menu: PopupMenu,
     get: impl Fn(&P) -> TrackSource + Clone + 'static,
@@ -77,8 +68,7 @@ pub fn source_flyout<P: 'static>(
 ) -> PopupMenu {
     let panel = panel.clone();
     let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
-        // The flyout follows the panel so the picked row's tick swaps live
-        // instead of staying stale until the menu is reopened.
+        // Follow the panel so the tick swaps live while the menu is open.
         panel::follow_panel(&panel, cx);
         source_items(submenu.check_side(Side::Right), get, &panel, set)
     });
@@ -88,15 +78,13 @@ pub fn source_flyout<P: 'static>(
     ))
 }
 
-/// The checked source rows the [`source_flyout`] lists.
 fn source_items<P: 'static>(
     mut menu: PopupMenu,
     get: impl Fn(&P) -> TrackSource + Clone + 'static,
     panel: &Entity<P>,
     set: impl Fn(&mut P, TrackSource, &mut Context<P>) + Clone + 'static,
 ) -> PopupMenu {
-    // Each source item has its own icon (Play, List Music), so the tick
-    // sits on the right where it stands apart from the icon.
+    // Tick on the right, apart from each item's own icon.
     for (label, icon, source) in [
         (
             rox_i18n::t!("source-follow-playing"),
@@ -122,7 +110,6 @@ fn source_items<P: 'static>(
     menu
 }
 
-/// The source setting row for a panel's customize window.
 pub fn source_row<P: 'static>(
     current: TrackSource,
     on_pick: impl Fn(&mut P, TrackSource, &mut Context<P>) + Clone + 'static,

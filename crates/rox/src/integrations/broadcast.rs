@@ -1,9 +1,5 @@
-//! The broadcast sink's app side (ADR 22): rox-playback owns the encoder,
-//! the icecast source connection, and the retry clock; this module owns
-//! what only the app knows: the settings that configure it and the
-//! library tags behind the stream metadata. The metadata is sent from the
-//! same player observer the media widget publishes on, keyed to the track
-//! so a steady stream of clock notifies writes nothing.
+//! The broadcast sink's app side (ADR 22): the settings and the stream
+//! metadata. rox-playback owns the encoder and the icecast connection.
 
 use gpui::App;
 
@@ -11,9 +7,7 @@ use rox_library::cue::TrackKey;
 use rox_panel_api::panel::AppState;
 use rox_playback::broadcast;
 
-/// Point the sink at the current settings: start it, retune it, or tear it
-/// down, whichever the file says. Startup calls it once; whatever edits
-/// the broadcast settings calls it again to make the change live.
+/// Start, retune, or stop the sink to match the settings.
 pub fn apply() {
     let s = rox_core::settings::Settings::load().broadcast;
     let config = s.enabled.then_some(broadcast::Config {
@@ -28,18 +22,13 @@ pub fn apply() {
     broadcast::configure(config);
 }
 
-/// Apply the configured sink and start sending it metadata off the player
-/// observer. App-level, once per process, beside the control socket.
 pub fn start(state: &AppState, cx: &mut App) {
     apply();
     let state = state.clone();
     let player = state.player.clone();
     let mut current: Option<TrackKey> = None;
-    // The station-title revision beside the key, because a relay of a
-    // station is the one case where what's on air changes without the
-    // queue moving. Listeners of the rebroadcast want the song, so the key
-    // compare alone would announce the station's name once and then say
-    // nothing for as long as it played.
+    // A station relay changes song without the key moving, so the title
+    // revision is compared too.
     let mut current_live: Option<u64> = None;
     cx.observe(&player, move |_, cx| {
         let player = state.player.read(cx);
@@ -51,8 +40,7 @@ pub fn start(state: &AppState, cx: &mut App) {
         current = now.clone();
         current_live = live;
         let Some(key) = now else { return };
-        // The same title-or-filename fallback the media widget shows, so
-        // the mount never announces an empty line.
+        // Title, else filename, so the mount never announces an empty line.
         let tags = player.live_over(state.library.read(cx).meta_for_key(&key));
         let title = tags
             .as_ref()

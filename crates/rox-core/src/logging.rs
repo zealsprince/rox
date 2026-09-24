@@ -1,15 +1,7 @@
-//! The app's logging backend behind the `log` facade: every `log::warn!`,
-//! `error!`, or `info!` in any crate of the workspace comes through here and
-//! fans three ways: stderr, so a debug run still prints as it always did; a
-//! rolling file under the data dir, so a crash or a weird session leaves a
-//! record a bug report can attach; and an in-memory ring the console window
-//! reads, so the same lines show live in the app without tailing a file.
-//!
-//! One backend, installed once at startup. The ring is capped and the file
-//! rolls at a size ceiling, so neither grows without bound. Writes take a
-//! mutex around the file and the ring; the log calls are off the audio
-//! path (decode-thread and UI-thread errors, never the sample callback),
-//! so the lock is never on a realtime deadline.
+//! The logging backend behind the `log` facade: every line fans to stderr,
+//! a rolling file under the data dir, and an in-memory ring the console
+//! window reads. Writes take one mutex; logging never happens on the sample
+//! callback, so the lock is never on a realtime deadline.
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -22,24 +14,15 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 
 use crate::settings::data_dir;
 
-/// How many lines the in-memory ring holds for the console window. Past
-/// this the oldest fall off; the file on disk is the full record.
 const RING_CAP: usize = 4000;
 
-/// The active log file's size ceiling. Past it the file rolls to `.1` and a
-/// fresh one starts, so the log never grows without bound. One back file is
-/// kept, enough that a crash and the report written just after both fall
-/// inside the same two files.
+/// Past this the file rolls to `.1`. One back file is kept.
 const FILE_CAP: u64 = 2 * 1024 * 1024;
 
-/// The backend, reached through the `log` facade. A process-wide singleton:
-/// [`init`] installs it once and the ring and file persist for the run.
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-/// One captured line: the wall-clock time it arrived (so a reported log
-/// reads in real time), how loud, and the message. The area is part of
-/// the message text itself ("history: ...", "settings: ..."), so there's no
-/// separate target column to keep in sync.
+/// The area is part of the message text ("history: ..."), so there's no
+/// separate target column.
 #[derive(Clone)]
 pub struct Line {
     pub time: String,
@@ -47,8 +30,6 @@ pub struct Line {
     pub message: String,
 }
 
-/// The mutable half behind one lock: the ring and the open file with its
-/// running size, so a write appends and rolls under the same guard.
 struct Sink {
     ring: VecDeque<Line>,
     file: Option<File>,
@@ -58,8 +39,8 @@ struct Sink {
 
 struct Logger {
     sink: Mutex<Sink>,
-    /// Bumps on every line and on a clear, so the console window's poll can
-    /// tell "nothing new" from "repaint" without diffing the ring.
+    /// Bumps on every line and on a clear, so the console's poll can skip
+    /// unchanged frames without diffing the ring.
     seq: AtomicU64,
 }
 
@@ -85,9 +66,7 @@ impl Log for Logger {
             return false;
         }
         // blade-graphics logs every buffer and texture create/destroy at
-        // info, and the shader region scratch texture recreates on each
-        // resize. That's debug-grade noise, so it drops with the rest of
-        // debug; its warnings and errors still pass.
+        // info. That's debug noise; its warnings and errors still pass.
         !(metadata.level() == Level::Info
             && metadata
                 .target()
@@ -103,8 +82,6 @@ impl Log for Logger {
             level: record.level(),
             message: record.args().to_string(),
         };
-        // Stderr first, so a debug build's console reads exactly as it did
-        // before the backend existed.
         eprintln!("{} {:>5} {}", line.time, line.level, line.message);
 
         let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
@@ -134,9 +111,7 @@ impl Log for Logger {
     }
 }
 
-/// Install the backend and open the log file. Idempotent and safe to call
-/// before the window system is up; a second call is a no-op. Info and above
-/// pass; debug and trace are dropped, so a release build stays quiet.
+/// Idempotent. Info and above pass.
 pub fn init() {
     let logger = LOGGER.get_or_init(Logger::new);
     if log::set_logger(logger).is_ok() {
@@ -144,8 +119,6 @@ pub fn init() {
     }
 }
 
-/// The console window's view of the ring, newest last. Cheap enough to
-/// clone whole on each refresh at this cap.
 pub fn snapshot() -> Vec<Line> {
     LOGGER
         .get()
@@ -162,8 +135,6 @@ pub fn snapshot() -> Vec<Line> {
         .unwrap_or_default()
 }
 
-/// The line-and-clear counter the console poll watches; unchanged since the
-/// last look means nothing to repaint.
 pub fn seq() -> u64 {
     LOGGER
         .get()
@@ -171,8 +142,7 @@ pub fn seq() -> u64 {
         .unwrap_or(0)
 }
 
-/// Empty the console's view. The file on disk is untouched. Clear tidies
-/// the live pane, it doesn't erase the record a report needs.
+/// The file on disk is untouched.
 pub fn clear() {
     if let Some(logger) = LOGGER.get() {
         logger
@@ -185,8 +155,7 @@ pub fn clear() {
     }
 }
 
-/// Where the active log file is, for the console's Reveal action. Valid
-/// before [`init`] too, so a caller can point at it either way.
+/// Valid before [`init`] too.
 pub fn log_path() -> PathBuf {
     LOGGER
         .get()
@@ -201,8 +170,6 @@ pub fn log_path() -> PathBuf {
         .unwrap_or_else(|| data_dir().join("logs").join("rox.log"))
 }
 
-/// Open the log file for append, making its folder first, and read back its
-/// current size so the roll accounts from where the last run left off.
 fn open_file(path: &Path) -> (Option<File>, u64) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -216,10 +183,8 @@ fn open_file(path: &Path) -> (Option<File>, u64) {
     }
 }
 
-/// Roll the log once it passes the cap: drop the current handle to close
-/// it, move `rox.log` to `rox.log.1` (replacing any older back file), then
-/// reopen a fresh one. A rename that fails leaves the current file in place
-/// and the next write tries again, so a locked back file never loses lines.
+/// A rename that fails leaves the current file in place and the next write
+/// tries again, so a locked back file never loses lines.
 fn roll(sink: &mut Sink) {
     sink.file = None;
     let back = sink.path.with_extension("log.1");

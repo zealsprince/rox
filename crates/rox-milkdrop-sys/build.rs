@@ -1,11 +1,7 @@
-//! Builds the vendored libprojectM with cmake and tells cargo how to link it.
-//!
-//! Everything is static: one .a per library, merged into the rox binary, so
-//! there's no shared object to ship and no runtime search path to get wrong.
-//! GL is not linked here on Linux or macOS, because projectM master resolves
-//! every GL entry point through its vendored glad using the load proc we hand
-//! it at instance creation. Windows is the exception, where the loader itself
-//! needs opengl32.
+//! Builds the vendored libprojectM with cmake and links it statically. GL
+//! isn't linked on Linux or macOS: projectM resolves every entry point
+//! through its vendored glad with the load proc we hand it. Windows still
+//! needs opengl32 for the loader itself.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -20,9 +16,8 @@ fn main() {
         );
     }
 
-    // The stamp changes when the pinned commits change, which is the only
-    // thing that makes the cmake build stale. Watching the tree itself would
-    // mean walking several thousand files on every cargo invocation.
+    // The stamp covers the pinned commits and patches; watching the tree
+    // would walk thousands of files on every cargo invocation.
     println!(
         "cargo:rerun-if-changed={}",
         source.join(".rox-stamp").display()
@@ -30,38 +25,26 @@ fn main() {
 
     let dst = cmake::Config::new(&source)
         .define("BUILD_SHARED_LIBS", "OFF")
-        // The playlist library and the SDL test UI are the two optional
-        // pieces; we pick presets ourselves and never open a window here.
         .define("ENABLE_PLAYLIST", "OFF")
         .define("ENABLE_SDL_UI", "OFF")
         .define("BUILD_TESTING", "OFF")
-        // Both default to looking for a system copy. There isn't one on any
-        // of our three platforms, and vendoring keeps vcpkg out of the
-        // Windows build.
+        // No system copy on any of our platforms; vendoring keeps vcpkg out.
         .define("ENABLE_SYSTEM_GLM", "OFF")
         .define("ENABLE_SYSTEM_PROJECTM_EVAL", "OFF")
         .define("ENABLE_GLES", "OFF")
-        // Release regardless of the cargo profile. The workspace already
-        // builds dependencies optimised (see the profile block in the root
-        // Cargo.toml), and a debug projectM misses frames at 60fps. It also
-        // keeps ENABLE_DEBUG_POSTFIX from renaming the libraries to *d.
+        // Release regardless of profile: a debug projectM misses frames at
+        // 60fps, and it keeps ENABLE_DEBUG_POSTFIX from renaming libs to *d.
         .profile("Release")
         .build();
 
-    // CMake's GNUInstallDirs picks lib64 on some Linux distributions and lib
-    // everywhere else, and which one it picked isn't visible from here.
+    // GNUInstallDirs picks lib64 on some distributions and lib elsewhere.
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-search=native={}/lib64", dst.display());
 
-    // One library, not two: the static build folds projectm-eval and the
-    // rest of the vendored objects into the projectM archive through
-    // TARGET_OBJECTS (src/libprojectM/CMakeLists.txt), so there's no second
-    // archive to name. What the archive is called is the platform's call:
-    // libprojectM-4.a on Linux and macOS, and libprojectM-4.lib on Windows,
-    // where the top-level CMakeLists forces a "lib" prefix onto static
-    // libraries so they can share a directory with the import libraries.
-    // rustc's `static=projectM-4` only looks for projectM-4.lib on MSVC, so
-    // the file is named verbatim instead, whichever one the install left.
+    // One archive: the static build folds projectm-eval in through
+    // TARGET_OBJECTS. It's libprojectM-4.a, or libprojectM-4.lib on Windows
+    // (CMake forces the "lib" prefix), and rustc's `static=projectM-4` only
+    // finds projectM-4.lib on MSVC, so the file is named verbatim.
     let mut archive = None;
     for dir in ["lib", "lib64"] {
         for name in ["libprojectM-4.a", "libprojectM-4.lib", "projectM-4.lib"] {
@@ -84,15 +67,12 @@ fn main() {
         // projectM is C++, and rustc links neither standard library for us.
         "macos" | "ios" => println!("cargo:rustc-link-lib=dylib=c++"),
         "windows" if target_env == "msvc" => {
-            // MSVC's runtime comes in through the linker defaults. The GL
-            // loader is what needs naming.
+            // MSVC's runtime comes in through the linker defaults.
             println!("cargo:rustc-link-lib=dylib=opengl32");
         }
         _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
     }
 
-    // Tell dependents where the headers are, in case anything downstream
-    // wants to check a constant against them.
     println!(
         "cargo:include={}",
         Path::new(&dst).join("include").display()

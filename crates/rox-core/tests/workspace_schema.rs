@@ -1,6 +1,5 @@
 //! Holds the committed workspace schema to the bundle types (ADR 22) and
-//! checks the write shape actually validates against it, the way a stock
-//! editor with the `$schema` reference resolved would.
+//! checks the write shape validates against it.
 
 use rox_core::settings::{NamedLayout, WorkspaceBundle, workspace_schema};
 
@@ -24,8 +23,7 @@ fn committed_schema_matches_the_types() {
 fn saved_shape_validates_and_required_fields_bite() {
     let validator = jsonschema::validator_for(&workspace_schema()).expect("schema compiles");
 
-    // A bundle as the writer produces it, `$schema` stamp included, with
-    // enough optional shape filled in to reach the referenced types.
+    // Enough optional shape filled in to reach the referenced types.
     let mut bundle = WorkspaceBundle {
         name: "Test".into(),
         ..WorkspaceBundle::default()
@@ -46,7 +44,6 @@ fn saved_shape_validates_and_required_fields_bite() {
         .collect();
     assert!(errors.is_empty(), "saved shape rejected: {errors:?}");
 
-    // Deleting a required field is exactly what the editor flags.
     file.as_object_mut().unwrap().remove("version");
     assert!(
         !validator.is_valid(&file),
@@ -54,8 +51,7 @@ fn saved_shape_validates_and_required_fields_bite() {
     );
 }
 
-/// Not a test: rewrites the committed schema from the types. Run it on
-/// purpose after a bundle shape change:
+/// Not a test: rewrites the committed schema after a bundle shape change.
 /// `cargo test -p rox-core --test workspace_schema -- --ignored regenerate`
 #[test]
 #[ignore]

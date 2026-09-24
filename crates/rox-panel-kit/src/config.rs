@@ -1,15 +1,11 @@
-//! The serde helpers every panel config uses. Small enough that each panel
-//! used to have its own copy, which is exactly why they belong in one
-//! place.
+//! The serde helpers every panel config uses, kept in one place so no panel
+//! carries its own copy.
 
-/// A knob that ships on, so an older layout dump missing the field keeps the
-/// behaviour it had.
+/// Serde default for a knob that ships on, so an older dump keeps it on.
 pub fn default_true() -> bool {
     true
 }
 
-/// Whether a counter is at rest, for the `skip_serializing_if` on the
-/// saved-position fields: a wall parked at the top writes nothing.
 pub fn is_zero(n: &usize) -> bool {
     *n == 0
 }

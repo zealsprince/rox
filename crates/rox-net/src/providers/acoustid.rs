@@ -1,21 +1,8 @@
-//! AcoustID (acoustid.org): what a track is, decided from the sound instead
-//! of from what the tags claim. A Chromaprint fingerprint goes up and
-//! MusicBrainz recording ids come back, which is the one thing no other
-//! provider here can do. A file with an empty title and a misspelled artist
-//! gives a text search nothing to match on, and its audio still matches.
-//!
-//! The lookup takes an application key, registered once at
-//! acoustid.org/new-application and baked in from `ACOUSTID_CLIENT_KEY`. It
-//! names rox and nothing else, the Last.fm pair's trade; a build without one
-//! asks the user for their own on the settings page instead. No user key and
-//! no account enter into it, because rox only reads. Submitting fingerprints
-//! back to the database is the other half of the service and the half that
-//! would need one.
-//!
-//! AcoustID asks for no more than three requests a second, held process-wide
-//! here so callers never have to count them. What this module returns is ids
-//! and a score. It writes no file and asks nothing on its own: the identify
-//! runs when a panel action asks for it, per ADR 14.
+//! AcoustID (acoustid.org): identify a track from its Chromaprint
+//! fingerprint, the one lookup that doesn't trust the tags. The application
+//! key is baked in from `ACOUSTID_CLIENT_KEY` or entered by the user; rox
+//! only reads, so no user key is involved. Runs only on a panel action, per
+//! ADR 14.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -27,25 +14,17 @@ use super::{agent, net_reason, string};
 
 const API: &str = "https://api.acoustid.org/v2/lookup";
 
-/// AcoustID's published limit is three requests a second, so this is the
-/// gap between two of them with a little room over. One identify sends one
-/// request and never notices; a pass over a selection would sail past the
-/// limit, so the gate lives here rather than being trusted to the caller.
+/// AcoustID's published limit is three requests a second. Enforced here
+/// rather than trusted to callers, since a pass over a selection would blow it.
 const MIN_INTERVAL: Duration = Duration::from_millis(350);
 
-/// The application key this build was compiled with, empty when it was
-/// built without one. `ACOUSTID_CLIENT_KEY` is how the release workflow
-/// hands the repository secret to cargo, the shape every baked identity
-/// takes.
 pub const CLIENT_KEY: &str = match option_env!("ACOUSTID_CLIENT_KEY") {
     Some(key) => key,
     None => "",
 };
 
-/// The key a lookup calls with: the settings override when the user entered
-/// one, the build's own otherwise, the order the Last.fm reads use. Empty
-/// when neither exists, which reads as the identify being unavailable rather
-/// than as an error.
+/// The settings override, else the build's key. Empty means the identify is
+/// unavailable, not an error.
 pub fn client_key() -> String {
     let key = Settings::load().accounts.providers.acoustid_key;
     if key.is_empty() {
@@ -55,29 +34,16 @@ pub fn client_key() -> String {
     }
 }
 
-/// One recording AcoustID matched the fingerprint to: the MusicBrainz id
-/// that turns into a full candidate, how sure the match is, and enough of a
-/// name to show while the tags are still being fetched.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
-    /// A MusicBrainz recording MBID.
     pub recording_id: String,
-    /// AcoustID's own score, 0 to 1. This scores the audio, not the tags,
-    /// which is why it stands in for the text scorer's confidence once a
-    /// candidate is built.
+    /// 0 to 1, scoring the audio, so it replaces the text scorer's confidence.
     pub score: f32,
     pub title: String,
-    /// The credited artists joined the way MusicBrainz credits read, since
-    /// that is where AcoustID's copy of them comes from.
     pub artist: String,
 }
 
-/// One lookup: a fingerprint and the file's whole duration in, the
-/// recordings that match out, best first. An empty vec is a clean no-match,
-/// which is the ordinary answer for anything the database has never seen.
-/// Err is the wire, a missing key, or a message the API sent back.
-///
-/// Blocking, background executor only.
+/// Hits best first; an empty vec is the ordinary no-match.
 pub fn lookup(fingerprint: &str, duration_secs: u32) -> Result<Vec<Hit>, String> {
     let key = client_key();
     if key.is_empty() {
@@ -85,30 +51,21 @@ pub fn lookup(fingerprint: &str, duration_secs: u32) -> Result<Vec<Hit>, String>
     }
     let fingerprint = fingerprint.trim();
     if fingerprint.is_empty() || duration_secs == 0 {
-        // Both are required parameters, so sending this would spend a
-        // request to be told what's already known here.
         return Err("the fingerprint is incomplete".to_string());
     }
     let duration = duration_secs.to_string();
     throttle();
-    // POST with a form body, not a query string: two minutes of audio
-    // encodes to well over a kilobyte of base64, and the service documents
-    // the POST as the preferred shape for exactly that reason. The key
-    // rides in the body either way, so ureq's Display, which prints the
-    // URL, has nothing to leak even before [`net_reason`] catches it.
+    // POST, not a query string: two minutes of audio is over a kilobyte of
+    // base64, and it keeps the key out of the URL.
     let sent = agent().post(API).send_form(&[
         ("client", key.as_str()),
         ("duration", duration.as_str()),
         ("fingerprint", fingerprint),
-        // Asking for the recordings rather than bare ids: the title and
-        // artist ride along at no extra request and give a picker
-        // something to name each hit by before its tags are fetched.
+        // Recordings carry title and artist, so a picker can name each hit early.
         ("meta", "recordings"),
         ("format", "json"),
     ]);
-    // An API error arrives as a 400 carrying the envelope in its body, so
-    // a status failure is read like a success and the message pulled out
-    // of it, rather than folded down to a bare code.
+    // An API error is a 400 with the message in its body, so read the body.
     let text = match sent {
         Ok(response) => response.into_string().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(_, response)) => {
@@ -119,9 +76,6 @@ pub fn lookup(fingerprint: &str, duration_secs: u32) -> Result<Vec<Hit>, String>
     parse(&text)
 }
 
-/// The response body into hits, best first. Its own function so the fixtures
-/// below exercise the shapes the service actually sends without a key or a
-/// network.
 fn parse(text: &str) -> Result<Vec<Hit>, String> {
     let body: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if string(body.get("status")) == "error" {
@@ -141,9 +95,7 @@ fn parse(text: &str) -> Result<Vec<Hit>, String> {
     let mut hits = Vec::new();
     for result in results {
         let score = result.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-        // A result is a fingerprint cluster, and a cluster nobody has ever
-        // tagged carries no recordings at all. That's a match with nothing
-        // to say, which is worth skipping and not worth failing over.
+        // A cluster nobody has tagged carries no recordings: skip it.
         let Some(recordings) = result.get("recordings").and_then(|v| v.as_array()) else {
             continue;
         };
@@ -156,10 +108,7 @@ fn parse(text: &str) -> Result<Vec<Hit>, String> {
                 recording_id,
                 score,
                 title: string(recording.get("title")),
-                // The same joiner the MusicBrainz provider runs credits
-                // through. AcoustID serves the credit straight out of its
-                // MusicBrainz mirror, names and join phrases in credit
-                // order, so the two read alike in a compare table.
+                // Same joiner as MusicBrainz, so the two read alike in a compare.
                 artist: super::musicbrainz::artist_credit(recording.get("artists")),
             });
         }
@@ -169,18 +118,13 @@ fn parse(text: &str) -> Result<Vec<Hit>, String> {
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    // Two clusters can name the same recording, and each one past the first
-    // buys a duplicate row in the picker and a MusicBrainz request behind
-    // the one-a-second throttle. The sort is stable, so the copy kept is
-    // the one that scored highest.
+    // Two clusters can name one recording. The sort is stable, so the copy
+    // kept is the highest-scoring one.
     let mut seen = HashSet::new();
     hits.retain(|hit| seen.insert(hit.recording_id.clone()));
     Ok(hits)
 }
 
-/// Hold the process to AcoustID's rate limit: if the last request was under
-/// the interval ago, sleep the remainder. Blocking, background executor
-/// only, never the audio path.
 fn throttle() {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
@@ -197,8 +141,6 @@ fn throttle() {
 mod tests {
     use super::*;
 
-    /// The documented response shape for `meta=recordings`, with a second
-    /// cluster added below the first so the ordering has something to do.
     const LOOKUP: &str = r#"{
         "status": "ok",
         "results": [
@@ -237,15 +179,11 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].recording_id, "38035858-f990-4fbb-b3b2-f2f8b958eeba");
         assert_eq!(hits[0].title, "Teen Angst");
-        // The join phrase comes off the credit, so a featured artist reads
-        // the way the tag would spell it.
         assert_eq!(hits[0].artist, "M83 feat. Morgan Kibby");
         assert!((hits[0].score - 0.98).abs() < 1e-6);
         assert_eq!(hits[1].artist, "M83");
     }
 
-    /// A fingerprint cluster nobody has tagged yet answers with a score and
-    /// no recordings. Nothing to show, and no reason to fail the lookup.
     #[test]
     fn a_result_without_recordings_is_skipped() {
         let hits = parse(
@@ -264,8 +202,6 @@ mod tests {
         .expect("fixture parses");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Known");
-        // A recording with no id of its own is no use either: the whole
-        // point of a hit is the id the MusicBrainz fetch runs on.
         assert!(parse(
             r#"{ "status": "ok", "results": [{ "score": 1.0, "recordings": [{ "title": "x" }] }] }"#
         )
@@ -273,18 +209,13 @@ mod tests {
         .is_empty());
     }
 
-    /// The envelope the service really sends on a bad key, captured from a
-    /// live call with a made-up one. It arrives with a 400, which is why
-    /// the lookup reads the body of a status failure instead of folding it
-    /// to a code.
+    /// The real envelope for a bad key, captured live. It arrives with a 400.
     #[test]
     fn an_error_envelope_carries_the_api_message() {
         assert_eq!(
             parse(r#"{"error": {"code": 4, "message": "invalid API key"}, "status": "error"}"#),
             Err("invalid API key".to_string())
         );
-        // An error with nothing said about it still fails, rather than
-        // reading as a clean no-match.
         assert_eq!(
             parse(r#"{ "status": "error" }"#),
             Err("unknown api error".to_string())
@@ -297,14 +228,10 @@ mod tests {
             parse(r#"{ "status": "ok", "results": [] }"#),
             Ok(Vec::new())
         );
-        // No results key at all reads the same way.
         assert_eq!(parse(r#"{ "status": "ok" }"#), Ok(Vec::new()));
-        // A body that isn't JSON is the one shape that fails here.
         assert!(parse("<html>").is_err());
     }
 
-    /// The same recording under two clusters is one hit at the better
-    /// score, so the picker shows it once and MusicBrainz is asked once.
     #[test]
     fn a_repeated_recording_is_kept_once() {
         let hits = parse(

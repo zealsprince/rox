@@ -1,5 +1,4 @@
-//! The Development settings page: the experimental switch and what it turns
-//! on.
+//! The Development settings page: the experimental switch.
 
 use super::*;
 
@@ -8,15 +7,12 @@ impl SettingsWindow {
         self.experimental = on;
         Settings::update(move |s| s.experimental = on);
         settings::set_experimental(on, cx);
-        // The in-window menus read the flag as they draw, so the refresh
-        // above is enough for them; the macOS bar is built once and held by
-        // the system, so it has to be rebuilt.
+        // The macOS bar is built once and held by the system, so it needs a
+        // rebuild.
         crate::workspace::native_menu::rebuild(cx);
         cx.notify();
     }
 
-    /// The Development page: the switches for work that isn't finished, and
-    /// the controls for whatever they turn on.
     pub(super) fn development_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new().section(Section::new(
             q,

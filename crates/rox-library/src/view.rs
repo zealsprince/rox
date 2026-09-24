@@ -1,11 +1,6 @@
-//! What a track list actually shows: the projection narrowed by a search
-//! and a filter, put through a sort, and walked into display rows with a
-//! header block opening every group run.
-//!
-//! All of it is arithmetic over the projection's interned columns, so it
-//! belongs here next to the projection instead of inside a panel. The panel
-//! keeps the parts that need a window: resolving its column keys to
-//! [`SortKey`]s, and drawing the rows this hands back.
+//! What a track list shows: the projection narrowed by search and filter,
+//! sorted, and walked into display rows with header blocks opening each
+//! group run. The panel only resolves its column keys and draws.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,112 +10,74 @@ use rayon::prelude::*;
 
 use crate::projection::{FilterSet, Projection, SortKey};
 
-/// How many rows one core takes at a time in the whole-view passes. The
-/// work per row is an array index and a push, so the chunk has to be big
-/// or the split dominates it; at this size a library under a hundred
-/// thousand tracks stays on one thread and a ten-million-row pass spreads
-/// over every core.
+/// Big enough that the split doesn't dominate a per-row index-and-push: a
+/// library under a hundred thousand tracks stays on one thread.
 const PAR_CHUNK: usize = 64 * 1024;
 
-/// One display row of a track list: a track from the projection, or a line
-/// of the group header opening the artist/album run that follows it.
-/// Headers open whatever runs the current order holds: the canonical
-/// order's groups, or the runs a column sort leaves adjacent. A searched
-/// subset may be grouped too; its caller supplies the pre-sort needed to
-/// make the intended runs contiguous, or passes no grouping for a flat
-/// result. Headers share the same index space as tracks, so a virtualized
-/// table scrolls them like any row. A table draws
-/// every row one fixed height, so a header block is one row per composed
-/// line, each drawing its own piece list.
+/// A track, or one line of a group header. Headers share the tracks' index
+/// space, so a virtualized fixed-height table scrolls them like any row.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Row {
     Track(u32),
-    /// One line of a group's header block: the group (indexing the groups
-    /// vector this comes back with) and which composed line this row draws.
+    /// (group index, composed line).
     Head(u32, u8),
-    /// The divider opening one disc's run inside a multi-disc group.
     Disc(u16),
 }
 
-/// One group of the current view: what its header rows draw. The name,
-/// year, and genre resolve through the first track.
+/// What a group's header rows draw. Name, year and genre resolve through
+/// the first track.
 #[derive(Debug)]
 pub struct Group {
     pub first: u32,
     pub tracks: u32,
     pub total_ms: u64,
-    /// The group's codec symbol while every track agrees; None once two
-    /// differ, and the meta line drops it.
+    /// Some while every track agrees.
     pub codec: Option<u32>,
-    /// The bitrate spread over tracks that have one, in kbps; both 0 when
-    /// none does.
+    /// Over tracks that have one; both 0 when none does.
     pub min_kbps: u16,
     pub max_kbps: u16,
-    /// The run's bit depth and sample rate while every track agrees, None
-    /// once two differ, the same all-or-nothing rule the codec follows:
-    /// a mixed album has no one shape to name. Option rather than a 0
-    /// sentinel because 0 is also what a track with an unread depth or
-    /// rate gets, and a group where every track agrees on "unread" is
-    /// not a group that disagrees.
+    /// Some while every track agrees. Option, not a 0 sentinel, since 0 is also
+    /// "unread" and a run that agrees on unread still agrees.
     pub bit_depth: Option<u8>,
     pub sample_rate_hz: Option<u32>,
-    /// The cover paths the header tile loads by, resolved through the
-    /// store once on the group's first paint: the run's first cover, or up
-    /// to four distinct albums' covers when the grouping mosaics (genre).
-    /// The inner vec empty is a group with nothing to show.
+    /// Resolved on first paint: the first cover, or up to four albums' covers
+    /// for a mosaic grouping. Empty means nothing to show.
     pub art: Option<Vec<PathBuf>>,
 }
 
 impl Group {
-    /// The group's codec name, resolved off the interned symbol, while
-    /// every track in the run agrees on one.
     pub fn codec_name<'a>(&self, projection: &'a Projection) -> Option<&'a str> {
         self.codec
             .map(|sym| projection.codecs.strings[sym as usize].as_str())
     }
 }
 
-/// How a view breaks its rows into groups. The caller owns the mapping
-/// from its own config, since the key is the only thing that differs
-/// between grouping by album, artist, genre, or year.
+/// The caller maps its config onto this; only the key differs between
+/// album, artist, genre and year grouping.
 pub struct Grouping<'a> {
-    /// How many header rows open each run, one per composed line.
     pub head_rows: u8,
-    /// The re-sort a grouping needs before its runs are contiguous. None
-    /// keeps the input order; callers grouping a searched subset must name
-    /// the sort that restores the runs they intend to label.
+    /// The re-sort that makes runs contiguous. Callers grouping a searched
+    /// subset must name it.
     pub pre_sort: Option<SortKey>,
-    /// The group key a row belongs to. Rows sharing a key and sitting next
-    /// to each other are one run.
+    /// Adjacent rows sharing a key are one run.
     pub key: &'a dyn Fn(&Projection, u32) -> u64,
-    /// Whether a run spanning several discs gets a divider row opening each
-    /// numbered disc. Only album grouping does; the others mix discs by
-    /// definition.
+    /// A divider row per numbered disc. Album grouping only.
     pub discs: bool,
 }
 
-/// Everything a view needs beyond the projection and the canonical order.
 pub struct ViewSpec<'a> {
     pub query: &'a str,
     pub filter: &'a FilterSet,
-    /// Similarity scores by db id and the sort direction, when the similar
-    /// column owns the sort. Takes precedence over `sort`.
+    /// Scores by db id and direction. Takes precedence over `sort`.
     pub similar: Option<(&'a HashMap<i64, f32>, bool)>,
-    /// The column sort, when one is set.
     pub sort: Option<(SortKey, bool)>,
-    /// The grouping to lay headers out under. An explicit column sort
-    /// groups the runs that sort leaves adjacent; without one, `pre_sort`
-    /// can first restore contiguous runs for a searched or canonical view.
-    /// Callers that want a flat search pass None while the query is active.
+    /// None for a flat result.
     pub grouping: Option<Grouping<'a>>,
 }
 
-/// The rows a view shows: the canonical order or search hits, narrowed by
-/// the structured filter, put through the active sort when one is set.
-/// Grouping headers open the runs of whichever order shows. With no
-/// explicit column sort, the grouping may pre-sort that subset so its keys
-/// are contiguous; with a column sort, headers follow the adjacent runs that
-/// sort leaves behind. A caller that wants flat search hits passes no grouping.
+/// The canonical order or search hits, filtered, then sorted. Without a
+/// column sort the grouping may pre-sort so its runs are contiguous; with
+/// one, headers follow whatever runs the sort leaves adjacent.
 pub fn view_for(
     projection: &Projection,
     order: Arc<Vec<u32>>,
@@ -131,12 +88,8 @@ pub fn view_for(
     } else {
         Arc::new(projection.search(spec.query))
     };
-    // Both the mask intersection and the flat collect below walk every row
-    // of the base, which is the whole library on an unqueried view, so they
-    // split across cores in chunks the way the projection's own passes do.
-    // Rayon keeps a collect in order, so the rows come out exactly as the
-    // serial pass left them. `with_min_len` keeps a small view on one
-    // thread, where the split would cost more than the pass.
+    // Both passes below walk the whole base, so they split across cores.
+    // Rayon keeps collect order; `with_min_len` keeps small views serial.
     let base = match projection.filter_mask(spec.filter) {
         Some(mask) => Arc::new(
             base.par_iter()
@@ -147,14 +100,10 @@ pub fn view_for(
         ),
         None => base,
     };
-    // Similarity sorts on the caller's score map rather than a projection
-    // field, so it takes its own branch. Anything unscored sinks to the
-    // bottom either way: a track with no vector isn't the least similar
-    // thing in the library, it's an unknown, and floating those to the top
-    // of an ascending sort would bury the real answer.
+    // Unscored rows sink either way: no vector is an unknown, not the least
+    // similar.
     if let Some((scores, desc)) = spec.similar {
-        // Stable, so tracks scoring the same keep the canonical order under
-        // each other rather than shuffling between paints.
+        // Stable, so equal scores keep canonical order between paints.
         let mut rows: Vec<u32> = base.iter().copied().collect();
         rows.sort_by(|a, b| {
             let (a, b) = (
@@ -183,15 +132,9 @@ pub fn view_for(
         Some((key, desc)) => {
             let sorted = projection.sort_view(&base, key, desc);
             match &spec.grouping {
-                // The sort itself is the order, so the grouping's pre-sort
-                // goes unused; `group_rows` breaks on adjacency and a key
-                // recurring later just opens a fresh group. Loners go
-                // bare: a run of one is no series, and a sort that
-                // scatters every group reads as the flat list it is.
+                // The sort is the order, so the pre-sort goes unused.
                 Some(grouping) => {
-                    // A searched result still names its group even when only
-                    // one matching track survives the filter. Outside search,
-                    // preserve the sorted view's old "loners go bare" rule.
+                    // Loners go bare outside search; a search still names a lone hit's group.
                     let solo_heads = !spec.query.is_empty();
                     let (rows, groups) = group_rows(&sorted, projection, grouping, solo_heads);
                     (Arc::new(rows), groups)
@@ -210,8 +153,7 @@ pub fn view_for(
         }
         None => match &spec.grouping {
             Some(grouping) => {
-                // Genre and year runs aren't contiguous in the canonical
-                // order; re-sort by the group field, canonical inside.
+                // Genre and year runs aren't contiguous in the canonical order.
                 let base = match grouping.pre_sort {
                     Some(key) => Arc::new(projection.sort_view(&base, key, false)),
                     None => base,
@@ -233,23 +175,12 @@ pub fn view_for(
     }
 }
 
-/// The given order with a header block opening every group run:
-/// `head_rows` rows per block, one per composed line. Runs are adjacency
-/// in the given order, so a key recurring later opens a fresh group: under
-/// a column sort an album can split, and each piece heads itself.
-/// Album groups break on the album artist, not the track artist, so a
-/// compilation stays one run with its per-track artists inside, and a
-/// group spanning discs gets a divider row opening each numbered disc's
-/// run, as long as the run lists its discs in order (the canonical order
-/// always does; a column sort can interleave them, and an out-of-order
-/// run reads better undivided). Untagged tracks (disc 0) go under the
-/// header undivided. Breaks compare interned symbols (years their raw
-/// value) and the stats are two integer sums, so the pass stays cheap and
-/// runs once per view swap, never while scrolling.
+/// The order with a header block opening each run of equal keys. A key
+/// recurring later opens a fresh group. With `discs`, a multi-disc run gets
+/// a divider per disc, but only if its discs are in order; disc 0 stays
+/// undivided. Cheap enough to run per view swap, never per scroll.
 ///
-/// `solo_heads` says whether a run of one track still opens a block. The
-/// canonical order heads everything (a single is its own album); a sorted
-/// view leaves loners bare, headers only over the runs that held together.
+/// `solo_heads` says whether a run of one track still opens a block.
 pub fn group_rows(
     order: &[u32],
     projection: &Projection,
@@ -261,9 +192,7 @@ pub fn group_rows(
     let key = |row: u32| -> u64 { (grouping.key)(projection, row) };
     let mut i = 0;
     while i < order.len() {
-        // One album run: the order keeps a group contiguous, so its extent
-        // is known before any of its rows are pushed, which lets the first
-        // disc get its divider too.
+        // Find the run's extent first so the first disc gets its divider too.
         let mut j = i + 1;
         while j < order.len() && key(order[j]) == key(order[i]) {
             j += 1;
@@ -384,9 +313,7 @@ mod tests {
         Projection::load_serial(&conn, false).unwrap()
     }
 
-    /// The same library with a radio station added, the way the sources
-    /// page adds one: an ordinary row under `source = 'radio'` with no
-    /// album, no artist and no duration.
+    /// A radio station added the way the sources page does it.
     fn projection_with_a_station(rows: &[TrackRow]) -> Projection {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
@@ -428,7 +355,6 @@ mod tests {
         let (rows, groups) = group_rows(&order, &p, &grouping(2), true);
 
         assert_eq!(groups.len(), 2);
-        // Two header lines per block, then the run's tracks.
         assert_eq!(
             rows.iter().filter(|r| matches!(r, Row::Head(0, _))).count(),
             2
@@ -464,9 +390,6 @@ mod tests {
         assert_eq!(groups[0].sample_rate_hz, None);
     }
 
-    /// An unread depth or rate is 0 on every track, which agrees, so the
-    /// group keeps the Some it started with rather than reading as a run
-    /// that disagrees.
     #[test]
     fn an_unread_shape_agrees_with_itself() {
         let p = projection(&[
@@ -496,7 +419,6 @@ mod tests {
             .collect();
         assert_eq!(discs, vec![1, 2]);
 
-        // One disc, or untagged tracks, get no dividers at all.
         let flat = projection(&[
             track("/m/1.flac", "A", "One", 0, 1, 0, "flac", 900, 44100, 16),
             track("/m/2.flac", "A", "One", 0, 2, 0, "flac", 900, 44100, 16),
@@ -505,8 +427,6 @@ mod tests {
         let (rows, _) = group_rows(&order, &flat, &grouping(1), true);
         assert!(!rows.iter().any(|r| matches!(r, Row::Disc(_))));
 
-        // A run whose discs come through out of order (a column sort can
-        // interleave them) stays undivided too.
         let p = projection(&[
             track("/m/1.flac", "A", "One", 1, 1, 0, "flac", 900, 44100, 16),
             track("/m/2.flac", "A", "One", 2, 1, 0, "flac", 900, 44100, 16),
@@ -516,9 +436,6 @@ mod tests {
         assert!(!rows.iter().any(|r| matches!(r, Row::Disc(_))));
     }
 
-    /// A column sort keeps the headers over whatever runs held together,
-    /// while a run of one goes bare: a loner is no series, and a sort
-    /// that scatters everything reads as the flat list it is.
     #[test]
     fn a_sorted_view_heads_its_runs_and_leaves_loners_bare() {
         let p = projection(&[
@@ -530,8 +447,6 @@ mod tests {
         ]);
         let order = Arc::new(p.sort_canonical());
         let filter = FilterSet::default();
-        // Titles read a through e, so ascending keeps One and Two whole
-        // and leaves Three's lone track at the end.
         let sorted = ViewSpec {
             query: "",
             filter: &filter,
@@ -545,7 +460,6 @@ mod tests {
             groups.iter().map(|g| g.tracks).collect::<Vec<_>>(),
             vec![2, 2]
         );
-        // Two header lines, five tracks, and no header over the loner.
         assert_eq!(rows.len(), 7);
         match rows.last() {
             Some(&Row::Track(r)) => assert_eq!(p.resolve(r).title, "/m/e.flac"),
@@ -553,9 +467,6 @@ mod tests {
         }
     }
 
-    /// Search grouping is caller-controlled: asking for grouping keeps a
-    /// singleton hit under its header, while passing None keeps the legacy
-    /// flat result.
     #[test]
     fn a_searched_view_groups_only_when_requested() {
         let p = projection(&[
@@ -597,9 +508,6 @@ mod tests {
         assert_eq!(rows.len(), 1);
     }
 
-    /// A searched view with an explicit column sort still keeps the lone
-    /// matching run's header. The sort owns row order in this branch, so the
-    /// grouping pre-sort is deliberately irrelevant.
     #[test]
     fn a_sorted_search_keeps_a_singleton_header() {
         let p = projection(&[
@@ -622,8 +530,6 @@ mod tests {
         assert!(matches!(rows[1], Row::Track(_)));
     }
 
-    /// The similarity sort beats the column sort, and anything unscored
-    /// sinks to the bottom whichever way the sort runs.
     #[test]
     fn unscored_tracks_sink_under_the_similarity_sort() {
         let p = projection(&[
@@ -654,10 +560,8 @@ mod tests {
         assert_eq!(ids, vec![p.db_id[2], p.db_id[0], p.db_id[1]]);
     }
 
-    /// The track list the library panel draws never shows a station, and
-    /// never opens the Unknown group one would sit in. Nothing in here
-    /// names radio: the canonical order and the search both come out of
-    /// the projection's browse mask already.
+    /// The station stays out through the browse mask; nothing here names
+    /// radio.
     #[test]
     fn a_station_never_reaches_the_track_list() {
         let p = projection_with_a_station(&[
@@ -678,7 +582,6 @@ mod tests {
         let (rows, _) = view_for(&p, order.clone(), &spec(""));
         assert_eq!(rows.len(), 2);
 
-        // With headers on, the station would be its own Unknown run.
         let (rows, groups) = view_for(
             &p,
             order,
@@ -693,7 +596,6 @@ mod tests {
             2
         );
 
-        // And the query box can't reach it either.
         let (rows, _) = view_for(&p, Arc::new(p.sort_canonical()), &spec("noise"));
         assert!(rows.is_empty());
     }

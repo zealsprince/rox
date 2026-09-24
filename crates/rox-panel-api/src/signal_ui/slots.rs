@@ -1,16 +1,11 @@
 //! The shader slot list, shared by every surface that fills slots.
 //!
-//! The companion to [`routes`](super::routes), and split off the same way:
-//! three windows show the same sixteen rows over a different config, so the
-//! difference is a borrowed slice and one write-back closure rather than a
-//! host trait. The Shader panel's Bindings page, a panel's Shader page and
-//! the app's Overlay Shader section all use this.
+//! The companion to [`routes`](super::routes), split the same way: hosts
+//! differ by a borrowed slice and one write-back closure, not a trait.
 //!
-//! Every slot the shader can read gets a row whether anything drives it or
-//! not, since the row shows where a value ends up in the WGSL. A slot a route
-//! feeds shows the live value it's getting; one with no route is a hand-set
-//! knob, typed or dragged, which is how a shader's named parameters get
-//! exposed without a signal in sight.
+//! Every slot gets a row whether anything drives it or not. A routed slot
+//! shows its live value; an unrouted one is a hand-set knob, which is how a
+//! shader's named parameters get exposed without a signal.
 
 use std::sync::Arc;
 
@@ -25,22 +20,15 @@ use crate::panel::{self, ScrubState, ValueEdit};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 
-/// How a host takes one hand-set slot edit. Same shape as
-/// [`RouteMutate`](super::routes::RouteMutate) and for the same reason: the
-/// list never touches the config it renders, so a panel field, a chrome
-/// write and the settings file plus a live driver all plug in the same way.
-///
-/// The host is expected to notify.
+/// How a host takes one hand-set slot edit. The list never touches the
+/// config it renders. The host is expected to notify.
 pub type SlotSet<P> = Arc<dyn Fn(&mut P, usize, f32, &mut Context<P>)>;
 
-/// One host's slots as the shader sees them: what drives them and how a
-/// hand-set value is written back.
+/// One host's slots as the shader sees them.
 ///
-/// `labels` is the shader's own slot names where it declares them
-/// (`// @slot 0: bass`); a host with no names passes an empty slice
-/// and the slots read by number. `scrubs` holds one drag state per slot,
-/// sized [`SLOTS`] by the host. A slot without one falls back to a
-/// readout, so a short list costs a knob rather than a panic.
+/// `labels` are the shader's `// @slot 0: bass` names; empty reads by
+/// number. `scrubs` should be sized [`SLOTS`]; a slot without one falls
+/// back to a readout rather than panicking.
 pub struct SlotList<'a, P: 'static> {
     pub hub: &'a Arc<SignalHub>,
     pub routes: &'a [Route],
@@ -52,9 +40,8 @@ pub struct SlotList<'a, P: 'static> {
 }
 
 impl<P: 'static> SlotList<'_, P> {
-    /// The rows, for whatever section the host hangs them under. Values are
-    /// resolved here rather than passed in, so every surface reads what the
-    /// shader actually gets this frame instead of what was set.
+    /// Values resolve here rather than being passed in, so every surface
+    /// shows what the shader gets this frame, not what was set.
     pub fn render(self, cx: &mut Context<P>) -> Div {
         let mut resolved = SlotTargets::default();
         seed_manual(&mut resolved, self.manual);
@@ -93,11 +80,7 @@ impl<P: 'static> SlotList<'_, P> {
     }
 }
 
-/// A routed slot's live value. While a route drives the slot, the route is
-/// the whole value, so this is a readout rather than a control; the
-/// unrouted slots get the hand-set slider instead. The signal glyph up
-/// front marks the slot as connected at a glance against the sliders
-/// around it.
+/// A routed slot's live value: a readout, since the route is the whole value.
 fn readout(value: f32) -> Div {
     const BAR: f32 = 64.0;
     div()

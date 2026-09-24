@@ -1,34 +1,16 @@
-//! Non-local sources, and the sync that turns one into library rows. The
-//! first is Subsonic: a server the user runs, whose catalog rox reads over
-//! HTTP and files under its own source id. Headless like everything else
-//! here, so nothing in this module knows a panel exists.
+//! Non-local sources and the sync that turns one into library rows, starting
+//! with Subsonic. A sync is a reconcile: every song upserts under
+//! `subsonic:<digest>` and anything that id no longer lists is pruned. Both
+//! halves are scoped to the source string, so a sync can never reach a local
+//! row. Each server digests to its own id, so catalogs never share a row.
 //!
-//! A sync is a reconcile rather than an import. The server is asked what it
-//! has, every song upserts under `subsonic:<digest>`, and anything still
-//! filed under that id the server no longer lists gets pruned. Both halves
-//! are scoped to the source string, so a sync can never reach a local row
-//! no matter what the server sends back.
+//! This module owns every `subsonic:` id, so a row under one no configured
+//! account digests to came from an address an account left, and it goes:
+//! the authorizer won't sign for it, so it could never play.
 //!
-//! There can be several servers, each an account in settings with its own
-//! switch, and each digests to its own source id, so two servers' catalogs
-//! never share a row.
-//!
-//! The same scoping is what lets a re-pointed account clean up after
-//! itself. This module owns every `subsonic:` id there is, so a row under
-//! one that no configured account digests to now can only have come from
-//! an address an account has since left, and it goes. Nothing else could
-//! play it: the authorizer below refuses to sign for a source id no
-//! switched-on account matches, so those rows would sit in the library
-//! looking playable and skip with the server's complaint about a password
-//! that was never the problem.
-//!
-//! The other half is the authorize table. A remote row stores its stream
-//! URL and nothing else, because a credential stored in SQLite is a
-//! credential somebody can lift back out of it. When playback resolves a
-//! row it asks this module to finish the request and the live source object
-//! answers from settings. Subsonic authorizes in the query string, so what
-//! it adds is a fresh salt and token on the URL and no headers at all; the
-//! table still takes headers because the next source will have some.
+//! A remote row stores only its stream URL; credentials never go in SQLite.
+//! The authorize table finishes each request from settings (for Subsonic, a
+//! fresh salt and token on the URL).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -51,28 +33,18 @@ use rox_net::sources::{SourceStation, SourceTrack};
 use crate::catalog::Library;
 use crate::sources_registry;
 
-/// How wide a cover the server is asked to scale to. The thumbnail store
-/// downscales again on the way in, so this only has to beat a grid tile
-/// and stay well short of pulling a full-resolution scan down.
+/// The thumbnail store downscales again; this only has to beat a grid tile.
 const COVER_SIZE: u32 = 512;
 
-/// How long a cover that came back empty is left alone before a paint may
-/// ask the server again. Long enough that a server that's down isn't
-/// hammered by every repaint, short enough that one back up shows its art
-/// within the session.
+/// Long enough that a down server isn't hammered by every repaint.
 const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 
-/// How many remembered misses before the expired ones are swept out.
 const MISSES_SWEEP: usize = 4096;
 
-/// What every Subsonic source id starts with, and the whole namespace this
-/// module answers for. Checked against [`Server::source_id`] by a test, so
-/// the two can't drift apart without the build saying so.
+/// The whole namespace this module answers for. A test holds it to
+/// [`Server::source_id`].
 const SOURCE_PREFIX: &str = "subsonic:";
 
-/// A running sync, as the settings row reads it. Atomics rather than an
-/// entity and an event: the work is on the background executor, the reader
-/// repaints on its own clock, and nothing else in the app cares.
 struct Progress {
     running: AtomicBool,
     done: AtomicUsize,
@@ -85,29 +57,20 @@ static PROGRESS: Progress = Progress {
     total: AtomicUsize::new(0),
 };
 
-/// What a finished sync did, for the line the settings section shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncOutcome {
-    /// Rows written, which is every song the server listed.
     pub tracks: usize,
-    /// Rows dropped because the server no longer lists them.
     pub pruned: usize,
-    /// Rows dropped because they belong to a server this account has left.
-    /// Separate from `pruned`: one is the server's catalog shrinking, the
-    /// other is the account having moved house.
+    /// Rows of an address the account has left, apart from `pruned`.
     pub departed: usize,
-    /// Server playlists created here for the first time.
     pub playlists: usize,
-    /// Internet radio stations the server lists, written to the radio source.
     pub stations: usize,
 }
 
-/// Which server the running sync is walking, by source id. None when no
-/// sync is running. The settings page reads it to put the album count on
-/// the right server's line.
+/// The source id the running sync is walking, so the settings page puts the
+/// album count on the right line.
 static SYNCING: Mutex<Option<String>> = Mutex::new(None);
 
-/// Albums walked and albums to walk, while a sync runs. None when none is.
 pub fn progress() -> Option<(usize, usize)> {
     if !PROGRESS.running.load(Ordering::Relaxed) {
         return None;
@@ -119,25 +82,20 @@ pub fn progress() -> Option<(usize, usize)> {
     ))
 }
 
-/// Whether a sync is in flight, so a second Sync Now doesn't start one on
-/// top of the first. One at a time across every server: two would race
-/// each other's prune.
+/// One sync at a time across every server: two would race each other's prune.
 pub fn syncing() -> bool {
     PROGRESS.running.load(Ordering::Relaxed)
 }
 
-/// The source id of the server a sync is walking right now.
 pub fn syncing_source() -> Option<String> {
     SYNCING.lock().ok()?.clone()
 }
 
-/// The configured servers, in the order the settings page lists them.
 fn accounts() -> Vec<SubsonicAccount> {
     Settings::load().accounts.subsonic_servers
 }
 
-/// An account as the server it describes, switched on or not. None while
-/// it names no address, which is a server that isn't set up yet.
+/// None while it names no address.
 fn server_of(account: &SubsonicAccount) -> Option<Server> {
     if account.url.trim().is_empty() {
         return None;
@@ -146,23 +104,17 @@ fn server_of(account: &SubsonicAccount) -> Option<Server> {
     Some(Server::new(&account.url, &account.user, &account.password))
 }
 
-/// The source id an account's rows are filed under, None while it names no
-/// address. What the settings page counts a server's rows by.
 pub fn source_of(account: &SubsonicAccount) -> Option<String> {
     server_of(account).map(|server| server.source_id())
 }
 
-/// The server at `index` in the settings list. A switched-off account
-/// still answers here, because Connect has to work before the switch goes
-/// on.
+/// Answers for a switched-off account too: Connect has to work first.
 pub fn server(index: usize) -> Option<Server> {
     server_of(accounts().get(index)?)
 }
 
-/// The switched-on servers: the ones whose rows browse, play and have
-/// covers fetched. Off means a server isn't used for any of that, so
-/// everything that reaches one on the library's behalf asks here rather
-/// than [`server`].
+/// Everything that reaches a server on the library's behalf goes through
+/// here rather than [`server`], so a switched-off server is never used.
 fn live_servers() -> Vec<Server> {
     accounts()
         .iter()
@@ -171,19 +123,14 @@ fn live_servers() -> Vec<Server> {
         .collect()
 }
 
-/// The switched-on server whose rows are filed under `source`.
 fn live_server(source: &str) -> Option<Server> {
     live_servers()
         .into_iter()
         .find(|server| server.source_id() == source)
 }
 
-/// Fill the library's source-name table from the accounts: "Local" for
-/// the files, "Radio" for the stations, and each server by the name it was
-/// given or its host. What every surface that shows or matches a source by
-/// name reads, see [`rox_library::cue::source_label`]. Run on every
-/// projection load, which is also when a renamed or added server would
-/// first show up anywhere, and reads the settings once.
+/// Fill the library's source-name table (see
+/// [`rox_library::cue::source_label`]). Run on every projection load.
 pub fn publish_labels() {
     let mut labels = HashMap::new();
     labels.insert(
@@ -209,15 +156,8 @@ pub fn publish_labels() {
     rox_library::cue::set_source_labels(labels);
 }
 
-/// Put every configured server in the registry, under the source id its
-/// rows are keyed by. Called at startup, before anything can resolve a row,
-/// so a locator built during the first frame already has somewhere to ask.
-/// Safe to call again after the settings change, which is how a re-pointed
-/// or newly added server gets its row.
-///
-/// A server with no address has no source id to file under, and a locator
-/// resolved for a row nobody signs for goes out bare, which is the right
-/// answer.
+/// Called at startup, before anything can resolve a row, and again after
+/// the settings change.
 pub fn install_registry() {
     for server in accounts().iter().filter_map(server_of) {
         let source = server.source_id();
@@ -225,28 +165,22 @@ pub fn install_registry() {
 
         sources_registry::install(
             &source,
-            // Rebuilt from settings on each call rather than captured here,
-            // so a changed password takes effect without reinstalling the
-            // row. Only a switched-on account with this very id signs: a row
-            // left behind by a re-pointed account, or one of a server that's
-            // switched off, goes out bare and the server refuses it.
+            // Rebuilt from settings on each call, so a changed password needs
+            // no reinstall. Only a switched-on account with this very id signs.
             Box::new(move |remote| {
                 let Some(server) = live_server(&mine) else {
                     return;
                 };
 
                 remote.headers = server.stream_headers();
-                // The salt is fresh per request, so the token can only go
-                // on here. A row that stored one would be a replayable
-                // credential sitting in the database, which is the whole
-                // reason the stored URL stops short of it.
+                // The salt is fresh per request, so the token only ever goes
+                // on here, never into the stored URL.
                 remote.url = server.sign(&remote.url);
             }),
         );
     }
 }
 
-/// The source ids whose rows browse: every switched-on account's.
 fn live_ids(accounts: &[SubsonicAccount]) -> HashSet<String> {
     accounts
         .iter()
@@ -255,16 +189,12 @@ fn live_ids(accounts: &[SubsonicAccount]) -> HashSet<String> {
         .collect()
 }
 
-/// The source ids whose rows a prune keeps: every account's that names an
-/// address, switched on or not, since a switched-off account keeps its
-/// catalog by design.
+/// Every account's that names an address, switched on or not: a
+/// switched-off account keeps its catalog.
 ///
-/// None when the prune shouldn't run at all. An account with an empty
-/// address is a half-finished edit or one somebody cleared, and either way
-/// there's no telling which rows were its. No accounts at all is the same
-/// answer: the one way to arrive there on purpose is [`remove`], which
-/// takes its own rows, so a list that reads empty anywhere else is more
-/// likely a file that didn't load than an instruction.
+/// None means don't prune. An empty address is a half-finished edit, and an
+/// empty list is more likely a file that didn't load than an instruction
+/// ([`remove`] handles its own rows).
 fn kept_ids(accounts: &[SubsonicAccount]) -> Option<HashSet<String>> {
     if accounts.is_empty() {
         return None;
@@ -273,15 +203,8 @@ fn kept_ids(accounts: &[SubsonicAccount]) -> Option<HashSet<String>> {
     accounts.iter().map(source_of).collect()
 }
 
-/// Drop every row filed under a Subsonic source id outside `kept`, and
-/// answer how many went.
-///
-/// Each id goes through [`store::prune_source`] with nothing to keep, which
-/// is the same delete a reconcile does one row at a time. What points at
-/// those rows is left the way the ordinary prune leaves it: a playlist
-/// entry, a listen and a thumbnail all outlive the track they name, and
-/// teaching this path to chase them would make a re-pointed server tidier
-/// than a server that dropped a track.
+/// Referrers (playlist entries, listens, thumbnails) outlive the rows, the
+/// same as they outlive a track the server dropped.
 fn drop_departed(conn: &mut Connection, kept: &HashSet<String>) -> usize {
     let departed: Vec<String> = store::sources(conn)
         .unwrap_or_default()
@@ -297,9 +220,6 @@ fn drop_departed(conn: &mut Connection, kept: &HashSet<String>) -> usize {
         .sum()
 }
 
-/// The prune as the accounts decide it: everything no account names any
-/// more, when [`kept_ids`] says the list can be trusted, and otherwise
-/// nothing at all.
 fn prune_for(conn: &mut Connection, accounts: &[SubsonicAccount]) -> usize {
     let Some(kept) = kept_ids(accounts) else {
         return 0;
@@ -308,20 +228,12 @@ fn prune_for(conn: &mut Connection, accounts: &[SubsonicAccount]) -> usize {
     drop_departed(conn, &kept)
 }
 
-/// Bring the library in line with the accounts the settings now describe.
-/// What the settings page calls when an address or login it just wrote has
-/// been committed, and when a switch flips. The rows an old address left
-/// behind go now rather than whenever somebody next presses Sync Now, and
-/// the catalog is rebuilt either way: the switches and the addresses decide
-/// which servers' rows browse, see [`hidden_sources`], and the projection
-/// only learns that on a load.
-///
-/// Answers how many rows went, which is zero on every call but the one
-/// right after an account moves.
+/// What the settings page calls after an address, login, or switch changes:
+/// the old address's rows go now, and the catalog reloads, since the
+/// switches decide which rows browse ([`hidden_sources`]).
 pub fn follow_accounts(library: Entity<Library>, cx: &mut App) -> Task<usize> {
-    // A sync is already doing this at the end of its own reconcile, and two
-    // writers on one database is a busy error rather than a race worth
-    // handling. Its own reload reads the switches as they stand by then.
+    // A sync does this itself at the end, and two writers on one database is
+    // a busy error.
     if syncing() {
         return Task::ready(0);
     }
@@ -343,9 +255,6 @@ pub fn follow_accounts(library: Entity<Library>, cx: &mut App) -> Task<usize> {
             })
             .await;
 
-        // The projection is never patched in place: rebuilt from SQLite
-        // and swapped whole, which is also where the hidden rows are
-        // decided.
         library
             .update(cx, |library, cx| library.reload_projection(cx))
             .ok();
@@ -354,20 +263,10 @@ pub fn follow_accounts(library: Entity<Library>, cx: &mut App) -> Task<usize> {
     })
 }
 
-/// Take one server out of rox: drop its account from the list and delete
-/// every row it filed. What Remove Server runs, once its confirm is
-/// answered. The switch is the way to keep a catalog while not using it;
-/// this is the way to be rid of one.
-///
-/// Rows under an address the removed account had since left go too, as
-/// long as the accounts that stay all name one, so a server removed after a
-/// re-point doesn't leave its old catalog hidden forever. The rows go the
-/// way a prune takes them: a playlist entry, a listen and a stored cover
-/// outlive them the same as they outlive a track the server dropped.
-/// Answers how many rows went.
+/// What Remove Server runs. Also drops rows of any address the account had
+/// since left, when the remaining accounts can all be trusted.
 pub fn remove(index: usize, library: Entity<Library>, cx: &mut App) -> Task<usize> {
-    // The same reason the prune above waits: a sync is writing, and the
-    // rows it's writing would land after the delete.
+    // A running sync's rows would land after the delete.
     if syncing() {
         return Task::ready(0);
     }
@@ -416,10 +315,8 @@ pub fn remove(index: usize, library: Entity<Library>, cx: &mut App) -> Task<usiz
     })
 }
 
-/// [`remove`]'s database half: the removed account's own rows, then what no
-/// account left in the list names, if they can all be trusted to. Unlike
-/// the everyday prune an empty list is trusted here, because it's empty
-/// because somebody just asked for exactly that.
+/// Unlike the everyday prune, an empty list is trusted here: somebody just
+/// asked for exactly that.
 fn remove_rows(conn: &mut Connection, source: Option<&str>, left: &[SubsonicAccount]) -> usize {
     let nothing = HashSet::new();
     let own = source
@@ -432,25 +329,18 @@ fn remove_rows(conn: &mut Connection, source: Option<&str>, left: &[SubsonicAcco
     own + departed
 }
 
-/// Which sources the catalog leaves out, as the projection load asks it:
-/// every Subsonic id that isn't a switched-on account's. That covers a
-/// server that's switched off, whose rows are kept and not used, and the
-/// rows of an address an account has half left, an empty one mid-edit,
-/// which nothing could sign anyway. The settings are read once here, not
-/// per source asked.
+/// Every Subsonic id that isn't a switched-on account's, as the projection
+/// load asks it. Reads the settings once.
 pub fn hidden_sources() -> impl Fn(&str) -> bool {
     let live = live_ids(&accounts());
 
     move |source| hides(&live, source)
 }
 
-/// [`hidden_sources`]'s rule with the live ids handed in.
 fn hides(live: &HashSet<String>, source: &str) -> bool {
     source.starts_with(SOURCE_PREFIX) && !live.contains(source)
 }
 
-/// Reach the server at `index` and report what it says about itself. What
-/// its Connect button runs, off the UI thread.
 pub fn ping(index: usize, cx: &App) -> Task<Result<ServerInfo, String>> {
     let server = server(index);
 
@@ -461,10 +351,8 @@ pub fn ping(index: usize, cx: &App) -> Task<Result<ServerInfo, String>> {
     })
 }
 
-/// Pull one server's whole catalog in and reconcile the library against
-/// it. The work runs on the background executor on a connection of its
-/// own, the way every other pass that writes the database does, and the
-/// projection reloads once at the end rather than per album.
+/// On its own connection on the background executor; the projection
+/// reloads once at the end.
 pub fn sync(
     index: usize,
     library: Entity<Library>,
@@ -474,8 +362,6 @@ pub fn sync(
         return Task::ready(Err("no server configured".to_string()));
     };
 
-    // One sync at a time. Two would race each other's prune, and the loser
-    // would delete what the winner had just written.
     if PROGRESS.running.swap(true, Ordering::SeqCst) {
         return Task::ready(Err("a sync is already running".to_string()));
     }
@@ -488,11 +374,8 @@ pub fn sync(
         *syncing = Some(source.clone());
     }
 
-    // The rows this writes land under whatever source id the account now
-    // digests to, and the registry is otherwise only filled at startup and
-    // when the settings change. A server re-pointed at another URL would
-    // sync a catalog nothing knew how to authorize until the next launch,
-    // so the table gets the current accounts before the rows do.
+    // Install the registry first: a re-pointed account's new rows would
+    // otherwise have no authorizer until the next launch.
     install_registry();
 
     let db_path = library.read(cx).db_path();
@@ -513,11 +396,8 @@ pub fn sync(
             *syncing = None;
         }
 
-        // Rows moved, so the in-memory projection is stale until it's
-        // rebuilt from SQLite and swapped whole.
         if outcome.is_ok() {
-            // Stamped by source id rather than by position, since the list
-            // can change under a sync that takes minutes.
+            // Stamped by source id: the list can change under a long sync.
             let now = now_secs();
             Settings::update(move |s| {
                 if let Some(account) = s
@@ -539,10 +419,8 @@ pub fn sync(
     })
 }
 
-/// The sync itself: blocking, and off any gpui context so it reads as one
-/// piece. Fetch the catalog, write it, drop what's gone, then playlists.
-/// `accounts` is the list as it stood when the sync started, which is what
-/// decides which other servers' rows are still somebody's.
+/// `accounts` is the list as the sync started, which decides which other
+/// servers' rows are still somebody's.
 fn run(
     server: &Server,
     accounts: &[SubsonicAccount],
@@ -558,8 +436,6 @@ fn run(
     let now = now_secs();
     let rows: Vec<TrackRow> = tracks.iter().map(|track| row_for(track, now)).collect();
 
-    // What the server still lists is what survives. Everything else under
-    // this source id went away on the server's side, so it goes here too.
     let keep: HashSet<String> = tracks.iter().map(|track| track.id.clone()).collect();
     let (pruned, departed) = reconcile(conn, &source, &rows, &keep, accounts)?;
 
@@ -575,15 +451,8 @@ fn run(
     })
 }
 
-/// The database half of a sync, so a test can run it without a server:
-/// write what the catalog holds, drop what it stopped holding, then drop
-/// what belongs to an address no account names any more. Answers the two
-/// counts in that order. The other servers' rows are left alone: each is
-/// still some account's.
-///
-/// The departed pass runs here rather than only on the settings page
-/// because an account can move without the settings window being open at
-/// all, by way of a hand-edited `accounts.json`.
+/// The departed pass runs here too, since `accounts.json` can be edited by
+/// hand without the settings window ever opening.
 fn reconcile(
     conn: &mut Connection,
     source: &str,
@@ -599,14 +468,8 @@ fn reconcile(
     Ok((pruned, departed))
 }
 
-/// Bring the server's playlists across, creating each one the first time
-/// it's seen. A playlist that already exists by name is left alone: rox
-/// can't tell a stale import from a list somebody has since edited here,
-/// and clobbering the edit is the worse of the two mistakes.
-///
-/// Playlist trouble doesn't fail the sync. The tracks are already in by
-/// the time this runs, and a server that refuses `getPlaylists` has still
-/// handed over a library.
+/// A playlist that already exists by name is left alone: rox can't tell a
+/// stale import from a local edit. Playlist trouble never fails the sync.
 fn sync_playlists(server: &Server, conn: &mut Connection, source: &str, now: i64) -> usize {
     let Ok(remote) = server.playlists() else {
         return 0;
@@ -624,9 +487,7 @@ fn sync_playlists(server: &Server, conn: &mut Connection, source: &str, now: i64
             continue;
         }
 
-        // Server ids to row ids, in the playlist's own order. A song the
-        // catalog didn't return (unreadable on the server, filtered out of
-        // a share) is skipped rather than failing the list.
+        // A song the catalog didn't return is skipped, not fatal to the list.
         let track_ids: Vec<i64> = list
             .track_ids
             .iter()
@@ -649,15 +510,9 @@ fn sync_playlists(server: &Server, conn: &mut Connection, source: &str, now: i64
     created
 }
 
-/// The server's internet radio list, written as stations. They land in the
-/// radio source beside the ones typed into the panel, keyed on the stream
-/// URL like any station, so a re-sync updates a renamed one in place. What
-/// this can't do is drop one the server removed: the radio list has no
-/// memory of where a station came from, and pruning it would take the
-/// typed ones with it. Removing is the panel's job.
-///
-/// Like playlists, trouble here doesn't fail the sync. A plain Subsonic
-/// server without the endpoint has still handed over its library.
+/// Keyed on the stream URL, so a re-sync updates a renamed station in place.
+/// A station the server removed isn't dropped: the radio list doesn't
+/// remember where a station came from.
 fn sync_stations(server: &Server, conn: &mut Connection) -> usize {
     let Ok(remote) = server.radio_stations() else {
         return 0;
@@ -677,9 +532,8 @@ fn sync_stations(server: &Server, conn: &mut Connection) -> usize {
     }
 }
 
-/// A server's station as the radio source stores it. The server's id is
-/// dropped: the URL is the identity there, which is what lets the same
-/// stream typed by hand and listed by the server be one row.
+/// The URL is a station's identity, so the same stream typed by hand and
+/// listed by the server is one row.
 fn station_for(station: &SourceStation) -> Station {
     Station {
         url: station.stream_url.clone(),
@@ -688,39 +542,19 @@ fn station_for(station: &SourceStation) -> Station {
     }
 }
 
-/// The picture for a row with no file behind it, by the string that stands
-/// in for its path: a station's logo out of the thumbnail store, and a
-/// server row's cover, fetched and filed the first time it's asked for.
-/// Every surface that draws a remote row's art comes through here, so a
-/// list tile, the cover panel and the OS media widget agree on the picture.
-///
-/// Blocking. Background executor only.
+/// Every surface draws a remote row's art through here, so they all agree.
+/// Blocking.
 pub fn art(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     rox_library::thumbs::thumbnail(thumbs, Path::new(key)).or_else(|| cover(thumbs, key))
 }
 
-/// One remote track's cover, fetched from the server and filed in the
-/// thumbnail store under the song id, so the next ask is a lookup.
-/// Deliberately not part of the sync: a library's worth of art is a
-/// download nobody asked for, and the row that needs a picture is the one
-/// on screen.
-///
-/// `key` is whatever the surface asked art by, which for a server row is
-/// the song id standing in for a path. Only a key a switched-on server has a
-/// row under goes anywhere near the server. Everything else that reaches
-/// here (a station's URL, a local file deleted since its row was read) is
-/// some other source's miss, and handing a local path to a server as a
-/// song id would be telling it about the user's disk.
-///
-/// A key that came back with nothing is left alone for [`RETRY_AFTER`].
-/// Every visible row re-asks each time the catalog moves, and without the
-/// wait a server that's down would cost a timeout per row per change.
-///
-/// Blocking, and the store lock is only taken for the write, never across
-/// the requests. Background executor only.
+/// Fetched on demand, never during the sync. Only a key a switched-on server
+/// has a row under reaches a server: never hand one a local path as a song
+/// id. An empty answer waits out [`RETRY_AFTER`], or a down server costs a
+/// timeout per visible row per catalog change. Blocking; the store lock is
+/// only taken for the write.
 pub fn cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
-    // A key that stats is a file, and a file's cover is the file's own
-    // business, already answered by the store.
+    // A key that stats is a file; the store already answered for it.
     if std::fs::metadata(key).is_ok() {
         return None;
     }
@@ -742,15 +576,9 @@ pub fn cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     found
 }
 
-/// [`cover`]'s network half: which switched-on server has a row under the
-/// key, which art id the song names there, and the image under it into the
-/// store. The first server holding the key answers; two servers handing out
-/// the same song id is a collision the thumbnail store, keyed on the id
-/// alone, couldn't tell apart anyway.
-///
-/// The library has no column for the art id the catalog walk saw, so the
-/// song is asked for it again. That's one small reply per cover, paid once:
-/// after it, the store answers.
+/// The first server holding the key answers. The library has no column for
+/// the art id, so the song is asked for it once; after that the store
+/// answers.
 fn fetch_cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     let servers = live_servers();
     if servers.is_empty() {
@@ -776,15 +604,12 @@ fn fetch_cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     rox_library::thumbs::store_bytes(&thumbs, &bytes, key)
 }
 
-/// The keys [`cover`] asked about recently and got nothing for, and when.
-/// In memory only: a restart is a fair moment to try again, and a stored
-/// miss would outlive the server outage that caused it.
+/// In memory only: a stored miss would outlive the outage that caused it.
 struct Misses(HashMap<String, Instant>);
 
 static MISSES: LazyLock<Mutex<Misses>> = LazyLock::new(|| Mutex::new(Misses(HashMap::new())));
 
 impl Misses {
-    /// Whether `key` came back empty inside the retry window.
     fn recent(&self, key: &str, now: Instant) -> bool {
         self.0
             .get(key)
@@ -792,8 +617,6 @@ impl Misses {
     }
 
     fn note(&mut self, key: &str, now: Instant) {
-        // Long sessions scroll past a lot of rows. Past a few thousand the
-        // expired entries go, so the map holds the window and not the day.
         if self.0.len() >= MISSES_SWEEP {
             self.0
                 .retain(|_, at| now.saturating_duration_since(*at) < RETRY_AFTER);
@@ -807,14 +630,11 @@ impl Misses {
     }
 }
 
-/// One song from the server as a library row. The empty fields are the
-/// honest answer rather than a placeholder: Subsonic reports no sort
-/// names, no ReplayGain, no tempo and no sample format, so those sit the
-/// way they would for a file whose tags carry none.
+/// Empty fields are honest: Subsonic reports no sort names, ReplayGain,
+/// tempo, or sample format.
 fn row_for(track: &SourceTrack, now: i64) -> TrackRow {
     TrackRow {
-        // The server's song id stands in for a path. It's what identity is
-        // keyed on for this source and what `id_for_path` resolves back.
+        // The song id stands in for a path; `id_for_path` resolves it back.
         path: track.id.clone(),
         sub: 0,
         cue: None,
@@ -841,15 +661,11 @@ fn row_for(track: &SourceTrack, now: i64) -> TrackRow {
         replay_gain: ReplayGain::default(),
         bpm: None,
         size: track.size.max(0) as u64,
-        // There's no file to stat, so the sync's own clock stands in.
-        // Nothing reads it to decide whether to re-read a file, since
-        // scans only ever walk local roots.
+        // No file to stat; scans only ever walk local roots anyway.
         mtime: now,
     }
 }
 
-/// What the library holds for one source, for the settings readout. Zero
-/// when the source has never synced.
 pub fn row_count(conn: &Connection, source: &str) -> usize {
     store::sources(conn)
         .unwrap_or_default()
@@ -859,7 +675,6 @@ pub fn row_count(conn: &Connection, source: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Wall clock in unix seconds, the stamp every write here shares.
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -906,7 +721,6 @@ mod tests {
         assert_eq!(row.size, 7_261_184);
         assert_eq!(row.mtime, 1_700_000_000);
 
-        // The stream URL rides the row; the credentials never do.
         assert_eq!(
             row.remote_url,
             "https://music.example.com/rest/stream.view?id=sg-1&format=raw"
@@ -917,8 +731,6 @@ mod tests {
 
     #[test]
     fn a_sparse_song_maps_the_way_an_untagged_file_would() {
-        // No year, no disc, no genre, no bitrate: what real servers return
-        // constantly.
         let mut sparse = track();
         sparse.year = 0;
         sparse.disc_no = 0;
@@ -932,7 +744,6 @@ mod tests {
         assert_eq!(row.genre, "");
         assert_eq!(row.bitrate_kbps, 0);
 
-        // Nothing invents a measurement the server never made.
         assert!(!row.replay_gain.any());
         assert!(row.bpm.is_none());
         assert_eq!(row.sample_rate_hz, 0);
@@ -962,9 +773,6 @@ mod tests {
         assert_eq!(row_for(&odd, 0).size, 0);
     }
 
-    /// The prefix the departed prune matches on is the one real source ids
-    /// carry. A digest that stopped starting with it would leave every
-    /// stale row in place and nothing else would notice.
     #[test]
     fn the_prefix_is_the_one_a_server_files_under() {
         let server = Server::new("https://music.example.com", "andrew", "pw");
@@ -982,7 +790,6 @@ mod tests {
         }
     }
 
-    /// The source id the account at `url` files its rows under.
     fn id(url: &str) -> String {
         source_of(&account(true, url)).expect("an address")
     }
@@ -990,8 +797,6 @@ mod tests {
     const HOME: &str = "https://home.example.com";
     const WORK: &str = "https://work.example.com";
 
-    /// An in-memory library holding one local row and two rows under each
-    /// of `sources`.
     fn library(sources: &[&str]) -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
@@ -1018,16 +823,11 @@ mod tests {
         row_count(conn, source)
     }
 
-    /// The finding this prune exists for: after the address changes, the
-    /// rows under the old id can't be signed by anybody, so a sync drops
-    /// them. The synced id reconciles the way it always has, and neither
-    /// half reaches a local row.
     #[test]
     fn a_sync_drops_the_rows_the_old_address_left_behind() {
         let home = id(HOME);
         let mut conn = library(&[&home, "subsonic:old"]);
 
-        // The server still lists one of its two songs.
         let mut kept = track();
         kept.id = "sg-1".into();
         let rows = [row_for(&kept, 1_700_000_100)];
@@ -1044,8 +844,6 @@ mod tests {
         assert_eq!(count(&conn, "local"), 1, "a sync never reaches a local row");
     }
 
-    /// Syncing one server leaves every other configured server's rows be,
-    /// switched on or off: each is still somebody's catalog.
     #[test]
     fn a_sync_leaves_the_other_servers_alone() {
         let (home, work) = (id(HOME), id(WORK));
@@ -1060,8 +858,6 @@ mod tests {
         assert_eq!(count(&conn, &work), 2);
     }
 
-    /// Pruning is scoped to this module's own namespace. Another source's
-    /// rows look exactly as stale from here and are none of its business.
     #[test]
     fn another_source_is_left_alone() {
         let home = id(HOME);
@@ -1077,9 +873,6 @@ mod tests {
         assert_eq!(count(&conn, &home), 2);
     }
 
-    /// The switch off keeps the server's catalog, which is what the switch
-    /// promises. What its account left behind at an older address still
-    /// goes, since no account names that one.
     #[test]
     fn a_switched_off_server_keeps_its_rows() {
         let home = id(HOME);
@@ -1091,8 +884,6 @@ mod tests {
         assert_eq!(count(&conn, "subsonic:old"), 0);
     }
 
-    /// A half-typed address is not an instruction to empty the library,
-    /// and neither is a list that reads empty.
     #[test]
     fn an_unsure_list_prunes_nothing() {
         let mut conn = library(&[&id(HOME), "subsonic:old"]);
@@ -1106,8 +897,6 @@ mod tests {
         assert_eq!(count(&conn, "subsonic:old"), 2);
     }
 
-    /// Removing a server takes its rows and whatever no remaining account
-    /// names, and never another server's.
     #[test]
     fn removing_a_server_takes_its_rows_and_only_its() {
         let (home, work) = (id(HOME), id(WORK));
@@ -1122,8 +911,6 @@ mod tests {
         assert_eq!(count(&conn, "local"), 1);
     }
 
-    /// The last server removed takes every Subsonic row with it: the empty
-    /// list is trusted here, because it's what was asked for.
     #[test]
     fn removing_the_last_server_takes_every_subsonic_row() {
         let home = id(HOME);
@@ -1136,8 +923,6 @@ mod tests {
         assert_eq!(count(&conn, "local"), 1);
     }
 
-    /// Only a switched-on server's rows browse. One that's off, and an
-    /// address nobody names, hide; the other sources never do.
     #[test]
     fn only_switched_on_servers_browse() {
         let (home, work) = (id(HOME), id(WORK));
@@ -1165,8 +950,6 @@ mod tests {
         assert!(misses.recent("sg-1", then + Duration::from_secs(30)));
         assert!(!misses.recent("sg-2", then));
 
-        // Past the window the key is worth asking about again, and a cover
-        // that did land clears the mark at once.
         assert!(!misses.recent("sg-1", then + RETRY_AFTER));
 
         misses.forget("sg-1");

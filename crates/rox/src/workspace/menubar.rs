@@ -1,7 +1,6 @@
-//! The menubar: the dropdown menus, their layout and workspace flyout
-//! submenus, and menu action dispatch. Split out of the workspace shell it
-//! renders into; it touches the same private state, so these are
-//! `impl Workspace` methods in a child module.
+//! The menubar: the dropdown menus, their flyout submenus, and menu action
+//! dispatch. `impl Workspace` in a child module, since it touches the shell's
+//! private state.
 
 use super::*;
 
@@ -9,44 +8,32 @@ use gpui::{Corner, MouseDownEvent, Stateful, anchored, point};
 use gpui_component::scroll::Scrollbar;
 use rox_core::settings::MenubarButtons;
 
-/// Where the keyboard cursor sits inside an open dropdown: the entry it's
-/// on, plus the row within it for the one entry kind that draws a run of
-/// them (a catalog section with no group of its own). A position rather
-/// than a flat row count, so the renderer can compare against it while
-/// walking entries, without counting what came before.
+/// The entry the cursor is on, plus the row within it for a bare catalog
+/// section, which draws a run of rows.
 pub(crate) type NavSlot = (usize, Option<usize>);
 
-/// What Enter on the row under the cursor does. The flyouts' rows come off
-/// disk and out of the catalog rather than the static table, so there's no
-/// single action type that covers them.
 pub(crate) enum NavRun {
     Action(MenuAction),
     Layout(String, LayoutTarget),
     Workspace(String, WorkspaceTarget),
     Preset(String, PanelTarget),
     PanelWindow(&'static PanelDef),
-    /// The "New..." rows, which open a save dialog rather than run.
     SaveLayout,
     SaveWorkspace,
 }
 
-/// One row the cursor can land on: something to run, or a surface to step
-/// into. `Open` carries the index that level's `open_*` field wants, which
-/// isn't the row's own position once headings and hidden sections have been
-/// skipped.
+/// `Open` carries the index that level's `open_*` field wants, which isn't
+/// the row's position once headings and hidden sections are skipped.
 pub(crate) enum NavRow {
     Run(NavRun),
     Open(usize),
 }
 
-/// Where the Application menu's three project links go. The issue form is
-/// the chooser rather than a blank issue, so a report arrives on a template.
+/// The chooser rather than a blank issue, so reports arrive on a template.
 const ISSUES_URL: &str = "https://github.com/zealsprince/rox/issues/new/choose";
 const DISCUSSIONS_URL: &str = "https://github.com/zealsprince/rox/discussions";
 const CHAT_URL: &str = "https://hivecom.net/chat?channel=rox";
 
-/// The room a menu surface keeps from the window edge, what its rows are
-/// capped against and what `anchored` snaps it back inside of.
 const MENU_MARGIN: Pixels = px(8.);
 
 impl Workspace {
@@ -103,9 +90,7 @@ impl Workspace {
             MenuAction::OpenTasks => crate::tasks_window::open(cx),
             MenuAction::OpenEqualizer => crate::eq_window::open(cx),
             MenuAction::RescanLibrary => self.rescan_library(cx),
-            // The four passes stop at their start prompt. Same dialog the
-            // health tiles and the tasks window raise, so a pass costs the
-            // same conversation whichever door it came through.
+            // The passes go through the same start prompt as everywhere else.
             MenuAction::MeasureReplayGain => {
                 self.start_pass_prompt(crate::pass_prompt::Pass::ReplayGain, cx)
             }
@@ -168,12 +153,8 @@ impl Workspace {
                 native_menu::rebuild(cx);
             }
             MenuAction::CloseWindow => {
-                // Deferred out of this update: the teardown persists the
-                // layout and dumps every panel, this workspace included, and
-                // a read inside its own update panics. Same teardown the OS
-                // close button and Window Controls close button run, so
-                // shutting the last workspace window quits; a popped-out menu
-                // panel isn't a workspace window, so it just closes.
+                // Deferred: the teardown dumps every panel, this workspace included, and a
+                // read inside its own update panics. A popped-out menu panel just closes.
                 let ws = cx.entity();
                 window.defer(cx, move |window, cx| {
                     if is_workspace_window(window, cx) {
@@ -183,19 +164,15 @@ impl Workspace {
                 });
             }
             MenuAction::Quit => {
-                // Same as the Quit action: quitting bypasses the window close
-                // hook, so dump the layout and frame here or a pending
-                // debounce and any window move since the last save are lost.
+                // Quitting bypasses the close hook, so persist the layout and frame here.
                 self.persist(window, cx);
                 cx.quit();
             }
         }
     }
 
-    /// The modifiers changed, which is where the pin and the access letters
-    /// come from. A docked bar arms on a single clean tap of Alt and drops
-    /// again on the next one. A hidden bar has nothing to arm until it's up,
-    /// so there the pair does both at once: pin the bar and arm it.
+    /// A docked bar arms on a single clean Alt tap. A hidden bar needs the
+    /// double tap, which pins it and arms it at once.
     pub(crate) fn note_modifiers(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
         let tap = self
             .alt_tap
@@ -215,11 +192,8 @@ impl Workspace {
         }
     }
 
-    /// Arm or drop the menubar's keyboard mode: the access letters, the
-    /// cursor, and the `MenuNav` context that hands space and the arrows
-    /// back from the playback bindings. Dropping it closes whatever the
-    /// keyboard opened. Never arms on macOS, where the menus live in the
-    /// system bar and this row has no buttons to walk.
+    /// The `MenuNav` context hands space and the arrows back from the playback
+    /// bindings. Never arms on macOS, where the menus live in the system bar.
     fn set_menu_keys(&mut self, on: bool, cx: &mut Context<Self>) {
         let on = on && !cfg!(target_os = "macos");
         if self.menubar_keys == on {
@@ -228,8 +202,6 @@ impl Workspace {
         self.menubar_keys = on;
         if on {
             self.menu_top = self.open_menu.unwrap_or(0);
-            // A collapsed bar has no buttons to walk, so arming it opens
-            // the root list and the cursor walks that instead.
             if self.menubar_collapsed {
                 self.menu_root = true;
             }
@@ -239,9 +211,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Drop the keyboard mode from outside the Alt path: a click that takes
-    /// the bar back to the mouse, or an Escape at the end of its ladder.
-    /// Reports whether there was one to drop.
     pub(crate) fn drop_menu_keys(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.menubar_keys {
             return false;
@@ -250,21 +219,12 @@ impl Workspace {
         true
     }
 
-    /// A key or a button went down under the held Alt, so it's a chord or a
-    /// drag rather than a tap, and the pair it might have completed is off
-    /// too.
     pub(crate) fn cancel_alt_tap(&mut self) {
         self.alt_tap.cancel();
     }
 
-    /// Drop a pinned menubar. Reports whether there was one, so escape can
-    /// stop at the bar instead of falling through to what it backs out of
-    /// next.
-    ///
-    /// The keyboard mode goes with it. On a hidden bar the pin is what holds
-    /// the row on screen, and an armed bar keeps it up on its own, so leaving
-    /// the letters behind would strand the bar over the dock with nothing but
-    /// Escape to clear it.
+    /// The keyboard mode goes too, or an armed bar would stay stranded over the
+    /// dock with only Escape to clear it.
     pub(crate) fn unpin_menubar(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.menubar_pinned {
             return false;
@@ -276,14 +236,9 @@ impl Workspace {
         true
     }
 
-    /// A keystroke offered to the menubar while it's taking keys. Reports
-    /// whether it was used, which is the caller's cue to stop the event: the
-    /// bar has the keyboard until Escape gives it back, so a letter must not
-    /// also land in whatever panel holds focus underneath.
-    ///
-    /// Bindings beat key listeners, so the bar's `MenuNav` context is what
-    /// really hands space and the arrows over (see `keymap::PLAYBACK`); this
-    /// only sees what nothing bound took first.
+    /// True means the caller stops the event: the bar has the keyboard until
+    /// Escape. Bindings beat key listeners, so `MenuNav` is what really takes
+    /// space and the arrows (see `keymap::PLAYBACK`).
     pub(crate) fn menu_key(
         &mut self,
         event: &KeyDownEvent,
@@ -294,9 +249,7 @@ impl Workspace {
             return false;
         }
         let modifiers = event.keystroke.modifiers;
-        // A real chord still belongs to whatever binds it. Shift doesn't
-        // count: it's how you type a capital, and the letters match either
-        // way.
+        // Shift doesn't count as a chord: the letters match either case.
         if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
             return false;
         }
@@ -313,15 +266,10 @@ impl Workspace {
                 }
             }
         }
-        // Everything else is swallowed rather than passed down. The bar was
-        // armed on purpose and Escape is the way out of it, so a stray key
-        // reaching the panel underneath would be the surprise.
+        // Swallow everything else, so a stray key never reaches the panel below.
         true
     }
 
-    /// Escape's ladder: back out one surface at a time, then off the bar. A
-    /// hidden bar was pinned up by the same double-tap that armed it, so the
-    /// last rung drops both.
     fn menu_escape(&mut self, cx: &mut Context<Self>) {
         if self.open_subgroup.is_some() {
             self.open_subgroup = None;
@@ -331,7 +279,6 @@ impl Workspace {
             self.open_flyout(None);
             cx.notify();
         } else if self.open_menu.is_some() && self.menu_root {
-            // Back to the root list, cursor still on this menu's row.
             self.show_top(None);
             cx.notify();
         } else if self.open_menu.is_some() {
@@ -342,13 +289,8 @@ impl Workspace {
         }
     }
 
-    /// Up and down: move the cursor within the deepest open surface,
-    /// wrapping at both ends. With nothing dropped down they open the
-    /// cursor's menu instead, down at its first row and up at its last.
     fn menu_step(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.open_menu.is_none() && self.menu_root {
-            // The root list runs top to bottom, so here up and down walk
-            // the menus the way left and right walk the unfolded bar.
             self.menu_top = self.step_top(delta);
             cx.notify();
             return;
@@ -377,7 +319,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Left: back out of a flyout, or step to the menu before this one.
     fn menu_out(&mut self, cx: &mut Context<Self>) {
         if self.open_subgroup.is_some() {
             self.open_subgroup = None;
@@ -385,9 +326,6 @@ impl Workspace {
         } else if self.open_submenu.is_some() {
             self.open_flyout(None);
         } else if self.menu_root {
-            // The dropdown hangs off the root row, so left backs into the
-            // list rather than along to a neighbor; on the list itself
-            // there's nothing further left to go.
             self.show_top(None);
         } else if self.open_menu.is_some() {
             self.open_top(self.step_top(-1), cx);
@@ -398,9 +336,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Right: step into the flyout under the cursor, or on a row that has
-    /// none, on to the next menu. Inside the panel picker's group flyout
-    /// there's nothing deeper to step into, so it holds still.
     fn menu_in(&mut self, cx: &mut Context<Self>) {
         if self.open_subgroup.is_some() {
             return;
@@ -427,8 +362,6 @@ impl Workspace {
             return;
         }
         if self.menu_root {
-            // Right on a root row flies its menu out, the same step in
-            // that a submenu row takes.
             self.open_top(self.menu_top, cx);
             return;
         }
@@ -436,8 +369,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Enter: run the row under the cursor, or open it when it's a flyout.
-    /// With nothing dropped down it drops the cursor's menu, same as down.
     fn menu_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.open_menu.is_none() {
             self.open_top(self.menu_top, cx);
@@ -457,7 +388,6 @@ impl Workspace {
         }
     }
 
-    /// Drop the menu at `index` under the keyboard, cursor on its first row.
     fn open_top(&mut self, index: usize, cx: &mut Context<Self>) {
         self.close_menus(cx);
         self.menu_root = self.menubar_collapsed;
@@ -468,10 +398,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Fly the menu at `index` out of the collapsed bar's root list, or
-    /// with None retract whichever is out, leaving the list up either way.
-    /// The hover route between root rows, and the keyboard's way back to
-    /// the list; the deeper levels go with the dropdown they hung off.
     fn show_top(&mut self, index: Option<usize>) {
         self.open_flyout(None);
         self.reset_menu_scrolls(self.level(0));
@@ -482,23 +408,18 @@ impl Workspace {
         }
     }
 
-    /// The menu one step along the bar from the cursor's, wrapping.
     fn step_top(&self, delta: isize) -> usize {
         let len = MENUS.len() as isize;
         (self.menu_top as isize + delta).rem_euclid(len) as usize
     }
 
-    /// Run what the keyboard picked, then get off the bar: the mouse rows do
-    /// the same, and leaving the letters up over a window that just opened
-    /// would keep eating its keys.
+    /// Leaving the letters up would keep eating the next window's keys.
     fn nav_run(&mut self, run: NavRun, window: &mut Window, cx: &mut Context<Self>) {
         self.set_menu_keys(false, cx);
         self.run_nav(run, window, cx);
     }
 
-    /// Do what a picked row says, whichever menu picked it. The menu panel
-    /// comes straight here: it has no access letters to put away first, so
-    /// there's nothing for it in the step above.
+    /// The menu panel comes straight here, with no access letters to put away.
     pub(crate) fn run_nav(&mut self, run: NavRun, window: &mut Window, cx: &mut Context<Self>) {
         match run {
             NavRun::Action(action) => self.run(action, window, cx),
@@ -511,12 +432,10 @@ impl Workspace {
         }
     }
 
-    /// The row a cursor index picks out of a flyout's list.
     fn row_at(&self, rows: Vec<NavRow>, at: Option<usize>) -> Option<NavRow> {
         nav_row_at(rows, at)
     }
 
-    /// The dropdown row the cursor sits on.
     fn current_row(&self) -> Option<NavRow> {
         let slot = self.menu_slot?;
         self.menu_rows()
@@ -525,12 +444,10 @@ impl Workspace {
             .map(|(_, row)| row)
     }
 
-    /// The open dropdown's rows in draw order.
     fn menu_rows(&self) -> Vec<(NavSlot, NavRow)> {
         self.open_menu.map(menu_entry_rows).unwrap_or_default()
     }
 
-    /// The open flyout's rows in draw order.
     fn flyout_rows(&self) -> Vec<NavRow> {
         match (self.open_menu, self.open_submenu) {
             (Some(menu), Some(entry)) => submenu_rows(menu, entry),
@@ -538,25 +455,18 @@ impl Workspace {
         }
     }
 
-    /// The open group flyout's rows in draw order.
     fn group_rows(&self) -> Vec<NavRow> {
         self.open_subgroup.map(subgroup_rows).unwrap_or_default()
     }
 }
 
-/// The row a cursor index picks out of a flyout's list.
 pub(crate) fn nav_row_at(rows: Vec<NavRow>, at: Option<usize>) -> Option<NavRow> {
     rows.into_iter().nth(at?)
 }
 
-/// The dropdown rows of the menu at `menu` in draw order, each with the slot
-/// the cursor uses for it. Headings and gated-off sections contribute none,
-/// which is what makes stepping skip past them.
-///
-/// Off the table and an index rather than off menubar state, because the menu
-/// panel draws the same `MENUS` a level deeper and walks it with the same
-/// three functions. One reading of the table, so the keyboard can't come to a
-/// different answer in the two places.
+/// Headings and gated-off sections contribute no rows. Off the table
+/// rather than menubar state, so the menu panel walks `MENUS` with the same
+/// three functions and the keyboard can't disagree between the two.
 pub(crate) fn menu_entry_rows(menu: usize) -> Vec<(NavSlot, NavRow)> {
     let Some(menu) = MENUS.get(menu) else {
         return Vec::new();
@@ -569,8 +479,6 @@ pub(crate) fn menu_entry_rows(menu: usize) -> Vec<(NavSlot, NavRow)> {
             }
             MenuEntry::Section(_) => {}
             MenuEntry::Panels(section) if !section_shows(section) => {}
-            // A bare section draws a run of rows in place, so its slots
-            // carry the row within the entry as well as the entry.
             MenuEntry::Panels(section) if section.group.is_none() => {
                 rows.extend(section.panels.iter().enumerate().map(|(j, def)| {
                     (
@@ -585,10 +493,7 @@ pub(crate) fn menu_entry_rows(menu: usize) -> Vec<(NavSlot, NavRow)> {
     rows
 }
 
-/// The rows of the flyout hanging off entry `entry` of the menu at `menu`, in
-/// draw order, read from the same lists the flyout drew from so the two walk
-/// in step. The note an empty flyout shows isn't a row, and never sits beside
-/// one.
+/// Read from the same lists the flyout draws, so the two walk in step.
 pub(crate) fn submenu_rows(menu: usize, entry: usize) -> Vec<NavRow> {
     let Some(entry) = MENUS.get(menu).and_then(|menu| menu.entries.get(entry)) else {
         return Vec::new();
@@ -637,8 +542,7 @@ pub(crate) fn submenu_rows(menu: usize, entry: usize) -> Vec<NavRow> {
             .collect(),
         MenuEntry::PanelWindowsSubmenu { .. } => {
             let mut rows = Vec::new();
-            // Group 0 is the presets when there are any, the same
-            // numbering the picker draws with.
+            // Group 0 is the presets when there are any, as the picker numbers them.
             if !panel_presets::saved().is_empty() {
                 rows.push(NavRow::Open(0));
             }
@@ -659,8 +563,6 @@ pub(crate) fn submenu_rows(menu: usize, entry: usize) -> Vec<NavRow> {
     }
 }
 
-/// The rows of the picker group at `group`, the one surface a level deeper
-/// than the rest: the panel picker's presets group, or one catalog group.
 pub(crate) fn subgroup_rows(group: usize) -> Vec<NavRow> {
     let presets = panel_presets::saved();
     if group == 0 {
@@ -682,19 +584,15 @@ pub(crate) fn subgroup_rows(group: usize) -> Vec<NavRow> {
 }
 
 impl Workspace {
-    /// Whether the keyboard cursor sits on the dropdown row at `slot`.
     fn nav_on(&self, entry: usize, row: Option<usize>) -> bool {
         self.menu_slot == Some((entry, row))
     }
 
-    /// Whether the cursor sits on the open flyout's row at `row`.
     fn nav_sub(&self, row: usize) -> bool {
         self.menu_sub_slot == Some(row)
     }
 
-    /// Whether the cursor sits on the flyout row that opens `group`, the
-    /// picker's group headers. They're addressed by their place in the
-    /// flyout, not by the group number they carry.
+    /// Addressed by place in the flyout, not by group number.
     fn nav_on_group(&self, group: usize) -> bool {
         matches!(
             self.row_at(self.flyout_rows(), self.menu_sub_slot),
@@ -702,17 +600,13 @@ impl Workspace {
         )
     }
 
-    /// Whether the cursor sits on `row` of the picker group `group`, the one
-    /// surface a level deeper than the rest. Group rows are built whether or
-    /// not their group is open, so the group has to match too.
+    /// Group rows are built whether or not their group is open.
     fn nav_group(&self, group: usize, row: usize) -> bool {
         self.open_subgroup == Some(group) && self.menu_group_slot == Some(row)
     }
 
-    /// The pointer crossing the pinned bar's edge. Entering arms the pin,
-    /// leaving drops it, so the bar clears itself once it's been used. A
-    /// leave with a dropdown open is the pointer moving into the dropdown,
-    /// which hangs below the bar's bounds, so the pin holds through it.
+    /// A leave with a dropdown open is the pointer moving into the dropdown,
+    /// so the pin holds through it.
     pub(crate) fn note_menubar_hover(&mut self, hovered: bool, cx: &mut Context<Self>) {
         if !self.menubar_pinned {
             return;
@@ -724,11 +618,8 @@ impl Workspace {
         }
     }
 
-    // `+ use<>` here and on the element builders below: under 2024 an `impl
-    // Trait` return captures every lifetime in scope unless it's told which
-    // ones to keep. These build their element out of owned values and hand it
-    // back while the caller still holds `cx`, so the capture list is pinned
-    // empty and the return borrows nothing.
+    // `+ use<>` on these builders: they return owned elements while the caller
+    // still holds `cx`, so the capture list is pinned empty.
     fn menu_button(
         &self,
         index: usize,
@@ -737,9 +628,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let open = self.open_menu == Some(index);
-        // The keyboard cursor lights the button the same way an open menu
-        // does, so walking the bar with the arrows reads as one cursor
-        // whether or not anything is dropped down.
         let cursor = self.menubar_keys && self.menu_top == index;
         div()
             .relative()
@@ -761,8 +649,6 @@ impl Workspace {
                     }
                 }),
             )
-            // Clicking anywhere outside this button closes its menu; a click
-            // that lands on a dropdown item still runs the item's handler.
             .when(open, |d| {
                 d.on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menus(cx)))
             })
@@ -772,9 +658,6 @@ impl Workspace {
             })
     }
 
-    /// The one button a collapsed bar keeps: the menus behind a hamburger,
-    /// the menu panel's shape. Its dropdown is the root list of top menus,
-    /// each flying its real dropdown out to the side.
     fn collapsed_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let open = self.menu_root;
         div()
@@ -806,9 +689,6 @@ impl Workspace {
             .when(open, |d| d.child(Self::dropdown_at(self.root_menu(cx))))
     }
 
-    /// The collapsed bar's root surface: one row per top menu, flying out
-    /// on hover the way submenu rows do, with the access letters underlined
-    /// while the bar is taking keys.
     fn root_menu(&self, cx: &mut Context<Self>) -> Div {
         let letters = self.menubar_keys.then(mnemonics).unwrap_or_default();
         let list = self
@@ -821,9 +701,6 @@ impl Workspace {
             .child(self.menu_surface_capture(0, cx))
     }
 
-    /// A root row for a top menu. Lit while its dropdown is out or the
-    /// keyboard cursor is on it, the same cursor the unfolded bar's buttons
-    /// show.
     fn root_row(
         &self,
         index: usize,
@@ -866,13 +743,9 @@ impl Workspace {
                 ))
             })
     }
-    /// The menubar row: the mini toggle, the menus, and the status side.
-    /// One builder so the docked row and the alt-revealed overlay stay
-    /// the same bar.
+    /// One builder, so the docked row and the alt-revealed overlay stay the same
+    /// bar.
     pub(crate) fn menubar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        // On macOS the menus are in the system bar, so this row keeps only
-        // what the system bar has no place for: the mini toggle, the drag
-        // handle, and the library status.
         let native_menus = cfg!(target_os = "macos");
         div()
             .relative()
@@ -891,18 +764,14 @@ impl Workspace {
                 d.child(self.collapsed_button(cx))
             })
             .when(!native_menus && !self.menubar_collapsed, |d| {
-                // The letters are only worked out while they're on show, so
-                // the common frame doesn't pay for five locale lookups and a
-                // dedup pass.
+                // Only worked out while shown, so the common frame skips the lookups.
                 let letters = self.menubar_keys.then(mnemonics).unwrap_or_default();
                 d.children(MENUS.iter().enumerate().map(|(i, menu)| {
                     let letter = letters.get(i).cloned().flatten().map(|(range, _)| range);
                     self.menu_button(i, menu, letter, cx)
                 }))
             })
-            // The empty middle is a drag handle, so a decorations-off
-            // window still moves by its menu bar. The move is the
-            // compositor's, same as the drag anchor panel.
+            // A drag handle, so a decorations-off window still moves by its menu bar.
             .child(
                 div()
                     .flex_1()
@@ -913,8 +782,7 @@ impl Workspace {
             .child(self.library_status(window, cx))
     }
 
-    /// A paint-time capture of the bar's own bounds, the first thing the
-    /// bar paints so [`Self::menubar_fit_capture`] finds them set.
+    /// Painted first so [`Self::menubar_fit_capture`] finds the bounds set.
     fn menubar_capture(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let view = cx.entity();
         canvas(
@@ -931,9 +799,7 @@ impl Workspace {
         .size_full()
     }
 
-    /// A zero-width marker after the status side's last control. Where it
-    /// lands is where the row's content ends, past the bar's edge when the
-    /// row overflows, which is what decides the fold.
+    /// Where it lands is where the row's content ends, which decides the fold.
     fn menubar_fit_capture(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let view = cx.entity();
         canvas(
@@ -947,13 +813,8 @@ impl Workspace {
         .flex_none()
     }
 
-    /// Fold the menus behind one button when the row can't hold them, and
-    /// unfold once it can again. `end_x` is where the row's content ends;
-    /// the row wants that far from its left edge plus the trailing padding.
-    /// The unfolded width is remembered while collapsed, with a little
-    /// slack over it so a resize can't sit on the boundary flickering. A
-    /// status line that grew while the bar was collapsed takes one more
-    /// frame to settle: the bar unfolds, measures, and folds again.
+    /// The unfolded width is remembered with some slack, so a resize can't
+    /// flicker on the boundary.
     fn note_menubar_fit(&mut self, end_x: Pixels, cx: &mut Context<Self>) {
         let Some(bar) = self.menubar_bounds else {
             return;
@@ -966,15 +827,11 @@ impl Workspace {
         };
         if collapse != self.menubar_collapsed {
             self.menubar_collapsed = collapse;
-            // Whatever was open hung off a row the next frame won't draw.
             self.close_menus(cx);
         }
     }
 
-    /// The macOS window buttons at the menubar's left edge, when this window
-    /// draws its own chrome. With OS decorations on, the real ones are up in
-    /// the native titlebar and a second set here would just be a copy; off
-    /// every other platform there are no traffic lights to match.
+    /// Only when this window draws its own chrome on macOS.
     fn traffic_lights(
         &self,
         window: &Window,
@@ -983,8 +840,6 @@ impl Workspace {
         if !cfg!(target_os = "macos") || settings::os_decorations() {
             return None;
         }
-        // Close runs the menu's own Close, the teardown that persists the
-        // layout and only quits from the last workspace window.
         let close = cx.listener(|this: &mut Workspace, _: &MouseDownEvent, window, cx| {
             this.run(MenuAction::CloseWindow, window, cx);
         });
@@ -1001,10 +856,6 @@ impl Workspace {
         )
     }
 
-    /// The menubar's right side: the catalog status line, a badge while a
-    /// scan or load runs, the tasks and sleep timer buttons, a rescan
-    /// button once a folder is known, and an abort button while a scan
-    /// runs.
     fn library_status(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (busy, status, can_rescan, scanning) = {
             let library = self.state.library.read(cx);
@@ -1017,16 +868,10 @@ impl Workspace {
         };
         let idle = busy.is_none();
         let buttons = settings::menubar_buttons();
-        // A standing selection rides along in parentheses after the
-        // catalog count: what's picked and how long it runs, the status
-        // strip's two stock readouts up in the bar. Only at idle, since a
-        // scan's own progress outranks it. The pair is summed on a pick
-        // rather than here, so the bar doesn't walk the projection every
-        // frame.
+        // Summed on a pick rather than here, so the bar doesn't walk the
+        // projection every frame. Only at idle; a scan's progress outranks it.
         let selection = idle.then_some(self.selection_status).flatten();
         let status = match selection {
-            // A pick of stations has no time to show, so the count stands
-            // alone rather than trailing a 0:00 nobody can act on.
             Some((picked, None)) => SharedString::from(format!(
                 "{status} ({})",
                 rox_i18n::t!("status-count-selected", count = picked as u64)
@@ -1040,11 +885,7 @@ impl Workspace {
 
             None => status,
         };
-        // Status text leftmost so its width changes grow into the empty
-        // middle of the bar; the badge and buttons keep their spot at the
-        // right edge. The side gives way before the menus do: it shrinks
-        // once the bar is out of room, the text truncating down to a floor,
-        // and only past that does the bar fold the menus.
+        // The status side shrinks and truncates before the bar folds the menus.
         div()
             .flex()
             .flex_row()
@@ -1053,9 +894,8 @@ impl Workspace {
             .min_w_0()
             .gap(tokens::SPACE_SM)
             .px(tokens::SPACE_MD)
-            // A right-click anywhere on this side picks which of its
-            // buttons draw. The buttons only take the left button, so the
-            // press reaches here from on top of them too.
+            // The buttons only take the left button, so a right-click anywhere here
+            // picks which buttons draw.
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1076,14 +916,7 @@ impl Workspace {
                         .max_w(px(480.))
                         .truncate()
                         .text_color(palette::text_muted())
-                        // While scanning the status is the full path of the
-                        // file under the cursor: smaller text.
                         .when(scanning, |d| d.text_xs())
-                        // The count's hover card: the totals behind the
-                        // line, the status strip's tooltip. Only at idle,
-                        // where the text is the count the card expands on.
-                        // It follows the line's scope, so a selection
-                        // shows the picked tracks' numbers.
                         .when(idle, |d| {
                             d.tooltip(move |_window, cx| {
                                 if selection.is_some() {
@@ -1097,8 +930,7 @@ impl Workspace {
                 )
             })
             .when_some(busy, |d, label| {
-                // Tabular digits, so the count ticking up never changes
-                // the badge width within a digit count.
+                // Tabular digits, so the ticking count never changes the badge width.
                 let mut badge = div()
                     .px(tokens::SPACE_SM)
                     .py(px(2.))
@@ -1112,11 +944,8 @@ impl Workspace {
                     .font_features = Some(FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
                 d.child(badge.child(label))
             })
-            // After the rescan: it's the same kind of thing, work the
-            // library is doing that you didn't have to sit and watch. The
-            // window behind it is also where those jobs are started from.
-            // The rescan button heads the button group, with the abort
-            // standing in its slot while a scan runs, so it never jumps.
+            // The abort stands in the rescan's slot while a scan runs, so it never
+            // jumps.
             .when(buttons.rescan && can_rescan && idle, |d| {
                 d.child(panel::icon_control_sized(
                     icons::REFRESH_CW,
@@ -1146,12 +975,8 @@ impl Workspace {
                 ))
             })
             .when(buttons.tasks, |d| d.child(crate::tasks_window::control(cx)))
-            // The sleep timer beside it: the same kind of thing again,
-            // something set and left to run while you do something else.
             .when(buttons.sleep, |d| d.child(self.sleep_control(cx)))
-            // The side's popup, over everything and pinned where the
-            // press landed. The occluding layer under it closes the menu
-            // on an outside click, the transport strip's arrangement.
+            // The occluding layer under the popup closes it on an outside click.
             .when_some(self.status_menu.as_ref(), |d, (at, menu, _)| {
                 d.child(
                     deferred(
@@ -1176,10 +1001,6 @@ impl Workspace {
             })
     }
 
-    /// The sleep timer button: a moon, tinted the accent while a timer
-    /// runs, with the minutes left in its tip. A press drops the same
-    /// picks the Playback menu offers, so the bar is the short way to the
-    /// timer and the menu stays for the keyboard.
     fn sleep_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let left = sleep_minutes_left(
             self.state
@@ -1218,9 +1039,7 @@ impl Workspace {
         )
     }
 
-    /// The sleep dropdown, hung from where the press started: the four
-    /// durations and the cancel row with its countdown, each dispatched
-    /// through the menu action so the two entry points can't drift.
+    /// Dispatched through the menu action so the two entry points can't drift.
     fn open_sleep_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         const PICKS: [(&str, SleepPick); 4] = [
             ("playback-sleep-15", SleepPick::Min15),
@@ -1254,9 +1073,7 @@ impl Workspace {
         self.show_status_menu(at, menu, window, cx);
     }
 
-    /// The right-click menu for the status side: a check per button it
-    /// can draw. A flip lands in the live set and the look at once, so the
-    /// bar repaints now and the choice comes back next launch.
+    /// A flip lands in the live set and the look at once.
     fn open_buttons_menu(
         &mut self,
         at: Point<Pixels>,
@@ -1293,8 +1110,6 @@ impl Workspace {
         self.show_status_menu(at, menu, window, cx);
     }
 
-    /// Hang a popup off the status side at `at`, replacing whatever was
-    /// there, and clear it again when it dismisses.
     fn show_status_menu(
         &mut self,
         at: Point<Pixels>,
@@ -1311,11 +1126,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The "Update Available" chip beside the catalog status, shown while a
-    /// newer release sits in the cache. The chip opens the About window,
-    /// which offers the download where the install can replace itself and
-    /// the release page everywhere else; the x dismisses it for this
-    /// release, so it only returns with the next one.
     fn update_chip(&self, version: String, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let dismiss_version = version.clone();
         let chip = div()
@@ -1347,8 +1157,7 @@ impl Workspace {
                         crate::startup::updates::dismiss(dismiss_version.clone());
                         cx.refresh_windows();
                     })
-                    // The svg takes its color from its own style, the chip's
-                    // text color doesn't reach it, so set it here.
+                    // The chip's text color doesn't reach the svg.
                     .child(
                         svg()
                             .path(icons::CLOSE)
@@ -1364,9 +1173,6 @@ impl Workspace {
         .apply(chip)
     }
 
-    /// A paint-time capture of a menu surface's bounds into
-    /// [`Workspace::menu_surfaces`], with the viewport width alongside. The
-    /// next frame's flyout side decisions read both.
     fn menu_surface_capture(
         &self,
         level: usize,
@@ -1388,24 +1194,18 @@ impl Workspace {
         .size_full()
     }
 
-    /// The side decision for a flyout off the surface at `level`, from the
-    /// bounds captured at the last paint.
     fn flyout_left(&self, level: usize) -> bool {
         flyout_leftward(&self.menu_surfaces, level, self.menu_viewport_w)
     }
 
-    /// A dropdown's surface level in [`Workspace::menu_surfaces`]: the
-    /// dropdown counts from 0 on the unfolded bar, and from 1 on a collapsed
-    /// one, where the root list of top menus sits underneath it.
+    /// Dropdowns count from 0 on the unfolded bar and from 1 on a collapsed
+    /// one, where the root list sits underneath.
     fn level(&self, level: usize) -> usize {
         level + usize::from(self.menubar_collapsed)
     }
 
-    /// The tallest a surface at `level` can be before its rows scroll: the
-    /// window from the last paint, less the margin the surface keeps from
-    /// the edge and the frame's border. Level 0 hangs under the bar, so it
-    /// has the room below the bar; a flyout can sit anywhere, so it gets
-    /// the whole window and `anchored` slides it up to fit.
+    /// Level 0 has the room below the bar; a flyout gets the whole window and
+    /// `anchored` slides it to fit.
     fn menu_fit(&self, level: usize) -> Pixels {
         let border = px(2.);
         if level == 0 {
@@ -1419,10 +1219,7 @@ impl Workspace {
         }
     }
 
-    /// The rows of a menu surface: a column capped at [`Self::menu_fit`]
-    /// that scrolls past it, on the scroll handle for `level` so the
-    /// keyboard cursor can follow. The first paint has no window height
-    /// yet; that frame runs uncapped and the next one settles it.
+    /// The first paint has no window height yet, so that frame runs uncapped.
     fn menu_list(&self, level: usize) -> Stateful<Div> {
         let fit = self.menu_fit(level);
         div()
@@ -1435,11 +1232,8 @@ impl Workspace {
             .track_scroll(&self.menu_scrolls[level])
     }
 
-    /// The frame every dropdown and flyout is: the opaque box, its border
-    /// and shadow, `list` inside it, and the scrollbar over it, which the
-    /// scrollbar hides while the rows fit. Anything else the caller adds,
-    /// a bounds capture say, goes on the frame rather than in the list, so
-    /// it doesn't count toward the scroll extent.
+    /// Anything else the caller adds goes on the frame, not in the list, so it
+    /// doesn't count toward the scroll extent.
     fn menu_frame(&self, level: usize, min_w: Pixels, list: impl IntoElement) -> Div {
         div()
             .relative()
@@ -1460,9 +1254,6 @@ impl Workspace {
             )
     }
 
-    /// A surface hung under the bar at its button's left edge: deferred
-    /// over the dock, and snapped back into the window when the button sits
-    /// near its right edge.
     fn dropdown_at(frame: Div) -> impl IntoElement {
         deferred(
             div().absolute().left_0().top(px(MENU_BAR_H)).child(
@@ -1473,13 +1264,9 @@ impl Workspace {
         )
     }
 
-    /// A flyout beside the row that opened it, on the side
-    /// [`flyout_leftward`] picked. Deferred, so it paints past the scroll
-    /// clip of the list its row is in, and anchored by the corner that
-    /// touches the row, so it snaps back into the window when the side
-    /// estimate was off or its rows would run past the bottom. The top
-    /// offset backs out the row's padding and the frame's border so the
-    /// first item lines up with the row.
+    /// Deferred to paint past the list's scroll clip, and anchored at the
+    /// corner touching the row so it snaps back into the window. The top offset
+    /// lines the first item up with the row.
     fn flyout_at(leftward: bool, frame: Div) -> impl IntoElement {
         let corner = if leftward {
             Corner::TopRight
@@ -1496,10 +1283,8 @@ impl Workspace {
         )
     }
 
-    /// Bring the keyboard cursor's row into view on the deepest open
-    /// surface. The lists draw one child per row, which is what the scroll
-    /// handle counts by; the dropdown also draws headings, so its index
-    /// comes from [`dropdown_child_index`].
+    /// The dropdown also draws headings, so its child index comes from
+    /// [`dropdown_child_index`].
     fn menu_scroll_follow(&self) {
         let (level, child) = if self.open_subgroup.is_some() {
             (self.level(2), self.menu_group_slot)
@@ -1518,18 +1303,14 @@ impl Workspace {
         }
     }
 
-    /// Put the surfaces from `level` down back at their top, for the next
-    /// list to open there.
     fn reset_menu_scrolls(&self, level: usize) {
         for scroll in &self.menu_scrolls[level..] {
             scroll.set_offset(point(Pixels::ZERO, Pixels::ZERO));
         }
     }
 
-    /// A top menu's dropdown, unplaced: the unfolded bar hangs it under
-    /// its button, the collapsed bar flies it out of a root row. The rows
-    /// are the list's direct children, a bare catalog section spread in
-    /// place, so their order is the one [`dropdown_child_index`] counts.
+    /// The rows are the list's direct children, in the order
+    /// [`dropdown_child_index`] counts.
     fn dropdown(&self, menu: &'static Menu, cx: &mut Context<Self>) -> Div {
         let level = self.level(0);
         let list =
@@ -1540,8 +1321,6 @@ impl Workspace {
                             MenuEntry::Item(item) => vec![
                                 self.action_item(*item, cx)
                                     .id(("menu-entry", i))
-                                    // Sliding onto a plain item retracts a flyout a
-                                    // sibling submenu left open.
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                         if *hovered && this.open_submenu.is_some() {
                                             this.open_flyout(None);
@@ -1554,11 +1333,8 @@ impl Workspace {
                             MenuEntry::Section(label) => {
                                 vec![menu_section(label).into_any_element()]
                             }
-                            // A gated-off section draws nothing rather than an
-                            // empty group row.
                             MenuEntry::Panels(section) if !section_shows(section) => Vec::new(),
                             MenuEntry::Panels(section) => match section.group {
-                                // A bare section is a run of plain rows in place.
                                 None => section
                                     .panels
                                     .iter()
@@ -1618,13 +1394,8 @@ impl Workspace {
             .child(self.menu_surface_capture(level, cx))
     }
 
-    /// A dropdown row that runs an action and closes the menu. The caller
-    /// chains its hover behavior, which differs between the top level and a
-    /// flyout.
     fn action_item(&self, item: MenuItem, cx: &mut Context<Self>) -> Div {
         let action = item.action;
-        // The static menu table can't hold state, so the toggle row reads
-        // its check live.
         let checked = match action {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
             MenuAction::ToggleDesignMode => settings::design_mode(),
@@ -1661,8 +1432,6 @@ impl Workspace {
                     .text_color(palette::text_muted()),
             )
             .child(label)
-            // The trailing slot: the row's keybinding, or the check while
-            // a toggle row is on. The spacer pushes it to the right edge.
             .when_some(shortcut_for(action), |d, keys| {
                 d.child(div().flex_1().min_w(px(24.))).child(
                     div()
@@ -1679,8 +1448,6 @@ impl Workspace {
                         .text_color(palette::text_muted()),
                 )
             })
-            // Panels with knobs the signal pool can drive are marked here, so
-            // the list itself shows which ones the pool can reach.
             .when(signal_marked(action), |d| {
                 d.child(div().flex_1().min_w(px(24.))).child(
                     svg()
@@ -1691,9 +1458,8 @@ impl Workspace {
             })
     }
 
-    /// A dropdown row that flies its items out to the side while hovered.
-    /// The flyout stays open until another entry is hovered or the menu
-    /// closes, so the pointer can cross the gap without losing it.
+    /// The flyout stays open until another entry is hovered, so the pointer
+    /// can cross the gap.
     fn submenu_row(
         &self,
         index: usize,
@@ -1757,11 +1523,6 @@ impl Workspace {
             })
     }
 
-    /// The layout-presets flyout: like [`Workspace::submenu_row`] but its
-    /// items are the saved presets, read when it opens, each
-    /// doing the flyout's `target` with that preset. With `with_new` the
-    /// list leads with a "New..." row that opens the save dialog, so the
-    /// Save Layout flyout can start a fresh preset as well as overwrite.
     fn layouts_submenu_row(
         &self,
         index: usize,
@@ -1812,8 +1573,6 @@ impl Workspace {
                     .text_color(palette::text_muted()),
             )
             .when(open, |d| {
-                // Read the presets only once the flyout opens, not on every
-                // parent-menu paint.
                 let presets = rox_core::settings::layouts::all(&Settings::load());
                 let level = self.level(1);
                 let mut flyout = self.menu_list(level);
@@ -1821,8 +1580,7 @@ impl Workspace {
                     flyout = flyout.child(self.save_new_item(cx).when(self.nav_sub(0), nav_lit));
                 }
                 if presets.is_empty() {
-                    // The Save flyout still has its New row, so only the
-                    // preset-only flyouts read empty here.
+                    // The Save flyout always has its New row.
                     if !with_new {
                         flyout = flyout.child(
                             div()
@@ -1846,8 +1604,6 @@ impl Workspace {
             })
     }
 
-    /// The Save flyout's leading row: opens the save dialog for a fresh
-    /// preset, closing the menu first like every other flyout row.
     fn save_new_item(&self, cx: &mut Context<Self>) -> Div {
         div()
             .px(tokens::SPACE_MD)
@@ -1874,9 +1630,6 @@ impl Workspace {
             .child(rox_i18n::t!("menu-new-ellipsis"))
     }
 
-    /// A preset row in a layouts flyout: closes the menu, then does the
-    /// flyout's thing with the named preset: open a window, overwrite it
-    /// with the current arrangement, or apply it here behind a confirm.
     fn layout_item(&self, name: String, target: LayoutTarget, cx: &mut Context<Self>) -> Div {
         let label = SharedString::from(name.clone());
         div()
@@ -1904,9 +1657,6 @@ impl Workspace {
             .child(label)
     }
 
-    /// The panel-presets flyout: the saved panels, read when it opens, each
-    /// doing the flyout's `target`: built into this window, or opened in one
-    /// of its own.
     fn presets_submenu_row(
         &self,
         index: usize,
@@ -1918,8 +1668,6 @@ impl Workspace {
         let open = self.open_submenu == Some(index);
         let lit = open || self.nav_on(index, None);
         submenu_shell(index, label, icon, lit, cx).when(open, |d| {
-            // Read the presets only once the flyout opens, not on every
-            // parent-menu paint.
             let presets = panel_presets::saved();
             let level = self.level(1);
             let list = self.menu_list(level);
@@ -1938,11 +1686,8 @@ impl Workspace {
         })
     }
 
-    /// The Window menu's panel picker: one flyout of groups (the saved
-    /// presets, then the catalog's own), each flying out again into its
-    /// panels. Every pick opens that panel in a window of its own, which is
-    /// why this is a flyout of its own rather than a target on the Panels
-    /// menu.
+    /// Every pick opens a panel in its own window, which is why this is a
+    /// flyout of its own rather than a target on the Panels menu.
     fn panel_windows_submenu_row(
         &self,
         index: usize,
@@ -1956,8 +1701,7 @@ impl Workspace {
             let presets = panel_presets::saved();
             let level = self.level(1);
             let mut flyout = self.menu_list(level);
-            // Group 0 is the presets when there are any, so the catalog's
-            // groups start one along and the two levels never share an index.
+            // Group 0 is the presets, so catalog groups start one along.
             if !presets.is_empty() {
                 let rows = presets
                     .into_iter()
@@ -1986,16 +1730,13 @@ impl Workspace {
                     })
                     .collect::<Vec<_>>();
                 flyout = match section.group {
-                    // A bare section is a run of plain rows in place, the
-                    // same as everywhere else the catalog is drawn.
                     None => flyout.children(rows),
                     Some((label, icon)) => {
                         flyout.child(self.panel_window_group(i + 1, label, icon, rows, cx))
                     }
                 };
             }
-            // This flyout hosts the group flyouts, so it captures its own
-            // bounds for their side decision.
+            // This flyout hosts the group flyouts, so it captures its own bounds.
             d.child(Self::flyout_at(
                 self.flyout_left(self.level(0)),
                 self.menu_frame(level, px(180.), flyout)
@@ -2004,9 +1745,8 @@ impl Workspace {
         })
     }
 
-    /// One group inside the panel picker: its own flyout, a level deeper than
-    /// the menus' usual one. `index` is the group's slot in that picker, kept
-    /// apart from the entry indices the level above uses.
+    /// `index` is the group's slot in the picker, apart from the entry indices
+    /// above.
     fn panel_window_group(
         &self,
         index: usize,
@@ -2066,8 +1806,6 @@ impl Workspace {
             })
     }
 
-    /// A catalog row in the panel picker: closes the menu, then opens that
-    /// panel with its stock config in a window of its own.
     fn panel_window_item(&self, def: &'static PanelDef, cx: &mut Context<Self>) -> Div {
         menu_row(cx.listener(move |this, _, window, cx| {
             this.close_menus(cx);
@@ -2082,8 +1820,6 @@ impl Workspace {
         .child(rox_i18n::t!(def.label))
     }
 
-    /// A preset row in a presets flyout: closes the menu, then does the
-    /// flyout's `target` with the named preset.
     fn preset_item(
         &self,
         preset: rox_core::settings::PanelPreset,
@@ -2106,8 +1842,6 @@ impl Workspace {
         .child(label)
     }
 
-    /// Close whatever the menubar has open, down to the nested flyouts. What
-    /// every row that runs something does first.
     fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.menu_root = false;
         self.open_menu = None;
@@ -2120,10 +1854,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Move the flyout open off the dropdown entry at `index`, or shut it
-    /// with None. The keyboard cursor goes with it: a hover that lands
-    /// somewhere else must not leave a highlight behind in a list it no
-    /// longer belongs to.
+    /// The keyboard cursor goes with it, so no highlight is left in a list it
+    /// left.
     fn open_flyout(&mut self, index: Option<usize>) {
         self.open_submenu = index;
         self.reset_menu_scrolls(self.level(1));
@@ -2132,12 +1864,6 @@ impl Workspace {
         self.menu_group_slot = None;
     }
 
-    /// A workspaces flyout: like [`Workspace::layouts_submenu_row`] but its
-    /// items are the saved and shipped workspaces, read when it opens, each
-    /// doing the flyout's `target` with that bundle behind a confirm. With
-    /// `with_new` the list leads with a "New..." row that opens the save
-    /// dialog, so the Save Workspace flyout can start a fresh bundle as well
-    /// as overwrite.
     fn workspaces_submenu_row(
         &self,
         index: usize,
@@ -2188,11 +1914,8 @@ impl Workspace {
                     .text_color(palette::text_muted()),
             )
             .when(open, |d| {
-                // Read the workspaces only once the flyout opens, not on every
-                // parent-menu paint, and only far enough to name them: the
-                // bundles stay on disk until one is applied. The Save flyout
-                // can't overwrite shipped bundles, so it drops them, matching
-                // the settings window where shipped rows have no Overwrite.
+                // Read only once the flyout opens. The Save flyout can't overwrite shipped
+                // bundles, so it drops them.
                 let mut entries = crate::workspaces::all();
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
@@ -2206,8 +1929,7 @@ impl Workspace {
                     );
                 }
                 if entries.is_empty() {
-                    // The Save flyout still has its New row, so only the
-                    // apply flyout reads empty here.
+                    // The Save flyout always has its New row.
                     if !with_new {
                         flyout = flyout.child(
                             div()
@@ -2231,8 +1953,6 @@ impl Workspace {
             })
     }
 
-    /// The Save Workspace flyout's leading row: opens the save dialog for a
-    /// fresh bundle, closing the menu first like every other flyout row.
     fn save_new_workspace_item(&self, cx: &mut Context<Self>) -> Div {
         div()
             .px(tokens::SPACE_MD)
@@ -2259,9 +1979,6 @@ impl Workspace {
             .child(rox_i18n::t!("menu-new-ellipsis"))
     }
 
-    /// A workspace row in a workspaces flyout: closes the menu, then stages
-    /// the flyout's confirm with the named bundle. A shipped bundle trails a
-    /// muted tag to tell it from the user's own.
     fn workspace_item(
         &self,
         name: String,
@@ -2305,10 +2022,6 @@ impl Workspace {
     }
 }
 
-/// Flip design mode, from wherever it was asked for: the Window menu's row,
-/// the Appearance page's toggle, or the row at the top of every panel menu.
-/// The live flag repaints every window, the file keeps it across launches,
-/// and the native bar redraws its label.
 pub(crate) fn toggle_design_mode(cx: &mut App) {
     let on = !settings::design_mode();
     settings::set_design_mode(on, cx);
@@ -2316,10 +2029,7 @@ pub(crate) fn toggle_design_mode(cx: &mut App) {
     native_menu::rebuild(cx);
 }
 
-/// A flyout row's own chrome: the icon, the label, the chevron, and the hover
-/// that opens it at `index`. The flyout itself is the caller's, chained onto
-/// what comes back: it's the part that differs between a static group and a
-/// list read at open time.
+/// The flyout itself is chained on by the caller.
 fn submenu_shell(
     index: usize,
     label: &'static str,
@@ -2368,11 +2078,7 @@ fn submenu_shell(
         )
 }
 
-/// Where the dropdown row at `slot` sits among its list's children, which
-/// is what the scroll handle counts by when the keyboard cursor is brought
-/// into view. Walks the entries the way [`Workspace::dropdown`] draws them:
-/// an item or a heading is one child, a gated-off section none, a bare
-/// section one per panel, and a flyout row one.
+/// Walks the entries the way [`Workspace::dropdown`] draws them.
 pub(crate) fn dropdown_child_index(menu: &Menu, slot: NavSlot) -> usize {
     let (entry, row) = slot;
     let before: usize = menu
@@ -2388,7 +2094,6 @@ pub(crate) fn dropdown_child_index(menu: &Menu, slot: NavSlot) -> usize {
     before + row.unwrap_or(0)
 }
 
-/// What a flyout shows instead of its items when it has none.
 fn flyout_note(text: impl Into<SharedString>) -> Div {
     div()
         .px(tokens::SPACE_MD)
@@ -2397,42 +2102,24 @@ fn flyout_note(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// The Alt tap tracker behind the menubar pin. Alt held floats a hidden bar
-/// over the dock, and two quick taps of it pin the bar up so it stays with
-/// nothing held. Holding the key makes the plain reveal awkward to
-/// click: Alt+drag is the compositor's window move, and on macOS
-/// Option-click on the zoom light means zoom, so fullscreen was unreachable
-/// while the bar only existed under a held Option.
-///
-/// Only a clean tap counts: Alt alone, released quickly, with nothing under
-/// it. A chord, a drag, or a long hold cancels the run. Split off the
-/// workspace so the timing rules can be exercised without a window.
+/// The Alt tap tracker behind the menubar pin: two quick taps pin a hidden
+/// bar up. A held Alt is awkward to click under: Alt+drag is the
+/// compositor's window move, and macOS Option-click on the zoom light
+/// zooms. Only a clean tap counts: Alt alone, released quickly.
 #[derive(Default)]
 pub(crate) struct AltTap {
-    /// When the current Alt press started, or None once it's been ruled out
-    /// as a tap.
     held_since: Option<Instant>,
-    /// When the last clean tap released, the window a second tap has to
-    /// land in to make the pair.
     tapped_at: Option<Instant>,
 }
 
-/// What an Alt release amounted to. A docked bar arms its access letters on
-/// the single tap; a hidden one waits for the pair, since the first tap of
-/// that pair has no bar to arm yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum AltTapKind {
-    /// Not a tap at all: a chord, a drag, or a hold.
     None,
-    /// A clean tap with no partner in the window before it.
     Tap,
-    /// The second of a pair, close enough behind the first to make one.
     DoubleTap,
 }
 
 impl AltTap {
-    /// Feed the tracker a modifiers change. Reports what the release it
-    /// completed amounted to, which is what the caller acts on.
     fn note(&mut self, modifiers: Modifiers, now: Instant, pointer_down: bool) -> AltTapKind {
         if modifiers.alt {
             let alone = !modifiers.control
@@ -2463,17 +2150,14 @@ impl AltTap {
         }
     }
 
-    /// A key or a button went down under the held Alt, so it's a chord or a
-    /// drag; the press and the pair it might have completed are both off.
     fn cancel(&mut self) {
         self.held_since = None;
         self.tapped_at = None;
     }
 }
 
-/// The next cursor index in a list of `len` rows, wrapping at both ends.
-/// With the cursor not on a row yet it lands on the first, or the last
-/// stepping backwards.
+/// Lands on the first row, or the last stepping backwards, when the cursor
+/// isn't on one yet.
 pub(crate) fn step_index(at: Option<usize>, delta: isize, len: usize) -> Option<usize> {
     if len == 0 {
         return None;
@@ -2484,14 +2168,9 @@ pub(crate) fn step_index(at: Option<usize>, delta: isize, len: usize) -> Option<
     Some((at as isize + delta).rem_euclid(len as isize) as usize)
 }
 
-/// The access letter each top menu answers to, in `MENUS` order: where it
-/// sits in the translated label, and the key that reaches it. First letter
-/// where it's free, the next unclaimed one where it isn't, which is how
-/// Window and Workspace end up on W and o. None once a label has nothing
-/// left unclaimed; that menu keeps its keyboard route through the arrows.
-///
-/// Off the translated text rather than the message key, so the underline is
-/// on the letter you actually press whatever the locale.
+/// First free letter of the translated label, so the underline is the key
+/// you press in any locale. None once a label runs out; that menu keeps
+/// the arrows.
 fn mnemonics() -> Vec<Option<(std::ops::Range<usize>, char)>> {
     let mut taken: Vec<char> = Vec::new();
     MENUS
@@ -2510,9 +2189,8 @@ fn mnemonics() -> Vec<Option<(std::ops::Range<usize>, char)>> {
         .collect()
 }
 
-/// The top menu a bare keypress opens, by its access letter. gpui hands
-/// letters over as one-character keys, so anything longer is some other key
-/// and matches nothing.
+/// gpui hands letters over as one-character keys, so anything longer
+/// matches nothing.
 fn mnemonic_menu(key: &str) -> Option<usize> {
     let mut chars = key.chars();
     let pressed = chars.next().filter(|_| chars.next().is_none())?;
@@ -2521,9 +2199,6 @@ fn mnemonic_menu(key: &str) -> Option<usize> {
         .position(|hit| hit.as_ref().is_some_and(|(_, c)| *c == pressed))
 }
 
-/// A top menu's label, with its access letter underlined while the bar is
-/// taking keys. A plain string the rest of the time, which is every frame
-/// nobody has tapped Alt.
 fn menu_label(label: &'static str, letter: Option<std::ops::Range<usize>>) -> AnyElement {
     let text = rox_i18n::t!(label);
     match letter {
@@ -2544,15 +2219,11 @@ fn menu_label(label: &'static str, letter: Option<std::ops::Range<usize>>) -> An
     }
 }
 
-/// The wash under the row the keyboard cursor is on. The same one hover
-/// paints, so the pointer and the arrows share one cursor between them
-/// rather than lighting two rows at once.
+/// The same wash hover paints, so pointer and arrows share one cursor.
 pub(crate) fn nav_lit<T: Styled>(d: T) -> T {
     d.bg(palette::bg_control_hover_opaque())
 }
 
-/// A clickable flyout row: the padding, hover, and icon-then-label layout
-/// every one of them shares. The caller chains the icon and label on.
 fn menu_row(on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
     div()
         .px(tokens::SPACE_MD)
@@ -2570,9 +2241,8 @@ fn menu_row(on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static)
 mod nav_tests {
     use super::*;
 
-    /// The source locale, which is what a test run resolves against. A
-    /// translation is free to run a label out of free letters; that menu
-    /// keeps its keyboard route through the arrows.
+    /// A translation may run a label out of free letters; the source locale
+    /// must not.
     #[test]
     fn every_menu_gets_a_letter_of_its_own() {
         let letters = mnemonics();
@@ -2606,15 +2276,11 @@ mod nav_tests {
 
     #[test]
     fn a_named_key_is_not_a_letter() {
-        // gpui hands named keys over spelled out, and "escape" starting with
-        // an e must not read as the e menu.
+        // "escape" starting with an e must not open the e menu.
         assert_eq!(mnemonic_menu("escape"), None);
         assert_eq!(mnemonic_menu("enter"), None);
     }
 
-    /// The scroll handle counts list children, the cursor counts rows, and
-    /// headings sit between them. Walking a menu's rows in order must land
-    /// on children in order, never behind or on top of the row before.
     #[test]
     fn dropdown_children_run_with_the_rows() {
         for (i, menu) in MENUS.iter().enumerate() {
@@ -2635,8 +2301,6 @@ mod nav_tests {
     fn stepping_wraps_at_both_ends() {
         assert_eq!(step_index(Some(2), 1, 3), Some(0));
         assert_eq!(step_index(Some(0), -1, 3), Some(2));
-        // A cursor left behind by a list that has since shrunk still lands
-        // somewhere in the new one rather than off the end.
         assert_eq!(step_index(Some(9), 1, 3), Some(1));
     }
 
@@ -2663,8 +2327,6 @@ mod alt_tap_tests {
         Modifiers::default()
     }
 
-    /// Press and release Alt at the given offsets from a fixed start, so the
-    /// timings are the test's to pick rather than the clock's.
     fn tap(tracker: &mut AltTap, base: Instant, down: u64, up: u64) -> AltTapKind {
         tracker.note(alt(), base + Duration::from_millis(down), false);
         tracker.note(none(), base + Duration::from_millis(up), false)
@@ -2680,8 +2342,7 @@ mod alt_tap_tests {
 
     #[test]
     fn a_third_tap_starts_a_fresh_pair() {
-        // The pair is consumed when it fires, so the tap after it is a first
-        // tap again and only the fourth toggles back.
+        // The pair is consumed when it fires.
         let base = Instant::now();
         let mut tracker = AltTap::default();
         assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
@@ -2700,7 +2361,6 @@ mod alt_tap_tests {
 
     #[test]
     fn a_held_alt_is_not_a_tap() {
-        // The plain reveal: Alt down, the bar floats, Alt up a second later.
         let base = Instant::now();
         let mut tracker = AltTap::default();
         assert_eq!(tap(&mut tracker, base, 0, 1000), AltTapKind::None);
@@ -2709,7 +2369,6 @@ mod alt_tap_tests {
 
     #[test]
     fn a_chord_is_not_a_tap() {
-        // Alt+Shift, then a clean tap: the chord can't be half of a pair.
         let base = Instant::now();
         let mut tracker = AltTap::default();
         let chord = Modifiers {
@@ -2727,8 +2386,6 @@ mod alt_tap_tests {
 
     #[test]
     fn a_key_under_alt_cancels_the_run() {
-        // What the workspace's captured key handler does: alt-f4 and friends
-        // are chords, so the release that follows isn't a tap.
         let base = Instant::now();
         let mut tracker = AltTap::default();
         assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
@@ -2742,8 +2399,6 @@ mod alt_tap_tests {
 
     #[test]
     fn an_alt_drag_is_not_a_tap() {
-        // Alt pressed with a button already down is the compositor's window
-        // move, not a tap, however short it is.
         let base = Instant::now();
         let mut tracker = AltTap::default();
         assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);

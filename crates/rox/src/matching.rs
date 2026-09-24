@@ -1,26 +1,17 @@
-//! Shared scaffolding for the online-match windows (find metadata, find
-//! lyrics, find cover art): the search-phase state they all cycle through,
-//! the small confidence widgets the scored lists render, the centered
-//! "note" line their empty states show, and the open-or-focus dance the
-//! editor and matcher windows all run over a keyed window registry.
+//! Shared scaffolding for the online-match windows: the search phase, the
+//! confidence widgets, and the open-or-focus window registry.
 
 use gpui::{App, Div, Global, SharedString, WindowHandle, div, prelude::*, px};
 use gpui_component::Root;
 
 use rox_design::palette;
 
-/// Where a match window is in its lookup: waiting on the network, holding a
-/// ranked set of candidates, or showing why the search came back empty. The
-/// candidate type differs per domain (metadata, lyrics, loaded covers), so
-/// this is generic over it.
 pub enum Phase<T> {
     Searching,
     Ready(Vec<T>),
     Failed(SharedString),
 }
 
-/// A one-word confidence tag beside a candidate's title, a quick read of how
-/// far to trust the row before opening the preview.
 pub fn confidence_badge(confidence: f32) -> Div {
     let pct = (confidence * 100.0).round() as u32;
     div()
@@ -36,8 +27,6 @@ pub fn confidence_badge(confidence: f32) -> Div {
         )))
 }
 
-/// The confidence as a filled bar, so the list reads at a glance without
-/// parsing the numbers.
 pub fn confidence_bar(confidence: f32) -> Div {
     div()
         .h(px(3.))
@@ -53,8 +42,6 @@ pub fn confidence_bar(confidence: f32) -> Div {
         )
 }
 
-/// A quiet centered line placed where a search window's list or grid would
-/// go. The empty, searching, and failed states all use it.
 pub fn note(text: impl Into<SharedString>) -> Div {
     div()
         .size_full()
@@ -65,29 +52,21 @@ pub fn note(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// A `Global` holding the live windows for one editor or matcher kind,
-/// keyed so a second request for the same subject focuses the open window
-/// instead of stacking a twin. Each kind keeps its own newtype (so the
-/// registries never cross-talk); the key is whatever tells one window from
-/// another: sorted track ids, a path, or a path plus the opening editor's
-/// id where the window binds to a specific editor.
+/// The live windows for one editor or matcher kind, keyed so a repeat
+/// request focuses the open window instead of stacking a twin.
 pub trait WindowRegistry: Global + Default {
     type Key: PartialEq;
     fn entries(&mut self) -> &mut Vec<(Self::Key, WindowHandle<Root>)>;
 }
 
-/// Open a window for `key`, or bring the one already on that key to the
-/// front. The probe doubles as a sweep: a window whose handle no longer
-/// updates has been closed, so it drops out of the registry here. `build`
-/// runs only when no live window matches; it opens the OS window and hands
-/// back its handle, which registers under `key`.
+/// Open a window for `key`, or focus the open one. Closed windows drop out
+/// of the registry as a side effect.
 pub fn open_or_focus<R: WindowRegistry>(
     key: R::Key,
     build: impl FnOnce(&mut App) -> WindowHandle<Root>,
     cx: &mut App,
 ) {
     let entries = std::mem::take(cx.default_global::<R>().entries());
-    // Closed windows fall out of the list as a side effect of the probe.
     let mut alive = Vec::with_capacity(entries.len() + 1);
     let mut focused = false;
     for (entry_key, handle) in entries {

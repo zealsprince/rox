@@ -1,8 +1,6 @@
-//! The design system as data, in two halves panels pull the same way:
-//! [`palette`] holds every color (ADR 10), [`tokens`] every shared size,
-//! radius, and pace (ADR 12). Named decisions instead of inlined values.
-//! [`assets`] is here too: the embedded icons and bundles the same panels
-//! draw with.
+//! The design system as data: [`palette`] holds every color (ADR 10),
+//! [`tokens`] every shared size, radius, and pace (ADR 12), and [`assets`]
+//! the embedded icons and bundles.
 
 pub mod assets;
 pub mod palette;

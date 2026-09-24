@@ -1,14 +1,7 @@
-//! The Milkdrop preset picker: one OS window holding the preset browser
-//! over whatever it was opened for, the backdrop from the Appearance page
-//! or a Milkdrop panel from its menu. A click on a row puts the preset up
-//! on the host straight away, so the preview is the real thing behind the
-//! window rather than a thumbnail of it.
-//!
-//! One window at a time: opening it for another host retargets the open
-//! one rather than stacking a second, the way the equalizer and console
-//! come to the front when opened again. The host comes in boxed through
-//! [`rox_panel_api::preset_browser::PresetHost`], so this file never
-//! names a panel type.
+//! The Milkdrop preset picker: the preset browser over whatever opened it,
+//! the backdrop or a Milkdrop panel. A click puts the preset up on the host
+//! at once, so the preview is the real thing. One window at a time: opening
+//! for another host retargets it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,8 +19,6 @@ use rox_panel_api::panel;
 use rox_panel_api::preset_browser::{BrowserEvent, PresetBrowser, PresetHost, preset_label};
 use rox_panel_kit::ui as settings_ui;
 
-/// The open picker, if any: its window, and the view inside it so a second
-/// open can point it at another host.
 struct OpenPicker {
     handle: WindowHandle<Root>,
     view: WeakEntity<PickerWindow>,
@@ -35,12 +26,8 @@ struct OpenPicker {
 
 impl Global for OpenPicker {}
 
-/// Open the picker over `host`, or point the open one at it and bring it
-/// to the front.
-///
-/// Deferred for the same reason the console is: a panel's menu action runs
-/// inside the workspace's own update, and reading the front workspace for
-/// the tint mid-update would panic.
+/// Deferred: a panel's menu action runs inside the workspace's update, and
+/// reading the front workspace for the tint mid-update would panic.
 pub fn open(host: Box<dyn PresetHost>, cx: &mut App) {
     cx.defer(move |cx| open_now(host, cx));
 }
@@ -60,9 +47,6 @@ fn open_now(host: Box<dyn PresetHost>, cx: &mut App) {
 }
 
 fn open_fresh_with(host: Box<dyn PresetHost>, cx: &mut App) {
-    // Theme to the front workspace's player if one is up, the console's
-    // move: the picker is a global window that borrows whatever song tint
-    // is showing.
     let player =
         rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.player.entity_id());
     let min = settings_ui::MIN_SIZE;
@@ -70,15 +54,9 @@ fn open_fresh_with(host: Box<dyn PresetHost>, cx: &mut App) {
     let (width, height) = saved
         .filter(|s| s.width >= f32::from(min.width) && s.height >= f32::from(min.height))
         .map(|s| (s.width, s.height))
-        // Tall rather than wide: it's a list, and a preset name runs to
-        // about sixty characters.
         .unwrap_or((560., 640.));
-    // The switches come back where they were left; a first run starts
-    // on every preset with the folders showing.
     let switches = saved.unwrap_or_default();
     let bounds = Bounds::centered(None, size(gpui::px(width), gpui::px(height)), cx);
-    // The build runs inside the open, so the view comes back out through
-    // a cell the closure and this frame share.
     let built: Rc<RefCell<Option<WeakEntity<PickerWindow>>>> = Rc::new(RefCell::new(None));
     let handle = rox_panel_api::panel::open_child_window(
         cx,
@@ -103,14 +81,11 @@ fn open_fresh_with(host: Box<dyn PresetHost>, cx: &mut App) {
 struct PickerWindow {
     host: Box<dyn PresetHost>,
     browser: Entity<PresetBrowser>,
-    /// The workspace player the window themes to, if one was up when it
-    /// opened; None themes to the base palette.
+    /// None themes to the base palette.
     player: Option<EntityId>,
-    /// The favorites and folder lists' edit the presets were last handed
-    /// in at, so the hand-in happens on a change and not per frame.
+    /// The lists edit the presets were last handed in at, so it happens on change.
     lists_gen: Option<u64>,
-    /// The host went away under the window. Set from the host's watch,
-    /// spent by the next render, which closes the window.
+    /// The host went away; the next render closes the window.
     orphaned: bool,
     _browser_events: Subscription,
     _host_events: Vec<Subscription>,
@@ -124,10 +99,8 @@ impl PickerWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // The frame persists on the OS close button, which never runs
-        // remove_window, so write the size in the should-close hook, the
-        // settings window's move. The switches write as they flip, which
-        // is why this edits the entry in place rather than replacing it.
+        // The OS close button never runs remove_window, so the size persists here.
+        // The switches write as they flip, so this edits the entry in place.
         window.on_window_should_close(cx, |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
@@ -180,7 +153,6 @@ impl PickerWindow {
         }
     }
 
-    /// Hook the host's own changes up to this view.
     fn watch(host: &dyn PresetHost, cx: &mut Context<Self>) -> Vec<Subscription> {
         let wake = cx.entity().downgrade();
         let gone = cx.entity().downgrade();
@@ -199,8 +171,7 @@ impl PickerWindow {
         )
     }
 
-    /// Point the open window at another host. The browser keeps its
-    /// filter and folds; the presets and the highlight follow the host.
+    /// The browser keeps its filter and folds across a retarget.
     fn retarget(&mut self, host: Box<dyn PresetHost>, cx: &mut Context<Self>) {
         self._host_events = Self::watch(&*host, cx);
         self.host = host;
@@ -209,8 +180,6 @@ impl PickerWindow {
         cx.notify();
     }
 
-    /// Hand the browser what the host has: the library when the lists
-    /// moved, and the preset that's up.
     fn follow_host(&mut self, cx: &mut Context<Self>) {
         let generation = core_settings::milkdrop_gen();
         if self.lists_gen != Some(generation) {
@@ -224,8 +193,6 @@ impl PickerWindow {
             .update(cx, |browser, cx| browser.set_current(current, cx));
     }
 
-    /// The line over the list: who this is picking for, what's up, and
-    /// the two things worth doing to it from here.
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let current = self.host.current(cx);
         let has_current = current.is_some();
@@ -235,8 +202,6 @@ impl PickerWindow {
             .map(gpui::SharedString::from)
             .unwrap_or_else(|| rox_i18n::t!("milkdrop-no-preset"));
         let reveal = current.clone();
-        // The star before the name: the same toggle every row carries,
-        // for the preset that's up without finding its row first.
         let starred = current
             .as_deref()
             .is_some_and(core_settings::is_milkdrop_favorite);
@@ -319,8 +284,6 @@ impl PickerWindow {
             )
     }
 
-    /// What the window says with no presets to list: where they go, and a
-    /// way into that folder.
     fn empty(&self) -> impl IntoElement + use<> {
         let folder = core_settings::milkdrop_dir().join("presets");
         div()
@@ -341,9 +304,7 @@ impl PickerWindow {
                 icons::FOLDER,
                 false,
                 move |_, _, cx| {
-                    // Nothing creates the folder, so the first open on a
-                    // fresh install makes it rather than handing the
-                    // platform a path it will refuse.
+                    // Nothing else creates the folder, and the platform refuses a missing path.
                     std::fs::create_dir_all(&folder).ok();
                     cx.open_with_system(&folder);
                 },
@@ -361,9 +322,7 @@ impl Render for PickerWindow {
         let player = self.player.unwrap_or_else(|| cx.entity().entity_id());
         palette::note_focus(player, window.is_window_active(), cx);
         let empty = self.browser.read(cx).total() == 0;
-        // Everything is built inside the closure: the tint is pushed for
-        // its run, and a button built before it reads the untinted
-        // palette and comes out the wrong colour.
+        // Build inside the closure: anything built before it reads the untinted palette.
         panel::window_body(player, || {
             let header = self.header(cx);
             let body = if empty {

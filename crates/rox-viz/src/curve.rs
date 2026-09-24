@@ -1,9 +1,6 @@
-//! Shaping curves the visual surfaces share. Pure arithmetic, no state, so
-//! anything that fades or ramps by distance reads the same math.
+//! Shaping curves the visual surfaces share.
 
-/// A step's weight under a compounding falloff: `dim` shaved off per step
-/// away from the focus, so distance zero is full and each step further
-/// multiplies by what's left. A zero factor never fades anything.
+/// `dim` shaved off per step from the focus, compounding. Zero never fades.
 pub fn falloff(dim: f32, distance: u32) -> f32 {
     if dim <= 0.0 {
         return 1.0;
@@ -21,7 +18,6 @@ mod tests {
         assert_eq!(falloff(0.25, 0), 1.0);
         assert!((falloff(0.5, 1) - 0.5).abs() < f32::EPSILON);
         assert!((falloff(0.5, 3) - 0.125).abs() < f32::EPSILON);
-        // A full shave leaves nothing past the focus itself.
         assert_eq!(falloff(1.0, 1), 0.0);
     }
 }

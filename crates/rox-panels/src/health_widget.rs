@@ -1,17 +1,10 @@
-//! The health widget: the library's tag coverage boiled down to one
-//! percentage for a transport row, and the health window's front door.
-//! Hovering breaks it out per tag, so the number is a glance away without
-//! giving up a panel-sized surface.
+//! The health widget: the library's tag coverage as one percentage for a
+//! transport row, broken out per tag on hover, and the health window's front
+//! door. The number is [`rox_library::health::completeness`]'s, the same walk
+//! the health window reads, recomputed when the catalog changes.
 //!
-//! The number is [`rox_library::health::completeness`]'s, the same walk the
-//! health window's overview ring reads, so the two can't drift. It runs when
-//! the catalog changes and never per frame, the library's own read cadence.
-//!
-//! What this deliberately doesn't do is measure anything that costs a file
-//! read. Album art, duplicates and album gaps belong to the health window's
-//! background pass, where a user has asked for them and can watch them land;
-//! a widget sitting in a transport row has no business probing a library's
-//! worth of files because it happened to get docked.
+//! Never measures anything that costs a file read. Art, duplicates, and album
+//! gaps belong to the health window's background pass.
 
 use std::time::Duration;
 
@@ -32,20 +25,14 @@ use crate::panel::{self, AppState, PanelChrome, PanelSettings, setting_row, togg
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
 
-/// How long the widget waits before re-walking. A catalog change raises
-/// `LibraryEvent::Updated` at the start of the reload and again at the end,
-/// and a running scan raises one per interim batch, so a single edit
-/// arrives as a burst. A percentage in a transport row has no business
-/// measuring a library once per event on the way through.
+/// How long the widget waits before re-walking. A reload raises
+/// `LibraryEvent::Updated` twice and a scan once per batch, so one edit
+/// arrives as a burst.
 const SCAN_DEBOUNCE: Duration = Duration::from_millis(200);
 
-/// Which of the five core tags count toward the readout.
-///
-/// A per-check switch rather than a single "strictness" dial: a library of
-/// live bootlegs has no year worth tagging and a classical library files by
-/// composer, and either owner would rather drop the check than read a number
-/// that will never reach a hundred. Every check on by default, which is the
-/// health window's own headline.
+/// Which of the five core tags count toward the readout. Per-check rather
+/// than one dial: a bootleg library has no years and a classical one files
+/// by composer.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CountedChecks {
@@ -90,25 +77,18 @@ impl CountedChecks {
         *field = !*field;
     }
 
-    /// The checks the readout counts, in listing order.
     fn picked(&self) -> Vec<Check> {
         Check::ALL.into_iter().filter(|c| self.on(*c)).collect()
     }
 }
 
-/// The widget's config: the shared chrome plus what it counts, whether the
-/// percentage shows at all, and whether a click opens the health window.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HealthWidgetConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub checks: CountedChecks,
-    /// Draw the percentage beside the icon. Off leaves a bare icon, for a
-    /// strip that only needs the way in to the health window.
     pub show_percent: bool,
-    /// Click the widget to open the health window. On by default; off leaves
-    /// it a readout.
     pub open_on_click: bool,
 }
 
@@ -126,18 +106,13 @@ impl Default for HealthWidgetConfig {
 pub struct HealthWidgetPanel {
     state: AppState,
     config: HealthWidgetConfig,
-    /// The cached coverage, so a repaint never walks the projection.
     health: Completeness,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    /// The walk that's out, held rather than detached: a burst of library
-    /// events replaces the pending one instead of queueing a walk per
-    /// event, and a panel that goes away takes its walk with it.
+    /// Held rather than detached, so a burst of events replaces the pending
+    /// walk and a closed panel takes its walk with it.
     scan: Option<Task<()>>,
-    /// Bumped per walk; a result carrying an older number is dropped.
     scan_generation: u64,
-    /// A rescan, a retag or a rating write swaps the projection, which moves
-    /// every number here.
     _library_changed: Subscription,
 }
 
@@ -165,24 +140,15 @@ impl HealthWidgetPanel {
         this
     }
 
-    /// Re-walk the projection, repainting only when a number actually moved:
-    /// a rating write swaps the projection without touching a single tag.
-    ///
-    /// The walk itself goes to the background executor over an Arc of the
-    /// projection. It's O(live rows) and it used to run on the UI thread on
-    /// every library event, which on a large library is a stall a docked
-    /// widget has no right to cause; the old percentage stays on screen
-    /// until the new one lands, and a result overtaken by another edit is
-    /// dropped by generation.
-    ///
-    /// No drill-down ids are kept (the cap is zero): the doors are the health
-    /// window's, and a widget holding a thousand ids per repaint would be
-    /// paying for a feature it doesn't have.
+    /// Re-walk the projection on the background executor, repainting only
+    /// when a number moved. A result overtaken by another edit is dropped by
+    /// generation. No drill-down ids are kept (cap zero): those are the
+    /// health window's.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.scan_generation += 1;
         let generation = self.scan_generation;
-        // The first walk is the one the panel appears with, so it skips the
-        // wait rather than showing a hundred percent for a fifth of a second.
+        // The first walk skips the wait, or the panel shows a hundred percent
+        // for a fifth of a second.
         let settle = (generation > 1).then_some(SCAN_DEBOUNCE);
         self.scan = Some(cx.spawn(async move |this, cx| {
             if let Some(settle) = settle {
@@ -213,13 +179,10 @@ impl HealthWidgetPanel {
         }));
     }
 
-    /// The readout as a whole percent over the counted checks.
     fn percent(&self) -> f64 {
         (self.health.share_within(&self.config.checks.picked()) as f64 * 100.).round()
     }
 
-    /// The tooltip's rows: every check's missing count with the counted ones
-    /// marked, read off the cache.
     fn rows(&self) -> Vec<TooltipRow> {
         Check::ALL
             .into_iter()
@@ -233,9 +196,6 @@ impl HealthWidgetPanel {
             .collect()
     }
 
-    /// The panel's own quick entries: the counted-tags flyout and the two
-    /// readout toggles, so the widget can be re-aimed from its right-click
-    /// without a trip through the settings window.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -245,9 +205,8 @@ impl HealthWidgetPanel {
         let menu = menu
             .separator()
             .label(rox_i18n::t!("health-readout-section"));
-        // The checks as a flyout, with live ticks through follow_panel +
-        // check_row: the flyout stays open on a pick, so a tick baked in at
-        // build time would stay on the old set.
+        // Live ticks through follow_panel + check_row: the flyout stays open on
+        // a pick, so a tick baked in at build time would go stale.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -286,7 +245,6 @@ impl HealthWidgetPanel {
         )
     }
 
-    /// One checked menu row over a config boolean.
     fn toggle_item(
         &self,
         menu: PopupMenu,
@@ -310,7 +268,6 @@ impl HealthWidgetPanel {
     }
 }
 
-/// A check's name, shared with the health window's overview rows.
 fn check_label(check: Check) -> SharedString {
     match check {
         Check::Title => rox_i18n::t!("health-tile-title"),
@@ -321,18 +278,13 @@ fn check_label(check: Check) -> SharedString {
     }
 }
 
-/// One check's line in the tooltip.
 struct TooltipRow {
     label: SharedString,
     missing: SharedString,
-    /// Whether this check is one the readout counts, which reads brighter
-    /// than the rest.
     counted: bool,
 }
 
-/// The hover tooltip: every check's missing count, so the one percentage has
-/// something behind it. Opaque fill like the popup menus, since it floats
-/// over panel content with no backdrop behind it.
+/// Opaque like the popup menus: it floats over panel content with no backdrop.
 struct HealthTooltip {
     rows: Vec<TooltipRow>,
 }
@@ -395,8 +347,6 @@ impl PanelSettings for HealthWidgetPanel {
     }
 
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        // The explainer belongs to the set rather than to any one switch,
-        // so it leads the section instead of hanging off a row.
         let mut checks = div().flex().flex_col().gap(tokens::SPACE_MD).child(
             div()
                 .text_xs()
@@ -497,8 +447,8 @@ impl Panel for HealthWidgetPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        // "100%" is the widest the readout gets, so the floor widens by
-        // about that; the bare icon keeps the strip's own minimum.
+        // "100%" is the widest the readout gets; the bare icon keeps the
+        // strip's own minimum.
         let mut width = rox_dock::resizable::PANEL_MIN_SIZE;
         if self.config.show_percent {
             width += px(30.);
@@ -582,8 +532,8 @@ impl Render for HealthWidgetPanel {
         let chrome = self.config.chrome.clone();
         let percent = self.percent();
         let show_percent = self.config.show_percent;
-        // A library with nothing in it has no coverage to report, so the
-        // readout steps back rather than claiming a perfect hundred.
+        // An empty library has no coverage to report, so the readout steps
+        // back rather than claiming a hundred.
         let measured = self.health.tracks > 0;
         let open_on_click = self.config.open_on_click;
         let weak = cx.entity().downgrade();
@@ -657,8 +607,6 @@ impl Render for HealthWidgetPanel {
 mod tests {
     use super::*;
 
-    /// A stand-in for a walked projection: rows folded in by the checks they
-    /// fail, through the same arithmetic the real walk uses.
     fn health(complete: u64, missing: &[u8]) -> Completeness {
         let mut out = Completeness::default();
         for _ in 0..complete {
@@ -670,8 +618,6 @@ mod tests {
         out
     }
 
-    /// The knob's whole point: dropping a check the library never had lifts
-    /// the number to what the rest of the tags actually say.
     #[test]
     fn dropping_a_check_stops_it_counting_against_the_number() {
         let mut config = HealthWidgetConfig::default();
@@ -688,8 +634,6 @@ mod tests {
         );
     }
 
-    /// A row failing two checks is one incomplete row, not two: dropping one
-    /// of the two still leaves it out, and dropping both brings it back.
     #[test]
     fn a_row_failing_two_checks_is_counted_once() {
         let mut checks = CountedChecks::default();
@@ -701,8 +645,6 @@ mod tests {
         assert_eq!(coverage.share_within(&checks.picked()), 1.0);
     }
 
-    /// Every check off is not an error: it counts every track, since there's
-    /// nothing left for one to fail.
     #[test]
     fn every_check_off_counts_the_whole_library() {
         let mut checks = CountedChecks::default();
@@ -716,8 +658,6 @@ mod tests {
         );
     }
 
-    /// An empty library reads as a hundred rather than a zero, and the
-    /// readout marks itself unmeasured so the strip doesn't imply otherwise.
     #[test]
     fn an_empty_library_reads_as_complete() {
         let coverage = health(0, &[]);

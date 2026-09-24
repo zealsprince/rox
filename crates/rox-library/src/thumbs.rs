@@ -1,13 +1,7 @@
-//! The artwork service's durable half per the components contract: 256px
-//! thumbnails generated once per cover and cached in a dedicated SQLite
-//! DB. A track's row is keyed by file identity (path, mtime, size) so a
-//! changed file regenerates and an unchanged one never touches the audio
-//! file again; the JPEG bytes are stored in a content-addressed pool shared
-//! by every track showing the same cover, so an album's twelve tracks (or
-//! the same cover copied across a discography) store one image and pay
-//! one decode, not twelve. Tracks without art cache that answer too, so
-//! an artless album costs one cover search ever, not one per launch.
-//! Blocking file and DB work; run it off the UI thread.
+//! The artwork service's durable half: 256px thumbnails cached in their own
+//! SQLite DB. A track row is keyed by file identity (path, mtime, size); the
+//! JPEG bytes live in a content-addressed pool, so an album's tracks share
+//! one image and one decode. No-art answers are cached too. Blocking.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -17,26 +11,18 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::art;
 
-/// The longest side of a stored thumbnail, per the artwork service
-/// contract: enough for a grid tile or a header block at any density,
-/// small enough that the decode costs nothing.
+/// The longest side of a stored thumbnail, per the artwork service contract.
 pub const SIZE: u32 = 256;
 
-/// Stored thumbnails are JPEG: covers are photographic, and at this size
-/// lossless would cost an order of magnitude more disk for no visible
-/// gain.
+/// JPEG: covers are photographic, and lossless costs ten times the disk.
 const QUALITY: u8 = 85;
 
-/// Open (creating as needed) a thumbnail DB, the same WAL shape as the
-/// library store.
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     crate::migrate::run(&conn, MIGRATIONS)?;
-    // Track rows replaced since the last open (a changed cover re-keys the
-    // row to a new image) may have left their old image behind with nothing
-    // pointing at it; one sweep gives that disk back.
+    // Sweep images a re-keyed row left with nothing pointing at them.
     conn.execute(
         "DELETE FROM images WHERE hash NOT IN
              (SELECT art_hash FROM thumbs WHERE art_hash <> 0)",
@@ -45,29 +31,24 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// The thumbnail cache's migration ladder. This is a cache, not a source of
-/// truth, so a future step that cannot cheaply ALTER through a shape change is
-/// free to drop and let the next scan regenerate, unlike the library store.
-/// Step 1 is the baseline converge; step 2 pools the image bytes by content.
-/// See [`crate::migrate`].
+/// A cache, not a source of truth: a future step that can't cheaply ALTER
+/// may drop and let the next scan regenerate. See [`crate::migrate`].
 const MIGRATIONS: &[crate::migrate::Migration] = &[
     crate::migrate::Migration {
         name: "baseline",
         up: baseline,
+        rescan: false,
     },
     crate::migrate::Migration {
         name: "dedup-images",
         up: dedup_images,
+        rescan: false,
     },
 ];
 
-/// The baseline cache schema, the whole thing as it stood before the version
-/// ladder. art_path/art_mtime/art_size pin the cover's own identity so a folder
-/// cover that changes without touching the audio file still invalidates: the
-/// audio (mtime,size) matches, then the recorded art source is re-stat'd.
-/// Embedded art records an empty art_path (the audio file's own identity
-/// already covers it); a no-art negative entry records the directory, so a
-/// newly dropped cover.jpg bumps the dir mtime and misses.
+/// The pre-ladder schema. art_path/art_mtime/art_size pin a folder cover's
+/// own identity, re-statted on a hit. Embedded art has an empty art_path;
+/// a no-art row records the directory, so a new cover.jpg misses.
 fn baseline(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS thumbs (
@@ -80,10 +61,8 @@ fn baseline(conn: &Connection) -> rusqlite::Result<()> {
             image     BLOB NOT NULL
         );",
     )?;
-    // A cache from before the art_* columns keeps the old four-column shape,
-    // and CREATE TABLE IF NOT EXISTS leaves it as is, so every lookup would
-    // query columns that aren't there and fail. Add them in place; on a fresh
-    // table they already exist and the ALTER is a harmless no-op we ignore.
+    // Add the art_* columns to a pre-art cache in place; on a fresh table the
+    // ALTER fails harmlessly.
     for column in [
         "ALTER TABLE thumbs ADD COLUMN art_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE thumbs ADD COLUMN art_mtime INTEGER NOT NULL DEFAULT 0",
@@ -94,14 +73,8 @@ fn baseline(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Step 2: the image bytes move out of the track rows into a pool keyed by
-/// content hash, so tracks sharing a cover share one row of JPEG instead of
-/// storing a copy each. Existing thumbs are hashed and pooled in place
-/// (the encoder is deterministic, so byte-identical covers collapse), then
-/// the per-track blob column drops. (Migrated rows key on the encoded
-/// bytes, fresh ones on the source bytes; the two never need to agree, a
-/// row only has to find its own image, and a migrated row that invalidates
-/// re-keys onto the fresh scheme.)
+/// Move the image bytes into a content-hash pool. Migrated rows key on the
+/// encoded bytes, fresh ones on the source; a row only needs to find its own.
 fn dedup_images(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS images (
@@ -110,9 +83,7 @@ fn dedup_images(conn: &Connection) -> rusqlite::Result<()> {
         );
         ALTER TABLE thumbs ADD COLUMN art_hash INTEGER NOT NULL DEFAULT 0;",
     )?;
-    // One streaming pass: pool each row's blob, remember which hash it got.
-    // Only (path, hash) pairs are held; the blobs stream through one at a
-    // time, so a big cache migrates without loading itself into memory.
+    // Stream the blobs; only (path, hash) pairs are held.
     let mut keyed: Vec<(String, i64)> = Vec::new();
     {
         let mut read = conn.prepare("SELECT path, image FROM thumbs WHERE length(image) > 0")?;
@@ -137,10 +108,7 @@ fn dedup_images(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// The pool key for one image's bytes: FNV-1a folded to a nonzero value,
-/// 0 staying free as a track row's no-art mark. A 64-bit content key over
-/// a library's covers has collision odds far below what a regeneratable
-/// cache needs to care about, at none of a cryptographic hash's cost.
+/// FNV-1a forced nonzero: 0 marks a no-art row.
 fn content_hash(bytes: &[u8]) -> i64 {
     match crate::hash::fnv1a(bytes) {
         0 => 1,
@@ -148,25 +116,13 @@ fn content_hash(bytes: &[u8]) -> i64 {
     }
 }
 
-/// The thumbnail for one track: JPEG bytes, or None when the track has no
-/// art anywhere. A path that doesn't stat is a row from a source with no
-/// files under it and answers straight out of the pool, see [`stored`].
-/// A hit is one point lookup; a miss
-/// resolves the cover's bytes and checks the pool by their hash, so only
-/// the first sight of a cover pays the decode and re-encode: the rest of
-/// the album, and any other copy of the image, reuse the pooled row. The
-/// no-art answer is stored too, so the next request never opens the audio
-/// file. A cover caught mid-write stores nothing at all, so the finished
-/// file gets a fresh look instead of half an image sticking. The
-/// connection is shared across workers; the lock is held for the lookups,
-/// never the file reads or the encode.
+/// JPEG bytes, or None for no art anywhere. A path that doesn't stat answers
+/// from the pool (see [`stored`]). Only a cover's first sight pays the
+/// decode; a cover caught mid-write stores nothing. The lock is held for
+/// lookups only, never file reads or the encode.
 pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
-    // A key that doesn't stat isn't a file and never will be: a station's
-    // URL, a Subsonic song id. There's nothing to re-read and no identity
-    // to check it against, so whatever [`store_bytes`] pooled under the
-    // key is the whole answer. A local file that has since been deleted
-    // lands here too and serves the cover it last had, which is a cache
-    // behaving like a cache.
+    // Not a file (a station URL, a server's song id), or a deleted one: the
+    // pooled answer is all there is.
     let Ok(meta) = std::fs::metadata(path) else {
         return stored(conn, &path.to_string_lossy());
     };
@@ -194,32 +150,22 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             .optional()
             .ok()?;
         if let Some((art_path, art_mtime, art_size, image)) = cached {
-            // The audio file is unchanged; the row still holds only if the
-            // cover it was built from is too. An embedded source (empty
-            // art_path) rode the audio identity above and needs no re-stat.
-            // A no-art row references no image and an undecodable cover an
-            // empty one; both answer None.
+            // The row holds if its cover source is unchanged. Empty art_path is
+            // embedded art, covered by the audio identity above.
             if art_path.is_empty() || art::identity(Path::new(&art_path)) == (art_mtime, art_size) {
                 return image.filter(|bytes| !bytes.is_empty());
             }
         }
     }
-    // A miss: resolve the cover source off the lock, then key its bytes.
-    // The directory's identity is taken before the resolve reads it, the
-    // same order the folder cover's own stat runs in: a cover dropped in
-    // between the two then reads as a directory this row has never seen,
-    // rather than being stamped as already accounted for.
+    // Stat the directory before resolving, the same order the folder cover's
+    // stat runs in, so a cover dropped in between reads as unseen.
     let (dir, dir_mtime, dir_size) = no_art_identity(path);
     let (art_hash, thumb, art_path, art_mtime, art_size, whole) = match art::cover_art_source(path)
     {
         art::Cover::Found { bytes, source, .. } => {
             let hash = content_hash(&bytes);
-            // Bytes that stop short of their end marker are a file still
-            // being written. Serve what decodes, store nothing: the
-            // finished cover deserves the row, not this.
+            // A cover short of its end marker is still downloading: serve, don't store.
             let whole = art::complete(&bytes);
-            // A cover seen before (the rest of this album, the same file
-            // in another folder) skips the decode and re-encode whole.
             let pooled: Option<Vec<u8>> = {
                 let conn = conn.lock().unwrap();
 
@@ -232,9 +178,7 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             let thumb = match pooled {
                 Some(image) => image,
                 None => {
-                    // First sight: encode off the lock, then pool the result.
-                    // Bytes that will not decode pool an empty image, so the
-                    // failure caches and dedups the same as a success.
+                    // Undecodable bytes pool an empty image, so failures cache too.
                     let encoded = encode(&bytes).unwrap_or_default();
                     if whole {
                         let conn = conn.lock().unwrap();
@@ -251,16 +195,10 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             let (art_path, art_mtime, art_size) = source_identity(&source);
             (hash, thumb, art_path, art_mtime, art_size, whole)
         }
-        // A cover file exists whose bytes aren't an image yet: a download
-        // that has created the file and not filled it. The folder's mtime
-        // moved when the file was created and won't move again when the
-        // bytes arrive, so a negative entry stored now would stand for
-        // this album forever. Store nothing, the same as bytes caught short
-        // of their end marker.
+        // A preallocated download: the folder mtime won't move again when the
+        // bytes land, so a negative entry now would stick forever. Store nothing.
         art::Cover::Settling => (0, Vec::new(), dir, dir_mtime, dir_size, false),
-        // No art: hash 0 references no pooled image, and the negative entry
-        // keys on the directory's identity, so a cover dropped in later
-        // bumps its mtime and forces a fresh look.
+        // The negative entry keys on the directory, so a new cover misses.
         art::Cover::None => (0, Vec::new(), dir, dir_mtime, dir_size, true),
     };
     if whole {
@@ -279,11 +217,7 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
     (!thumb.is_empty()).then_some(thumb)
 }
 
-/// The pooled image for a row keyed by something that isn't a path:
-/// [`store_bytes`]'s read side. The identity columns are zero on those
-/// rows and there's no file behind them, so the key alone decides. An
-/// empty pooled image is a source whose bytes wouldn't decode, which
-/// answers the same as no row at all.
+/// [`store_bytes`]'s read side: the key alone decides.
 fn stored(conn: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     let conn = conn.lock().unwrap();
 
@@ -300,23 +234,12 @@ fn stored(conn: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     (!image.is_empty()).then_some(image)
 }
 
-/// Store one image whose bytes came from somewhere other than a file, and
-/// hand back the thumbnail. What a non-local source uses: there's no path
-/// to stat and no cover file to key on, so the row's own key (a Subsonic
-/// song id) stands in for the path and the identity columns sit at zero.
-/// Everything past that is [`thumbnail`]'s own path, pool included, so two
-/// tracks of one album still store one image. [`thumbnail`] reads it back
-/// under the same key, which is what puts a station's favicon in a list
-/// row beside the files.
-///
-/// Takes the connection directly rather than the shared `Mutex` the
-/// lookups take: a source sync owns its connection outright, so there's
-/// nothing to contend with.
+/// Store a thumbnail from bytes that aren't a file (a server cover, a
+/// station favicon), keyed by the row's own key with zero identity columns.
+/// Takes the connection directly: a source sync owns it outright.
 pub fn store_bytes(conn: &Connection, bytes: &[u8], key: &str) -> Option<Vec<u8>> {
     let hash = content_hash(bytes);
 
-    // A cover seen before skips the decode and the re-encode whole, the
-    // same as a local one.
     let pooled: Option<Vec<u8>> = conn
         .prepare_cached("SELECT image FROM images WHERE hash = ?1")
         .ok()?
@@ -328,8 +251,7 @@ pub fn store_bytes(conn: &Connection, bytes: &[u8], key: &str) -> Option<Vec<u8>
         Some(image) => image,
 
         None => {
-            // Bytes that won't decode pool an empty image, so the failure
-            // caches and dedups the same way a success does.
+            // Undecodable bytes pool an empty image, so failures cache too.
             let encoded = encode(bytes).unwrap_or_default();
             conn.prepare_cached("INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)")
                 .ok()?
@@ -352,10 +274,7 @@ pub fn store_bytes(conn: &Connection, bytes: &[u8], key: &str) -> Option<Vec<u8>
     (!thumb.is_empty()).then_some(thumb)
 }
 
-/// Empty the store and give its disk back: every row and pooled image
-/// deleted, then a VACUUM so the file shrinks instead of keeping the
-/// pages free. Thumbnails regenerate on demand. Blocking; run off the
-/// UI thread.
+/// Delete every row and image, then VACUUM so the file shrinks. Blocking.
 pub fn clear(conn: &Mutex<Connection>) {
     let conn = conn.lock().unwrap();
     let _ = conn.execute("DELETE FROM thumbs", []);
@@ -363,9 +282,7 @@ pub fn clear(conn: &Mutex<Connection>) {
     let _ = conn.execute_batch("VACUUM;");
 }
 
-/// A resolved cover's cache identity: empty path for embedded art (the
-/// audio file's own identity covers it), the identity the cover file
-/// carried going into the read for folder art.
+/// Empty path for embedded art; the pre-read identity for folder art.
 fn source_identity(source: &art::ArtSource) -> (String, i64, i64) {
     match source {
         art::ArtSource::Embedded => (String::new(), 0, 0),
@@ -375,9 +292,7 @@ fn source_identity(source: &art::ArtSource) -> (String, i64, i64) {
     }
 }
 
-/// The negative entry's identity for a track with no art anywhere: its
-/// parent directory, stored the same way it re-stats so the two compare
-/// cleanly.
+/// The parent directory, stored the same way it re-stats.
 fn no_art_identity(path: &Path) -> (String, i64, i64) {
     match path.parent() {
         Some(dir) => {
@@ -388,8 +303,6 @@ fn no_art_identity(path: &Path) -> (String, i64, i64) {
     }
 }
 
-/// One cover's bytes into a downscaled JPEG thumbnail. None when the bytes
-/// won't decode as an image.
 fn encode(bytes: &[u8]) -> Option<Vec<u8>> {
     let cover = image::load_from_memory(bytes).ok()?;
     let small = cover.thumbnail(SIZE, SIZE).into_rgb8();
@@ -416,8 +329,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A small real JPEG the thumbnail encoder accepts, its pixels seeded
-    /// so two calls with different seeds produce different files.
     fn jpeg(side: u32, seed: u8) -> Vec<u8> {
         let pixels: Vec<u8> = (0..side * side * 3)
             .map(|i| (i as u8).wrapping_mul(7).wrapping_add(seed))
@@ -429,10 +340,6 @@ mod tests {
         out
     }
 
-    /// A cache written before the art_* columns must keep working: open()
-    /// adds the columns in place, so an existing thumbnail still reads back
-    /// instead of every cover going blank. This is the exact shape that
-    /// regressed once: the seven-column lookup against a four-column table.
     #[test]
     fn migrates_pre_art_columns_and_serves_existing_rows() {
         let dir = std::env::temp_dir().join("rox-thumbs-migrate");
@@ -440,8 +347,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("thumbs.db");
 
-        // A real track file so thumbnail() can stat it for the (mtime, size)
-        // half of the key; the bytes need not be audio for a cache hit.
         let track = dir.join("track.mp3");
         std::fs::write(&track, b"stand-in for audio").unwrap();
         let meta = std::fs::metadata(&track).unwrap();
@@ -453,8 +358,6 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        // Seed the old four-column cache with a thumbnail for this track,
-        // the way a build from before tonight left it on disk.
         {
             let conn = Connection::open(&db).unwrap();
             conn.execute_batch(
@@ -479,8 +382,6 @@ mod tests {
         }
 
         let conn = Mutex::new(open(&db).unwrap());
-        // Without the migration this returns None (the lookup fails to
-        // prepare against the missing columns) and the cover shows blank.
         assert_eq!(
             thumbnail(&conn, &track).as_deref(),
             Some(b"cached-cover".as_slice())
@@ -489,9 +390,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The pooling migration collapses byte-identical blobs to one image
-    /// row, re-keys every track row onto the pool, and drops the per-track
-    /// blob column.
     #[test]
     fn migration_pools_existing_duplicate_rows() {
         let dir = std::env::temp_dir().join("rox-thumbs-pool-migrate");
@@ -509,7 +407,6 @@ mod tests {
                 );",
             )
             .unwrap();
-            // Two tracks of one album sharing a cover, one track of another.
             for (path, blob) in [
                 ("/m/a/1.mp3", b"cover-a".as_slice()),
                 ("/m/a/2.mp3", b"cover-a".as_slice()),
@@ -538,8 +435,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Tracks sharing a cover (the same album, or the same image copied
-    /// into another folder) pool one image row and all serve it.
     #[test]
     fn identical_covers_pool_one_image() {
         let dir = std::env::temp_dir().join("rox-thumbs-pool");
@@ -550,7 +445,6 @@ mod tests {
         let cover = jpeg(8, 1);
         std::fs::write(a.join("cover.jpg"), &cover).unwrap();
         std::fs::write(b.join("cover.jpg"), &cover).unwrap();
-        // Dummy audio: the tags will not read, so the folder cover answers.
         for track in [a.join("1.mp3"), a.join("2.mp3"), b.join("1.mp3")] {
             std::fs::write(track, b"not audio").unwrap();
         }
@@ -569,10 +463,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A cover still downloading leaves no row behind, so the finished
-    /// file is read fresh. Without this the row would pair a thumbnail
-    /// built from half an image with the identity the cover settles on,
-    /// and the truncated cover would show forever.
     #[test]
     fn a_half_written_cover_caches_nothing() {
         let dir = std::env::temp_dir().join("rox-thumbs-partial");
@@ -588,8 +478,6 @@ mod tests {
         assert_eq!(count(&conn, "thumbs"), 0, "the partial cover keys nothing");
         assert_eq!(count(&conn, "images"), 0, "and pools nothing");
 
-        // The download finishes: the next look reads the whole cover and this
-        // one does cache.
         std::fs::write(dir.join("cover.jpg"), &cover).unwrap();
         let whole = thumbnail(&conn, &track).expect("a thumbnail");
         assert_eq!(count(&conn, "thumbs"), 1);
@@ -598,11 +486,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A cover file that exists but holds no image yet leaves no row
-    /// behind either. This is the download that preallocates: the folder's
-    /// mtime moved when the file was created and never moves again, so a
-    /// no-art row keyed on the folder here would outlive the download and
-    /// the album would show blank forever.
     #[test]
     fn a_cover_with_no_image_bytes_yet_caches_nothing() {
         let dir = std::env::temp_dir().join("rox-thumbs-preallocated");
@@ -616,16 +499,12 @@ mod tests {
         assert!(thumbnail(&conn, &track).is_none());
         assert_eq!(count(&conn, "thumbs"), 0, "the unfilled cover keys nothing");
 
-        // Filling the file leaves the folder's mtime where it was, so only
-        // the missing row lets the finished cover through.
         std::fs::write(dir.join("cover.jpg"), jpeg(8, 1)).unwrap();
         assert!(thumbnail(&conn, &track).is_some(), "the cover lands");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An album with nothing to show still caches that answer, so an
-    /// artless folder costs one cover search ever rather than one a launch.
     #[test]
     fn an_artless_folder_caches_its_answer() {
         let dir = std::env::temp_dir().join("rox-thumbs-artless");
@@ -642,11 +521,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A row whose path is not a file reads its picture straight back out
-    /// of the pool. This is the whole reason a station's favicon and a
-    /// Subsonic cover can show at all: [`store_bytes`] put them there, and
-    /// before this the stat at the top of [`thumbnail`] made them
-    /// unreachable.
     #[test]
     fn a_non_file_key_reads_back_what_was_stored() {
         let conn = Connection::open_in_memory().unwrap();
@@ -666,9 +540,6 @@ mod tests {
         );
     }
 
-    /// Bytes that aren't an image pool an empty picture, and an empty
-    /// picture reads as no art rather than as a zero-byte JPEG the
-    /// decoder then chokes on.
     #[test]
     fn a_non_file_key_with_undecodable_bytes_reads_as_no_art() {
         let conn = Connection::open_in_memory().unwrap();
@@ -680,8 +551,6 @@ mod tests {
         assert!(thumbnail(&conn, Path::new("sg-1")).is_none());
     }
 
-    /// A changed folder cover regenerates under a new pool key, and the
-    /// image nothing references anymore is swept on the next open.
     #[test]
     fn changed_cover_regenerates_and_open_sweeps_orphans() {
         let dir = std::env::temp_dir().join("rox-thumbs-sweep");
@@ -695,8 +564,7 @@ mod tests {
         let conn = Mutex::new(open(&db).unwrap());
         let old = thumbnail(&conn, &track).expect("a thumbnail");
 
-        // A new cover with a different size, so the art identity misses
-        // even inside the same mtime second.
+        // A different size, so the identity misses inside the same mtime second.
         std::fs::write(dir.join("cover.jpg"), jpeg(16, 2)).unwrap();
         let new = thumbnail(&conn, &track).expect("a regenerated thumbnail");
         assert_ne!(old, new);

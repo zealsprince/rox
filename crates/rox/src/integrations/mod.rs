@@ -1,6 +1,5 @@
-//! OS integration surfaces: the MPRIS/media-key controls, the control
-//! socket, the icecast broadcast sink's wiring, the system tray for
-//! windowless residency, and the taskbar button's progress bar.
+//! OS integration surfaces: media keys, the control socket and its debug
+//! drive, the broadcast sink, the tray, and taskbar progress.
 
 pub mod broadcast;
 pub mod drive;

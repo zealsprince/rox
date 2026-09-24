@@ -1,29 +1,13 @@
-//! The track metadata table: sort names for track titles.
+//! The track metadata table: sort names for track titles, keyed by track id
+//! because titles aren't interned. Ranking rules are [`crate::artist_meta`]'s.
 //!
-//! The third of the sort-name tables, and the only one keyed by row rather
-//! than by value. A title isn't interned in the projection the way an
-//! artist or an album is: there are as many titles as there are tracks and
-//! most of them appear once, so they live in an arena addressed by row and
-//! there's no symbol to hang a sort name off. This table follows that,
-//! keyed by the track id the store gave the row.
-//!
-//! What follows from the key is worth knowing. A track id belongs to a
-//! (source, path, subsong), so a file that's moved and rescanned under a
-//! new id leaves its old row here orphaned. That's dead weight rather than
-//! a bug: the projection only ever looks a row up by an id it holds, an
-//! orphan is a few dozen bytes, and the pass fills the new id the next
-//! time it runs. Nothing prunes them, deliberately, because the thing that
-//! looks like an orphan is often a file that's about to come back.
-//!
-//! Sources and their ranking are [`crate::artist_meta`]'s; in practice a
-//! row here says `romanized` or `user`, since no service publishes a sort
-//! title.
+//! A moved file's old id leaves an orphan row here. Nothing prunes them on
+//! purpose: an apparent orphan is often a file about to come back.
 
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
-/// The table beside the tracks it describes, keyed by track id.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS track_meta (
@@ -35,11 +19,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Record a track's sort title. The write only lands over a row whose
-/// source ranks no higher; see [`crate::artist_meta`].
-///
-/// An empty sort title writes nothing: a row that files a track under
-/// nothing is a row the projection's merge would have to skip anyway.
+/// Record a track's sort title, landing only over a source that ranks no
+/// higher. An empty sort title writes nothing.
 pub fn set(
     conn: &Connection,
     track_id: i64,
@@ -70,17 +51,11 @@ pub fn set(
     Ok(())
 }
 
-/// Forget a track's sort title, whoever wrote it.
 pub fn clear(conn: &Connection, track_id: i64) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM track_meta WHERE track_id = ?1", [track_id])
 }
 
-/// The whole table as a track id -> sort title map, one query per
-/// projection build. Bigger than the other two by construction, a row per
-/// romanized track rather than per value, but still only the rows the pass
-/// actually filled.
-/// The track ids the romanization pass wrote under a marker other than
-/// `current`; see [`crate::artist_meta::stale_romanized`].
+/// See [`crate::artist_meta::stale_romanized`].
 pub fn stale_romanized(conn: &Connection, current: &str) -> rusqlite::Result<HashSet<i64>> {
     let mut stmt = conn.prepare_cached(
         "SELECT track_id FROM track_meta

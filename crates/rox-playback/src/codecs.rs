@@ -1,25 +1,12 @@
-//! The one place the codec set is assembled. Symphonia's global
-//! `default::get_codecs()` holds exactly the codecs its own features enable,
-//! and rox needs one more than that: the Opus decoder in [`crate::opus`].
-//! Rather than remember to reach past the global at every call site, this
-//! module builds a registry once, feature-enabled codecs plus ours, and hands
-//! back the same one forever.
-//!
-//! That the registry is shared is the point. Playback, the ReplayGain
-//! measurement pass, and the acoustic extractor all decode the same files, and
-//! a file that plays but can't be analyzed (or the reverse) is a bug that only
-//! shows up on somebody's library months later. One registry means they can't
+//! The one codec registry every decode goes through: symphonia's enabled
+//! codecs plus the Opus decoder in [`crate::opus`]. Playback, ReplayGain
+//! measurement, and the acoustic extractor all share it so they can never
 //! disagree about what decodes.
-//!
-//! The probe stays on `symphonia::default::get_probe()`. Containers aren't the
-//! gap here: the Ogg reader already maps Opus, it just had nothing to hand the
-//! packets to.
 
 use std::sync::OnceLock;
 
 use symphonia::core::codecs::registry::CodecRegistry;
 
-/// The codec registry every decode in rox goes through.
 pub fn registry() -> &'static CodecRegistry {
     static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
@@ -34,7 +21,6 @@ pub fn registry() -> &'static CodecRegistry {
 mod tests {
     use symphonia::core::codecs::audio::well_known::{CODEC_ID_FLAC, CODEC_ID_OPUS};
 
-    /// The registry is symphonia's set plus ours, not ours instead of theirs.
     #[test]
     fn the_registry_holds_opus_beside_the_built_in_codecs() {
         let reg = super::registry();

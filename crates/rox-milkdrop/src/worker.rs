@@ -1,24 +1,13 @@
 //! The render thread: everything that touches OpenGL or libprojectM.
 //!
-//! One thread, spawned by [`crate::Engine::spawn`], that owns the GL context
-//! for its whole life. That ownership is the point. A GL context is current
-//! on exactly one thread, projectM keeps state in it, and the only way to
-//! keep both facts true without locking is to never let anything else in.
-//! So the panel talks to this thread through a channel and reads what it
-//! publishes, and no rox code outside this file ever holds a projectM handle.
+//! One thread owns the GL context for its whole life. A context is current on
+//! exactly one thread and projectM keeps state in it, so nothing else ever
+//! gets in: the panel talks through a channel and reads what's published, and
+//! no code outside this file holds a projectM handle.
 //!
-//! The loop is: drain commands, feed projectM the audio that arrived since
-//! last time, render into an FBO, start a readback into one pixel buffer
-//! while mapping the other, flip the rows, publish. It paces itself against a
-//! wall clock deadline rather than sleeping a fixed interval, so a slow frame
-//! is absorbed instead of drifting the whole schedule.
-//!
-//! The one piece of reentrancy is projectM's preset callbacks, which fire
-//! from inside `projectm_opengl_render_frame_fbo`. They record what happened
-//! and return; the actual preset load happens back out in the loop. Loading a
-//! preset from inside projectM's own render call is legal but it means a
-//! `&mut` into state the render call is already walking, and one frame of
-//! delay on a preset change nobody can see is a cheap way out of that.
+//! projectM's preset callbacks fire from inside its render call. They only
+//! record; the load happens back in the loop, a frame later, rather than
+//! reentering state the render call is walking.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::PathBuf;
@@ -34,48 +23,36 @@ use crate::gl::{self, Gl};
 use crate::library::Shuffle;
 use crate::{Command, EngineOptions, Event, Frame, PresetLibrary, Rotation, Shared, Status};
 
-/// Render size is clamped to this on each side. The floor keeps a
-/// mid-drag one-pixel panel from producing a degenerate FBO; the ceiling is
-/// where a readback stops being affordable at any frame rate.
+/// The floor stops a mid-drag sliver producing a degenerate FBO; the ceiling
+/// is where a readback stops being affordable.
 const MIN_SIZE: u32 = 128;
 const MAX_SIZE: u32 = 4096;
 
-/// Defaults matching `MilkdropConfig`. The panel sends its real values as
-/// commands right after spawning, but the engine has to be sane before that
-/// arrives.
+/// Matching `MilkdropConfig`, until the panel sends its real values.
 const DEFAULT_PRESET_DURATION: f64 = 30.0;
 const DEFAULT_BEAT_SENSITIVITY: f32 = 1.0;
 
-/// Consecutive readback maps the driver can refuse before the worker gives
-/// up. One refusal is a hiccup and the next frame covers it. Thirty in a
-/// row, half a second at sixty frames, is a driver that is never going to
-/// map the buffer, and until this the panel sat black over it with nothing
-/// but a warning per frame in the log.
+/// Thirty refused maps in a row (half a second) is a driver that never will;
+/// without a limit the panel sits black with a warning per frame.
 const MAP_MISS_LIMIT: u32 = 30;
 
-/// What projectM's callbacks write down. Boxed and kept alive for as long as
-/// the instance is, because projectM holds the pointer.
+/// Boxed and kept alive as long as the instance: projectM holds the pointer.
 #[derive(Default)]
 struct Callbacks {
-    /// `Some(is_hard_cut)` when projectM asked for a different preset.
     switch_requested: std::cell::Cell<Option<bool>>,
     failures: std::cell::RefCell<Vec<(PathBuf, String)>>,
 }
 
 pub(crate) fn run(options: EngineOptions, commands: Receiver<Command>, shared: Arc<Shared>) {
-    // Counted in before the context exists and out after it is gone, so the
-    // window this thread can make a GL call in is entirely inside the count.
-    // See `exit_guard`.
+    // Counted in before the context exists and out after it's gone, so every
+    // GL call sits inside the count. See `exit_guard`.
     exit_guard::enter();
     match Worker::start(options, shared.clone()) {
-        // The worker's own drop, at the end of this arm, is the GL teardown,
-        // so `leave` comes after the match rather than inside it.
+        // The worker's drop is the GL teardown, so `leave` comes after the match.
         Ok(mut worker) => worker.run(&commands),
         Err(message) => {
             log::warn!("milkdrop engine did not start: {message}");
             shared.set_status(Status::Failed(message));
-            // Nothing to drain: the channel is unbounded, so senders never
-            // block on a receiver that walked away.
         }
     }
     exit_guard::leave();
@@ -86,47 +63,34 @@ struct Worker {
     feed: Arc<rox_viz::AudioFeed>,
     library: PresetLibrary,
     shuffle: Shuffle,
-    /// Positions in `library.presets()` that Next, Previous and projectM's
-    /// own timed switch move through. The whole library until the panel
-    /// narrows it, and back to the whole library if what it asked for
-    /// matched nothing.
+    /// Indices into `library.presets()`; the whole library when the panel's
+    /// rotation matched nothing.
     rotation: Vec<usize>,
 
-    /// Held, not read: dropping it is what releases the GL context, at the
-    /// end of the worker's life and on the worker's own thread.
+    /// Dropping it releases the GL context, on this thread.
     _headless: Box<HeadlessGl>,
     gl: Gl,
     instance: pm::projectm_handle,
     callbacks: Box<Callbacks>,
     version: String,
-    /// `GL_RENDERER` and `GL_VERSION`, kept for the status and for the
-    /// message a readback failure names.
     renderer: String,
     gl_version: String,
-    /// Readback maps refused in a row. Reset by the next one that works.
     map_misses: u32,
 
     targets: Targets,
-    /// Where the next frame's pixels are written. Buffers come back here
-    /// once the consumer is done with them, so a steady state allocates
-    /// nothing.
+    /// Buffers come back here once consumers let go.
     scratch: Vec<u8>,
-    /// A published buffer somebody was still reading when the frame after it
-    /// landed, kept for one more publish so it can be asked again. Two
-    /// buffers going round is what a consumer holding the newest frame while
-    /// the next one is rendered needs; without the second ask that consumer
-    /// would have the worker allocating a buffer a frame.
+    /// A published buffer still being read when the next frame landed, kept
+    /// one more publish so a consumer holding the newest frame doesn't force an
+    /// allocation per frame.
     waiting: Option<Arc<Vec<u8>>>,
     pcm: Vec<f32>,
     cursor: u64,
 
     current: Option<usize>,
-    /// Where the user has been, so Previous and Next mean back and
-    /// forward rather than a step through the sorted list.
+    /// So Previous and Next mean back and forward, like a browser.
     trail: Trail,
     preset: Option<PathBuf>,
-    /// How long the last map-and-flip took. Published for the headless
-    /// example, which is where the zero-copy follow-up gets its baseline.
     readback_micros: u64,
     locked: bool,
     paused: bool,
@@ -155,9 +119,7 @@ impl Worker {
             pm::projectm_create_with_opengl_load_proc(Some(load_proc), std::ptr::null_mut())
         };
         if instance.is_null() {
-            // projectM's own reason went to the log through the callback
-            // above; this is the line for the panel, with the fact that
-            // decides most of these in it.
+            // projectM's own reason already went to the log.
             return Err(format!(
                 "libprojectM needs OpenGL 3.3 and this context is {gl_version} on {renderer}"
             ));
@@ -195,9 +157,8 @@ impl Worker {
             return Err(message);
         }
 
-        // Start from what the feed has already written rather than zero, so a
-        // panel opened mid-track doesn't shove a second of stale audio at
-        // projectM's beat detector on its first frame.
+        // Start at what the feed already holds, so a panel opened mid-track
+        // doesn't feed a second of stale audio to the beat detector.
         let cursor = options.feed.written();
 
         let rotation = (0..options.library.presets().len()).collect();
@@ -231,9 +192,7 @@ impl Worker {
             seq: 0,
         };
 
-        // A restored preset goes straight up, with no shuffle before it.
-        // Nothing to load is a normal state: projectM renders its built-in
-        // idle preset, so the panel is never blank.
+        // With nothing to load, projectM renders its built-in idle preset.
         if let Some(path) = options.preset {
             worker.load(path, false);
         } else if !worker.library.is_empty() {
@@ -246,17 +205,13 @@ impl Worker {
     fn run(&mut self, commands: &Receiver<Command>) {
         let mut deadline = Instant::now();
         loop {
-            // The process is exiting and the driver is being torn down under
-            // us. One frame of latency on noticing is the cost of checking
-            // here rather than between every GL call, and the handler waits
-            // that out. See `exit_guard`.
+            // The process is exiting under us; the handler waits out the one
+            // frame this check can lag. See `exit_guard`.
             if exit_guard::exiting() {
                 exit_guard::park();
             }
 
-            // Sleep out the rest of the frame in the channel, so a command
-            // that lands mid-frame is acted on at once rather than after the
-            // timer expires.
+            // Sleep out the frame in the channel, so commands act at once.
             loop {
                 match commands.recv_deadline(deadline) {
                     Ok(command) => self.handle(command),
@@ -269,9 +224,7 @@ impl Worker {
             deadline += interval;
             let now = Instant::now();
             if deadline < now {
-                // Behind schedule. Restart the clock instead of trying to
-                // catch up, which would just run a burst of frames nobody
-                // sees and fall behind again.
+                // Behind schedule: restart the clock rather than burst to catch up.
                 deadline = now + interval;
             }
 
@@ -279,9 +232,7 @@ impl Worker {
             if !self.paused
                 && let Err(message) = self.render()
             {
-                // The loop ends here and the worker drops on its own
-                // thread, context and all. The status is what the
-                // panel shows over the last frame it got.
+                // The status is what the panel shows over the last frame.
                 log::warn!("milkdrop engine stopped: {message}");
                 self.shared.set_status(Status::Failed(message));
                 return;
@@ -307,16 +258,11 @@ impl Worker {
                 };
             }
             Command::LoadPreset { path, smooth } => self.load(path, smooth),
-            // Next and Previous only ever come from somebody clicking, and
-            // the lock is about the visual not changing on its own. Refusing
-            // an explicit ask made the menu items look broken. The automatic
-            // path checks the lock in `drain_callbacks`, and projectM's own
-            // timed switch is off while `projectm_set_preset_locked` is set,
-            // so the lock still does its job.
-            // Forward retraces a step that was taken back before it picks
-            // anything new, and back goes to what was actually on screen
-            // before, random picks included: the browser's rule, which is
-            // the one people bring with them.
+            // Explicit Next and Previous ignore the lock, which is about the
+            // visual not changing on its own; refusing them looks broken. The
+            // automatic paths check it (`drain_callbacks`, and
+            // `projectm_set_preset_locked`). Forward retraces a step taken
+            // back before picking anything new.
             Command::NextPreset { smooth } => match self.trail.forward() {
                 Some(path) => self.replay(path, smooth),
                 None => self.advance(smooth),
@@ -352,9 +298,7 @@ impl Worker {
         }
     }
 
-    /// Everything the feed has written since last time, handed to projectM as
-    /// interleaved stereo. `count` in projectM's API is frames per channel,
-    /// not floats, which the header says and the ring buffer confirms.
+    /// `count` in projectM's API is frames per channel, not floats.
     fn feed_audio(&mut self) {
         self.cursor = self.feed.since(self.cursor, &mut self.pcm);
         let frames = self.pcm.len() / 2;
@@ -376,17 +320,11 @@ impl Worker {
         }
     }
 
-    /// One frame: render, start this frame's readback, publish the last
-    /// one. `Err` is a readback the driver refuses to map, which ends the
-    /// worker; see [`MAP_MISS_LIMIT`].
+    /// `Err` is a readback the driver refuses to map; see [`MAP_MISS_LIMIT`].
     fn render(&mut self) -> Result<(), String> {
-        // A resize the driver refused leaves nothing to render into:
-        // `Targets::release` has zeroed the names but `width` and `height`
-        // still hold the old size, so going on would read a framebuffer
-        // that no longer exists back into a pixel buffer that doesn't
-        // either, which with no buffer bound is a readback straight into a
-        // null pointer. The failed resize already published its status; the
-        // loop idles under it rather than taking the app down.
+        // A refused resize leaves no targets but the old size: going on would
+        // read back into a null pointer. The failed resize already published
+        // its status; idle under it.
         if self.targets.fbo == 0 {
             return Ok(());
         }
@@ -399,9 +337,8 @@ impl Worker {
             (self.gl.Viewport)(0, 0, width as i32, height as i32);
             pm::projectm_opengl_render_frame_fbo(self.instance, self.targets.fbo);
 
-            // Start this frame's readback into one buffer, then map the one
-            // the previous frame filled. The GPU gets a whole frame to finish
-            // the transfer, which is what keeps the map from being a stall.
+            // Read this frame into one buffer and map the one the last frame
+            // filled: the GPU gets a whole frame, so the map doesn't stall.
             let write = self.targets.index;
             let read = 1 - write;
             (self.gl.BindFramebuffer)(gl::FRAMEBUFFER, self.targets.fbo);
@@ -420,8 +357,7 @@ impl Worker {
             self.targets.index = read;
 
             if !self.targets.filled[read] {
-                // First frame after a resize: there's nothing in the other
-                // buffer yet, so there's nothing to publish.
+                // First frame after a resize: nothing to publish yet.
                 (self.gl.BindBuffer)(gl::PIXEL_PACK_BUFFER, 0);
                 (self.gl.BindFramebuffer)(gl::FRAMEBUFFER, 0);
                 return Ok(());
@@ -435,9 +371,8 @@ impl Worker {
                 bytes as isize,
                 gl::MAP_READ_BIT,
             );
-            // The map is where the driver first has to name a pixel format,
-            // so by the time it returns Mesa has registered the exit
-            // handlers ours has to run ahead of. See `exit_guard`.
+            // The map is where Mesa first names a pixel format, so its exit
+            // handlers are registered by now and ours can go after them.
             exit_guard::arm();
             if mapped.is_null() {
                 (self.gl.BindBuffer)(gl::PIXEL_PACK_BUFFER, 0);
@@ -447,7 +382,6 @@ impl Worker {
                     None => String::new(),
                 };
                 self.map_misses += 1;
-                // Once when it starts, not sixty times a second.
                 if self.map_misses == 1 {
                     log::warn!("milkdrop readback could not map the pixel buffer{error}");
                 }
@@ -463,8 +397,7 @@ impl Worker {
 
             self.scratch.resize(bytes, 0);
             let source = std::slice::from_raw_parts(mapped as *const u8, bytes);
-            // glReadPixels hands back the bottom row first, textures want the
-            // top row first, so the copy out is also the flip.
+            // glReadPixels returns bottom-up, so the copy out is also the flip.
             for row in 0..height as usize {
                 let from = row * stride;
                 let to = (height as usize - 1 - row) * stride;
@@ -481,8 +414,6 @@ impl Worker {
         Ok(())
     }
 
-    /// Swap the finished pixels into the shared slot and take the previous
-    /// buffer back to write the next frame into.
     fn publish(&mut self, width: u32, height: u32) {
         self.seq += 1;
         let frame = Frame {
@@ -492,14 +423,12 @@ impl Worker {
             seq: self.seq,
         };
         let previous = self.shared.frame.lock().unwrap().replace(frame);
-        // Release, paired with the panel's Acquire load, so a panel that sees
-        // the new seq also sees the frame behind it.
+        // Release pairs with the panel's Acquire, so a new seq implies its frame.
         self.shared.seq.store(self.seq, Ordering::Release);
         self.shared
             .readback_micros
             .store(self.readback_micros, Ordering::Relaxed);
-        // Oldest first, so the buffer that has had the longest to come free
-        // is the one that gets reused.
+        // Oldest first: it's had the longest to come free.
         if let Some(waiting) = self.waiting.take() {
             self.reclaim(waiting);
         }
@@ -508,12 +437,8 @@ impl Worker {
         }
     }
 
-    /// Take a published buffer back if nothing is reading it any more.
-    ///
     /// One spare is the whole pool: the readback writes one buffer and a
-    /// consumer holds at most one, so a third would only sit there holding
-    /// three megabytes. Anything that doesn't fit is dropped, and the next
-    /// `resize` allocates in its place.
+    /// consumer holds at most one.
     fn reclaim(&mut self, buffer: Arc<Vec<u8>>) {
         match Arc::try_unwrap(buffer) {
             Ok(rgba8) if self.scratch.is_empty() => self.scratch = rgba8,
@@ -536,40 +461,26 @@ impl Worker {
         }
     }
 
-    /// The shuffle, over the rotation rather than the whole library. This is
-    /// the one path Next and projectM's timed switch both take, so they can't
-    /// drift apart on which set they walk.
+    /// The one path Next and the timed switch share, so they walk the same set.
     fn advance(&mut self, smooth: bool) {
         if let Some(slot) = self.shuffle.pick(self.rotation.len(), self.current_slot()) {
             self.load_index(self.rotation[slot], smooth);
         }
     }
 
-    /// Where the preset on screen sits in the rotation. `None` when it came
-    /// from an explicit pick outside it, which is a fine place to be: the
-    /// next step just starts from the end of the rotation.
+    /// `None` after an explicit pick outside the rotation.
     fn current_slot(&self) -> Option<usize> {
         let current = self.current?;
         self.rotation.iter().position(|index| *index == current)
     }
 
-    /// Swap in a rescanned library.
-    ///
-    /// The tricky part is what happens to the preset on screen. Its index is
-    /// meaningless against the new list, so it gets looked up by path: still
-    /// there and it keeps playing under its new index, gone and the worker
-    /// forgets it and lets the next switch pick fresh. The one case worth
-    /// handling loudly is a worker that had nothing at all, because that's
-    /// the whole reason this command exists: presets landed on disk after the
-    /// panel opened, and sitting on projectM's idle preset until something
-    /// else happens to call for a switch would read as the rescan not
-    /// working.
+    /// The preset on screen is looked up by path in the new list. A worker
+    /// that had nothing starts playing at once, or the rescan looks broken.
     fn set_library(&mut self, library: PresetLibrary, rotation: &Rotation) {
         let was_empty = self.library.is_empty();
         self.library = library;
         self.rotation = resolve_rotation(&self.library, rotation);
-        // Texture search paths are per instance, not per preset, so a new
-        // library's textures folders have to go in now.
+        // Texture search paths are per instance.
         set_texture_paths(self.instance, &self.library);
         self.current = self
             .preset
@@ -581,9 +492,7 @@ impl Worker {
         self.publish_status();
     }
 
-    /// Load a preset by path, through its rotation index when the library
-    /// holds it. A preset outside the scanned roots is still loadable; the
-    /// panel restores a remembered path this way.
+    /// A preset outside the scanned roots still loads (the panel restores one this way).
     fn load(&mut self, path: PathBuf, smooth: bool) {
         match self.library.index_of(&path) {
             Some(index) => self.load_index(index, smooth),
@@ -599,16 +508,13 @@ impl Worker {
         self.load_path(path, smooth);
     }
 
-    /// Load a preset and remember it as the newest step, which is every
-    /// load except the ones that walk the trail itself.
     fn load_path(&mut self, path: PathBuf, smooth: bool) {
         self.trail.record(path.clone());
         self.play(path, smooth);
     }
 
-    /// Load a preset the trail handed back, without recording it again.
-    /// The rotation index is looked up so a following timed switch still
-    /// avoids what's on screen.
+    /// Load without recording. The index lookup keeps the next timed switch
+    /// off what's on screen.
     fn replay(&mut self, path: PathBuf, smooth: bool) {
         self.current = self.library.index_of(&path);
         self.play(path, smooth);
@@ -640,16 +546,13 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Order matters: projectM's own GL objects go first, while the
-        // context is still current, then ours, then the context itself when
-        // `headless` drops after this.
+        // Order matters: projectM's GL objects go first while the context is
+        // current, then ours, then the context when `headless` drops.
         unsafe { pm::projectm_destroy(self.instance) };
         self.targets.release(&self.gl);
     }
 }
 
-/// The FBO projectM renders into, its colour and depth attachments, and the
-/// two pixel buffers the frame is read back through.
 #[derive(Default)]
 struct Targets {
     fbo: gl::GLuint,
@@ -687,9 +590,7 @@ impl Targets {
             (gl_fns.TexParameteri)(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE);
             (gl_fns.BindTexture)(gl::TEXTURE_2D, 0);
 
-            // projectM's composite uses the stencil buffer for its border
-            // shapes, so the FBO needs one; a depth-stencil renderbuffer is
-            // the cheap way to have both.
+            // projectM's composite needs a stencil buffer for its border shapes.
             (gl_fns.GenRenderbuffers)(1, &mut self.depth);
             (gl_fns.BindRenderbuffer)(gl::RENDERBUFFER, self.depth);
             (gl_fns.RenderbufferStorage)(
@@ -717,9 +618,7 @@ impl Targets {
             );
             let status = (gl_fns.CheckFramebufferStatus)(gl::FRAMEBUFFER);
 
-            // Start black rather than whatever the driver left in the
-            // allocation, so a first frame that arrives before projectM has
-            // drawn anything isn't noise.
+            // Start black, so an early frame isn't driver noise.
             (gl_fns.ClearColor)(0.0, 0.0, 0.0, 1.0);
             (gl_fns.Clear)(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             (gl_fns.BindFramebuffer)(gl::FRAMEBUFFER, 0);
@@ -787,13 +686,8 @@ fn version_string() -> String {
     }
 }
 
-/// The rotation the worker actually walks, given what the panel asked for.
-///
-/// A folder that matches nothing is the interesting case: the user renamed or
-/// deleted it since the config was written, or the pack moved. Falling back to
-/// the whole library keeps Next working, where an empty rotation would pin the
-/// panel to whatever happened to be on screen. It warns once here, on the
-/// command, rather than every time a frame wants a new preset.
+/// A rotation that matches nothing (a renamed or deleted folder) falls back
+/// to the whole library, so Next keeps working. Warns once, here.
 fn resolve_rotation(library: &PresetLibrary, rotation: &Rotation) -> Vec<usize> {
     let indices = library.rotation_indices(rotation);
     if !indices.is_empty() || library.is_empty() {
@@ -813,10 +707,8 @@ fn resolve_rotation(library: &PresetLibrary, rotation: &Rotation) -> Vec<usize> 
     library.rotation_indices(&Rotation::All)
 }
 
-/// The presets loaded in order and where in that list the one on screen
-/// sits. A new load from anywhere but the trail itself drops whatever was
-/// ahead of the cursor, the way a browser forgets the forward pages once
-/// you navigate somewhere new.
+/// Loaded presets in order and the cursor into them. A new load drops what
+/// was ahead of the cursor, like a browser's forward pages.
 #[derive(Default)]
 struct Trail {
     paths: Vec<PathBuf>,
@@ -824,8 +716,6 @@ struct Trail {
 }
 
 impl Trail {
-    /// How far back it reaches. Past this the oldest step goes; nobody
-    /// presses Previous two hundred times.
     const CAP: usize = 200;
 
     fn record(&mut self, path: PathBuf) {
@@ -872,13 +762,9 @@ fn set_texture_paths(instance: pm::projectm_handle, library: &PresetLibrary) {
     unsafe { pm::projectm_set_texture_search_paths(instance, paths.as_ptr(), paths.len()) };
 }
 
-/// Hand projectM's own log lines to `log`. Without a callback every `LOG_*`
-/// inside libprojectM is a no-op, so the GL probe's summary line, every
-/// shader compile error and every texture it couldn't load went nowhere,
-/// and a Windows release build has no stderr to catch them either. The
-/// callback is independent of any instance and covers every thread, so
-/// the thumbnailer's engine gets it for free, and it's set once because a
-/// second call would only replace it with itself.
+/// Without a callback every `LOG_*` in libprojectM is a no-op, shader errors
+/// included, and a Windows release build has no stderr. Process-wide, so set
+/// once.
 fn forward_projectm_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
@@ -886,10 +772,8 @@ fn forward_projectm_log() {
     });
 }
 
-/// projectM's fatal and error both land as `error`: fatal is what precedes a
-/// null instance, error is a shader that didn't compile, and both are what
-/// someone reading a black panel's log is after. Trace and debug only exist
-/// in projectM's debug builds and go to `debug` for the one that has them.
+/// Fatal and error both map to `error`: they're what a black panel's log
+/// needs.
 unsafe extern "C" fn on_log(
     message: *const c_char,
     level: pm::projectm_log_level,
@@ -910,13 +794,9 @@ unsafe extern "C" fn on_log(
     log::log!(level, "projectm: {}", message.trim_end());
 }
 
-/// The trampoline projectM's glad loads through.
-///
-/// `user_data` is deliberately unused. projectM's resolver keeps whatever
-/// pointer it's given for the whole process and hands it back on every later
-/// instance's probe, so anything owned by one engine would dangle the moment
-/// that engine goes away. [`context::resolve`] reads a display that outlives
-/// them all instead.
+/// Never use `user_data`: projectM's resolver keeps the first pointer for the
+/// whole process, so anything one engine owns would dangle once it's gone.
+/// [`context::resolve`] reads a display that outlives them all.
 unsafe extern "C" fn load_proc(name: *const c_char, _user_data: *mut c_void) -> *mut c_void {
     if name.is_null() {
         return std::ptr::null_mut();
@@ -925,8 +805,6 @@ unsafe extern "C" fn load_proc(name: *const c_char, _user_data: *mut c_void) -> 
     context::resolve(unsafe { CStr::from_ptr(name) }) as *mut c_void
 }
 
-/// Fired from inside projectM's render call. Records and returns; the load
-/// happens back in the loop.
 unsafe extern "C" fn on_switch_requested(is_hard_cut: bool, user_data: *mut c_void) {
     if user_data.is_null() {
         return;
@@ -936,8 +814,7 @@ unsafe extern "C" fn on_switch_requested(is_hard_cut: bool, user_data: *mut c_vo
     callbacks.switch_requested.set(Some(is_hard_cut));
 }
 
-/// Both strings are only valid for the duration of the call, so they're
-/// copied out before anything else happens.
+/// Both strings are only valid for the call, so they're copied out first.
 unsafe extern "C" fn on_switch_failed(
     preset_filename: *const c_char,
     message: *const c_char,
@@ -972,46 +849,33 @@ unsafe extern "C" fn on_switch_failed(
 
 /// Getting the render thread off GL before the process finishes exiting.
 ///
-/// `exit()` runs the C exit handlers on whichever thread called it and lets
-/// every other thread keep running. Mesa registers handlers of its own: one
-/// joins the driver's queue threads, another frees the table `glReadPixels`
-/// looks a pixel layout up in. A worker still rendering while those run
-/// walks freed memory, and the app dies in Mesa's hash table instead of
-/// quitting. Nothing above drops the engine on the way out and nothing
-/// should have to: the backdrop keeps one in a process static and the panel
-/// keeps one in an entity, and gpui unwinds neither when its loop returns.
+/// `exit()` runs C exit handlers on the calling thread while others keep
+/// running. Mesa's handlers join its queue threads and free the table
+/// `glReadPixels` looks pixel layouts up in, so a worker still rendering dies
+/// in Mesa's hash table. Nothing drops the engines on the way out: the
+/// backdrop holds one in a static, the panel in an entity, and gpui unwinds
+/// neither. So the handler sets a latch and waits for every live worker to
+/// stand down; each worker checks it once a frame.
 ///
-/// So the thread that owns the context takes the hook. The handler sets a
-/// latch and waits for every live worker to stand down, and each worker
-/// checks the latch once a frame.
-///
-/// The registration point is the load-bearing part, and it's why this is
-/// armed from the render loop rather than from `Engine::spawn`. Handlers run
-/// in reverse registration order, so ours has to go in after Mesa's to run
-/// before them, and Mesa registers lazily: the queue handler when the screen
-/// comes up, the format table's the first time a readback asks for a format.
-/// Arming on the first readback is past both of those. A handler Mesa only
-/// registers later still slips underneath us, which is the residual this
-/// can't close from out here.
+/// Handlers run in reverse registration order, so ours must register after
+/// Mesa's, which register lazily (the queue handler when the screen comes up,
+/// the format table on the first readback). Hence arming from the first
+/// readback, not `Engine::spawn`. A handler Mesa registers later still slips
+/// underneath.
 mod exit_guard {
     use std::sync::Once;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    /// How long the exit handler gives the render threads. A frame at the
-    /// slowest rate the panel offers is a few tens of milliseconds, so this
-    /// is many frames of slack, and past it the quit goes ahead anyway
-    /// rather than hanging the app on a worker wedged inside the driver.
+    /// Many frames of slack; past it the quit goes ahead rather than hang on a
+    /// worker wedged in the driver.
     const STAND_DOWN: Duration = Duration::from_millis(500);
 
     static EXITING: AtomicBool = AtomicBool::new(false);
-    /// Workers that would touch GL if they got another frame.
     static LIVE: AtomicUsize = AtomicUsize::new(0);
     static ARMED: Once = Once::new();
 
-    // Declared rather than pulled in through libc: one C function with a
-    // signature that hasn't moved since C89 is not worth a dependency, and
-    // every platform this crate builds for has it.
+    // Declared rather than pulling in libc for one C89 function.
     unsafe extern "C" {
         fn atexit(handler: extern "C" fn()) -> i32;
     }
@@ -1025,19 +889,14 @@ mod exit_guard {
         }
     }
 
-    /// Register the handler, once per process. See the module note for why
-    /// the timing of the first call matters.
+    /// Once per process; the timing of the first call matters (see the module note).
     pub(super) fn arm() {
         ARMED.call_once(|| {
-            // A refusal means the process is already inside `exit()`, which
-            // is the case this guards and the point where there is nothing
-            // left to do about it.
+            // A refusal means we're already inside `exit()`; nothing left to do.
             unsafe { atexit(on_exit) };
         });
     }
 
-    /// Count a worker in from the moment it can make a GL call, and out
-    /// again once its context is gone.
     pub(super) fn enter() {
         LIVE.fetch_add(1, Ordering::AcqRel);
     }
@@ -1050,9 +909,8 @@ mod exit_guard {
         EXITING.load(Ordering::Acquire)
     }
 
-    /// Stand down and stay down. Returning instead would drop the `Worker`,
-    /// and that drop destroys the projectM instance and the render targets,
-    /// which is more GL than an exiting process has left.
+    /// Returning would drop the `Worker`, whose drop is more GL than an exiting
+    /// process has left.
     pub(super) fn park() -> ! {
         leave();
         loop {
@@ -1113,8 +971,6 @@ mod tests {
         assert!(rotation.is_empty());
     }
 
-    /// Back returns to what was on screen, forward retraces it, and a new
-    /// load from anywhere else drops the forward steps.
     #[test]
     fn the_trail_walks_back_and_forward_like_a_browser() {
         let a = std::path::PathBuf::from("/p/a.milk");
@@ -1134,7 +990,6 @@ mod tests {
         assert_eq!(trail.forward(), Some(c.clone()));
         assert_eq!(trail.forward(), None);
 
-        // Back to a, then somewhere new: b and c are forgotten.
         trail.back();
         trail.back();
         let d = std::path::PathBuf::from("/p/d.milk");
@@ -1143,13 +998,11 @@ mod tests {
         assert_eq!(trail.back(), Some(a.clone()));
         assert_eq!(trail.forward(), Some(d.clone()));
 
-        // Loading what's already up records nothing, so Previous after a
-        // restored preset doesn't land on the same preset again.
+        // Loading what's already up records nothing.
         trail.record(d.clone());
         assert_eq!(trail.back(), Some(a));
     }
 
-    /// The trail is bounded, and the oldest step is what goes.
     #[test]
     fn the_trail_forgets_its_oldest_steps_past_the_cap() {
         let mut trail = Trail::default();
@@ -1164,13 +1017,8 @@ mod tests {
         );
     }
 
-    /// End to end without a UI: context, projectM, one rendered frame.
-    ///
-    /// Needs a working OpenGL driver. Mesa's llvmpipe is enough and is what a
-    /// headless Linux box has, so this runs rather than being ignored. On a
-    /// machine with no driver at all the engine reports `Status::Failed`,
-    /// which is the documented behaviour, so the test accepts it and stops
-    /// rather than failing a build over a missing GPU.
+    /// End to end: context, projectM, one frame. llvmpipe is enough; with no
+    /// driver at all the engine reports `Status::Failed` and the test stops.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn the_engine_renders_a_frame() {
@@ -1211,24 +1059,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         };
 
-        // 64 was asked for, MIN_SIZE is what the engine will actually give.
         assert_eq!(frame.width, super::MIN_SIZE);
         assert_eq!(frame.height, super::MIN_SIZE);
         assert_eq!(frame.rgba8.len(), (frame.width * frame.height * 4) as usize);
         assert!(frame.seq > 0);
 
-        // A consumer that lets go of each frame before the next one is
-        // published gets the same buffer back, over and over. That's the
-        // whole point of handing out a handle: at a panel's size a fresh
-        // allocation per frame costs more in page faults than the render.
-        // Addresses can repeat by luck, so this wants a run of frames, not
-        // two.
-        //
-        // The frame is let go only once the one after it is in hand, which is
-        // what the panel does: the texture upload keeps the handle until the
-        // renderer has carried the bytes out. Three buffers is the floor for
-        // that pattern, one being written, one published, one held, and the
-        // point of the assert is that the set stops growing there.
+        // A consumer that lets go of each frame once it holds the next (what
+        // the panel does) must cycle a fixed set of buffers. Three is the floor:
+        // one written, one published, one held. A run of frames, since
+        // addresses can repeat by luck.
         let mut seen = std::collections::HashSet::new();
         let mut held = frame;
         let deadline = Instant::now() + Duration::from_secs(8);
@@ -1251,19 +1090,10 @@ mod tests {
         );
     }
 
-    /// Close a Milkdrop panel, open another one.
-    ///
-    /// This is the sequence that used to take the app down, so it's worth
-    /// having, but note what it does and doesn't prove. It exercises the
-    /// second `spawn` end to end. It does *not* reliably catch the
-    /// use-after-free that caused the original crash, because whether a read
-    /// through a freed pointer faults depends on what the allocator did with
-    /// the block. The deterministic proof of the underlying cause is
-    /// `projectm_latches_the_first_load_proc_user_data` below.
-    ///
-    /// The test is only meaningful with a real driver. Without one both
-    /// engines report `Status::Failed` and it stops early, the same as the
-    /// smoke test above.
+    /// Close a Milkdrop panel, open another: the sequence that crashes if
+    /// projectM resolves through the dropped engine (see `context::RESOLVER`).
+    /// It won't reliably catch the use-after-free itself; the deterministic
+    /// check is `projectm_latches_the_first_load_proc_user_data`.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn a_second_engine_starts_after_the_first_is_dropped() {
@@ -1297,9 +1127,6 @@ mod tests {
         };
         drop(first);
 
-        // The worker joins on the last clone dropping, so by here the first
-        // engine's context and its boxed state are gone. This is the call
-        // that used to die.
         let second = spawn_and_wait().expect("the first engine ran, so the second has a driver");
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -1314,32 +1141,18 @@ mod tests {
         }
     }
 
-    /// projectM's GL resolver latches the first load proc and user pointer it
-    /// is ever given, and ignores both arguments on every later instance.
-    ///
-    /// This is the reason [`load_proc`] resolves through a process-lifetime
-    /// display instead of a pointer to the engine that happens to be starting.
-    /// It is asserted here rather than argued in a comment, because it is a
-    /// property of the vendored libprojectM rather than of our code: if a
-    /// future bump makes `Initialize` adopt the new callback, this test goes
-    /// red and the workaround can be reconsidered.
-    ///
-    /// See `Renderer/Platform/GLResolver.cpp`, the `if (m_loaded) return
-    /// true;` at the top of `GLResolver::Initialize`.
-    ///
-    /// Deliberately written not to care whether it is the first test in this
-    /// binary to touch projectM. It latches the resolver itself, with the
-    /// real trampoline, before offering a different one.
+    /// projectM's GL resolver latches the first load proc and user pointer
+    /// (`GLResolver::Initialize`'s `if (m_loaded) return true;`) and ignores
+    /// later ones. The reason [`load_proc`] never uses `user_data`; if a bump
+    /// changes this, the test goes red. Latches the resolver itself first, so
+    /// test order doesn't matter.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn projectm_latches_the_first_load_proc_user_data() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        /// What the second instance handed our replacement trampoline, or
-        /// zero if it never called it at all. Both outcomes mean the same
-        /// thing: the resolver is not listening to us any more.
+        /// What the second instance handed our trampoline, or zero if it never called.
         static SEEN: AtomicUsize = AtomicUsize::new(0);
-        /// A sentinel, never dereferenced, only compared.
         const SECOND: usize = 0x2222;
 
         unsafe extern "C" fn recording_proc(
@@ -1354,15 +1167,13 @@ mod tests {
             context::resolve(unsafe { CStr::from_ptr(name) }) as *mut c_void
         }
 
-        // A context has to be current on this thread before projectM will
-        // resolve anything, and it has to outlive both instances.
+        // The context has to be current and outlive both instances.
         let Ok(headless) = context::create() else {
             eprintln!("no usable OpenGL here, skipping");
             return;
         };
         assert!(headless.is_current());
 
-        // Make sure the resolver is latched, by us if nobody beat us to it.
         let first = unsafe {
             pm::projectm_create_with_opengl_load_proc(Some(super::load_proc), std::ptr::null_mut())
         };
@@ -1372,8 +1183,6 @@ mod tests {
         }
         unsafe { pm::projectm_destroy(first) };
 
-        // Now offer a different callback and a different pointer. Neither
-        // should reach the resolver.
         SEEN.store(0, Ordering::Relaxed);
         let second = unsafe {
             pm::projectm_create_with_opengl_load_proc(Some(recording_proc), SECOND as *mut c_void)
@@ -1390,13 +1199,8 @@ mod tests {
         );
     }
 
-    /// Narrow the rotation, then step through it: every switch has to land
-    /// inside the folder.
-    ///
-    /// The presets here are empty files, so libprojectM will refuse them and
-    /// the panel would see `PresetFailed` for each. That's fine for what this
-    /// asserts, which is which paths the worker chose, not whether they
-    /// rendered. Same driver caveat as the tests above.
+    /// Every switch lands inside the narrowed folder. The presets are empty
+    /// files projectM refuses; the test is about which paths get chosen.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn a_rotation_keeps_every_switch_inside_the_folder() {
@@ -1436,17 +1240,13 @@ mod tests {
             }
         }
 
-        // Push the timed switch out of the way so the only preset changes
-        // from here on are the ones this test asks for, then flush the
-        // startup pick out of the event buffer.
+        // Push the timed switch out of the way, then flush the startup pick.
         engine.send(Command::SetPresetDuration(3600.0));
         std::thread::sleep(Duration::from_millis(100));
         engine.take_events();
 
-        // Every fresh pick lands in the folder. Previous isn't a pick: it
-        // retraces the trail, and the trail starts at the preset the
-        // engine came up on, before the rotation narrowed, so only Next
-        // is asked here.
+        // Only Next: Previous retraces a trail that starts before the rotation
+        // narrowed.
         engine.send(Command::SetRotation(Rotation::Folder(root.join("Fractal"))));
         for _ in 0..10 {
             engine.send(Command::NextPreset { smooth: false });
@@ -1466,8 +1266,6 @@ mod tests {
         }
         assert!(picked.len() >= 2, "the engine never switched preset");
 
-        // Back goes to the pick before the last one, whatever the sorted
-        // order says, and forward comes back to the last one.
         engine.send(Command::PreviousPreset { smooth: false });
         engine.send(Command::NextPreset { smooth: false });
         std::thread::sleep(Duration::from_millis(200));
@@ -1489,20 +1287,13 @@ mod tests {
         );
     }
 
-    /// Presets that land on disk after the panel opened still get played.
-    ///
-    /// This is the case Andrew hit: the panel scanned an empty directory at
-    /// startup, he unpacked a pack into it, and the settings list caught up
-    /// on rescan while the worker kept walking the empty snapshot it was
-    /// spawned with. A rescan that only fixes the count is worse than no
-    /// rescan, because it looks like it worked.
+    /// Presets unpacked after the panel opened get played after a rescan, not
+    /// just counted.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn a_rescanned_library_reaches_a_worker_that_started_empty() {
         let dir = tempfile::tempdir().unwrap();
-        // projectM will reject these as presets, which is fine: the worker
-        // announces the preset it asked for and reports the parse failure
-        // separately, and it's the asking this test is about.
+        // projectM rejects these; the test is about what the worker asks for.
         for name in ["a.milk", "b.milk"] {
             std::fs::write(dir.path().join(name), "").unwrap();
         }
@@ -1531,8 +1322,6 @@ mod tests {
             }
         }
 
-        // An empty library has nothing to announce, so anything after this
-        // point came from the rescan.
         engine.take_events();
         engine.send(Command::SetLibrary {
             library: PresetLibrary::scan(&[dir.path().to_path_buf()], None),
@@ -1564,14 +1353,8 @@ mod tests {
         );
     }
 
-    /// The lock stops the visual changing on its own. It doesn't stop you.
-    ///
-    /// Andrew locked a preset and then found Next, Previous and Random in
-    /// the panel menu did nothing at all, which reads as three broken menu
-    /// items rather than as the lock working. projectM's own timed switch is
-    /// held off by `projectm_set_preset_locked` and the beat-driven one by
-    /// the check in `drain_callbacks`, so an explicit command doesn't need
-    /// to be refused as well.
+    /// The lock stops the visual changing on its own; explicit Next, Previous
+    /// and Random still work.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn a_locked_engine_still_takes_an_explicit_preset_change() {
@@ -1604,8 +1387,6 @@ mod tests {
             }
         }
 
-        // Nothing may switch on its own from here, so every preset change
-        // after this point is one the test asked for.
         engine.send(Command::SetLocked(true));
         engine.send(Command::SetPresetDuration(3600.0));
         std::thread::sleep(Duration::from_millis(100));
@@ -1635,11 +1416,8 @@ mod tests {
         }
     }
 
-    /// A restored preset is the first and only thing the worker loads. It
-    /// used to shuffle one in the constructor and take the restore as a
-    /// command after, so the owner saw two switches at start. The backdrop
-    /// writes what it sees to settings while locked, kept the random one
-    /// out of that pair, and came up somewhere else on every restart.
+    /// A restored preset is the first and only thing the worker loads, with
+    /// no shuffle before it. `EngineOptions::preset` says why.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs a GL driver")]
     fn a_worker_spawned_with_a_preset_comes_up_on_it_without_a_shuffle_first() {
@@ -1673,7 +1451,6 @@ mod tests {
                 }
             }
         }
-        // Long enough for a stray shuffle to have been announced too.
         std::thread::sleep(Duration::from_millis(100));
 
         let changed: Vec<_> = engine

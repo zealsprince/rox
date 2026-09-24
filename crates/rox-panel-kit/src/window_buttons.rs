@@ -1,12 +1,6 @@
-//! The window buttons, for the surfaces that draw their own chrome: the
-//! window controls panel, the menubar's left edge, and the fallback
-//! titlebar a window grows when the compositor won't decorate it. Pure
-//! widget factory, so every caller gets the same three buttons and only
-//! the close handler differs.
-//!
-//! Two styles, both trios in their platform's order: flat icons in the
-//! app's palette (Windows order, minimize to maximize to close), and the
-//! macOS traffic lights (close to minimize to zoom).
+//! The window buttons for surfaces that draw their own chrome: the window
+//! controls panel, the menubar, and the fallback titlebar. Two styles, each
+//! in its platform's order: flat icons (Windows) and traffic lights (macOS).
 
 use gpui::{App, Div, MouseButton, MouseDownEvent, Stateful, Window, div, prelude::*, px, rgb};
 use rox_design::assets::icons;
@@ -14,15 +8,12 @@ use rox_design::{palette, tokens};
 
 use crate::Tip;
 
-/// The macOS traffic light colors, close to minimize to zoom.
 const TRAFFIC_CLOSE: u32 = 0xff5f57;
 const TRAFFIC_MIN: u32 = 0xfebc2e;
 const TRAFFIC_ZOOM: u32 = 0x28c840;
 
-/// The maximize control. On macOS it matches the native green button: native
-/// fullscreen (its own Space, honoring the user's Mission Control setup) by
-/// default, and zoom (fill the screen in place) on Option-click. Everywhere
-/// else it just maximizes.
+/// On macOS this matches the native green button: fullscreen by default,
+/// zoom on Option-click. Everywhere else it maximizes.
 pub fn maximize(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
     if cfg!(target_os = "macos") && !event.modifiers.alt {
         window.toggle_fullscreen();
@@ -31,10 +22,6 @@ pub fn maximize(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
     }
 }
 
-/// What the maximize control does right now, which is two things on macOS and
-/// one everywhere else. The modifier is the part nobody guesses, so the tip
-/// spells it out. From inside a fullscreen Space the same click is the way
-/// back out, and the tip says that instead.
 pub fn maximize_tip(window: &Window) -> &'static str {
     if !cfg!(target_os = "macos") {
         "Maximize"
@@ -45,11 +32,8 @@ pub fn maximize_tip(window: &Window) -> &'static str {
     }
 }
 
-/// The glyph for the maximize control, for the surfaces that draw icons
-/// rather than traffic lights. Corner brackets folding in from inside a
-/// fullscreen Space, and the plain square otherwise. Brackets rather than
-/// shrink arrows: the mini toggle uses the arrows, and it can sit right
-/// beside this button.
+/// Brackets rather than shrink arrows inside fullscreen: the mini toggle,
+/// which can sit right beside this button, uses the arrows.
 pub fn maximize_icon(window: &Window) -> &'static str {
     if cfg!(target_os = "macos") && window.is_fullscreen() {
         icons::FULLSCREEN_EXIT
@@ -58,13 +42,8 @@ pub fn maximize_icon(window: &Window) -> &'static str {
     }
 }
 
-/// The three traffic lights in macOS order (close, minimize, zoom) over
-/// the caller's close handler; minimize and zoom are the window's own, so
-/// they're the same wherever these are drawn. Handed back as children
-/// rather than a row, so each caller keeps its own spacing: the window
-/// controls panel spaces them with the mini toggle beside them, the macOS
-/// menubar places them at its left edge. The window is read for the zoom
-/// light's tip, which follows the fullscreen state.
+/// Handed back as children rather than a row so each caller keeps its own
+/// spacing.
 pub fn traffic_lights(
     window: &Window,
     close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -80,10 +59,6 @@ pub fn traffic_lights(
     ]
 }
 
-/// One traffic light: a colored circle that runs its click handler. No
-/// hover glyphs, the color identifies them like macOS without focus,
-/// and the tip is there for anyone who reads the color the other way
-/// round.
 fn traffic_light(
     color: u32,
     tip: &'static str,
@@ -100,11 +75,6 @@ fn traffic_light(
     )
 }
 
-/// The flat-icon trio in Windows order (minimize, maximize, close) over
-/// the caller's close handler, the [`traffic_lights`] twin. Handed back as
-/// children rather than a row for the same reason: the window controls
-/// panel spaces them with the mini toggle beside them, the fallback
-/// titlebar spaces them against its title text.
 pub fn icon_controls(
     window: &Window,
     close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -116,11 +86,14 @@ pub fn icon_controls(
             |_, w, _| w.minimize_window(),
         ),
         icon_button(maximize_icon(window), maximize_tip(window), maximize),
-        icon_button(icons::CLOSE, rox_i18n::t_static("panel-close"), close),
+        icon_button(
+            icons::WINDOW_CLOSE,
+            rox_i18n::t_static("panel-close"),
+            close,
+        ),
     ]
 }
 
-/// One flat button: an icon that runs its click handler.
 pub fn icon_button(
     icon: &'static str,
     tip: &'static str,

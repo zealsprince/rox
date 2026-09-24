@@ -1,9 +1,5 @@
-//! The font-family picker: the field the app settings window and every
-//! panel's Appearance page drop their typeface list from. The machinery
-//! is [`search_picker`](crate::search_picker::search_picker); this file
-//! keeps the family list, enumerated once, and the Default head that
-//! clears the override so the text falls back to whatever the layer
-//! above sets.
+//! The font-family picker for the app settings window and every panel's
+//! Appearance page, built on [`search_picker`](crate::search_picker).
 
 use std::sync::{Arc, OnceLock};
 
@@ -11,13 +7,10 @@ use gpui::{App, Context, SharedString, prelude::*};
 
 use crate::search_picker::{PickRow, search_picker};
 
-/// The head of the list, the row that clears the override so the text
-/// falls back to whatever the layer above sets.
 const DEFAULT_LABEL: &str = "Default";
 
-/// A font-family picker: the shared field over the installed families,
-/// with a Default at the head that clears the override back to the app
-/// font. `current` is the panel's stored family, None meaning inherit.
+/// A picker over the installed families, headed by a Default row that clears
+/// the override. `current` None means inherit.
 // `use<..>` and the named `A` for the same reason as the crate root's
 // `picker`.
 pub fn font_picker<P, A>(
@@ -30,9 +23,8 @@ where
     P: 'static,
     A: Fn(&mut P, Option<String>, &mut Context<P>) + 'static,
 {
-    // The stored family shows even when it isn't installed here, since
-    // clearing someone's override because this machine lacks the font
-    // would be the picker's doing, not theirs.
+    // Show the stored family even when this machine lacks it; never clear
+    // the override on the user's behalf.
     let label: SharedString = current
         .clone()
         .map(SharedString::from)
@@ -49,10 +41,7 @@ where
     )
 }
 
-/// The installed families, Default at the head, enumerated and sorted
-/// once and shared from there. They don't change over a session, and this
-/// used to run on every settings render, slider scrubs included, where
-/// re-listing and re-sorting every font each frame was pure waste.
+/// Enumerated once: the settings pages render on every slider scrub.
 fn families(cx: &mut App) -> Arc<Vec<PickRow>> {
     static FONTS: OnceLock<Arc<Vec<PickRow>>> = OnceLock::new();
     FONTS

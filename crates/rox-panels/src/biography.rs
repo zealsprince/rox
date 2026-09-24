@@ -1,24 +1,13 @@
 //! The biography panel: who the current track's artist is. A wide image
-//! banner up top with the name, the country, and the years active laid
-//! over its foot, then the listening stats, the genre tags, the wiki
-//! text, the top tracks, and the similar names, over the artist fanart
-//! dimmed into the background. It all comes from the artist store's
-//! cached fetches (Last.fm text, stats, and top tracks, deezer portrait,
-//! theaudiodb banner, fanarts, and facts), so a shown artist reads
-//! offline from then on. The header cycles through the wide images on a
-//! timer with a crossfade, and arrows on hover step through them by
-//! hand. A tag crediting several acts splits into chips, one sheet per
-//! act, a click apart. A top track the
-//! library holds selects on a click, the app-wide selection every other
-//! panel follows, and plays on a double click; one it doesn't is inert.
-//! A similar name is a chip too: a click turns the sheet to that artist,
-//! a trail of chips over the sheet leading back, and one the library
-//! files tracks under carries a search glyph that picks it on the shared
-//! search.
-//! Which track is per-view config through [`crate::source::TrackSource`],
-//! the cover panel's knob, so a duplicate can watch each. The sheet
-//! scrolls as one; each block has its own toggle in the panel settings,
-//! so a narrow panel can pare down to just the text.
+//! banner with the name, country, and years active over its foot, then the
+//! listening stats, genre tags, wiki text, top tracks, and similar names,
+//! over the artist fanart dimmed into the background. It all comes from the
+//! artist store's cached fetches, so a shown artist reads offline from then
+//! on. A tag crediting several acts splits into chips, one sheet per act,
+//! and a similar name is a chip that turns the sheet to that artist.
+//!
+//! Which track is per-view config through [`crate::source::TrackSource`], so
+//! a duplicate can watch each.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -54,108 +43,69 @@ use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
-/// The header height's default and floor, in px. With the proportions
-/// kept it caps how tall the band gets, so a square portrait fallback
-/// doesn't run as tall as the panel is wide; with them off it is the
-/// band's height outright. Typed rather than scrubbed, since the useful
-/// range runs from a strip to most of a tall panel; the ceiling only
-/// keeps a stray digit from making a band taller than any screen.
+/// Header band height in px. The ceiling only stops a stray digit making a
+/// band taller than any screen.
 const HEADER_H_DEFAULT: f32 = 200.;
 const HEADER_H_MIN: f32 = 40.;
 const HEADER_H_MAX: f32 = 4000.;
 
-/// The hover arrows' size on the header, in px.
 const HEADER_ARROW: f32 = 28.;
 
-/// How far up the header the title's scrim reaches, in px.
 const OVERLAY_SCRIM_H: f32 = 56.;
 
-/// The background opacity knob's default, in percent.
 const BACKGROUND_OPACITY_DEFAULT: f32 = 40.;
 
-/// How long the crossfade between two header images runs. Longer than
-/// the palette's ease: a picture swapping under a title reads better
-/// slow, and nothing waits on it.
+/// Slower than the palette's ease: a picture swapping under a title reads
+/// better slow.
 const HEADER_FADE_SECS: f32 = 0.8;
 
-/// How often the cycle checks whether its interval has passed. A second
-/// keeps a changed interval taking effect promptly without the loop
-/// costing anything to speak of; the stats widget ticks the same way.
 const CYCLE_TICK: Duration = Duration::from_secs(1);
 
-/// The width of the play and queue slot at a top track row's left edge,
-/// kept whether or not the row has icons so the ranks line up.
+/// Reserved on every top track row, icons or not, so the ranks line up.
 const TRACK_ACTIONS_W: f32 = 36.;
 
-/// The choices the track count knob offers.
 const TOP_TRACK_COUNTS: [usize; 3] = [3, 5, 10];
 
-/// The choices the cycle interval knob offers, in seconds.
 const CYCLE_INTERVALS: [u64; 5] = [5, 10, 20, 30, 60];
 
-/// The biography panel's per-view config: what a saved layout restores,
-/// and what the settings window edits. Missing fields take the defaults,
-/// so a layout dumped before a knob existed still loads.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BiographyConfig {
-    /// The rename, theme override, and placement locks shared by every
-    /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub source: TrackSource,
-    /// Which tag names the artist: the track's own artist, or the album
-    /// artist for a compilation or a guest-heavy record.
     pub name_source: NameSource,
-    /// The image banner across the panel top: the wide artist banner when
-    /// one was found, the square portrait otherwise. Named `portrait` from
-    /// when that was all it showed; a saved layout keeps its setting.
+    /// The header image. Named `portrait` from before the banner existed;
+    /// renaming it breaks saved layouts.
     pub portrait: bool,
-    /// Keep the header image at its own proportions; off crops it to fill
-    /// a fixed band instead.
+    /// Keep the header image at its own proportions; off crops it into a
+    /// fixed band.
     pub header_aspect: bool,
-    /// Let a tall header image span the full width, however tall that runs,
-    /// instead of being capped and centered. Only applies while the
-    /// proportions are kept: a cropped fill already spans the width.
+    /// Let a tall header image span the full width uncapped. Only applies
+    /// while the proportions are kept.
     pub header_fill: bool,
-    /// With the proportions off, fit the whole image into the band over a
-    /// blurred wash of itself instead of cropping it to fill: a banner
-    /// letterboxes, a portrait pillarboxes, and nothing is cut.
+    /// With the proportions off, fit the whole image over a blurred copy of
+    /// itself instead of cropping.
     pub header_blur: bool,
-    /// The band's height, or the cap on it while the proportions are
-    /// kept, in px.
+    /// The band's height, or its cap while the proportions are kept.
     pub header_height: f32,
-    /// Lay the name, country, and years over the header's foot instead of
-    /// under it in the sheet.
     pub header_overlay: bool,
-    /// Which of theaudiodb's wide images feed the header: the logo strip
-    /// (the banner) and the 16:9 fanarts. The strip is off by default,
-    /// since a 1000x185 lettering band reads poorly under a title; with
-    /// both off, or nothing found, the square portrait stands in.
+    /// theaudiodb's logo strip, off by default: a 1000x185 lettering band
+    /// reads poorly under a title.
     pub header_banner: bool,
     pub header_fanart: bool,
-    /// Rotate the header through the images the two sources give, with a
-    /// crossfade, every `cycle_secs`.
     pub cycle: bool,
     pub cycle_secs: u64,
-    /// The artist fanart behind the text, dimmed and fading out toward the
-    /// bottom so the words keep reading.
     pub background: bool,
-    /// How strongly the fanart shows, in percent, before the fade.
     pub background_opacity: f32,
-    /// The country and years active line under the name.
+    /// The country and years active line.
     pub profile: bool,
     /// The country as its flag; off, as its two-letter code.
     pub flag: bool,
-    /// The listeners and plays row under the name.
     pub stats: bool,
-    /// The genre tag chips.
     pub tags: bool,
-    /// The Last.fm top tracks list after the text, `top_tracks_count`
-    /// long.
     pub top_tracks: bool,
     pub top_tracks_count: usize,
-    /// The similar artists block at the sheet's foot.
     pub similar: bool,
 }
 
@@ -188,7 +138,6 @@ impl Default for BiographyConfig {
     }
 }
 
-/// Which tag the sheet's artist comes from.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NameSource {
@@ -199,88 +148,51 @@ pub enum NameSource {
 pub struct BiographyPanel {
     state: AppState,
     config: BiographyConfig,
-    /// The shown path's credited artists off the chosen tag, cached
-    /// because the pump notifies per frame and the lookup is a database
-    /// read; empty inside for an untagged file. Cleared when the catalog
-    /// changes. A tag naming several acts ("A, B", "A feat. B") splits
-    /// into them, and `pick` says which one the sheet is about.
-    ///
-    /// The number beside the key is the station-title revision the credits
-    /// were read at. A station's key stands still while the song under it
-    /// turns over, so without it the sheet would stay on whoever was
-    /// playing when the stream was tuned in.
+    /// The shown track's credits, cached because the pump notifies per
+    /// frame. The `u64` is the station-title revision: a station's key
+    /// stands still while the song under it turns over.
     artist: Option<(TrackKey, u64, Vec<String>)>,
-    /// Which of the credited artists the sheet shows, an index into the
-    /// list above; back to the first when the track changes.
     pick: usize,
-    /// The names browsed into off the similar lists, the last one what
-    /// the sheet shows; empty means the sheet is about the credited
-    /// artist itself. Cleared with the pick when the track changes.
+    /// Names browsed into off the similar lists; empty means the sheet shows
+    /// the credited artist.
     trail: Vec<String>,
-    /// Every album artist the library knows, folded, the evidence the
-    /// credit splitter uses to keep "Earth, Wind & Fire" whole. Built on
-    /// first use and dropped when the catalog changes.
+    /// Every album artist, folded: the evidence that keeps "Earth, Wind &
+    /// Fire" whole when splitting credits.
     known_acts: Option<Arc<HashSet<String>>>,
-    /// Every name the library files tracks under, folded, with the filter
-    /// field and the spelling a search pick wants for it. What tells a
-    /// similar name the library holds from one it doesn't. Built on first
-    /// use and dropped when the catalog or the name source changes.
+    /// Every name the library files tracks under, folded, with the field and
+    /// spelling a search pick wants.
     held: Option<Arc<HashMap<String, (FilterField, String)>>>,
-    /// The store's result, keyed by the folded name it was asked under;
-    /// None inside is a clean miss, no Last.fm entry under that name.
+    /// Keyed by the folded name; None inside is a clean miss.
     loaded: Option<(String, Option<Artist>)>,
-    /// The folded name a fetch is running for, so a render can tell
-    /// "already fetching" from "needs a fetch".
     pending: Option<String>,
-    /// The last fetch's failure keyed the same way, shown quietly in
-    /// place of a sheet until the track or a refresh moves things on.
     error: Option<(String, SharedString)>,
-    /// The cached source resolve, so the pump's per-frame notifies never
-    /// turn into selection lookups.
     resolved: ResolvedTrack,
     /// Discards stale fetch results when the artist changes mid-flight.
     generation: u64,
-    /// Which of the header images is up, an index into the cycle list.
     header_ix: usize,
-    /// The image on its way out and when the crossfade started, while one
-    /// runs.
     fade: Option<(SizedImage, Instant)>,
-    /// When the header last moved on, the cycle's clock.
     advanced_at: Instant,
-    /// Which library track each top track resolved to, keyed by the
-    /// folded artist name the list belongs to; None per row is a track
-    /// the library doesn't hold. Cleared when the catalog changes.
+    /// Library ids for the top tracks, keyed by the folded artist; None is a
+    /// track the library doesn't hold.
     matches: Option<(String, Vec<Option<i64>>)>,
     scroll: ScrollHandle,
     focus: FocusHandle,
-    /// The settings slider's scrub and readout-edit state.
     opacity_scrub: ScrubState,
     value_edit: panel::ValueEdit,
-    /// The header height field, made the first time the customize window
-    /// opens, with the subscription that applies what's typed.
     height_input: Option<(Entity<InputState>, Subscription)>,
-    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _selection_changed: Subscription,
     _library_changed: Subscription,
-    /// Retires the shown artist's decoded images when the panel is dropped
-    /// (closed or its pop-out window shut). Without it a closed panel leaves
-    /// its portrait, banner, and background pinned in gpui's never-evicting
-    /// asset cache.
+    /// Without it a closed panel leaves its images pinned in gpui's
+    /// never-evicting asset cache.
     _retire_on_drop: Subscription,
 }
 
 impl BiographyPanel {
     pub fn new(state: AppState, config: BiographyConfig, cx: &mut Context<Self>) -> Self {
-        // The sheet turns over with the track, not as it plays, so the
-        // gated observe skips the pump's per-tick repaints.
-        //
-        // The title revision rides along with the view because a station
-        // is one track for the whole broadcast: the view holds the key,
-        // which doesn't move when the stream announces its next song, and
-        // that announcement is the only thing that names the act the sheet
-        // should be about.
+        // Gated on the view and the station-title revision: a station's view
+        // doesn't move when the stream announces its next song.
         let _player_changed = {
             let mut last = {
                 let player = state.player.read(cx);
@@ -304,10 +216,8 @@ impl BiographyPanel {
                 cx.notify();
             },
         );
-        // A rescan can rewrite tags and id -> path mappings; drop the
-        // caches so the resolve, the artist tag, and the top track matches
-        // re-read. The store's cached results stay: they key on the name,
-        // not the file.
+        // A rescan can rewrite tags and id mappings. The store's results
+        // stay, since they key on the name.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -329,9 +239,6 @@ impl BiographyPanel {
             let old = this.loaded.take().and_then(|(_, a)| a);
             this.retire(old, cx);
         });
-        // The cycle's clock: a slow tick that moves the header on once the
-        // interval has passed; the loop ends with the view, the stats
-        // widget's shape. Idle when the cycle is off or there is one image.
         cx.spawn(async move |view, cx| {
             loop {
                 cx.background_executor().timer(CYCLE_TICK).await;
@@ -371,14 +278,8 @@ impl BiographyPanel {
         }
     }
 
-    /// The shown path's credited artists off the chosen tag, from the
-    /// cache or one database read on a miss, the other tag standing in
-    /// when the chosen one is empty. Empty for an untagged file or one
-    /// the library doesn't know.
-    ///
-    /// A station's row names the station, so the read goes through the
-    /// player's overlay and comes back with the act the stream announced.
-    /// The revision moves once a song, which is the rate this then runs at.
+    /// Credits off the chosen tag, the other tag standing in when it's
+    /// empty. A station's read goes through the player's announced song.
     fn credits_for(&mut self, key: &TrackKey, cx: &App) -> Vec<String> {
         let rev = self.live_rev(key, cx);
         if self.artist.as_ref().map(|(k, r, _)| (k, *r)) != Some((key, rev)) {
@@ -409,10 +310,7 @@ impl BiographyPanel {
             .unwrap_or_default()
     }
 
-    /// The station-title revision the shown track sits at: the number that
-    /// moves when a stream announces its next song. Zero unless the shown
-    /// track is the live one playing, so a file and a selection both key on
-    /// nothing but themselves.
+    /// Zero unless the shown track is the live stream playing.
     fn live_rev(&self, key: &TrackKey, cx: &App) -> u64 {
         let player = self.state.player.read(cx);
         match player.now_playing() {
@@ -421,10 +319,8 @@ impl BiographyPanel {
         }
     }
 
-    /// The shown track's tags with a station's announced song laid over
-    /// them. A stream's library row is the station itself, whose artist
-    /// tag names the station, so the credits have to come off the overlay
-    /// or the sheet is about a radio station instead of the band on it.
+    /// A stream's row names the station, so the credits come off the
+    /// announced song laid over it.
     fn live_meta(&self, key: &TrackKey, cx: &App) -> Option<rox_library::store::TrackMeta> {
         let row = self.state.library.read(cx).meta_for_key(key);
         let player = self.state.player.read(cx);
@@ -434,11 +330,8 @@ impl BiographyPanel {
         }
     }
 
-    /// The library's album artists, folded, from the cache or one pass
-    /// over the projection's symbol table. What tells a comma inside one
-    /// act's name from a comma between two acts: an album is filed under
-    /// the act that made it, so a name with a comma that shows up as an
-    /// album artist is one act.
+    /// An album is filed under the act that made it, so a name with a comma
+    /// that shows up as an album artist is one act.
     fn known_acts(&mut self, cx: &App) -> Arc<HashSet<String>> {
         if let Some(known) = &self.known_acts {
             return known.clone();
@@ -461,8 +354,6 @@ impl BiographyPanel {
         known
     }
 
-    /// The credited artist the sheet is about: the picked one, the first
-    /// when the pick has gone stale. Empty when the track names none.
     fn picked(&self) -> String {
         self.artist
             .as_ref()
@@ -471,16 +362,11 @@ impl BiographyPanel {
             .unwrap_or_default()
     }
 
-    /// The artist the sheet shows: the end of the browse trail while one
-    /// is walked, the picked credit otherwise.
     fn shown(&self) -> String {
         self.trail.last().cloned().unwrap_or_else(|| self.picked())
     }
 
-    /// Turn the sheet to a name off the similar list, one more step down
-    /// the trail. A name already on it is a step back to that point
-    /// rather than a loop, and the credited artist's own name is the
-    /// trail's start.
+    /// A name already on the trail steps back to it rather than looping.
     fn browse(&mut self, name: String, cx: &mut Context<Self>) {
         if let Some(at) = self.trail.iter().position(|n| *n == name) {
             self.trail.truncate(at + 1);
@@ -492,10 +378,8 @@ impl BiographyPanel {
         cx.notify();
     }
 
-    /// The names the library files tracks under, from the cache or one
-    /// pass over the projection's artist and album artist tables, the
-    /// chosen tag's table first so a name in both picks the field the
-    /// sheet reads.
+    /// The chosen tag's table goes first, so a name in both picks the field
+    /// the sheet reads.
     fn held(&mut self, cx: &App) -> Arc<HashMap<String, (FilterField, String)>> {
         if let Some(held) = &self.held {
             return held.clone();
@@ -521,10 +405,7 @@ impl BiographyPanel {
         held
     }
 
-    /// Make sure the store's result for `name` is loaded or on its way:
-    /// run the cache-or-fetch off the UI thread and swap the result in
-    /// when it arrives. `force` refetches past the store's TTL, the
-    /// dropdown's refresh.
+    /// `force` refetches past the store's TTL.
     fn ensure_loaded(&mut self, name: &str, force: bool, cx: &mut Context<Self>) {
         let key = providers::normalize(name);
         if !force
@@ -554,8 +435,7 @@ impl BiographyPanel {
                 this.pending = None;
                 match result {
                     Ok(artist) => {
-                        // A fresh artist starts its cycle from the top,
-                        // and no fade may keep a retired image on screen.
+                        // No fade may keep a retired image on screen.
                         this.header_ix = 0;
                         this.fade = None;
                         this.advanced_at = Instant::now();
@@ -569,7 +449,6 @@ impl BiographyPanel {
                         this.error = Some((key, format!("Couldn't load {name}: {e}").into()))
                     }
                 }
-                // A fresh sheet reads from the top.
                 this.scroll.set_offset(point(px(0.), px(0.)));
                 cx.notify();
             })
@@ -578,13 +457,8 @@ impl BiographyPanel {
         .detach();
     }
 
-    /// Drop a replaced artist's decoded bitmaps from gpui's asset cache. `img`
-    /// keeps every distinct decode in the process-wide asset cache and never
-    /// evicts on its own, so without this every artist viewed leaks its
-    /// portrait, banner, fanarts, and background for the life of the
-    /// process. Same as the cover and metadata panels' retire. Skips a
-    /// bitmap the freshly loaded artist still shows, which a refresh of the
-    /// same artist reuses.
+    /// gpui's asset cache never evicts, so every artist viewed would leak its
+    /// images without this. Skips any the fresh artist still shows.
     fn retire(&self, old: Option<Artist>, cx: &mut App) {
         let Some(old) = old else { return };
         let kept = self
@@ -600,9 +474,6 @@ impl BiographyPanel {
         }
     }
 
-    /// Refetch the shown artist past the store's TTL, the dropdown's
-    /// Refresh: a moved portrait or a grown wiki article shows up without
-    /// waiting out the month.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let name = self.shown();
         if name.is_empty() {
@@ -612,10 +483,6 @@ impl BiographyPanel {
         cx.notify();
     }
 
-    /// The images the header shows: the banner and then the fanarts, each
-    /// as its source toggle allows. With the cycle off only the first
-    /// counts, so a banner-only setting is the header as it was before the
-    /// cycle existed. The portrait stands in when the sources give nothing.
     fn headers(&self, artist: &Artist) -> Vec<SizedImage> {
         let mut list = Vec::new();
         if self.config.header_banner {
@@ -632,7 +499,6 @@ impl BiographyPanel {
         list
     }
 
-    /// The cycle's tick: move the header on once the interval has passed.
     fn tick(&mut self, cx: &mut Context<Self>) {
         if !self.config.cycle || self.advanced_at.elapsed().as_secs() < self.config.cycle_secs {
             return;
@@ -640,10 +506,8 @@ impl BiographyPanel {
         self.step(1, cx);
     }
 
-    /// Move the header `delta` images along (wrapping either way) with a
-    /// crossfade from the one up now, and restart the cycle's clock so a
-    /// hand-picked image gets its full interval. Nothing to do with one
-    /// image or none.
+    /// Restarts the cycle's clock so a hand-picked image gets its full
+    /// interval.
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some((_, Some(artist))) = &self.loaded else {
             return;
@@ -662,10 +526,6 @@ impl BiographyPanel {
         cx.notify();
     }
 
-    /// The header height field, seeded with the config's value the first
-    /// time and applying every valid number typed into it from then on.
-    /// A number under the floor or over the ceiling clamps as it applies;
-    /// anything that isn't a number leaves the height as it was.
     fn height_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
         if let Some((input, _)) = &self.height_input {
             return input.clone();
@@ -686,13 +546,8 @@ impl BiographyPanel {
         input
     }
 
-    /// Which library track each of the artist's top tracks is, computed
-    /// once per artist and kept until the catalog changes. A scan of the
-    /// projection: a row whose artist or album artist folds to the shown
-    /// name (the tag's spelling or Last.fm's) and whose title folds to
-    /// the top track's is the match, first found wins. Folding is the
-    /// search's case and accent fold plus the provider's punctuation
-    /// fold, so "Don't" against "Don’t" still meets.
+    /// Folds with the search's case and accent fold plus the provider's
+    /// punctuation fold, so "Don't" against "Don’t" still meets.
     fn matches_for(
         &mut self,
         key: &str,
@@ -727,8 +582,6 @@ impl BiographyPanel {
                     continue;
                 }
                 let view = projection.resolve(row);
-                // A row credited to several acts counts for each of them,
-                // so a collaboration lands under either name.
                 let by_this_artist = credits(view.artist, &is_known)
                     .iter()
                     .chain(credits(view.album_artist, &is_known).iter())
@@ -752,9 +605,7 @@ impl BiographyPanel {
         matches
     }
 
-    /// Publish a matched top track as the app-wide selection, the way a
-    /// click in the library does, so the panels that follow it turn to
-    /// the track without it starting.
+    /// Selects without playing, the way a click in the library does.
     fn select(&mut self, id: i64, cx: &mut Context<Self>) {
         let source = cx.entity_id();
         self.state
@@ -763,7 +614,6 @@ impl BiographyPanel {
         cx.notify();
     }
 
-    /// Play a matched top track now, or queue it after what's queued.
     fn play(&mut self, id: i64, queue: bool, cx: &mut Context<Self>) {
         let Ok(keys) = self.state.library.read(cx).keys_for(&[id]) else {
             return;
@@ -780,9 +630,6 @@ impl BiographyPanel {
         });
     }
 
-    /// The panel's own dropdown entries: the source pick, the image
-    /// toggles (the customize window's, surfaced for a quick flip), and
-    /// the refresh.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -800,10 +647,8 @@ impl BiographyPanel {
             window,
             cx,
         );
-        // A checked row that flips one bool of the config, the image toggles
-        // the customize window also has. No icon: the left-side check shows
-        // the state, and an icon would take that slot (the source flyout's
-        // note), so these read like the other panels' toggle rows.
+        // No icon: the left-side check shows the state, and an icon would
+        // take that slot.
         let entity = cx.entity();
         let toggle =
             |menu: PopupMenu, label: SharedString, checked, set: fn(&mut BiographyConfig)| {
@@ -892,7 +737,6 @@ impl PanelSettings for BiographyPanel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let height_input = self.height_input(window, cx);
-        // One toggle row per config bool, the shape every row below shares.
         let flag =
             |label: &str, on: bool, set: fn(&mut BiographyConfig, bool), cx: &mut Context<Self>| {
                 panel::setting_row(
@@ -947,8 +791,6 @@ impl PanelSettings for BiographyPanel {
                     self.config.name_source,
                     |this: &mut Self, name_source, cx| {
                         this.config.name_source = name_source;
-                        // The credits and the held names re-read off the
-                        // other tag.
                         this.artist = None;
                         this.held = None;
                         cx.notify();
@@ -984,9 +826,8 @@ impl PanelSettings for BiographyPanel {
                     cx,
                 ))
             })
-            // The height is the band's height, or the cap on a proportioned
-            // band; with the proportions kept and the fill on there is no
-            // cap, so the row would set nothing and hides.
+            // With the proportions kept and the fill on there's no cap, so the
+            // row would set nothing.
             .when(
                 !(self.config.header_aspect && self.config.header_fill),
                 |d| {
@@ -1161,8 +1002,6 @@ impl Panel for BiographyPanel {
         false
     }
 
-    /// The layout dump stores the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -1236,9 +1075,8 @@ impl Panel for BiographyPanel {
 impl Render for BiographyPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        // The panel is a focus stop: a click puts the keyboard here and
-        // tab walks to it, which is also what puts its tab group on the
-        // focus path for the tab-cycle chord.
+        // A focus stop, which also puts the tab group on the focus path for
+        // the tab-cycle chord.
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
@@ -1246,9 +1084,8 @@ impl Render for BiographyPanel {
 
 impl BiographyPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // The floor at the surface opacity like every other panel, so the
-        // window backdrop (the playing track's art, ADR 10) shows through
-        // as much as the theme asks. The artist background lays over it.
+        // The floor at surface opacity, so the window backdrop (ADR 10) shows
+        // through.
         let root = div().size_full().bg(palette::bg_root());
         let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             return root.child(quiet(rox_i18n::t!("content-no-track")));
@@ -1260,11 +1097,8 @@ impl BiographyPanel {
         }
         self.ensure_loaded(&name, false, cx);
         let key = providers::normalize(&name);
-        // With several acts credited, a chip per name over whatever the
-        // sheet shows, the picked one in the accent, so the other's sheet
-        // is one click away. A walked trail follows the credits behind a
-        // chevron each, its end in the accent instead, and a click on any
-        // earlier chip steps back to it.
+        // A chip per credited act, then the browse trail behind chevrons. The
+        // one shown is in the accent.
         let trail = self.trail.clone();
         let picker = (names.len() > 1 || !trail.is_empty()).then(|| {
             let pick = self.pick.min(names.len().saturating_sub(1));
@@ -1343,14 +1177,9 @@ impl BiographyPanel {
         }
     }
 
-    /// The frame the header image fills, shaped by the two fit knobs. The
-    /// image object-fits Cover into it, so it always fills the frame and
-    /// crops the overflow; the frame's own shape decides what that means:
-    ///
-    /// - proportions off: a fixed band, so the image crops to fill it.
-    /// - fill on: full width at the image's own ratio, however tall.
-    /// - neither: full width at the image's ratio but capped, so a wide
-    ///   banner is a strip and a tall portrait stops at the cap, cropped.
+    /// The frame the header image covers: a fixed band with the proportions
+    /// off, full width at the image's ratio with the fill on, and that ratio
+    /// capped at the height otherwise.
     fn header_band(&self, ratio: f32) -> Div {
         let band = div().w_full().flex_none().overflow_hidden().relative();
         let height = self.config.header_height.clamp(HEADER_H_MIN, HEADER_H_MAX);
@@ -1366,10 +1195,6 @@ impl BiographyPanel {
         band
     }
 
-    /// One header image as a layer filling the band. In the fixed band
-    /// with the blurred fit on, the picture sits whole and centered over
-    /// its soft companion stretched to cover; otherwise it covers and
-    /// crops, which in the proportioned band is no crop at all.
     fn header_layer(&self, sized: &SizedImage) -> Div {
         let fit = !self.config.header_aspect && self.config.header_blur;
         let mut layer = div().absolute().inset_0();
@@ -1395,10 +1220,6 @@ impl BiographyPanel {
         )
     }
 
-    /// The header: the image up now over the one on its way out while a
-    /// crossfade runs, the title laid over the foot when the overlay is
-    /// on, and a click to skip ahead when there is more than one image.
-    /// None when the header is off or the artist has no image at all.
     fn header(
         &mut self,
         artist: &Artist,
@@ -1413,8 +1234,7 @@ impl BiographyPanel {
             return None;
         }
         let current = headers[self.header_ix % headers.len()].clone();
-        // Frames only while a fade is running; a settled header costs
-        // zero. Smoothstepped so it eases out instead of stopping dead.
+        // Frames only while a fade runs, smoothstepped to ease out.
         let mut opacity = 1.0;
         let mut outgoing = None;
         if let Some((from, at)) = self.fade.clone() {
@@ -1432,8 +1252,6 @@ impl BiographyPanel {
             band = band.child(self.header_layer(&from));
         }
         band = band.child(self.header_layer(&current).opacity(opacity));
-        // With more than one image, arrows at the band's edges step through
-        // them by hand; they show on hover so the picture stays clean.
         if headers.len() > 1 {
             let arrow = |side: &'static str, icon: &'static str, delta: isize| {
                 let base = palette::bg_root_opaque();
@@ -1486,8 +1304,7 @@ impl BiographyPanel {
                     .right_0()
                     .bottom_0()
                     .pt(px(OVERLAY_SCRIM_H))
-                    // Angle 0 puts 0% at the bottom: near solid under the
-                    // words, clear at the strip's top so the picture shows.
+                    // Angle 0 puts 0% at the bottom.
                     .bg(linear_gradient(
                         0.0,
                         linear_color_stop(scrim(base, 0xD9), 0.0),
@@ -1503,8 +1320,6 @@ impl BiographyPanel {
         Some(band)
     }
 
-    /// The name with the country code beside it, and the years active
-    /// under it when the profile line is on and the store has the facts.
     fn title_block(&self, artist: &Artist) -> Div {
         let profile = &artist.profile;
         let mut name = div()
@@ -1513,10 +1328,8 @@ impl BiographyPanel {
             .items_center()
             .gap(tokens::SPACE_SM)
             .min_w_0();
-        // The country as its flag, the two regional indicators the code
-        // spells; the settings window's language picker draws its flags
-        // the same way, so the glyphs are known to land. A code that
-        // isn't two letters keeps the chip.
+        // The language picker draws flags the same way, so the glyphs are
+        // known to land.
         if self.config.profile && !profile.country.is_empty() {
             let glyph = self.config.flag.then(|| flag(&profile.country)).flatten();
             name = name.child(match glyph {
@@ -1544,8 +1357,6 @@ impl BiographyPanel {
         block
     }
 
-    /// The loaded artist as one scrolling sheet: the header, the name,
-    /// and the blocks the config keeps on.
     fn sheet(
         &mut self,
         artist: &Artist,
@@ -1566,7 +1377,6 @@ impl BiographyPanel {
             .w_full()
             .p(tokens::SPACE_MD)
             .gap(tokens::SPACE_SM);
-        // The title sits in the sheet unless the header carries it.
         if !overlaid {
             content = content.child(self.title_block(artist));
         }
@@ -1589,10 +1399,8 @@ impl BiographyPanel {
             );
         }
         if self.config.tags && !info.tags.is_empty() {
-            // A tag narrows the app-wide search on the genre filter, the
-            // metadata panel's rule: only while a search box is up
-            // somewhere to show the pick, so a click never narrows the
-            // followers with nothing on screen saying why.
+            // Clickable only while a search box is up somewhere, so a click
+            // never narrows the followers with nothing on screen saying why.
             let query = self
                 .state
                 .query
@@ -1620,11 +1428,8 @@ impl BiographyPanel {
                     .child(rox_i18n::t!("biography-no-text")),
             );
         } else {
-            // The text as markdown in a text view, which is what gives it
-            // selectable, copyable text and clickable links: the wiki's
-            // inline links become markdown links, everything else is
-            // escaped so the article can't format itself. Keyed by the
-            // artist so the view's selection state doesn't carry over.
+            // Escaped so the article can't format itself. Keyed by artist so
+            // the view's selection doesn't carry over.
             let markdown = bio_markdown(&info.bio, info.links.as_deref().unwrap_or(&[]));
             content = content.child(
                 div()
@@ -1646,8 +1451,6 @@ impl BiographyPanel {
             content = content.child(list);
         }
         if self.config.similar && !info.similar.is_empty() {
-            // The search glyph follows the tag row's rule: only while a
-            // search box is up somewhere to show the pick.
             let held = self.held(cx);
             let query = self
                 .state
@@ -1682,8 +1485,7 @@ impl BiographyPanel {
                     ),
             );
         }
-        // The attribution the wiki's license asks for: where the text
-        // came from, as a link to the artist's page.
+        // The attribution the wiki's license asks for.
         if !info.url.is_empty() {
             let url = info.url.clone();
             content = content.child(
@@ -1704,15 +1506,9 @@ impl BiographyPanel {
             .track_scroll(&self.scroll)
             .child(column.child(content));
 
-        // The fanart sits behind the scrolling sheet, fixed to the panel so
-        // it fades toward the panel's own bottom rather than the content's.
-        // The scrim over it is heaviest at the bottom (the text runs long)
-        // and only dims the top, where the header banner covers it anyway.
-        // Both stops scale with the surface opacity, so a translucent
-        // theme keeps the picture showing through the words' floor.
-        // A flex child rather than size_full: the body's column puts the
-        // credit picker above this when a track names several acts, and
-        // the sheet takes what's left.
+        // The fanart is fixed to the panel, not the scroll, so it fades toward
+        // the panel's bottom. flex_1 rather than size_full, since the credit
+        // picker can sit above.
         let mut root = div().flex_1().min_h_0().w_full().relative();
         if self.config.background
             && let Some(image) = &artist.background
@@ -1730,14 +1526,11 @@ impl BiographyPanel {
                 )
                 .child(div().absolute().inset_0().bg(linear_gradient(
                     0.0,
-                    // Angle 0 puts 0% at the bottom: solid there, thinning
-                    // to a light dim at the top.
                     linear_color_stop(base, 0.0),
                     linear_color_stop(scrim(base, 0xA6), 1.0),
                 )));
         }
-        // The bar over the sheet's right edge, the queue's arrangement:
-        // gpui's overflow scroll draws none of its own.
+        // gpui's overflow scroll draws no bar of its own.
         root.child(scroll).child(
             div()
                 .absolute()
@@ -1746,9 +1539,6 @@ impl BiographyPanel {
         )
     }
 
-    /// The top tracks block: the heading and one row per track up to the
-    /// configured count. None when the block is off or the list is empty
-    /// (or not fetched yet, which an online look fills in).
     fn top_tracks(&mut self, artist: &Artist, key: &str, cx: &mut Context<Self>) -> Option<Div> {
         if !self.config.top_tracks {
             return None;
@@ -1772,12 +1562,7 @@ impl BiographyPanel {
         Some(list)
     }
 
-    /// One top track: the rank, the name, and the listener count at the
-    /// right. A row the library holds selects on a click (the app-wide
-    /// selection, so a metadata panel on Selected turns to it), plays on
-    /// a double click, and reveals a play and a queue glyph on hover; one
-    /// the library doesn't hold reads faint and does nothing, so the list
-    /// never promises what it can't do.
+    /// A row the library doesn't hold reads faint and is inert.
     fn top_track_row(
         &self,
         i: usize,
@@ -1879,14 +1664,9 @@ impl BiographyPanel {
             })
     }
 
-    /// One similar name as a chip. A click turns the sheet to that
-    /// artist, whether or not the library holds them: reading up on a
-    /// name you don't own is the point of the list. A name the library
-    /// files tracks under reads in the chip's own colour and carries a
-    /// search glyph that picks it on the shared search, under the
-    /// library's spelling so the filter's whole-value match lands; one it
-    /// doesn't reads faint, the top tracks' cue, with no glyph to promise
-    /// a search that would find nothing.
+    /// A click browses to the name whether or not the library holds it. The
+    /// search glyph picks the library's spelling so the filter's whole-value
+    /// match lands.
     fn similar_chip(
         &self,
         i: usize,
@@ -1930,10 +1710,6 @@ impl BiographyPanel {
     }
 }
 
-/// The wiki text as markdown: every character that markdown would read
-/// as formatting escaped, the inline links written as links. Paragraph
-/// breaks (blank lines) pass through, which is how the text view
-/// paragraphs it.
 fn bio_markdown(bio: &str, links: &[BioLink]) -> String {
     fn escape(text: &str, out: &mut String) {
         for ch in text.chars() {
@@ -1993,18 +1769,12 @@ fn bio_markdown(bio: &str, links: &[BioLink]) -> String {
     out
 }
 
-/// The key a name is known under for the credit splitter: case and
-/// accent folded, punctuation dropped, so "Earth, Wind & Fire" and
-/// "earth wind fire" meet.
 fn fold_name(name: &str) -> String {
     providers::normalize(&rox_library::fold::fold(name))
 }
 
-/// The names the library files tracks under, folded, each with the field
-/// and the spelling a filter pick wants. Whole symbols rather than split
-/// credits: the filter matches a pick against a whole value, so a guest
-/// on a "feat." credit would read as held and then find nothing. The
-/// first table wins a name in both; empties are skipped.
+/// Whole symbols rather than split credits: the filter matches a whole value,
+/// so a guest on a "feat." credit would read as held and then find nothing.
 fn held_index(tables: [(FilterField, &[String]); 2]) -> HashMap<String, (FilterField, String)> {
     let mut index = HashMap::new();
     for (field, strings) in tables {
@@ -2017,23 +1787,14 @@ fn held_index(tables: [(FilterField, &[String]); 2]) -> HashMap<String, (FilterF
     index
 }
 
-/// The acts an artist tag credits, in its order. Semicolons, slashes,
-/// and a featuring join ("feat.", "ft.", "featuring", any case) always
-/// split. A comma splits unless the parts around it, joined back, name
-/// an act `is_known` vouches for: the library's album artists, so
-/// "Earth, Wind & Fire" stays whole while "BABYMETAL, Electric Callboy"
-/// comes apart. The longest known run wins.
+/// The acts an artist tag credits, in order. Semicolons, slashes, and
+/// featuring joins always split. A comma splits unless the joined parts name
+/// an act `is_known` vouches for, so "Earth, Wind & Fire" stays whole; the
+/// longest known run wins.
 ///
-/// An ampersand is a coin flip between a duo and a collaboration, so it
-/// gets both readings: the whole credit first, then each side after it.
-/// "Teddy Killerz & Billain" comes back as itself and then the two acts,
-/// so the sheet opens on the collab's own page and either act is one
-/// chip away. `is_known` doesn't veto this: a collab with an album to
-/// its name is filed like a duo, so the album artists can't tell the two
-/// apart, and a duo's two spare chips cost less than a collab's dead
-/// sheet. The one exception is a run the comma rule glued back together,
-/// since "Earth, Wind & Fire" already proved itself one name. Trimmed,
-/// empties dropped; a plain name comes back as itself.
+/// An ampersand gets both readings, the whole credit and then each side,
+/// since the album artists can't tell a duo from a collab. A run the comma
+/// rule glued back together is exempt.
 fn credits(tag: &str, is_known: &dyn Fn(&str) -> bool) -> Vec<String> {
     let mut out = Vec::new();
     for segment in tag.split([';', '/']) {
@@ -2045,8 +1806,6 @@ fn credits(tag: &str, is_known: &dyn Fn(&str) -> bool) -> Vec<String> {
                 .collect();
             let mut i = 0;
             while i < parts.len() {
-                // The longest run of parts from here that names one known
-                // act, else this part alone.
                 let mut end = i + 1;
                 for j in (i + 2..=parts.len()).rev() {
                     if is_known(&parts[i..j].join(", ")) {
@@ -2058,9 +1817,6 @@ fn credits(tag: &str, is_known: &dyn Fn(&str) -> bool) -> Vec<String> {
                 let glued = end - i > 1;
                 i = end;
 
-                // A name with an ampersand in it is also read as the acts
-                // on either side of it, unless the comma rule just proved
-                // the whole thing one act.
                 let sides: Vec<String> = if glued {
                     Vec::new()
                 } else {
@@ -2081,8 +1837,6 @@ fn credits(tag: &str, is_known: &dyn Fn(&str) -> bool) -> Vec<String> {
     out
 }
 
-/// One segment split on its featuring joins, the pieces trimmed and
-/// empties dropped.
 fn split_features(segment: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = segment;
@@ -2111,9 +1865,8 @@ fn split_features(segment: &str) -> Vec<&str> {
     }
 }
 
-/// An ISO 3166 alpha-2 code as its flag emoji: each letter to the
-/// regional indicator symbol at the same offset from A, which the emoji
-/// font pairs into the flag. None for anything but two ASCII letters.
+/// An ISO 3166 alpha-2 code as its regional-indicator pair, which the emoji
+/// font draws as the flag.
 fn flag(code: &str) -> Option<SharedString> {
     let code = code.trim();
     if code.len() != 2 || !code.bytes().all(|b| b.is_ascii_alphabetic()) {
@@ -2126,15 +1879,12 @@ fn flag(code: &str) -> Option<SharedString> {
     Some(flag.into())
 }
 
-/// A scrim stop: `base` at `a` out of 255, scaled by the alpha the
-/// surface opacity already gave it, so a translucent theme's floor
-/// stays translucent under the gradient rather than snapping solid.
+/// Scaled by `base`'s own alpha, so a translucent theme's floor stays
+/// translucent under the gradient.
 fn scrim(base: Rgba, a: u8) -> Rgba {
     palette::alpha(base, (f32::from(a) * base.a).round() as u8)
 }
 
-/// A block heading, the small muted line over the similar names and the
-/// top tracks.
 fn heading(text: SharedString) -> Div {
     div()
         .text_xs()
@@ -2142,10 +1892,8 @@ fn heading(text: SharedString) -> Div {
         .child(text)
 }
 
-/// The years active line, from the record's years: since the formed year
-/// for an act still going, the span for one that ended. None without a
-/// formed year, or for an act marked disbanded with no year on file,
-/// where "since" would be wrong and a lone year says nothing.
+/// None for an act marked disbanded with no end year, where "since" would be
+/// wrong.
 fn years_active(profile: &ArtistProfile) -> Option<SharedString> {
     let from = profile.formed?;
     match profile.ended {
@@ -2162,7 +1910,6 @@ fn years_active(profile: &ArtistProfile) -> Option<SharedString> {
     }
 }
 
-/// A quiet line where the sheet would sit, the metadata panel's move.
 fn quiet(text: impl Into<SharedString>) -> Div {
     div()
         .size_full()
@@ -2173,8 +1920,6 @@ fn quiet(text: impl Into<SharedString>) -> Div {
         .child(div().text_color(palette::text_faint()).child(text.into()))
 }
 
-/// The same quiet line, but with a spinner over it while a lookup runs, so
-/// the wait reads as work in progress rather than a stuck panel.
 fn loading(text: impl Into<SharedString>) -> Div {
     div()
         .size_full()
@@ -2189,9 +1934,6 @@ fn loading(text: impl Into<SharedString>) -> Div {
         .child(div().child(text.into()))
 }
 
-/// A genre tag as a chip that picks its value on the shared search's
-/// genre filter while a search box is up (`query` is Some), and plain
-/// text otherwise.
 fn tag_chip(i: usize, tag: String, query: Option<gpui::Entity<SharedQuery>>) -> gpui::AnyElement {
     let Some(query) = query else {
         return chip(tag).into_any_element();
@@ -2205,7 +1947,6 @@ fn tag_chip(i: usize, tag: String, query: Option<gpui::Entity<SharedQuery>>) -> 
         .into_any_element()
 }
 
-/// One genre tag or country code as a chip.
 fn chip(tag: String) -> Div {
     div()
         .px(tokens::SPACE_SM)
@@ -2217,8 +1958,6 @@ fn chip(tag: String) -> Div {
         .child(SharedString::from(tag))
 }
 
-/// A listener count at chip scale: exact under a thousand, one decimal
-/// of k or M above, so eight digits never crowd the stats row.
 fn fmt_count(n: u64) -> String {
     let scaled = |v: f64, suffix: &str| {
         let text = if v >= 100.0 {
@@ -2282,7 +2021,6 @@ mod tests {
             credits("Simon & Garfunkel", &duo),
             ["Simon & Garfunkel", "Simon", "Garfunkel"]
         );
-        // An ampersand with nothing on one side never adds a blank.
         assert_eq!(credits("Simon & ", &none), ["Simon &"]);
     }
 
@@ -2309,7 +2047,6 @@ mod tests {
             (FilterField::Artist, &artists[..]),
             (FilterField::AlbumArtist, &album_artists[..]),
         ]);
-        // A name in both tables reads off the first, under its spelling.
         assert_eq!(
             held.get(&fold_name("madeon")),
             Some(&(FilterField::Artist, "Madeon".to_string()))

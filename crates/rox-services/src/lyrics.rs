@@ -1,14 +1,7 @@
-//! The two catalog-shaped pieces the lyrics matcher and the lyrics panel
-//! both need: what a provider gets asked for a track, and where a found
-//! sheet is saved. Neither renders anything, so both are down here where
-//! the panel and the matcher window can each get at them.
-//!
-//! A path is not enough to name either one. A Subsonic song has no file to
-//! sit beside, and a radio station is one URL playing a different song
-//! every three minutes, so its library row names the station and the song
-//! only exists in what the stream announces. [`LyricsTarget`] carries both
-//! halves of the answer, the subject a sheet is filed under and the query a
-//! provider is asked, and every lyrics surface works on one of those.
+//! What a lyrics provider is asked for a track, and where a found sheet is
+//! saved. A path doesn't name either: a Subsonic song has no file, and a
+//! station's row names the station while the song only exists in what the
+//! stream announces. [`LyricsTarget`] carries both halves.
 
 use std::path::Path;
 
@@ -22,11 +15,8 @@ use rox_playback::IcyTitle;
 
 use crate::catalog::Library;
 
-/// What a lyrics surface works on: the subject a sheet is filed under and
-/// the tags a provider is asked for. The two are built together because
-/// for a station they come from the same place, the song it just
-/// announced, and building either off the library row alone would file a
-/// sheet under the station or ask a provider for the words to one.
+/// Built together because for a station both come from the announced song;
+/// off the library row alone they'd name the station.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LyricsTarget {
     pub subject: Subject,
@@ -34,13 +24,10 @@ pub struct LyricsTarget {
 }
 
 impl LyricsTarget {
-    /// The file behind the target, for the reads and writes that need one.
     pub fn file(&self) -> Option<&Path> {
         self.subject.file()
     }
 
-    /// The track as a window header names it: the title, the artist
-    /// trailing it when there is one.
     pub fn label(&self) -> String {
         if self.query.artist.is_empty() {
             self.query.title.clone()
@@ -50,9 +37,8 @@ impl LyricsTarget {
     }
 }
 
-/// The provider query for a track: its tags off the catalog, and its
-/// duration off the projection so the score doesn't depend on the track
-/// being the one playing.
+/// Duration comes off the projection, so the score doesn't depend on the
+/// track being the one playing.
 pub fn query_for(library: &Entity<Library>, key: &TrackKey, cx: &App) -> TrackQuery {
     let catalog = library.read(cx);
     let resolved = catalog.resolve_key(key);
@@ -72,14 +58,8 @@ pub fn query_for(library: &Entity<Library>, key: &TrackKey, cx: &App) -> TrackQu
     }
 }
 
-/// The lyrics target for a track. `live` is the song the stream is
-/// announcing, which the caller passes only when this track is the
-/// playing station: a station's row names the station and holds that name
-/// for the whole broadcast, so without the announcement there is no song
-/// here to look up or file anything under.
-///
-/// None where there is nothing to file a sheet under, which is a station
-/// that hasn't named a song yet.
+/// Pass `live` only when this track is the playing station. None for a
+/// station that hasn't named a song yet.
 pub fn target_for(
     library: &Entity<Library>,
     key: &TrackKey,
@@ -91,9 +71,8 @@ pub fn target_for(
     if let Some(live) = live {
         query.artist = live.artist.clone();
         query.title = live.title.clone();
-        // The row's title is the station's name, which reads as the album
-        // for the song it happens to be playing and scores against nothing.
-        // A stream has no length either, so there is no duration to weigh.
+        // The station's name isn't the song's album, and a stream has no
+        // duration.
         query.album = String::new();
         query.duration_secs = None;
     }
@@ -104,10 +83,7 @@ pub fn target_for(
     })
 }
 
-/// The subject half of [`target_for`] on its own, without the catalog
-/// lookup the query needs. Cheap enough for a playback tick, which is
-/// what the edit window compares against to tell whether the track it is
-/// open on is the one playing.
+/// Cheap enough for a playback tick, without the catalog lookup.
 pub fn subject_for(key: &TrackKey, live: Option<&IcyTitle>) -> Option<Subject> {
     if key.is_local() {
         return Some(Subject::File(key.path.clone()));
@@ -119,13 +95,9 @@ pub fn subject_for(key: &TrackKey, live: Option<&IcyTitle>) -> Option<Subject> {
         return Subject::song(&live.artist, &live.title);
     }
 
-    // A server hands the same id back for the same song every time, which
-    // is the whole of what the store needs.
     Some(Subject::remote(&key.to_fragment()))
 }
 
-/// The song the playing track's words belong to, or None when nothing is
-/// playing and when a station hasn't announced anything yet.
 pub fn playing_subject(player: &crate::player::Player) -> Option<Subject> {
     let now = player.now_playing()?;
     let live = now.live.then(|| player.live_title()).flatten();
@@ -133,13 +105,8 @@ pub fn playing_subject(player: &crate::player::Player) -> Option<Subject> {
     subject_for(&now.key, live.as_ref())
 }
 
-/// Where a saved sheet goes, per the Providers page's tag/sidecar/store
-/// choice. Shared by the matcher's Apply and the panel's auto-search so
-/// both honor the one destination setting.
-///
-/// A subject with no file behind it has neither a sidecar to write beside
-/// nor a tag to write into, so the store is the only home the setting
-/// could have named and it takes that one whatever the page says.
+/// Per the Providers page's tag/sidecar/store choice. A subject with no file
+/// always goes to the store.
 pub fn save_target(subject: &Subject) -> Source {
     let Some(path) = subject.file() else {
         return Source::Store(lyrics::store_file(&lyrics_dir(), subject));
@@ -152,7 +119,6 @@ pub fn save_target(subject: &Subject) -> Source {
     }
 }
 
-/// The track's duration in ms off the projection, resolved from its id.
 fn duration_ms_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<u32> {
     let catalog = library.read(cx);
     let projection = catalog.projection()?;

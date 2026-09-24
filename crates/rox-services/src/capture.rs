@@ -1,42 +1,17 @@
-//! Saving songs off the air. A station's bytes are already going past the
-//! transport in the container the station encodes in, and its in-band
-//! titles say where one song stops and the next starts, so a song heard
-//! from one title change to the next can land on disk with no decoder and
-//! no encoder in the way. The file is the station's own frames, byte for
-//! byte.
+//! Saving songs off the air, byte for byte: a station's own frames from
+//! one in-band title change to the next, with no decoder or encoder.
 //!
-//! The rule this exists to enforce is start to finish. A capture counts
-//! only when it began at a boundary, ended at the next one, ran long
-//! enough to be a song rather than a jingle, and had no reconnect in the
-//! middle. Everything else is thrown away, which includes the very first
-//! capture of a connection: a station announces what is already playing
-//! the moment you tune in, so the song under that first title was joined
-//! halfway through.
+//! A capture counts only when it began at a boundary, ended at the next,
+//! ran long enough to be a song, and had no reconnect in the middle. The
+//! first capture of a connection is always thrown away: the song under the
+//! first title was joined halfway. Stations flip titles a few seconds off
+//! the audio, so captures carry slivers of the neighbouring songs; trimming
+//! would need a silence detector capture doesn't have.
 //!
-//! Where the boundary sits is the honest limitation. Stations flip the
-//! title a few seconds either side of the audio actually switching, so a
-//! capture routinely carries the tail of the song before it or the head of
-//! the one after. Trimming that needs a decoder-side silence or energy
-//! detector, which is not in this round; the settings row says so, and the
-//! files are written as they came.
-//!
-//! What a saved song is called is the renamer's pattern language, run
-//! through [`rox_core::pattern`] over the only values a broadcast has: the
-//! artist and title the air announced, the station, its genre, and the day
-//! it was heard. A "/" in the pattern makes a folder under the capture
-//! folder, which is what keeps an evening of radio from piling up flat.
-//!
-//! A saved song gets a cover beside it, under the same name with an image
-//! extension, from the same providers the now-playing art searches. The
-//! picture is a guess off two strings a station sent, the same guess the
-//! backdrop is already showing while the song is on air, and a wrong guess
-//! on a file kept on disk is worth more caution than one behind a blur: it
-//! has to clear the art matcher's bar before it's written at all.
-//!
-//! Nothing here touches the decode thread. [`rox_playback::icy`] copies
-//! bytes into a channel and that is the whole of its job; the buffer, the
-//! rule, the tag write and the scan all run here, on the player's pump and
-//! the background executor.
+//! Names come from the renamer's pattern language ([`rox_core::pattern`]).
+//! A cover is written beside the file only if it clears the art matcher's
+//! bar. Nothing here touches the decode thread: [`rox_playback::icy`] only
+//! copies bytes into a channel.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,62 +28,41 @@ use rox_playback::icy::{CaptureEvent, CaptureSink, IcyTitle};
 use crate::catalog::Library;
 use crate::player::Player;
 
-/// How long a song has to run before it's worth keeping. The scrobbler's
-/// own floor (`MIN_TRACK_SECS` in `lastfm.rs`), for the same reason: under
-/// thirty seconds is a station ident, a trailer or a bad boundary, not a
-/// play.
+/// The scrobbler's own floor (`MIN_TRACK_SECS`): under thirty seconds is an
+/// ident, a trailer, or a bad boundary.
 const MIN_SECS: f64 = 30.0;
 
-/// The bitrate assumed for a station that states none, so the length rule
-/// still has a number to work from. Well under what most stations run, so
-/// the guess errs towards keeping a song rather than dropping it.
+/// Low on purpose, so the length guess errs towards keeping a song.
 const ASSUMED_KBPS: u32 = 128;
 
-/// The hard ceiling on one capture, whatever the settings say. A station
-/// whose titles stop moving would otherwise buffer the rest of the
-/// evening; sixty-four megabytes is around half an hour at 320 kbps.
+/// Whatever the settings say: around half an hour at 320 kbps.
 const CAP_BYTES: usize = 64 * 1024 * 1024;
 
-/// How long a capture may run, in seconds, before it's abandoned: the live
-/// buffer length from settings. The two are one idea from the listener's
-/// side. The buffer is how far back a station can be rewound, and a song
-/// that never ends inside it (a podcast, a mix, a station that stopped
-/// announcing) isn't a song to save. `apply` keeps it current.
+/// The live buffer length: a song that never ends inside it (a podcast, a
+/// mix) isn't a song to save. `apply` keeps it current.
 static CEILING_SECS: AtomicU32 = AtomicU32::new(settings::DEFAULT_LIVE_BUFFER_SECS);
 
-/// How many counted names a collision walks through before giving up. A
-/// station replaying a song is ordinary, a thousand copies of it is not.
 const MAX_COPIES: u32 = 999;
 
-/// One finished song: the title it was announced under, and every byte the
-/// station sent between the two boundaries that bracket it.
 pub struct Take {
     pub title: IcyTitle,
     pub bytes: Vec<u8>,
 }
 
-/// The song currently being written down.
 struct InFlight {
     title: IcyTitle,
     bytes: Vec<u8>,
 }
 
-/// The start-to-finish rule with no app and no disk around it: events in,
-/// finished songs out.
+/// The start-to-finish rule with no app and no disk: events in, songs out.
 pub struct Tape {
     current: Option<InFlight>,
-    /// Whether the next boundary is the announcement a station makes when
-    /// you tune in rather than a song starting. True at the start and
-    /// again after every drop, since a reconnect rejoins mid-song exactly
-    /// the way the first connect did.
+    /// The next boundary is a tune-in announcement, not a song start. True
+    /// at the start and again after every drop.
     joined: bool,
-    /// How many bytes a song has to reach to count as heard, the thirty
-    /// seconds turned into bytes at the station's own bitrate.
     min_bytes: usize,
-    /// The station's stated bitrate, kept rather than a byte ceiling
-    /// computed from it once: the ceiling follows the live buffer setting,
-    /// and that setting moves while a station plays, so it's read at each
-    /// check instead of frozen at connect.
+    /// Kept rather than a byte ceiling: the ceiling follows the live buffer
+    /// setting, which can move while a station plays.
     kbps: u32,
 }
 
@@ -124,20 +78,17 @@ impl Default for Tape {
 }
 
 impl Tape {
-    /// Take the station's stated bitrate as the length yardstick. A capture
-    /// has no decoder behind it, so byte count at the advertised rate is
+    /// With no decoder behind a capture, byte count at the advertised rate is
     /// the only duration it can know.
     fn follow_bitrate(&mut self, kbps: u32) {
         self.min_bytes = min_bytes_at(kbps);
         self.kbps = kbps;
     }
 
-    /// Feed one event, and answer with a song if that event finished one.
     fn feed(&mut self, event: CaptureEvent) -> Option<Take> {
         match event {
             CaptureEvent::Boundary(title) => {
-                // The first title on a connection names what was already
-                // playing when we arrived, so it opens nothing.
+                // The first title on a connection opens nothing.
                 if self.joined {
                     self.joined = false;
                     self.current = None;
@@ -161,14 +112,12 @@ impl Tape {
             }
 
             CaptureEvent::Bytes(mut bytes) => {
-                // Bytes with no song open are the ones before the first
-                // boundary, or the ones after a capture was abandoned.
+                // No song open: before the first boundary, or abandoned.
                 let current = self.current.as_mut()?;
 
-                // Past the ceiling this isn't a song, it's a broadcast that
-                // never announced its end. Drop it and wait for a boundary,
-                // and say so: a buffer set shorter than the songs on air
-                // otherwise looks like capture doing nothing at all.
+                // Past the ceiling this is a broadcast that never announced
+                // its end. Log it, or a short buffer looks like capture doing
+                // nothing.
                 if current.bytes.len() + bytes.len() > max_bytes_at(self.kbps) {
                     log::info!(
                         "capture: dropping {} - {}: longer than the live buffer allows",
@@ -184,9 +133,7 @@ impl Tape {
             }
 
             CaptureEvent::End => {
-                // The connection went away. What was in flight lost its
-                // middle, and whatever the reconnect announces first is a
-                // song already underway.
+                // The connection dropped: the song in flight lost its middle.
                 self.current = None;
                 self.joined = true;
                 None
@@ -195,26 +142,18 @@ impl Tape {
     }
 }
 
-/// What a capture's tags come from: the row it played under and the
-/// headers the stream answered the connect with.
 #[derive(Clone, PartialEq)]
 struct Station {
-    /// The stream URL, which is both the station row's path and the
-    /// comment the capture carries.
+    /// Both the station row's path and the comment the capture carries.
     url: String,
     name: String,
     genre: String,
-    /// The provider the station belongs to, as [`source_label`] spells it.
     source: String,
-    /// The container the station encodes in, as a file extension.
     ext: &'static str,
 }
 
-/// The provider a stream belongs to, as a folder name: the source id's
-/// kind with its first letter up, so `radio` files as "Radio" and a
-/// `subsonic:<server>` as "Subsonic". Read off the id rather than a
-/// table, so a source that doesn't exist yet names its own folder without
-/// anyone coming back here.
+/// The source id's kind with its first letter up, so `subsonic:<server>`
+/// files as "Subsonic" and a future source names its own folder.
 pub fn source_label(source: &str) -> String {
     let kind = source.split(':').next().unwrap_or(source).trim();
     let mut chars = kind.chars();
@@ -225,35 +164,22 @@ pub fn source_label(source: &str) -> String {
     }
 }
 
-/// What a capture pattern fills. Every placeholder in the app-wide
-/// vocabulary parses here, so a pattern carried over from the rename
-/// dialog still works. What the air actually gives you is an artist, a
-/// title, the station, its genre, the container and the clock;
-/// everything else parses and renders as nothing.
+/// Every placeholder in the app-wide vocabulary parses; what the air
+/// doesn't give renders as nothing.
 #[derive(Clone, PartialEq)]
 pub enum CaptureField {
     Artist,
     Title,
-    /// The station's name. %album% spells the same thing, since a station
-    /// is the only release a song off the air belongs to.
+    /// Also `%album%`: a station is the only release a song off the air has.
     Station,
-    /// The kind of source the stream came from, "Radio" today. Its own
-    /// field so a pattern can file by provider, and a source that doesn't
-    /// exist yet lands in a folder of its own the day it ships.
     Source,
     Genre,
-    /// The container the stream sends, "MP3". As much of a format as a
-    /// broadcast states: the bitrate it claims in its headers is a
-    /// station-wide number rather than this song's.
+    /// The container, "MP3". The header bitrate is station-wide, not this
+    /// song's, so it isn't used.
     Format,
-    /// The year the capture landed, off the same clock as the day.
     Year,
-    /// The day the capture landed, as `YYYY-MM-DD`.
     Date,
-    /// A placeholder a broadcast can't fill: an album artist, a track or
-    /// disc number, a comment. It parses and renders nothing, taking its
-    /// separator with it, rather than refusing a pattern the rename
-    /// dialog would have accepted.
+    /// Renders nothing rather than refusing a pattern the renamer accepts.
     Unfilled,
 }
 
@@ -262,16 +188,13 @@ impl PatternField for CaptureField {
         Some(match name {
             Name::Artist => CaptureField::Artist,
             Name::Title => CaptureField::Title,
-            // A station is the only release a song off the air belongs
-            // to, so the album is the station.
             Name::Album | Name::Station => CaptureField::Station,
             Name::Source => CaptureField::Source,
             Name::Genre => CaptureField::Genre,
             Name::Format => CaptureField::Format,
             Name::Year => CaptureField::Year,
-            // The renamer reads %date% as the release year. A stream has
-            // no release, so here it's the day the song was heard, which
-            // is the only date a capture has.
+            // The renamer reads %date% as the release year; here it's the
+            // day the song was heard.
             Name::Date => CaptureField::Date,
             Name::AlbumArtist | Name::Track | Name::Disc | Name::Comment => CaptureField::Unfilled,
             Name::Skip => return None,
@@ -280,13 +203,10 @@ impl PatternField for CaptureField {
 
     fn fallback(&self) -> &'static str {
         match self {
-            // The artist is allowed to vanish. Plenty of stations send a
-            // single unsplittable title, and "Unknown Artist - Song" on
-            // every one of them is a worse name than "Song".
+            // Plenty of stations send one unsplittable title, and "Song"
+            // beats "Unknown Artist - Song".
             CaptureField::Artist | CaptureField::Unfilled => "",
 
-            // What a nameless capture has been called since before there
-            // was a pattern.
             CaptureField::Title => "Capture",
 
             CaptureField::Station => "Unknown Station",
@@ -294,23 +214,20 @@ impl PatternField for CaptureField {
             CaptureField::Genre => "Unknown Genre",
             CaptureField::Format => "Unknown Format",
 
-            // Both read off the clock at write time, so nothing reaches
-            // these from a real capture. Kept total rather than
-            // panicking.
+            // Unreachable from a real capture; kept total rather than panicking.
             CaptureField::Year => "Unknown Year",
             CaptureField::Date => "Unknown Date",
         }
     }
 }
 
-/// When a capture landed, in the two shapes a pattern can ask for.
 struct Stamp {
     day: String,
     year: String,
 }
 
-/// The clock, read once per saved song. Local rather than UTC: the day a
-/// listener files a song under is the day they heard it.
+/// Local rather than UTC: the day a listener files a song under is the day
+/// they heard it.
 fn now() -> Stamp {
     let now = chrono::Local::now();
 
@@ -320,15 +237,11 @@ fn now() -> Stamp {
     }
 }
 
-/// The capture service: one per player, holding the in-flight song and
-/// writing the finished ones out. Headless like the rest of the services
-/// here, and it refers to no panel.
 pub struct Capture {
     events: Receiver<CaptureEvent>,
     tape: Tape,
-    /// The station the tape belongs to, read off the player as it plays so
-    /// a finished song is tagged with what played it rather than with
-    /// whatever is on by the time the write lands.
+    /// Read as it plays, so a song is tagged with the station that played it
+    /// rather than whatever is on when the write lands.
     station: Option<Station>,
     library: Entity<Library>,
     _player_changed: Subscription,
@@ -336,19 +249,12 @@ pub struct Capture {
 
 impl Capture {
     pub fn new(player: &Entity<Player>, library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
-        // Unbounded on purpose. The far end is the decode thread copying a
-        // station's bytes at the station's own bitrate, a few tens of
-        // kilobytes a second, and this end drains on the sixteen
-        // millisecond pump, so the queue is bounded by how far behind the
-        // UI thread is rather than by anything the stream does. A bounded
-        // channel would answer a full queue by dropping a batch, and a
-        // capture with a hole in the middle is worse than no capture.
+        // Unbounded on purpose: the pump drains it every 16 ms, and a bounded
+        // channel would drop a batch and leave a hole in a capture.
         let (tx, events) = std::sync::mpsc::channel();
         rox_playback::icy::tee_to(sink(tx));
         apply();
 
-        // The same pump clock the scrobbler and the live-title service
-        // ride: every tick while a session runs.
         let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
             this.tick(&player, cx);
         });
@@ -363,12 +269,10 @@ impl Capture {
     }
 
     fn tick(&mut self, player: &Entity<Player>, cx: &mut Context<Self>) {
-        // Who is playing, read before the drain: a song finishing on this
-        // tick belongs to the station that was on when its bytes arrived.
+        // Before the drain: a song finishing now belongs to the station that
+        // was on when its bytes arrived.
         self.follow(player, cx);
 
-        // Drain first, write second. The writes take the app mutably, and
-        // the receiver is borrowed for as long as the loop runs.
         let mut done = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             done.extend(self.tape.feed(event));
@@ -383,9 +287,8 @@ impl Capture {
         }
     }
 
-    /// Note which station is playing, and take its bitrate as the length
-    /// yardstick. A local file leaves the last station in place, which
-    /// costs nothing: the tape only ever fills from a stream.
+    /// A local file leaves the last station in place: the tape only fills
+    /// from a stream.
     fn follow(&mut self, player: &Entity<Player>, cx: &mut Context<Self>) {
         let player = player.read(cx);
 
@@ -412,10 +315,6 @@ impl Capture {
         self.station = Some(station);
     }
 
-    /// Put one finished song on disk and into the library. The write is a
-    /// few megabytes, a tag parse and a cover lookup, so it goes to the
-    /// background executor; the reindex comes back to the UI thread
-    /// because the catalog lives there.
     fn save(&mut self, take: Take, station: Station, cx: &mut Context<Self>) {
         let capture = Settings::load().capture;
         let pattern = capture.parsed_pattern::<CaptureField>();
@@ -430,10 +329,8 @@ impl Capture {
                 .spawn(async move {
                     let path = write(&folder, &take, &station, &pattern, &album, &stamp)?;
 
-                    // Before the reindex rather than after: the panels
-                    // repaint on the library event, and a thumbnail asked
-                    // for before the picture is beside it caches as a
-                    // definitive no-art answer.
+                    // Before the reindex, or a thumbnail asked for on the
+                    // repaint caches a definitive no-art answer.
                     save_cover(&path, &take.title);
 
                     Ok(path)
@@ -441,9 +338,7 @@ impl Capture {
                 .await;
 
             match written {
-                // Explicitly, rather than leaving it to the root watcher:
-                // the capture folder is not required to be a library root,
-                // and the watcher drops events under load anyway.
+                // Explicitly: the capture folder needn't be a library root.
                 Ok(path) => {
                     log::info!("capture: saved {}", path.display());
                     library
@@ -458,40 +353,31 @@ impl Capture {
     }
 }
 
-/// Point the tee at the current settings. Startup builds the service,
-/// which calls this once; the settings row calls it again to make a change
-/// live, the same shape the broadcast sink's switch has.
+/// Startup calls this once; the settings row calls it to make a change live.
 pub fn apply() {
     let settings = Settings::load();
     rox_playback::icy::set_capturing(settings.capture.enabled);
     follow_live_buffer(settings.live_buffer_secs);
 }
 
-/// The live buffer moved. The player calls this from its setter, so a
-/// slider change reaches the ceiling while a station plays, rather than
-/// waiting for the next launch or the capture switch.
+/// Called from the player's setter, so a slider change reaches a station
+/// already playing.
 pub fn follow_live_buffer(secs: u32) {
     CEILING_SECS.store(settings::clamp_live_buffer_secs(secs), Ordering::Relaxed);
 }
 
-/// The sink the transport feeds. A channel send and nothing else: this
-/// runs inside the decode thread's read.
+/// Runs inside the decode thread's read, so a channel send and nothing else.
 fn sink(tx: Sender<CaptureEvent>) -> CaptureSink {
-    // The service outlives every reader that will ever use this, so a
-    // disconnected send means the app is going down and there is nothing
-    // to do about it.
+    // A disconnected send means the app is going down.
     Arc::new(move |event| {
         let _ = tx.send(event);
     })
 }
 
-/// How many bytes of a stream at `kbps` make [`MIN_SECS`] of audio.
 fn min_bytes_at(kbps: u32) -> usize {
     bytes_at(kbps, MIN_SECS)
 }
 
-/// How many bytes of a stream at `kbps` make the live buffer's worth of
-/// audio, capped at [`CAP_BYTES`].
 fn max_bytes_at(kbps: u32) -> usize {
     bytes_at(kbps, f64::from(CEILING_SECS.load(Ordering::Relaxed))).min(CAP_BYTES)
 }
@@ -502,8 +388,6 @@ fn bytes_at(kbps: u32, secs: f64) -> usize {
     (f64::from(kbps) * 1000.0 / 8.0 * secs) as usize
 }
 
-/// `<Artist> - <Title>` as a filename, or the title alone for the stations
-/// that send one unsplittable field.
 fn stem_for(title: &IcyTitle) -> String {
     let artist = title.artist.trim();
     let song = title.title.trim();
@@ -517,9 +401,6 @@ fn stem_for(title: &IcyTitle) -> String {
     safe_file_stem(&name, "Capture")
 }
 
-/// The first free name in `folder`, counted upwards past a collision. A
-/// station replaying a song is the ordinary case, so this is a path the
-/// feature takes often rather than an edge.
 fn free_path(
     folder: &Path,
     stem: &str,
@@ -536,12 +417,9 @@ fn free_path(
         .find(|path| !taken(path))
 }
 
-/// The tags a capture carries. The comment names the station and its
-/// stream URL, because that's the only provenance a song off the air has,
-/// and the comment is where provenance belongs. The album is whatever the
-/// setting rendered, and nothing when it's blank: a song off the air has
-/// no release, and an album field full of station names pollutes every
-/// album view it lands in.
+/// The comment carries the station and its URL, the only provenance a song
+/// off the air has. No album unless the setting asks: station names in the
+/// album field pollute every album view.
 fn tags_for(take: &Take, station: &Station, album: &str) -> Vec<Change> {
     let mut changes = vec![Change {
         field: Field::Title,
@@ -566,8 +444,6 @@ fn tags_for(take: &Take, station: &Station, album: &str) -> Vec<Change> {
     changes
 }
 
-/// The comment line: the station's name and its stream URL, or whichever
-/// of the two it gave us.
 fn provenance(station: &Station) -> String {
     match (station.name.trim(), station.url.trim()) {
         ("", url) => url.to_string(),
@@ -576,10 +452,8 @@ fn provenance(station: &Station) -> String {
     }
 }
 
-/// The album tag the setting asks for, rendered with the same vocabulary a
-/// name pattern gets, so `%station%` works there too. Blank stays blank.
-/// Text that isn't a pattern (a stray `%`) or won't render is written as
-/// typed rather than dropped: "Singles" should never fail to be "Singles".
+/// Text that isn't a pattern (a stray `%`) is written as typed: "Singles"
+/// must never fail to be "Singles".
 fn album_for(setting: &str, fields: &[(CaptureField, String)]) -> String {
     let setting = setting.trim();
     if setting.is_empty() {
@@ -593,8 +467,6 @@ fn album_for(setting: &str, fields: &[(CaptureField, String)]) -> String {
         .unwrap_or_else(|| setting.to_string())
 }
 
-/// The values a capture pattern renders from: what the air announced,
-/// what the station calls itself, and when the song landed.
 fn fields_for(title: &IcyTitle, station: &Station, stamp: &Stamp) -> Vec<(CaptureField, String)> {
     vec![
         (CaptureField::Artist, title.artist.trim().to_string()),
@@ -608,11 +480,8 @@ fn fields_for(title: &IcyTitle, station: &Station, stamp: &Stamp) -> Vec<(Captur
     ]
 }
 
-/// Where a capture sits under the capture folder: the pattern rendered,
-/// every segment of it folded into something a filesystem will take. A
-/// pattern that renders nothing at all (an untitled song under a folder
-/// the station left unnamed) falls back to the flat name captures carried
-/// before there was a pattern.
+/// Falls back to the flat [`stem_for`] name when the pattern renders
+/// nothing.
 fn relative_for(
     pattern: &Pattern<CaptureField>,
     fields: &[(CaptureField, String)],
@@ -628,17 +497,13 @@ fn relative_for(
     }
 }
 
-/// Every segment of a rendered path folded into something a filesystem
-/// will take. The values a pattern put there went through this on the way
-/// in; the literal text the pattern wrote around them did not.
+/// Values were sanitized on the way in; the pattern's own literals weren't.
 fn fold_segments(path: &Path) -> PathBuf {
     path.iter()
         .map(|segment| safe_file_stem(&segment.to_string_lossy(), "Capture"))
         .collect()
 }
 
-/// What a pattern is previewed against in the settings row that types it:
-/// the station on the air, or a stand-in when nothing is playing.
 pub struct Sample {
     pub title: IcyTitle,
     pub station: String,
@@ -663,9 +528,6 @@ impl Default for Sample {
 }
 
 impl Sample {
-    /// The station playing right now, when one is. Better than the
-    /// stand-in, because what the row is really being asked is how this
-    /// station's titles come out.
     pub fn playing(player: &Player) -> Option<Sample> {
         let title = player.live_title()?;
         let info = player.station_info()?;
@@ -681,9 +543,7 @@ impl Sample {
     }
 }
 
-/// What `pattern` would call the sample, or what's wrong with it. Runs
-/// the same render a saved song takes, so the line under the settings
-/// input can't drift from what lands on disk.
+/// Runs the same render a saved song takes, so the preview can't drift.
 pub fn preview(pattern: &str, sample: &Sample) -> Result<String, String> {
     let parsed = rox_core::pattern::parse::<CaptureField>(pattern)?;
     let station = Station {
@@ -691,8 +551,7 @@ pub fn preview(pattern: &str, sample: &Sample) -> Result<String, String> {
         name: sample.station.clone(),
         genre: sample.genre.clone(),
         source: sample.source.clone(),
-        // The container is appended below rather than rendered; a pattern
-        // never names it.
+        // The container is appended below; a pattern never names it.
         ext: "",
     };
 
@@ -702,9 +561,7 @@ pub fn preview(pattern: &str, sample: &Sample) -> Result<String, String> {
     Ok(format!("{}.{}", rendered.display(), sample.ext))
 }
 
-/// Write one capture out: the bytes, then the tags through the writer's
-/// atomic layer (ADR 4, which is the only sanctioned way tags reach a
-/// file). Blocking; the caller runs it on the background executor.
+/// Tags go through the writer's atomic layer (ADR 4). Blocking.
 fn write(
     folder: &Path,
     take: &Take,
@@ -717,9 +574,7 @@ fn write(
     let relative = relative_for(pattern, &fields, &take.title);
     let album = album_for(album, &fields);
 
-    // The pattern's folders, dug under the capture folder. Only the name
-    // on the end counts through a collision; the folders above it are
-    // shared by design.
+    // Only the file name counts up through a collision; folders are shared.
     let dir = match relative.parent() {
         Some(parent) => folder.join(parent),
         None => folder.to_path_buf(),
@@ -731,16 +586,14 @@ fn write(
     let path = free_path(&dir, &stem, station.ext, &|path| path.exists())
         .ok_or_else(|| format!("no free name left for {stem}"))?;
 
-    // Through a sibling temp file and a rename, so a watcher over the
-    // folder never sees a half-written capture and indexes it as a
-    // truncated track.
+    // Through a sibling temp file and a rename, so a watcher never indexes a
+    // half-written capture as a truncated track.
     let part = path.with_extension(format!("{}.part", station.ext));
     std::fs::write(&part, &take.bytes).map_err(|e| format!("writing {}: {e}", part.display()))?;
     std::fs::rename(&part, &path).map_err(|e| format!("naming {}: {e}", path.display()))?;
 
-    // A container the tagger can't parse still holds playable audio, and a
-    // mid-stream Ogg capture is exactly that: it has no header pages, so
-    // lofty has nothing to open. Keep the file and say what was lost.
+    // A mid-stream Ogg capture has no header pages for lofty to open, but it
+    // still plays. Keep the file.
     if let Err(e) = writer::commit(&path, &tags_for(take, station, &album)) {
         log::warn!("capture: {} saved untagged: {e}", path.display());
     }
@@ -748,17 +601,10 @@ fn write(
     Ok(path)
 }
 
-/// The song's cover next to the file that holds it, under the same name.
-/// A station's evening lands in one folder, so a shared cover.jpg there
-/// would be the wrong picture for all but one song; the per-track name is
-/// what [`rox_library::art`] ranks first for a track, and it travels with
-/// the song when it's moved out of the capture folder.
-///
-/// The same lookup the backdrop runs for the song on air, and that one has
-/// already searched these two names by the time the song ends, so the
-/// search half comes back off the provider session cache and only the
-/// download is new. Silent on every way it comes to nothing: the picture
-/// rides along with the audio and is never the reason a capture failed.
+/// Named after the file, since a shared cover.jpg would be wrong for every
+/// song but one; that's also what [`rox_library::art`] ranks first. The
+/// backdrop already searched these names, so this hits the provider session
+/// cache. Silent on failure: the cover never fails a capture.
 fn save_cover(path: &Path, title: &IcyTitle) {
     let Some(query) = crate::radio_art::query(title) else {
         return;
@@ -770,9 +616,7 @@ fn save_cover(path: &Path, title: &IcyTitle) {
         return;
     };
 
-    // Through a sibling temp file and a rename, the audio's own move: a
-    // reader that catches a half-written picture caches the track as
-    // having art that will not decode.
+    // Temp file and rename, so a reader never caches a half-written picture.
     let cover = path.with_extension(ext);
     let part = cover.with_extension(format!("{ext}.part"));
     let written = std::fs::write(&part, &bytes).and_then(|()| std::fs::rename(&part, &cover));
@@ -789,8 +633,7 @@ mod tests {
 
     use rox_core::settings::CaptureSettings;
 
-    /// Two tests move the ceiling, which is one global, so they take
-    /// turns rather than read each other's value mid-assertion.
+    /// The ceiling is one global, so the tests that move it take turns.
     static CEILING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn title(artist: &str, song: &str) -> IcyTitle {
@@ -800,8 +643,6 @@ mod tests {
         }
     }
 
-    /// A tape that keeps anything past ten bytes, so the tests are about
-    /// the boundaries rather than about arithmetic.
     fn tape() -> Tape {
         Tape {
             min_bytes: 10,
@@ -813,8 +654,6 @@ mod tests {
     fn the_song_playing_when_we_tuned_in_is_not_saved() {
         let mut tape = tape();
 
-        // The announcement on connect, then the rest of a song we joined
-        // halfway through, then the real first boundary.
         assert!(tape.feed(CaptureEvent::Boundary(title("A", "1"))).is_none());
         assert!(tape.feed(CaptureEvent::Bytes(vec![0; 400])).is_none());
         assert!(tape.feed(CaptureEvent::Boundary(title("B", "2"))).is_none());
@@ -857,11 +696,8 @@ mod tests {
         tape.feed(CaptureEvent::Bytes(vec![7; 400]));
         tape.feed(CaptureEvent::End);
 
-        // Long enough to keep, had it not been cut in half.
         assert!(tape.feed(CaptureEvent::Boundary(title("C", "3"))).is_none());
 
-        // And the boundary after a drop is another tune-in, so the song it
-        // names is underway too.
         tape.feed(CaptureEvent::Bytes(vec![7; 400]));
         assert!(tape.feed(CaptureEvent::Boundary(title("D", "4"))).is_none());
     }
@@ -880,11 +716,8 @@ mod tests {
         assert!(tape.feed(CaptureEvent::Boundary(title("C", "3"))).is_none());
     }
 
-    /// The ceiling is the live buffer at the station's rate: ten minutes
-    /// at 128 kbps is 9.6 MB, and a station stating nothing is measured at
-    /// the assumed rate. The hard cap still wins over a huge buffer.
-    /// A song already taping is judged against the buffer as it is now,
-    /// not as it was when the station connected.
+    /// A song already taping is judged against the buffer as it is now, not
+    /// as it was at connect.
     #[test]
     fn a_longer_buffer_reaches_a_song_in_flight() {
         let _guard = CEILING_LOCK.lock().unwrap();
@@ -894,7 +727,6 @@ mod tests {
         tape.feed(CaptureEvent::Boundary(title("A", "First")));
         tape.feed(CaptureEvent::Boundary(title("B", "Second")));
 
-        // Ninety seconds at 128 kbps, over a one minute buffer.
         let chunk = vec![0u8; bytes_at(128, 30.0)];
         tape.feed(CaptureEvent::Bytes(chunk.clone()));
         tape.feed(CaptureEvent::Bytes(chunk.clone()));
@@ -922,7 +754,6 @@ mod tests {
         // Thirty seconds at 128 kbps is 480 kB; at 320 it is 1.2 MB.
         assert_eq!(min_bytes_at(128), 480_000);
         assert_eq!(min_bytes_at(320), 1_200_000);
-        // A station that states nothing is measured at the assumed rate.
         assert_eq!(min_bytes_at(0), min_bytes_at(ASSUMED_KBPS));
     }
 
@@ -946,8 +777,6 @@ mod tests {
         }
     }
 
-    /// %source% is the provider, spelled off the id so a source nobody has
-    /// written yet already has a folder name.
     #[test]
     fn the_source_names_the_provider() {
         assert_eq!(source_label("radio"), "Radio");
@@ -959,8 +788,6 @@ mod tests {
         );
     }
 
-    /// Where one capture lands under the capture folder, as a relative
-    /// path, which is the whole of what the pattern decides.
     fn placed(pattern: &Pattern<CaptureField>, artist: &str, song: &str) -> String {
         let title = title(artist, song);
         let stamp = Stamp {
@@ -1018,9 +845,6 @@ mod tests {
         assert_eq!(placed(&pattern("%artist% - %title%"), "", "Xtal"), "Xtal");
     }
 
-    /// A pattern nobody can render is a settings file somebody edited by
-    /// hand, or a placeholder retired out from under one. Captures keep
-    /// landing, under the default.
     #[test]
     fn a_pattern_that_does_not_parse_falls_back_to_the_default() {
         let settings = CaptureSettings {
@@ -1074,8 +898,6 @@ mod tests {
             .map(|c| (c.field, c.value))
             .collect();
 
-        // No album by default: the station is provenance, so it goes in
-        // the comment beside the URL and never into the album field.
         assert_eq!(
             fields,
             vec![
@@ -1090,9 +912,6 @@ mod tests {
         );
     }
 
-    /// The album is whatever the setting says: a plain word as typed, a
-    /// pattern rendered with the station's own vocabulary, and nothing when
-    /// it's blank. Text that isn't a pattern is still written as typed.
     #[test]
     fn the_album_is_the_settings_call() {
         let take = Take {

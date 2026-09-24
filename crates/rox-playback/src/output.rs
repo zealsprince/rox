@@ -1,15 +1,10 @@
-//! The output seam and the shared-mode backend that implements it. ADR 9
-//! kept the output layer swappable and deferred the exclusive path; ADR 19
-//! spends that option, so this file is two things now: the contract a
-//! backend implements, and cpal's implementation of it.
+//! The output seam (ADR 9, ADR 19) and cpal's shared-mode backend. A backend
+//! gets the shared atomics, hands back the ring's producer end and the PCM
+//! tap's consumer end, and reports what the device accepted.
 //!
-//! A backend gets the shared atomics, hands back the producer end of the
-//! sample ring and the consumer end of the PCM tap, and reports what the
-//! device actually accepted. The engine never learns which one runs.
-//!
-//! The hard line from the components spec is in [`fill`], which every
-//! backend calls: pop a pre-allocated ring, read atomics, write the device
-//! buffer. No allocation, no lock, no logging, no I/O.
+//! The hard line is in [`fill`], which every backend calls: pop a
+//! pre-allocated ring, read atomics, write the device buffer. No allocation,
+//! no lock, no logging, no I/O.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -25,128 +20,85 @@ use crate::shared::Shared;
 mod alsa;
 #[cfg(target_os = "macos")]
 mod coreaudio;
-// Not cfg-gated like its neighbours: the FFI half is Windows-only, but the
-// format ladder and the period math above it are plain Rust and have their
-// own tests, so the module compiles everywhere and those tests run in every
-// build rather than only on the one platform nobody here develops on.
+// Not cfg-gated: the format ladder and period math are plain Rust with tests
+// that should run on every platform.
 mod wasapi;
 
-/// Half a second of buffered stereo between decode and the callback.
 const RING_SECS: f64 = 0.5;
-/// How long a shared open keeps retrying before its error stands. Right
-/// after exclusive lets a device go, CoreAudio is still relocking the clock
-/// and refuses queries (OSStatus 56 on the default config), so the first
-/// attempt of an exclusive-to-shared switch falls inside that window and a
-/// single try would kill the session over a transient. Twenty tries of 50 ms
-/// is a second, blocking the caller like the exclusive rate settle already
-/// does; a machine with genuinely no device pays it once and then the error
-/// stands.
+/// Right after exclusive releases a device, CoreAudio refuses queries while
+/// it relocks the clock (OSStatus 56), so a shared open retries for a second
+/// instead of failing the session on a transient.
 const OPEN_TRIES: u32 = 20;
 const OPEN_STEP: Duration = Duration::from_millis(50);
-/// Tap capacity in samples. Kept small so the tap consumer lags and loses
-/// rather than backpressures.
+/// Small, so a slow tap consumer loses samples rather than backpressuring.
 const TAP_SAMPLES: usize = 16384;
 
-/// What a platform without an exclusive backend reports. Linux, macOS, and
-/// Windows all have one; anywhere else a stub that claimed to be one would be
-/// worse than this string.
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const NO_EXCLUSIVE: &str = "exclusive output isn't built for this platform yet";
 
-/// How the samples get to the device.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Mode {
-    /// Through the system's mixer, cpal on every platform. Other apps keep
-    /// making sound and the mixer owns the rate, so a file whose rate
-    /// differs gets resampled on the way out.
+    /// Through the system mixer, which owns the rate.
     #[default]
     Shared,
-    /// The device claimed for rox alone, at the file's own rate where it
-    /// takes one. Per-platform below cpal.
+    /// The device claimed for rox alone, at the file's rate where it takes one.
     Exclusive,
 }
 
-/// A device the picker can offer. The id is the one a [`Request`] names and
-/// it's backend-scoped: a cpal device name in shared mode, an ALSA `hw:`
-/// name in exclusive. They're never interchangeable, which is why the two
-/// lists are asked for separately.
+/// Ids are backend-scoped (a cpal name in shared, a platform id in
+/// exclusive) and never interchangeable.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Device {
     pub id: String,
     pub name: String,
 }
 
-/// What the caller wants. Nothing here is a promise; [`Negotiated`] is what
-/// came back.
-// No `Eq`: the period is a float, and nothing compares requests for
-// identity anyway.
+/// Nothing here is a promise; [`Negotiated`] is what came back.
+// No `Eq`: the period is a float.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct Request {
     pub mode: Mode,
-    /// The device id to claim, or None for whatever the system calls
-    /// default. An id that's gone (unplugged, renamed) also falls to the
-    /// default rather than failing the open.
+    /// None, or an id that's gone, means the system default.
     pub device: Option<String>,
-    /// The rate to ask for, the playing file's own where the caller knows
-    /// it. Only exclusive follows it; shared runs at whatever rate the
-    /// mixer already picked and ignores this.
+    /// Exclusive only; shared runs at the mixer's rate.
     pub rate: Option<u32>,
-    /// The sample format to ask for by its short name (`f32`, `s32`,
-    /// `s16`), or None to take the widest the device offers. A name the
-    /// device won't take falls to that same best-first search rather than
-    /// failing the open, and [`Negotiated::format`] reports what was used.
-    /// Exclusive only: the mixer owns the format in shared mode.
+    /// `f32`, `s32`, `s16`, or None for the widest. A name the device won't take
+    /// falls back to the widest. Exclusive only.
     pub format: Option<String>,
-    /// How much audio the device holds per period, in milliseconds, or None
-    /// for the backend's default. The knob behind the latency trade: short
-    /// periods wake the writer more often and xrun sooner on a loaded
-    /// machine. Exclusive only.
+    /// Milliseconds, or None for the backend default. Exclusive only.
     pub period_ms: Option<f64>,
 }
 
-/// What the device actually accepted, for the UI to state instead of
-/// echoing the request back. ADR 19 is blunt about this: a bit-perfect
-/// claim nobody checked is decoration.
+/// What the device actually accepted, for the UI to state (ADR 19: an
+/// unchecked bit-perfect claim is decoration).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Negotiated {
     pub mode: Mode,
-    /// The device that's running, by the name a human reads.
     pub device: String,
     pub sample_rate: u32,
     pub channels: u16,
-    /// The sample format the device takes, in cpal's spelling for shared
-    /// and ALSA's for exclusive.
+    /// cpal's spelling for shared, the [`Request::format`] names for exclusive.
     pub format: String,
-    /// Why exclusive isn't running when exclusive was asked for. Some means
-    /// this is shared output standing in, and the string is the reason the
-    /// claim failed. None means the mode above is the mode requested.
+    /// Some: shared is standing in, and this is why exclusive failed.
     pub fallback: Option<String>,
 }
 
-/// A live output stream. Nothing to call on one: a backend hands it back so
-/// the caller can hold it, and dropping it stops audio and gives the device
-/// up. Boxed rather than an enum so a new backend is one new file instead of
-/// another arm in every match.
+/// Held to keep audio running; dropping it releases the device.
 pub trait OutputStream {}
 
 impl OutputStream for Stream {}
 
 pub struct OpenOutput {
-    /// Held so the stream stays alive; dropping it stops audio.
+    /// Dropping it stops audio.
     pub stream: Box<dyn OutputStream>,
-    /// What the device accepted, the truth the UI shows.
     pub negotiated: Negotiated,
     pub sample_rate: u32,
     pub ring_frames: usize,
-    /// Decode thread's side of the sample ring (interleaved stereo f32).
     pub producer: Producer<f32>,
-    /// Visualizer side of the PCM tap.
     pub tap: Consumer<f32>,
 }
 
-/// The devices one mode can open. Two lists rather than one tagged list
-/// because the ids don't cross: picking a cpal device name only means
-/// something to the shared backend.
+/// Separate lists per mode because the ids don't cross.
 pub fn devices(mode: Mode) -> Vec<Device> {
     match mode {
         Mode::Shared => shared_devices(),
@@ -154,11 +106,8 @@ pub fn devices(mode: Mode) -> Vec<Device> {
     }
 }
 
-/// Open output per the request, allocate both rings, start the stream.
-///
-/// Exclusive that can't claim its device (busy, no such rate, no such
-/// device) comes back as shared with the reason recorded, never as silence,
-/// which is the failure shape ADR 19 asks for.
+/// Open output per the request. Exclusive that can't claim its device comes
+/// back as shared with the reason recorded, never as silence (ADR 19).
 pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, String> {
     if request.mode == Mode::Exclusive {
         match open_exclusive(request, shared) {
@@ -174,8 +123,6 @@ pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, Strin
     open_shared_settled(request, shared)
 }
 
-/// [`open_shared`] with the settling retry, so a device that refuses the
-/// first try because it's mid-transition doesn't cost the session.
 fn open_shared_settled(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, String> {
     let mut tries = 0;
     loop {
@@ -193,9 +140,7 @@ fn open_shared_settled(request: &Request, shared: &Arc<Shared>) -> Result<OpenOu
     }
 }
 
-/// Allocate the sample ring and the PCM tap for a stream at `rate`. Both
-/// backends call this before they touch the device, so the ring depth is
-/// one rule (500 ms) rather than one per backend.
+/// Shared by every backend so the ring depth is one rule.
 fn rings(
     rate: u32,
 ) -> (
@@ -251,9 +196,6 @@ fn exclusive_devices() -> Vec<Device> {
     Vec::new()
 }
 
-/// Whether this build has an exclusive backend at all, so the settings page
-/// can say "not on this platform" instead of offering a toggle that always
-/// falls back.
 pub fn exclusive_supported() -> bool {
     cfg!(any(
         target_os = "linux",
@@ -262,13 +204,8 @@ pub fn exclusive_supported() -> bool {
     ))
 }
 
-/// The device's name, or None where the query fails. cpal 0.18 dropped
-/// `name()` for `description()`, and its Display wraps the same query with
-/// the Err swallowed into `fmt::Error`, which `to_string` turns into a
-/// panic. The query does fail in practice: on macOS a device mid-transition
-/// (hog mode just released, clock relocking) won't return one, and the
-/// exclusive toggle hits exactly that. So the name is asked through the fallible
-/// path everywhere, and never through Display.
+/// Never through Display: cpal 0.18's Display turns a failed query into a
+/// `to_string` panic, and on macOS a device mid-transition fails it.
 fn device_name(device: &cpal::Device) -> Option<String> {
     device
         .description()
@@ -276,9 +213,7 @@ fn device_name(device: &cpal::Device) -> Option<String> {
         .map(|desc| desc.name().to_string())
 }
 
-/// The cpal devices, by name. cpal has no stable device id, so the name is
-/// the id; two identical cards read as one entry and the first one wins,
-/// which is the same ambiguity every cpal app has.
+/// cpal has no stable id, so the name is the id; identical cards collapse.
 fn shared_devices() -> Vec<Device> {
     let host = cpal::default_host();
     let Ok(devices) = host.output_devices() else {
@@ -286,8 +221,6 @@ fn shared_devices() -> Vec<Device> {
     };
     let mut out = Vec::new();
     for device in devices {
-        // A device whose name won't read is one the picker can't offer
-        // anyway; skipping it beats aborting on the name read.
         let Some(name) = device_name(&device) else {
             continue;
         };
@@ -302,15 +235,11 @@ fn shared_devices() -> Vec<Device> {
     out
 }
 
-/// Shared mode: cpal's default host, the picked device or the default one,
-/// and the config that device already runs at. The mixer owns the rate here,
-/// so `request.rate` is not consulted; the resampler on the decode thread
-/// covers the difference.
+/// The mixer owns the rate, so `request.rate` is ignored; the decode thread resamples.
 fn open_shared(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, String> {
     let host = cpal::default_host();
-    // A saved device that's gone falls back to the default rather than
-    // failing: unplugging headphones shouldn't mean no audio until someone
-    // visits the settings window.
+    // A saved device that's gone falls back to the default: unplugged
+    // headphones shouldn't mean no audio.
     let picked = request.device.as_deref().and_then(|want| {
         host.output_devices()
             .ok()?
@@ -319,8 +248,6 @@ fn open_shared(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, St
     let device = picked
         .or_else(|| host.default_output_device())
         .ok_or("no default output device")?;
-    // A default device mid-transition may not return its name; the stream
-    // still opens, so play through it rather than failing over a label.
     let name = device_name(&device).unwrap_or_else(|| "unnamed device".into());
     let supported = device
         .default_output_config()
@@ -369,9 +296,6 @@ where
 {
     let device_channels = config.channels as usize;
 
-    // The error callback runs on the backend's own thread when the stream
-    // faults; it flags the loss so the app can reopen. Kept off the data
-    // callback's clone so that one stays a straight move.
     let err_shared = shared.clone();
 
     let callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
@@ -379,11 +303,9 @@ where
     };
 
     let err_fn = move |err: cpal::Error| {
-        // The device dropped out or the backend faulted. The data callback
-        // won't run again on this stream, so flag the loss and let the app
-        // reopen; without this the ring fills, the engine parks, and the UI
-        // stays frozen on "playing". Logging is fine here, this is the backend
-        // error thread, not the RT data path.
+        // The stream is dead. Flag it so the app reopens; otherwise the ring fills,
+        // the engine parks, and the UI freezes on "playing". Logging is fine: this
+        // is the error thread, not the data path.
         log::error!("stream error: {err}");
         err_shared.device_lost.store(true, Ordering::Release);
     };
@@ -393,18 +315,11 @@ where
         .map_err(|e| format!("build_output_stream: {e}"))
 }
 
-/// One device buffer's worth of work, and the whole of what a backend is
-/// allowed to do to the samples. Both backends call this and neither may do
-/// any of it differently: two backends drifting on the unity short-circuit
-/// would make "bit-perfect" mean two things, and ADR 19 defines it once.
+/// One device buffer's worth of work, and all a backend may do to samples.
+/// Every backend calls this, so "bit-perfect" means one thing (ADR 19).
 ///
-/// Runs on the real-time thread, so it obeys ADR 2 to the letter: no
-/// allocation, no lock, no logging, no I/O.
-///
-/// `data` is stepped through a device frame at a time. cpal hands whole
-/// frames, and so do the exclusive backends, but a buffer that ends
-/// mid-frame anyway leaves its stub silent rather than panicking on the RT
-/// thread.
+/// Runs on the real-time thread: no allocation, no lock, no logging, no I/O
+/// (ADR 2). A trailing partial frame is filled with silence, never a panic.
 pub(crate) fn fill<T>(
     data: &mut [T],
     device_channels: usize,
@@ -414,15 +329,9 @@ pub(crate) fn fill<T>(
 ) where
     T: SizedSample + FromSample<f32>,
 {
-    // A seek or a skip is in flight: throw away whatever the decode thread
-    // queued before it, play silence, and advance nothing on the clock.
-    //
-    // Exactly once per epoch. The ack is this side's own bookkeeping (no
-    // one else writes it), so it doubles as the record of which epoch was
-    // handled, and no backend has to keep state across calls. What the
-    // decode thread gets out of it is the end of the grace sleep: it knows
-    // the ring is clear the moment this runs, instead of waiting long
-    // enough that it must have been.
+    // A seek or skip is in flight: discard what was queued before it, play
+    // silence, and don't advance the clock. Exactly once per epoch; the ack is
+    // this side's own record, and tells the decode thread the ring is clear.
     let seq = shared.flush_seq.load(Ordering::Acquire);
     if seq != shared.flush_ack.load(Ordering::Relaxed) {
         while ring.pop().is_ok() {}
@@ -431,12 +340,9 @@ pub(crate) fn fill<T>(
         return;
     }
 
-    // A step taken while paused plays a blip this long through the pause.
-    // The pause itself never lifts: `playing` stays false the whole time, so
-    // nothing reading it (the transport, the skip fade, a panel that dims
-    // while paused) sees anything happen. Only frames that actually leave
-    // here count against it, so a dry ring waiting on the seek's refill
-    // doesn't eat the blip before it's audible.
+    // An audition blip plays this many frames through a pause without touching
+    // `playing`, so nothing watching the pause reacts. Only frames actually
+    // played count, so an underrun during the seek's refill doesn't spend it.
     let mut blip = shared.audition_left.load(Ordering::Relaxed);
     let auditioning = blip > 0;
 
@@ -450,35 +356,28 @@ pub(crate) fn fill<T>(
 
     let mut frames = data.chunks_exact_mut(device_channels);
     for frame in frames.by_ref() {
-        // The blip has played out; the rest of this buffer is silence.
         if auditioning && blip == 0 {
             frame.fill(T::from_sample(0.0f32));
             continue;
         }
-        // The ring holds whole stereo frames; only pop when both
-        // samples are there so interleaving can't slip. Dry ring means
-        // underrun (or end of queue): emit silence, don't count it.
+        // Pop whole frames only so interleaving can't slip. Dry ring is an
+        // underrun: silence, not counted.
         if ring.slots() < 2 {
             frame.fill(T::from_sample(0.0f32));
             continue;
         }
         let (l, r) = (ring.pop().unwrap(), ring.pop().unwrap());
 
-        // Lossy PCM tap: if the visualizer side is behind, drop, never
-        // wait. Push L and R together or not at all, so a single free
-        // slot can't drop R while L goes in and leave the tap stream
-        // frame-misaligned for good. Tapped pre-volume, so the spectrum
-        // and signals read the program material, not the listening level;
-        // chain DSP (EQ, ReplayGain) still shows because it runs before
-        // the ring.
+        // Lossy tap: drop, never wait. L and R go in together or not at all, or a
+        // single free slot would misalign the tap for good. Pre-volume, so the
+        // visualizers read the program, chain DSP included.
         if tap.slots() >= 2 {
             let _ = tap.push(l);
             let _ = tap.push(r);
         }
 
-        // Unity short-circuits (ADR 19's bypass rule): at volume 1.0 the
-        // samples pass through untouched, so chain off + volume at 100% +
-        // equal rates delivers the decoder's output bit-identically.
+        // Unity short-circuits (ADR 19's bypass rule): chain off, volume 100%, and
+        // equal rates deliver the decoder's output bit-identically.
         let (l, r) = if volume == 1.0 {
             (l, r)
         } else {
@@ -498,8 +397,6 @@ pub(crate) fn fill<T>(
         frames_out += 1;
         blip = blip.saturating_sub(1);
     }
-    // A tail too short to be a frame gets silence, not a popped sample it
-    // has no partner for.
     frames.into_remainder().fill(T::from_sample(0.0f32));
 
     if frames_out > 0 {
@@ -518,8 +415,6 @@ mod tests {
 
     use super::*;
 
-    /// A ring primed with `frames` stereo frames counting up from 1.0, and a
-    /// tap wide enough to take all of them.
     fn primed(frames: usize) -> (Arc<Shared>, Consumer<f32>, Producer<f32>, Consumer<f32>) {
         let shared = Arc::new(Shared::new(1));
         let (mut producer, ring) = RingBuffer::<f32>::new(frames * 2);
@@ -570,8 +465,6 @@ mod tests {
         assert_eq!(shared.frames_consumed.load(Ordering::Relaxed), 0);
     }
 
-    /// A step while paused: the blip plays its own length through the pause
-    /// and no more, and the pause flag never moves for it.
     #[test]
     fn an_audition_blip_plays_its_length_through_the_pause() {
         let (shared, mut ring, mut tap_tx, _tap) = primed(4);
@@ -579,22 +472,17 @@ mod tests {
         shared.audition_left.store(2, Ordering::Relaxed);
         let mut data = [9.0f32; 8];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
-        // Two frames of audio, then silence for the rest of the buffer.
         assert_eq!(data, [1.0, -1.0, 2.0, -2.0, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(shared.frames_consumed.load(Ordering::Relaxed), 2);
         assert_eq!(shared.audition_left.load(Ordering::Relaxed), 0);
         assert!(!shared.playing.load(Ordering::Relaxed), "still paused");
-        // What the blip didn't use stays in the ring for the resume.
         assert_eq!(ring.slots(), 4);
-        // Spent, the callback is back to plain paused silence.
         let mut data = [9.0f32; 2];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
         assert_eq!(data, [0.0, 0.0]);
         assert_eq!(ring.slots(), 4);
     }
 
-    /// A blip longer than one callback carries across buffers rather than
-    /// stopping at the first boundary it meets.
     #[test]
     fn a_long_audition_carries_across_callbacks() {
         let (shared, mut ring, mut tap_tx, _tap) = primed(4);
@@ -609,9 +497,7 @@ mod tests {
         assert_eq!(shared.audition_left.load(Ordering::Relaxed), 0);
     }
 
-    /// A dry ring is the seek's refill still in flight, not the blip
-    /// playing: silence there would otherwise spend the whole length
-    /// before a sample of the new position ever reached the device.
+    /// A dry ring is the seek's refill in flight; it mustn't spend the blip.
     #[test]
     fn an_underrun_doesnt_spend_the_blip() {
         let (shared, mut ring, mut tap_tx, _tap) = primed(0);
@@ -632,7 +518,6 @@ mod tests {
         assert_eq!(data, [0.0, 0.0]);
         assert_eq!(ring.slots(), 0);
         assert_eq!(shared.frames_consumed.load(Ordering::Relaxed), 0);
-        // The decode thread waits on the ack before it resyncs.
         assert_eq!(shared.flush_ack.load(Ordering::Acquire), 1);
     }
 
@@ -642,9 +527,7 @@ mod tests {
         shared.flush_seq.store(1, Ordering::Release);
         let mut data = [9.0f32; 2];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
-        // Samples pushed after the discard belong to the new track; the
-        // epoch is handled, so the next callback plays them instead of
-        // eating them the way a flag being cleared late used to.
+        // Samples after the discard belong to the new track and must play.
         let (mut producer, mut ring) = RingBuffer::<f32>::new(4);
         producer.push(0.25).unwrap();
         producer.push(-0.25).unwrap();
@@ -683,7 +566,6 @@ mod tests {
             .store(0.5f32.to_bits(), Ordering::Relaxed);
         let mut data = [0.0f32; 4];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
-        // The device gets half scale, the visualizers get the program.
         assert_eq!(data, [0.5, -0.5, 1.0, -1.0]);
         assert_eq!(drain(&mut tap), vec![1.0, -1.0, 2.0, -2.0]);
     }
@@ -691,18 +573,14 @@ mod tests {
     #[test]
     fn a_full_tap_drops_frames_without_slipping_interleave() {
         let (shared, mut ring, _wide, _unused) = primed(4);
-        // One frame of room, four frames of audio: the tap takes the first
-        // pair whole and drops the rest rather than pushing a lone L.
+        // One frame of room: the first pair goes in whole, never a lone L.
         let (mut tap_tx, mut tap) = RingBuffer::<f32>::new(3);
         let mut data = [0.0f32; 8];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
         assert_eq!(drain(&mut tap), vec![1.0, -1.0]);
     }
 
-    /// Nothing here opens a device; only the platform seam is under test.
-    /// Where no exclusive backend is built the error has to name that, not
-    /// look like the device was busy, or the settings page would blame the
-    /// hardware for a gap in rox.
+    /// Without an exclusive backend the error must say so, not blame the device.
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     #[test]
     fn exclusive_where_it_is_not_built_says_so() {
@@ -719,20 +597,12 @@ mod tests {
         );
     }
 
-    /// Both hardware tests below claim the same first exclusive device, and
-    /// the test harness runs them on parallel threads, so without this one
-    /// steals the card out from under the other and whichever loses the race
-    /// reports a fallback it never asked for. Poison is ignored: a failed
-    /// assertion in one shouldn't turn the other into a second, unrelated
-    /// failure.
+    /// Both hardware tests claim the same device, so they take turns. Poison
+    /// is ignored.
     static HARDWARE: Mutex<()> = Mutex::new(());
 
-    /// The one test that touches hardware, so it only runs when asked:
-    /// `cargo test -p rox-playback -- --ignored`. It claims the first
-    /// exclusive device, feeds it silence, and checks the output clock
-    /// moved, which is the whole path (claim, negotiate, writer thread,
-    /// ring drain) short of anything audible. There's nothing to hear
-    /// either way; failing it means the claim or the thread is broken.
+    /// Claims real hardware, so opt-in: `cargo test -p rox-playback -- --ignored`.
+    /// Covers claim, negotiate, writer thread, and ring drain.
     #[test]
     #[ignore = "claims a real audio device"]
     fn exclusive_claims_a_device_and_runs_its_clock() {
@@ -744,9 +614,6 @@ mod tests {
             mode: Mode::Exclusive,
             device: Some(list[0].id.clone()),
             rate: Some(44100),
-            // Pin the widest format and a short period, so this covers the
-            // two request fields the settings page can pin as well as the
-            // defaults would.
             format: Some("f32".into()),
             period_ms: Some(5.0),
         };
@@ -766,10 +633,7 @@ mod tests {
         drop(out.stream);
     }
 
-    /// The other half of the hardware path, same opt-in: a device that's
-    /// already claimed has to come back as shared output with the
-    /// reason, because the alternative shape (an error, no stream) is
-    /// silence with a toggle to blame for it.
+    /// A busy device must fall back to shared with a reason, not fail silent.
     #[test]
     #[ignore = "claims a real audio device"]
     fn a_device_that_is_busy_falls_back_to_shared() {

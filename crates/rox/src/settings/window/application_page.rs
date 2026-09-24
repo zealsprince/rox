@@ -1,14 +1,10 @@
-//! The Application settings page: how the app itself behaves, from the AI
-//! gate through launch, window residency, updates, and where the data is
-//! kept. The portable switch's folder copy lives here with it.
+//! The Application settings page: the AI gate, launch and updates, layout,
+//! window residency, the data folder and the control socket.
 
 use super::*;
 
 impl SettingsWindow {
-    /// The quit-to-tray switch, the Window menu toggle's twin: flips the
-    /// live flag the close path reads, persists, and puts the tray icon up
-    /// or takes it down on the spot. The toggle reads the static, not a
-    /// cached field, so the two entry points never show different states.
+    /// Reads the static, so it matches the Window menu toggle.
     fn set_quit_to_tray(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_quit_to_tray(on);
         Settings::update(move |s| s.quit_to_tray = on);
@@ -16,12 +12,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The portable switch. On creates rox-data beside the executable,
-    /// seeds it from the current data folder when it's new, and drops
-    /// the marker file launch checks for; off removes the marker and
-    /// leaves rox-data where it is. Going back doesn't migrate; that
-    /// data is the user's to keep or delete. Either way the running app
-    /// stays on the folder it started with.
+    /// On creates rox-data beside the executable, seeded from the current data
+    /// folder when new, and drops the marker launch checks for. Off removes the
+    /// marker and leaves rox-data alone. The running app stays on the folder it
+    /// started with.
     fn set_portable(&mut self, on: bool, cx: &mut Context<Self>) {
         let (Some(marker), Some(portable_dir)) =
             (settings::portable_marker(), settings::portable_data_dir())
@@ -35,19 +29,15 @@ impl SettingsWindow {
             return;
         }
         if portable_dir.exists() {
-            // A rox-data from an earlier portable stint: reuse it rather
-            // than overwrite it with the current state.
+            // An earlier portable stint's rox-data is reused, not overwritten.
             let _ = std::fs::write(&marker, b"");
             self.portable = marker.exists();
             cx.notify();
             return;
         }
-        // Seed rox-data from the live data folder off the UI thread (the
-        // caches can be big) and only drop the marker once the copy
-        // finishes, so a restart mid-copy never boots on a half folder. The
-        // copy is best-effort over live databases, the same risk copying
-        // the folder by hand takes; the restart requirement keeps the
-        // window small.
+        // Drop the marker only after the copy finishes, so a restart mid-copy
+        // never boots on a half folder. The copy is best-effort over live
+        // databases.
         self.portable = true;
         self.portable_busy = true;
         let source = settings::data_dir();
@@ -70,22 +60,13 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The resize-lock switch, the design-mode setter's shape: the live
-    /// flag repaints every window's handles, and the file keeps it.
     fn set_resize_lock(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_resize_lock(on, cx);
         Settings::update(move |s| s.resize_lock = on);
         cx.notify();
     }
 
-    /// The Application page: how the app itself behaves, from the AI gate
-    /// through launch, layout, window residency, where the data is kept,
-    /// and the control socket under it all. Everything about how the music
-    /// plays is on the Playback page instead.
     pub(super) fn application_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
-        // The portable row's control depends on the state: inert text
-        // where the exe folder can't take writes or while the seed copy
-        // runs, the live switch otherwise.
         let portable_control: AnyElement = if !self.portable_writable {
             readout(rox_i18n::t!("settings-application-portable-not-writable").to_string())
                 .into_any_element()
@@ -107,9 +88,8 @@ impl SettingsWindow {
                     )),
                     portable_control,
                 ));
-        // The restart note keys on the marker not matching the run, not
-        // on a flip this session: it stays up across window reopens
-        // until a launch actually applies the change.
+        // Keys on the marker not matching this run, so the note survives window
+        // reopens until a launch applies it.
         if self.portable != settings::portable() && !self.portable_busy {
             portable_row = portable_row.child(
                 div()
@@ -119,9 +99,7 @@ impl SettingsWindow {
             );
         }
         PageBody::new()
-            // At the head of the page rather than sorted in: it's the gate
-            // for two whole pages (MCP, ML Models), and a gate that hides
-            // below the fold is a setting people ask where to find.
+            // At the head of the page: it gates two whole pages.
             .section(Section::new(
                 q,
                 icons::LINK,
@@ -146,8 +124,6 @@ impl SettingsWindow {
                         &["release", "version", "upgrade"],
                         panel::toggle(self.check_updates, Self::set_check_updates, cx),
                     )
-                    // Which releases to take and whether to fetch them only
-                    // mean something while something's checking.
                     .when(self.check_updates, |rows| {
                         rows.keyed(
                             "settings-application-prerelease-updates",
@@ -165,9 +141,7 @@ impl SettingsWindow {
                                 cx,
                             ),
                         )
-                        // Meaningless where the install can't replace itself (a
-                        // distro package, a read-only folder), so the row only
-                        // exists where the updater can act on it.
+                        // Only where the install can replace itself.
                         .when(updater::can_update(), |rows| {
                             rows.keyed(
                                 "settings-application-download-updates",
@@ -195,8 +169,8 @@ impl SettingsWindow {
                     )
                 },
             ))
-            // A resident process with no way back in is worse than quitting,
-            // so the row only exists where something can bring a window back.
+            // Only where something can bring a window back: a resident process
+            // with no way in is worse than quitting.
             .when(tray::supported(), |page| {
                 page.section(Section::new(
                     q,
@@ -223,8 +197,8 @@ impl SettingsWindow {
                     })
                 },
             ))
-            // Here rather than on the MCP page: the socket is rox's one
-            // machine interface, and rox-mcp is just one of its callers.
+            // Here rather than on the MCP page: rox-mcp is just one caller of
+            // the socket.
             .section(Section::new(
                 q,
                 icons::LINK,
@@ -257,8 +231,6 @@ impl SettingsWindow {
                                             ));
                                         },
                                     ))
-                                    // A named pipe isn't in the filesystem,
-                                    // so Windows has nothing to reveal.
                                     .when(!cfg!(windows), |d| {
                                         d.child(small_button(
                                             rox_i18n::t!("settings-common-reveal"),
@@ -271,17 +243,15 @@ impl SettingsWindow {
                                     })
                                     .into_any_element(),
                             ))
-                            // The path on its own line rather than squeezed
-                            // beside the buttons: runtime dirs run long, and a
-                            // readout that truncates is a readout that lies.
+                            // On its own line: runtime dirs run long, and a truncated
+                            // path is wrong.
                             .child(readout(text))
                             .into_any_element()
                     })
                 },
             ))
-            // Only ever on an AppImage: every other channel registers itself
-            // with the desktop, and a switch over an entry the package
-            // manager owns would be a lie.
+            // AppImage only: every other channel registers its own desktop
+            // entry.
             .when(rox_core::install::appimage().is_some(), |page| {
                 page.section(Section::new(
                     q,
@@ -313,9 +283,8 @@ impl SettingsWindow {
             })
     }
 
-    /// The AppImage's menu entry, written or removed on the spot; the row
-    /// reads the entry back on the next render. Turning it off counts as
-    /// declining, so the welcome window stops offering it.
+    /// Turning it off counts as declining, so the welcome window stops offering
+    /// it.
     fn set_menu_entry(&mut self, on: bool, cx: &mut Context<Self>) {
         use crate::startup::desktop_integration;
 
@@ -334,17 +303,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The launch-check toggle: into the file, so the next start reads the
-    /// new setting. This run is already past its launch check either way.
     fn set_check_updates(&mut self, on: bool, cx: &mut Context<Self>) {
         self.check_updates = on;
         Settings::update(move |s| s.check_updates = on);
         cx.notify();
     }
 
-    /// The candidates toggle: into the file, and the menubar chip
-    /// recomputed against it, so a candidate the last check cached shows
-    /// or hides at once rather than after the next daily check.
+    /// Recompute the menubar chip now, so a cached candidate shows or hides at
+    /// once.
     fn set_prerelease_updates(&mut self, on: bool, cx: &mut Context<Self>) {
         self.prerelease_updates = on;
         Settings::update(move |s| s.prerelease_updates = on);
@@ -353,8 +319,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The auto-download toggle, same shape: the next launch's check reads
-    /// it.
     fn set_download_updates(&mut self, on: bool, cx: &mut Context<Self>) {
         self.download_updates = on;
         Settings::update(move |s| s.download_updates = on);
@@ -364,9 +328,7 @@ impl SettingsWindow {
     fn set_ai_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.ai_enabled = on;
         Settings::update(move |s| s.ai_enabled = on);
-        // Turning it off takes the MCP and ML Models pages out of the
-        // sidebar; a window on one of them goes back to the page with the
-        // toggle rather than staying on an orphaned page.
+        // Leave a page the toggle just hid.
         if !on && matches!(self.page, Page::Mcp | Page::MlModels) {
             self.page = Page::Application;
         }
@@ -374,9 +336,7 @@ impl SettingsWindow {
     }
 }
 
-/// Copy a folder tree whole, files and subfolders. The portable seed:
-/// stops on the first error so a half copy reports as one instead of
-/// passing for done.
+/// Stops on the first error, so a half copy reports as one.
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {

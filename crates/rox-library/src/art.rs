@@ -1,15 +1,11 @@
-//! Cover art resolution: the picture embedded in a file's tags, read
-//! through lofty (ADR 4's single metadata layer), with a cover image file
-//! next to the track as the fallback. Hands back the encoded bytes and
-//! their mime type; decoding and display stay with the caller. Blocking
-//! file reads; run it off the UI thread.
+//! Cover art resolution: the embedded picture read through lofty (ADR 4),
+//! with a cover file beside the track as the fallback. Returns encoded bytes
+//! and mime; decoding is the caller's. Blocking.
 //!
-//! One carve-out from the single layer: ID3v2.4 tags whose header and APIC
-//! frame both flag unsynchronisation get their picture read raw here,
-//! because lofty (through 0.24) de-unsynchronises that shape twice and
-//! hands back mangled image bytes. Bandcamp's tagger writes exactly this,
-//! so it covers a large slice of real libraries. Drop the workaround once
-//! lofty reads these tags clean.
+//! One carve-out: ID3v2.4 tags whose header and APIC frame both flag
+//! unsynchronisation get their picture read raw, because lofty (through
+//! 0.24) de-syncs that shape twice and mangles the image. Bandcamp writes
+//! exactly this. Drop the workaround once lofty reads it clean.
 
 use std::io::Read;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -18,28 +14,24 @@ use std::path::Path;
 use lofty::picture::{MimeType, PictureType};
 use lofty::prelude::*;
 
-/// File stems that count as folder art, best first.
+/// Best first.
 const FOLDER_ART: &[&str] = &["cover", "folder", "front", "album"];
-/// Image extensions folder art may use.
 const ART_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
-/// The picture slot a caller asks for, the tag picture types a player
-/// shows. Every pick falls back through the front cover, any embedded
-/// picture, and folder art, so asking for a slot a file doesn't have
-/// still resolves to something.
+/// Every pick falls back through the front cover, any embedded picture, and
+/// folder art.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArtKind {
     #[default]
     Front,
     Back,
-    /// The disc scan, ID3's "media" picture.
+    /// ID3's "media" picture, the disc scan.
     Media,
     Artist,
 }
 
 impl ArtKind {
-    /// The lofty picture types that satisfy this slot exactly, best
-    /// first; APIC keeps two artist types, so that pick accepts both.
+    /// Best first; APIC has two artist types.
     fn types(self) -> &'static [PictureType] {
         match self {
             ArtKind::Front => &[PictureType::CoverFront],
@@ -49,8 +41,7 @@ impl ArtKind {
         }
     }
 
-    /// The raw APIC type bytes for the same slot, the unsync path's copy
-    /// of [`ArtKind::types`].
+    /// The unsync path's copy of [`ArtKind::types`].
     fn apic_bytes(self) -> &'static [u8] {
         match self {
             ArtKind::Front => &[3],
@@ -60,9 +51,7 @@ impl ArtKind {
         }
     }
 
-    /// The folder-art stems this slot prefers, ranked ahead of the
-    /// generic cover names so a disc.jpg beside the track wins the media
-    /// pick but a lone cover.jpg still answers.
+    /// Slot-specific stems rank ahead of the generic cover names.
     fn stems(self) -> &'static [&'static str] {
         match self {
             ArtKind::Front => FOLDER_ART,
@@ -73,16 +62,12 @@ impl ArtKind {
     }
 }
 
-/// The cover art for a track: the front cover from its tags (any embedded
-/// picture failing that), else a cover image file in its folder. None when
-/// neither exists or nothing identifies as an image.
+/// The front cover from the tags (any picture failing that), else a cover
+/// file in the folder.
 pub fn cover_art(path: &Path) -> Option<(Vec<u8>, String)> {
     cover_art_source(path).art()
 }
 
-/// [`cover_art`] with the slot pick: the asked-for picture type from the
-/// tags, falling back through the front cover, any embedded picture, and
-/// the folder art ranked for the slot.
 pub fn cover_art_of(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     if let Some(art) = embedded(path, kind) {
         return Some(art);
@@ -90,17 +75,12 @@ pub fn cover_art_of(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     folder_art(path, kind).art()
 }
 
-/// Where a track's resolved cover came from, so a cache keyed on file
-/// identity can tell an embedded picture (covered by the audio file's own
-/// mtime/size) from a folder cover that changes without touching the track.
+/// Lets a cache tell an embedded picture (covered by the audio file's
+/// identity) from a folder cover that changes on its own.
 pub enum ArtSource {
-    /// The picture lived in the track's own tags.
     Embedded,
-    /// The picture came from this image file beside the track, stamped
-    /// with the identity it carried just before its bytes were read.
-    /// Statting after the read instead would pin a cover that finished
-    /// downloading mid-read to the identity it settled on, so a thumbnail
-    /// built from half an image would match forever.
+    /// Stamped with the identity the file had just before its bytes were read.
+    /// Statting after would pin half a download to the finished identity.
     Folder {
         file: std::path::PathBuf,
         mtime: i64,
@@ -108,31 +88,21 @@ pub enum ArtSource {
     },
 }
 
-/// What a cover lookup found. An album with nothing to show and one whose
-/// cover file will not read as an image are different answers, and a cache
-/// has to keep them apart: the first is settled and worth storing, the
-/// second is a file still landing on disk. A downloader bumps the folder's
-/// mtime once, when it creates the file, so an entry stored while the
-/// bytes are still arriving would answer for that album forever.
+/// Keeps "no art" apart from "art still landing": a downloader bumps the
+/// folder's mtime once, on create, so caching the half-written state would
+/// stick forever.
 pub enum Cover {
-    /// A picture that reads as one: its bytes, its mime type, and where it
-    /// came from.
     Found {
         bytes: Vec<u8>,
         mime: String,
         source: ArtSource,
     },
-    /// A cover file the pick would take is sitting there and its bytes are
-    /// not an image yet, whether that's an empty file, a zero-filled
-    /// preallocation, or one that won't read at all.
+    /// A cover file the pick would take whose bytes aren't an image yet.
     Settling,
-    /// Nothing in the tags, nothing in the folder.
     None,
 }
 
 impl Cover {
-    /// The bytes and their mime type, dropping where they came from: what a
-    /// caller that only wants to draw the picture needs.
     pub fn art(self) -> Option<(Vec<u8>, String)> {
         match self {
             Cover::Found { bytes, mime, .. } => Some((bytes, mime)),
@@ -141,10 +111,8 @@ impl Cover {
     }
 }
 
-/// [`cover_art`] plus where the picture came from. The thumbnail cache uses
-/// the source to key a folder cover on that file's identity, so replacing
-/// or adding cover.jpg invalidates a thumb the audio file's own mtime/size
-/// would never notice.
+/// [`cover_art`] plus its source, which the thumbnail cache keys a folder
+/// cover's identity on.
 pub fn cover_art_source(path: &Path) -> Cover {
     if let Some((bytes, mime)) = embedded(path, ArtKind::Front) {
         return Cover::Found {
@@ -156,8 +124,7 @@ pub fn cover_art_source(path: &Path) -> Cover {
     folder_art(path, ArtKind::Front)
 }
 
-/// The (mtime, size) of a path, both zero when it will not stat. Caches
-/// key on this, so a changed file reads as a fresh identity.
+/// (mtime, size), both zero when the path won't stat.
 pub fn identity(path: &Path) -> (i64, i64) {
     match std::fs::metadata(path) {
         Ok(meta) => (
@@ -172,31 +139,21 @@ pub fn identity(path: &Path) -> (i64, i64) {
     }
 }
 
-/// Whether an image's bytes include their end marker, so a file caught
-/// halfway through a download reads as what it is. Only the formats with
-/// an unambiguous end are checked; anything else passes, since guessing
-/// wrong costs a cover. The marker scan tolerates the trailing padding some
-/// encoders leave after it.
+/// Whether an image's bytes include their end marker, so a half-downloaded
+/// file reads as one. Formats without an unambiguous end pass.
 pub fn complete(bytes: &[u8]) -> bool {
-    // Far enough back to clear padding, short enough that a marker found
-    // here really is the end.
     const TAIL: usize = 32;
     let tail = &bytes[bytes.len().saturating_sub(TAIL)..];
     let ends_with = |marker: &[u8]| tail.windows(marker.len()).any(|w| w == marker);
     match sniff(bytes) {
-        // FF D9 cannot occur inside entropy-coded scan data, where every
-        // FF is stuffed with a zero, so finding it means the real end.
+        // FF D9 can't occur inside stuffed scan data, so it's the real end.
         Some("image/jpeg") => ends_with(&[0xFF, 0xD9]),
         Some("image/png") => ends_with(b"IEND\xAEB\x60\x82"),
-        // GIF's trailer is a single byte, so a bare scan for it would match
-        // any 0x3B the compressed data happens to end on. Take the last one
-        // and require the rest of the tail to be zeros, which is the shape
-        // padding actually comes in.
+        // GIF's trailer is one byte, so take the last 0x3B and require zeros after.
         Some("image/gif") => tail
             .iter()
             .rposition(|b| *b == 0x3B)
             .is_some_and(|end| tail[end + 1..].iter().all(|b| *b == 0)),
-        // RIFF containers count their own length in the header.
         Some("image/webp") => bytes
             .get(4..8)
             .and_then(|n| n.try_into().ok())
@@ -205,10 +162,8 @@ pub fn complete(bytes: &[u8]) -> bool {
     }
 }
 
-/// The embedded picture for a slot, isolated like the scanner's tag
-/// reads: a file that errors or panics lofty's parser just has no art.
-/// Tags lofty is known to mangle take the raw path first. The pick runs
-/// the slot's exact types, then the front cover, then any picture.
+/// A file that errors or panics lofty just has no art. The pick runs the
+/// slot's types, then the front cover, then any picture.
 fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     if let Some(art) = unsync_apic(path, kind) {
         return Some(art);
@@ -229,8 +184,7 @@ fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
                 .find(|p| p.pic_type() == PictureType::CoverFront)
         })
         .or_else(|| pictures.first())?;
-    // Tags lie about mime types often enough that a missing or unknown one
-    // is worth rescuing off the magic bytes.
+    // Tags lie about mime types; rescue off the magic bytes.
     let mime = match picture.mime_type() {
         Some(MimeType::Unknown(_)) | None => sniff(picture.data())?.into(),
         Some(mime) => mime.as_str().to_string(),
@@ -238,12 +192,8 @@ fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     Some((picture.data().to_vec(), mime))
 }
 
-/// A cover image sitting next to the track: the one named after the track
-/// itself first, then the slot's best-ranked shared stem. Hands back the
-/// file it read, and the identity that file had going in, so a cache can
-/// key on it. A folder holding a cover whose bytes don't sniff answers
-/// [`Cover::Settling`] rather than None, so a caller can tell a download in
-/// flight from an album that has no art.
+/// The track's own-name image first, then the slot's stems. Unsniffable bytes
+/// answer [`Cover::Settling`], not None.
 fn folder_art(path: &Path, kind: ArtKind) -> Cover {
     let stems = kind.stems();
     let Some(dir) = path.parent() else {
@@ -253,12 +203,8 @@ fn folder_art(path: &Path, kind: ArtKind) -> Cover {
         return Cover::None;
     };
 
-    // The track's own name, which outranks every shared stem: a picture
-    // called after one track was put there for that track. A capture off
-    // the air writes one, since a station's evening lands in a single
-    // folder where a shared cover.jpg would be the wrong picture for all
-    // but one song. Front only, because a name matching the track says
-    // nothing about the picture being its back or its disc scan.
+    // A picture named after the track outranks shared stems: a radio capture
+    // writes one per song into a shared folder. Front slot only.
     let own = (kind == ArtKind::Front)
         .then(|| path.file_stem().and_then(|s| s.to_str()))
         .flatten();
@@ -276,10 +222,7 @@ fn folder_art(path: &Path, kind: ArtKind) -> Cover {
         let Some(stem) = candidate.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        // Rank 0 is the track's own name; the shared stems start at one.
-        // Case-blind like the shared stems and the extension, since on a
-        // case-insensitive disk the two spellings are one file anyway and
-        // a path typed or dropped in carries whatever casing it was given.
+        // Rank 0 is the track's own name. Case-blind, like the stems.
         let rank = if own.is_some_and(|own| own.eq_ignore_ascii_case(stem)) {
             0
         } else {
@@ -295,9 +238,6 @@ fn folder_art(path: &Path, kind: ArtKind) -> Cover {
     let Some((_, file)) = best else {
         return Cover::None;
     };
-    // Stat first, read second: a cover that finishes downloading between
-    // the two then reads as a file the cache has never seen, instead of
-    // stamping its finished identity on the bytes we caught mid-write.
     let (mtime, size) = identity(&file);
     let Ok(bytes) = std::fs::read(&file) else {
         return Cover::Settling;
@@ -312,17 +252,10 @@ fn folder_art(path: &Path, kind: ArtKind) -> Cover {
     }
 }
 
-/// The picture pulled raw out of an ID3v2.4 tag whose header sets the
-/// unsynchronisation flag. lofty de-unsynchronises such a tag whole, then
-/// again per frame for the frame's own flag, so every stuffed `ff 00 00`
-/// collapses to `ff` instead of `ff 00` and the image never decodes. Only
-/// frames with their own flag set qualify: per the v2.4 spec the scheme
-/// is applied frame by frame, so their sizes count the stuffed bytes as
-/// stored and the walk below stays aligned. A tag unsynchronised as one
-/// stream (header flag alone) reads fine through lofty and stays there.
-/// None means the tag is not this shape; the lofty path takes over. The
-/// writer uses the same probe to pass the picture through a commit,
-/// since lofty would hand it the mangled bytes to write back.
+/// The picture read raw out of an ID3v2.4 tag with the header unsync flag,
+/// which lofty de-syncs twice. Only frames with their own unsync flag
+/// qualify; their sizes count the stuffing, so the walk stays aligned. The
+/// writer uses this too, so a commit doesn't write the mangled bytes back.
 pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut header = [0u8; 10];
@@ -333,8 +266,7 @@ pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String
     let mut tag = vec![0u8; synchsafe(&header[6..10])? as usize];
     file.read_exact(&mut tag).ok()?;
     let mut pos = 0;
-    // The extended header comes before the frames and counts itself in its
-    // own size.
+    // The extended header counts itself in its own size.
     if header[5] & 0x40 != 0 {
         pos = synchsafe(tag.get(..4)?)? as usize;
     }
@@ -355,7 +287,7 @@ pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String
         if id != b"APIC" || flags & 0x02 == 0 {
             continue;
         }
-        // The data length indicator, when flagged, prefixes the content.
+        // A flagged data length indicator prefixes the content.
         let body = if flags & 0x01 != 0 {
             body.get(4..)?
         } else {
@@ -364,8 +296,7 @@ pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String
         let Some((pic_type, art)) = parse_apic(&resync(body)) else {
             continue;
         };
-        // The slot's own types win outright, the front cover stands in,
-        // any other picture last, mirroring the lofty path's pick.
+        // Same pick order as the lofty path.
         let rank = preferred
             .iter()
             .position(|b| *b == pic_type)
@@ -384,15 +315,12 @@ pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String
     best.map(|(_, art)| art)
 }
 
-/// A de-unsynchronised APIC body split into its picture type and the
-/// image bytes with their mime type.
 fn parse_apic(body: &[u8]) -> Option<(u8, (Vec<u8>, String))> {
     let encoding = *body.first()?;
     let mime_end = 1 + body.get(1..)?.iter().position(|b| *b == 0)?;
     let declared = String::from_utf8_lossy(&body[1..mime_end]).into_owned();
     let pic_type = *body.get(mime_end + 1)?;
-    // The description ends on one nul for latin1/utf8, a nul pair on
-    // utf16's two-byte grid.
+    // One nul ends latin1/utf8, a nul pair ends utf16.
     let desc_start = mime_end + 2;
     let data_start = match encoding {
         1 | 2 => {
@@ -408,8 +336,7 @@ fn parse_apic(body: &[u8]) -> Option<(u8, (Vec<u8>, String))> {
     if data.is_empty() {
         return None;
     }
-    // The same rescue the lofty path runs: magic bytes beat a lying tag,
-    // the tag's claim stands when the magic says nothing.
+    // Magic bytes beat a lying tag; the tag stands when the magic says nothing.
     let mime = sniff(&data).map_or(declared, str::to_string);
     if mime.is_empty() {
         return None;
@@ -417,8 +344,6 @@ fn parse_apic(body: &[u8]) -> Option<(u8, (Vec<u8>, String))> {
     Some((pic_type, (data, mime)))
 }
 
-/// One pass of un-unsynchronisation: every `ff 00` collapses back to `ff`,
-/// restoring the bytes the stuffing hid from mpeg sync scanners.
 fn resync(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
@@ -432,8 +357,7 @@ fn resync(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A 4-byte synchsafe integer; None when a byte has its high bit set,
-/// which no conforming tag writes.
+/// None when a byte has its high bit set.
 pub(crate) fn synchsafe(bytes: &[u8]) -> Option<u32> {
     let quad: [u8; 4] = bytes.try_into().ok()?;
     if quad.iter().any(|b| b & 0x80 != 0) {
@@ -442,8 +366,7 @@ pub(crate) fn synchsafe(bytes: &[u8]) -> Option<u32> {
     Some(quad.iter().fold(0u32, |acc, b| acc << 7 | u32::from(*b)))
 }
 
-/// The 4-byte synchsafe encode, the write-side counterpart of [`synchsafe`].
-/// The value must fit 28 bits; callers bound it before asking.
+/// The value must fit 28 bits.
 pub(crate) fn synchsafe_encode(n: u32) -> [u8; 4] {
     [
         (n >> 21) as u8 & 0x7F,
@@ -453,7 +376,6 @@ pub(crate) fn synchsafe_encode(n: u32) -> [u8; 4] {
     ]
 }
 
-/// The mime type off an image's magic bytes.
 pub(crate) fn sniff(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         Some("image/png")
@@ -470,11 +392,8 @@ pub(crate) fn sniff(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// What to call a picture written next to a track: the extension for its
-/// bytes, sniffed off the magic numbers rather than trusted from whatever
-/// handed them over. Only the extensions [`folder_art`] reads back come
-/// out of here, so a cover this names is a cover the player will find
-/// again; a GIF or a BMP answers None and is better not written at all.
+/// The extension for a picture's bytes, only ones [`folder_art`] reads back.
+/// GIF and BMP answer None.
 pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     match sniff(bytes)? {
         "image/jpeg" => Some("jpg"),
@@ -488,9 +407,6 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// The stuffing the resync must undo exactly once: `ff 00 00` back to
-    /// `ff 00`, `ff 00 xx` back to `ff xx`. Stripping the pair twice is
-    /// the lofty bug the raw path exists for.
     #[test]
     fn resync_is_a_single_pass() {
         assert_eq!(resync(&[0xFF, 0x00, 0x00, 0x59]), [0xFF, 0x00, 0x59]);
@@ -498,9 +414,6 @@ mod tests {
         assert_eq!(resync(&[0x01, 0x00, 0xFF]), [0x01, 0x00, 0xFF]);
     }
 
-    /// The end-marker check the thumbnail cache leans on: a whole file
-    /// passes, the front of one still downloading does not, and a format
-    /// with no marker to read passes rather than lose its cover.
     #[test]
     fn complete_reads_the_end_marker() {
         let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x41, 0xFF, 0xD9];
@@ -513,9 +426,6 @@ mod tests {
         assert!(complete(b"not an image at all"));
     }
 
-    /// GIF's one-byte trailer: it counts at the end and behind zero
-    /// padding, so a padded but finished cover caches instead of decoding
-    /// itself again on every request. Data that just stops does not.
     #[test]
     fn complete_reads_a_padded_gif_trailer() {
         let mut gif = b"GIF89a".to_vec();
@@ -527,8 +437,6 @@ mod tests {
         assert!(complete(&gif), "trailing zero padding still ends");
     }
 
-    /// The unsynchronisation an encoder applies: a zero stuffed after
-    /// every `ff` that precedes a zero or a sync-shaped byte.
     fn stuff(data: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         for (i, b) in data.iter().enumerate() {
@@ -540,7 +448,6 @@ mod tests {
         out
     }
 
-    /// A 4-byte synchsafe encode, the write-side counterpart of `synchsafe`.
     fn synch(n: u32) -> [u8; 4] {
         [
             (n >> 21) as u8 & 0x7F,
@@ -550,10 +457,6 @@ mod tests {
         ]
     }
 
-    /// A file holding just an ID3v2.4 tag shaped like Bandcamp's: header
-    /// unsynchronisation flag set, the APIC frame flagged unsynchronised
-    /// with a data length indicator, a utf16 description. The picture must
-    /// come back byte-identical through the raw path.
     #[test]
     fn unsync_apic_survives_ff_runs() {
         let image = [
@@ -574,8 +477,7 @@ mod tests {
         tag.extend(synch(frame.len() as u32));
         tag.extend(&frame);
 
-        // An empty scratch dir so the folder-art fallback can never answer
-        // for a broken raw path.
+        // An empty dir, so folder art can't mask a broken raw path.
         let dir = std::env::temp_dir().join("rox-art-unsync-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("track.mp3");
@@ -588,24 +490,17 @@ mod tests {
         assert_eq!(mime, "image/jpeg");
     }
 
-    /// A picture named after the track beats the folder's shared cover,
-    /// which is what makes a folder of captures off one station show a
-    /// different sleeve per song. The shared cover still answers for the
-    /// tracks that have no picture of their own.
     #[test]
     fn a_picture_named_after_the_track_wins() {
         let dir = std::env::temp_dir().join("rox-art-sidecar-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Untagged, so nothing embedded can answer ahead of the folder.
         let own = dir.join("Pendulum - Propane Nightmares.mp3");
         let other = dir.join("Koven - Take It Away.mp3");
         std::fs::write(&own, b"not really audio").unwrap();
         std::fs::write(&other, b"not really audio").unwrap();
         std::fs::write(dir.join("cover.png"), png(b"shared")).unwrap();
-        // Cased differently from the track on purpose: the match is
-        // case-blind, the same as the shared stems.
         std::fs::write(
             dir.join("pendulum - propane nightmares.png"),
             png(b"its own"),
@@ -616,16 +511,12 @@ mod tests {
         assert_eq!(art(&own), png(b"its own"));
         assert_eq!(art(&other), png(b"shared"));
 
-        // The name only counts for the front slot: a song's own picture
-        // says nothing about being the back of anything.
         let back = cover_art_of(&own, ArtKind::Back).expect("a picture").0;
         assert_eq!(back, png(b"shared"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Bytes that sniff as a PNG, so folder art will take them: the
-    /// signature and whatever marks this copy apart.
     fn png(mark: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         bytes.extend(mark);

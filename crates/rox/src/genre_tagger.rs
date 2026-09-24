@@ -1,46 +1,19 @@
-//! The genre tagger: the one window in rox that asks for a single tag,
-//! one track at a time, with the track playing while it asks. Genre is
-//! the field a scanner can't infer and a provider often disagrees about,
-//! so filling it is a listening job, not a lookup job. The window's whole
-//! shape follows from that: play the track, rank the likely answers under
-//! it with the evidence beside each, take a typed answer for everything
-//! the ranking missed, write, and move on. Nothing here batches silently,
-//! and nothing here guesses on the user's behalf. A track that is two
-//! genres gets them by collecting: Shift with a digit, or a Shift-click,
-//! adds a row's genre to the box rather than writing it, and Enter writes
-//! the list in the library's "; " spelling.
+//! The genre tagger: one track at a time, playing while it asks. Genre is
+//! the field a scanner can't infer, so this is a listening job: rank the
+//! likely answers with their evidence, take a typed one for the rest, write,
+//! move on. Nothing batches silently and nothing guesses for the user.
+//! Shift with a digit or a Shift-click collects genres into the box for a
+//! track that's more than one.
 //!
-//! It has two ways of choosing what it asks about. Opened cold it looks at
-//! whatever is playing, tagged or not, and offers to retag it: the window
-//! never touches the transport on its own, so opening it beside a track
-//! you're already listening to is a way to ask "what would you call this".
-//! "Begin queue" is the other way: from then on it walks every track with
-//! no genre, plays each as it arrives, and steps on with every write or
-//! skip. Stopping the queue drops back to watching the player.
+//! Opened cold it watches the player and never touches the transport. "Begin
+//! queue" walks every untagged track instead, playing each in turn.
 //!
-//! The suggestions come from [`rox_library::genre_suggest`], which votes
-//! over three sources that disagree in useful ways: what the rest of the
-//! album already says, what the rest of the artist already says, and what
-//! the acoustically nearest neighbours say. Last.fm's artist tags join as
-//! a fourth source, but only when asked: a tagging pass moves at the speed
-//! of the keyboard, and a network round trip per track would turn a
-//! five-minute session into a twenty-minute one, so the lookup is a button
-//! rather than a step.
-//!
-//! Writes go through the same atomic copy-verify-rename layer as every
-//! other tag edit (ADR 4), one file at a time with per-file isolation, and
-//! a cue subsong is refused rather than written, because there is nowhere
-//! inside a shared image that means "track 4". The album switch is the one
-//! multi-file action: in the queue it reaches the album's other untagged
-//! rows, and on a track being retagged it reaches the whole album, both
-//! scoped to rows sharing an album name and a folder, so a compilation
-//! split across directories can't be painted with one word. One level of
-//! undo puts every file the last write touched back to what it held.
-//!
-//! The window never patches the library's projection: it holds an Arc of
-//! the one it opened over, and rebuilds its walk from scratch when the
-//! catalog swaps a new one in, keeping the cursor on the same track where
-//! that track survives.
+//! Suggestions come from [`rox_library::genre_suggest`]'s vote over the
+//! album, the artist, and acoustic neighbours, plus Last.fm's artist tags
+//! when looked up. Writes go through the atomic tag layer (ADR 4); a cue
+//! subsong is refused, since nothing inside a shared image means "track 4".
+//! The album switch reaches rows sharing an album name and a folder. One
+//! level of undo restores every file the last write touched.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -73,43 +46,29 @@ use rox_services::backdrop::WindowBackdrop;
 use rox_services::catalog::LibraryEvent;
 use rox_services::thumbs::Thumb;
 
-/// How many suggestions the vote is asked for. Eight because the digit row
-/// picks them: a ninth row would be a row with no key behind it.
+/// Eight because the digit row picks them.
 const ROW_CAP: usize = 8;
 
-/// The current track's cover. Big enough to recognize a sleeve at a
-/// glance, small enough that the ranking stays above the fold at the
-/// window's minimum height.
 const COVER: f32 = 88.;
 
-/// Where in the track playback starts. A third of the way in skips the
-/// intro, which is the part of a song that says least about its genre.
+/// A third of the way in skips the intro, which says least about genre.
 const START_DIVISOR: u32 = 3;
 
-/// The ceiling on that offset. Without it a twenty-minute mix would start
-/// seven minutes in, well past the point where the answer was already
-/// obvious, and the pass would spend its time seeking.
+/// Caps the offset so a long mix doesn't start minutes in.
 const START_CAP_MS: u32 = 30_000;
 
-/// A row's share bar. Thin: the number beside it is the real reading, and
-/// the bar is there to make the ranking visible without being read.
 const BAR_W: f32 = 56.;
 const BAR_H: f32 = 3.;
 
-/// How many of Last.fm's top tags a lookup keeps. The list is ordered by
-/// how often listeners applied each tag, and past the first few it turns
-/// into "seen live" and "favourites", which are not genres.
+/// Past the first few, Last.fm's tags turn into "seen live" and "favourites".
 const LOOKUP_TAGS: usize = 5;
 
-/// The open tagger, if any. One at a time, the duplicates window's rule:
-/// a walk in progress with a write in flight isn't worth losing to a
-/// second copy, so asking again brings this one forward.
+/// One at a time: a walk with a write in flight isn't worth losing to a second copy.
 #[derive(Default)]
 struct OpenTagger(Option<WindowHandle<Root>>);
 
 impl Global for OpenTagger {}
 
-/// Open the genre tagger, or bring the open one forward.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(handle) = cx.try_global::<OpenTagger>().and_then(|o| o.0)
         && handle
@@ -129,38 +88,28 @@ pub fn open(state: AppState, cx: &mut App) {
     cx.set_global(OpenTagger(Some(handle)));
 }
 
-/// One track waiting for a genre: its database id (the identity that
-/// survives a projection swap), the row it sits at in the projection the
-/// walk was built from, and the two symbols the album switch groups on.
-///
-/// `album` is None where the row carries no album name at all. A folder of
-/// loose singles all share the empty album, and grouping on it would let
-/// one click paint a dozen unrelated tracks.
+/// `id` survives a projection swap; `row` is in the walk's projection.
+/// `album` is None for a row with no album name, so loose singles never
+/// group into one album.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Pending {
     id: i64,
     row: u32,
     album: Option<u32>,
     folder: u32,
-    /// Which subsong of its file the row is. Non-zero means a cue track,
-    /// which has no place on disk to write to.
+    /// Non-zero is a cue track, which has nowhere on disk to write to.
     sub: u16,
 }
 
-/// Which way the window is choosing its subject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
-    /// Whatever the player has on, for retagging. The transport is the
-    /// user's, untouched.
+    /// Retag whatever plays; the transport stays the user's.
     Watching,
-    /// Walking the untagged list, playing each track as it comes up.
     Queue,
 }
 
-/// One file a write touched, with what it held before, so the write can
-/// be taken back exactly. `walk` says the row was one of the untagged walk's
-/// own, so the write took it out and taking the write back puts it back;
-/// false for a retag, which removes nothing from the walk.
+/// Enough to take a write back exactly. `walk` marks a row the write took out
+/// of the untagged walk, which undo puts back.
 #[derive(Clone, Debug)]
 struct Written {
     walk: bool,
@@ -171,67 +120,41 @@ struct Written {
 
 pub struct GenreTagger {
     state: AppState,
-    /// The projection the walk was built over, held whole. Suggestions run
-    /// against this one, so a swap mid-vote can't shift the rows out from
-    /// under a result that's already on its way back.
+    /// Held whole so a swap mid-vote can't shift rows under a result on its way back.
     projection: Option<Arc<Projection>>,
     mode: Mode,
-    /// The untagged walk, in projection order, and where the queue is in it.
     items: Vec<Pending>,
     pos: usize,
-    /// What the window is asking about right now: in the queue, the row at
-    /// the cursor; watching, the playing track once it's found in the
-    /// projection. None when there's nothing to ask about.
+    /// The row at the cursor in the queue, or the playing track while watching.
     subject: Option<Pending>,
-    /// The subject's key, resolved once per seat: the cover, the playback,
-    /// and the write all address through it.
     key: Option<TrackKey>,
-    /// The subject's genre as it stands, for the card. Empty in the queue
-    /// by definition.
     before: String,
     suggestions: Vec<Suggestion>,
     loading: bool,
-    /// Bumped on every seat. A batch of suggestions carrying an older
-    /// number belongs to a track the window has already left, so it drops.
+    /// Bumped on every seat so a stale batch of suggestions drops.
     generation: u64,
     input: Entity<InputState>,
     typed: String,
-    /// A failed write, or the note that a cue track can't take one.
     error: Option<SharedString>,
     applying: bool,
-    /// How far the write in flight has got: files done, files in all. An
-    /// album sweep touches a dozen files one after another, and the footer
-    /// counts them off so the window doesn't look stuck.
+    /// (done, total) for an album sweep's footer count.
     progress: (usize, usize),
-    /// Raised when the window goes away. A sweep can have a dozen files
-    /// left to write, and the user closing the window is the user saying
-    /// stop, so the loop reads this between files.
+    /// Raised on close; the sweep checks it between files.
     cancel: Arc<AtomicBool>,
     undo: Option<Vec<Written>>,
-    /// Whether an answer also lands on the album's siblings. Sticky across
-    /// tracks: a user working through a folder of albums decides this
-    /// once, and Ctrl with a digit is the per-pick override.
+    /// Sticky across tracks; Ctrl with a digit overrides it per pick.
     album_too: bool,
-    /// What the Last.fm lookup answered for this track's artist, fed to the
-    /// vote as its fourth source. Empty until the button is pressed.
+    /// The Last.fm tags fed to the vote. Empty until a lookup answers.
     lookup: Vec<String>,
     looking_up: bool,
-    /// Whether every seat asks Last.fm on its own, so the fourth source
-    /// is there without a press per track. Sticky for the session like
-    /// the album switch; the button and L still ask by hand.
     auto_lookup: bool,
-    /// What the lookup said, in words, beside the button.
     lookup_note: Option<SharedString>,
-    /// The ranking's scroll, for a window shorter than eight rows.
     scroll: ScrollHandle,
     focus: FocusHandle,
     backdrop: WindowBackdrop,
-    /// This window pumps its own frames, so the backdrop needs its own
-    /// wake on a new bake.
     _backdrop_changed: Subscription,
     _library_changed: Subscription,
-    /// Follows the player: repaints the transport's play/pause face, and
-    /// while watching, moves the subject onto whatever starts playing.
+    /// Also moves the subject onto whatever starts playing while watching.
     _player_changed: Subscription,
     _input_events: Vec<Subscription>,
 }
@@ -310,11 +233,8 @@ impl GenreTagger {
         this
     }
 
-    /// Build the walk from the catalog's current projection, keeping the
-    /// cursor where it can. The track under the cursor is looked up by
-    /// database id in the new list; where it's gone (this window just
-    /// tagged it) the index stays put, which lands on whatever slid up into
-    /// its place. Watching, the subject is re-found the same way, by id.
+    /// Rebuild the walk, keeping the cursor by database id. A row this window just
+    /// tagged is gone, so the index stays and lands on what slid into its place.
     fn rebuild(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(projection) = self.state.library.read(cx).projection().cloned() else {
             self.projection = None;
@@ -334,11 +254,8 @@ impl GenreTagger {
         self.pos = pos;
         match self.mode {
             Mode::Queue => {
-                // Only re-seat when the cursor actually landed somewhere
-                // else. A rebuild that finds the same track under the cursor
-                // must not restart it: the catalog fires on every rating
-                // click and scrobble, and a walk that jumped back to the
-                // intro on each one would be unusable.
+                // Re-seat only when the cursor moved: the catalog fires on every rating and
+                // scrobble, and restarting the track each time would make the walk unusable.
                 let moved = first || holding != self.items.get(pos).map(|p| p.id);
                 if moved {
                     self.seat(window, cx);
@@ -347,9 +264,7 @@ impl GenreTagger {
                 }
             }
             Mode::Watching => {
-                // The playing track's row may have moved, and its genre may
-                // be what this window just wrote. Refresh what the card
-                // shows without re-asking the vote or clearing the box.
+                // Refresh the card without re-asking the vote or clearing the box.
                 let subject = self.playing_subject(cx);
                 if subject.map(|p| p.id) != self.subject.map(|p| p.id) {
                     self.seat(window, cx);
@@ -362,9 +277,7 @@ impl GenreTagger {
         }
     }
 
-    /// The playing track as a walk entry, when it's a library track the
-    /// projection knows. A stream, or a file the library hasn't indexed,
-    /// gives None.
+    /// None for a stream or a file the library hasn't indexed.
     fn playing_subject(&self, cx: &App) -> Option<Pending> {
         let projection = self.projection.as_ref()?;
         let key = self.state.player.read(cx).now_playing()?.key;
@@ -373,7 +286,6 @@ impl GenreTagger {
         Some(pending_at(projection, row))
     }
 
-    /// The subject's genre string as the projection holds it.
     fn genre_of(&self, subject: Option<Pending>) -> String {
         match (self.projection.as_ref(), subject) {
             (Some(projection), Some(p)) => projection.resolve(p.row).genre.to_string(),
@@ -381,9 +293,7 @@ impl GenreTagger {
         }
     }
 
-    /// While watching, move onto whatever the player just switched to.
-    /// Compared by id so the position ticks the player notifies on don't
-    /// re-seat the same track over and over.
+    /// Compared by id so position ticks don't re-seat the same track.
     fn follow_player(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != Mode::Watching {
             return;
@@ -394,10 +304,7 @@ impl GenreTagger {
         }
     }
 
-    /// Take up the subject for the mode: resolve its key, clear the last
-    /// track's answers, play it if the queue is running, and ask for
-    /// suggestions. The album switch and the box's focus are left alone,
-    /// since both belong to the user rather than the track.
+    /// The album switch and focus are left alone: they belong to the user, not the track.
     fn seat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
         self.suggestions.clear();
@@ -439,9 +346,7 @@ impl GenreTagger {
         cx.notify();
     }
 
-    /// Begin queue: from here the window chooses what plays. Picks up
-    /// from wherever the cursor was, so stopping and starting again
-    /// doesn't send the walk back to the top.
+    /// Resumes from the cursor rather than the top.
     fn begin_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.items.is_empty() {
             return;
@@ -451,18 +356,13 @@ impl GenreTagger {
         self.seat(window, cx);
     }
 
-    /// Stop queue: back to watching the player. The track the queue was on
-    /// keeps playing, and it's what the window now watches, so nothing
-    /// visibly changes except which controls are offered.
     fn stop_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = Mode::Watching;
         self.seat(window, cx);
     }
 
-    /// Play the subject from partway in, spliced in after the playing track
-    /// the way Play Now does, so a tagging pass doesn't eat the queue (ADR
-    /// 16). The offset rides the insert command itself, so the track's head
-    /// is never heard.
+    /// Spliced in after the playing track like Play Now, so the pass doesn't eat
+    /// the queue (ADR 16). The offset rides the insert, so the head is never heard.
     fn play(&mut self, cx: &mut Context<Self>) {
         let (Some(key), Some(item)) = (self.key.clone(), self.subject) else {
             return;
@@ -478,10 +378,7 @@ impl GenreTagger {
         });
     }
 
-    /// Ask the vote for this track's likely genres, off the UI thread. The
-    /// read connection is opened per request rather than held: a tagging
-    /// pass makes one of these every few seconds, and the open is cheap
-    /// beside the nearest-neighbour query it precedes.
+    /// A connection per request: cheap beside the nearest-neighbour query.
     fn request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(projection), Some(item)) = (self.projection.clone(), self.subject) else {
             return;
@@ -514,12 +411,8 @@ impl GenreTagger {
         .detach();
     }
 
-    /// Ask Last.fm what the artist is tagged as, and vote again with the
-    /// answer in. Artist-level, since that's the read the service offers
-    /// without an account; a compilation's lookup is the compilation's
-    /// credited artist. Honours the same provider switch the biography
-    /// panel does, and says so instead of silently doing nothing when the
-    /// switch is off.
+    /// Artist-level, the read Last.fm offers without an account. Honours the
+    /// provider switch, and says so when it's off.
     fn look_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.looking_up {
             return;
@@ -557,8 +450,7 @@ impl GenreTagger {
                 this.looking_up = false;
                 match result {
                     Ok(Some(info)) if !info.tags.is_empty() => {
-                        // Last.fm hands its tags over in lowercase; the
-                        // library keeps them capitalized.
+                        // Last.fm's tags are lowercase; the library capitalizes.
                         let tags: Vec<String> = info
                             .tags
                             .iter()
@@ -588,8 +480,6 @@ impl GenreTagger {
         .detach();
     }
 
-    /// Move the cursor without writing anything. Queue only: watching has
-    /// no list to move along.
     fn skip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != Mode::Queue || self.applying || self.items.is_empty() {
             return;
@@ -598,8 +488,6 @@ impl GenreTagger {
         self.seat(window, cx);
     }
 
-    /// The digit keys: the nth suggestion, with Ctrl reaching the album
-    /// whatever the switch says.
     fn pick(&mut self, n: usize, album: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(genre) = self.suggestions.get(n).map(|s| s.genre.clone()) else {
             return;
@@ -607,9 +495,7 @@ impl GenreTagger {
         self.apply(genre, album, window, cx);
     }
 
-    /// Collect a genre into the box instead of writing it, for a track that
-    /// is more than one thing. Joined in the library's "; " spelling, with a
-    /// value already in the box left as it was rather than doubled.
+    /// Joined in the library's "; " spelling, never doubled.
     fn add_to_box(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         let value = value.trim();
         if value.is_empty() {
@@ -628,10 +514,8 @@ impl GenreTagger {
         cx.notify();
     }
 
-    /// Which rows an answer lands on: the subject alone, or the subject
-    /// with its album. In the queue the album is its other untagged rows;
-    /// watching, where the subject is being retagged, it's every row of the
-    /// album, since "tag the whole album" means the whole album.
+    /// With `album`: in the queue, the album's other untagged rows; watching, the
+    /// whole album.
     fn targets(&self, album: bool) -> Vec<(bool, Pending)> {
         let Some(subject) = self.subject else {
             return Vec::new();
@@ -657,8 +541,6 @@ impl GenreTagger {
         }
     }
 
-    /// How many siblings the album switch would reach beyond the subject,
-    /// for the switch's label.
     fn siblings(&self) -> usize {
         self.targets(true).len().saturating_sub(1)
     }
@@ -674,10 +556,7 @@ impl GenreTagger {
             cx.notify();
             return;
         }
-        // A cue row caught in an album sweep drops out of it rather than
-        // stopping the sweep: the rest of the album is still writable, and
-        // in the queue the row stays in the walk to be refused on its own
-        // turn.
+        // A cue row drops out of an album sweep rather than stopping it.
         let targets: Vec<(bool, Pending)> = self
             .targets(album)
             .into_iter()
@@ -715,12 +594,8 @@ impl GenreTagger {
         self.commit(jobs, Some(genre), window, cx);
     }
 
-    /// Put `genre` on every one of `jobs` (None clears it), then fold the
-    /// results back in: in the queue, written rows leave the walk and the
-    /// cursor lands on whatever follows; watching, the subject stays and
-    /// the card catches up when the catalog reloads. The first failure
-    /// shows inline. `undo` says whether this write is one to remember or
-    /// the taking-back of one.
+    /// Write `genre` to every job and fold the results back in. A None `genre`
+    /// is an undo: each file gets its own `before` back.
     fn commit(
         &mut self,
         jobs: Vec<Written>,
@@ -731,22 +606,15 @@ impl GenreTagger {
         let taking_back = genre.is_none();
         self.progress = (0, jobs.len());
         let cancel = self.cancel.clone();
-        // Held apart from the window: the sweep has to be able to tell the
-        // catalog about files it already wrote even when the window that
-        // started it is gone.
+        // The library outlives the window, and must hear about files already written.
         let library = self.state.library.clone();
         cx.spawn_in(window, async move |this, cx| {
             let mut written: Vec<(Written, Change)> = Vec::new();
             let mut failure: Option<SharedString> = None;
             for job in jobs {
-                // Closing the window mid-sweep stops it at the next file
-                // rather than writing the rest of an album into a window
-                // nobody is looking at.
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                // Taking back restores each file's own previous value,
-                // which for a queue row is nothing at all.
                 let value = match &genre {
                     Some(genre) => Some(genre.clone()),
                     None => (!job.before.is_empty()).then(|| job.before.clone()),
@@ -787,14 +655,9 @@ impl GenreTagger {
                     }
                 }
             }
-            // The library first, through the app rather than the window.
-            // Files are already changed on disk by this point, and a window
-            // closed mid-sweep must not be the reason the database and the
-            // projection never hear about them.
-            //
-            // One batch, one reindex: folding each file back on its own
-            // would hit the catalog's busy gate from the second file on and
-            // leave the rest of an album stale.
+            // The library first, through the app: files are already changed on disk,
+            // and a closed window must not keep the database from hearing. One batch,
+            // one reindex: per-file folds would hit the catalog's busy gate.
             if !written.is_empty() {
                 let edits: Vec<writer::Edit> = written
                     .iter()
@@ -811,7 +674,6 @@ impl GenreTagger {
                 })
                 .ok();
             }
-            // Then the window, which is allowed to be gone.
             this.update_in(cx, |this, window, cx| {
                 this.applying = false;
                 this.error = failure;
@@ -820,9 +682,6 @@ impl GenreTagger {
                     return;
                 }
                 if taking_back {
-                    // Undone rows the write took out of the walk go back
-                    // into it in projection order, and the cursor returns
-                    // to the first of them.
                     let entries: Vec<Pending> = written
                         .iter()
                         .filter_map(|(job, _)| job.walk.then_some(job.pending))
@@ -846,9 +705,7 @@ impl GenreTagger {
                     this.pos = after_apply(&mut this.items, &applied);
                     this.seat(window, cx);
                 } else {
-                    // Rows the retag reached leave the untagged walk even
-                    // though the cursor isn't on it, so a later Begin queue
-                    // doesn't ask about them again.
+                    // A retag also takes its rows out of the walk, so Begin queue skips them.
                     let gone: HashSet<i64> = this
                         .undo
                         .iter()
@@ -865,9 +722,6 @@ impl GenreTagger {
         .detach();
     }
 
-    /// Take the last write back: every file it touched returns to what it
-    /// held, queue rows go back in the walk where they were, and the cursor
-    /// returns to the first of them.
     fn undo_last(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.applying {
             return;
@@ -879,11 +733,8 @@ impl GenreTagger {
         self.commit(jobs, None, window, cx);
     }
 
-    /// The keys the window answers to on its own root, not through the
-    /// keymap: a tagging pass is a mode with its own vocabulary, and
-    /// binding digits app-wide to pick a row would be absurd anywhere
-    /// else. Everything but Escape only fires while the root itself holds
-    /// focus, so typing "1990s Rock" in the box types it.
+    /// Handled on the root, not the keymap: binding digits app-wide would be
+    /// absurd. All but Escape need the root focused, so the box still types.
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
@@ -904,9 +755,7 @@ impl GenreTagger {
         if mods.alt || mods.platform {
             return;
         }
-        // On Linux, gpui hands Shift+1 over as "!" with shift cleared, so
-        // the shifted symbol row has to read as its digit here. macOS and
-        // Windows keep the digit and set the modifier.
+        // On Linux gpui reports Shift+1 as "!" with shift cleared.
         let (digit, shift) = match shifted_digit(key) {
             Some(n) => (Some(n), true),
             None => (
@@ -927,8 +776,7 @@ impl GenreTagger {
                     }
                     return;
                 }
-                // Ctrl with the digit is the album override, whatever the
-                // switch says; the plain digit follows the switch.
+                // Ctrl forces the album; the plain digit follows the switch.
                 let album = mods.control || self.album_too;
                 self.pick(i, album, window, cx);
             }
@@ -937,8 +785,7 @@ impl GenreTagger {
         if mods.control {
             return;
         }
-        // Shift with a digit fills the box without moving focus into it,
-        // so Enter has to work from the root as well as from the box.
+        // Shift+digit fills the box without focusing it, so Enter works from the root too.
         if key == "enter" {
             let typed = self.typed.clone();
             let album = self.album_too;
@@ -954,11 +801,7 @@ impl GenreTagger {
         }
     }
 
-    /// What sits at the section's right: the count, and the queue's
-    /// controls. Watching, that's Begin queue; in the queue, the transport
-    /// nudges and Stop queue. The nudges are the EQ window's strip without
-    /// the die, since a random draw would swap the track out from under
-    /// the question.
+    /// The queue's nudges leave out the die: a random draw would swap the track mid-question.
     fn header(&self, cx: &mut Context<Self>) -> AnyElement {
         let total = self.items.len() as u64;
         let count = div()
@@ -997,8 +840,6 @@ impl GenreTagger {
         .into_any_element()
     }
 
-    /// The subject's card: cover, the three names, and the genre it holds
-    /// now, which is the thing a retag is replacing.
     fn track_card(&self, cx: &mut Context<Self>) -> Div {
         let (Some(projection), Some(item)) = (self.projection.as_ref(), self.subject) else {
             return div();
@@ -1070,8 +911,6 @@ impl GenreTagger {
             )
     }
 
-    /// The Last.fm button with its answer beside it. Above the ranking,
-    /// since what it finds lands in the ranking.
     fn lookup_row(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex_none()
@@ -1098,8 +937,6 @@ impl GenreTagger {
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.auto_lookup = !this.auto_lookup;
-                        // Switching it on mid-track asks for this one too,
-                        // rather than only from the next seat.
                         if this.auto_lookup && this.lookup.is_empty() {
                             this.look_up(window, cx);
                         }
@@ -1127,8 +964,6 @@ impl GenreTagger {
             )
     }
 
-    /// The ranking's column heads, so the rows read as what they are: a
-    /// ranked list of answers, not the album's tracks.
     fn table_head(&self) -> Div {
         let head = |label: SharedString| {
             div()
@@ -1160,11 +995,7 @@ impl GenreTagger {
             .child(head(rox_i18n::t!("tag-genres-col-why")).flex_1().min_w_0())
     }
 
-    /// The ranking, or what stands in for it: a spinner while the vote
-    /// runs, a line saying nothing came back when it didn't. It takes
-    /// whatever height the card and controls leave, and scrolls inside
-    /// it: eight rows at the window's minimum height is more than fits,
-    /// and the input has to stay reachable regardless.
+    /// Scrolls inside the space left, so the input stays reachable at minimum height.
     fn ranking(&self, cx: &mut Context<Self>) -> Div {
         let frame = div().flex_1().min_h_0().flex().flex_col();
         if self.loading {
@@ -1214,10 +1045,6 @@ impl GenreTagger {
         )
     }
 
-    /// One answer: its digit, the genre, the share of the vote it won with
-    /// the bar beside the number, and in words what voted for it. Clicking
-    /// the row applies it, with the album switch deciding how far it goes;
-    /// a Shift-click collects it into the box instead.
     fn ranking_row(
         &self,
         i: usize,
@@ -1291,8 +1118,6 @@ impl GenreTagger {
             )
     }
 
-    /// The album switch: whether an answer reaches the subject's siblings
-    /// too. Shown whenever the album has any, with the count.
     fn album_switch(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let siblings = self.siblings();
         if siblings == 0 {
@@ -1321,8 +1146,6 @@ impl GenreTagger {
         )
     }
 
-    /// The footer: whatever's in the way on the left, the two moves that
-    /// don't need an answer on the right.
     fn footer(&self, cx: &mut Context<Self>) -> Div {
         let can_undo = self.undo.is_some() && !self.applying;
         let can_skip = self.mode == Mode::Queue && !self.applying && self.subject.is_some();
@@ -1382,7 +1205,6 @@ impl GenreTagger {
             )
     }
 
-    /// The working body, once there's a track to work on.
     fn body(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex_1()
@@ -1397,9 +1219,6 @@ impl GenreTagger {
             .child(self.answer_row(cx))
     }
 
-    /// The box and its Apply button. Enter in the box does the same; the
-    /// button is for the hand that's on the mouse, and it's disabled while
-    /// the box is empty so it can't write nothing.
     fn answer_row(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex_none()
@@ -1425,8 +1244,6 @@ impl GenreTagger {
             ))
     }
 
-    /// The page when there's nothing to ask about: the library still
-    /// loading, nothing playing while watching, or a queue that ran out.
     fn empty(&self) -> Div {
         let message = if self.projection.is_none() {
             rox_i18n::t!("tag-genres-library-loading")
@@ -1447,18 +1264,15 @@ impl GenreTagger {
 }
 
 impl Drop for GenreTagger {
-    /// Closing the window stops the sweep. The write task outlives this
-    /// entity by design, so that the files it already wrote still reach the
-    /// catalog, but it has no business touching a file the user hasn't
-    /// looked at.
+    /// The write task outlives this entity so written files reach the catalog,
+    /// but it stops before touching another file.
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
-/// The digit under a shifted number-row symbol, US layout. gpui on Linux
-/// resolves Shift+1 to "!" and drops the modifier, and doesn't expose the
-/// physical key, so the symbol is all there is to go on.
+/// US layout. gpui on Linux drops the modifier and doesn't expose the
+/// physical key, so the symbol is all there is.
 fn shifted_digit(key: &str) -> Option<u32> {
     let n = match key {
         "!" => 1,
@@ -1476,7 +1290,6 @@ fn shifted_digit(key: &str) -> Option<u32> {
     Some(n)
 }
 
-/// The walk entry for one projection row.
 fn pending_at(projection: &Projection, row: u32) -> Pending {
     let i = row as usize;
     let album = projection.album[i];
@@ -1490,8 +1303,6 @@ fn pending_at(projection: &Projection, row: u32) -> Pending {
     }
 }
 
-/// Every live row with no genre, in projection order, carrying what the
-/// album switch groups on.
 fn build_queue(projection: &Projection) -> Vec<Pending> {
     genre_suggest::untagged(projection)
         .into_iter()
@@ -1499,10 +1310,8 @@ fn build_queue(projection: &Projection) -> Vec<Pending> {
         .collect()
 }
 
-/// Which entries of the walk share an album with the one at `at`: the same
-/// album name and the same folder, so the "Greatest Hits" two different
-/// artists both released stay two albums. Includes `at` itself, and is one
-/// entry long for a row with no album name.
+/// Same album name and folder, so two artists' "Greatest Hits" stay apart.
+/// Includes `at`.
 fn album_peers(items: &[Pending], at: usize) -> Vec<usize> {
     let Some(here) = items.get(at) else {
         return Vec::new();
@@ -1518,9 +1327,7 @@ fn album_peers(items: &[Pending], at: usize) -> Vec<usize> {
         .collect()
 }
 
-/// Every live row of `subject`'s album in the projection, tagged or not,
-/// by the same rule as [`album_peers`]. The subject alone when it has no
-/// album name.
+/// Tagged or not, by the rule [`album_peers`] uses.
 fn album_rows(projection: &Projection, subject: Pending) -> Vec<u32> {
     let Some(album) = subject.album else {
         return vec![subject.row];
@@ -1535,13 +1342,8 @@ fn album_rows(projection: &Projection, subject: Pending) -> Vec<u32> {
         .collect()
 }
 
-/// Drop the written rows out of the walk and say where it resumes: the
-/// first row still standing at or after the earliest one written.
-///
-/// By id and projection row, never by index. A write makes the catalog fire,
-/// the catalog makes the window rebuild its walk, and a rebuild replaces both
-/// the list and the cursor, so any slot number taken before the write is a
-/// guess by the time the write lands.
+/// Resumes at the first row at or after the earliest written one. By id and
+/// row, never index: the write triggers a rebuild that replaces the list.
 fn after_apply(items: &mut Vec<Pending>, applied: &[Pending]) -> usize {
     let gone: HashSet<i64> = applied.iter().map(|p| p.id).collect();
     let from = applied.iter().map(|p| p.row).min().unwrap_or(0);
@@ -1554,10 +1356,7 @@ fn after_apply(items: &mut Vec<Pending>, applied: &[Pending]) -> usize {
         .min(last)
 }
 
-/// Put undone rows back into the walk where projection order says they go,
-/// and say where the cursor lands: the first of them. A row the walk already
-/// holds (a rebuild beat the fold-back to it) is left alone rather than
-/// doubled.
+/// Returns the cursor on the first of them. Rows the walk already holds stay single.
 fn reinsert(items: &mut Vec<Pending>, entries: &[Pending]) -> usize {
     let mut sorted: Vec<Pending> = entries.to_vec();
     sorted.sort_by_key(|p| p.row);
@@ -1574,8 +1373,6 @@ fn reinsert(items: &mut Vec<Pending>, entries: &[Pending]) -> usize {
         .unwrap_or(0)
 }
 
-/// A suggestion's share as a bar. Sized in plain px: the bar is a glyph
-/// beside a number, not a layout element the tokens have a measure for.
 fn meter(score: f32) -> Div {
     let fraction = score.clamp(0., 1.);
     div()
@@ -1593,10 +1390,7 @@ fn meter(score: f32) -> Div {
         )
 }
 
-/// What voted for a suggestion, in words: rows on the album, rows by the
-/// artist, neighbours that sound like it, and Last.fm when the lookup named
-/// it. A source with nothing behind it is left out rather than shown as a
-/// zero, so the line reads as a short list of reasons.
+/// Sources with nothing behind them are left out rather than shown as zero.
 fn why(suggestion: &Suggestion) -> String {
     let mut parts: Vec<String> = Vec::new();
     if suggestion.album > 0 {
@@ -1624,9 +1418,6 @@ fn why(suggestion: &Suggestion) -> String {
     parts.join(", ")
 }
 
-/// The current track's cover: the thumbnail once it's ready, a note glyph
-/// while it loads or when the file has none. The duplicates window's tile,
-/// scaled up.
 fn cover_tile(thumb: Option<Thumb>) -> Div {
     let side = px(COVER);
     let ready = match thumb {
@@ -1655,10 +1446,6 @@ fn cover_tile(thumb: Option<Thumb>) -> Div {
 
 impl Render for GenreTagger {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The page renders under the player's art tint like the workspace
-        // that opened it, and claims the widget theme while it holds focus,
-        // the health window's move. Without the wrapper the palette reads
-        // untinted and the window sits grey beside its themed siblings.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || self.page(window, cx))
@@ -1666,7 +1453,6 @@ impl Render for GenreTagger {
 }
 
 impl GenreTagger {
-    /// The whole window, built inside the tint scope.
     fn page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let header = self.header(cx);
         let body = if self.subject.is_some() {
@@ -1762,9 +1548,7 @@ mod tests {
 
     #[test]
     fn after_apply_survives_a_rebuild_that_already_dropped_the_rows() {
-        // The catalog fired between the write and the fold-back, so the
-        // walk is already short and every slot the write remembered is off
-        // by one. Ids still name the right rows.
+        // A rebuild already dropped the rows, so remembered slots are off by one.
         let mut items = vec![
             pending(1, None, 0),
             pending(4, None, 0),

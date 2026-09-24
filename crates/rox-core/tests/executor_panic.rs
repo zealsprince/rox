@@ -1,14 +1,9 @@
 //! A panicking background task must not take the worker thread with it.
 //!
-//! Our vendored gpui spawns tasks with `async_task::Builder::propagate_panic(true)`
-//! (patches/gpui/z5-executor-propagate-panic.patch), so the future is polled
-//! inside a `catch_unwind`. Without that flag the panic unwinds out of
-//! `Runnable::run`, the worker thread dies for good, and whoever awaited the
-//! task gets a second, useless panic reading "Task polled after completion".
-//!
-//! The dispatcher here is a stripped-down copy of the linux one
-//! (`vendor/gpui/src/platform/linux/dispatcher.rs`): one thread looping
-//! `for runnable in receiver { runnable.run() }`, never restarted.
+//! The vendored gpui spawns with `propagate_panic(true)`
+//! (patches/gpui/z5-executor-propagate-panic.patch). Without it the worker
+//! dies for good and the awaiter gets "Task polled after completion".
+//! The dispatcher here is a stripped-down copy of the linux one.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -21,8 +16,7 @@ use gpui::{BackgroundExecutor, PlatformDispatcher, TaskLabel};
 
 struct OneWorkerDispatcher {
     tx: Sender<Runnable>,
-    /// Bumped after `run()` returns, so it stops climbing the moment a panic
-    /// unwinds through the worker loop.
+    /// Bumped after `run()` returns, so it stops climbing if a panic unwinds.
     finished: Arc<AtomicUsize>,
 }
 
@@ -66,10 +60,8 @@ impl PlatformDispatcher for OneWorkerDispatcher {
     }
 }
 
-/// Wait for the worker to have returned from `run()` `want` times. The
-/// tasks signal from inside `run()`, so the main thread can wake before the
-/// worker's own bump lands; sampling the counter right after a receive is
-/// a race, and this is the wait that isn't.
+/// The tasks signal from inside `run()`, so sampling the counter right after
+/// a receive races the worker's bump.
 fn wait_for_finished(finished: &AtomicUsize, want: usize) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while finished.load(Ordering::SeqCst) < want {
@@ -104,8 +96,6 @@ fn panicking_task_keeps_the_worker_alive_and_reaches_its_awaiter() {
     .expect_err("awaiting a panicked task should panic");
     let message = payload_message(payload.as_ref());
 
-    // The awaiter sees the original panic, not async-task's follow-on
-    // "Task polled after completion" from a task closed without an output.
     assert!(
         message.contains("rox executor test: boom"),
         "awaiter saw {message:?}"
@@ -115,7 +105,6 @@ fn panicking_task_keeps_the_worker_alive_and_reaches_its_awaiter() {
         "awaiter saw the follow-on panic instead of the original: {message:?}"
     );
 
-    // And the worker thread is still there to serve the next task.
     let (done_tx, done_rx) = mpsc::channel();
     executor
         .spawn(async move {
@@ -126,17 +115,14 @@ fn panicking_task_keeps_the_worker_alive_and_reaches_its_awaiter() {
         .recv_timeout(Duration::from_secs(5))
         .expect("worker thread died with the panicking task");
 
-    // Both runnables came back out of run() rather than unwinding through it.
     wait_for_finished(&finished, 2);
     assert_eq!(finished.load(Ordering::SeqCst), 2);
 }
 
 #[test]
 fn detached_panicking_task_is_swallowed_but_the_worker_survives() {
-    // Nobody awaits a detached task, so async-task drops the stored payload
-    // (`Task::detach` in async-task 4.7.1 binds it to `_out`). The panic hook
-    // still prints the panic, but nothing resumes it: the crash becomes a log
-    // line. This test pins that behaviour so a change to it is deliberate.
+    // async-task 4.7.1's `Task::detach` drops the payload, so a detached
+    // panic becomes a log line. Pinned so a change to that is deliberate.
     let dispatcher = OneWorkerDispatcher::new();
     let finished = dispatcher.finished.clone();
     let executor = BackgroundExecutor::new(Arc::new(dispatcher));

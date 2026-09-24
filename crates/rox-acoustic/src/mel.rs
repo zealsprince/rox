@@ -1,128 +1,72 @@
 //! Log-mel spectrograms, the input every acoustic model here takes.
 //!
-//! ## Why this is written out longhand
+//! A network's mel front end is part of the network: a different recipe
+//! yields vectors that look fine and mean nothing. So every knob a training
+//! config sets is a [`Config`] field, stated per model. The ones that bite
+//! hardest: the log convention, the mel scale (HTK or Slaney), filterbank
+//! normalization, power, and centered or uncentered framing.
 //!
-//! A network's mel front end is part of the network. The weights were fit
-//! against one exact spectrogram recipe, and feeding them a different one
-//! doesn't produce a worse embedding, it produces a meaningless one that
-//! looks fine: the vectors still have the right shape, the cosines still
-//! land between -1 and 1, and the nearest-neighbour lists still come back
-//! ranked. Nothing anywhere says the input was wrong. So every knob a
-//! training config can set is a field on [`Config`] rather than a constant,
-//! and each model in the catalog states its own.
+//! Not `rox_viz::analysis::log_bands`, which sums bins into display bands
+//! with no triangles, curve, or normalization.
 //!
-//! The knobs that actually bite, in rough order of how badly:
-//!
-//! - **The log convention.** `ln(x + 1e-6)`, `log10(x)`, and dB-with-a-floor
-//!   are three different functions with three different dynamic ranges. Get
-//!   this wrong and every value the first conv layer sees is off by a scale
-//!   factor and an offset.
-//! - **Mel scale flavour.** HTK's single log curve and Slaney's
-//!   linear-below-1 kHz curve put the band centers in noticeably different
-//!   places. Nobody labels which one they used.
-//! - **Filterbank normalization.** Slaney-normalized triangles have equal
-//!   area, so high bands (which are wide) come out much lower than
-//!   unit-peak triangles would put them. This is a per-band gain tilt across
-//!   the whole input.
-//! - **Power.** Magnitude or magnitude squared, before the log. A factor of
-//!   two in log space.
-//! - **Framing.** Whether the signal is center-padded by half a window
-//!   (librosa's default, and what most PyTorch training code inherits) or
-//!   framed from sample zero (TensorFlow's). Changes the frame count and
-//!   shifts every frame by half a window.
-//!
-//! ## What this is not
-//!
-//! `rox_viz::analysis::log_bands` groups FFT bins into log-spaced ranges and
-//! sums them. That's a display device for the spectrum bars and it isn't a
-//! mel filterbank: no triangular weights, no mel curve, no normalization,
-//! and each bin belongs to exactly one band instead of being shared between
-//! overlapping neighbours. It's the right thing for drawing and the wrong
-//! thing for feeding a network, and the two are easy to confuse because both
-//! produce "N log-spaced bands".
-//!
-//! ## Checked against librosa
-//!
-//! The whole front end is pinned to golden values generated from librosa
-//! 0.11; `the_whole_front_end_matches_librosa_band_by_band` below has
-//! the numbers and the script that produced them. Most of these models'
-//! training code runs on librosa one layer down, so matching it is the
-//! closest thing to a proof that the recipe is right.
+//! Pinned against librosa 0.11 golden values
+//! (`the_whole_front_end_matches_librosa_band_by_band`), since most of these
+//! models trained on librosa underneath.
 
-/// Which mel curve. Nobody agrees, everybody omits it from the readme, and
-/// the two disagree by enough to move every band center.
+/// Rarely documented, and the two move every band center.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scale {
-    /// `2595 * log10(1 + f/700)`, one curve all the way down. What HTK,
-    /// torchaudio's default, and TensorFlow use.
+    /// HTK, torchaudio's default, and TensorFlow.
     Htk,
-    /// Linear at 200/3 Hz per mel below 1 kHz, logarithmic above. Slaney's
-    /// Auditory Toolbox, and librosa's default.
+    /// Linear below 1 kHz. Slaney's Auditory Toolbox and librosa's default.
     Slaney,
 }
 
-/// How the triangles are scaled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Norm {
-    /// Every triangle peaks at 1. Wide high bands therefore pass much more
-    /// energy than narrow low ones.
+    /// Wide high bands pass more energy than narrow low ones.
     UnitPeak,
-    /// Every triangle has the same area, so a flat-spectrum input produces a
-    /// flat mel spectrum. librosa's `norm="slaney"`, and its default.
+    /// Flat spectrum in, flat mel out. librosa's `norm="slaney"`, its default.
     Area,
 }
 
-/// The window applied to each frame. Periodic (the `fftbins=True` /
-/// `sym=False` flavour) because that's what every spectrogram library uses;
-/// the symmetric variant belongs to filter design.
+/// Periodic (`fftbins=True`), as every spectrogram library uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowKind {
     Hann,
     Hamming,
 }
 
-/// What runs over the mel energies at the end.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Log {
-    /// `ln(x + offset)`. The PANNs and torchlibrosa convention, and what
-    /// most PyTorch audio training code ends up with.
+    /// What most PyTorch audio training code ends up with.
     Natural { offset: f32 },
     /// `log10(x + offset)`.
     Base10 { offset: f32 },
-    /// `10 * log10(max(x, floor))`, then clamped to `top_db` below the
-    /// loudest value in this clip. librosa's `power_to_db`. The clamp is
-    /// per clip, so it makes the result depend on the whole clip rather than
-    /// on each frame alone.
+    /// librosa's `power_to_db`. The `top_db` clamp is relative to the loudest
+    /// value in the clip, so it depends on the whole clip.
     Db { floor: f32, top_db: Option<f32> },
 }
 
-/// One model's spectrogram recipe, copied from its training config. Every
-/// field here is load-bearing; see the module header for which ones bite
-/// hardest when they're guessed.
+/// One model's recipe, copied from its training config. Every field matters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
-    /// What the audio must be resampled to before any of this runs.
+    /// The rate audio must be resampled to first.
     pub sample_rate: u32,
-    /// Transform length. Powers of two only: the FFT below is radix-2, and
-    /// a config wanting 400 zero-pads a 400-sample window into 512, which is
-    /// what librosa does anyway.
+    /// Powers of two only (radix-2); a 400-sample window goes in `win_length`.
     pub n_fft: usize,
-    /// How many samples the window actually covers, zero-padded up to
-    /// `n_fft` and centered in it rather than at the front, which is what
-    /// librosa's `util.pad_center` does. Equal to `n_fft` in most configs.
+    /// Zero-padded to `n_fft` and centered, like librosa's `util.pad_center`.
     pub win_length: usize,
     pub hop_length: usize,
     pub n_mels: usize,
     pub fmin: f32,
-    /// The top of the filterbank. Never above Nyquist; a config that says so
-    /// is describing a different sample rate.
+    /// Never above Nyquist.
     pub fmax: f32,
     pub window: WindowKind,
-    /// Whether the signal is reflect-padded by `n_fft / 2` so frame `t` is
-    /// centered on sample `t * hop`. librosa's default is true; TensorFlow's
-    /// framing is false.
+    /// Reflect-pad by `n_fft / 2` so frame `t` centers on sample `t * hop`.
+    /// librosa: true; TensorFlow: false.
     pub center: bool,
-    /// Magnitude (1.0) or power (2.0) before the filterbank.
+    /// 1.0 magnitude, 2.0 power.
     pub power: f32,
     pub scale: Scale,
     pub norm: Norm,
@@ -130,14 +74,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// Bins in the half spectrum the filterbank projects from.
     pub fn bins(&self) -> usize {
         self.n_fft / 2 + 1
     }
 
-    /// How many frames a clip of `samples` samples produces. Zero when the
-    /// clip is shorter than one uncentered window, which is a clip with no
-    /// spectrogram rather than an error.
+    /// Zero for a clip shorter than one uncentered window.
     pub fn frames(&self, samples: usize) -> usize {
         if self.center {
             samples / self.hop_length + 1
@@ -148,9 +89,7 @@ impl Config {
         }
     }
 
-    /// Whether the numbers describe a transform that can actually run.
-    /// Checked once when a model is loaded rather than trusted, since a
-    /// catalog entry is data and data gets edited.
+    /// Checked at load: a catalog entry is data, and data gets edited.
     pub fn valid(&self) -> Result<(), String> {
         if !self.n_fft.is_power_of_two() {
             return Err(format!("n_fft {} is not a power of two", self.n_fft));
@@ -178,15 +117,12 @@ impl Config {
     }
 }
 
-/// Hz to mels on the given curve.
 pub fn hz_to_mel(hz: f64, scale: Scale) -> f64 {
     match scale {
         Scale::Htk => 2595.0 * (1.0 + hz / 700.0).log10(),
         Scale::Slaney => {
-            // Slaney's curve is linear at 200/3 Hz per mel up to 1 kHz, then
-            // logarithmic with 27 mels per decade-and-a-bit above it. The
-            // two constants below are the join: mel 15 is exactly 1 kHz, and
-            // mel 42 is exactly 6.4 kHz.
+            // Linear at 200/3 Hz per mel to 1 kHz, then log with 27 mels per factor of
+            // 6.4. Mel 15 is exactly 1 kHz, mel 42 exactly 6.4 kHz.
             const F_SP: f64 = 200.0 / 3.0;
             const MIN_LOG_HZ: f64 = 1000.0;
             const MIN_LOG_MEL: f64 = MIN_LOG_HZ / F_SP;
@@ -200,7 +136,7 @@ pub fn hz_to_mel(hz: f64, scale: Scale) -> f64 {
     }
 }
 
-/// Mels back to Hz, the exact inverse of [`hz_to_mel`].
+/// The exact inverse of [`hz_to_mel`].
 pub fn mel_to_hz(mel: f64, scale: Scale) -> f64 {
     match scale {
         Scale::Htk => 700.0 * (10f64.powf(mel / 2595.0) - 1.0),
@@ -218,18 +154,12 @@ pub fn mel_to_hz(mel: f64, scale: Scale) -> f64 {
     }
 }
 
-/// The filterbank: `n_mels` rows of `bins()` weights, each row a triangle
-/// spanning three consecutive mel-spaced points.
-///
-/// This is librosa's `filters.mel` written out. The `n_mels + 2` points give
-/// every triangle a left foot, a peak, and a right foot, with neighbours
-/// sharing feet so the bank overlaps at half height. Rows can come out all
-/// zero when the FFT is too coarse to resolve a band, which is a real
-/// outcome (a 64-band bank at 16 kHz over a 400-sample window has none, a
-/// 128-band one over the same window has several) and not an error.
+/// librosa's `filters.mel`: `n_mels` triangles over `n_mels + 2` mel-spaced
+/// points. Rows can be all zero when the FFT is too coarse for a band, which
+/// is a real outcome, not an error.
 pub fn filterbank(config: &Config) -> Vec<Vec<f32>> {
     let bins = config.bins();
-    // Bin center frequencies, exactly linspace(0, sr/2, bins).
+    // Exactly linspace(0, sr/2, bins).
     let fft_hz: Vec<f64> = (0..bins)
         .map(|k| k as f64 * config.sample_rate as f64 / config.n_fft as f64)
         .collect();
@@ -246,10 +176,7 @@ pub fn filterbank(config: &Config) -> Vec<Vec<f32>> {
     (0..config.n_mels)
         .map(|m| {
             let (left, center, right) = (points[m], points[m + 1], points[m + 2]);
-            // Slaney's area normalization: a triangle spanning more Hz gets
-            // scaled down so every band passes the same energy from a flat
-            // spectrum. Without it the top bands, which are several times
-            // wider, dominate the input.
+            // Slaney area norm, or the wide top bands dominate.
             let gain = match config.norm {
                 Norm::UnitPeak => 1.0,
                 Norm::Area => 2.0 / (right - left),
@@ -257,9 +184,7 @@ pub fn filterbank(config: &Config) -> Vec<Vec<f32>> {
             fft_hz
                 .iter()
                 .map(|&hz| {
-                    // The two ramps, each guarding its own zero-width case:
-                    // duplicate points happen when the FFT resolution can't
-                    // separate two band edges.
+                    // Each ramp guards its own zero width: coarse FFTs duplicate points.
                     let up = if center > left {
                         (hz - left) / (center - left)
                     } else {
@@ -277,7 +202,6 @@ pub fn filterbank(config: &Config) -> Vec<Vec<f32>> {
         .collect()
 }
 
-/// The analysis window, `win_length` long, periodic.
 fn window(config: &Config) -> Vec<f64> {
     let n = config.win_length as f64;
     (0..config.win_length)
@@ -291,25 +215,17 @@ fn window(config: &Config) -> Vec<f64> {
         .collect()
 }
 
-/// The signal a frame reads from, in the framing the config asks for.
-///
-/// Centered framing reflect-pads by half a transform at both ends so frame
-/// `t` is centered on sample `t * hop`, which is what librosa does and what
-/// every PyTorch training pipeline inherits from it. Reflection rather than
-/// zeros because a zero pad puts a step discontinuity at both ends of the
-/// clip and rings across the whole spectrum in the first and last frames.
+/// Centered framing reflect-pads half a transform at each end. Reflection,
+/// not zeros: a zero pad's step rings across the first and last frames.
 fn padded(samples: &[f32], config: &Config) -> Vec<f32> {
-    // A clip of nothing has no edge to mirror, and the modular reflection
-    // below divides by a period of 2 * (len - 1), which is negative for one.
+    // Nothing to mirror, and the period below would be negative.
     if !config.center || samples.is_empty() {
         return samples.to_vec();
     }
     let pad = config.n_fft / 2;
     let mut out = Vec::with_capacity(samples.len() + 2 * pad);
-    // numpy's "reflect" mirrors without repeating the edge sample, so a pad
-    // of 3 over [a b c d] prepends [d c b]. A clip shorter than the pad
-    // reflects off both ends in turn, which is what the modular reflection
-    // below does; a clip of one sample just repeats it.
+    // numpy's "reflect": no repeated edge, so a pad of 3 over [a b c d]
+    // prepends [d c b]. Short clips bounce off both ends.
     let reflect = |i: isize| -> f32 {
         let n = samples.len() as isize;
         if n == 1 {
@@ -332,10 +248,7 @@ fn padded(samples: &[f32], config: &Config) -> Vec<f32> {
     out
 }
 
-/// In-place iterative radix-2 Cooley-Tukey, f64. Same shape as rox-viz's,
-/// in double precision and in this crate: rox-viz's is private, drives the
-/// sixty-times-a-second spectrum bars, and has no business growing a second
-/// caller with different precision needs.
+/// Radix-2, f64. rox-viz has its own private f32 one for the spectrum bars.
 fn fft(re: &mut [f64], im: &mut [f64]) {
     let n = re.len();
     debug_assert!(n.is_power_of_two());
@@ -377,8 +290,7 @@ fn fft(re: &mut [f64], im: &mut [f64]) {
     }
 }
 
-/// A configured front end, holding the window and filterbank so a run over
-/// a whole library builds them once rather than per track.
+/// Holds the window and filterbank, so a library pass builds them once.
 pub struct Mel {
     config: Config,
     window: Vec<f64>,
@@ -386,7 +298,6 @@ pub struct Mel {
 }
 
 impl Mel {
-    /// Build the front end, or say why the config can't run.
     pub fn new(config: Config) -> Result<Self, String> {
         config.valid()?;
         Ok(Mel {
@@ -396,12 +307,8 @@ impl Mel {
         })
     }
 
-    /// The same, with a filterbank supplied rather than derived.
-    ///
-    /// For models that ship the exact bank they were trained with, which
-    /// PANNs does: using the file's own matrix removes the last place a
-    /// mel reimplementation could be subtly off, and leaves
-    /// [`Mel::bank_deviation`] to say whether the config is right anyway.
+    /// With a supplied filterbank, for models like PANNs that ship theirs.
+    /// [`Mel::bank_deviation`] still says whether the config matches it.
     pub fn with_bank(config: Config, bank: Vec<Vec<f32>>) -> Result<Self, String> {
         config.valid()?;
         if bank.len() != config.n_mels || bank.iter().any(|row| row.len() != config.bins()) {
@@ -418,12 +325,9 @@ impl Mel {
         })
     }
 
-    /// The largest single weight this front end's bank differs from the one
-    /// its config describes, relative to the bank's loudest weight.
-    ///
-    /// Zero for a bank built from the config. For a supplied one it's the
-    /// answer to "is the config actually the recipe these weights were
-    /// trained with", a question no readme ever answers.
+    /// The largest weight difference from the config's bank, relative to its
+    /// peak: whether the config really is the recipe these weights were
+    /// trained with.
     pub fn bank_deviation(&self) -> f32 {
         let derived = filterbank(&self.config);
         let peak = derived
@@ -439,25 +343,17 @@ impl Mel {
             / peak
     }
 
-    /// The recipe this front end runs.
     pub fn config(&self) -> &Config {
         &self.config
     }
 
-    /// The log-mel spectrogram of one mono clip, frame-major: `frames`
-    /// rows of `n_mels` values. An empty result means the clip was too
-    /// short to frame at all.
-    ///
-    /// `samples` must already be at [`Config::sample_rate`]. Nothing here
-    /// resamples: a resample belongs to the decode, where the original
-    /// rate is known and a proper band-limited filter can run.
+    /// Frame-major log-mel of a mono clip; empty if too short to frame.
+    /// `samples` must already be at [`Config::sample_rate`]: resampling belongs
+    /// to the decode, where the source rate is known.
     pub fn spectrogram(&self, samples: &[f32]) -> Vec<Vec<f32>> {
         let config = &self.config;
-        // Centered framing counts 1 + len / hop, so a clip of no samples
-        // asks for one frame of nothing. There's no signal under it to
-        // transform, which makes it the same empty result a clip too short
-        // to frame gets. A decode can get here: a one-sample read
-        // resampled 44.1 kHz down to 32 kHz is zero samples long.
+        // An empty clip, which a one-sample read resampled down produces, has no
+        // frame to transform.
         if samples.is_empty() {
             return Vec::new();
         }
@@ -473,21 +369,14 @@ impl Mel {
         let mut spectrum = vec![0.0f32; bins];
         let mut out = Vec::with_capacity(frames);
 
-        // Where a window shorter than the transform goes inside the frame.
-        // librosa pads the window up to n_fft centered, so the samples it
-        // covers start half the difference in rather than at the frame's
-        // first sample. Which buffer slots the windowed block goes into is
-        // only a phase shift, and the power spectrum below throws that
-        // away; the samples the window covers are what the model actually
-        // reads.
+        // A short window sits centered in the frame, as librosa pads it; its slot
+        // is only a phase shift the power spectrum drops.
         let offset = (config.n_fft - config.win_length) / 2;
         for frame in 0..frames {
             let start = frame * config.hop_length + offset;
             re.fill(0.0);
             im.fill(0.0);
-            // A centered clip's last frames read past the padded end when
-            // the signal doesn't divide evenly by the hop; those samples are
-            // zero, which is what librosa's own centered tail does too.
+            // Reads past the padded end are zero, as librosa's centered tail.
             for (i, w) in self.window.iter().enumerate() {
                 if let Some(&sample) = signal.get(start + i) {
                     re[offset + i] = sample as f64 * w;
@@ -496,9 +385,7 @@ impl Mel {
             fft(&mut re, &mut im);
             for (k, value) in spectrum.iter_mut().enumerate() {
                 let power = re[k] * re[k] + im[k] * im[k];
-                // power == 2 is the common case and the FFT already handed
-                // us the square, so the sqrt only runs when a config
-                // actually asks for magnitude.
+                // The FFT already gives power; only take the sqrt for another exponent.
                 *value = if config.power == 2.0 {
                     power as f32
                 } else {
@@ -511,15 +398,11 @@ impl Mel {
         out
     }
 
-    /// One frame's spectrum through the filterbank.
     fn project(&self, spectrum: &[f32]) -> Vec<f32> {
         self.bank
             .iter()
             .map(|weights| {
-                // f64 accumulation over a few hundred products: the mel
-                // energies span a wide range and the low bands are tiny, and
-                // a log of a value that lost its bottom bits is a value that
-                // moved.
+                // f64 accumulation: the low bands are tiny, and lost bits move the log.
                 let sum: f64 = weights
                     .iter()
                     .zip(spectrum)
@@ -530,10 +413,7 @@ impl Mel {
             .collect()
     }
 
-    /// The log, in whichever convention the model was trained with. dB is
-    /// the one that spans frames: its ceiling is the loudest mel value in
-    /// the whole clip, so it needs every frame before it can scale any of
-    /// them.
+    /// dB needs every frame first: its ceiling is the clip's loudest value.
     fn apply_log(&self, frames: &mut [Vec<f32>]) {
         match self.config.log {
             Log::Natural { offset } => {
@@ -575,8 +455,6 @@ impl Mel {
 mod tests {
     use super::*;
 
-    /// librosa's own defaults, for the structural checks that want a
-    /// spectrogram and don't care whose.
     fn librosa_default() -> Config {
         Config {
             sample_rate: 22050,
@@ -598,20 +476,16 @@ mod tests {
         }
     }
 
-    /// The two published anchors on Slaney's curve: the linear-to-log join
-    /// is at exactly 1 kHz / 15 mel, and 27 mels above it is exactly
-    /// 6.4 kHz. Getting either wrong moves every band center in the bank.
+    /// Slaney's published anchors: 1 kHz is mel 15, 6.4 kHz mel 42.
     #[test]
     fn slaney_mels_hit_their_published_anchors() {
         assert!((hz_to_mel(1000.0, Scale::Slaney) - 15.0).abs() < 1e-12);
         assert!((hz_to_mel(6400.0, Scale::Slaney) - 42.0).abs() < 1e-12);
-        // Below the join it's a straight 200/3 Hz per mel.
         assert!((hz_to_mel(200.0, Scale::Slaney) - 3.0).abs() < 1e-12);
         assert_eq!(hz_to_mel(0.0, Scale::Slaney), 0.0);
     }
 
-    /// HTK's curve is the one where a mel is roughly a Hz at 1 kHz, which
-    /// is the whole reason the constants were picked.
+    /// A mel is roughly a Hz at 1 kHz.
     #[test]
     fn htk_mels_land_near_a_thousand_at_a_kilohertz() {
         assert_eq!(hz_to_mel(0.0, Scale::Htk), 0.0);
@@ -632,9 +506,7 @@ mod tests {
         }
     }
 
-    /// Every triangle peaks at its own center and is zero at its
-    /// neighbours' centers, which makes the bank a partition of the
-    /// spectrum rather than a set of overlapping boxes.
+    /// Each triangle peaks at its center and vanishes at its neighbours'.
     #[test]
     fn triangles_peak_at_their_center_and_vanish_at_their_feet() {
         let config = Config {
@@ -647,13 +519,10 @@ mod tests {
         for row in &bank {
             assert_eq!(row.len(), config.bins());
             let peak = row.iter().cloned().fold(0.0f32, f32::max);
-            // 40 bands over a 2048-point transform: every band is several
-            // bins wide, so every triangle has a bin near its apex.
+            // 40 bands over 2048 points: every triangle has a bin near its apex.
             assert!(peak > 0.9, "unit-peak triangle only reached {peak}");
-            // Weights never go negative, whatever the ramps did.
             assert!(row.iter().all(|&w| w >= 0.0));
         }
-        // Bands climb: each row's center of mass is above the last one's.
         let centers: Vec<f32> = bank
             .iter()
             .map(|row| {
@@ -670,9 +539,6 @@ mod tests {
         }
     }
 
-    /// Area normalization is the difference between a bank that tilts up
-    /// with frequency and one that doesn't. Unit-peak rows get heavier as
-    /// the bands widen; area-normalized rows stay put.
     #[test]
     fn area_normalization_flattens_the_tilt_unit_peak_leaves() {
         let unit = filterbank(&Config {
@@ -686,23 +552,19 @@ mod tests {
             ..librosa_default()
         });
         let weight = |bank: &[Vec<f32>], row: usize| bank[row].iter().sum::<f32>();
-        // The top band of a unit-peak bank passes many times what the
-        // bottom one does, purely because it covers more spectrum.
+        // Unit-peak's top band passes many times the bottom's.
         assert!(weight(&unit, 39) > weight(&unit, 2) * 5.0);
-        // Area normalization removes that: every row sums to about
-        // the same thing once the FFT resolves the band.
+        // Area-normalized rows sum to about the same once resolved.
         let sums: Vec<f32> = (4..40).map(|row| weight(&area, row)).collect();
         let lo = sums.iter().cloned().fold(f32::MAX, f32::min);
         let hi = sums.iter().cloned().fold(f32::MIN, f32::max);
         assert!(hi / lo < 1.3, "area-normalized rows spread {lo} to {hi}");
     }
 
-    /// Frame counts follow the framing mode, and a clip too short to frame
-    /// comes back empty rather than panicking on a slice.
+    /// A clip too short to frame returns empty, never panics.
     #[test]
     fn frame_counts_follow_the_framing_mode() {
         let centered = librosa_default();
-        // librosa's centered count: 1 + len // hop.
         assert_eq!(centered.frames(22050), 22050 / 512 + 1);
         assert_eq!(centered.frames(0), 1);
 
@@ -718,11 +580,8 @@ mod tests {
         assert!(mel.spectrogram(&[0.0; 100]).is_empty());
     }
 
-    /// A clip with no samples at all describes nothing, whichever framing
-    /// is asked for. Centered framing counts one frame for it, and a decode
-    /// really does produce one: a single-sample read resampled from 44.1 to
-    /// 32 kHz is zero samples long, and it used to run the reflect pad off
-    /// the front of an empty slice and take the whole pass down.
+    /// Empty in, empty out, in either framing: a one-sample read resampled down
+    /// is zero samples, and would otherwise run the reflect pad off an empty slice.
     #[test]
     fn a_clip_of_no_samples_describes_nothing() {
         let centered = librosa_default();
@@ -735,12 +594,8 @@ mod tests {
         assert!(Mel::new(uncentered).unwrap().spectrogram(&[]).is_empty());
     }
 
-    /// A window shorter than the transform goes in the middle of the frame,
-    /// the way librosa's `pad_center` puts it, so the samples it covers
-    /// start half the difference in. Nothing shipped uses a short window
-    /// (PANNs' is the full transform), which is exactly why it's pinned:
-    /// a catalog entry that wanted one would otherwise read the wrong
-    /// samples and produce embeddings nobody could tell were wrong.
+    /// A short window covers the middle of its frame, like `pad_center`.
+    /// Nothing shipped uses one, which is why it's pinned.
     #[test]
     fn a_short_window_covers_the_middle_of_its_frame() {
         let config = Config {
@@ -759,8 +614,7 @@ mod tests {
             log: Log::Natural { offset: 1e-10 },
         };
         let mel = Mel::new(config).unwrap();
-        // Four into eight, so the window covers samples 2 through 5 and
-        // nothing outside them reaches the transform.
+        // The window covers samples 2 through 5 only.
         let covered = mel.spectrogram(&[0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]);
         let noisy_edges = mel.spectrogram(&[9.0, 9.0, 1.0, 1.0, 1.0, 1.0, 9.0, 9.0]);
         assert_eq!(covered.len(), 1);
@@ -768,14 +622,10 @@ mod tests {
             covered, noisy_edges,
             "samples outside the window changed the frame"
         );
-        // And a sample the window does cover moves it.
         let changed = mel.spectrogram(&[0.0, 0.0, 1.0, 1.0, 2.0, 1.0, 0.0, 0.0]);
         assert_ne!(covered, changed);
     }
 
-    /// Reflect padding mirrors without repeating the edge sample, numpy's
-    /// rule. A zero pad here would ring across the whole spectrum in the
-    /// first and last frames.
     #[test]
     fn reflect_padding_mirrors_without_doubling_the_edge() {
         let config = Config {
@@ -784,20 +634,16 @@ mod tests {
             ..librosa_default()
         };
         let out = padded(&[1.0, 2.0, 3.0, 4.0, 5.0], &config);
-        // Pad of 4 either side of a 5-sample clip.
         assert_eq!(
             out,
             vec![
                 5.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 5.0, 4.0, 3.0, 2.0, 1.0
             ]
         );
-        // A single sample has nothing to mirror and repeats instead.
         assert_eq!(padded(&[7.0], &config), vec![7.0; 9]);
     }
 
-    /// A pure tone lands in the mel bands that cover it and essentially
-    /// nowhere else, which is the end-to-end check that the filterbank is
-    /// wired to the right FFT bins.
+    /// A tone lands only in its bands: the bank is wired to the right bins.
     #[test]
     fn a_tone_lights_the_bands_that_cover_it() {
         let config = Config {
@@ -823,8 +669,7 @@ mod tests {
         let frames = mel.spectrogram(&samples);
         assert!(!frames.is_empty());
 
-        // Which band should hold 1 kHz, worked out from the mel spacing
-        // rather than from the answer.
+        // Worked out from the mel spacing, not from the answer.
         let lo = hz_to_mel(config.fmin as f64, config.scale);
         let hi = hz_to_mel(config.fmax as f64, config.scale);
         let position = (hz_to_mel(tone_hz as f64, config.scale) - lo) / (hi - lo);
@@ -841,20 +686,13 @@ mod tests {
             loudest.abs_diff(expected) <= 1,
             "a {tone_hz} Hz tone peaked in band {loudest}, expected near {expected}"
         );
-        // And the far end of the spectrum is decades down, not merely lower.
+        // Decades down at the far end.
         assert!(frame[loudest] - frame[config.n_mels - 1] > 10.0);
     }
 
-    /// The dB convention is absolute, not per clip: a reference of 1.0 means
-    /// turning a clip up moves every value by the same number of dB rather
-    /// than leaving them where they were.
-    ///
-    /// Worth pinning because the opposite is so widely assumed. librosa's
-    /// `power_to_db(ref=np.max)` is the relative one, and models trained
-    /// against it see level-independent input; PANNs is trained against
-    /// `ref=1.0`, so the absolute level of the recording is part of what it
-    /// reads, and mixing the two conventions up costs you a constant offset
-    /// on every value.
+    /// Absolute dB (ref=1.0): scaling a clip shifts every value. PANNs trained
+    /// this way; librosa's `ref=np.max` is relative, and mixing them up offsets
+    /// every value.
     #[test]
     fn the_db_convention_is_absolute_and_only_the_floor_is_relative() {
         let mel = Mel::new(Config {
@@ -869,8 +707,7 @@ mod tests {
         let loud: Vec<f32> = quiet.iter().map(|s| s * 10.0).collect();
         let a = mel.spectrogram(&quiet);
         let b = mel.spectrogram(&loud);
-        // Ten times the amplitude is a hundred times the power, which is
-        // exactly 20 dB, everywhere the floor isn't in the way.
+        // 10x amplitude is exactly +20 dB above the floor.
         for (fa, fb) in a.iter().zip(&b) {
             for (x, y) in fa.iter().zip(fb) {
                 if *x > -99.0 {
@@ -879,8 +716,7 @@ mod tests {
             }
         }
 
-        // With a ceiling, the clamp is the one relative piece: nothing is
-        // more than top_db under the loudest value in the clip.
+        // The top_db clamp is the only relative piece.
         let clamped = Mel::new(librosa_default()).unwrap().spectrogram(&quiet);
         let peak = clamped.iter().flatten().cloned().fold(f32::MIN, f32::max);
         assert!(clamped.iter().flatten().all(|&v| v >= peak - 80.0 - 1e-3));
@@ -893,9 +729,7 @@ mod tests {
         );
     }
 
-    /// PANNs CNN10's recipe, the one the golden values below were generated
-    /// against. Spelled out here rather than imported from the model catalog
-    /// so this test fails if either copy drifts.
+    /// Spelled out, not imported, so drift in either copy fails.
     fn panns() -> Config {
         Config {
             sample_rate: 32_000,
@@ -917,10 +751,7 @@ mod tests {
         }
     }
 
-    /// The test signal the golden values were taken over: three tones an
-    /// octave-and-a-half apart with offset phases, one second at 32 kHz.
-    /// Deterministic and identical on both sides, which is the only reason
-    /// a golden comparison means anything.
+    /// Three tones with offset phases, one second at 32 kHz, identical on both sides.
     fn golden_signal() -> Vec<f32> {
         let rate = 32_000.0f64;
         (0..32_000)
@@ -945,9 +776,8 @@ mod tests {
     /// L.mean(axis=0)
     /// ```
     ///
-    /// Note `pad_mode='reflect'`: librosa's own default went to `'constant'`
-    /// in 0.10, and torchlibrosa (which PANNs actually trains through)
-    /// asks for reflect, so the default would compare the wrong thing.
+    /// `pad_mode='reflect'`: librosa's default became `'constant'` in 0.10, but
+    /// torchlibrosa, which PANNs trained through, asks for reflect.
     const LIBROSA_BAND_MEANS: [f32; 64] = [
         -52.5597, -47.6234, -41.7836, -34.1515, -24.0316, 15.4932, 26.3506, 22.5684, -12.9836,
         -30.4306, -39.2264, -45.4518, -50.4682, -55.1357, -58.6262, -61.6374, -64.3298, -67.3219,
@@ -959,17 +789,9 @@ mod tests {
         -97.5625,
     ];
 
-    /// The whole front end against librosa, band by band, on PANNs' own
-    /// recipe. This is the test that says the spectrogram is right rather
-    /// than merely self-consistent: framing, window, padding, transform,
-    /// filterbank, and log all have to agree at once for these numbers to
-    /// come out.
-    ///
-    /// Two tolerances. The bands carrying signal are compared to a
-    /// hundredth of a dB; the bands near the -100 dB floor hold nothing
-    /// but window leakage, where this transform's f64 arithmetic and
-    /// librosa's f32 really do differ, and a tight bound there would be
-    /// measuring float noise rather than correctness.
+    /// The whole front end against librosa, band by band. Signal bands to 0.01
+    /// dB; bands near the -100 dB floor hold only leakage, where f64 and
+    /// librosa's f32 differ, so they get 0.5.
     #[test]
     fn the_whole_front_end_matches_librosa_band_by_band() {
         let mel = Mel::new(panns()).unwrap();
@@ -986,9 +808,7 @@ mod tests {
         }
     }
 
-    /// The tones land where librosa puts them and nowhere else, which is
-    /// the same claim as the band-by-band check stated so a reader can see
-    /// what it means: three tones, three bands, the rest at the floor.
+    /// Three tones, three bands, the rest at the floor.
     #[test]
     fn the_golden_signals_three_tones_land_in_three_bands() {
         let mel = Mel::new(panns()).unwrap();
@@ -996,12 +816,9 @@ mod tests {
         let means: Vec<f32> = (0..64)
             .map(|band| frames.iter().map(|frame| frame[band]).sum::<f32>() / 101.0)
             .collect();
-        // 440 Hz, 3 kHz and 11 kHz, in the bands librosa's own mel spacing
-        // puts them in.
         for band in [6usize, 36, 60] {
             assert!(means[band] > 0.0, "band {band} should carry a tone");
         }
-        // And every band four or more away from all three is at the floor.
         for (band, &mean) in means.iter().enumerate() {
             if [6usize, 36, 60].iter().all(|t| band.abs_diff(*t) > 3) {
                 assert!(mean < -20.0, "band {band} has no tone but reads {mean}");
@@ -1009,8 +826,6 @@ mod tests {
         }
     }
 
-    /// A config the transform can't run says so at build time rather than
-    /// panicking somewhere in the middle of a library pass.
     #[test]
     fn an_impossible_config_is_refused_up_front() {
         let base = librosa_default();
@@ -1035,7 +850,6 @@ mod tests {
             })
             .is_err()
         );
-        // fmax past Nyquist means the config was written for another rate.
         assert!(
             Mel::new(Config {
                 fmax: 12000.0,

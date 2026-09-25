@@ -57,6 +57,9 @@
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.28.6" date="2026-09-25">
+      <url type="details">https://github.com/zealsprince/rox/releases/tag/v1.28.6</url>
+    </release>
     <release version="1.28.5" date="2026-09-24">
       <url type="details">https://github.com/zealsprince/rox/releases/tag/v1.28.5</url>
     </release>

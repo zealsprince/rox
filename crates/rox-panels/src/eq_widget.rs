@@ -152,7 +152,7 @@ impl EqWidgetPanel {
 
     /// The badge floats off the corner so the footprint never shifts with
     /// the number.
-    fn glyph(&self, enabled: bool, active: usize) -> Div {
+    fn glyph(&self, enabled: bool, active: usize, spatial: bool) -> Div {
         let tint = match (enabled, active) {
             (true, 1..) => palette::accent(),
             (true, _) => palette::text(),
@@ -168,6 +168,19 @@ impl EqWidgetPanel {
         div()
             .relative()
             .flex_none()
+            // Outside the icon's box, so turning the convolver on moves nothing.
+            .when(spatial, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top(px(-3.))
+                        .left(px(-3.))
+                        .right(px(-3.))
+                        .bottom(px(-3.))
+                        .rounded(tokens::RADIUS)
+                        .bg(palette::alpha(palette::accent(), 0x26)),
+                )
+            })
             .child(
                 svg()
                     .path(icons::AUDIO_LINES)
@@ -274,7 +287,7 @@ impl EqWidgetPanel {
                         .on_click(cx.listener(|this, _, _, cx| this.clicked(cx)))
                 })
                 .when(self.config.readout != EqReadout::Curve, |d| {
-                    d.child(self.glyph(eq.enabled, active))
+                    d.child(self.glyph(eq.enabled, active, player::convolver_enabled()))
                 })
                 .when_some(curve, |d, curve| d.child(self.spark(eq.enabled, curve)))
                 .tooltip(move |_window, cx| cx.new(|_| tooltip.clone()).into()),

@@ -111,7 +111,11 @@ impl BuiltinHesuviProfile {
                 ("Dolby Headphone", include_bytes!("../hrir/dh+.wav"))
             }
         };
-        parse_wav(name, bytes).ok()
+        let ir = parse_wav(name, bytes).ok()?;
+        Some(WavIr {
+            profile: *self,
+            ..ir
+        })
     }
 }
 
@@ -180,6 +184,8 @@ pub struct WavIr {
     pub sample_rate: u32,
     pub layout: IrLayout,
     pub channels: Vec<Vec<f32>>,
+    /// The bundled profile this was loaded from, `None` for a file the user picked.
+    pub profile: BuiltinHesuviProfile,
 }
 
 impl WavIr {
@@ -217,6 +223,7 @@ impl WavIr {
             sample_rate: target_rate,
             layout: self.layout,
             channels: resampled,
+            profile: self.profile,
         }
     }
 }
@@ -417,6 +424,7 @@ pub fn parse_wav_reader<R: std::io::Read + std::io::Seek>(
         sample_rate: rate,
         layout: final_layout,
         channels: final_channels,
+        profile: BuiltinHesuviProfile::None,
     })
 }
 
@@ -1840,6 +1848,8 @@ mod tests {
             assert_eq!(ir.layout, IrLayout::Hesuvi14);
             assert_eq!(ir.channels.len(), 14);
             assert_eq!(ir.sample_rate, 48000);
+            assert_eq!(ir.profile, profile);
+            assert_eq!(ir.resampled_to(44100).profile, profile);
 
             let params = Arc::new(ConvolverParams::new(
                 true,

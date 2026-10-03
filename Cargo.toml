@@ -26,7 +26,7 @@ members = [
 default-members = ["crates/rox"]
 
 [workspace.package]
-version = "1.29.4"
+version = "1.30.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -52,6 +52,12 @@ opt-level = 3
 # of it and 3 is within noise of it. The compile cost is the same 1.1s either
 # way, so this matches rox-viz above.
 [profile.dev.package.rox-library]
+opt-level = 3
+
+# The convolver runs per sample on the decode thread. Unoptimized, Surround
+# 7.1 takes 2.6s to process one second of audio, so playback stutters under
+# `cargo run`. Optimized it's 23ms.
+[profile.dev.package.rox-playback]
 opt-level = 3
 
 # Debug symbols are a third of the binary (68 MB down to 54 MB) and release

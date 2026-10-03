@@ -211,6 +211,9 @@ pub struct GenreGridPanel {
     hovered: Option<usize>,
     /// The cross extent last laid out for; the list closure notifies on drift.
     cross: Pixels,
+    /// The font scale the captions last laid out at, caught in `body` where the
+    /// panel's own scale is in scope, so the event paths share its pitch.
+    caption_scale: f32,
     scroll: VirtualListScrollHandle,
     flick: FlickState,
     glide_to: Option<usize>,
@@ -312,6 +315,7 @@ impl GenreGridPanel {
             cursor: None,
             hovered: None,
             cross: px(0.),
+            caption_scale: 1.,
             scroll: VirtualListScrollHandle::new(),
             flick: FlickState::default(),
             glide_to: None,
@@ -1044,7 +1048,7 @@ impl GenreGridPanel {
             playing_ix: self.playing_ix,
             playing: self.playing,
             fallback_lanes: FALLBACK_COLS,
-            label_h: None,
+            label_h: Some(TILE_LABEL_H * self.caption_scale),
         }
     }
 
@@ -1429,7 +1433,7 @@ impl GenreGridPanel {
         let (name, tally) = self.cell_labels(ix);
         let base = div()
             .w(side)
-            .h(px(TILE_LABEL_H))
+            .h(px(TILE_LABEL_H * self.caption_scale))
             .pt(tokens::SPACE_XS)
             .flex()
             .flex_col()
@@ -2173,6 +2177,9 @@ impl GenreGridPanel {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
+
+        // The caption text is rem sized, so its px block has to grow with it.
+        self.caption_scale = palette::row_scale();
         let axis = self.axis();
         let lanes = self.lanes();
         let line_count = self.cells.len().div_ceil(lanes);

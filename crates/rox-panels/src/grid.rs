@@ -69,7 +69,7 @@ const CAPTION_ROW_H: f32 = 16.;
 
 fn caption_row(child: impl IntoElement) -> Div {
     div()
-        .h(px(CAPTION_ROW_H))
+        .h(palette::scaled_px(CAPTION_ROW_H))
         .truncate()
         .text_xs()
         .text_color(palette::text_secondary())
@@ -340,6 +340,9 @@ pub struct GridPanel {
     /// The cross extent last laid out for. The dock caches panels, so a resize
     /// repaints without re-rendering; the list closure notifies on drift.
     cross: Pixels,
+    /// The font scale the captions last laid out at, caught in `body` where the
+    /// panel's own scale is in scope, so the event paths share its pitch.
+    caption_scale: f32,
     scroll: VirtualListScrollHandle,
     /// Drag-to-scroll. A drag past its dead zone swallows the tile click.
     flick: FlickState,
@@ -479,6 +482,7 @@ impl GridPanel {
             cursor: None,
             hovered: None,
             cross: px(0.),
+            caption_scale: 1.,
             scroll: VirtualListScrollHandle::new(),
             flick: FlickState::default(),
             glide_to: None,
@@ -1259,7 +1263,7 @@ impl GridPanel {
     }
 
     fn caption_height(&self) -> f32 {
-        self.config.caption_height()
+        self.config.caption_height() * self.caption_scale
     }
 
     fn warm_last_played(&mut self, cx: &App) {
@@ -1573,7 +1577,7 @@ impl GridPanel {
         };
         base = base.child(
             div()
-                .h(px(CAPTION_ALBUM_H))
+                .h(palette::scaled_px(CAPTION_ALBUM_H))
                 .truncate()
                 .text_sm()
                 .text_color(palette::text_bright())
@@ -1582,7 +1586,7 @@ impl GridPanel {
         if self.config.label_artist {
             base = base.child(
                 div()
-                    .h(px(CAPTION_ROW_H))
+                    .h(palette::scaled_px(CAPTION_ROW_H))
                     .truncate()
                     .text_xs()
                     .text_color(palette::text_secondary())
@@ -2369,6 +2373,9 @@ impl GridPanel {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
+
+        // The caption text is rem sized, so its px block has to grow with it.
+        self.caption_scale = palette::row_scale();
         let axis = self.axis();
         let lanes = self.lanes();
         let line_count = self.cells.len().div_ceil(lanes);

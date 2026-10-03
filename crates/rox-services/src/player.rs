@@ -15,7 +15,7 @@ use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
 
 use rox_core::QUEUE_CAP;
 use rox_core::settings::{
-    GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings, ShuffleMode,
+    ConvolverSettings, GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings, ShuffleMode,
     clamp_live_buffer_secs,
 };
 use rox_library::cue::{Origin, Span, TrackKey};
@@ -32,8 +32,8 @@ use rox_playback::StreamState;
 use rox_playback::continuation::{self, Pick};
 use rox_playback::convolver::{self, Convolver, ConvolverParams};
 pub use rox_playback::convolver::{
-    ConvolverMode, IrLayout, POINT_BL, POINT_BR, POINT_FC, POINT_FL, POINT_FR, POINT_SL, POINT_SR,
-    SURROUND_POINTS,
+    BuiltinHesuviProfile, ConvolverMode, IrLayout, POINT_BL, POINT_BR, POINT_FC, POINT_FL,
+    POINT_FR, POINT_SL, POINT_SR, SURROUND_POINTS,
 };
 use rox_playback::engine::{self, Cmd, StartQueue, shuffle_head, shuffle_slice};
 use rox_playback::eq::{Eq, EqParams};
@@ -3507,14 +3507,14 @@ fn persist_eq_soon(cx: &mut App) {
 
 static CONVOLVER: std::sync::LazyLock<Arc<ConvolverParams>> = std::sync::LazyLock::new(|| {
     let saved = Settings::load().eq.convolver;
-    let ir = saved.ir_path.as_ref().and_then(|p| {
-        let path = std::path::Path::new(p);
+    let ir = saved.profile.load_ir().or_else(|| {
+        let path = std::path::Path::new(saved.ir_path.as_ref()?);
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("ir.wav");
-        let data = std::fs::read(path).ok()?;
-        convolver::parse_wav(name, &data).ok()
+        let file = std::fs::File::open(path).ok()?;
+        convolver::parse_wav_reader(name, std::io::BufReader::new(file)).ok()
     });
     Arc::new(ConvolverParams::new(
         saved.enabled,
@@ -3612,12 +3612,40 @@ pub fn reset_convolver_channel_gains(cx: &mut App) {
     eq_changed(cx);
 }
 
+/// Wet, width, crossfeed and gain back to their defaults.
+pub fn reset_convolver_mix(cx: &mut App) {
+    let defaults = ConvolverSettings::default();
+    let params = convolver_params();
+    params.set_wet(defaults.wet);
+    params.set_stereo_width(defaults.stereo_width);
+    params.set_crossfeed(defaults.crossfeed);
+    params.set_gain_db(defaults.gain_db);
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
 pub fn convolver_ir_name() -> Option<String> {
     convolver_params().current_ir().map(|ir| ir.name.clone())
 }
 
 pub fn convolver_ir_layout() -> Option<IrLayout> {
     convolver_params().current_ir().map(|ir| ir.layout)
+}
+
+/// The bundled profile playing, `None` when there's no IR or it's a user file.
+pub fn convolver_profile() -> BuiltinHesuviProfile {
+    convolver_params()
+        .current_ir()
+        .map_or(BuiltinHesuviProfile::None, |ir| ir.profile)
+}
+
+pub fn set_convolver_profile(profile: BuiltinHesuviProfile, cx: &mut App) {
+    convolver_params().set_ir(profile.load_ir());
+    Settings::update(move |s| {
+        s.eq.convolver.profile = profile;
+        s.eq.convolver.ir_path = None;
+    });
+    eq_changed(cx);
 }
 
 pub fn apply_convolver_ir(path: std::path::PathBuf, cx: &mut App) -> Result<IrLayout, String> {
@@ -3632,6 +3660,7 @@ pub fn apply_convolver_ir(path: std::path::PathBuf, cx: &mut App) -> Result<IrLa
     convolver_params().set_ir(Some(ir));
     let path_str = path.to_string_lossy().to_string();
     Settings::update(move |s| {
+        s.eq.convolver.profile = BuiltinHesuviProfile::None;
         s.eq.convolver.ir_path = Some(path_str);
     });
     eq_changed(cx);
@@ -3641,6 +3670,7 @@ pub fn apply_convolver_ir(path: std::path::PathBuf, cx: &mut App) -> Result<IrLa
 pub fn clear_convolver_ir(cx: &mut App) {
     convolver_params().set_ir(None);
     Settings::update(move |s| {
+        s.eq.convolver.profile = BuiltinHesuviProfile::None;
         s.eq.convolver.ir_path = None;
     });
     eq_changed(cx);

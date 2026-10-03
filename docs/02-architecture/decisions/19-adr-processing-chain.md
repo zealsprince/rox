@@ -161,3 +161,23 @@ expose.
 `set_rate_resample(false)`, since that's the one path that works whether or not
 PipeWire is in the picture. The fade midpoint the ADR left as a constant is half the
 window: the new track's segment registers the frame the mix crosses it.
+
+**Amended 2026-10-03: convolution.** The impulse response convolver
+(`rox-playback/src/convolver.rs`) is a chain node, which the latency rule above ruled
+out as written. It keeps the contract because it's partitioned the way Gardner
+described: the first 128 taps of each filter run directly in the time domain and the
+rest runs as uniformly partitioned overlap-save on 256-point FFTs, so every output frame
+is ready as soon as its input frame is. The rule narrows to nodes that hold samples
+back. Block-FFT convolution and lookahead limiting stay out until a latency-reporting
+extension exists.
+
+An IR's leading silence is part of its response, and the node can't remove it. The
+bundled HRIRs start within 3 ms. A user's file with a long pre-delay shifts the audio
+by that much, capped at the 8192-sample IR limit, and the position clock doesn't see
+it.
+
+Building an engine allocates: it resamples the IR to the device rate and transforms
+the partitions. So that runs in `reset` or on a worker thread. `process` checks for a
+finished engine with `try_lock` and swaps it in without waiting. The swap frees the
+retired engine on the decode thread, the one heap operation `process` does, once per IR
+or mode change.

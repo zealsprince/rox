@@ -253,6 +253,9 @@ pub struct ArtistGridPanel {
     /// caches panels, so the list closure notifies when the painted extent
     /// drifts from this.
     cross: Pixels,
+    /// The font scale the captions last laid out at, caught in `body` where the
+    /// panel's own scale is in scope, so the event paths share its pitch.
+    caption_scale: f32,
     scroll: VirtualListScrollHandle,
     flick: FlickState,
     glide_to: Option<usize>,
@@ -366,6 +369,7 @@ impl ArtistGridPanel {
             cursor: None,
             hovered: None,
             cross: px(0.),
+            caption_scale: 1.,
             scroll: VirtualListScrollHandle::new(),
             flick: FlickState::default(),
             glide_to: None,
@@ -1131,7 +1135,7 @@ impl ArtistGridPanel {
             playing_ix: self.playing_ix,
             playing: self.playing,
             fallback_lanes: FALLBACK_COLS,
-            label_h: None,
+            label_h: Some(TILE_LABEL_H * self.caption_scale),
         }
     }
 
@@ -1404,7 +1408,7 @@ impl ArtistGridPanel {
         let readings = crate::settings::show_readings();
         let base = div()
             .w(side)
-            .h(px(TILE_LABEL_H))
+            .h(px(TILE_LABEL_H * self.caption_scale))
             .pt(tokens::SPACE_XS)
             .flex()
             .flex_col()
@@ -2172,6 +2176,9 @@ impl ArtistGridPanel {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
+
+        // The caption text is rem sized, so its px block has to grow with it.
+        self.caption_scale = palette::row_scale();
         let axis = self.axis();
         let lanes = self.lanes();
         let line_count = self.cells.len().div_ceil(lanes);

@@ -137,7 +137,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [16 - Play queue](decisions/16-adr-play-queue.md) | Mutable timeline the engine owns, playlists in the library store | Decided |
 | [17 - Queue continuation](decisions/17-adr-queue-continuation.md) | Single provider feeding the live timeline | Decided; a context bringing its own provider added by its amendment |
 | [18 - Tag editor](decisions/18-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
-| [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Decided |
+| [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Decided; zero-latency convolution added by its amendment |
 | [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, and accounts each in a file of their own | Decided |
 | [21 - CUE subsongs](decisions/21-adr-cue-subsongs.md) | Cue tracks as ordinary rows under a subsong id, spans in a side table | Decided |
 | [22 - Control surface](decisions/22-adr-control-surface.md) | Machine interface on a local JSON-RPC socket, never a bundled web server | Decided |

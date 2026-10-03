@@ -31,7 +31,7 @@ use rox_net::sources::autoeq::{self, BandSetting};
 use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ScrubState;
 use rox_panel_kit::ui::{self as settings_ui, icon_button, small_button};
-use rox_services::player::{self, ConvolverMode, IrLayout};
+use rox_services::player::{self, BuiltinHesuviProfile, ConvolverMode, IrLayout};
 
 use crate::eq_presets;
 
@@ -207,8 +207,7 @@ struct EqWindow {
     /// Keeps the sample ring shallow while open (ADR 19), so a band follows the
     /// drag at about a tenth of a second instead of half.
     _latency: LatencyHold,
-    /// Whether the Convolver & Spatial processor drawer/section is expanded.
-    spatial_open: bool,
+    tab: EqTab,
     /// Scrub states for convolver sliders: wet, width, crossfeed, gain, and 7 speaker levels.
     convolver_scrubs: [ScrubState; 11],
     convolver_error: Option<SharedString>,
@@ -270,7 +269,7 @@ impl EqWindow {
                 cx.notify();
             }),
             _latency: latency::hold(),
-            spatial_open: eq.convolver.enabled || eq.convolver.ir_path.is_some(),
+            tab: EqTab::Equalizer,
             convolver_scrubs: std::array::from_fn(|_| ScrubState::default()),
             convolver_error: None,
         }
@@ -394,8 +393,11 @@ impl EqWindow {
 
     fn transport(&self, cx: &mut Context<Self>) -> Option<Div> {
         let state = self.state.as_ref()?;
-        let strip = panel::transport_strip(&state.player.clone(), &state.library.clone(), cx);
-        Some(div().flex().flex_row().justify_center().child(strip))
+        Some(panel::transport_strip(
+            &state.player.clone(),
+            &state.library.clone(),
+            cx,
+        ))
     }
 
     /// Compared band for band: nothing else in the window knows the picker exists.
@@ -515,6 +517,12 @@ impl EqWindow {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
+            .child(small_button(
+                rox_i18n::t!("eq-autoeq"),
+                icons::HEADPHONES,
+                false,
+                cx.listener(|_, _, _, cx| crate::autoeq_window::open(cx)),
+            ))
             .child(panel::picker(
                 "eq-preset",
                 current,
@@ -550,6 +558,17 @@ impl EqWindow {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
+            .child(panel::toggle(
+                player::eq_enabled(),
+                |_, on, cx| player::set_eq_enabled(on, cx),
+                cx,
+            ))
+    }
+
+    /// Over the plot's top-left corner: what changes the curve.
+    fn curve_buttons(&self, cx: &mut Context<Self>) -> Div {
+        plot_corner()
+            .left(tokens::SPACE_SM)
             .child(small_button(
                 rox_i18n::t!("eq-flatten"),
                 icons::MINUS,
@@ -562,21 +581,12 @@ impl EqWindow {
                 false,
                 cx.listener(|_, _, _, cx| player::reset_eq_shape(cx)),
             ))
-            .child(small_button(
-                rox_i18n::t!("eq-autoeq"),
-                icons::HEADPHONES,
-                false,
-                cx.listener(|_, _, _, cx| crate::autoeq_window::open(cx)),
-            ))
-            .child(small_button(
-                rox_i18n::t!("eq-convolver-spatial"),
-                icons::WAVES,
-                self.spatial_open,
-                cx.listener(|this, _, _, cx| {
-                    this.spatial_open = !this.spatial_open;
-                    cx.notify();
-                }),
-            ))
+    }
+
+    /// Over the plot's top-right corner: how the analyzer behind the curve draws.
+    fn analyzer_pickers(&self, cx: &mut Context<Self>) -> Div {
+        plot_corner()
+            .right(tokens::SPACE_SM)
             .child(panel::picker(
                 "eq-analyzer",
                 self.analyzer_style,
@@ -606,11 +616,6 @@ impl EqWindow {
                     cx,
                 ))
             })
-            .child(panel::toggle(
-                player::eq_enabled(),
-                |_, on, cx| player::set_eq_enabled(on, cx),
-                cx,
-            ))
     }
 
     /// The response comes from the same coefficients the node runs.
@@ -752,6 +757,10 @@ impl EqWindow {
         for band in 0..BANDS {
             face = face.child(self.handle(band));
         }
+        face = face
+            .child(self.curve_buttons(cx))
+            .child(self.analyzer_pickers(cx));
+
         // The press lands on the plot so NODE_GRAB's reach catches a band.
         face.on_mouse_down(
             MouseButton::Left,
@@ -977,6 +986,43 @@ impl EqWindow {
         .detach();
     }
 
+    fn pick_ir(&mut self, choice: IrChoice, cx: &mut Context<Self>) {
+        // The file entry only marks what's loaded. Loading another goes through the button.
+        let IrChoice::Profile(profile) = choice else {
+            return;
+        };
+
+        player::set_convolver_profile(profile, cx);
+        if profile != BuiltinHesuviProfile::None {
+            player::set_convolver_enabled(true, cx);
+        }
+        self.convolver_error = None;
+        cx.notify();
+    }
+
+    /// The bundled profiles, plus the user's file while one is loaded.
+    fn ir_choices(ir_name: Option<&String>) -> (IrChoice, Vec<(IrChoice, SharedString)>) {
+        let profile = player::convolver_profile();
+        let mut options: Vec<(IrChoice, SharedString)> = BuiltinHesuviProfile::all()
+            .iter()
+            .map(|&p| {
+                let label = match p {
+                    BuiltinHesuviProfile::None => rox_i18n::t!("eq-convolver-no-file"),
+                    p => p.display_name().into(),
+                };
+                (IrChoice::Profile(p), label)
+            })
+            .collect();
+
+        match ir_name {
+            Some(name) if profile == BuiltinHesuviProfile::None => {
+                options.insert(1, (IrChoice::File, name.clone().into()));
+                (IrChoice::File, options)
+            }
+            _ => (IrChoice::Profile(profile), options),
+        }
+    }
+
     fn convolver_slider_row(
         &self,
         label: impl Into<SharedString>,
@@ -1014,8 +1060,41 @@ impl EqWindow {
         ("eq-convolver-br", player::POINT_BR),
     ];
 
-    fn spatial_section(&self, cx: &mut Context<Self>) -> Div {
-        let enabled = player::convolver_enabled();
+    /// The loaded IR's layout and the convolver's switch, for the header.
+    fn spatial_controls(&self, cx: &mut Context<Self>) -> Div {
+        let badge = player::convolver_ir_layout().map(|layout| match layout {
+            IrLayout::Hesuvi14 => rox_i18n::t!("eq-convolver-layout-hesuvi"),
+            IrLayout::TrueStereo4 => rox_i18n::t!("eq-convolver-layout-true-stereo"),
+            IrLayout::Stereo2 => rox_i18n::t!("eq-convolver-layout-stereo"),
+            IrLayout::Mono1 => rox_i18n::t!("eq-convolver-layout-mono"),
+            IrLayout::Generic(_) => rox_i18n::t!("eq-convolver-layout-generic"),
+        });
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .when_some(badge, |d, badge| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .px(tokens::SPACE_XS)
+                        .py(px(1.0))
+                        .rounded(tokens::RADIUS)
+                        .bg(palette::alpha(palette::accent(), 0x26))
+                        .text_color(palette::accent())
+                        .child(badge),
+                )
+            })
+            .child(panel::toggle(
+                player::convolver_enabled(),
+                |_, on, cx| player::set_convolver_enabled(on, cx),
+                cx,
+            ))
+    }
+
+    fn spatial(&self, cx: &mut Context<Self>) -> Div {
         let ir_name = player::convolver_ir_name();
         let ir_layout = player::convolver_ir_layout();
         let mode = player::convolver_mode();
@@ -1023,93 +1102,28 @@ impl EqWindow {
         let width = player::convolver_stereo_width();
         let crossfeed = player::convolver_crossfeed();
         let gain_db = player::convolver_gain_db();
+        let (ir_choice, ir_options) = Self::ir_choices(ir_name.as_ref());
 
         div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
-            .p(tokens::SPACE_SM)
-            .rounded(tokens::RADIUS)
-            .bg(palette::bg_control())
-            .border_1()
-            .border_color(if enabled {
-                palette::accent()
-            } else {
-                palette::border()
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(rox_i18n::t!("eq-convolver-title")),
-                            )
-                            .when_some(ir_layout, |d, layout| {
-                                let badge = match layout {
-                                    IrLayout::Hesuvi14 => {
-                                        rox_i18n::t!("eq-convolver-layout-hesuvi")
-                                    }
-                                    IrLayout::TrueStereo4 => {
-                                        rox_i18n::t!("eq-convolver-layout-true-stereo")
-                                    }
-                                    IrLayout::Stereo2 => {
-                                        rox_i18n::t!("eq-convolver-layout-stereo")
-                                    }
-                                    IrLayout::Mono1 => {
-                                        rox_i18n::t!("eq-convolver-layout-mono")
-                                    }
-                                    IrLayout::Generic(_) => {
-                                        rox_i18n::t!("eq-convolver-layout-generic")
-                                    }
-                                };
-                                d.child(
-                                    div()
-                                        .text_xs()
-                                        .px(tokens::SPACE_XS)
-                                        .py(px(1.0))
-                                        .rounded(tokens::RADIUS)
-                                        .bg(palette::alpha(palette::accent(), 0x26))
-                                        .text_color(palette::accent())
-                                        .child(badge),
-                                )
-                            }),
-                    )
-                    .child(panel::toggle(
-                        enabled,
-                        |_, on, cx| player::set_convolver_enabled(on, cx),
-                        cx,
-                    )),
-            )
-            .child(
+            .child(labelled(
+                rox_i18n::t!("eq-convolver-profile-label"),
+                px(64.),
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(tokens::SPACE_SM)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(if ir_name.is_some() {
-                                palette::text_bright()
-                            } else {
-                                palette::text_muted()
-                            })
-                            .child(ir_name.clone().unwrap_or_else(|| {
-                                rox_i18n::t!("eq-convolver-no-file").to_string()
-                            })),
-                    )
+                    .child(panel::picker(
+                        "eq-convolver-ir",
+                        ir_choice,
+                        ir_options,
+                        false,
+                        |this, choice, cx| this.pick_ir(choice, cx),
+                        cx,
+                    ))
                     .child(small_button(
                         rox_i18n::t!("eq-convolver-load"),
                         icons::FOLDER,
@@ -1123,39 +1137,37 @@ impl EqWindow {
                             false,
                             cx.listener(|_, _, _, cx| player::clear_convolver_ir(cx)),
                         ))
-                    }),
-            )
+                    })
+                    .child(div().flex_1())
+                    .child(small_button(
+                        rox_i18n::t!("eq-convolver-reset"),
+                        icons::REFRESH_CW,
+                        false,
+                        cx.listener(|_, _, _, cx| player::reset_convolver_mix(cx)),
+                    )),
+            ))
             .when(ir_layout == Some(IrLayout::Hesuvi14), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_SM)
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(palette::text_muted())
-                                .child(rox_i18n::t!("eq-convolver-mode-label")),
-                        )
-                        .child(panel::picker(
-                            "eq-convolver-mode",
-                            mode,
-                            vec![
-                                (
-                                    ConvolverMode::VirtualStereo,
-                                    rox_i18n::t!("eq-convolver-mode-virtual-stereo"),
-                                ),
-                                (
-                                    ConvolverMode::Surround7_1,
-                                    rox_i18n::t!("eq-convolver-mode-surround-71"),
-                                ),
-                            ],
-                            false,
-                            |_, m, cx| player::set_convolver_mode(m, cx),
-                            cx,
-                        )),
-                )
+                d.child(labelled(
+                    rox_i18n::t!("eq-convolver-mode-label"),
+                    px(64.),
+                    div().flex().flex_row().child(panel::picker(
+                        "eq-convolver-mode",
+                        mode,
+                        vec![
+                            (
+                                ConvolverMode::VirtualStereo,
+                                rox_i18n::t!("eq-convolver-mode-virtual-stereo"),
+                            ),
+                            (
+                                ConvolverMode::Surround7_1,
+                                rox_i18n::t!("eq-convolver-mode-surround-71"),
+                            ),
+                        ],
+                        false,
+                        |_, m, cx| player::set_convolver_mode(m, cx),
+                        cx,
+                    )),
+                ))
             })
             .when_some(self.convolver_error.clone(), |d, err| {
                 d.child(div().text_xs().text_color(palette::tone_bad()).child(err))
@@ -1220,7 +1232,7 @@ impl EqWindow {
                                         .child(rox_i18n::t!("eq-convolver-speakers-title")),
                                 )
                                 .child(small_button(
-                                    rox_i18n::t!("eq-convolver-reset-levels"),
+                                    rox_i18n::t!("eq-convolver-reset"),
                                     icons::REFRESH_CW,
                                     false,
                                     cx.listener(|_, _, _, cx| {
@@ -1255,6 +1267,35 @@ impl EqWindow {
                 )
             })
     }
+}
+
+/// A row of buttons pinned over a top corner of the plot. The press stops
+/// here, or it would also grab a band sitting under the button.
+fn plot_corner() -> Div {
+    div()
+        .absolute()
+        .top(tokens::SPACE_SM)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// The window's tabs, one per stage of the chain.
+#[derive(Clone, Copy, PartialEq)]
+enum EqTab {
+    Equalizer,
+    Spatial,
+}
+
+/// An entry in the convolver's IR picker.
+#[derive(Clone, Copy, PartialEq)]
+enum IrChoice {
+    /// A bundled profile, or `None` for no IR at all.
+    Profile(BuiltinHesuviProfile),
+    /// The file the user loaded.
+    File,
 }
 
 fn labelled(label: impl Into<SharedString>, label_w: Pixels, control: Div) -> Div {
@@ -1325,12 +1366,26 @@ impl Render for EqWindow {
             window.request_animation_frame();
         }
         panel::window_body(player, || {
-            let presets = self.presets(cx);
-            let plot = self.plot(cx);
-            let axis = self.axis();
-            let readouts = self.readouts(cx);
+            let tabs = [
+                (rox_i18n::t!("eq-heading"), EqTab::Equalizer),
+                (rox_i18n::t!("eq-convolver-spatial"), EqTab::Spatial),
+            ];
+            let switch = panel::choices_shared(
+                &tabs,
+                self.tab,
+                |this: &mut Self, tab, cx| {
+                    this.tab = tab;
+                    cx.notify();
+                },
+                cx,
+            );
+            let controls = match self.tab {
+                EqTab::Equalizer => self.controls(cx),
+                EqTab::Spatial => self.spatial_controls(cx),
+            };
             let transport = self.transport(cx);
-            div()
+
+            let body = div()
                 .size_full()
                 .flex()
                 .flex_col()
@@ -1345,29 +1400,41 @@ impl Render for EqWindow {
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(div().child(rox_i18n::t!("eq-heading")))
-                        .child(self.controls(cx)),
-                )
-                .child(presets)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(rox_i18n::t!("eq-help-text")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .gap(tokens::SPACE_XS)
-                        .child(plot)
-                        .child(axis),
-                )
-                .when_some(transport, |d, transport| d.child(transport))
-                .child(readouts)
-                .when(self.spatial_open, |d| d.child(self.spatial_section(cx)))
-                .into_any_element()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(tokens::SPACE_MD)
+                                .child(switch)
+                                .when_some(transport, |d, transport| d.child(transport)),
+                        )
+                        .child(controls),
+                );
+
+            match self.tab {
+                EqTab::Equalizer => body
+                    .child(self.presets(cx))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(rox_i18n::t!("eq-help-text")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .gap(tokens::SPACE_XS)
+                            .child(self.plot(cx))
+                            .child(self.axis()),
+                    )
+                    .child(self.readouts(cx)),
+
+                EqTab::Spatial => body.child(self.spatial(cx)),
+            }
+            .into_any_element()
         })
     }
 }

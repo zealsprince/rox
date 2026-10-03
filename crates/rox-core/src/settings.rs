@@ -2211,6 +2211,9 @@ pub enum AnalyzerStyle {
 #[serde(default)]
 pub struct ConvolverSettings {
     pub enabled: bool,
+    /// A bundled profile. Picking one clears `ir_path`, and loading a file
+    /// sets this back to `none`.
+    pub profile: rox_playback::convolver::BuiltinHesuviProfile,
     pub ir_path: Option<String>,
     pub mode: rox_playback::convolver::ConvolverMode,
     pub wet: f32,
@@ -2226,6 +2229,7 @@ impl Default for ConvolverSettings {
     fn default() -> Self {
         ConvolverSettings {
             enabled: false,
+            profile: rox_playback::convolver::BuiltinHesuviProfile::None,
             ir_path: None,
             mode: rox_playback::convolver::ConvolverMode::default(),
             wet: 1.0,

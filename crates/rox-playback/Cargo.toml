@@ -37,6 +37,7 @@ rtrb = "0.3"
 # core in release, 1.8% in debug. Construction is 1.6 ms release / 3.0 ms
 # debug, so a seek reuses it through `Resampler::reset`.
 rubato = { version = "5", default-features = false }
+realfft = "3.5"
 # Libraries only declare the facade; rox_core::logging installs the logger.
 log = "0.4"
 # EBU R128 loudness and true peak for ReplayGain measurement (ADR 19). Pure

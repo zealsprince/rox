@@ -7359,6 +7359,7 @@ dependencies = [
  "log",
  "mp3lame-encoder",
  "opus-pure",
+ "realfft",
  "rox-library",
  "rtrb",
  "rubato 5.0.0",

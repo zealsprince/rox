@@ -2191,6 +2191,9 @@ pub struct EqSettings {
     /// In samples. Snapped to a power of two on read, so a hand-edited value
     /// can't panic the window.
     pub fft_size: usize,
+    /// Impulse response convolver (HeSuVi / HRIR) and spatial audio settings.
+    #[serde(default)]
+    pub convolver: ConvolverSettings,
 }
 
 /// How the equalizer draws the music behind its curve.
@@ -2203,6 +2206,37 @@ pub enum AnalyzerStyle {
     Off,
 }
 
+/// Settings for the impulse response convolver and spatial audio processor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConvolverSettings {
+    pub enabled: bool,
+    pub ir_path: Option<String>,
+    pub mode: rox_playback::convolver::ConvolverMode,
+    pub wet: f32,
+    pub gain_db: f32,
+    pub stereo_width: f32,
+    pub crossfeed: f32,
+    /// Per-channel volume adjustments in dB for the 7 surround speaker points:
+    /// [FL, FR, FC, SL, SR, BL, BR]. Default is 0.0 dB for each point.
+    pub channel_gains_db: Vec<f32>,
+}
+
+impl Default for ConvolverSettings {
+    fn default() -> Self {
+        ConvolverSettings {
+            enabled: false,
+            ir_path: None,
+            mode: rox_playback::convolver::ConvolverMode::default(),
+            wet: 1.0,
+            gain_db: 0.0,
+            stereo_width: 1.0,
+            crossfeed: 0.0,
+            channel_gains_db: vec![0.0; 7],
+        }
+    }
+}
+
 impl Default for EqSettings {
     fn default() -> Self {
         EqSettings {
@@ -2213,6 +2247,7 @@ impl Default for EqSettings {
             analyzer: AnalyzerStyle::default(),
             // Long, or the bottom two octaves fall into a handful of bins.
             fft_size: 8192,
+            convolver: ConvolverSettings::default(),
         }
     }
 }

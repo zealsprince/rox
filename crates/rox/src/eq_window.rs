@@ -11,8 +11,9 @@ use std::time::Instant;
 
 use gpui::{
     App, Bounds, Context, Div, Entity, Global, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Path, Pixels, Point, ScrollWheelEvent, SharedString, Subscription, WeakEntity,
-    Window, WindowHandle, canvas, div, fill, point, prelude::*, px, relative, size,
+    MouseUpEvent, Path, PathPromptOptions, Pixels, Point, ScrollWheelEvent, SharedString,
+    Subscription, WeakEntity, Window, WindowHandle, canvas, div, fill, point, prelude::*, px,
+    relative, size,
 };
 use gpui_component::Root;
 use gpui_component::Sizable as _;
@@ -30,7 +31,7 @@ use rox_net::sources::autoeq::{self, BandSetting};
 use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ScrubState;
 use rox_panel_kit::ui::{self as settings_ui, icon_button, small_button};
-use rox_services::player;
+use rox_services::player::{self, ConvolverMode, IrLayout};
 
 use crate::eq_presets;
 
@@ -206,6 +207,11 @@ struct EqWindow {
     /// Keeps the sample ring shallow while open (ADR 19), so a band follows the
     /// drag at about a tenth of a second instead of half.
     _latency: LatencyHold,
+    /// Whether the Convolver & Spatial processor drawer/section is expanded.
+    spatial_open: bool,
+    /// Scrub states for convolver sliders: wet, width, crossfeed, gain, and 7 speaker levels.
+    convolver_scrubs: [ScrubState; 11],
+    convolver_error: Option<SharedString>,
 }
 
 impl EqWindow {
@@ -264,6 +270,9 @@ impl EqWindow {
                 cx.notify();
             }),
             _latency: latency::hold(),
+            spatial_open: eq.convolver.enabled || eq.convolver.ir_path.is_some(),
+            convolver_scrubs: std::array::from_fn(|_| ScrubState::default()),
+            convolver_error: None,
         }
     }
 
@@ -558,6 +567,15 @@ impl EqWindow {
                 icons::HEADPHONES,
                 false,
                 cx.listener(|_, _, _, cx| crate::autoeq_window::open(cx)),
+            ))
+            .child(small_button(
+                rox_i18n::t!("eq-convolver-spatial"),
+                icons::WAVES,
+                self.spatial_open,
+                cx.listener(|this, _, _, cx| {
+                    this.spatial_open = !this.spatial_open;
+                    cx.notify();
+                }),
             ))
             .child(panel::picker(
                 "eq-analyzer",
@@ -880,6 +898,7 @@ impl EqWindow {
         let hz = player::eq_freq(band);
         labelled(
             rox_i18n::t!("eq-freq-label"),
+            px(44.),
             panel::value_slider_edit_sized(
                 &self.scrubs[0],
                 &self.value_edit,
@@ -913,6 +932,7 @@ impl EqWindow {
     ) -> Div {
         labelled(
             label,
+            px(44.),
             settings_ui::scalar_sized(
                 &self.scrubs[slot],
                 &self.value_edit,
@@ -927,9 +947,317 @@ impl EqWindow {
             ),
         )
     }
+
+    fn load_ir_file(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(mut paths))) = rx.await
+                && let Some(path) = paths.pop()
+            {
+                this.update(cx, |this, cx| match player::apply_convolver_ir(path, cx) {
+                    Ok(_) => {
+                        this.convolver_error = None;
+                        player::set_convolver_enabled(true, cx);
+                        cx.notify();
+                    }
+                    Err(err) => {
+                        this.convolver_error =
+                            Some(rox_i18n::t!("eq-convolver-error-load", reason = err));
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn convolver_slider_row(
+        &self,
+        label: impl Into<SharedString>,
+        value: f32,
+        span: settings_ui::Span,
+        apply: impl Fn(f32, &mut App) + Clone + 'static,
+        slot: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        labelled(
+            label,
+            px(64.),
+            settings_ui::scalar_sized(
+                &self.convolver_scrubs[slot],
+                &self.value_edit,
+                value,
+                span,
+                panel::SliderWidth::Fill,
+                move |_: &mut Self, value, cx| {
+                    apply(value, cx);
+                    cx.notify();
+                },
+                cx,
+            ),
+        )
+    }
+
+    const SPEAKERS: [(&'static str, usize); 7] = [
+        ("eq-convolver-fl", player::POINT_FL),
+        ("eq-convolver-fr", player::POINT_FR),
+        ("eq-convolver-fc", player::POINT_FC),
+        ("eq-convolver-sl", player::POINT_SL),
+        ("eq-convolver-sr", player::POINT_SR),
+        ("eq-convolver-bl", player::POINT_BL),
+        ("eq-convolver-br", player::POINT_BR),
+    ];
+
+    fn spatial_section(&self, cx: &mut Context<Self>) -> Div {
+        let enabled = player::convolver_enabled();
+        let ir_name = player::convolver_ir_name();
+        let ir_layout = player::convolver_ir_layout();
+        let mode = player::convolver_mode();
+        let wet = player::convolver_wet();
+        let width = player::convolver_stereo_width();
+        let crossfeed = player::convolver_crossfeed();
+        let gain_db = player::convolver_gain_db();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .p(tokens::SPACE_SM)
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_control())
+            .border_1()
+            .border_color(if enabled {
+                palette::accent()
+            } else {
+                palette::border()
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(rox_i18n::t!("eq-convolver-title")),
+                            )
+                            .when_some(ir_layout, |d, layout| {
+                                let badge = match layout {
+                                    IrLayout::Hesuvi14 => {
+                                        rox_i18n::t!("eq-convolver-layout-hesuvi")
+                                    }
+                                    IrLayout::TrueStereo4 => {
+                                        rox_i18n::t!("eq-convolver-layout-true-stereo")
+                                    }
+                                    IrLayout::Stereo2 => {
+                                        rox_i18n::t!("eq-convolver-layout-stereo")
+                                    }
+                                    IrLayout::Mono1 => {
+                                        rox_i18n::t!("eq-convolver-layout-mono")
+                                    }
+                                    IrLayout::Generic(_) => {
+                                        rox_i18n::t!("eq-convolver-layout-generic")
+                                    }
+                                };
+                                d.child(
+                                    div()
+                                        .text_xs()
+                                        .px(tokens::SPACE_XS)
+                                        .py(px(1.0))
+                                        .rounded(tokens::RADIUS)
+                                        .bg(palette::alpha(palette::accent(), 0x26))
+                                        .text_color(palette::accent())
+                                        .child(badge),
+                                )
+                            }),
+                    )
+                    .child(panel::toggle(
+                        enabled,
+                        |_, on, cx| player::set_convolver_enabled(on, cx),
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(if ir_name.is_some() {
+                                palette::text_bright()
+                            } else {
+                                palette::text_muted()
+                            })
+                            .child(ir_name.clone().unwrap_or_else(|| {
+                                rox_i18n::t!("eq-convolver-no-file").to_string()
+                            })),
+                    )
+                    .child(small_button(
+                        rox_i18n::t!("eq-convolver-load"),
+                        icons::FOLDER,
+                        false,
+                        cx.listener(|this, _, _, cx| this.load_ir_file(cx)),
+                    ))
+                    .when(ir_name.is_some(), |row| {
+                        row.child(small_button(
+                            rox_i18n::t!("eq-convolver-clear"),
+                            icons::MINUS,
+                            false,
+                            cx.listener(|_, _, _, cx| player::clear_convolver_ir(cx)),
+                        ))
+                    }),
+            )
+            .when(ir_layout == Some(IrLayout::Hesuvi14), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(rox_i18n::t!("eq-convolver-mode-label")),
+                        )
+                        .child(panel::picker(
+                            "eq-convolver-mode",
+                            mode,
+                            vec![
+                                (
+                                    ConvolverMode::VirtualStereo,
+                                    rox_i18n::t!("eq-convolver-mode-virtual-stereo"),
+                                ),
+                                (
+                                    ConvolverMode::Surround7_1,
+                                    rox_i18n::t!("eq-convolver-mode-surround-71"),
+                                ),
+                            ],
+                            false,
+                            |_, m, cx| player::set_convolver_mode(m, cx),
+                            cx,
+                        )),
+                )
+            })
+            .when_some(self.convolver_error.clone(), |d, err| {
+                d.child(div().text_xs().text_color(palette::tone_bad()).child(err))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_XS)
+                    .child(self.convolver_slider_row(
+                        rox_i18n::t!("eq-convolver-wet-label"),
+                        wet * 100.0,
+                        settings_ui::span(0.0, 100.0, "%").decimals(0).hard(),
+                        |val, cx| player::set_convolver_wet(val / 100.0, cx),
+                        0,
+                        cx,
+                    ))
+                    .child(self.convolver_slider_row(
+                        rox_i18n::t!("eq-convolver-width-label"),
+                        width * 100.0,
+                        settings_ui::span(0.0, 200.0, "%").decimals(0).hard(),
+                        |val, cx| player::set_convolver_stereo_width(val / 100.0, cx),
+                        1,
+                        cx,
+                    ))
+                    .child(self.convolver_slider_row(
+                        rox_i18n::t!("eq-convolver-crossfeed-label"),
+                        crossfeed * 100.0,
+                        settings_ui::span(0.0, 100.0, "%").decimals(0).hard(),
+                        |val, cx| player::set_convolver_crossfeed(val / 100.0, cx),
+                        2,
+                        cx,
+                    ))
+                    .child(self.convolver_slider_row(
+                        rox_i18n::t!("eq-convolver-gain-label"),
+                        gain_db,
+                        settings_ui::span(-12.0, 12.0, " dB").decimals(1).hard(),
+                        player::set_convolver_gain_db,
+                        3,
+                        cx,
+                    )),
+            )
+            .when(ir_layout.is_some(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_XS)
+                        .p(tokens::SPACE_SM)
+                        .rounded(tokens::RADIUS)
+                        .bg(palette::bg_input())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(rox_i18n::t!("eq-convolver-speakers-title")),
+                                )
+                                .child(small_button(
+                                    rox_i18n::t!("eq-convolver-reset-levels"),
+                                    icons::REFRESH_CW,
+                                    false,
+                                    cx.listener(|_, _, _, cx| {
+                                        player::reset_convolver_channel_gains(cx)
+                                    }),
+                                )),
+                        )
+                        .children({
+                            let count = if ir_layout == Some(IrLayout::Hesuvi14)
+                                && mode == ConvolverMode::Surround7_1
+                            {
+                                7
+                            } else {
+                                2
+                            };
+                            Self::SPEAKERS[..count]
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &(key, point))| {
+                                    self.convolver_slider_row(
+                                        rox_i18n::t!(key),
+                                        player::convolver_channel_gain_db(point),
+                                        settings_ui::span(-18.0, 6.0, " dB").decimals(1).hard(),
+                                        move |val, cx| {
+                                            player::set_convolver_channel_gain_db(point, val, cx)
+                                        },
+                                        4 + i,
+                                        cx,
+                                    )
+                                })
+                        }),
+                )
+            })
+    }
 }
 
-fn labelled(label: impl Into<SharedString>, control: Div) -> Div {
+fn labelled(label: impl Into<SharedString>, label_w: Pixels, control: Div) -> Div {
     div()
         .flex()
         .flex_row()
@@ -938,7 +1266,7 @@ fn labelled(label: impl Into<SharedString>, control: Div) -> Div {
         .gap(tokens::SPACE_SM)
         .child(
             div()
-                .w(px(44.))
+                .w(label_w)
                 .flex_none()
                 .text_xs()
                 .text_color(palette::text_muted())
@@ -1038,6 +1366,7 @@ impl Render for EqWindow {
                 )
                 .when_some(transport, |d, transport| d.child(transport))
                 .child(readouts)
+                .when(self.spatial_open, |d| d.child(self.spatial_section(cx)))
                 .into_any_element()
         })
     }

@@ -30,6 +30,11 @@ use rox_playback::Shift;
 use rox_playback::StationInfo;
 use rox_playback::StreamState;
 use rox_playback::continuation::{self, Pick};
+use rox_playback::convolver::{self, Convolver, ConvolverParams};
+pub use rox_playback::convolver::{
+    ConvolverMode, IrLayout, POINT_BL, POINT_BR, POINT_FC, POINT_FL, POINT_FR, POINT_SL, POINT_SR,
+    SURROUND_POINTS,
+};
 use rox_playback::engine::{self, Cmd, StartQueue, shuffle_head, shuffle_slice};
 use rox_playback::eq::{Eq, EqParams};
 use rox_playback::gain;
@@ -385,6 +390,9 @@ impl Session {
         // The EQ joins the chain (ADR 19) before the first buffer. It's the
         // only chain command sent: later knob turns are atomic stores.
         let _ = tx.send(Cmd::ChainPush(Box::new(Eq::new(eq_params().clone()))));
+        let _ = tx.send(Cmd::ChainPush(Box::new(Convolver::new(
+            convolver_params().clone(),
+        ))));
         let gains = queue.gains.clone();
         let live = live_flags(&queue.locators);
         let engine = engine::Engine::new(queue, shared.clone(), out.producer, device_rate, rx);
@@ -3492,6 +3500,176 @@ fn persist_eq_soon(cx: &mut App) {
             s.eq.gains = gains;
             s.eq.freqs = freqs;
             s.eq.qs = qs;
+        });
+    })
+    .detach();
+}
+
+static CONVOLVER: std::sync::LazyLock<Arc<ConvolverParams>> = std::sync::LazyLock::new(|| {
+    let saved = Settings::load().eq.convolver;
+    let ir = saved.ir_path.as_ref().and_then(|p| {
+        let path = std::path::Path::new(p);
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("ir.wav");
+        let data = std::fs::read(path).ok()?;
+        convolver::parse_wav(name, &data).ok()
+    });
+    Arc::new(ConvolverParams::new(
+        saved.enabled,
+        saved.wet,
+        saved.gain_db,
+        saved.mode,
+        saved.stereo_width,
+        saved.crossfeed,
+        Some(&saved.channel_gains_db),
+        ir,
+    ))
+});
+
+/// The convolver and spatial audio node's live parameters (ADR 19).
+pub fn convolver_params() -> &'static Arc<ConvolverParams> {
+    &CONVOLVER
+}
+
+/// Whether the convolver / spatial node is active.
+pub fn convolver_enabled() -> bool {
+    convolver_params().enabled()
+}
+
+pub fn set_convolver_enabled(on: bool, cx: &mut App) {
+    convolver_params().set_enabled(on);
+    Settings::update(move |s| s.eq.convolver.enabled = on);
+    eq_changed(cx);
+}
+
+pub fn convolver_mode() -> ConvolverMode {
+    convolver_params().mode()
+}
+
+pub fn set_convolver_mode(mode: ConvolverMode, cx: &mut App) {
+    convolver_params().set_mode(mode);
+    Settings::update(move |s| s.eq.convolver.mode = mode);
+    eq_changed(cx);
+}
+
+pub fn convolver_wet() -> f32 {
+    convolver_params().wet()
+}
+
+pub fn set_convolver_wet(wet: f32, cx: &mut App) {
+    convolver_params().set_wet(wet);
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
+pub fn convolver_gain_db() -> f32 {
+    convolver_params().gain_db()
+}
+
+pub fn set_convolver_gain_db(db: f32, cx: &mut App) {
+    convolver_params().set_gain_db(db);
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
+pub fn convolver_stereo_width() -> f32 {
+    convolver_params().stereo_width()
+}
+
+pub fn set_convolver_stereo_width(width: f32, cx: &mut App) {
+    convolver_params().set_stereo_width(width);
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
+pub fn convolver_crossfeed() -> f32 {
+    convolver_params().crossfeed()
+}
+
+pub fn set_convolver_crossfeed(crossfeed: f32, cx: &mut App) {
+    convolver_params().set_crossfeed(crossfeed);
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
+pub fn convolver_channel_gain_db(ch: usize) -> f32 {
+    convolver_params().channel_gain_db(ch)
+}
+
+pub fn set_convolver_channel_gain_db(ch: usize, db: f32, cx: &mut App) {
+    convolver_params().set_channel_gain_db(ch, db);
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
+pub fn reset_convolver_channel_gains(cx: &mut App) {
+    for ch in 0..SURROUND_POINTS {
+        convolver_params().set_channel_gain_db(ch, 0.0);
+    }
+    persist_convolver_soon(cx);
+    eq_changed(cx);
+}
+
+pub fn convolver_ir_name() -> Option<String> {
+    convolver_params().current_ir().map(|ir| ir.name.clone())
+}
+
+pub fn convolver_ir_layout() -> Option<IrLayout> {
+    convolver_params().current_ir().map(|ir| ir.layout)
+}
+
+pub fn apply_convolver_ir(path: std::path::PathBuf, cx: &mut App) -> Result<IrLayout, String> {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ir.wav")
+        .to_string();
+    let file = std::fs::File::open(&path).map_err(|e| format!("Failed to open WAV file: {e}"))?;
+    let ir = convolver::parse_wav_reader(&name, std::io::BufReader::new(file))?;
+    let layout = ir.layout;
+    convolver_params().set_ir(Some(ir));
+    let path_str = path.to_string_lossy().to_string();
+    Settings::update(move |s| {
+        s.eq.convolver.ir_path = Some(path_str);
+    });
+    eq_changed(cx);
+    Ok(layout)
+}
+
+pub fn clear_convolver_ir(cx: &mut App) {
+    convolver_params().set_ir(None);
+    Settings::update(move |s| {
+        s.eq.convolver.ir_path = None;
+    });
+    eq_changed(cx);
+}
+
+fn persist_convolver_soon(cx: &mut App) {
+    static GEN: AtomicU64 = AtomicU64::new(0);
+    let mine = GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(200))
+            .await;
+        if GEN.load(Ordering::Relaxed) != mine {
+            return;
+        }
+        let params = convolver_params();
+        let wet = params.wet();
+        let gain_db = params.gain_db();
+        let width = params.stereo_width();
+        let crossfeed = params.crossfeed();
+        let channel_gains: Vec<f32> = (0..SURROUND_POINTS)
+            .map(|ch| params.channel_gain_db(ch))
+            .collect();
+        Settings::update(move |s| {
+            s.eq.convolver.wet = wet;
+            s.eq.convolver.gain_db = gain_db;
+            s.eq.convolver.stereo_width = width;
+            s.eq.convolver.crossfeed = crossfeed;
+            s.eq.convolver.channel_gains_db = channel_gains;
         });
     })
     .detach();

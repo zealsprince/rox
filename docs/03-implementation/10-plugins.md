@@ -513,14 +513,18 @@ never stops local playback. A command that arrives during an open waits for it, 
 commands drain at the top of the decode loop; research 04 measured pauses waiting up to
 2.3 s behind cold opens.
 
-The services side opens ahead (`follow` and `preopen`,
-`rox-services/src/plugins.rs:701-804`). Once the audible track has held for 2 s, the
-two entries after the one the engine is opening or adopted last are opened
-(`upcoming_locators`, `rox-services/src/player.rs:1204-1232`), and one nobody takes
-within 60 s is closed. Counting from the engine's entry, not the clock's, keeps a skip
-from reopening the track it just opened. An engine
-open that finds its stream pre-opened takes it, or waits for the pre-open still under
-way (`take_preopened`, `plugins.rs:677-699`). Live streams are never pre-opened, since
+The services side opens ahead (`follow`, `preopen_due`, `worth_preopening` and
+`preopen`, `rox-services/src/plugins.rs:1262-1411`). Once the audible track has held
+for 2 s and is within 20 s of its crossfade window, the entry after the one the engine
+is opening or adopted last is opened (`upcoming_locators`,
+`rox-services/src/player.rs:1224-1246`), and the one after that too when it starts
+inside 60 s. One nobody takes within 60 s is closed, which is why a long track waits
+for its end: opened at its start, the stream would be closed before the boundary and
+the engine would open it cold mid-fade. A track of unknown length opens what's next as
+soon as it holds. Counting from the engine's entry, not the clock's, keeps a skip from
+reopening the track it just opened. An engine open that finds its stream pre-opened
+takes it, or waits for the pre-open still under way (`take_preopened`,
+`plugins.rs:1238-1260`). Live streams are never pre-opened, since
 that would start a broadcast nobody hears yet.
 
 What the engine reads through (`reader_for`, `rox-playback/src/plugin.rs:56-74`):

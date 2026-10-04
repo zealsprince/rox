@@ -508,9 +508,9 @@ enum RowBit {
     /// Segments of text and whether each is muted.
     Run(Vec<(String, bool)>),
     Fixed(InfoPiece),
-    /// A station's or a server's glyph, outside the crawl so it holds its
-    /// place while the line scrolls.
-    Glyph(&'static str),
+    /// A station's, a server's or a plugin's glyph, outside the crawl so it
+    /// holds its place while the line scrolls.
+    Glyph(SharedString),
 }
 
 /// Same-color neighbors read as one phrase: bright ones join with a space,
@@ -524,7 +524,7 @@ enum RowBit {
 fn row_bits(
     pieces: &[InfoPiece],
     texts: &PieceTexts,
-    glyph: Option<(InfoPiece, &'static str)>,
+    glyph: Option<(InfoPiece, SharedString)>,
 ) -> Vec<RowBit> {
     let mut bits = Vec::new();
     let mut run: Vec<(String, bool)> = Vec::new();
@@ -559,7 +559,7 @@ fn row_bits(
         };
         let Some((text, muted)) = text else { continue };
 
-        if glyph.is_some_and(|(lead, _)| lead == *piece) {
+        if glyph.as_ref().is_some_and(|(lead, _)| lead == piece) {
             marked = true;
         }
 
@@ -1434,9 +1434,11 @@ impl TrackInfoPanel {
         // announcement.
         let glyph = match now.origin {
             Origin::Local => None,
-            Origin::Radio => Some(icons::RADIO),
-            Origin::Subsonic => Some(icons::DATABASE),
-            Origin::Plugin => Some(icons::PLUG),
+            Origin::Radio => Some(icons::RADIO.into()),
+            Origin::Subsonic => Some(icons::DATABASE.into()),
+            Origin::Plugin => Some(
+                rox_services::plugins::icon(&now.key.source).unwrap_or_else(|| icons::PLUG.into()),
+            ),
         }
         .map(|path| match texts.album.is_some() {
             true => (InfoPiece::Album, path),
@@ -1449,7 +1451,7 @@ impl TrackInfoPanel {
             .iter()
             .enumerate()
             .filter(|(_, row)| !row.is_empty())
-            .map(|(ix, row)| (ix, row_bits(row, &texts, glyph)))
+            .map(|(ix, row)| (ix, row_bits(row, &texts, glyph.clone())))
             .collect();
         // The end-of-queue note trails the first row's last run, where
         // the single line has always worn it.
@@ -1938,7 +1940,11 @@ mod tests {
     fn the_source_mark_trails_the_row_it_marks() {
         let pieces = [InfoPiece::Title, InfoPiece::Artist, InfoPiece::Album];
 
-        let bits = row_bits(&pieces, &texts(), Some((InfoPiece::Album, icons::RADIO)));
+        let bits = row_bits(
+            &pieces,
+            &texts(),
+            Some((InfoPiece::Album, icons::RADIO.into())),
+        );
         assert!(bits.len() == 2);
         let RowBit::Run(run) = &bits[0] else {
             panic!("expected a run");
@@ -1949,16 +1955,24 @@ mod tests {
                 ("USAO - REVOLUTION BEATZ".to_string(), true),
             ]
         );
-        assert!(matches!(&bits[1], RowBit::Glyph(icons::RADIO)));
+        assert!(matches!(&bits[1], RowBit::Glyph(path) if path == icons::RADIO));
 
         // Behind the words, ahead of whatever sits at the far edge.
         let trailing = [InfoPiece::Title, InfoPiece::Album, InfoPiece::Output];
-        let bits = row_bits(&trailing, &texts(), Some((InfoPiece::Album, icons::RADIO)));
-        assert!(matches!(&bits[1], RowBit::Glyph(icons::RADIO)));
+        let bits = row_bits(
+            &trailing,
+            &texts(),
+            Some((InfoPiece::Album, icons::RADIO.into())),
+        );
+        assert!(matches!(&bits[1], RowBit::Glyph(path) if path == icons::RADIO));
         assert!(matches!(&bits[2], RowBit::Fixed(InfoPiece::Output)));
 
         let elsewhere = [InfoPiece::Title, InfoPiece::Artist];
-        let bits = row_bits(&elsewhere, &texts(), Some((InfoPiece::Album, icons::RADIO)));
+        let bits = row_bits(
+            &elsewhere,
+            &texts(),
+            Some((InfoPiece::Album, icons::RADIO.into())),
+        );
         assert!(bits.len() == 1);
 
         let bits = row_bits(&pieces, &texts(), None);

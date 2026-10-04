@@ -10,7 +10,7 @@
 //! refresh. Accepted; re-materializing every open smart list per star click
 //! is worse. A bulk play-count import does refresh.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
-use gpui_component::{Icon, Sizable};
+use gpui_component::{Icon, IconName, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +42,7 @@ use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{
     self, ART_MARGIN_MAX, Column, ColumnHost, GroupTrack, HEAD_GAP_MAX, HEAD_HEIGHT_MAX,
     HEAD_TEXT_MAX, HEAD_TEXT_MIN, HEAD_TEXT_STOCK, HeadSlot, HeadingHost, ROW_HEIGHT_MAX,
-    ROW_HEIGHT_MIN, ROW_HEIGHT_STOCK, ROW_SPACING_MAX,
+    ROW_HEIGHT_MIN, ROW_HEIGHT_STOCK, ROW_SPACING_MAX, SourceMark,
 };
 use crate::track_ui::track_drag::PlayDrag;
 use rox_library::playlist_file::Format;
@@ -107,6 +107,11 @@ fn columns() -> Vec<Column> {
             default_on: false,
         },
         Column {
+            key: "source",
+            label: rox_i18n::t!("columns-source"),
+            default_on: false,
+        },
+        Column {
             key: "plays",
             label: rox_i18n::t!("status-item-plays"),
             default_on: false,
@@ -130,6 +135,9 @@ pub struct PlaylistsConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub expanded: Vec<i64>,
+    /// Playlists drawn last member first. Playback follows the drawn order.
+    #[serde(default)]
+    pub reversed: Vec<i64>,
     /// The library's album grouping brought to the tree.
     pub headers: Headers,
     /// In no particular order; render order is the registry's.
@@ -206,6 +214,7 @@ impl Default for PlaylistsConfig {
         PlaylistsConfig {
             chrome: PanelChrome::default(),
             expanded: Vec::new(),
+            reversed: Vec::new(),
             headers: Headers::Off,
             columns: track_columns::default_columns(&columns()),
             search: false,
@@ -253,6 +262,9 @@ fn fold_head_lines(config: &PlaylistsConfig) -> (Vec<HeadPiece>, Vec<HeadPiece>,
     )
 }
 
+// Nearly every row is a track, so padding the rare headings costs less than
+// boxing an allocation per track.
+#[allow(clippy::large_enum_variant)]
 enum Row {
     Head {
         id: i64,
@@ -264,6 +276,7 @@ enum Row {
         favourite: bool,
         /// A saved query: takes no member edits and offers Edit Query.
         smart: bool,
+        reversed: bool,
     },
     /// Indexes [`PlaylistsPanel::albums`]; one block per run of tracks sharing
     /// an album.
@@ -297,6 +310,8 @@ struct TrackRow {
     rating: u8,
     plays: u32,
     path: String,
+    /// Empty for a member the library no longer holds.
+    source: String,
 }
 
 /// A smart row has no member rowid, so a hash of the playlist and track
@@ -348,6 +363,7 @@ impl TrackRow {
             rating: t.rating,
             plays,
             path: t.path.clone(),
+            source: t.source.clone(),
         }
     }
 }
@@ -417,6 +433,9 @@ pub struct PlaylistsPanel {
     /// Empty when the headings are off.
     albums: Vec<track_columns::AlbumGroup>,
     expanded: HashSet<i64>,
+    /// Keyed on the source string and resolved per refresh, since both
+    /// lookups take a lock.
+    sources: HashMap<String, SourceMark>,
     /// Reloaded every refresh, since a favourite toggle emits the same event
     /// as a playlist edit.
     favourites: HashSet<i64>,
@@ -550,6 +569,7 @@ impl PlaylistsPanel {
             rows: Vec::new(),
             albums: Vec::new(),
             expanded,
+            sources: HashMap::new(),
             favourites: HashSet::new(),
             playing: None,
             selected: HashSet::new(),
@@ -618,6 +638,7 @@ impl PlaylistsPanel {
         let favourites = library.favourite_ids();
         let mut rows = Vec::new();
         let mut albums = Vec::new();
+        let mut sources = HashMap::new();
         for playlist in library.playlists() {
             let expanded = self.expanded.contains(&playlist.id);
             // A searching tree loads every list; otherwise only the expanded ones.
@@ -640,13 +661,17 @@ impl PlaylistsPanel {
                 (None, false) => (playlist.tracks, Vec::new()),
             };
             // Positions stay the playlist's, not the filtered run's.
-            let visible: Vec<usize> = if searching {
+            let mut visible: Vec<usize> = if searching {
                 (0..all.len())
                     .filter(|&i| self.track_visible(&terms, &all[i]))
                     .collect()
             } else {
                 (0..all.len()).collect()
             };
+            let reversed = self.is_reversed(playlist.id);
+            if reversed {
+                visible.reverse();
+            }
             if searching && visible.is_empty() {
                 continue;
             }
@@ -657,9 +682,16 @@ impl PlaylistsPanel {
                 expanded: show_tracks,
                 favourite: playlist.favourite,
                 smart,
+                reversed,
             });
             if !show_tracks {
                 continue;
+            }
+            for &i in &visible {
+                let source = &all[i].source;
+                if !source.is_empty() && !sources.contains_key(source) {
+                    sources.insert(source.clone(), SourceMark::resolve(source));
+                }
             }
             let ids: Vec<i64> = visible.iter().map(|&i| all[i].track_id).collect();
             let plays = library.plays_for(&ids);
@@ -717,6 +749,7 @@ impl PlaylistsPanel {
         self.rows = rows;
         self.drag_gen += 1;
         self.albums = albums;
+        self.sources = sources;
         self.favourites = favourites;
         // Keep only members that still exist.
         let live: HashSet<i64> = self
@@ -1010,10 +1043,28 @@ impl PlaylistsPanel {
         self.refresh(cx);
     }
 
+    fn is_reversed(&self, playlist_id: i64) -> bool {
+        self.config.reversed.contains(&playlist_id)
+    }
+
+    fn toggle_reversed(&mut self, id: i64, cx: &mut Context<Self>) {
+        if self.is_reversed(id) {
+            self.config.reversed.retain(|&r| r != id);
+        } else {
+            self.config.reversed.push(id);
+        }
+
+        self.request_layout_save(cx);
+        self.refresh(cx);
+    }
+
     fn play(&self, playlist_id: i64, start_track: Option<i64>, cx: &mut Context<Self>) {
         let (keys, start, ids) = {
             let library = self.state.library.read(cx);
-            let ids = library.playlist_ids(playlist_id);
+            let mut ids = library.playlist_ids(playlist_id);
+            if self.is_reversed(playlist_id) {
+                ids.reverse();
+            }
             let start = start_track
                 .and_then(|t| ids.iter().position(|&x| x == t))
                 .unwrap_or(0);
@@ -1260,10 +1311,28 @@ impl PlaylistsPanel {
 
     /// A header means the end of its list, a track the slot before itself.
     /// An album heading is no slot. Shared by both drop paths.
-    fn drop_target(&self, target: usize) -> Option<(i64, Option<i64>)> {
+    ///
+    /// A reversed list draws its end at the top, so the header lands the drop
+    /// right under itself. A track there means the slot after itself: before
+    /// the nearest row drawn above it that isn't `moving`, or the end.
+    fn drop_target(&self, target: usize, moving: &[i64]) -> Option<(i64, Option<i64>)> {
         match self.rows.get(target) {
             Some(Row::Head { id, .. }) => Some((*id, None)),
+
+            Some(Row::Track(t)) if self.is_reversed(t.playlist_id) => {
+                let above = self.rows[..target]
+                    .iter()
+                    .rev()
+                    .take_while(|row| !matches!(row, Row::Head { .. }))
+                    .find_map(|row| match row {
+                        Row::Track(u) if !moving.contains(&u.member_id) => Some(u.member_id),
+                        _ => None,
+                    });
+                Some((t.playlist_id, above))
+            }
+
             Some(Row::Track(t)) => Some((t.playlist_id, Some(t.member_id))),
+
             Some(Row::Album(_) | Row::AlbumMeta(_)) | None => None,
         }
     }
@@ -1271,13 +1340,17 @@ impl PlaylistsPanel {
     /// Goes in as one block before the target. Dropping onto a dragged row
     /// does nothing.
     fn drop_on(&mut self, drag: &TrackDrag, target: usize, cx: &mut Context<Self>) {
-        let Some((playlist_id, before)) = self.drop_target(target) else {
+        if self
+            .member_at(target)
+            .is_some_and(|m| drag.members.contains(&m))
+        {
+            return;
+        }
+
+        let Some((playlist_id, before)) = self.drop_target(target, &drag.members) else {
             return;
         };
 
-        if before.is_some_and(|b| drag.members.contains(&b)) {
-            return;
-        }
         // A smart playlist is its query's answer; refuse rather than swallow.
         if self.is_smart(playlist_id) {
             self.refuse(rox_i18n::t!("playlists-refuse-smart-source"), cx);
@@ -1288,7 +1361,13 @@ impl PlaylistsPanel {
             self.refuse(rox_i18n::t!("playlists-refuse-drag-out"), cx);
             return;
         }
-        let members = drag.members.clone();
+        // The drag holds rows in drawn order; a reversed list stores them
+        // backwards so the block reads the same once it lands.
+        let mut members = drag.members.to_vec();
+        if self.is_reversed(playlist_id) {
+            members.reverse();
+        }
+
         self.state.library.update(cx, |library, cx| {
             library.place_playlist_members(playlist_id, &members, before, cx);
         });
@@ -1297,7 +1376,7 @@ impl PlaylistsPanel {
     /// The drag carries library ids beside its keys; only an id-less source
     /// resolves keys, and a key with no row drops out.
     fn drop_tracks(&mut self, drag: &PlayDrag, target: usize, cx: &mut Context<Self>) {
-        let Some((playlist_id, before)) = self.drop_target(target) else {
+        let Some((playlist_id, before)) = self.drop_target(target, &[]) else {
             return;
         };
 
@@ -1307,7 +1386,7 @@ impl PlaylistsPanel {
             return;
         }
 
-        let ids: Vec<i64> = if drag.ids.is_empty() {
+        let mut ids: Vec<i64> = if drag.ids.is_empty() {
             let library = self.state.library.read(cx);
             drag.keys
                 .iter()
@@ -1319,6 +1398,10 @@ impl PlaylistsPanel {
 
         if ids.is_empty() {
             return;
+        }
+
+        if self.is_reversed(playlist_id) {
+            ids.reverse();
         }
 
         self.state.library.update(cx, |library, cx| {
@@ -1342,8 +1425,18 @@ impl PlaylistsPanel {
                         expanded,
                         favourite,
                         smart,
+                        reversed,
                         ..
-                    } => self.head_row(ix, name.clone(), *count, *expanded, *favourite, *smart, cx),
+                    } => self.head_row(
+                        ix,
+                        name.clone(),
+                        *count,
+                        *expanded,
+                        *favourite,
+                        *smart,
+                        *reversed,
+                        cx,
+                    ),
                     Row::Album(g) => {
                         let g = *g;
                         self.album_row(ix, g, cx)
@@ -1370,6 +1463,7 @@ impl PlaylistsPanel {
         expanded: bool,
         favourite: bool,
         smart: bool,
+        reversed: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let chevron = if expanded {
@@ -1463,12 +1557,30 @@ impl PlaylistsPanel {
                         count as i64,
                     ))),
             )
-            // The popover trigger lets the press bubble, so swallow it or the header
-            // toggles under the menu.
+            // Both buttons let the press bubble, so swallow it or the header toggles
+            // under them.
             .child(
                 div()
                     .flex_none()
+                    .flex()
+                    .flex_row()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new(("playlist-reverse", ix))
+                            .ghost()
+                            .xsmall()
+                            .icon(if reversed {
+                                IconName::SortDescending
+                            } else {
+                                IconName::SortAscending
+                            })
+                            .tooltip(rox_i18n::t!("playlists-reverse-tooltip"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(Row::Head { id, .. }) = this.rows.get(ix) {
+                                    this.toggle_reversed(*id, cx);
+                                }
+                            })),
+                    )
                     .child(
                         Button::new(("playlist-export", ix))
                             .ghost()
@@ -1691,6 +1803,12 @@ impl PlaylistsPanel {
                 self.compact_plays,
             ) {
                 row = row.child(c);
+            } else if col.key == "source" {
+                row = row.child(
+                    track_columns::source_cell(self.sources.get(&t.source))
+                        .flex_none()
+                        .w(palette::scaled_px(track_columns::SOURCE_WIDTH)),
+                );
             }
         }
         row

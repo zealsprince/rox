@@ -3522,6 +3522,7 @@ playlists-remove = { $count ->
    *[other] Remove { $count } from Playlist
 }
 playlists-rename = Rename...
+playlists-reverse-tooltip = Reverse Order
 playlists-title = Playlists
 
 ## Queue panel

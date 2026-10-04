@@ -3484,6 +3484,7 @@ playlists-remove = { $count ->
    *[other] Прибрати { $count } трека зі списку
 }
 playlists-rename = Перейменувати...
+playlists-reverse-tooltip = Обернути порядок
 playlists-title = Списки відтворення
 
 ## Queue panel

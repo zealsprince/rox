@@ -3338,6 +3338,7 @@ playlists-remove = { $count ->
    *[other] 从播放列表移除 { $count } 首
 }
 playlists-rename = 重命名…
+playlists-reverse-tooltip = 反转顺序
 playlists-title = 播放列表
 
 ## Queue panel

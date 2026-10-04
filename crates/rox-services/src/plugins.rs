@@ -47,6 +47,11 @@ const PREOPEN_AHEAD: usize = 2;
 /// How long a track has to hold before the ones after it are opened.
 const PREOPEN_SETTLE: Duration = Duration::from_secs(2);
 
+/// How far ahead of the crossfade the next track opens. Cold opens measured
+/// up to 3.8 s, and with the longest fade it still lands well inside
+/// [`PREOPEN_KEEP`].
+const PREOPEN_LEAD: Duration = Duration::from_secs(20);
+
 /// A sync past this many pages is a plugin looping on its own cursor.
 const MAX_SYNC_PAGES: usize = 2000;
 
@@ -1305,47 +1310,54 @@ fn sweep() {
     }
 }
 
-/// Once the audible track has held for [`PREOPEN_SETTLE`], open the next
-/// plugin tracks before the engine asks for them. Skipping through faster
-/// than that opens nothing: every open is the plugin's work and a request to
-/// its service. Live streams aren't opened early either, since that would
-/// start a broadcast nobody hears yet.
+/// Open the next plugin tracks before the engine asks for them, once the
+/// audible track has held for [`PREOPEN_SETTLE`] and is within
+/// [`PREOPEN_LEAD`] of its crossfade. Skipping through faster than that opens
+/// nothing: every open is the plugin's work and a request to its service.
+/// Opening at the start of a long track would see the sweep close the stream
+/// before the boundary, and the engine open it cold mid-fade. Live streams
+/// aren't opened early either, since that would start a broadcast nobody
+/// hears yet.
 fn follow(player: Entity<Player>, cx: &mut App) {
     let mut audible: Option<usize> = None;
-    // Replacing it drops, and so cancels, the wait for the track before.
-    let mut settling: Option<Task<()>> = None;
+    let mut since = Instant::now();
+    let mut opened = false;
 
+    // The pump notifies every tick while playing, so this sees the window open.
     cx.observe(&player, move |player, cx| {
-        let now = player.read(cx).now_playing().map(|now| now.audible_idx);
-        if now == audible {
+        let player = player.read(cx);
+        let now = player.now_playing();
+
+        let idx = now.as_ref().map(|now| now.audible_idx);
+        if idx != audible {
+            audible = idx;
+            since = Instant::now();
+            opened = false;
+            sweep();
+        }
+
+        let Some(now) = now else {
+            return;
+        };
+
+        let left = now
+            .duration_secs
+            .map(|total| (total - now.position_secs).max(0.0));
+
+        // A seek back out of the window opens again when it comes round.
+        if !preopen_due(since.elapsed(), left, player.crossfade_secs()) {
+            opened = false;
             return;
         }
-        audible = now;
-        sweep();
 
-        let wait = cx.spawn(async move |cx| {
-            cx.background_executor().timer(PREOPEN_SETTLE).await;
+        if opened {
+            return;
+        }
+        opened = true;
 
-            let upcoming = player.read_with(cx, |player, _| {
-                let held = player.now_playing().map(|now| now.audible_idx) == now;
-                held.then(|| player.upcoming_locators(PREOPEN_AHEAD))
-            });
-            let Ok(Some(upcoming)) = upcoming else {
-                return;
-            };
-
-            cx.update(|cx| {
-                for locator in upcoming {
-                    if let Locator::Plugin(stream) = locator
-                        && !stream.live
-                    {
-                        preopen(stream, cx);
-                    }
-                }
-            })
-            .ok();
-        });
-        drop(settling.replace(wait));
+        for stream in worth_preopening(player.upcoming_locators(PREOPEN_AHEAD), left) {
+            preopen(stream, cx);
+        }
     })
     .detach();
 
@@ -1357,6 +1369,46 @@ fn follow(player: Entity<Player>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Held long enough, and near enough the end. A track of unknown length
+/// has no end to count back from, so it opens what's next once it holds.
+fn preopen_due(held: Duration, left: Option<f64>, fade_secs: f32) -> bool {
+    if held < PREOPEN_SETTLE {
+        return false;
+    }
+
+    let lead = fade_secs.max(0.0) as f64 + PREOPEN_LEAD.as_secs_f64();
+    left.is_none_or(|left| left <= lead)
+}
+
+/// The next entry, and past it only what starts before the sweep would
+/// close it. A long track ahead leaves the one behind it to its own window.
+fn worth_preopening(upcoming: Vec<Locator>, left: Option<f64>) -> Vec<PluginStream> {
+    let keep = PREOPEN_KEEP.as_secs_f64();
+    let mut starts_in = left;
+    let mut streams = Vec::new();
+
+    for (i, locator) in upcoming.into_iter().enumerate() {
+        if i > 0 && starts_in.is_none_or(|secs| secs >= keep) {
+            break;
+        }
+
+        // A file or a remote row has no length here to count past.
+        let Locator::Plugin(stream) = locator else {
+            break;
+        };
+
+        starts_in = starts_in
+            .zip(stream.duration_ms)
+            .map(|(secs, ms)| secs + ms as f64 / 1000.0);
+
+        if !stream.live {
+            streams.push(stream);
+        }
+    }
+
+    streams
 }
 
 fn track(mut wire: wire::Track) -> PluginTrack {
@@ -2553,6 +2605,54 @@ mod tests {
             start_ms,
             title: title.into(),
         }
+    }
+
+    fn plugin_row(key: &str, duration_ms: Option<u32>) -> Locator {
+        Locator::Plugin(PluginStream {
+            source: "plugin:example".into(),
+            key: key.into(),
+            live: false,
+            duration_ms,
+        })
+    }
+
+    fn keys(streams: &[PluginStream]) -> Vec<&str> {
+        streams.iter().map(|s| s.key.as_str()).collect()
+    }
+
+    #[test]
+    fn a_long_track_opens_whats_next_only_near_its_crossfade() {
+        let held = Duration::from_secs(30);
+
+        assert!(!preopen_due(held, Some(200.0), 6.0));
+        assert!(preopen_due(held, Some(25.0), 6.0));
+        assert!(
+            !preopen_due(held, Some(25.0), 0.0),
+            "no fade, a shorter lead"
+        );
+        assert!(
+            !preopen_due(Duration::from_secs(1), Some(5.0), 6.0),
+            "skipping through opens nothing"
+        );
+        assert!(preopen_due(held, None, 6.0), "no length, opens once held");
+    }
+
+    #[test]
+    fn the_second_entry_opens_only_when_it_plays_before_the_sweep() {
+        let short_next = vec![
+            plugin_row("a", Some(20_000)),
+            plugin_row("b", Some(200_000)),
+        ];
+        assert_eq!(keys(&worth_preopening(short_next, Some(15.0))), ["a", "b"]);
+
+        let long_next = vec![
+            plugin_row("a", Some(200_000)),
+            plugin_row("b", Some(200_000)),
+        ];
+        assert_eq!(keys(&worth_preopening(long_next, Some(15.0))), ["a"]);
+
+        let unknown_next = vec![plugin_row("a", None), plugin_row("b", None)];
+        assert_eq!(keys(&worth_preopening(unknown_next, Some(15.0))), ["a"]);
     }
 
     #[test]

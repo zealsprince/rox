@@ -3339,6 +3339,7 @@ playlists-remove = { $count ->
    *[other] { $count } 曲をプレイリストから削除
 }
 playlists-rename = 名前を変更...
+playlists-reverse-tooltip = 順序を反転
 playlists-title = プレイリスト
 
 ## Queue panel

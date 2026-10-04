@@ -882,7 +882,7 @@ running. Switch it off on the Plugins page before updating its folder.
 
 | What                                                 | Limit                          |
 | ---------------------------------------------------- | ------------------------------ |
-| `hello`                                              | 5 s                            |
+| `hello`                                              | 30 s                           |
 | `source.browse`, `source.search`, later sync pages   | 15 s                           |
 | `source.radio`, `source.link`, `source.lyrics`       | 15 s                           |
 | `source.action`, `source.job`, `source.cancel`       | 15 s                           |

@@ -444,7 +444,7 @@ that reaches a plugin on every OS when rox goes away without a shutdown.
 
 | | Limit | Where |
 |---|---|---|
-| `hello` | 5 s | `Timeouts`, `rox-plugins/src/host.rs:51-62` |
+| `hello` | 30 s | `Timeouts`, `rox-plugins/src/host.rs:53-65` |
 | `source.browse`, `source.search`, each later sync page | 15 s | |
 | A sync's first page | 60 s | |
 | `source.open` | 20 s | |

@@ -37,6 +37,8 @@ pub const STOPPED_AFTER_CRASHES: &str = "Stopped after repeated crashes";
 /// The contract's, as the prototype's measurements left them.
 #[derive(Clone, Copy, Debug)]
 pub struct Timeouts {
+    /// Counted from the spawn, so it covers the interpreter starting and the
+    /// plugin's imports. Those run long on slow machines.
     pub hello: Duration,
     pub listing: Duration,
     /// A sync's first page, where a plugin may list the whole collection to
@@ -51,7 +53,7 @@ pub struct Timeouts {
 impl Default for Timeouts {
     fn default() -> Self {
         Timeouts {
-            hello: Duration::from_secs(5),
+            hello: Duration::from_secs(30),
             listing: Duration::from_secs(15),
             sync_first: Duration::from_secs(60),
             open: Duration::from_secs(20),

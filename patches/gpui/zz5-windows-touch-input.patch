@@ -1,0 +1,1034 @@
+Touch input on Windows: taps click, drags scroll, long presses right-click.
+
+gpui 0.2.2 never looks at WM_POINTER, so touch falls through to Windows'
+legacy handling. That promotes a tap to a mouse click but turns a drag into
+a pan gesture that only scrolls windows with native scrollbars, so on a
+touchscreen nothing in rox scrolled. The backend now consumes touch
+pointers itself and feeds them to a recognizer that speaks the events gpui
+already dispatches:
+
+- A tap is a hover move plus a left click, with its own double-tap window
+  (400ms, 16px) since the system's double-click box is sized for a mouse.
+- A drag past 8px scrolls the container under where it started, locked to
+  its dominant axis, and a fast release coasts on UIScrollView's decay.
+  Touching a fling stops it.
+- Holding still for 500ms and lifting is a right click, which opens context
+  menus. Holding and then moving is a left-button drag from the original
+  point, which is how sliders, splitters and drag-and-drop work by touch.
+
+Pen and touchpad pointers keep the default handling. One contact is
+followed at a time and pinch isn't recognized. Upstream gpui has since
+grown a portable TouchGestureRecognizer behind its own touch events, with
+the Windows side still in review (zed #64205); on a bump that carries both,
+this patch goes and rox moves to their long-press and touch-drag APIs.
+
+Diffed against the tree with every earlier patch applied.
+
+--- a/Cargo.toml	2026-10-03 23:03:45.069494391 -0600
++++ b/Cargo.toml	2026-10-03 23:07:02.042216787 -0600
+@@ -736,6 +736,7 @@
+     "Win32_UI_HiDpi",
+     "Win32_UI_Input_Ime",
+     "Win32_UI_Input_KeyboardAndMouse",
++    "Win32_UI_Input_Pointer",
+     "Win32_UI_Shell",
+     "Win32_UI_Shell_Common",
+     "Win32_UI_Shell_PropertiesSystem",
+--- a/src/platform.rs	2026-10-03 23:03:45.069137007 -0600
++++ b/src/platform.rs	2026-10-03 23:06:41.592834293 -0600
+@@ -34,6 +34,11 @@
+ #[cfg(target_os = "windows")]
+ mod windows;
+ 
++// rox patch: raw touch contacts to mouse and scroll events. Built under test
++// on every host so the recognizer's tests run in CI.
++#[cfg(any(target_os = "windows", test))]
++pub(crate) mod touch_gestures;
++
+ // rox patch: the shader registry tests in `window.rs` translate their composed
+ // modules, and the translator lives behind this module. Re-exported under a
+ // name of its own rather than opening `windows` up, since a `pub(crate) mod
+--- a/src/platform/touch_gestures.rs	1969-12-31 17:00:00.000000000 -0700
++++ b/src/platform/touch_gestures.rs	1969-12-31 17:00:00.000000000 -0700
+@@ -0,0 +1,722 @@
++//! rox patch: turns raw touch contacts into the mouse and scroll-wheel events
++//! gpui 0.2.2 already dispatches, so every element written against the mouse
++//! works under a finger. A backend that receives contacts feeds this and
++//! dispatches what comes back; nothing above the platform layer sees touch.
++//!
++//! Taps click, a drag past the slop scrolls and coasts on release, after
++//! upstream gpui's later `TouchGestureRecognizer`. Upstream hands long presses
++//! to element listeners 0.2.2 doesn't have, so here a long press that lifts in
++//! place is a right click and one that then moves is a left-button drag.
++
++use std::collections::VecDeque;
++use std::mem;
++use std::time::{Duration, Instant};
++
++use smallvec::SmallVec;
++
++use crate::{
++    Axis, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
++    PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
++};
++
++const TOUCH_SLOP: Pixels = px(8.);
++const LONG_PRESS: Duration = Duration::from_millis(500);
++const MULTI_TAP_INTERVAL: Duration = Duration::from_millis(400);
++const MULTI_TAP_SLOP: Pixels = px(16.);
++
++/// Release velocity looks this far back. A longer gap between samples means
++/// the finger had stopped, so anything before it isn't the release speed.
++const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
++const VELOCITY_STOPPED_GAP: Duration = Duration::from_millis(40);
++const VELOCITY_MAX_SAMPLES: usize = 20;
++
++/// Fling feel in pixels per second, with `UIScrollView`'s normal deceleration.
++const MIN_FLING_VELOCITY: f32 = 50.;
++const MAX_FLING_VELOCITY: f32 = 8000.;
++const MOMENTUM_DECAY_PER_MS: f32 = 0.998;
++const MOMENTUM_STOP_VELOCITY: f32 = 10.;
++
++pub(crate) type TouchOutput = SmallVec<[PlatformInput; 3]>;
++
++/// Follows one contact at a time. Further fingers are ignored until it lifts.
++#[derive(Default)]
++pub(crate) struct TouchGestures {
++    state: State,
++    momentum: Option<Momentum>,
++    last_tap: Option<Tap>,
++}
++
++#[derive(Default)]
++enum State {
++    #[default]
++    Idle,
++    /// Still inside the slop: a tap, a pan or a long press.
++    Pending(Contact),
++    /// Landed on a running fling and stopped it. Never a tap: it pans from its
++    /// first movement, on whichever axis that movement picks.
++    Caught(Contact),
++    Panning(Contact, Axis),
++    Dragging(Contact),
++}
++
++struct Contact {
++    id: u32,
++    start: Point<Pixels>,
++    started_at: Instant,
++    last: Point<Pixels>,
++    samples: VecDeque<(Instant, Point<Pixels>)>,
++}
++
++struct Tap {
++    position: Point<Pixels>,
++    at: Instant,
++    count: usize,
++}
++
++/// A fling in progress. Distance is a closed-form curve of elapsed time, so a
++/// late tick lands further along the same curve instead of slowing it down.
++struct Momentum {
++    /// Where the pan started, so the fling keeps scrolling that container.
++    position: Point<Pixels>,
++    direction: Point<f32>,
++    speed: f32,
++    started_at: Instant,
++    emitted: f32,
++}
++
++impl TouchGestures {
++    pub(crate) fn touch_down(
++        &mut self,
++        id: u32,
++        position: Point<Pixels>,
++        now: Instant,
++    ) -> TouchOutput {
++        let mut output = TouchOutput::new();
++        if !matches!(self.state, State::Idle) {
++            return output;
++        }
++
++        let contact = Contact::new(id, position, now);
++        self.state = match self.momentum.take() {
++            Some(momentum) => {
++                output.push(scroll(
++                    momentum.position,
++                    Point::default(),
++                    TouchPhase::Ended,
++                ));
++                State::Caught(contact)
++            }
++            None => State::Pending(contact),
++        };
++        output
++    }
++
++    pub(crate) fn touch_move(
++        &mut self,
++        id: u32,
++        position: Point<Pixels>,
++        now: Instant,
++    ) -> TouchOutput {
++        let mut output = TouchOutput::new();
++        self.state = match mem::take(&mut self.state) {
++            State::Pending(mut contact) if contact.id == id => {
++                contact.record(now, position);
++                let travel = position - contact.start;
++
++                if travel.magnitude() <= f64::from(TOUCH_SLOP.0) {
++                    State::Pending(contact)
++                } else if now.duration_since(contact.started_at) >= LONG_PRESS {
++                    // The press lands where the finger went down, so a slider
++                    // or splitter grabs what was under it, then catches up.
++                    output.push(mouse_down(MouseButton::Left, contact.start, 1));
++                    output.push(mouse_move(position, Some(MouseButton::Left)));
++                    State::Dragging(contact)
++                } else {
++                    // The first step carries the whole travel, so the content
++                    // doesn't lag the finger by the slop.
++                    let axis = dominant_axis(travel);
++                    output.push(scroll(
++                        contact.start,
++                        lock_to_axis(travel, axis),
++                        TouchPhase::Started,
++                    ));
++                    State::Panning(contact, axis)
++                }
++            }
++
++            State::Caught(mut contact) if contact.id == id => {
++                let travel = position - contact.last;
++                contact.record(now, position);
++
++                if travel == Point::default() {
++                    State::Caught(contact)
++                } else {
++                    let axis = dominant_axis(travel);
++                    output.push(scroll(
++                        contact.start,
++                        lock_to_axis(travel, axis),
++                        TouchPhase::Started,
++                    ));
++                    State::Panning(contact, axis)
++                }
++            }
++
++            State::Panning(mut contact, axis) if contact.id == id => {
++                let delta = lock_to_axis(position - contact.last, axis);
++                contact.record(now, position);
++
++                if delta != Point::default() {
++                    output.push(scroll(contact.start, delta, TouchPhase::Moved));
++                }
++                State::Panning(contact, axis)
++            }
++
++            State::Dragging(mut contact) if contact.id == id => {
++                contact.last = position;
++                output.push(mouse_move(position, Some(MouseButton::Left)));
++                State::Dragging(contact)
++            }
++
++            other => other,
++        };
++        output
++    }
++
++    pub(crate) fn touch_up(
++        &mut self,
++        id: u32,
++        position: Point<Pixels>,
++        now: Instant,
++    ) -> TouchOutput {
++        let mut output = TouchOutput::new();
++        match mem::take(&mut self.state) {
++            State::Pending(contact) if contact.id == id => {
++                // Move first so hover lands on what was tapped and stays there,
++                // which is also what reveals hover-only controls on a finger.
++                output.push(mouse_move(position, None));
++
++                if now.duration_since(contact.started_at) >= LONG_PRESS {
++                    output.push(mouse_down(MouseButton::Right, position, 1));
++                    output.push(mouse_up(MouseButton::Right, position, 1));
++                } else {
++                    let count = self.tap_count(position, now);
++                    output.push(mouse_down(MouseButton::Left, position, count));
++                    output.push(mouse_up(MouseButton::Left, position, count));
++                }
++            }
++
++            State::Caught(contact) if contact.id == id => {}
++
++            State::Panning(contact, axis) if contact.id == id => {
++                // The release isn't recorded as a sample: it usually repeats
++                // the last position with a later time, which drags the
++                // estimate toward zero.
++                let delta = lock_to_axis(position - contact.last, axis);
++                output.push(scroll(contact.start, delta, TouchPhase::Ended));
++
++                let velocity = lock_velocity(contact.velocity(now), axis);
++                let speed = velocity.x.hypot(velocity.y);
++                if speed >= MIN_FLING_VELOCITY {
++                    self.momentum = Some(Momentum {
++                        position: contact.start,
++                        direction: point(velocity.x / speed, velocity.y / speed),
++                        speed: speed.min(MAX_FLING_VELOCITY),
++                        started_at: now,
++                        emitted: 0.,
++                    });
++                }
++            }
++
++            State::Dragging(contact) if contact.id == id => {
++                output.push(mouse_up(MouseButton::Left, position, 1));
++            }
++
++            other => self.state = other,
++        }
++        output
++    }
++
++    /// The OS took the contact away mid-gesture. A drag still gets its release
++    /// so nothing is left holding a pressed button.
++    pub(crate) fn touch_cancel(&mut self, id: u32) -> TouchOutput {
++        let mut output = TouchOutput::new();
++        match mem::take(&mut self.state) {
++            State::Pending(contact) | State::Caught(contact) if contact.id == id => {}
++
++            State::Panning(contact, _) if contact.id == id => {
++                output.push(scroll(contact.start, Point::default(), TouchPhase::Ended));
++            }
++
++            State::Dragging(contact) if contact.id == id => {
++                output.push(mouse_up(MouseButton::Left, contact.last, 1));
++            }
++
++            other => self.state = other,
++        }
++        output
++    }
++
++    pub(crate) fn has_momentum(&self) -> bool {
++        self.momentum.is_some()
++    }
++
++    /// Advances a fling to `now`. The last step carries `TouchPhase::Ended`.
++    pub(crate) fn tick(&mut self, now: Instant) -> Option<PlatformInput> {
++        let momentum = self.momentum.as_mut()?;
++
++        // v(t) = v0 * decay^t with t in ms, run until v drops below the stop
++        // speed. Distance is its integral.
++        let ln_decay = MOMENTUM_DECAY_PER_MS.ln();
++        let duration_ms = (MOMENTUM_STOP_VELOCITY / momentum.speed).ln() / ln_decay;
++        let elapsed_ms = now.duration_since(momentum.started_at).as_secs_f32() * 1000.;
++        let t = elapsed_ms.min(duration_ms);
++        let distance = momentum.speed / 1000. * (MOMENTUM_DECAY_PER_MS.powf(t) - 1.) / ln_decay;
++
++        let step = (distance - momentum.emitted).max(0.);
++        momentum.emitted = momentum.emitted.max(distance);
++        let delta = point(
++            px(momentum.direction.x * step),
++            px(momentum.direction.y * step),
++        );
++        let position = momentum.position;
++
++        if elapsed_ms >= duration_ms {
++            self.momentum = None;
++            Some(scroll(position, delta, TouchPhase::Ended))
++        } else {
++            Some(scroll(position, delta, TouchPhase::Moved))
++        }
++    }
++
++    fn tap_count(&mut self, position: Point<Pixels>, now: Instant) -> usize {
++        let count = match &self.last_tap {
++            Some(tap)
++                if now.duration_since(tap.at) <= MULTI_TAP_INTERVAL
++                    && (position - tap.position).magnitude() <= f64::from(MULTI_TAP_SLOP.0) =>
++            {
++                tap.count + 1
++            }
++            _ => 1,
++        };
++
++        self.last_tap = Some(Tap {
++            position,
++            at: now,
++            count,
++        });
++        count
++    }
++}
++
++impl Contact {
++    fn new(id: u32, position: Point<Pixels>, now: Instant) -> Self {
++        Self {
++            id,
++            start: position,
++            started_at: now,
++            last: position,
++            samples: VecDeque::from([(now, position)]),
++        }
++    }
++
++    fn record(&mut self, now: Instant, position: Point<Pixels>) {
++        self.last = position;
++
++        // A repeated position isn't movement. Recording it would make a
++        // finger still travelling at lift-off look like it slowed down.
++        if self
++            .samples
++            .back()
++            .is_some_and(|(_, last)| *last == position)
++        {
++            return;
++        }
++
++        if self.samples.len() == VELOCITY_MAX_SAMPLES {
++            self.samples.pop_front();
++        }
++        self.samples.push_back((now, position));
++    }
++
++    /// Least-squares velocity over the recent unbroken run of samples, in
++    /// pixels per second.
++    fn velocity(&self, now: Instant) -> Point<f32> {
++        let Some(&(newest, _)) = self.samples.back() else {
++            return Point::default();
++        };
++        if now.duration_since(newest) > VELOCITY_STOPPED_GAP {
++            return Point::default();
++        }
++
++        let mut run = Vec::with_capacity(self.samples.len());
++        let mut later = newest;
++        for &(at, position) in self.samples.iter().rev() {
++            if newest.duration_since(at) > VELOCITY_WINDOW
++                || later.duration_since(at) > VELOCITY_STOPPED_GAP
++            {
++                break;
++            }
++            run.push((-newest.duration_since(at).as_secs_f32(), position));
++            later = at;
++        }
++        if run.len() < 2 {
++            return Point::default();
++        }
++
++        let n = run.len() as f32;
++        let mean_t = run.iter().map(|(t, _)| t).sum::<f32>() / n;
++        let mean_x = run.iter().map(|(_, p)| p.x.0).sum::<f32>() / n;
++        let mean_y = run.iter().map(|(_, p)| p.y.0).sum::<f32>() / n;
++        let spread = run.iter().map(|(t, _)| (t - mean_t).powi(2)).sum::<f32>();
++        if spread <= f32::EPSILON {
++            return Point::default();
++        }
++
++        let slope = |mean: f32, coord: fn(&Point<Pixels>) -> f32| {
++            run.iter()
++                .map(|(t, p)| (t - mean_t) * (coord(p) - mean))
++                .sum::<f32>()
++                / spread
++        };
++        point(slope(mean_x, |p| p.x.0), slope(mean_y, |p| p.y.0))
++    }
++}
++
++fn dominant_axis(delta: Point<Pixels>) -> Axis {
++    if delta.x.0.abs() <= delta.y.0.abs() {
++        Axis::Vertical
++    } else {
++        Axis::Horizontal
++    }
++}
++
++fn lock_to_axis(mut delta: Point<Pixels>, axis: Axis) -> Point<Pixels> {
++    match axis {
++        Axis::Vertical => delta.x = px(0.),
++        Axis::Horizontal => delta.y = px(0.),
++    }
++    delta
++}
++
++fn lock_velocity(mut velocity: Point<f32>, axis: Axis) -> Point<f32> {
++    match axis {
++        Axis::Vertical => velocity.x = 0.,
++        Axis::Horizontal => velocity.y = 0.,
++    }
++    velocity
++}
++
++fn scroll(position: Point<Pixels>, delta: Point<Pixels>, touch_phase: TouchPhase) -> PlatformInput {
++    PlatformInput::ScrollWheel(ScrollWheelEvent {
++        position,
++        delta: ScrollDelta::Pixels(delta),
++        modifiers: Modifiers::default(),
++        touch_phase,
++    })
++}
++
++fn mouse_move(position: Point<Pixels>, pressed_button: Option<MouseButton>) -> PlatformInput {
++    PlatformInput::MouseMove(MouseMoveEvent {
++        position,
++        pressed_button,
++        modifiers: Modifiers::default(),
++    })
++}
++
++fn mouse_down(button: MouseButton, position: Point<Pixels>, click_count: usize) -> PlatformInput {
++    PlatformInput::MouseDown(MouseDownEvent {
++        button,
++        position,
++        modifiers: Modifiers::default(),
++        click_count,
++        first_mouse: false,
++    })
++}
++
++fn mouse_up(button: MouseButton, position: Point<Pixels>, click_count: usize) -> PlatformInput {
++    PlatformInput::MouseUp(MouseUpEvent {
++        button,
++        position,
++        modifiers: Modifiers::default(),
++        click_count,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn at(start: Instant, ms: u64) -> Instant {
++        start + Duration::from_millis(ms)
++    }
++
++    fn pos(x: f32, y: f32) -> Point<Pixels> {
++        point(px(x), px(y))
++    }
++
++    fn scroll_delta(input: &PlatformInput) -> (Point<Pixels>, TouchPhase) {
++        match input {
++            PlatformInput::ScrollWheel(ScrollWheelEvent {
++                delta: ScrollDelta::Pixels(delta),
++                touch_phase,
++                ..
++            }) => (*delta, *touch_phase),
++            other => panic!("expected a pixel scroll, got {other:?}"),
++        }
++    }
++
++    fn assert_scroll(input: &PlatformInput, delta: Point<Pixels>, phase: TouchPhase) {
++        let (actual_delta, actual_phase) = scroll_delta(input);
++        assert_eq!(actual_delta, delta);
++        assert_eq!(mem::discriminant(&actual_phase), mem::discriminant(&phase));
++    }
++
++    fn button_events(output: &TouchOutput) -> Vec<(&'static str, MouseButton, usize)> {
++        output
++            .iter()
++            .filter_map(|input| match input {
++                PlatformInput::MouseDown(e) => Some(("down", e.button, e.click_count)),
++                PlatformInput::MouseUp(e) => Some(("up", e.button, e.click_count)),
++                _ => None,
++            })
++            .collect()
++    }
++
++    /// A pan that moves `step` pixels down every 10ms and lifts after `steps`.
++    fn swipe(gestures: &mut TouchGestures, start: Instant, step: f32, steps: u64) -> Instant {
++        gestures.touch_down(1, pos(100., 100.), start);
++        for i in 1..=steps {
++            gestures.touch_move(1, pos(100., 100. + step * i as f32), at(start, i * 10));
++        }
++        let lift = at(start, steps * 10 + 5);
++        gestures.touch_up(1, pos(100., 100. + step * steps as f32), lift);
++        lift
++    }
++
++    #[test]
++    fn tap_hovers_then_left_clicks() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        assert!(gestures.touch_down(1, pos(10., 10.), start).is_empty());
++        assert!(
++            gestures
++                .touch_move(1, pos(13., 12.), at(start, 30))
++                .is_empty()
++        );
++        let output = gestures.touch_up(1, pos(13., 12.), at(start, 80));
++
++        assert!(matches!(
++            output[0],
++            PlatformInput::MouseMove(MouseMoveEvent {
++                pressed_button: None,
++                ..
++            })
++        ));
++        assert_eq!(
++            button_events(&output),
++            [("down", MouseButton::Left, 1), ("up", MouseButton::Left, 1)]
++        );
++    }
++
++    #[test]
++    fn quick_second_tap_counts_as_double() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(10., 10.), start);
++        gestures.touch_up(1, pos(10., 10.), at(start, 60));
++        gestures.touch_down(2, pos(18., 14.), at(start, 200));
++        let output = gestures.touch_up(2, pos(18., 14.), at(start, 260));
++        assert_eq!(button_events(&output)[0], ("down", MouseButton::Left, 2));
++
++        gestures.touch_down(3, pos(18., 14.), at(start, 1000));
++        let output = gestures.touch_up(3, pos(18., 14.), at(start, 1050));
++        assert_eq!(button_events(&output)[0], ("down", MouseButton::Left, 1));
++    }
++
++    #[test]
++    fn drag_past_slop_scrolls_the_whole_travel_on_one_axis() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(100., 100.), start);
++        assert!(
++            gestures
++                .touch_move(1, pos(102., 105.), at(start, 10))
++                .is_empty()
++        );
++
++        let output = gestures.touch_move(1, pos(103., 112.), at(start, 20));
++        assert_eq!(output.len(), 1);
++        assert_scroll(&output[0], pos(0., 12.), TouchPhase::Started);
++
++        let output = gestures.touch_move(1, pos(110., 120.), at(start, 30));
++        assert_scroll(&output[0], pos(0., 8.), TouchPhase::Moved);
++    }
++
++    #[test]
++    fn scrolls_at_the_start_point() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(100., 100.), start);
++        let output = gestures.touch_move(1, pos(100., 300.), at(start, 20));
++        let PlatformInput::ScrollWheel(event) = &output[0] else {
++            panic!("expected a scroll");
++        };
++        assert_eq!(event.position, pos(100., 100.));
++    }
++
++    #[test]
++    fn a_finger_that_stopped_before_lifting_does_not_fling() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(100., 100.), start);
++        gestures.touch_move(1, pos(100., 200.), at(start, 50));
++        let output = gestures.touch_up(1, pos(100., 200.), at(start, 400));
++
++        assert!(matches!(scroll_delta(&output[0]).1, TouchPhase::Ended));
++        assert!(!gestures.has_momentum());
++    }
++
++    #[test]
++    fn a_fast_release_coasts_forward_and_ends() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        let lift = swipe(&mut gestures, start, 20., 8);
++        assert!(gestures.has_momentum());
++
++        let mut travelled = 0.;
++        let mut ended = false;
++        for frame in 1..2000 {
++            let Some(input) = gestures.tick(at(lift, frame * 16)) else {
++                break;
++            };
++            let (delta, phase) = scroll_delta(&input);
++            assert_eq!(delta.x, px(0.));
++            assert!(delta.y.0 >= 0.);
++            travelled += delta.y.0;
++            if matches!(phase, TouchPhase::Ended) {
++                ended = true;
++                break;
++            }
++        }
++
++        assert!(ended);
++        assert!(!gestures.has_momentum());
++        // 2000 px/s under 0.998/ms decay coasts about 1000px.
++        assert!((900. ..1100.).contains(&travelled), "travelled {travelled}");
++    }
++
++    #[test]
++    fn touching_a_fling_stops_it_and_never_taps() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        let lift = swipe(&mut gestures, start, 20., 8);
++        let output = gestures.touch_down(2, pos(50., 50.), at(lift, 100));
++        assert_scroll(&output[0], pos(0., 0.), TouchPhase::Ended);
++        assert!(!gestures.has_momentum());
++
++        assert!(
++            gestures
++                .touch_up(2, pos(50., 50.), at(lift, 150))
++                .is_empty()
++        );
++    }
++
++    #[test]
++    fn a_caught_fling_takes_its_axis_from_the_new_finger() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        let lift = swipe(&mut gestures, start, 20., 8);
++        gestures.touch_down(2, pos(50., 50.), at(lift, 100));
++        let output = gestures.touch_move(2, pos(54., 50.), at(lift, 110));
++        assert_scroll(&output[0], pos(4., 0.), TouchPhase::Started);
++    }
++
++    #[test]
++    fn long_press_in_place_right_clicks() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(10., 10.), start);
++        gestures.touch_move(1, pos(12., 11.), at(start, 300));
++        let output = gestures.touch_up(1, pos(12., 11.), at(start, 650));
++
++        assert_eq!(
++            button_events(&output),
++            [
++                ("down", MouseButton::Right, 1),
++                ("up", MouseButton::Right, 1)
++            ]
++        );
++    }
++
++    #[test]
++    fn long_press_then_move_drags_with_the_left_button() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(10., 10.), start);
++        let output = gestures.touch_move(1, pos(40., 10.), at(start, 600));
++        let PlatformInput::MouseDown(down) = &output[0] else {
++            panic!("expected a press");
++        };
++        assert_eq!(
++            (down.button, down.position),
++            (MouseButton::Left, pos(10., 10.))
++        );
++        assert!(matches!(
++            output[1],
++            PlatformInput::MouseMove(MouseMoveEvent {
++                pressed_button: Some(MouseButton::Left),
++                ..
++            })
++        ));
++
++        let output = gestures.touch_up(1, pos(60., 10.), at(start, 700));
++        assert_eq!(button_events(&output), [("up", MouseButton::Left, 1)]);
++    }
++
++    #[test]
++    fn a_cancelled_drag_still_releases_the_button() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(10., 10.), start);
++        gestures.touch_move(1, pos(40., 10.), at(start, 600));
++        let output = gestures.touch_cancel(1);
++        assert_eq!(button_events(&output), [("up", MouseButton::Left, 1)]);
++    }
++
++    #[test]
++    fn a_second_finger_is_ignored() {
++        let start = Instant::now();
++        let mut gestures = TouchGestures::default();
++
++        gestures.touch_down(1, pos(10., 10.), start);
++        assert!(
++            gestures
++                .touch_down(2, pos(80., 80.), at(start, 20))
++                .is_empty()
++        );
++        assert!(
++            gestures
++                .touch_move(2, pos(80., 200.), at(start, 40))
++                .is_empty()
++        );
++        assert!(
++            gestures
++                .touch_up(2, pos(80., 200.), at(start, 60))
++                .is_empty()
++        );
++
++        let output = gestures.touch_up(1, pos(10., 10.), at(start, 80));
++        assert_eq!(button_events(&output)[0], ("down", MouseButton::Left, 1));
++    }
++}
+--- a/src/platform/windows/events.rs	2026-10-03 23:03:45.067794484 -0600
++++ b/src/platform/windows/events.rs	2026-10-03 23:12:36.880624650 -0600
+@@ -1,4 +1,7 @@
+-use std::rc::Rc;
++use std::{
++    rc::Rc,
++    time::{Duration, Instant},
++};
+ 
+ use ::util::ResultExt;
+ use anyhow::Context as _;
+@@ -6,18 +9,18 @@
+     Win32::{
+         Foundation::*,
+         Graphics::Gdi::*,
+-        System::SystemServices::*,
++        System::{Performance::*, SystemServices::*},
+         UI::{
+             Controls::*,
+             HiDpi::*,
+-            Input::{Ime::*, KeyboardAndMouse::*},
++            Input::{Ime::*, KeyboardAndMouse::*, Pointer::*},
+             WindowsAndMessaging::*,
+         },
+     },
+     core::PCWSTR,
+ };
+ 
+-use crate::*;
++use crate::{platform::touch_gestures::TouchOutput, *};
+ 
+ pub(crate) const WM_GPUI_CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
+ pub(crate) const WM_GPUI_CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
+@@ -28,6 +31,7 @@
+ pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
+ 
+ const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
++const TOUCH_MOMENTUM_TIMER_ID: usize = 2;
+ const AUTO_HIDE_TASKBAR_THICKNESS_PX: i32 = 1;
+ 
+ impl WindowsWindowInner {
+@@ -92,6 +96,13 @@
+             }
+             WM_MOUSEWHEEL => self.handle_mouse_wheel_msg(handle, wparam, lparam),
+             WM_MOUSEHWHEEL => self.handle_mouse_horizontal_wheel_msg(handle, wparam, lparam),
++            // rox patch: gpui 0.2.2 left touch to Windows, which promotes taps
++            // to clicks but turns a drag into a pan gesture nothing handles, so
++            // nothing scrolled. Touch pointers are consumed here instead.
++            WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP => {
++                self.handle_pointer_msg(handle, msg, wparam)
++            }
++            WM_POINTERCAPTURECHANGED => self.handle_pointer_capture_changed_msg(wparam),
+             WM_SYSKEYDOWN => self.handle_syskeydown_msg(handle, wparam, lparam),
+             WM_SYSKEYUP => self.handle_syskeyup_msg(handle, wparam, lparam),
+             WM_SYSCOMMAND => self.handle_system_command(wparam),
+@@ -244,6 +255,8 @@
+                 runnable.run();
+             }
+             self.handle_paint_msg(handle)
++        } else if wparam.0 == TOUCH_MOMENTUM_TIMER_ID {
++            self.handle_touch_momentum_tick(handle)
+         } else {
+             None
+         }
+@@ -613,6 +626,83 @@
+         if handled { Some(0) } else { Some(1) }
+     }
+ 
++    fn handle_pointer_msg(&self, handle: HWND, msg: u32, wparam: WPARAM) -> Option<isize> {
++        let pointer_id = wparam.loword() as u32;
++        let mut pointer_type = POINTER_INPUT_TYPE::default();
++        unsafe { GetPointerType(pointer_id, &mut pointer_type) }.ok()?;
++        // Pen and touchpad keep the default handling, which promotes them to
++        // mouse messages.
++        if pointer_type != PT_TOUCH {
++            return None;
++        }
++
++        let samples = touch_samples(handle, pointer_id, msg, self.state.borrow().scale_factor);
++        let canceled = u32::from(wparam.hiword()) & POINTER_MESSAGE_FLAG_CANCELED != 0;
++
++        let mut lock = self.state.borrow_mut();
++        let mut output = TouchOutput::new();
++        if canceled {
++            output.extend(lock.touch_gestures.touch_cancel(pointer_id));
++        } else {
++            for (at, position) in samples {
++                output.extend(match msg {
++                    WM_POINTERDOWN => lock.touch_gestures.touch_down(pointer_id, position, at),
++                    WM_POINTERUP => lock.touch_gestures.touch_up(pointer_id, position, at),
++                    _ => lock.touch_gestures.touch_move(pointer_id, position, at),
++                });
++            }
++        }
++        let coasting = lock.touch_gestures.has_momentum();
++        drop(lock);
++
++        self.dispatch_touch_output(output);
++        if coasting {
++            start_touch_momentum_timer(handle);
++        }
++
++        // Consumed even when nothing was dispatched, or Windows promotes the
++        // contact to mouse input on top of what was already sent.
++        Some(0)
++    }
++
++    fn handle_pointer_capture_changed_msg(&self, wparam: WPARAM) -> Option<isize> {
++        let pointer_id = wparam.loword() as u32;
++        let output = self
++            .state
++            .borrow_mut()
++            .touch_gestures
++            .touch_cancel(pointer_id);
++        self.dispatch_touch_output(output);
++        None
++    }
++
++    fn handle_touch_momentum_tick(&self, handle: HWND) -> Option<isize> {
++        let mut lock = self.state.borrow_mut();
++        let input = lock.touch_gestures.tick(Instant::now());
++        let coasting = lock.touch_gestures.has_momentum();
++        drop(lock);
++
++        if !coasting {
++            unsafe { KillTimer(Some(handle), TOUCH_MOMENTUM_TIMER_ID).log_err() };
++        }
++        self.dispatch_touch_output(input.into_iter().collect());
++        Some(0)
++    }
++
++    fn dispatch_touch_output(&self, output: TouchOutput) {
++        if output.is_empty() {
++            return;
++        }
++
++        let Some(mut func) = self.state.borrow_mut().callbacks.input.take() else {
++            return;
++        };
++        for input in output {
++            func(input);
++        }
++        self.state.borrow_mut().callbacks.input = Some(func);
++    }
++
+     fn retrieve_caret_position(&self) -> Option<POINT> {
+         self.with_input_handler_and_scale_factor(|input_handler, scale_factor| {
+             let caret_range = input_handler.selected_text_range(false)?;
+@@ -1568,3 +1658,82 @@
+         .log_err();
+     }
+ }
++
++/// rox patch: the contact's positions since the last message, oldest first.
++/// Windows coalesces the moves between messages, and a fling measured from the
++/// newest point alone comes out too slow or not at all.
++fn touch_samples(
++    handle: HWND,
++    pointer_id: u32,
++    msg: u32,
++    scale_factor: f32,
++) -> Vec<(Instant, Point<Pixels>)> {
++    let mut info = POINTER_INFO::default();
++    if unsafe { GetPointerInfo(pointer_id, &mut info) }
++        .log_err()
++        .is_none()
++    {
++        return Vec::new();
++    }
++
++    let mut history = vec![info];
++    if msg == WM_POINTERUPDATE && info.historyCount > 1 {
++        let mut count = info.historyCount;
++        let mut entries = vec![POINTER_INFO::default(); count as usize];
++        if unsafe { GetPointerInfoHistory(pointer_id, &mut count, Some(entries.as_mut_ptr())) }
++            .is_ok()
++        {
++            entries.truncate(count as usize);
++            history = entries;
++        }
++    }
++
++    let now = Instant::now();
++    let mut counter = 0i64;
++    let mut frequency = 0i64;
++    let clock = unsafe {
++        QueryPerformanceCounter(&mut counter).is_ok()
++            && QueryPerformanceFrequency(&mut frequency).is_ok()
++    };
++
++    // The history lists the newest entry first.
++    history
++        .iter()
++        .rev()
++        .map(|entry| {
++            // The raw location skips Windows' prediction, which jitters a pan.
++            let mut position = entry.ptPixelLocationRaw;
++            unsafe { ScreenToClient(handle, &mut position).ok().log_err() };
++
++            let stamp = entry.PerformanceCount as i64;
++            let at = if clock && frequency > 0 && stamp > 0 && stamp <= counter {
++                let age = (counter - stamp) as f64 / frequency as f64;
++                now.checked_sub(Duration::from_secs_f64(age)).unwrap_or(now)
++            } else {
++                now
++            };
++
++            (
++                at,
++                logical_point(position.x as f32, position.y as f32, scale_factor),
++            )
++        })
++        .collect()
++}
++
++fn start_touch_momentum_timer(handle: HWND) {
++    let ret = unsafe {
++        SetTimer(
++            Some(handle),
++            TOUCH_MOMENTUM_TIMER_ID,
++            USER_TIMER_MINIMUM,
++            None,
++        )
++    };
++    if ret == 0 {
++        log::error!(
++            "unable to create touch momentum timer: {}",
++            std::io::Error::last_os_error()
++        );
++    }
++}
+--- a/src/platform/windows/window.rs	2026-10-03 23:03:45.067996285 -0600
++++ b/src/platform/windows/window.rs	2026-10-03 23:07:33.652529177 -0600
+@@ -26,7 +26,7 @@
+     core::*,
+ };
+ 
+-use crate::*;
++use crate::{platform::touch_gestures::TouchGestures, *};
+ 
+ pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
+ 
+@@ -53,6 +53,8 @@
+     pub click_state: ClickState,
+     pub current_cursor: Option<HCURSOR>,
+     pub nc_button_pressed: Option<u32>,
++    // rox patch: see `touch_gestures`.
++    pub touch_gestures: TouchGestures,
+ 
+     pub display: WindowsDisplay,
+     fullscreen: Option<StyleAndBounds>,
+@@ -152,6 +154,7 @@
+             click_state,
+             current_cursor,
+             nc_button_pressed,
++            touch_gestures: TouchGestures::default(),
+             display,
+             fullscreen,
+             initial_placement,

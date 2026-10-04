@@ -172,7 +172,9 @@ pub fn check_on_launch(cx: &mut gpui::App) {
     let settings = Settings::load();
     // Seed the chip even when no check is due.
     refresh_available(&settings);
-    if !auto_check_due(&settings) {
+    // A first launch hasn't been asked yet: the welcome window offers the
+    // toggle, and the next launch honours the answer.
+    if rox_core::settings::first_run() || !auto_check_due(&settings) {
         return;
     }
     let auto_download = settings.download_updates;

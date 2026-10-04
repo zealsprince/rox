@@ -85,6 +85,7 @@ struct WelcomeWindow {
     /// Read on open and again once the offer is answered.
     menu: MenuStatus,
     menu_error: Option<String>,
+    check_updates: bool,
     /// One handle for every stage, reset on each step.
     scroll: ScrollHandle,
     /// Nothing here takes typing; this puts the arrow keys on the dispatch path.
@@ -95,6 +96,7 @@ struct WelcomeWindow {
 
 impl WelcomeWindow {
     fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let settings = Settings::load();
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         let focus = cx.focus_handle();
         window.focus(&focus);
@@ -123,9 +125,10 @@ impl WelcomeWindow {
             hovered_tile: None,
             tiles_width: 458.,
             stage: 0,
-            language: Settings::load().language.clone(),
+            language: settings.language.clone(),
             menu: desktop_integration::status(),
             menu_error: None,
+            check_updates: settings.check_updates,
             scroll: ScrollHandle::new(),
             focus,
             _backdrop_changed,
@@ -136,6 +139,12 @@ impl WelcomeWindow {
         set_language(language.as_deref(), cx);
         self.language = language.clone();
         Settings::update(move |s| s.language = language);
+        cx.notify();
+    }
+
+    fn set_check_updates(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.check_updates = on;
+        Settings::update(move |s| s.check_updates = on);
         cx.notify();
     }
 
@@ -676,7 +685,8 @@ impl Render for WelcomeWindow {
                 .child(line(stage.lead()));
 
             // The language switch sits on the first page: nobody should have to find
-            // the settings window in a language that isn't theirs.
+            // the settings window in a language that isn't theirs. The update check
+            // sits beside it, so it's offered before the first launch check runs.
             let heading = div()
                 .flex()
                 .flex_row()
@@ -686,12 +696,35 @@ impl Render for WelcomeWindow {
                 .gap(tokens::SPACE_MD)
                 .child(heading_copy)
                 .when(first, |d| {
-                    d.child(div().flex_none().child(panel::language_picker(
-                        "welcome-language",
-                        self.language.clone(),
-                        Self::set_language,
-                        cx,
-                    )))
+                    d.child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_MD)
+                            .child(
+                                div()
+                                    .id("welcome-check-updates")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(tokens::SPACE_SM)
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("settings-application-check-updates"))
+                                    .child(panel::toggle(
+                                        self.check_updates,
+                                        Self::set_check_updates,
+                                        cx,
+                                    )),
+                            )
+                            .child(panel::language_picker(
+                                "welcome-language",
+                                self.language.clone(),
+                                Self::set_language,
+                                cx,
+                            )),
+                    )
                 });
 
             let body = div()

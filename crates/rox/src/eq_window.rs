@@ -11,9 +11,9 @@ use std::time::Instant;
 
 use gpui::{
     App, Bounds, Context, Div, Entity, Global, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Path, PathPromptOptions, Pixels, Point, ScrollWheelEvent, SharedString,
-    Subscription, WeakEntity, Window, WindowHandle, canvas, div, fill, point, prelude::*, px,
-    relative, size,
+    MouseUpEvent, Path, PathPromptOptions, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    SharedString, Subscription, WeakEntity, Window, WindowHandle, canvas, div, fill, point,
+    prelude::*, px, relative, size,
 };
 use gpui_component::Root;
 use gpui_component::Sizable as _;
@@ -780,20 +780,22 @@ impl EqWindow {
                 cx.notify();
             }),
         )
-        .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+        .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
             let Some(band) = this.grabbed.or_else(|| this.band_at(event.position)) else {
                 return;
             };
-            let delta = event.delta.pixel_delta(window.line_height()).y;
-            if delta == px(0.) {
+            let lines = match event.delta {
+                ScrollDelta::Lines(lines) => lines.y,
+                ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 20.0,
+            };
+            if lines == 0.0 {
                 return;
             }
-            let step = if f32::from(delta) > 0.0 {
-                1.12
-            } else {
-                1.0 / 1.12
-            };
-            player::set_eq_q(band, player::eq_q(band) * step, cx);
+
+            // A wheel notch is 3 lines and one 1.12 step. Touch and trackpad
+            // pixels arrive as a stream of small deltas, so they scale in
+            // proportion instead of stepping once per event.
+            player::set_eq_q(band, player::eq_q(band) * 1.12f32.powf(lines / 3.0), cx);
             this.selected = band;
             cx.notify();
         }))

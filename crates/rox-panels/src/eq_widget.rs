@@ -270,6 +270,7 @@ impl EqWidgetPanel {
             enabled: eq.enabled,
             active,
             peak: eq.peak(),
+            spatial: spatial_source(),
             hint: hint(click, eq.enabled),
         };
         div().size_full().bg(palette::bg_root()).child(
@@ -304,12 +305,30 @@ fn hint(click: EqClick, enabled: bool) -> Option<SharedString> {
     }
 }
 
+/// What the convolver is running, named as the Spatial tab's picker names
+/// it. None while it's off.
+fn spatial_source() -> Option<SharedString> {
+    if !player::convolver_enabled() {
+        return None;
+    }
+
+    match player::convolver_profile() {
+        player::BuiltinHesuviProfile::None => Some(
+            player::convolver_ir_name()
+                .map(SharedString::from)
+                .unwrap_or_else(|| rox_i18n::t!("eq-convolver-no-file")),
+        ),
+        profile => Some(profile.display_name().into()),
+    }
+}
+
 /// Opaque like the popup menus: it floats over panel content with no backdrop.
 #[derive(Clone)]
 struct EqTooltip {
     enabled: bool,
     active: usize,
     peak: f32,
+    spatial: Option<SharedString>,
     hint: Option<SharedString>,
 }
 
@@ -343,6 +362,10 @@ impl Render for EqTooltip {
                 rox_i18n::t!("eq-status-off")
             })
             .child(div().text_color(palette::text_muted()).child(shape))
+            .when_some(self.spatial.clone(), |d, source| {
+                d.child(rox_i18n::t!("eq-spatial-on"))
+                    .child(div().text_color(palette::text_muted()).child(source))
+            })
             .when_some(self.hint.clone(), |d, hint| {
                 d.child(div().text_color(palette::text_muted()).child(hint))
             })

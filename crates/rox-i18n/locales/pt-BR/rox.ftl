@@ -1698,6 +1698,7 @@ stats-count-menu = Contagem
     .description = Sobre qual janela recente o número conta as audições; a lista que aparece ao passar o mouse sempre mostra todas
 stats-empty-all = Nenhuma audição ainda
 stats-empty-range = Nenhuma audição neste período
+stats-empty-repeats = Nenhuma música foi ouvida mais de uma vez neste período
 stats-library-held = { $tracks } faixas, { $size } na memória
 stats-now = Agora
 stats-open = Abrir estatísticas
@@ -1728,12 +1729,14 @@ stats-section-recent-listens = Audições recentes
 stats-section-top-albums = Top álbuns
 stats-section-top-artists = Top artistas
 stats-section-top-genres = Top gêneros
+stats-section-top-tracks = Top faixas
 stats-show-change = Mostrar a variação
     .description = Adicionar um selo com a comparação entre este período e o anterior, para cima ou para baixo; Desde sempre não tem nada atrás
 stats-show-number = Mostrar o número
     .description = Desenhar a contagem ao lado do ícone; desligado, fica só o ícone e as contagens vêm ao passar o mouse
 stats-title = Widget de estatísticas
 stats-tooltip-listens = Audições
+stats-unknown-row = Não está na sua biblioteca; toque pelo painel Histórico
 stats-window-title = rox - Estatísticas
 
 ## Limpar o histórico de audição: a confirmação que a janela de
@@ -2003,6 +2006,7 @@ eq-shape-active = { $count ->
    *[other] { $count } bandas fora do plano, pico { $peak } dB
 }
 eq-shape-flat = Plano, todas as bandas em 0 dB
+eq-spatial-on = Espacial ligado
 eq-status-off = Equalizador desligado
 eq-status-on = Equalizador ligado
 eq-title = Widget de EQ
@@ -2323,6 +2327,7 @@ lastfm-import-history = Lendo o histórico de scrobbles
 lastfm-import-plays-counts = Lendo as contagens de reprodução
 lastfm-import-plays-writing = Escrevendo o histórico de reprodução
 lastfm-import-plays-dated = , { $count } com data real
+lastfm-import-plays-unknown = , { $count } de músicas fora da sua biblioteca
 lastfm-import-plays-stopped-history = Interrompido após { $count } scrobbles
 
 ## Tag tools
@@ -3296,6 +3301,7 @@ metadata-field-source = Origem
 metadata-source-local = Local
 metadata-source-radio = Rádio
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = Desconhecido
 metadata-field-station = Estação
 metadata-field-homepage = Site
 metadata-field-disc = Disco
@@ -3368,6 +3374,13 @@ history-view-most = Mais tocadas
 history-view-never = Nunca tocadas
 history-view-recent = Tocadas recentemente
 history-view-recent-short = Recentes
+history-play-from = Tocar de
+history-unknown-row = Não está na sua biblioteca; clique duas vezes para tocar por um plugin
+history-finding = Buscando { $title } em { $source }...
+history-not-found = { $source } não tem resultado para { $title }
+history-find-failed = Não foi possível buscar em { $source }: { $reason }
+history-no-plugins = Nenhum plugin em execução consegue buscar esta música
+history-pick-plugin = Escolha um plugin em Tocar de, no menu desta linha
 history-view-row = Visualização
     .description = Que recorte do registro de audições o painel mostra
 

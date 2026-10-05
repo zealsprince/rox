@@ -290,17 +290,19 @@ where
         tx.prepare_cached("SELECT 1 FROM listens WHERE track_id = ?1 AND played_at = ?2")?;
     let mut track_stmt = tx.prepare_cached(
         "SELECT title, artist, album, genre,
-                CASE WHEN sub = 0 THEN path ELSE path || '#' || sub END
+                CASE WHEN sub = 0 THEN path ELSE path || '#' || sub END, source
          FROM tracks WHERE id = ?1",
     )?;
     let mut insert_stmt = tx.prepare_cached(
-        "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path, origin)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO listens
+            (track_id, played_at, title, artist, album, genre, path, source, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
 
     // One lookup per track: a heavy account scrobbles the same few hundred
     // tracks thousands of times.
-    let mut tags: HashMap<i64, (String, String, String, String, String)> = HashMap::new();
+    type Snapshot = (String, String, String, String, String, String);
+    let mut tags: HashMap<i64, Snapshot> = HashMap::new();
     let mut added = 0usize;
     let total = plays.len();
     for (index, &(track_id, played_at)) in plays.iter().enumerate() {
@@ -320,6 +322,7 @@ where
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 });
                 // A track gone since the match waits for the next run rather than landing
@@ -328,7 +331,7 @@ where
                 slot.insert(row)
             }
         };
-        let (title, artist, album, genre, path) = entry.clone();
+        let (title, artist, album, genre, path, source) = entry.clone();
         insert_stmt.execute(rusqlite::params![
             track_id,
             played_at,
@@ -337,6 +340,7 @@ where
             album,
             genre,
             path,
+            source,
             ORIGIN_SCROBBLE,
         ])?;
         added += 1;
@@ -532,16 +536,96 @@ pub fn recent(
     rows.collect()
 }
 
+/// Where a page of [`recent_page`] stopped reading: the last event it looked
+/// at, kept or not. The listen id breaks ties inside one second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    played_at: i64,
+    id: i64,
+}
+
+impl Cursor {
+    /// Above every event, for the first page.
+    pub const START: Cursor = Cursor {
+        played_at: i64::MAX,
+        id: i64::MAX,
+    };
+}
+
+/// Up to `limit` events below `after`, newest first, keeping only the rows
+/// `keep` passes. A filter can't be pushed into SQL without forking the
+/// matcher's folding, so the scan streams the index and stops once the page
+/// fills. None for the cursor means the record ran out.
+pub fn recent_page(
+    conn: &Connection,
+    after: Cursor,
+    limit: usize,
+    mut keep: impl FnMut(&TrackPlays) -> bool,
+) -> rusqlite::Result<(Vec<TrackPlays>, Option<Cursor>)> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT l.track_id, 1, l.played_at, {SNAPSHOT_COLUMNS}, l.id
+         FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
+         WHERE (l.played_at, l.id) < (?1, ?2)
+         ORDER BY l.played_at DESC, l.id DESC"
+    ))?;
+    let mut rows = stmt.query([after.played_at, after.id])?;
+
+    let mut page = Vec::new();
+    let mut last = None;
+    while page.len() < limit {
+        let Some(row) = rows.next()? else {
+            return Ok((page, None));
+        };
+
+        let plays = track_plays_row(row)?;
+        last = Some(Cursor {
+            played_at: plays.last_played,
+            id: row.get(18)?,
+        });
+        if keep(&plays) {
+            page.push(plays);
+        }
+    }
+    Ok((page, last))
+}
+
+/// One group per song. A station's listens split by the song that was on,
+/// since the snapshot is what the row shows. The song keys are null off a
+/// live row, so everything else groups by id.
+const SONG_GROUP: &str = "l.track_id,
+         CASE WHEN t.remote_live THEN l.artist END,
+         CASE WHEN t.remote_live THEN l.title END";
+
 /// Bare snapshot columns come from the MAX(played_at) row, per SQLite's
 /// documented min/max behavior.
 pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT l.track_id, COUNT(*) AS plays, MAX(l.played_at), {SNAPSHOT_COLUMNS}
          FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
-         GROUP BY l.track_id
+         GROUP BY {SONG_GROUP}
          ORDER BY plays DESC, MAX(l.played_at) DESC LIMIT ?1"
     ))?;
     let rows = stmt.query_map([limit as i64], track_plays_row)?;
+    rows.collect()
+}
+
+/// Plays per song within [since, until), most first. A song heard once
+/// isn't a favourite yet, so it stays off the list.
+pub fn top_tracks(
+    conn: &Connection,
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<TrackPlays>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT l.track_id, COUNT(*) AS plays, MAX(l.played_at), {SNAPSHOT_COLUMNS}
+         FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
+         WHERE l.played_at >= ?1 AND l.played_at < ?2
+         GROUP BY {SONG_GROUP}
+         HAVING COUNT(*) > 1
+         ORDER BY plays DESC, MAX(l.played_at) DESC LIMIT ?3"
+    ))?;
+    let rows = stmt.query_map([since, until, limit as i64], track_plays_row)?;
     rows.collect()
 }
 
@@ -908,6 +992,8 @@ pub fn tally(conn: &Connection) -> rusqlite::Result<Tally> {
 }
 
 /// The one delete in an append-only module; only ever behind a confirm.
+/// Unknown rows exist only to hold imported listens, so the ones left
+/// holding none go too.
 pub fn clear(conn: &Connection, what: Clear) -> rusqlite::Result<usize> {
     let gone = match what {
         Clear::Imported => {
@@ -915,6 +1001,8 @@ pub fn clear(conn: &Connection, what: Clear) -> rusqlite::Result<usize> {
         }
         Clear::Everything => conn.execute("DELETE FROM listens", [])?,
     };
+    crate::unknown::prune(conn)?;
+
     Ok(gone)
 }
 
@@ -958,6 +1046,57 @@ mod tests {
     fn listen(conn: &Connection, path: &str, at: i64) {
         let listen = listen_for_path(conn, path, at).unwrap().unwrap();
         append(conn, &listen).unwrap();
+    }
+
+    #[test]
+    fn recent_pages_walk_the_whole_record() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "rock"),
+                track("/m/2.mp3", "Two", "B", "Second", "jazz"),
+            ],
+        )
+        .unwrap();
+        // Two listens share second 200, so the page edge has to split a tie.
+        for (path, at) in [
+            ("/m/1.mp3", 100),
+            ("/m/2.mp3", 200),
+            ("/m/1.mp3", 200),
+            ("/m/2.mp3", 300),
+            ("/m/1.mp3", 400),
+        ] {
+            listen(&conn, path, at);
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor = Some(Cursor::START);
+        while let Some(after) = cursor {
+            let (page, next) = recent_page(&conn, after, 2, |_| true).unwrap();
+            seen.extend(page.iter().map(|r| (r.title.clone(), r.last_played)));
+            cursor = next;
+        }
+        assert_eq!(
+            seen,
+            [
+                ("One".to_string(), 400),
+                ("Two".to_string(), 300),
+                ("One".to_string(), 200),
+                ("Two".to_string(), 200),
+                ("One".to_string(), 100),
+            ],
+            "every listen once, newest first, ties by insertion"
+        );
+
+        let (page, next) = recent_page(&conn, Cursor::START, 10, |r| r.artist == "B").unwrap();
+        assert_eq!(
+            page.len(),
+            2,
+            "the filter reaches past what a page would hold"
+        );
+        assert_eq!(next, None, "and a scan that hit the bottom says so");
     }
 
     #[test]
@@ -2024,12 +2163,64 @@ mod tests {
         );
 
         let played = most_played(&conn, 10).unwrap();
-        let station_row = played
+        let mut station_rows: Vec<_> = played
             .iter()
-            .find(|r| r.track_id == station_id)
-            .expect("the station's plays roll up");
-        assert_eq!(station_row.plays, 2);
-        assert_eq!(station_row.title, "Firestarter");
+            .filter(|r| r.track_id == station_id)
+            .map(|r| (r.title.as_str(), r.plays))
+            .collect();
+        station_rows.sort();
+        assert_eq!(
+            station_rows,
+            [("Breathe", 1), ("Firestarter", 1)],
+            "each station song counts its own plays, not the station's"
+        );
+    }
+
+    #[test]
+    fn top_tracks_rank_songs_within_the_range() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+
+        // The early listen falls before the range.
+        for at in [50, 100, 150, 400] {
+            listen(&conn, "/m/1.mp3", at);
+        }
+
+        let mut station = track("https://host/stream", "The Station", "Radio", "", "");
+        station.remote_url = "https://host/stream".into();
+        station.remote_live = true;
+        store::upsert_source_rows(&mut conn, "radio", &[station]).unwrap();
+        let station_id = store::id_for_path(&conn, "radio", "https://host/stream")
+            .unwrap()
+            .unwrap();
+
+        for (at, title) in [(200, "Breathe"), (250, "Firestarter"), (300, "Breathe")] {
+            append(
+                &conn,
+                &Listen {
+                    track_id: station_id,
+                    played_at: at,
+                    title: title.into(),
+                    artist: "The Prodigy".into(),
+                    album: "The Station".into(),
+                    genre: String::new(),
+                    path: String::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        let top = top_tracks(&conn, 100, 1000, 10).unwrap();
+        assert_eq!(
+            top.iter()
+                .map(|r| (r.title.as_str(), r.plays))
+                .collect::<Vec<_>>(),
+            [("One", 3), ("Breathe", 2)],
+            "each station song ranks on its own, the range clips the file, and a single play doesn't rank"
+        );
+        assert_eq!(top[1].track_id, station_id);
+        assert!(top[1].live);
     }
 
     mod by_source {

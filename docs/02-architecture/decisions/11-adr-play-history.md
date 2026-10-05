@@ -1,6 +1,6 @@
 # ADR 11: Append-only listen events in the library store
 
-**Status:** Decided
+**Status:** Decided; amended below
 
 Decision: a listen is appended as an event to a table in the existing library database.
 The event holds the track id, the timestamp, and a small snapshot of the identifying tags
@@ -38,3 +38,25 @@ browse, where a query runs on every character typed. Stats are read when a panel
 and when a listen is appended, thousands of times less often. SQL over an indexed events
 table is quick enough at that rate, and the projection's sync machinery, already the main
 library risk, is left alone.
+
+**Amended 2026-10-04: a scrobble with no track gets a row of its own.** The Last.fm import
+files each dated scrobble as a listen on the track it names. One that named no library
+track was dropped, and since a rerun only asks for scrobbles newer than the last, adding
+the album later never brought those plays back.
+
+Now such a scrobble lands on an Unknown row: a `tracks` row under the reserved source
+`unknown`, one per song, its path the folded artist and title so case and accent variants
+share it (`rox-library/src/unknown.rs`). It never plays and never loads into the
+projection, so browse and search can't reach it. The history reads it through the same
+SQL as any other row. Playlists and ratings refuse it, and a play request drops it the
+way it drops a deleted id.
+
+Two things move its listens to a real track. After a scan or a watched-file reindex,
+`relink` (`rox-services/src/unknown.rs`) matches every Unknown row against the local
+tracks with the loved-tracks import's name rules, and the copy played most takes them.
+When a plugin search finds and plays the song, `adopt` hands them to the plugin's row.
+Either way the listens take the new row's source and path, keep the tags they were heard
+with, and the Unknown row is deleted. A listen the new row already holds at the same
+second is the same play counted twice, rox's record and Last.fm's echo of it, and is
+dropped. That's the one delete of a listen outside a confirmed clear. With no Unknown row
+in the library, the relink is a single indexed probe.

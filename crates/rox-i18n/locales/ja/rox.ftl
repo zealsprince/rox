@@ -1660,6 +1660,7 @@ stats-count-menu = 集計
     .description = 数字がどの期間の再生数を数えるか。ホバーの一覧には常に全期間が出る
 stats-empty-all = 再生の記録がまだありません
 stats-empty-range = この期間の再生はありません
+stats-empty-repeats = この期間に2回以上再生された曲はありません
 stats-library-held = { $tracks } 曲、メモリ使用 { $size }
 stats-now = 現在
 stats-open = 統計を開く
@@ -1689,12 +1690,14 @@ stats-section-recent-listens = 最近の再生
 stats-section-top-albums = よく聴くアルバム
 stats-section-top-artists = よく聴くアーティスト
 stats-section-top-genres = よく聴くジャンル
+stats-section-top-tracks = よく聴く曲
 stats-show-change = 増減を表示
     .description = その期間が一つ前の期間と比べて増えたか減ったかのチップを添える。全期間には比べる相手がない
 stats-show-number = 数字を表示
     .description = アイコンの横に件数を描く。オフならアイコンだけになり、件数はホバーで出る
 stats-title = 統計ウィジェット
 stats-tooltip-listens = 再生数
+stats-unknown-row = ライブラリにありません。履歴パネルから再生できます
 stats-window-title = rox - 統計
 
 ## 再生履歴のクリア。統計ウィンドウとストレージページの両方が出す確認
@@ -1960,6 +1963,7 @@ eq-shape-active = { $count ->
    *[other] { $count } バンドがフラットから外れ、ピーク { $peak } dB
 }
 eq-shape-flat = フラット、全バンド 0 dB
+eq-spatial-on = 空間オーディオ オン
 eq-status-off = イコライザー オフ
 eq-status-on = イコライザー オン
 eq-title = EQ ウィジェット
@@ -2259,6 +2263,7 @@ lastfm-import-history = スクロブル履歴を読み込み中
 lastfm-import-plays-counts = 再生回数を読み込み中
 lastfm-import-plays-writing = 再生履歴を書き込み中
 lastfm-import-plays-dated = 、うち { $count } 件は実際の日時
+lastfm-import-plays-unknown = 、{ $count } 件はライブラリにない曲
 lastfm-import-plays-stopped-history = { $count } 件のスクロブルで停止
 
 ## Tag tools
@@ -3173,6 +3178,7 @@ metadata-field-source = ソース
 metadata-source-local = ローカル
 metadata-source-radio = ラジオ
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = 不明
 metadata-field-station = 局
 metadata-field-homepage = サイト
 metadata-field-disc = ディスク
@@ -3245,6 +3251,13 @@ history-view-most = よく聴く曲
 history-view-never = 未再生
 history-view-recent = 最近再生した曲
 history-view-recent-short = 最近
+history-play-from = 再生元
+history-unknown-row = ライブラリにない曲。ダブルクリックでプラグインから再生する
+history-finding = { $source } で { $title } を検索中...
+history-not-found = { $source } に { $title } は見つからない
+history-find-failed = { $source } を検索できない: { $reason }
+history-no-plugins = この曲を検索できるプラグインが動いていない
+history-pick-plugin = この行のメニューの再生元からプラグインを選ぶ
 history-view-row = 表示
     .description = 再生記録のどの切り口をパネルに出すか
 

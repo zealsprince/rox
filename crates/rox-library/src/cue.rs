@@ -77,6 +77,9 @@ pub enum Origin {
     Radio,
     /// A plugin's catalog (ADR 30), `plugin:<id>`.
     Plugin,
+    /// A song the history knows by name only ([`crate::unknown`]). Never
+    /// plays.
+    Unknown,
 }
 
 impl Origin {
@@ -88,6 +91,8 @@ impl Origin {
             Origin::Subsonic
         } else if source.starts_with(PLUGIN_PREFIX) {
             Origin::Plugin
+        } else if source == crate::unknown::SOURCE {
+            Origin::Unknown
         } else {
             Origin::Local
         }
@@ -777,6 +782,7 @@ FILE "Urban Hymns.flac" WAVE
         assert_eq!(Origin::of("radio"), Origin::Radio);
         assert_eq!(Origin::of("subsonic:9f2a1c"), Origin::Subsonic);
         assert_eq!(Origin::of("plugin:demo"), Origin::Plugin);
+        assert_eq!(Origin::of("unknown"), Origin::Unknown);
 
         assert_eq!(Origin::of("unknown:abc"), Origin::Local);
         assert_eq!(Origin::of(""), Origin::Local);

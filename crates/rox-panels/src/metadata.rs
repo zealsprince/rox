@@ -2267,6 +2267,8 @@ impl MetadataPanel {
             // A removed plugin's rows keep the raw id, which at least names it.
             Origin::Plugin => SharedString::from(rox_library::cue::source_label(&source)),
 
+            Origin::Unknown => rox_i18n::t!("metadata-source-unknown"),
+
             Origin::Local => SharedString::from(source.clone()),
         };
         self.source_label = Some((source, label.clone()));

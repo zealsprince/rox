@@ -129,7 +129,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on gpui primitives, generative visuals only as GPU shaders | Decided; shader API added by its amendment, chains by 23 |
 | [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided; deferral ended by 19 |
 | [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |
-| [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |
+| [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided; Unknown rows for unmatched scrobbles added by its amendment |
 | [12 - Design tokens](decisions/12-adr-design-tokens.md) | Non-color tokens as consts beside the palette | Decided |
 | [13 - Panel theming](decisions/13-adr-panel-theming.md) | Sparse palette override per panel in config | Decided |
 | [14 - Online providers](decisions/14-adr-online-providers.md) | Per-domain provider traits for online enrichment | Decided |

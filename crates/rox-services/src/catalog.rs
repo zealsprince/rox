@@ -21,6 +21,7 @@ use rox_library::projection::{self, Builder, Patch, Projection, RowView};
 use rox_library::rusqlite::{self, Connection};
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
+use rox_library::unknown;
 use rox_library::watch::{LibraryWatcher, WatchBatch};
 use rox_library::writer;
 
@@ -1033,6 +1034,7 @@ impl Library {
 
     /// Anything that plays what it resolved uses this, not
     /// [`paths_for`](Self::paths_for): a cue track's key points at its own span.
+    /// Unknown rows drop out like deleted ids: they have nothing to play.
     pub fn keys_for(&self, ids: &[i64]) -> Result<Vec<TrackKey>, String> {
         let Some(conn) = &self.conn else {
             return Ok(Vec::new());
@@ -1041,7 +1043,7 @@ impl Library {
         for &id in ids {
             // One query per id: a dropped id would misalign a batch.
             let row = store::key_for_id(conn, id).map_err(|e| e.to_string())?;
-            if let Some(row) = row {
+            if let Some(row) = row.filter(|row| &*row.source != unknown::SOURCE) {
                 keys.push(TrackKey {
                     source: row.source,
                     path: row.path,
@@ -1096,7 +1098,7 @@ impl Library {
 
     /// What file actions (editors, rename, convert, reveal) take: a server
     /// song or a station has no file. An id with no projection row yet stays
-    /// in.
+    /// in, unless it's an Unknown row, which the projection never holds.
     pub fn local_ids(&self, ids: &[i64]) -> Vec<i64> {
         let Some(projection) = &self.projection else {
             return ids.to_vec();
@@ -1106,7 +1108,7 @@ impl Library {
             .copied()
             .filter(|id| {
                 let Some(&row) = self.row_by_id.get(id) else {
-                    return true;
+                    return !self.is_unknown(*id);
                 };
 
                 projection.source.get(row as usize).is_none_or(|&sym| {
@@ -1114,6 +1116,15 @@ impl Library {
                 })
             })
             .collect()
+    }
+
+    /// An Unknown row ([`unknown`]), read off the store since the projection
+    /// never holds one.
+    pub fn is_unknown(&self, id: i64) -> bool {
+        self.conn
+            .as_ref()
+            .and_then(|conn| store::key_for_id(conn, id).ok().flatten())
+            .is_some_and(|key| &*key.source == unknown::SOURCE)
     }
 
     /// Off the projection, so the readings are the interned ones. All empty
@@ -1197,6 +1208,19 @@ impl Library {
         self.listen_query(|conn| listens::recent(conn, since, until, limit))
     }
 
+    /// A failed read ends the record rather than retrying the same page forever.
+    pub fn recent_page(
+        &self,
+        after: listens::Cursor,
+        limit: usize,
+        keep: impl FnMut(&listens::TrackPlays) -> bool,
+    ) -> (Vec<listens::TrackPlays>, Option<listens::Cursor>) {
+        self.conn
+            .as_ref()
+            .and_then(|conn| listens::recent_page(conn, after, limit, keep).ok())
+            .unwrap_or_default()
+    }
+
     pub fn listen_summary(&self, id: i64, since: i64) -> Option<listens::TrackSummary> {
         self.conn
             .as_ref()
@@ -1212,6 +1236,10 @@ impl Library {
 
     pub fn most_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
         self.listen_query(|conn| listens::most_played(conn, limit))
+    }
+
+    pub fn top_tracks(&self, since: i64, until: i64, limit: usize) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::top_tracks(conn, since, until, limit))
     }
 
     pub fn never_played(
@@ -1755,6 +1783,10 @@ impl Library {
     /// through the write queue.
     pub fn rate(&mut self, id: i64, rating: u8, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
+        // A rating belongs to a track, and an Unknown row has none behind it.
+        if self.is_unknown(id) {
+            return;
+        }
         if let Err(e) = store::set_rating(conn, id, rating) {
             self.status = format!("library: {e}").into();
             cx.notify();
@@ -1934,7 +1966,7 @@ impl Library {
                 // reload is owed.
                 let mut owed = false;
                 match result {
-                    Ok((loaded, summary, watch)) => {
+                    Ok((loaded, summary, watch, relinked)) => {
                         match loaded {
                             Loaded::Full {
                                 projection,
@@ -1960,6 +1992,11 @@ impl Library {
                                 this.status =
                                     status_line(total, summary.as_ref(), watch.as_ref()).into();
                             }
+                        }
+                        // A patch only re-reads the counts of rows it touched,
+                        // and the copy that took the listens may not be one.
+                        if relinked > 0 {
+                            this.reload_plays(cx);
                         }
                         // An aborted walk never finished, so it doesn't stamp
                         // last_scan.
@@ -2134,6 +2171,7 @@ struct Touched {
     removed: Vec<i64>,
 }
 
+/// The last element is how many Unknown listens moved onto a local copy.
 #[allow(clippy::type_complexity)]
 fn load(
     db_path: &std::path::Path,
@@ -2141,9 +2179,11 @@ fn load(
     exclude: &Exclusions,
     progress: &ScanProgress,
     patch: Option<bool>,
-) -> Result<(Loaded, Option<ScanSummary>, Option<WatchSummary>), rox_library::rusqlite::Error> {
+) -> Result<(Loaded, Option<ScanSummary>, Option<WatchSummary>, usize), rox_library::rusqlite::Error>
+{
     let mut watch = None;
     let mut touched = Touched::default();
+    let mut relinked = 0;
     let summary = match refresh {
         Refresh::Load => None,
         Refresh::Scan(roots) => {
@@ -2168,6 +2208,7 @@ fn load(
                     break;
                 }
             }
+            relinked = relink_unknown(&mut conn);
             Some(summary)
         }
         Refresh::Remove(root) => {
@@ -2186,6 +2227,7 @@ fn load(
             scanner::reindex(&mut conn, &paths)?;
             touched.changed.extend(store::ids_for_paths(&conn, &paths)?);
             touched.changed.extend(cue_neighbours(&conn, &paths)?);
+            relinked = relink_unknown(&mut conn);
             None
         }
         Refresh::Prune(paths) => {
@@ -2211,6 +2253,7 @@ fn load(
                 exclude,
                 &mut touched,
             )?);
+            relinked = relink_unknown(&mut conn);
             None
         }
     };
@@ -2243,6 +2286,7 @@ fn load(
                 },
                 summary,
                 watch,
+                relinked,
             ));
         }
     }
@@ -2255,7 +2299,17 @@ fn load(
         },
         summary,
         watch,
+        relinked,
     ))
+}
+
+/// [`crate::unknown::relink`] once files arrived. A failure costs the relink,
+/// never the refresh: the next scan tries again.
+fn relink_unknown(conn: &mut Connection) -> usize {
+    crate::unknown::relink(conn).unwrap_or_else(|e| {
+        log::warn!("library: moving unknown listens onto local copies: {e}");
+        0
+    })
 }
 
 /// Every row in a directory where one of these paths is a cue sheet. A new

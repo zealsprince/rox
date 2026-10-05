@@ -7,7 +7,6 @@
 //! [`rox_library::playlists::reattach`]: exact after folding, a bracketed
 //! qualifier gets a second look, and anything ambiguous is left for a human.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,9 +16,10 @@ use gpui::{App, Entity, Global, SharedString};
 use rox_library::store;
 
 use rox_core::settings::Settings;
-use rox_net::providers::{agent, net_reason, normalize};
+use rox_net::providers::{agent, net_reason};
 use rox_services::catalog::Library;
 use rox_services::lastfm::Scrobbler;
+use rox_services::names::Index;
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -387,153 +387,9 @@ fn parse_page(text: &str) -> Result<(Vec<Loved>, Pages), String> {
     ))
 }
 
-struct Entry {
-    title: String,
-    /// `title` with bracketed qualifiers dropped first.
-    bare: String,
-    id: i64,
-}
-
-/// Normalized artist to every track filed under it. Shared by both imports.
-pub(crate) struct Index(HashMap<String, Vec<Entry>>);
-
-impl Index {
-    pub(crate) fn build(rows: Vec<(i64, String, String)>) -> Index {
-        let mut index: HashMap<String, Vec<Entry>> = HashMap::new();
-        for (id, artist, title) in rows {
-            let artist = normalize(&artist);
-            if artist.is_empty() {
-                continue;
-            }
-            let folded = normalize(&title);
-            if folded.is_empty() {
-                continue;
-            }
-            index.entry(artist).or_default().push(Entry {
-                bare: bare(&title),
-                title: folded,
-                id,
-            });
-        }
-        Index(index)
-    }
-
-    /// Every library track the name could mean, empty when unsure. All of them:
-    /// a heart goes on every copy, while [`super::plays_import`] picks one.
-    ///
-    /// The bracket-stripped second look only settles on a single title, so a
-    /// studio and a live take that differ by nothing else never match.
-    pub(crate) fn resolve(&self, artist: &str, title: &str) -> Vec<i64> {
-        let Some(entries) = self.0.get(&normalize(artist)) else {
-            return Vec::new();
-        };
-        let want = normalize(title);
-        let exact: Vec<i64> = entries
-            .iter()
-            .filter(|entry| entry.title == want)
-            .map(|entry| entry.id)
-            .collect();
-        if !exact.is_empty() {
-            return exact;
-        }
-        let want = bare(title);
-        if want.is_empty() {
-            return Vec::new();
-        }
-        let near: Vec<&Entry> = entries.iter().filter(|entry| entry.bare == want).collect();
-        let Some(first) = near.first() else {
-            return Vec::new();
-        };
-        if near.iter().any(|entry| entry.title != first.title) {
-            return Vec::new();
-        }
-        near.iter().map(|entry| entry.id).collect()
-    }
-}
-
-pub(crate) fn bare(title: &str) -> String {
-    normalize(&strip_brackets(title))
-}
-
-/// An unclosed group takes the rest of the line with it.
-pub(crate) fn strip_brackets(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut depth = 0usize;
-    for ch in s.chars() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn library() -> Index {
-        Index::build(vec![
-            (1, "Boards of Canada".into(), "Roygbiv".into()),
-            (2, "Boards of Canada".into(), "Olson".into()),
-            (3, "Boards of Canada".into(), "Roygbiv".into()),
-            (
-                4,
-                "Radiohead".into(),
-                "Everything in Its Right Place".into(),
-            ),
-            (5, "Air".into(), "La Femme d'Argent (Live)".into()),
-        ])
-    }
-
-    #[test]
-    fn a_loved_track_hearts_every_copy_the_library_holds() {
-        assert_eq!(
-            library().resolve("Boards of Canada", "Roygbiv"),
-            [1, 3],
-            "one song, both rows"
-        );
-    }
-
-    #[test]
-    fn folding_beats_punctuation_and_case() {
-        assert_eq!(
-            library().resolve("radiohead", "Everything In Its Right Place"),
-            [4]
-        );
-        assert_eq!(library().resolve("BOARDS OF CANADA", "olson!"), [2]);
-    }
-
-    #[test]
-    fn a_bracketed_qualifier_gets_a_second_look_from_either_side() {
-        assert_eq!(
-            library().resolve("Boards of Canada", "Olson (2013 Remaster)"),
-            [2]
-        );
-        assert_eq!(library().resolve("Air", "La Femme d'Argent"), [5]);
-    }
-
-    #[test]
-    fn two_titles_that_differ_only_by_their_qualifier_are_left_alone() {
-        let index = Index::build(vec![
-            (1, "Air".into(), "Sexy Boy".into()),
-            (2, "Air".into(), "Sexy Boy (Live)".into()),
-        ]);
-        assert_eq!(index.resolve("Air", "Sexy Boy"), [1]);
-        assert!(index.resolve("Air", "Sexy Boy (Remastered)").is_empty());
-    }
-
-    #[test]
-    fn an_unknown_name_matches_nothing() {
-        assert!(library().resolve("Aphex Twin", "Xtal").is_empty());
-        assert!(
-            library()
-                .resolve("Boards of Canada", "Dayvan Cowboy")
-                .is_empty()
-        );
-    }
 
     #[test]
     fn a_page_parses_its_tracks_and_its_shape() {

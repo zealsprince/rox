@@ -12,12 +12,13 @@ use std::collections::BTreeMap;
 use super::api_root;
 use crate::providers::{agent, net_reason};
 
-/// No album: the import matches on artist and title, and a scrobble's album
-/// is whatever the submitting client sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scrobble {
     pub artist: String,
     pub title: String,
+    /// Whatever the submitting client sent, empty when it sent none. Display
+    /// only: the import matches on artist and title.
+    pub album: String,
     /// Unix seconds. None for the now-playing row.
     pub played_at: Option<i64>,
 }
@@ -122,6 +123,14 @@ fn scrobble(row: &serde_json::Value) -> Option<Scrobble> {
             _ => string(artist.get("#text")).or_else(|| string(artist.get("name"))),
         })
         .filter(|artist| !artist.is_empty())?;
+    // The album takes the artist's two shapes.
+    let album = row
+        .get("album")
+        .and_then(|album| match album {
+            serde_json::Value::String(name) => Some(name.trim().to_string()),
+            _ => string(album.get("#text")).or_else(|| string(album.get("name"))),
+        })
+        .unwrap_or_default();
 
     let played_at = row
         .get("date")
@@ -133,6 +142,7 @@ fn scrobble(row: &serde_json::Value) -> Option<Scrobble> {
     Some(Scrobble {
         artist,
         title,
+        album,
         played_at,
     })
 }
@@ -209,6 +219,13 @@ mod tests {
     }
 
     #[test]
+    fn the_album_comes_along_and_reads_empty_when_absent() {
+        let page = parse_recent(PAGE).unwrap();
+        assert_eq!(page.scrobbles[0].album, "Music Has the Right to Children");
+        assert_eq!(page.scrobbles[1].album, "", "no album on the row");
+    }
+
+    #[test]
     fn the_now_playing_row_arrives_without_a_time() {
         let page = parse_recent(PAGE).unwrap();
         assert_eq!(page.scrobbles[0].title, "Roygbiv");
@@ -221,11 +238,13 @@ mod tests {
     #[test]
     fn the_extended_form_names_its_artist_differently() {
         let body = r#"{"recenttracks":{"track":
-            {"artist":{"name":"Air","url":"x"},"name":"Sexy Boy","date":{"uts":1600000000}},
+            {"artist":{"name":"Air","url":"x"},"name":"Sexy Boy",
+             "album":{"name":"Moon Safari"},"date":{"uts":1600000000}},
             "@attr":{"total":"1"}}}"#;
         let page = parse_recent(body).unwrap();
         assert_eq!(page.scrobbles.len(), 1);
         assert_eq!(page.scrobbles[0].artist, "Air");
+        assert_eq!(page.scrobbles[0].album, "Moon Safari");
         assert_eq!(
             page.scrobbles[0].played_at,
             Some(1_600_000_000),

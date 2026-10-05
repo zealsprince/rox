@@ -1709,6 +1709,7 @@ stats-count-menu = Conteggio
     .description = Su quale periodo recente il numero conta gli ascolti; l'elenco al passaggio del mouse li mostra sempre tutti
 stats-empty-all = Ancora nessun ascolto
 stats-empty-range = Nessun ascolto in questo intervallo
+stats-empty-repeats = Nessun brano ascoltato più di una volta in questo intervallo
 stats-library-held = { $tracks } brani, { $size } in memoria
 stats-now = Adesso
 stats-open = Apri le statistiche
@@ -1739,12 +1740,14 @@ stats-section-recent-listens = Ascolti recenti
 stats-section-top-albums = Album principali
 stats-section-top-artists = Artisti principali
 stats-section-top-genres = Generi principali
+stats-section-top-tracks = Brani principali
 stats-show-change = Mostra la variazione
     .description = Aggiunge un chip che confronta il periodo con quello precedente, in su o in giù; Sempre non ha niente prima con cui confrontarsi
 stats-show-number = Mostra il numero
     .description = Disegna il conteggio accanto all'icona; disattivato lascia un'icona nuda con i conteggi al passaggio del mouse
 stats-title = Widget statistiche
 stats-tooltip-listens = Ascolti
+stats-unknown-row = Non è nella tua libreria; riproducilo dal pannello Cronologia
 stats-window-title = rox - Statistiche
 
 ## Cancellare la cronologia di ascolto: la conferma che alzano sia la
@@ -2014,6 +2017,7 @@ eq-shape-active = { $count ->
    *[other] { $count } bande non piatte, picco { $peak } dB
 }
 eq-shape-flat = Piatto, ogni banda a 0 dB
+eq-spatial-on = Spaziale acceso
 eq-status-off = Equalizzatore spento
 eq-status-on = Equalizzatore acceso
 eq-title = Widget EQ
@@ -2331,6 +2335,7 @@ lastfm-import-history = Lettura della cronologia degli scrobble
 lastfm-import-plays-counts = Lettura dei conteggi di riproduzione
 lastfm-import-plays-writing = Scrittura della cronologia di riproduzione
 lastfm-import-plays-dated = , { $count } con data reale
+lastfm-import-plays-unknown = , { $count } di brani non presenti nella tua libreria
 lastfm-import-plays-stopped-history = Interrotto dopo { $count } scrobble
 
 ## Tag tools
@@ -3334,6 +3339,7 @@ metadata-field-source = Sorgente
 metadata-source-local = Locale
 metadata-source-radio = Radio
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = Sconosciuto
 metadata-field-station = Stazione
 metadata-field-homepage = Sito web
 metadata-field-disc = Disco
@@ -3406,6 +3412,13 @@ history-view-most = Più ascoltate
 history-view-never = Mai ascoltate
 history-view-recent = Ascoltate di recente
 history-view-recent-short = Recenti
+history-play-from = Riproduci da
+history-unknown-row = Non è nella tua libreria; fai doppio clic per riprodurlo da un plugin
+history-finding = Ricerca di { $title } su { $source }...
+history-not-found = { $source } non ha risultati per { $title }
+history-find-failed = Impossibile cercare su { $source }: { $reason }
+history-no-plugins = Nessun plugin attivo può cercare questo brano
+history-pick-plugin = Scegli un plugin in Riproduci da, nel menu di questa riga
 history-view-row = Vista
     .description = Quale taglio del registro degli ascolti mostra il pannello
 

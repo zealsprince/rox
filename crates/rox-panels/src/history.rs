@@ -20,7 +20,7 @@ use rox_core::QUEUE_CAP;
 use rox_core::fmt::fmt_ago;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
-use rox_library::listens::{NeverOrder, TrackPlays};
+use rox_library::listens::{Cursor, NeverOrder, TrackPlays};
 use rox_library::projection::{FilterSet, TrackFields, parse_query, track_matches};
 use serde::{Deserialize, Serialize};
 
@@ -40,11 +40,16 @@ use crate::track_ui::track_columns::{
 };
 use rox_services::catalog::LocalCopy;
 use rox_services::history::HistoryEvent;
+use rox_services::{plugins, unknown};
 
 const ROW_H: f32 = 30.;
 
-/// How many rows a view reads; the events themselves are unbounded.
+/// How many rows a view reads at a time. Most and Never stop there; Recent
+/// reads another page as the list nears its end.
 const ROWS_CAP: usize = 500;
+
+/// How close to the last row the next page gets asked for.
+const PAGE_AHEAD: usize = 50;
 
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -109,6 +114,17 @@ fn never_sorts() -> Vec<(SharedString, NeverSort)> {
         (rox_i18n::t!("info-item-duration"), NeverSort::Duration),
         (rox_i18n::t!("info-item-rating"), NeverSort::Rating),
         (rox_i18n::t!("history-sort-date-added"), NeverSort::Added),
+    ]
+}
+
+fn views() -> Vec<(SharedString, HistoryView)> {
+    vec![
+        (
+            rox_i18n::t!("history-view-recent-short"),
+            HistoryView::Recent,
+        ),
+        (rox_i18n::t!("history-view-most"), HistoryView::Most),
+        (rox_i18n::t!("history-view-never"), HistoryView::Never),
     ]
 }
 
@@ -191,6 +207,11 @@ enum Row {
     Track(u32),
 }
 
+/// A listen the Last.fm import couldn't match to a track, kept by its names.
+fn is_unknown(t: &TrackPlays) -> bool {
+    t.source == rox_library::unknown::SOURCE
+}
+
 fn group_track(t: &TrackPlays) -> GroupTrack<'_> {
     GroupTrack {
         album: &t.album,
@@ -229,6 +250,10 @@ pub struct HistoryConfig {
     /// The panel's own query, kept while following the shared one.
     #[serde(default)]
     pub query: String,
+    /// The plugin an Unknown row's double click searches: the last one picked
+    /// from Play From.
+    #[serde(default)]
+    pub unknown_source: Option<String>,
 }
 
 // Hand-written so the columns default to the registry set, for a layout
@@ -245,6 +270,7 @@ impl Default for HistoryConfig {
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
+            unknown_source: None,
         }
     }
 }
@@ -273,6 +299,16 @@ pub struct HistoryPanel {
     applied_filter: FilterSet,
     rows: Vec<Row>,
     albums: Vec<track_columns::AlbumGroup>,
+    /// Where the Recent view's next page starts. None once the record runs
+    /// out, and always on the other views.
+    cursor: Option<Cursor>,
+    /// A page is queued, so the next frame doesn't stack another.
+    paging: bool,
+    /// Where the last plugin search for an Unknown row got to, shown in the
+    /// view bar.
+    finding: Option<SharedString>,
+    /// Bumped per search, so a slow answer never plays over a newer click.
+    finding_gen: u64,
     favourites: HashSet<i64>,
     /// Indices into `tracks`, cleared by the refresh that re-reads them.
     selected: HashSet<usize>,
@@ -363,6 +399,10 @@ impl HistoryPanel {
             applied_filter: FilterSet::default(),
             rows: Vec::new(),
             albums: Vec::new(),
+            cursor: None,
+            paging: false,
+            finding: None,
+            finding_gen: 0,
             favourites: HashSet::new(),
             selected: HashSet::new(),
             anchor: None,
@@ -402,52 +442,107 @@ impl HistoryPanel {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        // The Recent view filters as it reads, so the query goes first.
+        self.refresh_query(cx);
+
         let library = self.state.library.read(cx);
-        self.tracks = match self.config.view {
-            HistoryView::Recent => library.recent_listens(0, i64::MAX, ROWS_CAP),
-            HistoryView::Most => library.most_played(ROWS_CAP),
-            HistoryView::Never => library.never_played(
-                self.config.never_sort.order(),
-                self.config.never_desc,
-                ROWS_CAP,
+        let (tracks, cursor) = match self.config.view {
+            // As deep as the list already reached, so a new listen doesn't
+            // drop the reader back to the first page.
+            HistoryView::Recent => {
+                let terms = parse_query(&self.applied_query);
+                let depth = self.tracks.len().max(ROWS_CAP);
+                library.recent_page(Cursor::START, depth, |t| self.matches(&terms, t))
+            }
+            HistoryView::Most => (library.most_played(ROWS_CAP), None),
+            HistoryView::Never => (
+                library.never_played(
+                    self.config.never_sort.order(),
+                    self.config.never_desc,
+                    ROWS_CAP,
+                ),
+                None,
             ),
         };
-        self.readings = self
-            .tracks
-            .iter()
-            .map(|t| (t.track_id, library.sort_names_for_id(t.track_id)))
-            .filter(|(_, sort)| {
-                !sort.title.is_empty() || !sort.artist.is_empty() || !sort.album.is_empty()
-            })
-            .collect();
+        self.favourites = library.favourite_ids();
+        self.tracks = tracks;
+        self.cursor = cursor;
+
+        self.readings.clear();
+        self.locals.clear();
+        self.sources.clear();
+        self.resolve_rows(0, cx);
+
+        self.selected.clear();
+        self.anchor = None;
+        self.menu_row = None;
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Reads the view again from its first page, for a change that makes
+    /// the rows already read meaningless.
+    fn reread(&mut self, cx: &mut Context<Self>) {
+        self.tracks.clear();
+        self.refresh(cx);
+    }
+
+    /// The next page of the Recent view. Rows only join at the end, so the
+    /// selection's indices into `tracks` stay put.
+    fn load_more(&mut self, cx: &mut Context<Self>) {
+        self.paging = false;
+        let Some(after) = self.cursor else {
+            return;
+        };
+
+        let terms = parse_query(&self.applied_query);
+        let (page, cursor) = self
+            .state
+            .library
+            .read(cx)
+            .recent_page(after, ROWS_CAP, |t| self.matches(&terms, t));
+        let start = self.tracks.len();
+        self.tracks.extend(page);
+        self.cursor = cursor;
+
+        self.resolve_rows(start, cx);
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// The per-row lookups for `tracks[start..]`, added to what earlier rows
+    /// already resolved.
+    fn resolve_rows(&mut self, start: usize, cx: &Context<Self>) {
+        let library = self.state.library.read(cx);
+        let fresh = &self.tracks[start..];
+
+        self.readings.extend(
+            fresh
+                .iter()
+                .map(|t| (t.track_id, library.sort_names_for_id(t.track_id)))
+                .filter(|(_, sort)| {
+                    !sort.title.is_empty() || !sort.artist.is_empty() || !sort.album.is_empty()
+                }),
+        );
+
         // A row off a file asks nothing: its own path is already the file.
-        let names: Vec<(&str, &str)> = self
-            .tracks
+        let names: Vec<(&str, &str)> = fresh
             .iter()
             .map(|t| match t.live {
                 true => (t.artist.as_str(), t.title.as_str()),
                 false => ("", ""),
             })
             .collect();
-        self.locals = library.local_copies(&names);
+        self.locals.extend(library.local_copies(&names));
 
-        let mut sources = HashMap::new();
-        for t in &self.tracks {
-            if t.source.is_empty() || sources.contains_key(&t.source) {
+        for t in fresh {
+            if t.source.is_empty() || self.sources.contains_key(&t.source) {
                 continue;
             }
 
-            sources.insert(t.source.clone(), SourceMark::resolve(&t.source));
+            self.sources
+                .insert(t.source.clone(), SourceMark::resolve(&t.source));
         }
-        self.sources = sources;
-
-        self.favourites = library.favourite_ids();
-        self.selected.clear();
-        self.anchor = None;
-        self.menu_row = None;
-        self.refresh_query(cx);
-        self.rebuild_rows();
-        cx.notify();
     }
 
     /// The views are keyed on play counts a rating never touches, and the
@@ -495,8 +590,10 @@ impl HistoryPanel {
     /// this rather than `refresh`.
     fn rebuild_rows(&mut self) {
         let terms = parse_query(&self.applied_query);
+        // The Recent view already filtered as it read.
+        let recent = self.config.view == HistoryView::Recent;
         let visible: Vec<u32> = (0..self.tracks.len() as u32)
-            .filter(|&i| self.matches(&terms, &self.tracks[i as usize]))
+            .filter(|&i| recent || self.matches(&terms, &self.tracks[i as usize]))
             .collect();
         let mut rows = Vec::new();
         let mut albums = Vec::new();
@@ -538,7 +635,7 @@ impl HistoryPanel {
             return;
         }
         self.config.view = view;
-        self.refresh(cx);
+        self.reread(cx);
     }
 
     fn set_never_sort(&mut self, sort: NeverSort, cx: &mut Context<Self>) {
@@ -558,7 +655,7 @@ impl HistoryPanel {
     }
 
     /// Often nowhere: a listen is only recorded once the listen rule is met,
-    /// and a view holds at most [`ROWS_CAP`] rows.
+    /// and a view only holds the rows it has read so far.
     fn playing_row(&self) -> Option<(usize, usize)> {
         let playing = self.playing?;
         self.rows
@@ -675,6 +772,58 @@ impl HistoryPanel {
         cx.notify();
     }
 
+    /// The selection minus Unknown rows, which no track action can use.
+    fn playable_ids(&self) -> Vec<i64> {
+        let unknown: HashSet<i64> = self
+            .selected
+            .iter()
+            .filter_map(|&ti| self.tracks.get(ti))
+            .filter(|t| is_unknown(t))
+            .map(|t| t.track_id)
+            .collect();
+
+        self.selected_track_ids()
+            .into_iter()
+            .filter(|id| !unknown.contains(id))
+            .collect()
+    }
+
+    /// The plugins an Unknown row can be searched on, with the double
+    /// click's pick checked.
+    fn play_from_menu(
+        &self,
+        menu: PopupMenu,
+        ti: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let sources = plugins::searchable_sources();
+        if sources.is_empty() {
+            return menu
+                .item(PopupMenuItem::new(rox_i18n::t!("history-no-plugins")).disabled(true));
+        }
+
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            for (source, label) in sources {
+                let checked = source.clone();
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    move |this: &Self| this.config.unknown_source.as_ref() == Some(&checked),
+                    move |this, cx| this.play_unknown(ti, Some(source.clone()), cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("history-play-from"),
+            submenu,
+        ))
+    }
+
     /// Deduplicated: the Recent view lists a track once per listen.
     fn selected_track_ids(&self) -> Vec<i64> {
         let mut seen = HashSet::new();
@@ -729,9 +878,102 @@ impl HistoryPanel {
         }
     }
 
+    /// An Unknown row has nothing to open, so a plugin searches for the song.
+    /// A Play From pick becomes the double click's plugin too.
+    fn play_unknown(&mut self, ti: usize, picked: Option<String>, cx: &mut Context<Self>) {
+        let Some(t) = self.tracks.get(ti) else {
+            return;
+        };
+
+        let sources = plugins::searchable_sources();
+        if picked.is_some() {
+            self.config.unknown_source = picked.clone();
+            panel::refresh_tab_panel(&self.tab_panel, cx);
+        }
+
+        // A remembered plugin that's since stopped doesn't count.
+        let remembered = self
+            .config
+            .unknown_source
+            .clone()
+            .filter(|source| sources.iter().any(|(id, _)| id == source));
+        let only = (sources.len() == 1).then(|| sources[0].0.clone());
+        let Some(source) = picked.or(remembered).or(only) else {
+            self.finding = Some(match sources.is_empty() {
+                true => rox_i18n::t!("history-no-plugins"),
+                false => rox_i18n::t!("history-pick-plugin"),
+            });
+            cx.notify();
+            return;
+        };
+
+        let label = sources
+            .iter()
+            .find(|(id, _)| *id == source)
+            .map_or_else(|| source.clone(), |(_, label)| label.clone());
+        let (unknown_id, artist, title) = (t.track_id, t.artist.clone(), t.title.clone());
+        self.finding_gen += 1;
+        let generation = self.finding_gen;
+        self.finding = Some(rox_i18n::t!(
+            "history-finding",
+            source = label.clone(),
+            title = title.clone()
+        ));
+        cx.notify();
+
+        let library = self.state.library.clone();
+        let found = plugins::find_track(library.clone(), &source, artist, title.clone(), cx);
+        cx.spawn(async move |this, cx| {
+            let found = found.await;
+            this.update(cx, |this, cx| {
+                if this.finding_gen != generation {
+                    return;
+                }
+
+                this.finding = match found {
+                    Ok(Some(key)) => {
+                        this.state
+                            .player
+                            .update(cx, |player, cx| player.play_at(vec![key.clone()], 0, cx));
+                        // The row's listens follow the song onto the plugin's
+                        // row, so the next click plays it straight away.
+                        let adopted = unknown::adopt(library, unknown_id, key, cx);
+                        cx.spawn(async move |_, _| {
+                            if let Err(e) = adopted.await {
+                                log::warn!("history: moving an unknown row's listens: {e}");
+                            }
+                        })
+                        .detach();
+                        None
+                    }
+
+                    Ok(None) => Some(rox_i18n::t!(
+                        "history-not-found",
+                        source = label,
+                        title = title
+                    )),
+
+                    Err(reason) => Some(rox_i18n::t!(
+                        "history-find-failed",
+                        source = label,
+                        reason = reason
+                    )),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Queues a window around the click, with the view as its timeline. A
     /// track deleted since its event drops out quietly.
     fn play_from(&mut self, ti: usize, cx: &mut Context<Self>) {
+        if self.tracks.get(ti).is_some_and(is_unknown) {
+            self.play_unknown(ti, None, cx);
+            return;
+        }
+
         // The library's copy of a radio listen's song wins. The station would
         // play whatever is on air now.
         if let Some(local) = self.locals.get(ti).and_then(|local| local.as_ref()) {
@@ -794,6 +1036,13 @@ impl HistoryPanel {
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
+        // Deferred: the list is mid-layout, and the page changes its length.
+        if range.end + PAGE_AHEAD >= self.rows.len() && self.cursor.is_some() && !self.paging {
+            self.paging = true;
+            cx.spawn(async move |this, cx| this.update(cx, |this, cx| this.load_more(cx)))
+                .detach();
+        }
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -893,10 +1142,18 @@ impl HistoryPanel {
             row = row.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx));
         }
 
+        // Its path is the song's names, not a file.
+        let unknown = is_unknown(t);
+        if unknown {
+            row = row.tooltip(|window, cx| {
+                Tooltip::new(rox_i18n::t!("history-unknown-row")).build(window, cx)
+            });
+        }
+
         // The song's own cover first, and the station's favicon behind it,
         // keyed on the row's own path.
         let shown = self.column_shown("cover");
-        let station = (!t.path.is_empty()).then(|| std::path::Path::new(&t.path));
+        let station = (!t.path.is_empty() && !unknown).then(|| std::path::Path::new(&t.path));
         let own = local.map(|local| local.path.as_path());
         let mut cover = track_columns::cover_thumb(&self.state, own.or(station), shown, cx);
         if own.is_some() && matches!(cover, Some(Thumb::Missing)) {
@@ -1110,6 +1367,12 @@ impl QueryFilter for HistoryPanel {
         self.config.search = shown;
     }
     fn rebuild_query_view(&mut self, cx: &mut Context<Self>) {
+        // The Recent view filters as it reads, so a new query reads again.
+        if self.config.view == HistoryView::Recent {
+            self.reread(cx);
+            return;
+        }
+
         self.refresh_query(cx);
         self.rebuild_rows();
         cx.notify();
@@ -1171,14 +1434,7 @@ impl PanelSettings for HistoryPanel {
                 rox_i18n::t!("history-view-row"),
                 Some(rox_i18n::t!("history-view-row.description")),
                 panel::choices_shared(
-                    &[
-                        (
-                            rox_i18n::t!("history-view-recent-short"),
-                            HistoryView::Recent,
-                        ),
-                        (rox_i18n::t!("history-view-most"), HistoryView::Most),
-                        (rox_i18n::t!("history-view-never"), HistoryView::Never),
-                    ],
+                    &views(),
                     self.config.view,
                     |this: &mut Self, view, cx| this.set_view(view, cx),
                     cx,
@@ -1419,7 +1675,10 @@ impl HistoryPanel {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)));
         let content = if self.rows.is_empty() {
             // Tracks hidden by the query read differently from an empty record.
-            let message = if !self.tracks.is_empty() {
+            // The Recent view never holds a hidden track, so its query says it.
+            let searched = self.config.view == HistoryView::Recent
+                && (!self.applied_query.trim().is_empty() || !self.applied_filter.is_empty());
+            let message = if !self.tracks.is_empty() || searched {
                 rox_i18n::t!("picker-no-matches")
             } else {
                 match self.config.view {
@@ -1427,57 +1686,71 @@ impl HistoryPanel {
                     _ => rox_i18n::t!("history-empty-recent"),
                 }
             };
-            div().flex_1().min_h_0().flex().flex_col().child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(palette::text_faint())
-                    .child(message),
-            )
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(palette::text_faint())
+                .child(message)
         } else {
             let this = cx.entity().downgrade();
             div()
                 .flex_1()
                 .min_h_0()
-                .flex()
-                .flex_col()
+                .relative()
                 .child(
-                    div()
-                        .flex_none()
-                        .px(tokens::SPACE_SM)
-                        .py(tokens::SPACE_XS)
-                        .border_b_1()
-                        .border_color(palette::border())
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(self.config.view.label()),
+                    uniform_list("history-rows", self.rows.len(), move |range, _, cx| {
+                        this.upgrade()
+                            .map(|this| this.update(cx, |this, cx| this.list_rows(range, cx)))
+                            .unwrap_or_default()
+                    })
+                    .track_scroll(self.scroll.clone())
+                    .size_full(),
                 )
                 .child(
                     div()
-                        .flex_1()
-                        .min_h_0()
-                        .relative()
-                        .child(
-                            uniform_list("history-rows", self.rows.len(), move |range, _, cx| {
-                                this.upgrade()
-                                    .map(|this| {
-                                        this.update(cx, |this, cx| this.list_rows(range, cx))
-                                    })
-                                    .unwrap_or_default()
-                            })
-                            .track_scroll(self.scroll.clone())
-                            .size_full(),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .child(Scrollbar::vertical(&self.scroll)),
-                        ),
+                        .absolute()
+                        .inset_0()
+                        .child(Scrollbar::vertical(&self.scroll)),
                 )
         };
+
+        // Over the empty state too, so an empty view isn't a dead end.
+        let bar = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .px(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
+            .border_b_1()
+            .border_color(palette::border())
+            .text_xs()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(panel::choices_shared(
+                &views(),
+                self.config.view,
+                |this: &mut Self, view, cx| this.set_view(view, cx),
+                cx,
+            ))
+            .children(self.finding.clone().map(|finding| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_right()
+                    .text_color(palette::text_muted())
+                    .child(finding)
+            }));
+        let content = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(bar)
+            .child(content);
+
         // Capture phase runs before any row records itself, so a press off
         // the rows leaves no target and the menu falls back to the panel's.
         let content =
@@ -1498,11 +1771,20 @@ impl HistoryPanel {
                 panel
                     .menu_row
                     .filter(|ti| *ti < panel.tracks.len())
-                    .map(|ti| (ti, panel.selected_track_ids()))
+                    .map(|ti| (ti, is_unknown(&panel.tracks[ti]), panel.playable_ids()))
             };
-            let Some((ti, ids)) = target else {
+            let Some((ti, unknown, ids)) = target else {
                 return this.update(cx, |this, cx| this.dropdown_menu(menu, window, cx));
             };
+
+            // An Unknown row has nothing for the track actions to act on.
+            if unknown {
+                return this.update(cx, |this, cx| {
+                    let menu = this.play_from_menu(menu, ti, window, cx);
+                    this.dropdown_menu(menu.separator(), window, cx)
+                });
+            }
+
             let state = this.read(cx).state.clone();
             let panel = weak.clone();
             // Play queues from the clicked track, the double click's move. The

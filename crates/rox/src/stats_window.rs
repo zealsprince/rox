@@ -1,6 +1,6 @@
 //! The stats window: the listening record rolled up per ADR 11. A range knob
 //! scopes the page: recency counts, listens over time, the top artists,
-//! albums and genres, and the newest listens. Everything derives from the
+//! albums, tracks and genres, and the newest listens. Everything derives from the
 //! events table by SQL; nothing counts along the way. Rollups read on open
 //! and when a listen lands or the catalog changes, never per frame.
 
@@ -30,7 +30,7 @@ use rox_panel_api::charts;
 use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, dialog_button, section};
 use rox_services::backdrop::WindowBackdrop;
-use rox_services::catalog::{LibraryEvent, LocalCopy};
+use rox_services::catalog::{Library, LibraryEvent, LocalCopy};
 use rox_services::history::HistoryEvent;
 use rox_services::thumbs::Thumb;
 
@@ -165,6 +165,12 @@ enum ArtShape {
     Square,
 }
 
+#[derive(Clone, Copy)]
+enum TrackList {
+    Top,
+    Recent,
+}
+
 struct OpenStats(WindowHandle<Root>);
 
 impl Global for OpenStats {}
@@ -214,8 +220,10 @@ struct StatsData {
     artists: Vec<NamePlays>,
     albums: Vec<NamePlays>,
     genres: Vec<NamePlays>,
+    top_tracks: Vec<TrackPlays>,
+    top_files: Vec<Option<LocalCopy>>,
     recents: Vec<TrackPlays>,
-    /// The library's own copy of each live recent's song, since a radio row is
+    /// The library's own copy of each live row's song, since a radio row is
     /// the station. Supplies the cover and what the play button queues.
     recent_files: Vec<Option<LocalCopy>>,
 }
@@ -316,14 +324,9 @@ impl StatsWindow {
             StatsRange::Span { since, until } => (since, ((until - since) / 24).max(60), until - 1),
         };
         let recents = library.recent_listens(since, until, RECENT_ROWS);
-        let names: Vec<(&str, &str)> = recents
-            .iter()
-            .map(|row| match row.live {
-                true => (row.artist.as_str(), row.title.as_str()),
-                false => ("", ""),
-            })
-            .collect();
-        let recent_files = library.local_copies(&names);
+        let recent_files = local_files(library, &recents);
+        let top_tracks = library.top_tracks(since, until, TOP_NAMES);
+        let top_files = local_files(library, &top_tracks);
 
         self.data = StatsData {
             week: library.listens_since(now - 7 * DAY),
@@ -338,6 +341,8 @@ impl StatsWindow {
             artists: library.listen_rollup(Rollup::Artist, since, until, TOP_NAMES),
             albums: library.listen_rollup(Rollup::Album, since, until, TOP_NAMES),
             genres: library.listen_rollup(Rollup::Genre, since, until, TOP_GENRES),
+            top_tracks,
+            top_files,
             recents,
             recent_files,
             tracks: library.projection().map_or(0, |p| p.browse_len()),
@@ -533,18 +538,25 @@ impl StatsWindow {
             .update(cx, |player, cx| player.play(keys, cx));
     }
 
-    fn play_recent(&mut self, ix: usize, cx: &mut Context<Self>) {
+    fn play_track(&mut self, list: TrackList, ix: usize, cx: &mut Context<Self>) {
+        let (rows, files) = match list {
+            TrackList::Top => (&self.data.top_tracks, &self.data.top_files),
+            TrackList::Recent => (&self.data.recents, &self.data.recent_files),
+        };
+
         // A stale click can point past the end after a refresh.
-        let Some(rows) = self.data.recents.get(ix..) else {
+        let Some(rows) = rows.get(ix..) else {
             return;
         };
+
+        // keys_for drops an Unknown row, so the rows after it would play in
+        // its place.
+        if rows.first().is_some_and(is_unknown) {
+            return;
+        }
         // Never queue the station for a radio row: it would play what's on air
         // now, not the song. The library's copy wins where it has one.
-        let local = self
-            .data
-            .recent_files
-            .get(ix)
-            .and_then(|local| local.as_ref());
+        let local = files.get(ix).and_then(|local| local.as_ref());
         if let Some(local) = local {
             let Ok(keys) = self.state.library.read(cx).keys_for(&[local.track_id]) else {
                 return;
@@ -586,6 +598,19 @@ impl StatsWindow {
             Thumb::Ready(image) => Some(image),
             _ => None,
         }
+    }
+
+    /// The song's own cover first, then the station's favicon, keyed on the
+    /// row's own path.
+    fn track_cover(
+        &self,
+        row: &TrackPlays,
+        local: Option<&LocalCopy>,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<Image>> {
+        local
+            .and_then(|local| self.cover(&local.path.to_string_lossy(), cx))
+            .or_else(|| self.cover(&row.path, cx))
     }
 
     fn portrait(&self, name: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {
@@ -741,50 +766,62 @@ impl StatsWindow {
                     .or_else(|| self.cover(&row.art, cx)),
                 ArtShape::Square => self.cover(&row.art, cx),
             };
-            body = body.child(
-                div()
-                    .group(ROW_GROUP)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(tokens::SPACE_SM)
-                    .p(tokens::SPACE_XS)
-                    .rounded(tokens::RADIUS)
-                    .hover(|d| d.bg(palette::alpha(palette::bg_control(), 0x80)))
-                    .child(rank(i))
-                    .child(art_frame(art, shape, &row.name, px(ART)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            // The column clips; a truncating line inside must not, or min-width 0
-                            // collapses it to its ellipsis.
-                            .overflow_hidden()
-                            .child(div().truncate().child(SharedString::from(row.name.clone())))
-                            .when(!row.sub.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(palette::text_secondary())
-                                        .child(SharedString::from(row.sub.clone())),
-                                )
-                            })
-                            .child(share_bar(row.plays as f32 / lead as f32)),
-                    )
-                    .child(play_button(
-                        (label, i),
-                        rox_i18n::t_static("stats-play-these-tracks"),
-                        move |this, cx| this.play_name(by, &name, cx),
-                        cx,
-                    ))
-                    .child(plays_readout(row.plays)),
-            );
+            body = body.child(ranked_row(
+                i,
+                art_frame(art, shape, &row.name, px(ART)),
+                div().truncate().child(SharedString::from(row.name.clone())),
+                row.sub.clone(),
+                row.plays as f32 / lead as f32,
+                play_button(
+                    (label, i),
+                    rox_i18n::t_static("stats-play-these-tracks"),
+                    move |this, cx| this.play_name(by, &name, cx),
+                    cx,
+                ),
+                row.plays,
+            ));
         }
         section(label, None, body)
+    }
+
+    fn track_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let rows = &self.data.top_tracks;
+        let mut body = div().flex().flex_col().gap(px(2.));
+
+        // Single plays don't rank, so a range can have listens and no list.
+        if rows.is_empty() && !self.data.recents.is_empty() {
+            body = body.child(
+                div()
+                    .py(tokens::SPACE_XS)
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("stats-empty-repeats")),
+            );
+        } else if rows.is_empty() {
+            body = body.child(empty_note(self.range));
+        }
+
+        let lead = rows.first().map_or(1, |row| row.plays).max(1);
+        for (ix, row) in rows.iter().enumerate() {
+            let local = self.data.top_files.get(ix).and_then(|l| l.as_ref());
+            let art = self.track_cover(row, local, cx);
+            let tip = row_tip(row, local.is_some());
+            body = body.child(
+                ranked_row(
+                    ix,
+                    art_frame(art, ArtShape::Square, &row.title, px(ART)),
+                    track_title(row),
+                    track_sub(row),
+                    row.plays as f32 / lead as f32,
+                    track_play_button(row, TrackList::Top, ("top-track", ix), ix, cx),
+                    row.plays,
+                )
+                .id(("top-track-row", ix))
+                .when_some(tip, |d, tip| {
+                    d.tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                }),
+            );
+        }
+        section(rox_i18n::t!("stats-section-top-tracks"), None, body)
     }
 
     fn genre_section(&self, rows: &[NamePlays], cx: &mut Context<Self>) -> Stateful<Div> {
@@ -889,22 +926,10 @@ impl StatsWindow {
             body = body.child(empty_note(self.range));
         }
         for (ix, row) in self.data.recents.iter().enumerate() {
-            let sub = match (row.artist.is_empty(), row.album.is_empty()) {
-                (false, false) => format!("{} - {}", row.artist, row.album),
-                (false, true) => row.artist.clone(),
-                (true, false) => row.album.clone(),
-                (true, true) => String::new(),
-            };
-            // The song's own cover first, then the station's favicon, keyed on the
-            // row's own path.
+            let sub = track_sub(row);
             let local = self.data.recent_files.get(ix).and_then(|l| l.as_ref());
-            let art = local
-                .and_then(|local| self.cover(&local.path.to_string_lossy(), cx))
-                .or_else(|| self.cover(&row.path, cx));
-            let plays = match local.is_some() {
-                true => rox_i18n::t_static("history-live-plays-file"),
-                false => rox_i18n::t_static("history-live-plays-station"),
-            };
+            let art = self.track_cover(row, local, cx);
+            let tip = row_tip(row, local.is_some());
             body = body.child(
                 div()
                     .id(("recent-row", ix))
@@ -916,8 +941,8 @@ impl StatsWindow {
                     .p(tokens::SPACE_XS)
                     .rounded(tokens::RADIUS)
                     .hover(|d| d.bg(palette::alpha(palette::bg_control(), 0x80)))
-                    .when(row.live, |d| {
-                        d.tooltip(move |window, cx| Tooltip::new(plays).build(window, cx))
+                    .when_some(tip, |d, tip| {
+                        d.tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                     })
                     .child(art_frame(art, ArtShape::Square, &row.title, px(ROW_ART)))
                     .child(
@@ -927,28 +952,7 @@ impl StatsWindow {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(tokens::SPACE_XS)
-                                    .overflow_hidden()
-                                    .when(row.live, |d| {
-                                        d.child(
-                                            svg()
-                                                .path(icons::RADIO)
-                                                .size(px(12.))
-                                                .flex_none()
-                                                .text_color(palette::text_muted()),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .child(SharedString::from(row.title.clone())),
-                                    ),
-                            )
+                            .child(track_title(row))
                             .when(!sub.is_empty(), |d| {
                                 d.child(
                                     div()
@@ -959,10 +963,11 @@ impl StatsWindow {
                                 )
                             }),
                     )
-                    .child(play_button(
+                    .child(track_play_button(
+                        row,
+                        TrackList::Recent,
                         ("recent", ix),
-                        rox_i18n::t_static("stats-play-this-track"),
-                        move |this, cx| this.play_recent(ix, cx),
+                        ix,
                         cx,
                     ))
                     .child(
@@ -1101,6 +1106,136 @@ fn rank(ix: usize) -> Div {
             palette::text_faint()
         })
         .child(SharedString::from((ix + 1).to_string()))
+}
+
+/// The line every top list shares: place, art, the name over its share of
+/// the leader, then the play control and the count.
+fn ranked_row(
+    ix: usize,
+    art: Div,
+    title: Div,
+    sub: String,
+    share: f32,
+    play: AnyElement,
+    plays: u64,
+) -> Div {
+    div()
+        .group(ROW_GROUP)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .p(tokens::SPACE_XS)
+        .rounded(tokens::RADIUS)
+        .hover(|d| d.bg(palette::alpha(palette::bg_control(), 0x80)))
+        .child(rank(ix))
+        .child(art)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                // The column clips; a truncating line inside must not, or min-width 0
+                // collapses it to its ellipsis.
+                .overflow_hidden()
+                .child(title)
+                .when(!sub.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(palette::text_secondary())
+                            .child(SharedString::from(sub)),
+                    )
+                })
+                .child(share_bar(share)),
+        )
+        .child(play)
+        .child(plays_readout(plays))
+}
+
+/// The library's own copy of each live row's song.
+fn local_files(library: &Library, rows: &[TrackPlays]) -> Vec<Option<LocalCopy>> {
+    let names: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| match row.live {
+            true => (row.artist.as_str(), row.title.as_str()),
+            false => ("", ""),
+        })
+        .collect();
+    library.local_copies(&names)
+}
+
+fn track_title(row: &TrackPlays) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        .overflow_hidden()
+        .when(row.live, |d| {
+            d.child(
+                svg()
+                    .path(icons::RADIO)
+                    .size(px(12.))
+                    .flex_none()
+                    .text_color(palette::text_muted()),
+            )
+        })
+        .child(
+            div()
+                .truncate()
+                .child(SharedString::from(row.title.clone())),
+        )
+}
+
+fn track_sub(row: &TrackPlays) -> String {
+    match (row.artist.is_empty(), row.album.is_empty()) {
+        (false, false) => format!("{} - {}", row.artist, row.album),
+        (false, true) => row.artist.clone(),
+        (true, false) => row.album.clone(),
+        (true, true) => String::new(),
+    }
+}
+
+/// What a track row's hover explains: that an Unknown row can't play, or
+/// whether a radio row's play button reaches the song or only the station.
+fn row_tip(row: &TrackPlays, has_file: bool) -> Option<&'static str> {
+    if is_unknown(row) {
+        return Some(rox_i18n::t_static("stats-unknown-row"));
+    }
+
+    row.live.then(|| match has_file {
+        true => rox_i18n::t_static("history-live-plays-file"),
+        false => rox_i18n::t_static("history-live-plays-station"),
+    })
+}
+
+/// A scrobble of a song the library doesn't hold ([`rox_library::unknown`]).
+fn is_unknown(row: &TrackPlays) -> bool {
+    row.source == rox_library::unknown::SOURCE
+}
+
+/// An Unknown row gets an empty slot instead, keeping the column aligned.
+fn track_play_button(
+    row: &TrackPlays,
+    list: TrackList,
+    id: impl Into<gpui::ElementId>,
+    ix: usize,
+    cx: &mut Context<StatsWindow>,
+) -> gpui::AnyElement {
+    if is_unknown(row) {
+        return div().flex_none().w(px(PLAY_SLOT_W)).into_any_element();
+    }
+
+    play_button(
+        id,
+        rox_i18n::t_static("stats-play-this-track"),
+        move |this, cx| this.play_track(list, ix, cx),
+        cx,
+    )
 }
 
 /// The image does its own rounding, since gpui content masks stay
@@ -1305,6 +1440,7 @@ impl Render for StatsWindow {
                     ArtShape::Square,
                     cx,
                 ))
+                .child(self.track_section(cx))
                 .child(self.genre_section(&self.data.genres, cx))
                 .child(self.recents_section(cx));
 

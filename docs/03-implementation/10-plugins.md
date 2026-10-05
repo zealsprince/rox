@@ -302,6 +302,15 @@ source menus bracket it the same way.
 
 Same page shape as browse, so a search can return nodes as well as tracks.
 
+History also searches to play a song it knows only by name, sending `"{artist} {title}"`
+to the source the user chose (`find_track`, `rox-services/src/plugins.rs`). It reads
+the first page's tracks and takes the first one that's the same song by the rules the
+Last.fm import matches with (`names::Index`): names folded, and a bracketed qualifier
+only matching when it settles on a single title. When no result is that song, nothing
+plays. The top result is never taken blind, since a cover or a karaoke take would play
+as the user's song. The track found is picked into the library like a played search
+result, not saved.
+
 ### `source.sync`
 
 Pages through one collection for the library.

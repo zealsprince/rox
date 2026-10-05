@@ -1708,6 +1708,7 @@ stats-count-menu = Підрахунок
     .description = За яким останнім проміжком число рахує прослуховування; список при наведенні завжди показує їх усі
 stats-empty-all = Ще немає прослуховувань
 stats-empty-range = У цьому проміжку немає прослуховувань
+stats-empty-repeats = У цьому проміжку жоден трек не прослухано більше одного разу
 stats-library-held = { $tracks } треків, { $size } у пам'яті
 stats-now = Зараз
 stats-open = Відкрити статистику
@@ -1740,12 +1741,14 @@ stats-section-recent-listens = Недавні прослуховування
 stats-section-top-albums = Топ альбомів
 stats-section-top-artists = Топ виконавців
 stats-section-top-genres = Топ жанрів
+stats-section-top-tracks = Топ треків
 stats-show-change = Показувати зміну
     .description = Додати позначку про те, як проміжок виглядає проти попереднього, вгору чи вниз; за весь час позаду нічого немає
 stats-show-number = Показувати число
     .description = Малювати число поруч зі значком; вимкнено лишає голий значок, а числа показує при наведенні
 stats-title = Віджет статистики
 stats-tooltip-listens = Прослуховування
+stats-unknown-row = Немає у вашій бібліотеці; увімкніть його з панелі «Історія»
 stats-window-title = rox - Статистика
 
 ## Очищення історії прослуховувань: підтвердження, яке показують вікно
@@ -2023,6 +2026,7 @@ eq-shape-active = { $count ->
    *[other] { $count } смуги не на нулі, пік { $peak } дБ
 }
 eq-shape-flat = Рівно, кожна смуга на 0 дБ
+eq-spatial-on = Просторовість увімкнено
 eq-status-off = Еквалайзер вимкнено
 eq-status-on = Еквалайзер увімкнено
 eq-title = Віджет еквалайзера
@@ -2322,6 +2326,7 @@ lastfm-import-history = Читаємо історію скроблів
 lastfm-import-plays-counts = Читаємо лічильники прослуховувань
 lastfm-import-plays-writing = Записуємо історію прослуховувань
 lastfm-import-plays-dated = , з реальними датами: { $count }
+lastfm-import-plays-unknown = , для пісень поза медіатекою: { $count }
 lastfm-import-plays-stopped-history = Зупинено після { $count } скроблів
 
 ## Tag tools
@@ -3312,6 +3317,7 @@ metadata-field-source = Джерело
 metadata-source-local = Локально
 metadata-source-radio = Радіо
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = Невідомо
 metadata-field-station = Радіостанція
 metadata-field-homepage = Сайт
 metadata-field-disc = Диск
@@ -3384,6 +3390,13 @@ history-view-most = Найчастіше грали
 history-view-never = Жодного разу не грали
 history-view-recent = Недавно грали
 history-view-recent-short = Недавнє
+history-play-from = Відтворити з
+history-unknown-row = Немає в медіатеці: подвійний клік відтворить через плагін
+history-finding = Пошук { $title } у { $source }...
+history-not-found = У { $source } немає збігів для { $title }
+history-find-failed = Не вдалося виконати пошук у { $source }: { $reason }
+history-no-plugins = Жоден запущений плагін не може знайти цю пісню
+history-pick-plugin = Виберіть плагін у пункті Відтворити з у меню цього рядка
 history-view-row = Вигляд
     .description = Який зріз запису прослуханого показує панель
 

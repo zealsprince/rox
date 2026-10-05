@@ -2596,6 +2596,74 @@ pub fn live_sources() -> Vec<(String, String)> {
     live
 }
 
+/// `(source id, label)` for every running, not-stopped plugin with a source
+/// capability, sorted like `live_sources`. The History panel lists these to
+/// play an Unknown row from. Every source answers `source.search`.
+pub fn searchable_sources() -> Vec<(String, String)> {
+    if !allowed() {
+        return Vec::new();
+    }
+
+    let mut sources = live_sources();
+    // A panel-only plugin has a host too, with nothing to search.
+    sources.retain(|(source, _)| offers(source, |_| true));
+
+    sources
+}
+
+/// Searches `source` for the song and answers the key of the result that's
+/// the same song, picked into the library (as a played row, not a saved one)
+/// so it can be played at once. Ok(None) when nothing on the first page is
+/// that song. Err on a plugin failure.
+pub fn find_track(
+    library: Entity<Library>,
+    source: &str,
+    artist: String,
+    title: String,
+    cx: &mut App,
+) -> Task<Result<Option<TrackKey>, String>> {
+    let source = source.to_string();
+    let searched = search(&source, format!("{artist} {title}"), None, None, cx);
+
+    cx.spawn(async move |cx| {
+        let page = searched.await?;
+        let mut tracks: Vec<PluginTrack> = page
+            .entries
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Track(track) => Some(track),
+                _ => None,
+            })
+            .collect();
+
+        let Some(at) = same_song(&tracks, &artist, &title) else {
+            return Ok(None);
+        };
+
+        let track = tracks.swap_remove(at);
+        let picked = cx
+            .update(|cx| pick(library, &source, vec![track], cx))
+            .map_err(|e| e.to_string())?;
+
+        Ok(picked.await?.into_iter().next())
+    })
+}
+
+/// The position of the first result that's the song named, by the same rules
+/// the Last.fm import matches with. No fallback to the top result: a cover or
+/// a karaoke take played as the user's song is worse than nothing found.
+fn same_song(tracks: &[PluginTrack], artist: &str, title: &str) -> Option<usize> {
+    let rows = tracks
+        .iter()
+        .enumerate()
+        .map(|(at, track)| (at as i64, track.artist.clone(), track.title.clone()))
+        .collect();
+
+    // The service ranked its results, so the earliest match wins a tie.
+    let found = crate::names::Index::build(rows).resolve(artist, title);
+    found.into_iter().min().map(|at| at as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2832,5 +2900,57 @@ mod tests {
             changes(&Value::Null, &doc),
             vec![Change::CapabilityAdded("source".into()), Change::Entry]
         );
+    }
+
+    fn results(found: &[(&str, &str)]) -> Vec<PluginTrack> {
+        found
+            .iter()
+            .map(|&(artist, title)| PluginTrack {
+                key: format!("{artist}/{title}"),
+                artist: artist.into(),
+                title: title.into(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_same_song_wins_over_a_result_ranked_above_it() {
+        let found = results(&[
+            ("Air", "Sexy Boy (Karaoke Version)"),
+            ("Air", "Kelly Watch the Stars"),
+            ("Air", "Sexy Boy"),
+            ("Air", "Sexy Boy"),
+        ]);
+        assert_eq!(same_song(&found, "air", "Sexy Boy"), Some(2));
+    }
+
+    #[test]
+    fn a_bracketed_qualifier_on_either_side_is_still_the_song() {
+        let found = results(&[("Boards of Canada", "Olson (2013 Remaster)")]);
+        assert_eq!(same_song(&found, "Boards of Canada", "Olson"), Some(0));
+
+        let found = results(&[("Boards of Canada", "Olson")]);
+        assert_eq!(
+            same_song(&found, "Boards of Canada", "Olson (Remastered)"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_cover_by_another_artist_is_not_the_song() {
+        let found = results(&[("Some Covers Band", "Roygbiv")]);
+        assert_eq!(same_song(&found, "Boards of Canada", "Roygbiv"), None);
+    }
+
+    #[test]
+    fn two_takes_that_differ_only_by_qualifier_settle_nothing() {
+        let found = results(&[("Air", "Sexy Boy (Live)"), ("Air", "Sexy Boy (Demo)")]);
+        assert_eq!(same_song(&found, "Air", "Sexy Boy"), None);
+    }
+
+    #[test]
+    fn no_results_find_nothing() {
+        assert_eq!(same_song(&[], "Air", "Sexy Boy"), None);
     }
 }

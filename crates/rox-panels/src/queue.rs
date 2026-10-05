@@ -192,7 +192,8 @@ impl Filterable for TrackRow {
 
 fn origin_glyph(origin: Origin) -> Option<&'static str> {
     match origin {
-        Origin::Local => None,
+        // An Unknown row never reaches the queue.
+        Origin::Local | Origin::Unknown => None,
 
         Origin::Radio => Some(icons::RADIO),
 

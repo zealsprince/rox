@@ -1689,6 +1689,7 @@ stats-count-menu = Anzahl
     .description = Über welchen zurückliegenden Zeitraum die Zahl Hörvorgänge zählt; die Liste beim Überfahren zeigt immer alle
 stats-empty-all = Noch nichts gehört
 stats-empty-range = In diesem Zeitraum nichts gehört
+stats-empty-repeats = Kein Titel wurde in diesem Zeitraum mehr als einmal gehört
 stats-library-held = { $tracks } Titel, { $size } im Speicher
 stats-now = Jetzt
 stats-open = Statistik öffnen
@@ -1719,12 +1720,14 @@ stats-section-recent-listens = Zuletzt gehört
 stats-section-top-albums = Top-Alben
 stats-section-top-artists = Top-Interpreten
 stats-section-top-genres = Top-Genres
+stats-section-top-tracks = Top-Titel
 stats-show-change = Veränderung anzeigen
     .description = Ein Chip dafür, wie der Zeitraum gegen den davor steht, hoch oder runter; vor Gesamtzeit liegt nichts
 stats-show-number = Zahl anzeigen
     .description = Die Anzahl neben das Symbol zeichnen; ausgeschaltet bleibt ein nacktes Symbol, die Zahlen kommen beim Überfahren
 stats-title = Statistik-Widget
 stats-tooltip-listens = Hörvorgänge
+stats-unknown-row = Nicht in deiner Bibliothek; spiele es im Verlauf-Panel ab
 stats-window-title = rox - Statistik
 
 ## Den Hörverlauf leeren: die Rückfrage, die sowohl das Statistikfenster
@@ -1994,6 +1997,7 @@ eq-shape-active = { $count ->
    *[other] { $count } Bänder nicht flach, Spitze { $peak } dB
 }
 eq-shape-flat = Flach, jedes Band auf 0 dB
+eq-spatial-on = Räumlich an
 eq-status-off = Equalizer aus
 eq-status-on = Equalizer an
 eq-title = EQ-Widget
@@ -2308,6 +2312,7 @@ lastfm-import-history = Wiedergabeverlauf wird gelesen
 lastfm-import-plays-counts = Wiedergabezahlen werden gelesen
 lastfm-import-plays-writing = Wiedergabeverlauf wird geschrieben
 lastfm-import-plays-dated = , davon { $count } mit echtem Datum
+lastfm-import-plays-unknown = , { $count } für Titel außerhalb deiner Bibliothek
 lastfm-import-plays-stopped-history = Nach { $count } Scrobbles gestoppt
 
 ## Tag tools
@@ -3278,6 +3283,7 @@ metadata-field-source = Quelle
 metadata-source-local = Lokal
 metadata-source-radio = Radio
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = Unbekannt
 metadata-field-station = Sender
 metadata-field-homepage = Website
 metadata-field-disc = CD
@@ -3350,6 +3356,13 @@ history-view-most = Meistgespielt
 history-view-never = Nie gespielt
 history-view-recent = Kürzlich gespielt
 history-view-recent-short = Kürzlich
+history-play-from = Abspielen über
+history-unknown-row = Nicht in deiner Bibliothek; ein Doppelklick spielt den Titel über ein Plugin
+history-finding = Suche in { $source } nach { $title }...
+history-not-found = { $source } hat keinen Treffer für { $title }
+history-find-failed = Suche in { $source } fehlgeschlagen: { $reason }
+history-no-plugins = Kein laufendes Plugin kann nach diesem Titel suchen
+history-pick-plugin = Wähle im Menü dieser Zeile unter Abspielen über ein Plugin
 history-view-row = Ansicht
     .description = Welchen Ausschnitt des Hörverlaufs das Panel zeigt
 

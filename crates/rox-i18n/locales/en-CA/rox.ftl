@@ -1770,6 +1770,7 @@ stats-count-menu = Count
     .description = Which trailing window the number counts listens over; the hover list always shows them all
 stats-empty-all = No listens yet
 stats-empty-range = No listens in this range
+stats-empty-repeats = No song played more than once in this range
 stats-library-held = { $tracks } tracks, { $size } in memory
 stats-now = Now
 stats-open = Open Stats
@@ -1800,12 +1801,14 @@ stats-section-recent-listens = Recent Listens
 stats-section-top-albums = Top Albums
 stats-section-top-artists = Top Artists
 stats-section-top-genres = Top Genres
+stats-section-top-tracks = Top Tracks
 stats-show-change = Show the Change
     .description = Add a chip for how the window compares with the one before it, up or down; All Time has nothing behind it
 stats-show-number = Show the Number
     .description = Draw the count beside the icon; off leaves a bare icon with the counts on hover
 stats-title = Stats Widget
 stats-tooltip-listens = Listens
+stats-unknown-row = Not in your library; play it from the History panel
 stats-window-title = rox - Stats
 
 ## Clearing the listening record: the confirm the stats window and the
@@ -2080,6 +2083,7 @@ eq-shape-active = { $count ->
    *[other] { $count } bands off flat, peak { $peak } dB
 }
 eq-shape-flat = Flat, every band at 0 dB
+eq-spatial-on = Spatial on
 eq-status-off = Equalizer off
 eq-status-on = Equalizer on
 eq-title = EQ Widget
@@ -2383,6 +2387,7 @@ lastfm-import-history = Reading scrobble history
 lastfm-import-plays-counts = Reading play counts
 lastfm-import-plays-writing = Writing play history
 lastfm-import-plays-dated = , { $count } dated from Last.fm
+lastfm-import-plays-unknown = , { $count } for songs not in your library
 lastfm-import-plays-stopped-history = Stopped after { $count } scrobbles
 
 ## Tag tools
@@ -3350,6 +3355,7 @@ metadata-field-source = Source
 metadata-source-local = Local
 metadata-source-radio = Radio
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = Unknown
 metadata-field-station = Station
 metadata-field-homepage = Homepage
 metadata-field-disc = Disc
@@ -3423,6 +3429,13 @@ history-view-most = Most Played
 history-view-never = Never Played
 history-view-recent = Recently Played
 history-view-recent-short = Recent
+history-play-from = Play From
+history-unknown-row = Not in your library; double-click to play it from a plugin
+history-finding = Searching { $source } for { $title }...
+history-not-found = { $source } has no match for { $title }
+history-find-failed = Couldn't search { $source }: { $reason }
+history-no-plugins = No running plugin can search for this song
+history-pick-plugin = Pick a plugin under Play From in this row's menu
 history-view-row = View
     .description = Which cut of the listen record the panel shows
 

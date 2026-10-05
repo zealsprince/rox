@@ -2,7 +2,9 @@
 //! library as listens.
 //!
 //! `user.getRecentTracks` gives every scrobble with its second and is read
-//! first. `user.getTopTracks` gives undated totals and fills what the history
+//! first. A scrobble no library track matches lands on an Unknown row
+//! ([`rox_library::unknown`]), so the history keeps it until a copy turns up.
+//! `user.getTopTracks` gives undated totals and fills what the history
 //! missed, as an even ladder down the account's lifetime marked
 //! [`rox_library::listens::ORIGIN_ESTIMATE`] rather than passed off as
 //! history.
@@ -19,12 +21,15 @@ use gpui::{App, Entity, Global, SharedString};
 
 use rox_core::settings::Settings;
 use rox_library::listens::{self, Ladder};
-use rox_library::store;
+use rox_library::{store, unknown};
 use rox_net::lastfm::user::{self, Scrobble};
 use rox_net::providers::{agent, net_reason};
 use rox_services::catalog::Library;
 
-use super::import::{Index, api_key, username};
+use rox_services::echoes;
+use rox_services::names::{self, Index};
+
+use super::import::{api_key, username};
 
 /// The API's own ceiling for both calls.
 const PAGE: usize = 200;
@@ -87,6 +92,8 @@ pub struct Summary {
     pub updated: usize,
     /// Rows carrying Last.fm's own second; the rest were placed to make a count add up.
     pub dated: usize,
+    /// The part of `dated` filed on Unknown rows, songs the library doesn't hold.
+    pub unknown: usize,
     pub unmatched: usize,
     pub stopped: bool,
 }
@@ -118,6 +125,12 @@ impl Summary {
             line.push_str(&rox_i18n::t!(
                 "lastfm-import-plays-dated",
                 count = self.dated as u64
+            ));
+        }
+        if self.unknown > 0 {
+            line.push_str(&rox_i18n::t!(
+                "lastfm-import-plays-unknown",
+                count = self.unknown as u64
             ));
         }
         line
@@ -269,19 +282,35 @@ fn run(
 
     // Names repeat thousands of times, so the matcher answers once per name.
     let mut plays: Vec<(i64, i64)> = Vec::new();
+    let mut unknown_plays: Vec<(i64, i64)> = Vec::new();
+    let mut unknown_rows: HashMap<(String, String), i64> = HashMap::new();
     for scrobble in &history {
-        let Some(track_id) = target_for(
+        // No date is the now-playing row; the count half covers it next run.
+        let Some(played_at) = scrobble.played_at else {
+            continue;
+        };
+
+        // A play rox recorded and scrobbled itself, coming back.
+        if echoes::is_echo(&conn, &scrobble.artist, &scrobble.title, played_at)
+            .map_err(|e| e.to_string())?
+        {
+            continue;
+        }
+
+        match target_for(
             &index,
             &current_counts,
             &mut resolved,
             &scrobble.artist,
             &scrobble.title,
-        ) else {
-            continue;
-        };
-        // No date is the now-playing row; the count half covers it next run.
-        if let Some(played_at) = scrobble.played_at {
-            plays.push((track_id, played_at));
+        ) {
+            Some(track_id) => plays.push((track_id, played_at)),
+
+            None => {
+                let track_id =
+                    unknown_for(&conn, &mut unknown_rows, scrobble).map_err(|e| e.to_string())?;
+                unknown_plays.push((track_id, played_at));
+            }
         }
     }
 
@@ -306,16 +335,25 @@ fn run(
     progress.unmatched.store(unmatched, Ordering::Relaxed);
 
     // Real plays first, so the ladder only fills what they leave missing.
+    // Written apart only so the summary can say how many found no track.
     progress.say(rox_i18n::t!("lastfm-import-plays-writing"));
+    let writes = plays.len() + unknown_plays.len();
     progress.done.store(0, Ordering::Relaxed);
-    progress.total.store(plays.len(), Ordering::Relaxed);
-    let dated = listens::import_scrobbles(&mut conn, &plays, |done, total| {
-        report(progress, done, total)
+    progress.total.store(writes, Ordering::Relaxed);
+    let known =
+        listens::import_scrobbles(&mut conn, &plays, |done, _| report(progress, done, writes))
+            .map_err(|e| e.to_string())?;
+    let unknown = listens::import_scrobbles(&mut conn, &unknown_plays, |done, _| {
+        report(progress, plays.len() + done, writes)
     })
     .map_err(|e| e.to_string())?;
-    // The next run's bound: the whole history seen, not just rows that landed,
-    // since unmatched scrobbles won't match next time either. Only after the
-    // writes succeed, so a failed write leaves no bound over lost scrobbles.
+    let dated = known + unknown;
+    // Echoes an import before the check above already wrote.
+    echoes::prune(&mut conn).map_err(|e| e.to_string())?;
+
+    // The next run's bound: the whole history seen, not just rows that landed.
+    // Only after the writes succeed, so a failed write leaves no bound over
+    // lost scrobbles.
     if let Some(through) = history.iter().filter_map(|s| s.played_at).max() {
         let user = user.to_string();
         Settings::update(move |s| s.accounts.lastfm.note_import(&user, through));
@@ -349,6 +387,7 @@ fn run(
         matched,
         updated: dated + estimated,
         dated,
+        unknown,
         unmatched,
         stopped: progress.stopping(),
     })
@@ -376,9 +415,26 @@ fn target_for(
     if let Some(found) = resolved.get(&key) {
         return *found;
     }
-    let found = pick_target_track(&index.resolve(artist, title), current_counts);
+    let found = names::pick_one(&index.resolve(artist, title), current_counts);
     resolved.insert(key, found);
     found
+}
+
+/// The Unknown row for a scrobble no track matched. Memoized like
+/// [`target_for`]; the row itself folds case and accents.
+fn unknown_for(
+    conn: &rox_library::rusqlite::Connection,
+    rows: &mut HashMap<(String, String), i64>,
+    scrobble: &Scrobble,
+) -> rox_library::rusqlite::Result<i64> {
+    let key = (scrobble.artist.clone(), scrobble.title.clone());
+    if let Some(&id) = rows.get(&key) {
+        return Ok(id);
+    }
+
+    let id = unknown::row(conn, &scrobble.artist, &scrobble.title, &scrobble.album)?;
+    rows.insert(key, id);
+    Ok(id)
 }
 
 /// Read oldest page first, so a stopped run's rows sit contiguously above
@@ -441,26 +497,6 @@ fn fetch_counts(key: &str, user: &str, progress: &Progress) -> Result<Vec<TopTra
         std::thread::sleep(PAGE_PAUSE);
     }
     Ok(tracks)
-}
-
-/// Among copies of one song, the one with local plays wins; ties take the first.
-fn pick_target_track(found: &[i64], current_counts: &HashMap<i64, u32>) -> Option<i64> {
-    if found.is_empty() {
-        return None;
-    }
-    if found.len() == 1 {
-        return Some(found[0]);
-    }
-    let mut best_id = found[0];
-    let mut max_plays = current_counts.get(&best_id).copied().unwrap_or(0);
-    for &id in &found[1..] {
-        let plays = current_counts.get(&id).copied().unwrap_or(0);
-        if plays > max_plays {
-            best_id = id;
-            max_plays = plays;
-        }
-    }
-    Some(best_id)
 }
 
 fn fetch_page(key: &str, user: &str, page: usize) -> Result<(Vec<TopTrack>, Pages), String> {
@@ -617,17 +653,5 @@ mod tests {
         assert_eq!(tracks[0].title, "Alone");
         assert_eq!(tracks[0].playcount, 1000);
         assert_eq!(pages.total, 1);
-    }
-
-    #[test]
-    fn picks_track_with_existing_local_plays_over_duplicates() {
-        let mut counts = std::collections::HashMap::new();
-        counts.insert(2, 10);
-        assert_eq!(pick_target_track(&[1, 2, 3], &counts), Some(2));
-
-        let empty = std::collections::HashMap::new();
-        assert_eq!(pick_target_track(&[1, 2, 3], &empty), Some(1));
-
-        assert_eq!(pick_target_track(&[], &counts), None);
     }
 }

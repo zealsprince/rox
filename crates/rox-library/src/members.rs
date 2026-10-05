@@ -620,6 +620,7 @@ pub fn collections(conn: &Connection, source: &str) -> rusqlite::Result<Vec<(Str
 fn refuse_other_shapes(source: &str) -> rusqlite::Result<()> {
     let other = source == cue::LOCAL
         || source == stations::SOURCE
+        || source == crate::unknown::SOURCE
         || source.starts_with(cue::SUBSONIC_PREFIX);
 
     if other {

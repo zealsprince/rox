@@ -44,6 +44,7 @@ pub mod tag_source;
 pub mod tempo;
 pub mod thumbs;
 pub mod track_meta;
+pub mod unknown;
 pub mod view;
 pub mod watch;
 pub mod writer;

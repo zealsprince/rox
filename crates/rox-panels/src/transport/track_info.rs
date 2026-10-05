@@ -1433,7 +1433,7 @@ impl TrackInfoPanel {
         // station's name once the overlay has run, or the title before the first
         // announcement.
         let glyph = match now.origin {
-            Origin::Local => None,
+            Origin::Local | Origin::Unknown => None,
             Origin::Radio => Some(icons::RADIO.into()),
             Origin::Subsonic => Some(icons::DATABASE.into()),
             Origin::Plugin => Some(

@@ -1752,6 +1752,7 @@ stats-count-menu = Nombre
     .description = Sur quelle fenêtre glissante le nombre compte les écoutes ; la liste au survol les affiche toutes
 stats-empty-all = Aucune écoute pour l'instant
 stats-empty-range = Aucune écoute sur cette période
+stats-empty-repeats = Aucun morceau écouté plus d'une fois sur cette période
 stats-library-held = { $tracks } pistes, { $size } en mémoire
 stats-now = Maintenant
 stats-open = Ouvrir les stats
@@ -1782,12 +1783,14 @@ stats-section-recent-listens = Écoutes récentes
 stats-section-top-albums = Top albums
 stats-section-top-artists = Top artistes
 stats-section-top-genres = Top genres
+stats-section-top-tracks = Top pistes
 stats-show-change = Afficher l'évolution
     .description = Ajouter une pastille pour dire comment la période se compare à la précédente, en hausse ou en baisse ; Depuis le début n'a rien à quoi se comparer
 stats-show-number = Afficher le nombre
     .description = Dessiner le compte à côté de l'icône ; désactivé, il ne reste que l'icône, avec les nombres au survol
 stats-title = Widget Stats
 stats-tooltip-listens = Écoutes
+stats-unknown-row = Absent de votre bibliothèque ; lisez-le depuis le panneau Historique
 stats-window-title = rox - Statistiques
 
 ## Effacer l'historique d'écoute : la confirmation que posent la fenêtre
@@ -2057,6 +2060,7 @@ eq-shape-active = { $count ->
    *[other] { $count } bandes écartées du plat, pic { $peak } dB
 }
 eq-shape-flat = À plat, toutes les bandes à 0 dB
+eq-spatial-on = Spatial activé
 eq-status-off = Égaliseur désactivé
 eq-status-on = Égaliseur activé
 eq-title = Widget EQ
@@ -2374,6 +2378,7 @@ lastfm-import-history = Lecture de l'historique des scrobbles
 lastfm-import-plays-counts = Lecture des compteurs de lectures
 lastfm-import-plays-writing = Écriture de l'historique des lectures
 lastfm-import-plays-dated = , { $count } avec date réelle
+lastfm-import-plays-unknown = , { $count } de titres absents de ta bibliothèque
 lastfm-import-plays-stopped-history = Arrêté après { $count } scrobbles
 
 ## Tag tools
@@ -3358,6 +3363,7 @@ metadata-field-source = Source
 metadata-source-local = Local
 metadata-source-radio = Radio
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = Inconnu
 metadata-field-station = Station
 metadata-field-homepage = Site web
 metadata-field-disc = Disque
@@ -3430,6 +3436,13 @@ history-view-most = Les plus écoutées
 history-view-never = Jamais écoutées
 history-view-recent = Écoutées récemment
 history-view-recent-short = Récentes
+history-play-from = Lire depuis
+history-unknown-row = Absent de ta bibliothèque ; double-clique pour le lire via un plugin
+history-finding = Recherche de { $title } sur { $source }...
+history-not-found = { $source } ne trouve rien pour { $title }
+history-find-failed = Impossible de chercher sur { $source } : { $reason }
+history-no-plugins = Aucun plugin actif ne peut chercher ce morceau
+history-pick-plugin = Choisis un plugin dans Lire depuis, dans le menu de cette ligne
 history-view-row = Vue
     .description = Quelle tranche du relevé d'écoutes le panneau montre
 

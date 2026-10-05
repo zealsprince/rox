@@ -162,6 +162,10 @@ fn labels(accounts: &AccountsState) -> HashMap<String, String> {
         stations::SOURCE.to_string(),
         rox_i18n::t!("metadata-source-radio").to_string(),
     );
+    labels.insert(
+        rox_library::unknown::SOURCE.to_string(),
+        rox_i18n::t!("metadata-source-unknown").to_string(),
+    );
 
     for account in &accounts.subsonic_servers {
         let Some(source) = source_of(account) else {
@@ -716,7 +720,7 @@ fn fetch_cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
 
         Origin::Plugin => plugin_thumb(thumbs, &source, key),
 
-        Origin::Local | Origin::Radio => None,
+        Origin::Local | Origin::Radio | Origin::Unknown => None,
     }
 }
 
@@ -755,7 +759,7 @@ pub fn full_cover(source: &str, key: &str) -> Option<Vec<u8>> {
     let found = match Origin::of(source) {
         Origin::Subsonic => subsonic_cover(&accounts, source, key, FULL_COVER_SIZE),
         Origin::Plugin => crate::plugins::cover(source, key),
-        Origin::Local | Origin::Radio => None,
+        Origin::Local | Origin::Radio | Origin::Unknown => None,
     };
 
     if let Ok(mut misses) = MISSES.lock() {

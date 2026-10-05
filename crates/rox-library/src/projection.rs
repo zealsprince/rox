@@ -721,11 +721,15 @@ pub fn shard_for_ids(
     Ok(shard)
 }
 
-/// The single definition behind [`Projection::is_browsable`]: radio is out.
-/// Subsonic and plugins stay in because each is a catalog with albums and
-/// artists; a station is a live stream with a name.
+/// The single definition behind [`Projection::is_browsable`]: radio and
+/// Unknown rows are out. Subsonic and plugins stay in because each is a
+/// catalog with albums and artists; a station is a live stream with a name,
+/// and an Unknown row is only a name.
 fn source_browsable(source: &str) -> bool {
-    crate::cue::Origin::of(source) != crate::cue::Origin::Radio
+    !matches!(
+        crate::cue::Origin::of(source),
+        crate::cue::Origin::Radio | crate::cue::Origin::Unknown
+    )
 }
 
 pub struct Projection {

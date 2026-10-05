@@ -853,10 +853,11 @@ fn stats_row(r: &rusqlite::Row) -> rusqlite::Result<Stats> {
     })
 }
 
-/// The whole library's rollup.
+/// The whole library's rollup. Unknown rows aren't in the library, only the
+/// history.
 pub fn stats(conn: &Connection) -> rusqlite::Result<Stats> {
     conn.query_row(
-        &format!("SELECT {STATS_COLUMNS} FROM tracks"),
+        &format!("SELECT {STATS_COLUMNS} FROM tracks WHERE source <> 'unknown'"),
         [],
         stats_row,
     )
@@ -1776,6 +1777,11 @@ pub fn locators_for(
         });
 
         if let Ok((source, path, url, live, duration_ms)) = row {
+            // An Unknown row has nothing to play; it drops like a missing id.
+            if source == crate::unknown::SOURCE {
+                continue;
+            }
+
             out.push(if source == crate::cue::LOCAL {
                 crate::locator::Locator::Local(PathBuf::from(path))
             } else if source.starts_with(crate::cue::PLUGIN_PREFIX) {
@@ -1948,10 +1954,18 @@ pub fn sources(conn: &Connection) -> rusqlite::Result<Vec<(String, usize)>> {
 /// names against the library. One pass over the table: the loved-tracks
 /// import folds this into its own lookup and does thousands of lookups
 /// against it, which would be a query each the other way around.
+///
+/// A track whose album artist differs comes back a second time under it. A
+/// guest goes into the artist tag ("Lord Huron, Allison Ponthier") while a
+/// service credits the song to the album artist alone.
 pub fn name_index(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT id, artist, title FROM tracks
-          WHERE source = 'local' AND artist <> '' AND title <> ''",
+          WHERE source = 'local' AND artist <> '' AND title <> ''
+         UNION ALL
+         SELECT id, album_artist, title FROM tracks
+          WHERE source = 'local' AND album_artist <> '' AND album_artist <> artist
+            AND title <> ''",
     )?;
     let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     rows.collect()
@@ -2279,7 +2293,8 @@ pub struct ScanRow<'a> {
 }
 
 /// Stream the projection columns for one rowid range, in id order, one
-/// [`ScanRow`] per row.
+/// [`ScanRow`] per row. Unknown rows ([`crate::unknown`]) stay out: only the
+/// history reads them, through SQL, and no projection walk should meet one.
 pub fn scan_range(
     conn: &Connection,
     lo: i64,
@@ -2292,7 +2307,7 @@ pub fn scan_range(
                 genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
                 rg_track_gain, rg_album_gain, bpm, bpm_source, sub
-         FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
+         FROM tracks WHERE id > ?1 AND id <= ?2 AND source <> 'unknown' ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
     while let Some(row) = rows.next()? {

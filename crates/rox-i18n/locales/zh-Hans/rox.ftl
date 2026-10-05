@@ -1660,6 +1660,7 @@ stats-count-menu = 计数
     .description = 这个数字统计最近哪一段时间的收听；悬停列表里始终全都有
 stats-empty-all = 还没有收听记录
 stats-empty-range = 这个区间没有收听记录
+stats-empty-repeats = 这个区间没有播放超过一次的歌曲
 stats-library-held = { $tracks } 首曲目，占用内存 { $size }
 stats-now = 现在
 stats-open = 打开统计
@@ -1689,12 +1690,14 @@ stats-section-recent-listens = 最近收听
 stats-section-top-albums = 专辑排行
 stats-section-top-artists = 艺术家排行
 stats-section-top-genres = 流派排行
+stats-section-top-tracks = 曲目排行
 stats-show-change = 显示变化
     .description = 加一个小标签，显示这一段和上一段比是升还是降；“全部时间”后面没有可比的
 stats-show-number = 显示数字
     .description = 在图标旁边画出计数；关掉就只剩图标，计数在悬停时显示
 stats-title = 统计部件
 stats-tooltip-listens = 收听
+stats-unknown-row = 不在你的资料库中；可从播放历史面板播放
 stats-window-title = rox - 统计
 
 ## 清除收听记录：统计窗口和存储页面都会弹出的确认框，以及其中的条数。
@@ -1959,6 +1962,7 @@ eq-shape-active = { $count ->
    *[other] { $count } 个频段偏离平直，峰值 { $peak } dB
 }
 eq-shape-flat = 平直，每个频段都在 0 dB
+eq-spatial-on = 空间音频已开
 eq-status-off = 均衡器已关
 eq-status-on = 均衡器已开
 eq-title = 均衡器部件
@@ -2258,6 +2262,7 @@ lastfm-import-history = 正在读取 scrobble 历史
 lastfm-import-plays-counts = 正在读取播放次数
 lastfm-import-plays-writing = 正在写入播放历史
 lastfm-import-plays-dated = ，其中 { $count } 次有真实日期
+lastfm-import-plays-unknown = ，{ $count } 次属于媒体库里没有的歌曲
 lastfm-import-plays-stopped-history = 在 { $count } 条 scrobble 后停止
 
 ## Tag tools
@@ -3172,6 +3177,7 @@ metadata-field-source = 来源
 metadata-source-local = 本地
 metadata-source-radio = 广播
 metadata-source-subsonic = Subsonic
+metadata-source-unknown = 未知
 metadata-field-station = 电台
 metadata-field-homepage = 主页
 metadata-field-disc = 碟片
@@ -3244,6 +3250,13 @@ history-view-most = 播放最多
 history-view-never = 从未播放
 history-view-recent = 最近播放
 history-view-recent-short = 最近
+history-play-from = 播放来源
+history-unknown-row = 媒体库里没有这首歌；双击即可通过插件播放
+history-finding = 正在 { $source } 中搜索 { $title }...
+history-not-found = { $source } 中没有找到 { $title }
+history-find-failed = 无法搜索 { $source }：{ $reason }
+history-no-plugins = 没有正在运行的插件能搜索这首歌
+history-pick-plugin = 在这一行菜单的播放来源中选择一个插件
 history-view-row = 视图
     .description = 面板显示收听记录的哪一面
 

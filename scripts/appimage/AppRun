@@ -8,4 +8,30 @@ if [ "$1" = "--mcp" ]; then
     shift
     exec "$here/usr/bin/rox-mcp" "$@"
 fi
+
+# True when a Vulkan driver manifest sits anywhere the loader searches.
+has_vulkan_driver() {
+    old_ifs=$IFS
+    IFS=:
+    for dir in "${XDG_CONFIG_HOME:-$HOME/.config}" ${XDG_CONFIG_DIRS:-/etc/xdg} /etc \
+        "${XDG_DATA_HOME:-$HOME/.local/share}" ${XDG_DATA_DIRS:-/usr/local/share:/usr/share} \
+        /usr/local/share /usr/share; do
+        for manifest in "$dir"/vulkan/icd.d/*.json; do
+            if [ -e "$manifest" ]; then
+                IFS=$old_ifs
+                return 0
+            fi
+        done
+    done
+
+    IFS=$old_ifs
+    return 1
+}
+
+# With no driver at all gpui panics before it opens a window, so fall back to
+# the bundled software one. A driver list the user set themselves wins.
+if [ -z "$VK_ICD_FILENAMES$VK_DRIVER_FILES" ] && ! has_vulkan_driver; then
+    export VK_ICD_FILENAMES="$here/usr/lib/lavapipe/lvp_icd.json"
+fi
+
 exec "$here/usr/bin/rox" "$@"

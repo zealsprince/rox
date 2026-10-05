@@ -121,7 +121,8 @@ jobs:
       # dpkg-shlibdeps for cargo-deb's $auto; file is for appimagetool;
       # cmake is for rox-milkdrop-sys, which builds libprojectM from source;
       # imagemagick downscales the AppImage's icon to the 256px slot;
-      # patchelf points the AppImage's rox at its bundled libraries.
+      # patchelf points the AppImage's rox at its bundled libraries;
+      # mesa-vulkan-drivers is the lavapipe the AppImage bundles.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -130,7 +131,7 @@ jobs:
             build-essential git curl ca-certificates dpkg-dev file \
             pkg-config libasound2-dev libfontconfig1-dev libwayland-dev \
             libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev \
-            libssl-dev cmake imagemagick patchelf
+            libssl-dev cmake imagemagick patchelf mesa-vulkan-drivers
 
       - uses: actions/checkout@v7
         with:
@@ -223,8 +224,9 @@ jobs:
         run: cargo deb -p rox --no-build -o .
 
       # Same binaries again as one self-contained file, with the desktop
-      # entry, icons, metainfo and the xkbcommon libraries the AppImage
-      # excludelist leaves out. Everything else comes from the host, and
+      # entry, icons, metainfo, the xkbcommon libraries the AppImage
+      # excludelist leaves out, and lavapipe as the Vulkan driver of last
+      # resort. Everything else comes from the host, and
       # the bookworm build is what makes the glibc floor hold. The script
       # pins appimagetool and the static runtime by hash, embeds the update
       # information and writes the .zsync that AppImageUpdate diffs against.

@@ -2,10 +2,11 @@
 # Wraps the release binaries into a single-file AppImage. The release
 # workflow's "Package (Linux AppImage)" step calls this after `cargo build
 # --release`; run it by hand from the repo root to
-# reproduce that locally. The host supplies glibc, Vulkan, ALSA, fontconfig
-# and everything else on the AppImage excludelist. The xkbcommon libraries
-# rox links aren't on it and stock installs can lack the X11 one, so those
-# get bundled.
+# reproduce that locally. The host supplies glibc, the Vulkan loader, ALSA,
+# fontconfig and everything else on the AppImage excludelist. The xkbcommon
+# libraries rox links aren't on it and stock installs can lack the X11 one,
+# so those get bundled, along with a software Vulkan driver for hosts that
+# have none.
 # Usage: scripts/appimage/build.sh <version> <out-dir>
 set -euo pipefail
 
@@ -72,6 +73,43 @@ for lib in libxkbcommon.so.0 libxkbcommon-x11.so.0 libxcb-xkb.so.1; do
     patchelf --set-rpath '$ORIGIN' "$APPDIR/usr/lib/$lib"
 done
 patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/rox"
+
+# Mesa's software Vulkan driver, for hosts with no Vulkan driver at all: VMs
+# without 3D, and CI boxes like the AppImage catalog's. gpui can't open a
+# window without one, and AppRun only points the loader here when the host
+# has no driver manifest. Its deps come along minus the excludelist ones, in
+# a dir of their own so they never shadow what rox resolves from the host.
+LVP_SRC=/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+LVP_MANIFEST=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+LVP_DIR="$APPDIR/usr/lib/lavapipe"
+if [ ! -f "$LVP_SRC" ] || [ ! -f "$LVP_MANIFEST" ]; then
+    echo "lavapipe is missing; install mesa-vulkan-drivers" >&2
+    exit 1
+fi
+
+mkdir -p "$LVP_DIR"
+for path in "$LVP_SRC" $(ldd "$LVP_SRC" | awk '$3 ~ /^\// { print $3 }'); do
+    lib=$(basename "$path")
+    case "$lib" in
+        libc.so.* | libm.so.* | libpthread.so.* | libstdc++.so.* | libgcc_s.so.* | \
+            libz.so.* | libdrm.so.* | libexpat.so.* | libwayland-client.so.* | \
+            libxcb.so.* | libxcb-dri3.so.* | libX11-xcb.so.*)
+            continue
+            ;;
+    esac
+
+    cp -L "$path" "$LVP_DIR/$lib"
+    patchelf --set-rpath '$ORIGIN' "$LVP_DIR/$lib"
+done
+
+# A relative library_path resolves against the manifest's own dir, which is
+# the only way to name a path inside the mount point ahead of time.
+sed 's|"library_path": *"[^"]*"|"library_path": "./libvulkan_lvp.so"|' \
+    "$LVP_MANIFEST" > "$LVP_DIR/lvp_icd.json"
+if ! grep -q '"./libvulkan_lvp.so"' "$LVP_DIR/lvp_icd.json"; then
+    echo "couldn't rewrite library_path in $LVP_MANIFEST" >&2
+    exit 1
+fi
 
 # Desktop entry under the reverse-DNS id, with the icon name to match. Both
 # Exec= lines stay as shipped: AppRun is what runs, appimagetool only wants

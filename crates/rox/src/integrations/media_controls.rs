@@ -46,6 +46,7 @@ const SEEK_EPSILON: Duration = Duration::from_millis(1000);
 /// Dropping it tears the media service down.
 pub struct MediaKeys {
     controls: MediaControls,
+    sender: async_channel::Sender<MediaCommand>,
     events: async_channel::Receiver<MediaCommand>,
     /// Last pushed play state: `None` stopped, `Some(playing)` with a track loaded.
     state: Option<bool>,
@@ -87,18 +88,11 @@ impl MediaKeys {
             display_name: "rox",
             hwnd,
         };
-        let mut controls = MediaControls::new(config).ok()?;
-        let (tx, events) = async_channel::unbounded();
-        controls
-            .attach(move |event| {
-                // Souvlaki's thread: map and hand to the UI.
-                if let Some(cmd) = interpret(event) {
-                    let _ = tx.try_send(cmd);
-                }
-            })
-            .ok()?;
-        Some(MediaKeys {
+        let controls = MediaControls::new(config).ok()?;
+        let (sender, events) = async_channel::unbounded();
+        let mut keys = MediaKeys {
             controls,
+            sender,
             events,
             state: None,
             force: false,
@@ -106,7 +100,28 @@ impl MediaKeys {
             cover: None,
             pushed_position: None,
             pushed_at: None,
-        })
+        };
+
+        // Linux attaches once MediaSession has seen the session bus answer.
+        if !cfg!(target_os = "linux") && !keys.attach() {
+            return None;
+        }
+
+        Some(keys)
+    }
+
+    /// Starts the OS service. On Linux, only with a session bus known to be up:
+    /// souvlaki's MPRIS thread unwraps its connection and panics without one.
+    fn attach(&mut self) -> bool {
+        let tx = self.sender.clone();
+        self.controls
+            .attach(move |event| {
+                // Souvlaki's thread: map and hand to the UI.
+                if let Some(cmd) = interpret(event) {
+                    let _ = tx.try_send(cmd);
+                }
+            })
+            .is_ok()
     }
 
     pub fn events(&self) -> async_channel::Receiver<MediaCommand> {
@@ -215,10 +230,44 @@ impl MediaSession {
                 track: None,
                 live_rev: None,
             };
+            #[cfg(target_os = "linux")]
+            session.attach_when_bus_answers(cx);
+
             // Seed now: a hand-off arrives mid-track, and a paused player may not notify soon.
             session.publish(cx);
             session
         }))
+    }
+
+    /// Without a session bus (containers, CI, bare X sessions) the service never
+    /// starts and the app runs on without media keys.
+    #[cfg(target_os = "linux")]
+    fn attach_when_bus_answers(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let bus = cx
+                .background_executor()
+                .spawn(async { zbus::Connection::session().await })
+                .await;
+            if let Err(err) = bus {
+                log::warn!("media controls: no session bus, no media keys: {err}");
+                return;
+            }
+
+            this.update(cx, |this, cx| {
+                if !this.keys.attach() {
+                    return;
+                }
+
+                // Everything pushed so far went nowhere, so the next publish
+                // has to send the whole block again.
+                this.track = None;
+                this.live_rev = None;
+                this.keys.force = true;
+                this.publish(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn apply(&mut self, cmd: MediaCommand, cx: &mut Context<Self>) {

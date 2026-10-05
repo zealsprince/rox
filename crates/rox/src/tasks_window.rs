@@ -400,12 +400,12 @@ impl Snapshot {
         }
     }
 
-    /// Unmatched loved tracks count as failed: this library has no home for them.
+    /// Nothing fails: a love with no track is kept on an Unknown row.
     fn import(job: &import::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
             total: job.total(),
-            failed: job.unmatched(),
+            failed: 0,
             current: job.current(),
             current_is_path: false,
             eta: job.eta_secs(),
@@ -1137,18 +1137,7 @@ impl TasksWindow {
                 }
             }
             Job::LovedImport => match import::last(cx) {
-                Some(Ok(summary)) => {
-                    lines.push(summary.line());
-                    if summary.unmatched > 0 {
-                        lines.push(
-                            rox_i18n::t!(
-                                "tasks-import-unmatched",
-                                count = summary.unmatched as u64
-                            )
-                            .to_string(),
-                        );
-                    }
-                }
+                Some(Ok(summary)) => lines.push(summary.line()),
                 Some(Err(e)) => lines
                     .push(rox_i18n::t!("tasks-import-failed", error = e.to_string()).to_string()),
                 // Only reachable for a frame, before the first progress arrives.

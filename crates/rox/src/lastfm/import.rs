@@ -2,8 +2,10 @@
 //! hearts. A dynamic task, shown in the tasks window only while running or
 //! just finished.
 //!
-//! It only adds. An unresolved name is counted and left alone, and nothing
-//! ever takes a heart back, which also makes a rerun free. Matching follows
+//! It only adds, and nothing ever takes a heart back, which also makes a
+//! rerun free. An unresolved name is hearted on its Unknown row
+//! ([`rox_library::unknown`]), so the heart moves to the song once a scan
+//! finds a copy or a plugin plays it. Matching follows
 //! [`rox_library::playlists::reattach`]: exact after folding, a bracketed
 //! qualifier gets a second look, and anything ambiguous is left for a human.
 
@@ -14,7 +16,7 @@ use std::time::Duration;
 
 use gpui::{App, Entity, Global, SharedString};
 
-use rox_library::store;
+use rox_library::{store, unknown};
 
 use rox_core::settings::Settings;
 use rox_services::catalog::Library;
@@ -34,7 +36,6 @@ const MAX_PAGES: usize = 500;
 pub struct Progress {
     done: AtomicUsize,
     total: AtomicUsize,
-    unmatched: AtomicUsize,
     /// A track name while fetching, a phase name otherwise.
     current: Mutex<String>,
     cancel: AtomicBool,
@@ -49,10 +50,6 @@ impl Progress {
     /// Zero until the first page returns.
     pub fn total(&self) -> usize {
         self.total.load(Ordering::Relaxed)
-    }
-
-    pub fn unmatched(&self) -> usize {
-        self.unmatched.load(Ordering::Relaxed)
     }
 
     pub fn current(&self) -> String {
@@ -81,9 +78,10 @@ pub struct Summary {
     pub fetched: usize,
     /// Loved tracks that named at least one library track.
     pub matched: usize,
-    /// Hearts this run turned on; lower than `matched` on a rerun.
+    /// Hearts this run turned on, Unknown rows included.
     pub added: usize,
-    pub unmatched: usize,
+    /// Loved tracks that named none, hearted on their Unknown rows.
+    pub unknown: usize,
     pub stopped: bool,
 }
 
@@ -103,6 +101,12 @@ impl Summary {
             "lastfm-import-added",
             count = self.added as u64
         ));
+        if self.unknown > 0 {
+            line.push_str(&rox_i18n::t!(
+                "lastfm-import-unknown",
+                count = self.unknown as u64
+            ));
+        }
         line
     }
 }
@@ -211,7 +215,7 @@ struct Found {
     ids: Vec<i64>,
     fetched: usize,
     matched: usize,
-    unmatched: usize,
+    unknown: usize,
 }
 
 fn apply(
@@ -227,17 +231,18 @@ fn apply(
     library.update(cx, |library, cx| {
         library.set_favourites(&found.ids, true, cx);
     });
-    // These came from Last.fm: the mirror absorbs them rather than pushing them
-    // back. Same update pass, so it lands before the library event reaches the
-    // mirror's diff.
+    // These came from Last.fm: the mirrors absorb them rather than pushing them
+    // back out. Same update pass, so it lands before the library event reaches
+    // the mirrors' diffs.
     scrobbler.update(cx, |scrobbler, cx| {
         scrobbler.absorb_favourites(cx);
     });
+    rox_services::plugin_favourites::absorb(library, cx);
     Summary {
         fetched: found.fetched,
         matched: found.matched,
         added,
-        unmatched: found.unmatched,
+        unknown: found.unknown,
         stopped: progress.stopping(),
     }
 }
@@ -273,26 +278,29 @@ fn run(
     let index = Index::build(store::name_index(&conn).map_err(|e| e.to_string())?);
     let mut ids: Vec<i64> = Vec::new();
     let mut matched = 0usize;
-    let mut unmatched = 0usize;
+    let mut unknown = 0usize;
     for track in &loved {
         let found = index.resolve(&track.artist, &track.title);
         if found.is_empty() {
-            unmatched += 1;
-            // Misses can number in the hundreds, so they go to the log.
-            log::debug!("lastfm: no match for {} - {}", track.artist, track.title);
+            // The loved list has no album to give the row.
+            let row = unknown::row(&conn, &track.artist, &track.title, "")
+                .map_err(|e| e.to_string())?;
+            ids.push(row);
+            unknown += 1;
             continue;
         }
+
         matched += 1;
         ids.extend(found);
     }
-    progress.unmatched.store(unmatched, Ordering::Relaxed);
+
     ids.sort_unstable();
     ids.dedup();
     Ok(Found {
         ids,
         fetched: loved.len(),
         matched,
-        unmatched,
+        unknown,
     })
 }
 

@@ -309,6 +309,9 @@ impl EnableCard {
             if source.lyrics {
                 lines.push(rox_i18n::t!("settings-plugins-card-lyrics"));
             }
+            if source.favourites.is_some() {
+                lines.push(rox_i18n::t!("settings-plugins-card-favourites"));
+            }
 
             if !source.actions.is_empty() {
                 let labels: Vec<&str> = source.actions.iter().map(|a| a.label.as_str()).collect();
@@ -406,6 +409,13 @@ impl SettingsWindow {
         Settings::update(move |s| s.plugins_enabled = on);
         settings::set_plugins_enabled(on, cx);
         host::apply(cx);
+        cx.notify();
+    }
+
+    fn set_plugin_favourites(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.plugin_favourites = on;
+        Settings::update(move |s| s.plugin_favourites = on);
+        rox_services::plugin_favourites::set_enabled(&self.library, on, cx);
         cx.notify();
     }
 
@@ -753,6 +763,11 @@ impl SettingsWindow {
                         "settings-common-program-folders",
                         PROGRAM_FOLDERS_KEYWORDS,
                         Input::new(&self.program_folders.plugins).w(px(240.)),
+                    )
+                    .keyed(
+                        "settings-plugins-favourites",
+                        &["favourite", "favorite", "heart", "sync"],
+                        panel::toggle(self.plugin_favourites, Self::set_plugin_favourites, cx),
                     )
                     .custom(&keywords, || intro.into_any_element())
                     .custom(&keywords, || table.into_any_element())

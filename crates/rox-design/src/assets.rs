@@ -79,6 +79,8 @@ pub mod icons {
     pub const STAR_FILLED: &str = "icons/star-filled.svg";
     pub const HEART: &str = "icons/heart.svg";
     pub const HEART_FILLED: &str = "icons/heart-filled.svg";
+    /// A favourite on one side of a plugin's sync and not the other.
+    pub const HEART_HALF: &str = "icons/heart-half.svg";
     pub const SLIDERS: &str = "icons/sliders-horizontal.svg";
     pub const RADIO: &str = "icons/radio.svg";
     /// The Icecast stream. Not the radio icon, which is stations and
@@ -232,6 +234,7 @@ pub mod icons {
         STAR_FILLED,
         HEART,
         HEART_FILLED,
+        HEART_HALF,
         SLIDERS,
         RADIO,
         RADIO_TOWER,

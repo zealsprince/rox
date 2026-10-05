@@ -38,9 +38,9 @@ use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{
     self, Column, ColumnHost, GroupTrack, HeadingHost, SourceMark,
 };
+use crate::unknown_play;
 use rox_services::catalog::LocalCopy;
 use rox_services::history::HistoryEvent;
-use rox_services::{plugins, unknown};
 
 const ROW_H: f32 = 30.;
 
@@ -209,7 +209,7 @@ enum Row {
 
 /// A listen the Last.fm import couldn't match to a track, kept by its names.
 fn is_unknown(t: &TrackPlays) -> bool {
-    t.source == rox_library::unknown::SOURCE
+    unknown_play::is_unknown(&t.source)
 }
 
 fn group_track(t: &TrackPlays) -> GroupTrack<'_> {
@@ -797,31 +797,14 @@ impl HistoryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let sources = plugins::searchable_sources();
-        if sources.is_empty() {
-            return menu
-                .item(PopupMenuItem::new(rox_i18n::t!("history-no-plugins")).disabled(true));
-        }
-
-        let panel = cx.entity();
-        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
-            panel::follow_panel(&panel, cx);
-            for (source, label) in sources {
-                let checked = source.clone();
-                submenu = submenu.item(panel::check_row(
-                    label,
-                    None,
-                    move |this: &Self| this.config.unknown_source.as_ref() == Some(&checked),
-                    move |this, cx| this.play_unknown(ti, Some(source.clone()), cx),
-                    &panel,
-                ));
-            }
-            submenu
-        });
-        menu.item(PopupMenuItem::submenu(
-            rox_i18n::t!("history-play-from"),
-            submenu,
-        ))
+        unknown_play::play_from_menu(
+            menu,
+            cx.entity(),
+            |this: &Self| this.config.unknown_source.clone(),
+            move |this, source, cx| this.play_unknown(ti, Some(source), cx),
+            window,
+            cx,
+        )
     }
 
     /// Deduplicated: the Recent view lists a track once per listen.
@@ -884,45 +867,29 @@ impl HistoryPanel {
         let Some(t) = self.tracks.get(ti) else {
             return;
         };
+        let (unknown_id, artist, title) = (t.track_id, t.artist.clone(), t.title.clone());
 
-        let sources = plugins::searchable_sources();
         if picked.is_some() {
             self.config.unknown_source = picked.clone();
             panel::refresh_tab_panel(&self.tab_panel, cx);
         }
 
-        // A remembered plugin that's since stopped doesn't count.
-        let remembered = self
-            .config
-            .unknown_source
-            .clone()
-            .filter(|source| sources.iter().any(|(id, _)| id == source));
-        let only = (sources.len() == 1).then(|| sources[0].0.clone());
-        let Some(source) = picked.or(remembered).or(only) else {
-            self.finding = Some(match sources.is_empty() {
-                true => rox_i18n::t!("history-no-plugins"),
-                false => rox_i18n::t!("history-pick-plugin"),
-            });
-            cx.notify();
-            return;
-        };
+        let (source, label) =
+            match unknown_play::source_for(picked, self.config.unknown_source.as_deref()) {
+                Ok(pick) => pick,
+                Err(why) => {
+                    self.finding = Some(why);
+                    cx.notify();
+                    return;
+                }
+            };
 
-        let label = sources
-            .iter()
-            .find(|(id, _)| *id == source)
-            .map_or_else(|| source.clone(), |(_, label)| label.clone());
-        let (unknown_id, artist, title) = (t.track_id, t.artist.clone(), t.title.clone());
         self.finding_gen += 1;
         let generation = self.finding_gen;
-        self.finding = Some(rox_i18n::t!(
-            "history-finding",
-            source = label.clone(),
-            title = title.clone()
-        ));
+        self.finding = Some(unknown_play::finding_line(&label, &title));
         cx.notify();
 
-        let library = self.state.library.clone();
-        let found = plugins::find_track(library.clone(), &source, artist, title.clone(), cx);
+        let found = unknown_play::find(&self.state, &source, artist, title.clone(), cx);
         cx.spawn(async move |this, cx| {
             let found = found.await;
             this.update(cx, |this, cx| {
@@ -930,35 +897,8 @@ impl HistoryPanel {
                     return;
                 }
 
-                this.finding = match found {
-                    Ok(Some(key)) => {
-                        this.state
-                            .player
-                            .update(cx, |player, cx| player.play_at(vec![key.clone()], 0, cx));
-                        // The row's listens follow the song onto the plugin's
-                        // row, so the next click plays it straight away.
-                        let adopted = unknown::adopt(library, unknown_id, key, cx);
-                        cx.spawn(async move |_, _| {
-                            if let Err(e) = adopted.await {
-                                log::warn!("history: moving an unknown row's listens: {e}");
-                            }
-                        })
-                        .detach();
-                        None
-                    }
-
-                    Ok(None) => Some(rox_i18n::t!(
-                        "history-not-found",
-                        source = label,
-                        title = title
-                    )),
-
-                    Err(reason) => Some(rox_i18n::t!(
-                        "history-find-failed",
-                        source = label,
-                        reason = reason
-                    )),
-                };
+                this.finding =
+                    unknown_play::found(&this.state, unknown_id, found, label, title, cx);
                 cx.notify();
             })
             .ok();

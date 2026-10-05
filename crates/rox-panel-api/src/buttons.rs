@@ -104,6 +104,12 @@ pub const STATES: &[StateSpec] = &[
                 color: "accent",
             },
             StateCase {
+                id: "half",
+                label_key: "button-state-favourite-half",
+                icon: icons::HEART_HALF,
+                color: "accent",
+            },
+            StateCase {
                 id: "off",
                 label_key: "button-state-favourite-off",
                 icon: icons::HEART,
@@ -892,17 +898,13 @@ fn read_playback(live: &Live) -> &'static str {
 
 fn read_favourite(live: &Live) -> &'static str {
     match live.marks {
+        Some(marks @ Marks { id: Some(_), .. }) if marks.half() => "half",
         Some(Marks {
             id: Some(_),
-            favourite,
+            favourite: true,
             ..
-        }) => {
-            if favourite {
-                "on"
-            } else {
-                "off"
-            }
-        }
+        }) => "on",
+        Some(Marks { id: Some(_), .. }) => "off",
         _ => "none",
     }
 }

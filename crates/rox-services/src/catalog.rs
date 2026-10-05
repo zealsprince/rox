@@ -2177,7 +2177,7 @@ struct Touched {
     removed: Vec<i64>,
 }
 
-/// The last element is how many Unknown listens moved onto a local copy.
+/// The last element is how many Unknown listens moved onto a real track.
 #[allow(clippy::type_complexity)]
 fn load(
     db_path: &std::path::Path,
@@ -2191,7 +2191,14 @@ fn load(
     let mut touched = Touched::default();
     let mut relinked = 0;
     let summary = match refresh {
-        Refresh::Load => None,
+        // A plugin sync ends in a load, and its new rows can be a hearted
+        // Unknown row's song. A failure costs the relink, never the load.
+        Refresh::Load => {
+            if let Ok(mut conn) = store::open(db_path) {
+                relinked = relink_hearts(&mut conn);
+            }
+            None
+        }
         Refresh::Scan(roots) => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
@@ -2309,11 +2316,21 @@ fn load(
     ))
 }
 
-/// [`crate::unknown::relink`] once files arrived. A failure costs the relink,
-/// never the refresh: the next scan tries again.
+/// [`crate::unknown::relink`] once files arrived, then the plugin pass for
+/// the hearts no local copy took. A failure costs the relink, never the
+/// refresh: the next scan tries again.
 fn relink_unknown(conn: &mut Connection) -> usize {
-    crate::unknown::relink(conn).unwrap_or_else(|e| {
+    let local = crate::unknown::relink(conn).unwrap_or_else(|e| {
         log::warn!("library: moving unknown listens onto local copies: {e}");
+        0
+    });
+
+    local + relink_hearts(conn)
+}
+
+fn relink_hearts(conn: &mut Connection) -> usize {
+    crate::unknown::relink_hearts(conn).unwrap_or_else(|e| {
+        log::warn!("library: moving unknown hearts onto plugin tracks: {e}");
         0
     })
 }

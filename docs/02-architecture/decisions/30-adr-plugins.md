@@ -616,3 +616,27 @@ and run its actions through the control socket, behind a switch of its own. [ADR
 22](22-adr-control-surface.md)'s amendment has the surface and the gate. The plugin
 hears the same `source.action`, `source.browse` and `source.search` a menu or the source
 browser sends, so nothing in this record moves.
+
+**Amended 2026-10-05: favourites that follow the heart.** Andrew's product call: a heart
+on a plugin's track should reach the service the track came from. A source may declare
+`favourites`, naming two of its own track actions, one that adds to the service's
+favourites and one that takes away. One switch on the Plugins page, Sync Favourites, off
+by default, has rox run them when a heart moves on that plugin's tracks. rox diffs the
+library's favourite set the way the Last.fm mirror does, so every way of moving a heart
+counts, and favourites from before the switch went on are never pushed. Hearts the
+Last.fm import writes are absorbed the same way.
+
+It adds no wire method. The calls are `source.action` with the declared ids, the same
+ones a menu sends, and rox reads the service's side from the rows' `favourite` flag,
+which `source.flags` and action answers already carry. The plugin does nothing it
+couldn't do from a menu, and the user's switch is what lets a heart reach it.
+
+While the switch is on, a heart whose two sides disagree draws half: a favourite in rox
+and not on the service, or the other way round. That's a favourite from before the
+switch, a push that failed, or one the user made on the service directly. A click on a
+half heart favourites on both sides, and a click on a full heart takes it off both. rox
+never adds a heart by itself because the service has one. Flags are still hints kept for
+the session, so a row the plugin said nothing about draws its local heart.
+
+The declaration sits under `capabilities.source`, so `api` stays 1, and the re-approval
+card shows it as a new capability.

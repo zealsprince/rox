@@ -1,12 +1,14 @@
 //! Matching a song named by artist and title, as an online service names it,
 //! to the rows that hold it: exact after folding, then with feature credits
 //! dropped, and a bracketed qualifier gets a last look. Anything ambiguous
-//! matches nothing, for a human to settle.
+//! matches nothing, for a human to settle. A row credited to a comma list of
+//! artists also answers to the first of them.
 
 use std::collections::{HashMap, HashSet};
 
 use rox_net::providers::normalize;
 
+#[derive(Clone)]
 struct Entry {
     title: String,
     /// `title` with feature credits dropped first.
@@ -22,8 +24,8 @@ pub struct Index(HashMap<String, Vec<Entry>>);
 impl Index {
     pub fn build(rows: Vec<(i64, String, String)>) -> Index {
         let mut index: HashMap<String, Vec<Entry>> = HashMap::new();
-        for (id, artist, title) in rows {
-            let artist = normalize(&artist);
+        for (id, row_artist, title) in rows {
+            let artist = normalize(&row_artist);
             if artist.is_empty() {
                 continue;
             }
@@ -31,12 +33,17 @@ impl Index {
             if folded.is_empty() {
                 continue;
             }
-            index.entry(artist).or_default().push(Entry {
+            let entry = Entry {
                 plain: plain(&title),
                 bare: bare(&title),
                 title: folded,
                 id,
-            });
+            };
+
+            if let Some(lead) = lead_of(&row_artist, &artist) {
+                index.entry(lead).or_default().push(entry.clone());
+            }
+            index.entry(artist).or_default().push(entry);
         }
         Index(index)
     }
@@ -78,6 +85,18 @@ impl Index {
         }
         ids(&near)
     }
+}
+
+/// The first of a comma list of artists, normalized, when it differs from
+/// the whole. Streaming services credit everyone on a track in one string
+/// ("Lemaitre, Sofiloud") where Last.fm names the lead. A band with a comma
+/// in its name gets a second key too, which only matters if another act
+/// called its first word has a song by the same title.
+fn lead_of(artist: &str, whole: &str) -> Option<String> {
+    let (lead, _) = artist.split_once(", ")?;
+    let lead = normalize(lead);
+
+    (!lead.is_empty() && lead != whole).then_some(lead)
 }
 
 /// In index order, each once: a track filed under both its artist and its
@@ -218,6 +237,18 @@ mod tests {
             ),
             (5, "Air".into(), "La Femme d'Argent (Live)".into()),
         ])
+    }
+
+    #[test]
+    fn a_credit_list_answers_to_its_lead() {
+        let index = Index::build(vec![(1, "Lemaitre, Sofiloud".into(), "Trip Sitter".into())]);
+
+        assert_eq!(index.resolve("Lemaitre", "Trip Sitter"), [1]);
+        assert_eq!(index.resolve("lemaitre, sofiloud", "Trip Sitter"), [1]);
+        assert!(
+            index.resolve("Sofiloud", "Trip Sitter").is_empty(),
+            "only the lead, never a guest"
+        );
     }
 
     #[test]

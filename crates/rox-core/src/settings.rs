@@ -475,6 +475,10 @@ pub struct Settings {
     /// Lets plugins run, from the head of the Plugins page. Each plugin
     /// still has its own switch (ADR 30).
     pub plugins_enabled: bool,
+    /// Whether a heart on a plugin's track also favourites it on the
+    /// plugin's service, for plugins that declare favourites. Off by
+    /// default, and it never pushes favourites that predate turning it on.
+    pub plugin_favourites: bool,
     /// Folders searched for programs ahead of PATH, joined the way PATH is
     /// on this OS. Plugins and Convert's ffmpeg both look here; parse with
     /// [`split_folders`].
@@ -1156,6 +1160,19 @@ pub fn plugins_enabled() -> bool {
 
 pub fn set_plugins_enabled(on: bool, cx: &mut App) {
     PLUGINS_ENABLED.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+static PLUGIN_FAVOURITES: AtomicBool = AtomicBool::new(false);
+
+pub fn plugin_favourites() -> bool {
+    PLUGIN_FAVOURITES.load(Ordering::Relaxed)
+}
+
+pub fn set_plugin_favourites(on: bool, cx: &mut App) {
+    PLUGIN_FAVOURITES.store(on, Ordering::Relaxed);
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -3400,6 +3417,7 @@ impl Default for Settings {
             experimental: false,
             ai_enabled: false,
             plugins_enabled: false,
+            plugin_favourites: false,
             program_folders: String::new(),
             mcp_enabled: false,
             mcp_plugins: false,

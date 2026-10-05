@@ -992,8 +992,7 @@ pub fn tally(conn: &Connection) -> rusqlite::Result<Tally> {
 }
 
 /// The one delete in an append-only module; only ever behind a confirm.
-/// Unknown rows exist only to hold imported listens, so the ones left
-/// holding none go too.
+/// An Unknown row left holding no listen goes too, unless it's a favourite.
 pub fn clear(conn: &Connection, what: Clear) -> rusqlite::Result<usize> {
     let gone = match what {
         Clear::Imported => {

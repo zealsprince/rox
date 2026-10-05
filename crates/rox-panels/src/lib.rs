@@ -45,6 +45,7 @@ pub mod waveform;
 
 mod playing_bars;
 mod settings;
+mod unknown_play;
 
 pub(crate) use rox_design as design;
 pub(crate) use rox_design::assets;

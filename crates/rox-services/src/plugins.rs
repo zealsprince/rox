@@ -923,15 +923,18 @@ pub fn changes(approved: &Value, now: &Value) -> Vec<Change> {
     );
 
     // Inside a source that was already approved, a feature switched on asks
-    // for something new too, like links the user can open. A new source is
-    // already the capability line above.
+    // for something new too, like links the user can open, or one declared
+    // as an object, like favourites. A new source is already the capability
+    // line above.
     let features = |doc: &Value| -> Vec<String> {
         doc["capabilities"]["source"]
             .as_object()
             .map(|source| {
                 source
                     .iter()
-                    .filter(|(key, value)| *key != "scrobble" && value.as_bool() == Some(true))
+                    .filter(|(key, value)| {
+                        *key != "scrobble" && (value.as_bool() == Some(true) || value.is_object())
+                    })
                     .map(|(key, _)| key.clone())
                     .collect()
             })
@@ -2653,10 +2656,18 @@ pub fn find_track(
 /// the Last.fm import matches with. No fallback to the top result: a cover or
 /// a karaoke take played as the user's song is worse than nothing found.
 fn same_song(tracks: &[PluginTrack], artist: &str, title: &str) -> Option<usize> {
+    // The album artist is a second name, the way local tracks are filed: a
+    // plugin can send the lead there when its artist is the whole credit list.
     let rows = tracks
         .iter()
         .enumerate()
-        .map(|(at, track)| (at as i64, track.artist.clone(), track.title.clone()))
+        .flat_map(|(at, track)| {
+            let album_artist = (!track.album_artist.is_empty()
+                && track.album_artist != track.artist)
+                .then(|| (at as i64, track.album_artist.clone(), track.title.clone()));
+            std::iter::once((at as i64, track.artist.clone(), track.title.clone()))
+                .chain(album_artist)
+        })
         .collect();
 
     // The service ranked its results, so the earliest match wins a tie.
@@ -2894,6 +2905,28 @@ mod tests {
     }
 
     #[test]
+    fn declaring_favourites_shows_as_a_new_capability() {
+        let add = json!({ "id": "add", "label": "Add", "on": ["track"] });
+        let drop = json!({ "id": "drop", "label": "Drop", "on": ["track"] });
+        let before = manifest(
+            json!({ "source": { "label": "T", "actions": [add.clone(), drop.clone()] } }),
+            json!([]),
+            "t.py",
+        );
+        let after = manifest(
+            json!({ "source": { "label": "T", "actions": [add, drop],
+                                "favourites": { "add": "add", "remove": "drop" } } }),
+            json!([]),
+            "t.py",
+        );
+
+        assert_eq!(
+            changes(&before, &after),
+            vec![Change::CapabilityAdded("favourites".into())]
+        );
+    }
+
+    #[test]
     fn a_first_approval_diffs_against_nothing() {
         let doc = manifest(json!({ "source": { "label": "T" } }), json!([]), "t.py");
         assert_eq!(
@@ -2947,6 +2980,16 @@ mod tests {
     fn two_takes_that_differ_only_by_qualifier_settle_nothing() {
         let found = results(&[("Air", "Sexy Boy (Live)"), ("Air", "Sexy Boy (Demo)")]);
         assert_eq!(same_song(&found, "Air", "Sexy Boy"), None);
+    }
+
+    #[test]
+    fn a_credit_list_or_an_album_artist_finds_the_lead() {
+        let found = results(&[("Lemaitre, Sofiloud", "Trip Sitter")]);
+        assert_eq!(same_song(&found, "Lemaitre", "Trip Sitter"), Some(0));
+
+        let mut found = results(&[("Sofiloud & Lemaitre", "Trip Sitter")]);
+        found[0].album_artist = "Lemaitre".into();
+        assert_eq!(same_song(&found, "Lemaitre", "Trip Sitter"), Some(0));
     }
 
     #[test]

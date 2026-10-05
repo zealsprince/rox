@@ -714,6 +714,7 @@
                                   "bar_width": 3.0,
                                   "bar_gap": 2.0,
                                   "outline": false,
+                                  "loudness": true,
                                   "scrobble_marker": false
                                 }
                               }
@@ -1018,6 +1019,7 @@
                           "bar_width": 3.0,
                           "bar_gap": 2.0,
                           "outline": false,
+                          "loudness": true,
                           "scrobble_marker": false
                         }
                       }

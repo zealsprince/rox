@@ -511,6 +511,7 @@ button-state-capture-on = On
 button-state-capture-off = Off
 button-state-favourite = Favourite
 button-state-favourite-on = Favourite
+button-state-favourite-half = Favourite on One Side
 button-state-favourite-off = Not Favourite
 button-state-favourite-none = Nothing to Mark
 button-state-mini = Mini Layout
@@ -1264,6 +1265,8 @@ settings-plugins-failed-title = Este plugin não consegue rodar
 settings-plugins-sync-failed = A última sincronização falhou
 settings-plugins-scrobble = Fazer scrobble
     .description = Envia o que este plugin toca para os seus serviços de scrobble. Oferecido porque o plugin pede
+settings-plugins-favourites = Sincronizar favoritos
+    .description = Um coração numa faixa de um plugin também a favorita no serviço do plugin, se o plugin oferecer isso. Corações de antes de ativar ficam como estão e aparecem preenchidos pela metade até você clicar neles
 settings-plugins-lyrics = Letras
     .description = Pede a este plugin as letras das faixas dele antes dos provedores de letras. Oferecido porque o plugin as fornece
 settings-plugins-developer = Modo desenvolvedor: até você fechar o rox, uma mudança na pasta deste plugin é aprovada sozinha e o reinicia. Uma mudança no que o manifesto declara ainda o desliga
@@ -1278,6 +1281,7 @@ settings-plugins-card-title = Ligar "{ $name }"?
 settings-plugins-card-runs = Ele roda como programa neste computador, com as suas permissões. O rox não o isola.
 settings-plugins-card-source = Adiciona { $label } como fonte: o rox navega, busca, sincroniza e toca por meio do plugin.
 settings-plugins-card-scrobbles = Pede para fazer scrobble do que toca.
+settings-plugins-card-favourites = Pode favoritar as faixas dele no serviço dele depois que você ativar Sincronizar favoritos.
 settings-plugins-card-lyrics = Oferece letras para as faixas dele. O rox só pede depois que você ativar.
 settings-plugins-card-actions = Adiciona aos menus do rox: { $actions }
 settings-plugins-card-program-found = Usa { $program }, encontrado neste computador.
@@ -2350,6 +2354,7 @@ lastfm-import-added = { $count ->
     [one] , { $count } adicionada aos favoritos
    *[other] , { $count } adicionadas aos favoritos
 }
+lastfm-import-unknown = , { $count } fora da sua biblioteca
 lastfm-import-plays-read = { $count ->
     [one] { $count } faixa com reproduções lida
    *[other] { $count } faixas com reproduções lidas
@@ -3876,6 +3881,8 @@ slide-title = Slide
 theme-toggle-to-dark = Mudar para o tema escuro
 theme-toggle-to-light = Mudar para o tema claro
 transport-favourite-add = Adicionar aos favoritos
+transport-favourite-half-here = Favorito aqui, mas não no serviço do plugin. Clique para adicionar lá
+transport-favourite-half-there = Favorito no serviço do plugin, mas não aqui. Clique para adicionar aqui
 transport-favourite-nothing = Nada para favoritar
 transport-favourite-remove = Remover dos favoritos
 transport-live = AO VIVO

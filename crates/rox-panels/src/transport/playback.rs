@@ -32,7 +32,7 @@ use crate::rating_ui;
 use crate::settings::ShuffleMode;
 use crate::source::TrackSource;
 use rox_panel_api::actions::{PLAYBACK_TIP_SCOPE, TogglePlayback};
-use rox_services::plugins;
+use rox_services::{plugin_favourites, plugins};
 
 use super::{default_true, transport_panel};
 
@@ -1235,11 +1235,10 @@ impl TransportPanel {
             self.outro = None;
         }
         // Resolving costs a lookup, so only while the heart is shown.
-        let (heart_id, heart_on) = if self.config.items.contains(&PlaybackItem::Favourite) {
-            let marks = self.current_marks(cx);
-            (marks.id, marks.favourite)
+        let heart = if self.config.items.contains(&PlaybackItem::Favourite) {
+            self.current_marks(cx)
         } else {
-            (None, false)
+            Marks::default()
         };
         let (rating_id, rating_value) = if self.config.items.contains(&PlaybackItem::Rating) {
             let marks = self.current_marks(cx);
@@ -1460,45 +1459,32 @@ impl TransportPanel {
                 })
                 .into_any_element(),
                 PlaybackItem::Favourite => {
-                    // Dimmed and unclickable reads as broken, so the tip says there's no
-                    // track under it.
-                    let tip = match (heart_id.is_some(), heart_on) {
-                        (false, _) => rox_i18n::t!("transport-favourite-nothing"),
-                        (true, true) => rox_i18n::t!("transport-favourite-remove"),
-                        (true, false) => rox_i18n::t!("transport-favourite-add"),
-                    };
-                    panel::Tip::keyed("favourite", tip)
+                    let (glyph, lit) = heart.heart();
+                    panel::Tip::keyed("favourite", heart.heart_tip())
                         .apply(
                             div()
                                 .flex_none()
                                 .p(tokens::ICON_PAD)
                                 .rounded(tokens::RADIUS)
-                                .child(
-                                    svg()
-                                        .path(if heart_on {
-                                            icons::HEART_FILLED
-                                        } else {
-                                            icons::HEART
-                                        })
-                                        .size(px(16.))
-                                        .text_color(if heart_on {
-                                            palette::accent()
-                                        } else {
-                                            palette::text_faint()
-                                        }),
-                                )
+                                .child(svg().path(glyph).size(px(16.)).text_color(if lit {
+                                    palette::accent()
+                                } else {
+                                    palette::text_faint()
+                                }))
                                 // Stays up dimmed so the strip holds its shape while the queue turns
                                 // over.
-                                .when(heart_id.is_none(), |d| d.opacity(0.4))
-                                .when_some(heart_id, |d, id| {
+                                .when(heart.id.is_none(), |d| d.opacity(0.4))
+                                .when_some(heart.id, |d, id| {
                                     d.cursor_pointer()
                                         .hover(|d| d.bg(palette::bg_control()))
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this: &mut Self, _, _, cx| {
-                                                this.state.library.update(cx, |library, cx| {
-                                                    library.set_favourites(&[id], !heart_on, cx)
-                                                });
+                                                plugin_favourites::toggle(
+                                                    &this.state.library,
+                                                    id,
+                                                    cx,
+                                                );
                                             }),
                                         )
                                 }),

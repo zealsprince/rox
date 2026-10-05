@@ -498,8 +498,9 @@ pub fn set_favourite(
 }
 
 /// Append in order, snapshotting tags. Duplicates are kept except on
-/// favourites, and an Unknown row ([`crate::unknown`]) never joins. Returns
-/// the member ids that survived, which a drop hands to [`place_members`].
+/// favourites. An Unknown row ([`crate::unknown`]) only joins favourites,
+/// where a love the library has no copy of waits for one. Returns the member
+/// ids that survived, which a drop hands to [`place_members`].
 pub fn add(
     conn: &mut Connection,
     playlist_id: i64,
@@ -523,7 +524,9 @@ pub fn add(
             "INSERT INTO playlist_tracks
                 (playlist_id, track_id, position, title, artist, album, path, source)
              SELECT ?1, t.id, ?3, t.title, t.artist, t.album, t.path, t.source
-             FROM tracks t WHERE t.id = ?2 AND t.source <> 'unknown'",
+             FROM tracks t WHERE t.id = ?2
+               AND (t.source <> 'unknown'
+                    OR ?1 IN (SELECT id FROM playlists WHERE favourite = 1))",
         )?;
         for &track_id in track_ids {
             let added = insert.execute(rusqlite::params![playlist_id, track_id, next])?;

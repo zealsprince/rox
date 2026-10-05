@@ -21,6 +21,7 @@ pub mod openers;
 pub mod peaks;
 pub mod player;
 pub mod plugin_actions;
+pub mod plugin_favourites;
 pub mod plugin_library;
 pub mod plugins;
 pub mod portraits;

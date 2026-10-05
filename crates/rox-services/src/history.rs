@@ -12,7 +12,9 @@ use rox_library::{listens, store};
 use crate::lastfm::{Listened, Scrobbler};
 
 pub enum HistoryEvent {
-    Recorded { track_id: i64 },
+    /// `claimed` when the listen's plugin track took over a hearted Unknown
+    /// row ([`crate::unknown::claim`]), so its listens and heart moved too.
+    Recorded { track_id: i64, claimed: bool },
 }
 
 pub struct History {
@@ -53,13 +55,21 @@ impl History {
             let recorded = cx
                 .background_executor()
                 .spawn(async move {
-                    let conn = store::open(&db_path).map_err(|e| e.to_string())?;
+                    let mut conn = store::open(&db_path).map_err(|e| e.to_string())?;
                     listens::append(&conn, &listen).map_err(|e| e.to_string())?;
-                    Ok::<i64, String>(listen.track_id)
+
+                    // The listen is in either way; a failed claim waits for the
+                    // next play or load.
+                    let claimed =
+                        crate::unknown::claim(&mut conn, listen.track_id).unwrap_or_else(|e| {
+                            log::warn!("history: moving unknown hearts onto a plugin track: {e}");
+                            false
+                        });
+                    Ok::<_, String>((listen.track_id, claimed))
                 })
                 .await;
             this.update(cx, |_, cx| match recorded {
-                Ok(track_id) => cx.emit(HistoryEvent::Recorded { track_id }),
+                Ok((track_id, claimed)) => cx.emit(HistoryEvent::Recorded { track_id, claimed }),
                 Err(e) => log::warn!("history: {e}"),
             })
             .ok();

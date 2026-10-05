@@ -129,7 +129,7 @@ The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
 | `api` | The plugin API version it targets. Must be in `SUPPORTED_API`. |
 | `entry` | Exactly one of `script` or `native`. |
 | `meta` | `author`, `description`, `website`, `license`, `version`, all optional. The card shows the author and description. |
-| `capabilities.source` | `label` names the source in rox. `scrobble` defaults to false. `lyrics` says it answers `source.lyrics`, which rox asks only once the user switches Lyrics on for it. |
+| `capabilities.source` | `label` names the source in rox. `scrobble` defaults to false. `lyrics` says it answers `source.lyrics`, which rox asks only once the user switches Lyrics on for it. `favourites` names the actions a heart runs; see [Favourites](#favourites). |
 | `capabilities.panels` | Extra presets of core panel kinds, listed under the plugin in Add Panel. See [Panels](#panels). |
 | `programs` | Programs the plugin runs, by name. The page reports each as found on PATH or missing. rox enforces nothing with it. |
 | `config_schema` | JSON Schema for the plugin's settings. |
@@ -655,6 +655,49 @@ gets a Lyrics switch under the plugin, off until the user turns it on, and appro
 never turns it on (`set_lyrics`, `PluginRecord::lyrics`). The Providers page's online
 switch covers the built-in providers only.
 
+## Favourites
+
+A source can name two of its track actions as the service's favourites, under
+`capabilities.source`:
+
+```json
+"favourites": { "add": "favourite", "remove": "unfavourite" }
+```
+
+`check_actions` (`rox-plugins/src/manifest.rs`) refuses a name that isn't a declared
+action offered on `track`, and one action named for both. The service's side is the row
+flag `favourite` (`FAVOURITE_FLAG`), from listings, `source.flags` and action answers like
+any flag.
+
+Sync Favourites on the Plugins page is off by default (`plugin_favourites` in `Settings`,
+read through `settings::plugin_favourites`). `follow` in
+`rox-services/src/plugin_favourites.rs` subscribes to each workspace's library. On
+`PlaylistsChanged` it diffs `favourite_ids` against one snapshot every library shares,
+since they all read the same database and a change made in one window would otherwise
+go out again from the next. `Updated` reseeds without sending, since a rescan can rewrite
+ids. Switching on seeds from the hearts as they are, so nothing from before goes out,
+and the Last.fm import's hearts join the snapshot unsent (`absorb`, beside the Scrobbler's
+own). A plugin row whose `favourite` flag already matches the change is skipped.
+
+What moved is queued per source, 20 keys a call (`BATCH`), since a plugin may make one
+request per track inside the listing timeout. One call is in flight at a time, so an
+unfavourite straight after a favourite can't overtake it. Each is a `source.action` like a
+menu's: its flags are reported, its message is dropped, and a job is watched to its end
+and lists in the Tasks window. A failure is logged and leaves the heart half. Switching
+off drops what's queued.
+
+`MarkCache` (`rox-panel-api/src/marks.rs`) holds `Marks::remote` from
+`plugin_favourites::remote`: None unless the switch is on, the plugin is running and
+declares favourites, and something said the row's flags. It reads it again whenever
+`plugin_actions::flags_moved` moves, which every listing, flags answer and action report
+bumps, and so does flipping the switch. `Marks::half` is a remote that disagrees with
+the local heart. The playback strip's heart, the track info heart and the custom
+button's `player.favourite` state (`half`) draw `HEART_HALF` in the accent, with a tip
+saying which side has it. A click goes through `plugin_favourites::toggle`: a half heart
+that's only local queues the add and leaves the library alone, and any other heart
+flips the local favourite and lets the diff carry it. The library's heart column and the
+track menus read the local heart only.
+
 ## Panels
 
 Contract capability `panels` (WT-P9). Every running plugin is listed under Add Panel >
@@ -764,6 +807,8 @@ The Plugins page's copy, in English, for finding each string in the other locale
 | Card, changes | New capability: { $name } / Dropped capability: { $name } / New program: { $program } / Now asks to scrobble / No longer asks to scrobble / Starts a different way |
 | Card button | Switch On |
 | Page switch | Enable Plugins: Let the plugins in the plugins folder run. Each one still has its own switch below, and runs as a program on this computer with your permissions |
+| Favourites switch | Sync Favourites: A heart on a plugin's track also favourites it on the plugin's service, for plugins that offer it. Hearts from before you switch this on stay where they are and show half filled until you click them |
+| Card, favourites | Can favourite its tracks on its service once you switch on Sync Favourites. |
 | Under a switched-on plugin | Scrobble Plays, Lyrics: Ask this plugin for its tracks' lyrics before the lyrics providers. Offered because the plugin answers them, Synced Collections, Sync Now, The last sync failed |
 | Developer mode tooltip | Developer mode: until rox quits, a change to this plugin's folder is approved on its own and restarts it. A change to what its manifest declares still switches it off |
 | Nothing kept | Nothing synced yet. Switch sync on for a collection in the plugin's source browser |
@@ -838,6 +883,7 @@ Its tests are `tests/echo.rs` against the fixture in `tests/fixtures/echo/`, and
 The services side is `crates/rox-services/src/plugins.rs` (the host table, apply and
 approval, browse, search, sync, pick, covers, the opener and the pre-open), with
 `sources.rs` (`live_ids`, hiding and departing rows), `lastfm.rs` (the scrobble gate),
+`plugin_favourites.rs` (Sync Favourites and the half heart),
 `lyrics.rs` (`PluginLyrics`, the lyrics gate),
 `openers.rs` (the opener slot) and `thumbs.rs` (covers through the plugin). Records and
 approvals are `PluginRecord`, `SyncedCollection` and `approved_plugins` in

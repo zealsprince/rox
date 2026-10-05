@@ -156,15 +156,28 @@ what its command did without a second round trip:
   library.artwork        {"path": ".."} returns {"mime", "data_base64"}.
   library.rescan         Scan the library folders again; {"started": true},
                          or an error while busy or without folders.
-  tasks.status           The analysis passes (acoustic, ReplayGain,
-                         tempo, sort names, romanize): switch state,
-                         tracks to do, progress while one runs.
+  tasks.status           The analysis passes (acoustic, ReplayGain, tempo,
+                         sort names, romanize): switch state, tracks to
+                         do, progress while one runs. plugin_jobs lists
+                         the jobs plugin actions are running.
   tasks.start            {"pass": "acoustic"/"replaygain"/"tempo"/
                          "sortnames"/"romanize"}; answers with count,
                          workers, estimate, and save mode.
   tasks.stop             {"pass": ..}; the pass stops at the next file,
-                         keeping what's done.
-  ai.status              {"enabled", "mcp"}, the toggles rox-mcp checks.
+                         keeping what's done. {"job": n} stops a plugin
+                         action's job instead.
+  plugins.list           The running plugins, each with its source and the
+                         actions it declares.
+  plugins.browse         {"source", "node"?, "view"?, "cursor"?}; one page
+                         of a plugin's catalog, its roots when there's no
+                         node.
+  plugins.search         {"source", "query", "view"?, "cursor"?}; the same
+                         page shape.
+  plugins.action         {"source", "action", "items"?, "params"?}; runs a
+                         declared action as its menu item would, and
+                         answers its message or a job number.
+  ai.status              {"enabled", "mcp", "plugins"}, the toggles
+                         rox-mcp checks.
   debug.*                Diagnostics for working on rox itself; the
                          repository documents them.
 
@@ -172,9 +185,10 @@ Queue entry ids are stable handles: queue.list returns them, and remove,
 move, and jump name entries by them, so an edit can't hit the wrong row
 when the queue shifts underneath it. queue.add takes files and folders,
 filters to decodable audio, and accepts path#N for a cue sheet's Nth
-track, the same spelling the m3u export uses. mode places the batch: end
-behind what's queued, next right after the playing track, now splices and
-plays.
+track, the same spelling the m3u export uses. A plugin's or a server's
+track goes in by the source|path key library.search gives it, and only
+once it's in the library. mode places the batch: end behind what's queued,
+next right after the playing track, now splices and plays.
 
 Search uses the panels' query language: free terms match title, artist,
 album, and genre, while a field: prefix pins one, as in artist:name or
@@ -196,6 +210,10 @@ apply and the -32000 range for rox's own:
   -32003   no answer from the app in 30 seconds; retry rather than assume
   -32004   client-side only: the connection itself failed
 
+The plugins.* methods make the same calls the External Sources panel and
+its menus make, so a plugin can't tell a socket client was behind one.
+They answer while plugins are on, whatever the MCP switches say.
+
 The surface is local, never a network port. Auth is filesystem
 permissions: the Unix socket is created user-only (0600), and the Windows
 pipe uses the platform's default per-session access control. Remote
@@ -214,9 +232,10 @@ MCP
 
 rox-mcp is in this folder. It's a stdio MCP server that proxies a running
 rox, so an MCP client can ask what's playing, search the library, work the
-playback/transport, read the queue, and kick off library scans and the
-long analysis passes. Every tool is a straight proxy of one socket
-method (see IPC above).
+playback/transport, read and add to the queue, and kick off library scans
+and the long analysis passes. With a third switch it can also browse
+plugins and run their actions. Every tool is a straight proxy of one
+socket method (see IPC above).
 
 Two switches gate it, both off by default:
 
@@ -224,9 +243,15 @@ Two switches gate it, both off by default:
      the MCP and ML Models pages.
   2. "Enable MCP Server" on Settings > MCP.
 
-The proxy checks both on every tool call, so a flip applies to the next
-call without restarting rox or the client. A switched-off toggle, or a rox
-that isn't running, comes back as a tool error naming the reason.
+A third switch, "Let MCP Clients Use Plugins" on Settings > MCP, also off
+by default, lets clients browse and search plugins and run the actions
+they declare. What a plugin answers reaches the model as it is, and an
+action acts on the plugin's service the way picking it from a menu would.
+Each action a client runs shows a toast.
+
+The proxy checks the switches on every tool call, so a flip applies to the
+next call without restarting rox or the client. A switched-off toggle, or
+a rox that isn't running, comes back as a tool error naming the reason.
 
 Settings > MCP shows a copy-ready snippet with the right path for your
 machine, in the mcpServers shape most clients read:
@@ -263,16 +288,30 @@ The tools:
                    tags; pins like artist:name narrow one field.
   get_queue        The play order with each entry's stable id and the one
                    playing.
+  add_to_queue     items, optional mode: end, next, or now. Files,
+                   folders, station stream URLs, or the source|path keys
+                   search_library gives, placed as queue.add places them.
   rescan_library   Starts a background rescan of the library folders.
-  get_tasks        The analysis passes (acoustic, ReplayGain, tempo,
-                   sort names, romanize): switch state, tracks to do,
-                   progress while one runs.
+  get_tasks        The analysis passes (acoustic, ReplayGain, tempo, sort
+                   names, romanize): switch state, tracks to do, progress
+                   while one runs. With plugins allowed, also the jobs
+                   plugin actions are running.
   start_task       pass: acoustic, replaygain, tempo, sortnames, or
                    romanize. Starts the pass; answers with count,
                    workers, estimate, and save mode.
   stop_task        pass: acoustic, replaygain, tempo, sortnames, or
                    romanize. Stops the pass at the next file, keeping
-                   what's done.
+                   what's done. Or job, a plugin action's job number from
+                   get_tasks.
+  plugins          The running plugins, each with the source the other
+                   plugin tools take and the actions it declares.
+  plugin_browse    source, optional node, view, and cursor. A place in a
+                   plugin's catalog: its roots, or a node's contents.
+  plugin_search    source and query, optional view and cursor. Answers in
+                   plugin_browse's shape.
+  plugin_action    source and action, optional items and params. Runs the
+                   action as its menu item would; a long one answers with
+                   a job number for get_tasks and stop_task.
 
 The socket does everything the tools do and more. Queue edits, seeking,
 volume, artwork, and the event stream are socket-only.
@@ -318,12 +357,36 @@ Remove from Library. One that a kept collection holds gets Stop Keeping,
 which lets go of the whole collection, since the next sync would put a
 single track back.
 
+A track you played or queued without keeping it stays out of the library's
+views and search, and keeps its place in the queue, playlists and history.
+One that isn't played again for 30 days, and isn't in the saved queue, is
+forgotten when rox starts. Its playlist entries and plays come back with
+it if it returns. Switching a plugin off hides its tracks without deleting
+them, and so does deleting its folder, which is how many plugins update.
+Only Remove deletes them.
+
 The chevron beside a switched-on plugin on the Plugins page unfolds its
 details. They count its tracks in the library and those added one at a
-time, and Show in Library narrows the library search to them. A plugin
-that offers lyrics gets a Lyrics switch there, off until you turn it on.
-With it on, the Lyrics panel asks the plugin for its own tracks' lyrics
-before it asks the lyrics providers.
+time, and Show in Library narrows the library search to them. Kept
+collections sync each time the plugin starts, and Sync Now syncs them
+again. A plugin that asks to scrobble gets a Scrobble Plays switch there,
+on once you approve it. A plugin that offers lyrics gets a Lyrics switch,
+off until you turn it on. With it on, the Lyrics panel asks the plugin for
+its own tracks' lyrics before it asks the lyrics providers.
+
+Sync Favourites on the Plugins page lets the heart reach a plugin's
+service, for plugins that offer it. Hearting one of its tracks favourites
+it there too, and taking the heart back removes it there. Hearts from
+before you switch it on aren't sent. While it's on, the heart on what's
+playing, in the transport, the track info and custom controls, shows half
+filled when it's a favourite on one side only, and clicking it makes it a
+favourite on both.
+
+History and the Biography panel's top tracks list songs your library may
+not have. Double-click one to have a plugin search for it and play the
+match, and pick the plugin under Play From in its menu. Nothing plays when
+the plugin has no match for that very song, so a cover or a karaoke take
+never stands in for it.
 
 What the panel offers depends on the plugin:
 
@@ -335,7 +398,8 @@ What the panel offers depends on the plugin:
     shuffle on, and an album or playlist you play goes on the same way
     when it ends. A radio carries on after a restart, and stops when
     continuation is Off in the playback settings.
-  - Go to in a track's right-click menu opens its album or artist.
+  - Go to in a track's right-click menu opens its album or artist in the
+    External Sources panel, wherever the track shows.
   - A long track can mark its parts, like an episode's segments, along
     the top of the Seek panel. Hover a mark for its name, and click it
     to jump there.
@@ -351,7 +415,9 @@ What the panel offers depends on the plugin:
     panel, or of the panel itself. One with settings opens a dialog
     first. A notice says when it's done, with Open Link or Show in
     Folder when the plugin hands back a page or a file. Longer work
-    shows in the Tasks window, where Stop cancels it.
+    shows in the Tasks window, where Stop cancels it. An action that
+    depends on a track's state, like adding to or removing from the
+    service's favourites, only shows where it applies.
 
 While one of the plugin's tracks plays, the panel's top level shows it
 and what's next. Click the plugin's name or logo at the top of the panel

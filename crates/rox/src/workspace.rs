@@ -95,7 +95,7 @@ use rox_panels::vu::VuPanel;
 use rox_panels::waveform::WaveformPanel;
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::capture::Capture;
-use rox_services::catalog::Library;
+use rox_services::catalog::{Library, LibraryEvent};
 use rox_services::cues::Cues;
 use rox_services::discord_presence::DiscordPresence;
 use rox_services::history::{History, HistoryEvent};
@@ -1820,14 +1820,11 @@ pub fn init(cx: &mut App) {
                 return;
             };
 
-            ws.state.library.update(cx, |library, cx| {
-                let Some(id) = library.id_for_key(&key) else {
-                    return;
-                };
+            let Some(id) = ws.state.library.read(cx).id_for_key(&key) else {
+                return;
+            };
 
-                let on = !library.is_favourite(id);
-                library.set_favourites(&[id], on, cx);
-            });
+            rox_services::plugin_favourites::toggle(&ws.state.library, id, cx);
         });
     });
 
@@ -3631,6 +3628,7 @@ impl Workspace {
             crate::embeddings::follow(&library, cx);
             crate::replaygain_job::follow(&library, cx);
             crate::tempo_job::follow(&library, cx);
+            rox_services::plugin_favourites::follow(&library, cx);
             // What a station is playing, built here rather than inside any
             // one consumer: the scrobbler files listens off its turnovers
             // and the backdrop looks up the song's cover off the same ones.
@@ -3916,10 +3914,18 @@ impl Workspace {
             }
         });
         let _history_changed = cx.subscribe(&state.history, |this, _, event: &HistoryEvent, cx| {
-            let HistoryEvent::Recorded { track_id } = *event;
-            this.state
-                .library
-                .update(cx, |library, cx| library.record_play(track_id, cx));
+            let HistoryEvent::Recorded { track_id, claimed } = *event;
+            this.state.library.update(cx, |library, cx| {
+                library.record_play(track_id, cx);
+
+                // The claim moved listens and a heart behind the Library's
+                // back. The favourites mirrors diff on this, so Sync
+                // Favourites sends the plugin track's add.
+                if claimed {
+                    library.reload_plays(cx);
+                    cx.emit(LibraryEvent::PlaylistsChanged);
+                }
+            });
         });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         // Frontmost lookups follow focus, so every workspace window reports

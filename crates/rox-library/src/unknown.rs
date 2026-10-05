@@ -4,9 +4,12 @@
 //! [`SOURCE`], keyed by the folded artist and title, so case and accent
 //! variants share it (ADR 11, amended 2026-10-04).
 //!
-//! An Unknown row never plays and never browses or searches; only the
-//! history reads it. When a copy turns up, [`adopt`] hands its listens over
-//! and drops it.
+//! A love the loved-tracks import can't match lands on one too, as a
+//! favourite.
+//!
+//! An Unknown row never plays and never browses or searches. Only the
+//! history and the favourites read it. When a copy turns up, [`adopt`] hands
+//! its listens and its heart over and drops it.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -64,12 +67,25 @@ pub fn all(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
     rows.collect()
 }
 
-/// Deletes the Unknown rows no listen names any more, which is all that can
-/// reference one. Answers how many went.
+/// Every hearted Unknown row as (id, artist, title). Driven from the
+/// favourites' members, which are far fewer than the Unknown rows.
+pub fn hearted(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT t.id, t.artist, t.title FROM playlist_tracks m
+           JOIN playlists p ON p.id = m.playlist_id AND p.favourite = 1
+           JOIN tracks t ON t.id = m.track_id AND t.source = ?1",
+    )?;
+    let rows = stmt.query_map([SOURCE], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    rows.collect()
+}
+
+/// Deletes the Unknown rows that no listen names and no favourite holds.
+/// Answers how many went.
 pub fn prune(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM tracks WHERE source = ?1
-           AND NOT EXISTS (SELECT 1 FROM listens l WHERE l.track_id = tracks.id)",
+           AND NOT EXISTS (SELECT 1 FROM listens l WHERE l.track_id = tracks.id)
+           AND NOT EXISTS (SELECT 1 FROM playlist_tracks m WHERE m.track_id = tracks.id)",
         [SOURCE],
     )
 }
@@ -81,8 +97,9 @@ pub fn prune(conn: &Connection) -> rusqlite::Result<usize> {
 /// [`crate::listens::reattach`] refreshes it; their tag snapshot stays, since
 /// that's what was heard. A listen the target already holds at the same
 /// second is the same play arriving twice (rox recorded it and Last.fm
-/// handed it back unmatched), so it goes. Playlist members and bookmarks
-/// follow too, though nothing should have filed one against an Unknown row.
+/// handed it back unmatched), so it goes. A heart follows, deduped against
+/// one the target already has. Bookmarks follow too, though nothing should
+/// have filed one against an Unknown row.
 ///
 /// Zero, touching nothing, when `unknown_id` isn't an Unknown row (a second
 /// adopt of the same song) or `track_id` isn't a real one.
@@ -402,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn playlists_refuse_an_unknown_row() {
+    fn only_favourites_take_an_unknown_row() {
         let mut conn = db();
         let id = row(&conn, "A", "One", "").unwrap();
         let list = crate::playlists::create(&conn, "Mix", 0).unwrap();
@@ -413,7 +430,47 @@ mod tests {
                 .is_empty()
         );
         crate::playlists::set_favourite(&mut conn, id, true, 0).unwrap();
-        assert!(!crate::playlists::is_favourite(&conn, id).unwrap());
+        assert!(crate::playlists::is_favourite(&conn, id).unwrap());
+    }
+
+    #[test]
+    fn adopt_carries_the_heart_and_keeps_one() {
+        let mut conn = db();
+        let id = row(&conn, "Air", "Sexy Boy", "").unwrap();
+        crate::playlists::set_favourite(&mut conn, id, true, 0).unwrap();
+        store::insert_batch(&mut conn, &[file("/m/air.flac", "Air", "Sexy Boy")]).unwrap();
+        let local = local_id(&conn, "/m/air.flac");
+
+        assert_eq!(
+            adopt(&mut conn, id, local).unwrap(),
+            0,
+            "no listens to move"
+        );
+        assert_eq!(
+            crate::playlists::favourite_track_ids(&conn).unwrap(),
+            [local]
+        );
+
+        // A copy hearted on its own already: the two hearts become one.
+        let again = row(&conn, "Air", "Sexy Boy", "").unwrap();
+        crate::playlists::set_favourite(&mut conn, again, true, 0).unwrap();
+        adopt(&mut conn, again, local).unwrap();
+        assert_eq!(
+            crate::playlists::favourite_track_ids(&conn).unwrap(),
+            [local]
+        );
+    }
+
+    #[test]
+    fn a_hearted_unknown_row_survives_the_prune() {
+        let mut conn = db();
+        let hearted = row(&conn, "A", "One", "").unwrap();
+        let bare = row(&conn, "B", "Two", "").unwrap();
+        crate::playlists::set_favourite(&mut conn, hearted, true, 0).unwrap();
+
+        assert_eq!(prune(&conn).unwrap(), 1);
+        assert!(store::key_for_id(&conn, hearted).unwrap().is_some());
+        assert!(store::key_for_id(&conn, bare).unwrap().is_none());
     }
 
     #[test]

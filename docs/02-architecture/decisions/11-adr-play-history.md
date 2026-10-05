@@ -48,15 +48,31 @@ Now such a scrobble lands on an Unknown row: a `tracks` row under the reserved s
 `unknown`, one per song, its path the folded artist and title so case and accent variants
 share it (`rox-library/src/unknown.rs`). It never plays and never loads into the
 projection, so browse and search can't reach it. The history reads it through the same
-SQL as any other row. Playlists and ratings refuse it, and a play request drops it the
-way it drops a deleted id.
+SQL as any other row. Ratings and every playlist but Favourites refuse it, and a play
+request drops it the way it drops a deleted id.
 
-Two things move its listens to a real track. After a scan or a watched-file reindex,
+The loved-tracks import files a love that names no library track the same way: the song
+gets its Unknown row and the row gets the heart, so Favourites lists it. Double-clicking
+it there searches a plugin the way History does. The prune that clears Unknown rows with
+no listens left spares a hearted one.
+
+Four things move its listens to a real track. After a scan or a watched-file reindex,
 `relink` (`rox-services/src/unknown.rs`) matches every Unknown row against the local
 tracks with the loved-tracks import's name rules, and the copy played most takes them.
-When a plugin search finds and plays the song, `adopt` hands them to the plugin's row.
-Either way the listens take the new row's source and path, keep the tags they were heard
-with, and the Unknown row is deleted. A listen the new row already holds at the same
-second is the same play counted twice, rox's record and Last.fm's echo of it, and is
-dropped. That's the one delete of a listen outside a confirmed clear. With no Unknown row
-in the library, the relink is a single indexed probe.
+A hearted row gets a second pass, `relink_hearts`, against every plugin track the library
+holds, synced, saved or picked. It runs after the local pass and on every plain load,
+which is how a plugin sync ends. When a listen lands on a plugin track, `claim` hands it
+every hearted Unknown row naming the same song. And when a plugin search finds and plays
+the song, `adopt` hands them to the plugin's row.
+
+A service credits everyone on a track in one string ("Lemaitre, Sofiloud") where Last.fm
+names the lead, so the matcher files a comma list under its first name too, and a
+plugin's album artist counts as a second name.
+
+Every way, the listens take the new row's source and path, keep the tags they were heard
+with, and the heart moves along with them. Then the Unknown row is deleted. A hearted
+pick no longer expires, the same way a bookmarked one doesn't. A listen the new row
+already holds at the same second is the same play counted twice, rox's record and
+Last.fm's echo of it, and is dropped. That's the one delete of a listen outside a
+confirmed clear. With no Unknown row in the library, the relink is a single indexed
+probe.

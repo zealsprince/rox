@@ -123,7 +123,7 @@ match the folder's name is refused.
 | `api`                 | The plugin API version it targets: `1`.                                                                          |
 | `entry`               | Exactly one of `script` or `native`.                                                                             |
 | `meta`                | `author`, `description`, `website`, `license`, `version`, all optional. The card shows the author and description. |
-| `capabilities.source` | `label` names the source in rox. `scrobble` defaults to false. `icon` is optional, see [The icon](#the-icon). `radio: true` says the plugin answers [`source.radio`](#sourceradio). `links: true` says it answers [`source.link`](#sourcelink). `lyrics: true` says it answers [`source.lyrics`](#sourcelyrics). `actions` lists what it can do with its items, see [Actions](#actions). |
+| `capabilities.source` | `label` names the source in rox. `scrobble` defaults to false. `icon` is optional, see [The icon](#the-icon). `radio: true` says the plugin answers [`source.radio`](#sourceradio). `links: true` says it answers [`source.link`](#sourcelink). `lyrics: true` says it answers [`source.lyrics`](#sourcelyrics). `actions` lists what it can do with its items, see [Actions](#actions). `favourites` names the pair of actions rox's heart runs, see [Favourites](#favourites). |
 | `capabilities.panels` | Extra panels listed under the plugin in Add Panel. Optional. See [Panels](#panels).                              |
 | `programs`            | Programs the plugin runs, by name. The page checks the plugin's own `bin/` folder, then Program Folders, then PATH, and reports each name as found or missing. rox doesn't enforce the list. |
 | `config_schema`       | JSON Schema for the plugin's settings.                                                                           |
@@ -711,6 +711,31 @@ seconds after the cancel either way.
 Work runs in the plugin, with the plugin's own access. A file it saves goes under the
 `data_dir` from `hello`, or a folder the user names in its settings, and never into its
 own folder.
+
+### Favourites
+
+A service with favourites of its own can have rox's heart reach them. Declare a pair of
+track actions that add to and take from the service's favourites, then name them under
+`capabilities.source`:
+
+```json
+"actions": [
+  { "id": "favourite", "label": "Add to Favourites", "on": ["track"], "when": "!favourite" },
+  { "id": "unfavourite", "label": "Remove from Favourites", "on": ["track"], "when": "favourite" }
+],
+"favourites": { "add": "favourite", "remove": "unfavourite" }
+```
+
+Both names have to be actions offered on `track`, and they have to differ, or the plugin
+is refused. With Sync Favourites switched on in rox's Plugins page, a heart given or
+taken on one of the plugin's tracks calls `source.action` with the matching id, the same
+call the menu item makes. rox sends at most 20 keys a call and one call at a time. The
+answer's message isn't shown, so the flags it carries are what counts.
+
+rox reads the service's side from the `favourite` flag, so answer `source.flags` and
+report `favourite` in the action's `flags`. A heart whose two sides disagree draws half
+filled, and a click on it favourites on both. A row whose flags rox doesn't know draws
+rox's own heart.
 
 ### shutdown
 

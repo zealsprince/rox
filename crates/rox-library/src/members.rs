@@ -279,6 +279,25 @@ pub fn picked_only_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
     ids.collect()
 }
 
+/// Every plugin row as (id, artist, title), with the album artist as a
+/// second name the way [`store::name_index`] files local tracks. Picks count:
+/// a pick is a track that was played or queued, and one a heart lands on
+/// stops expiring.
+pub fn plugin_name_index(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "WITH plugin AS (
+             SELECT id, artist, album_artist, title FROM tracks
+              WHERE source >= 'plugin:' AND source < 'plugin;' AND title <> '')
+         SELECT id, artist, title FROM plugin WHERE artist <> ''
+         UNION ALL
+         SELECT id, album_artist, title FROM plugin
+          WHERE album_artist <> '' AND album_artist <> artist",
+    )?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+
+    rows.collect()
+}
+
 /// The track ids of every saved row, for Remove from Library.
 pub fn saved_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
     let mut stmt = conn.prepare(
@@ -387,8 +406,9 @@ pub fn in_library(conn: &Connection, source: &str) -> rusqlite::Result<InLibrary
 
 /// Prune picked-only rows neither picked nor played since `cutoff` (unix
 /// seconds), leaving the ids in `keep` alone: the saved queue restores by
-/// row id. A bookmarked row stays, since a mark is the user keeping it.
-/// Playlist entries and listens detach to their snapshots.
+/// row id. A bookmarked or hearted row stays, since a mark or a heart is the
+/// user keeping it. Other playlist entries and listens detach to their
+/// snapshots.
 /// Answers how many rows went.
 pub fn expire_picks(
     conn: &mut Connection,
@@ -404,7 +424,10 @@ pub fn expire_picks(
                 AND t.mtime < ?1
                 AND NOT EXISTS (SELECT 1 FROM listens l
                                  WHERE l.track_id = t.id AND l.played_at >= ?1)
-                AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.track_id = t.id)"
+                AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.track_id = t.id)
+                AND NOT EXISTS (SELECT 1 FROM playlist_tracks f
+                                  JOIN playlists l ON l.id = f.playlist_id AND l.favourite = 1
+                                 WHERE f.track_id = t.id)"
         );
         let mut stmt = tx.prepare(&sql)?;
         let rows = stmt.query_map([cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -1143,7 +1166,7 @@ mod tests {
     fn a_stale_pick_expires_unless_something_still_wants_it() {
         let mut conn = store();
         let tracks: Vec<PluginTrack> = [
-            "old", "played", "queued", "fresh", "saved", "synced", "marked",
+            "old", "played", "queued", "fresh", "saved", "synced", "marked", "hearted",
         ]
         .iter()
         .map(|key| track(key, key))
@@ -1153,7 +1176,9 @@ mod tests {
         set_collection(&mut conn, DEMO, "liked", &[track("synced", "synced")]).unwrap();
 
         let cutoff = 1_000_000;
-        for key in ["old", "played", "queued", "saved", "synced", "marked"] {
+        for key in [
+            "old", "played", "queued", "saved", "synced", "marked", "hearted",
+        ] {
             age(&conn, key, cutoff - 10);
         }
         age(&conn, "fresh", cutoff + 10);
@@ -1165,12 +1190,16 @@ mod tests {
         .unwrap();
         let marked = id_of(&conn, "marked");
         bookmarks::add(&conn, marked, "plugin:demo|marked", 5_000, "", None).unwrap();
+        let hearted = id_of(&conn, "hearted");
+        playlists::set_favourite(&mut conn, hearted, true, 0).unwrap();
         let keep = std::collections::HashSet::from([id_of(&conn, "queued")]);
 
         assert_eq!(expire_picks(&mut conn, cutoff, &keep).unwrap(), 1);
         assert_eq!(
             rows(&conn, DEMO),
-            ["fresh", "marked", "played", "queued", "saved", "synced"]
+            [
+                "fresh", "hearted", "marked", "played", "queued", "saved", "synced"
+            ]
         );
         assert!(
             collections(&conn, DEMO)

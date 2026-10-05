@@ -238,6 +238,9 @@ pub struct LyricsPanel {
     /// The loaded sheet and its "no lyrics" mark, keyed by subject so a
     /// station's next song misses instead of keeping the first song's words.
     loaded: Option<(Subject, Option<Arc<Lyrics>>, bool)>,
+    /// `loaded` wants a re-read but stays on screen until it lands, so a
+    /// library update doesn't blank the sheet and rewind the scroll.
+    stale: bool,
     pending: Option<Subject>,
     /// The edit window's unsaved draft, shown over the stored sheet while it's open.
     preview: Option<(Subject, Arc<Lyrics>)>,
@@ -306,7 +309,7 @@ impl LyricsPanel {
                     return;
                 }
                 this.resolved.invalidate();
-                this.loaded = None;
+                this.mark_stale();
                 this.target = None;
                 cx.notify();
             },
@@ -317,6 +320,7 @@ impl LyricsPanel {
             state,
             config,
             loaded: None,
+            stale: false,
             pending: None,
             preview: None,
             target: None,
@@ -406,9 +410,8 @@ impl LyricsPanel {
 
     /// Load `subject`'s lyrics off the UI thread unless cached or pending.
     fn ensure_loaded(&mut self, subject: &Subject, cx: &mut Context<Self>) {
-        if self.loaded.as_ref().map(|(s, ..)| s) == Some(subject)
-            || self.pending.as_ref() == Some(subject)
-        {
+        let cached = !self.stale && self.loaded.as_ref().map(|(s, ..)| s) == Some(subject);
+        if cached || self.pending.as_ref() == Some(subject) {
             return;
         }
         self.pending = Some(subject.clone());
@@ -434,6 +437,7 @@ impl LyricsPanel {
                     return;
                 }
                 this.pending = None;
+                this.stale = false;
                 if this.loaded.as_ref().map(|(s, ..)| s) != Some(&subject) {
                     this.rewind();
                 }
@@ -443,6 +447,13 @@ impl LyricsPanel {
             .ok();
         })
         .detach();
+    }
+
+    /// Re-read the sheet on the next render. Drops any load in flight, since
+    /// it may have read the file before the change.
+    fn mark_stale(&mut self) {
+        self.stale = true;
+        self.pending = None;
     }
 
     fn rewind(&mut self) {
@@ -681,11 +692,11 @@ impl LyricsPanel {
         .detach();
     }
 
-    /// Drop the cached sheet for `subject` and repaint. Lyrics aren't in the
+    /// Re-read the cached sheet for `subject` and repaint. Lyrics aren't in the
     /// projection, so the reload broadcast is the only signal to re-read.
     pub fn reload(&mut self, subject: &Subject, cx: &mut Context<Self>) {
         if self.loaded.as_ref().is_some_and(|(s, ..)| s == subject) {
-            self.loaded = None;
+            self.mark_stale();
         }
         cx.notify();
     }

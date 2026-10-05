@@ -175,6 +175,9 @@ pub struct BiographyPanel {
     /// frame. The `u64` is the station-title revision: a station's key
     /// stands still while the song under it turns over.
     artist: Option<(TrackKey, u64, Vec<String>)>,
+    /// `artist` wants a re-read of the same track's tags. Unlike a track
+    /// change, that keeps the pick and the trail.
+    credits_stale: bool,
     pick: usize,
     /// Names browsed into off the similar lists; empty means the sheet shows
     /// the credited artist.
@@ -256,7 +259,7 @@ impl BiographyPanel {
                     return;
                 }
                 this.resolved.invalidate();
-                this.artist = None;
+                this.credits_stale = true;
                 this.known_acts = None;
                 this.held = None;
                 this.matches = None;
@@ -283,6 +286,7 @@ impl BiographyPanel {
             state,
             config,
             artist: None,
+            credits_stale: false,
             pick: 0,
             trail: Vec::new(),
             known_acts: None,
@@ -316,7 +320,8 @@ impl BiographyPanel {
     /// empty. A station's read goes through the player's announced song.
     fn credits_for(&mut self, key: &TrackKey, cx: &App) -> Vec<String> {
         let rev = self.live_rev(key, cx);
-        if self.artist.as_ref().map(|(k, r, _)| (k, *r)) != Some((key, rev)) {
+        let turned = self.artist.as_ref().map(|(k, r, _)| (k, *r)) != Some((key, rev));
+        if turned || self.credits_stale {
             let known = self.known_acts(cx);
             let names = self
                 .live_meta(key, cx)
@@ -335,8 +340,11 @@ impl BiographyPanel {
                 })
                 .unwrap_or_default();
             self.artist = Some((key.clone(), rev, names));
-            self.pick = 0;
-            self.trail.clear();
+            self.credits_stale = false;
+            if turned {
+                self.pick = 0;
+                self.trail.clear();
+            }
         }
         self.artist
             .as_ref()

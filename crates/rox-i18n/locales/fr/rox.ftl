@@ -520,6 +520,7 @@ button-state-capture-on = On
 button-state-capture-off = Off
 button-state-favourite = Favourite
 button-state-favourite-on = Favourite
+button-state-favourite-half = Favourite on One Side
 button-state-favourite-off = Not Favourite
 button-state-favourite-none = Nothing to Mark
 button-state-mini = Mini Layout
@@ -1299,6 +1300,8 @@ settings-plugins-failed-title = Ce plugin ne peut pas s'exécuter
 settings-plugins-sync-failed = La dernière synchronisation a échoué
 settings-plugins-scrobble = Scrobbler les écoutes
     .description = Envoie ce que ce plugin joue à vos services de scrobbling. Proposé parce que le plugin le demande
+settings-plugins-favourites = Synchroniser les favoris
+    .description = Un cœur sur une piste d'un plugin la met aussi en favori sur le service du plugin, si le plugin le propose. Les cœurs d'avant l'activation restent tels quels et s'affichent à moitié remplis jusqu'à ce que vous cliquiez dessus
 settings-plugins-lyrics = Paroles
     .description = Demande à ce plugin les paroles de ses pistes avant les fournisseurs de paroles. Proposé parce que le plugin les fournit
 settings-plugins-developer = Mode développeur : jusqu'à ce que vous quittiez rox, une modification du dossier de ce plugin est approuvée d'elle-même et le redémarre. Une modification de ce que déclare son manifeste le désactive toujours
@@ -1313,6 +1316,7 @@ settings-plugins-card-title = Activer « { $name } » ?
 settings-plugins-card-runs = Il s'exécute comme un programme sur cet ordinateur, avec vos droits. rox ne l'isole pas.
 settings-plugins-card-source = Ajoute { $label } comme source : rox la parcourt, la recherche, la synchronise et la lit par le plugin.
 settings-plugins-card-scrobbles = Demande à scrobbler ce qu'il joue.
+settings-plugins-card-favourites = Peut mettre ses pistes en favori sur son service une fois que vous activez Synchroniser les favoris.
 settings-plugins-card-lyrics = Propose les paroles de ses pistes. rox ne les demande qu'une fois que vous les activez.
 settings-plugins-card-actions = Ajoute aux menus de rox : { $actions }
 settings-plugins-card-program-found = Utilise { $program }, présent sur cet ordinateur.
@@ -2401,6 +2405,7 @@ lastfm-import-added = { $count ->
     [one] , { $count } ajoutée aux favoris
    *[other] , { $count } ajoutées aux favoris
 }
+lastfm-import-unknown = , { $count } absents de ta bibliothèque
 lastfm-import-plays-read = { $count ->
     [one] { $count } piste avec écoutes lue
    *[other] { $count } pistes avec écoutes lues
@@ -3940,6 +3945,8 @@ slide-title = Diapositive
 theme-toggle-to-dark = Passer au thème sombre
 theme-toggle-to-light = Passer au thème clair
 transport-favourite-add = Ajouter aux favoris
+transport-favourite-half-here = Favori ici, mais pas sur le service du plugin. Cliquez pour l'y ajouter
+transport-favourite-half-there = Favori sur le service du plugin, mais pas ici. Cliquez pour l'ajouter ici
 transport-favourite-nothing = Rien à mettre en favori
 transport-favourite-remove = Retirer des favoris
 transport-live = EN DIRECT

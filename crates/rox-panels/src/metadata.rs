@@ -602,18 +602,22 @@ pub struct MetadataPanel {
     /// projection.
     details: Option<(TrackKey, Option<Details>)>,
     totals: Option<LibraryTotals>,
-    /// Keyed by track so a source flip never shows another track's numbers;
-    /// cleared on a catalog change, since a rescan can rewrite the tags.
+    /// Keyed by track so a source flip never shows another track's numbers.
+    /// A catalog change marks it stale instead of clearing it, since a rescan
+    /// can rewrite the tags but blanking the rows would flash them.
     stats: Option<(TrackKey, Option<TrackStats>)>,
     stats_pending: Option<TrackKey>,
     stats_generation: u64,
+    stats_stale: bool,
     facts: Option<(TrackKey, Facts)>,
     facts_pending: Option<TrackKey>,
     facts_generation: u64,
+    facts_stale: bool,
     /// None inside is a clean miss.
     release: Option<(TrackKey, Option<ReleaseFacts>)>,
     release_pending: Option<TrackKey>,
     release_generation: u64,
+    release_stale: bool,
     art: panel::TrackedImage,
     /// So the pump's notifies never turn into selection lookups.
     resolved: ResolvedTrack,
@@ -666,9 +670,7 @@ impl MetadataPanel {
                 this.resolved.invalidate();
                 this.details = None;
                 this.totals = None;
-                this.stats = None;
-                this.facts = None;
-                this.release = None;
+                this.mark_lookups_stale();
                 this.art.refresh();
                 cx.notify();
             },
@@ -684,12 +686,15 @@ impl MetadataPanel {
             stats: None,
             stats_pending: None,
             stats_generation: 0,
+            stats_stale: false,
             facts: None,
             facts_pending: None,
             facts_generation: 0,
+            facts_stale: false,
             release: None,
             release_pending: None,
             release_generation: 0,
+            release_stale: false,
             art: panel::TrackedImage::default(),
             resolved: ResolvedTrack::default(),
             source_label: None,
@@ -702,6 +707,17 @@ impl MetadataPanel {
             _library_changed,
             _retire_on_drop,
         }
+    }
+
+    /// Re-read the lookups on the next render while the held rows keep
+    /// painting. Drops any in flight, since they may have read the old tags.
+    fn mark_lookups_stale(&mut self) {
+        self.stats_stale = true;
+        self.stats_pending = None;
+        self.facts_stale = true;
+        self.facts_pending = None;
+        self.release_stale = true;
+        self.release_pending = None;
     }
 
     fn resolved_track(&mut self, cx: &App) -> Option<TrackKey> {
@@ -852,7 +868,7 @@ impl MetadataPanel {
     /// Only called while a global row is shown, so a sheet without them never
     /// touches the network.
     fn ensure_stats(&mut self, key: &TrackKey, d: &Details, cx: &mut Context<Self>) {
-        if self.stats.as_ref().is_some_and(|(k, _)| k == key)
+        if (!self.stats_stale && self.stats.as_ref().is_some_and(|(k, _)| k == key))
             || self.stats_pending.as_ref() == Some(key)
         {
             return;
@@ -876,6 +892,7 @@ impl MetadataPanel {
                     return;
                 }
                 this.stats_pending = None;
+                this.stats_stale = false;
                 match result {
                     Ok(stats) => this.stats = Some((key, stats)),
                     // A failed lookup leaves the rows absent; the next track change asks
@@ -895,7 +912,7 @@ impl MetadataPanel {
     /// Two throttled calls on a miss. Only called while a release row is
     /// shown.
     fn ensure_release(&mut self, key: &TrackKey, d: &Details, cx: &mut Context<Self>) {
-        if self.release.as_ref().is_some_and(|(k, _)| k == key)
+        if (!self.release_stale && self.release.as_ref().is_some_and(|(k, _)| k == key))
             || self.release_pending.as_ref() == Some(key)
         {
             return;
@@ -920,6 +937,7 @@ impl MetadataPanel {
                     return;
                 }
                 this.release_pending = None;
+                this.release_stale = false;
                 match result {
                     Ok(facts) => this.release = Some((key, facts)),
                     Err(e) => {
@@ -941,7 +959,7 @@ impl MetadataPanel {
         similar: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.facts.as_ref().is_some_and(|(k, _)| k == key)
+        if (!self.facts_stale && self.facts.as_ref().is_some_and(|(k, _)| k == key))
             || self.facts_pending.as_ref() == Some(key)
         {
             return;
@@ -964,6 +982,7 @@ impl MetadataPanel {
                     return;
                 }
                 this.facts_pending = None;
+                this.facts_stale = false;
                 this.facts = Some((key, facts));
                 cx.notify();
             })

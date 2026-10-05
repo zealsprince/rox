@@ -309,10 +309,12 @@ impl ArtistGridPanel {
                 if !matches!(event, LibraryEvent::Updated) {
                     return;
                 }
+                let was = this.playing_ix;
                 this.rebuild(cx);
-                // The catalog loads after a restored track starts, so the
-                // launch's follow waits for this first rebuild.
-                if this.config.follow_playing {
+                // The catalog loads after a restored track starts, so the launch's
+                // follow waits for this first rebuild. One that leaves the playing
+                // tile in place doesn't re-follow, so an add can't yank the view.
+                if this.config.follow_playing && this.playing_ix != was {
                     this.follow_playing(cx);
                 }
             },

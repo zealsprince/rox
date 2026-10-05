@@ -31,6 +31,10 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// since the row itself carries no flags.
 static FLAGGED: LazyLock<Mutex<HashMap<String, Flagged>>> = LazyLock::new(Default::default);
 
+/// Moves whenever any source's flags do, listed or reported, so a holder of
+/// one row's flags knows to read them again.
+static FLAGS_MOVED: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct Flagged {
     reports: u64,
@@ -52,6 +56,19 @@ pub fn known_flags(source: &str) -> HashMap<String, Vec<String>> {
         .unwrap_or_default()
 }
 
+/// One row's newest flags, None when nobody said.
+pub fn flags_for(source: &str, item: &str) -> Option<Vec<String>> {
+    FLAGGED.lock().ok()?.get(source)?.flags.get(item).cloned()
+}
+
+pub fn flags_moved() -> u64 {
+    FLAGS_MOVED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn bump_flags() {
+    FLAGS_MOVED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// A listing's flags. Not a report: the panel that listed them already has
 /// them, so nothing else needs to merge.
 pub fn note(source: &str, flags: &HashMap<String, Vec<String>>) {
@@ -65,6 +82,7 @@ pub fn note(source: &str, flags: &HashMap<String, Vec<String>>) {
             .flags
             .extend(flags.iter().map(|(item, now)| (item.clone(), now.clone())));
     }
+    bump_flags();
 }
 
 pub(crate) fn report(source: &str, flags: HashMap<String, Vec<String>>) {
@@ -77,6 +95,7 @@ pub(crate) fn report(source: &str, flags: HashMap<String, Vec<String>>) {
         found.reports += 1;
         found.flags.extend(flags);
     }
+    bump_flags();
 }
 
 /// The actions a running plugin declares. Empty when it isn't running.

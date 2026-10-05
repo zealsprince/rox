@@ -18,13 +18,14 @@ use rox_library::cue::{Origin, TrackKey};
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
+use rox_services::plugin_favourites;
 use rox_services::thumbs::Thumb;
 
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::group_head;
-use crate::marks::MarkCache;
+use crate::marks::{MarkCache, Marks};
 use crate::panel::{
     self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, justify,
 };
@@ -856,26 +857,15 @@ impl TrackInfoPanel {
         (*count, next.clone())
     }
 
-    fn favourite_for(&mut self, key: &TrackKey, cx: &App) -> (Option<i64>, bool) {
-        let marks = self.marks.resolve(key, self.state.library.read(cx));
-        (marks.id, marks.favourite)
+    fn favourite_for(&mut self, key: &TrackKey, cx: &App) -> Marks {
+        self.marks.resolve(key, self.state.library.read(cx))
     }
 
     /// A click runs the favourite panel's toggle. Scaled with its row, so a
     /// title-row heart holds the line.
-    fn favourite_heart(
-        &self,
-        id: Option<i64>,
-        on: bool,
-        scale: f32,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let tip = match (id.is_some(), on) {
-            (false, _) => rox_i18n::t!("transport-favourite-nothing"),
-            (true, true) => rox_i18n::t!("transport-favourite-remove"),
-            (true, false) => rox_i18n::t!("transport-favourite-add"),
-        };
-        panel::Tip::keyed("favourite", tip)
+    fn favourite_heart(&self, marks: Marks, scale: f32, cx: &mut Context<Self>) -> AnyElement {
+        let (glyph, lit) = marks.heart();
+        panel::Tip::keyed("favourite", marks.heart_tip())
             .apply(
                 div()
                     .flex_none()
@@ -886,29 +876,23 @@ impl TrackInfoPanel {
                     .justify_center()
                     .child(
                         svg()
-                            .path(if on {
-                                icons::HEART_FILLED
-                            } else {
-                                icons::HEART
-                            })
+                            .path(glyph)
                             .size(palette::scaled_px(15.) * scale)
-                            .text_color(if on {
+                            .text_color(if lit {
                                 palette::accent()
                             } else {
                                 palette::text_faint()
                             }),
                     )
                     // Stays up dimmed so the piece holds its place in the row.
-                    .when(id.is_none(), |d| d.opacity(0.4))
-                    .when_some(id, |d, id| {
+                    .when(marks.id.is_none(), |d| d.opacity(0.4))
+                    .when_some(marks.id, |d, id| {
                         d.cursor_pointer()
                             .hover(|d| d.bg(palette::bg_control_hover()))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this: &mut Self, _, _, cx| {
-                                    this.state.library.update(cx, |library, cx| {
-                                        library.set_favourites(&[id], !on, cx)
-                                    });
+                                    plugin_favourites::toggle(&this.state.library, id, cx);
                                 }),
                             )
                     }),
@@ -1480,7 +1464,7 @@ impl TrackInfoPanel {
         // Built ahead like the chips, at their row's scale.
         let mut hearts: Vec<AnyElement> = Vec::new();
         if items.contains(&InfoPiece::Favourite) {
-            let (fav_id, fav_on) = self.favourite_for(&now.key, cx);
+            let marks = self.favourite_for(&now.key, cx);
             let heart_scales: Vec<f32> = plans
                 .iter()
                 .flat_map(|(scale_ix, bits)| {
@@ -1496,14 +1480,14 @@ impl TrackInfoPanel {
                 .collect();
             hearts = heart_scales
                 .into_iter()
-                .map(|scale| self.favourite_heart(fav_id, fav_on, scale, cx))
+                .map(|scale| self.favourite_heart(marks, scale, cx))
                 .collect();
         }
         let mut heart_iter = hearts.into_iter();
         // The id comes off the heart's resolve, the value off the tags cache.
         let mut stars: Vec<AnyElement> = Vec::new();
         if items.contains(&InfoPiece::Rating) {
-            let (rating_id, _) = self.favourite_for(&now.key, cx);
+            let rating_id = self.favourite_for(&now.key, cx).id;
             let count = plans
                 .iter()
                 .flat_map(|(_, bits)| bits.iter())

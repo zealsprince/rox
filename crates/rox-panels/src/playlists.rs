@@ -23,6 +23,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,7 @@ use crate::track_ui::track_columns::{
     ROW_HEIGHT_MIN, ROW_HEIGHT_STOCK, ROW_SPACING_MAX, SourceMark,
 };
 use crate::track_ui::track_drag::PlayDrag;
+use crate::unknown_play;
 use rox_library::playlist_file::Format;
 use rox_library::playlists::{PlaylistKind, PlaylistTrack};
 use rox_library::projection::{FilterSet, Filterable, Term, parse_query};
@@ -205,6 +207,10 @@ pub struct PlaylistsConfig {
     /// An index, not pixels, so it survives a height change.
     #[serde(default)]
     pub scroll_row: usize,
+    /// The plugin a double click on an Unknown favourite searches, set from
+    /// Play From.
+    #[serde(default)]
+    pub unknown_source: Option<String>,
 }
 
 // Hand-written so the columns default to the registry set and the
@@ -241,6 +247,7 @@ impl Default for PlaylistsConfig {
             resume_playing: false,
             smooth_follow: false,
             scroll_row: 0,
+            unknown_source: None,
         }
     }
 }
@@ -449,8 +456,12 @@ pub struct PlaylistsPanel {
     /// A member id, so it survives a rebuild.
     anchor: Option<i64>,
     menu_row: Option<usize>,
-    /// What a smart playlist refused and why. Cleared on the next refresh.
+    /// What a smart playlist refused and why, or how an Unknown favourite's
+    /// plugin search went. Cleared on the next refresh.
     refusal: Option<SharedString>,
+    /// Bumped per Unknown favourite search, so a slow answer can't play over
+    /// a newer pick.
+    finding_gen: u64,
     /// Px at the stock font size; together they make the list's stride.
     row_height: f32,
     row_spacing: f32,
@@ -578,6 +589,7 @@ impl PlaylistsPanel {
             anchor: None,
             menu_row: None,
             refusal: None,
+            finding_gen: 0,
             row_height,
             row_spacing: track_columns::fold_margin(config.row_spacing, ROW_SPACING_MAX),
             head_height,
@@ -1065,10 +1077,17 @@ impl PlaylistsPanel {
             if self.is_reversed(playlist_id) {
                 ids.reverse();
             }
+
+            // Paired up front: an Unknown favourite or a deleted member has
+            // no key, and dropping it later would shift the start.
+            let (ids, keys): (Vec<i64>, Vec<_>) = ids
+                .into_iter()
+                .filter_map(|id| Some((id, library.keys_for(&[id]).ok()?.pop()?)))
+                .unzip();
             let start = start_track
                 .and_then(|t| ids.iter().position(|&x| x == t))
                 .unwrap_or(0);
-            (library.keys_for(&ids).unwrap_or_default(), start, ids)
+            (keys, start, ids)
         };
         if keys.is_empty() {
             return;
@@ -1079,6 +1098,50 @@ impl PlaylistsPanel {
             // Continuation then follows the playlist's order (ADR 17).
             player.set_scope(continuation::Scope::View(ids.into()));
         });
+    }
+
+    /// An Unknown favourite has nothing to open, so a plugin searches for the
+    /// song, the way History does it. A Play From pick becomes the double
+    /// click's plugin too.
+    fn play_unknown(&mut self, ix: usize, picked: Option<String>, cx: &mut Context<Self>) {
+        let Some(Row::Track(t)) = self.rows.get(ix) else {
+            return;
+        };
+        let (unknown_id, artist, title) = (t.track_id, t.artist.clone(), t.title.clone());
+
+        if picked.is_some() {
+            self.config.unknown_source = picked.clone();
+            self.request_layout_save(cx);
+        }
+
+        let (source, label) =
+            match unknown_play::source_for(picked, self.config.unknown_source.as_deref()) {
+                Ok(pick) => pick,
+                Err(why) => {
+                    self.refuse(why, cx);
+                    return;
+                }
+            };
+
+        self.finding_gen += 1;
+        let generation = self.finding_gen;
+        self.refuse(unknown_play::finding_line(&label, &title), cx);
+
+        let found = unknown_play::find(&self.state, &source, artist, title.clone(), cx);
+        cx.spawn(async move |this, cx| {
+            let found = found.await;
+            this.update(cx, |this, cx| {
+                if this.finding_gen != generation {
+                    return;
+                }
+
+                this.refusal =
+                    unknown_play::found(&this.state, unknown_id, found, label, title, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// GPUI's save prompt has no filter list, so a typed playlist extension
@@ -1674,6 +1737,7 @@ impl PlaylistsPanel {
         let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
         let playing = self.playing == Some(track_id);
         let favourite = self.favourites.contains(&track_id);
+        let unknown = unknown_play::is_unknown(&t.source);
         // The shared Arc from `list_rows` when inside the selection.
         let members: Arc<[i64]> = match multi_drag {
             Some(set) if selected => set.clone(),
@@ -1732,7 +1796,9 @@ impl PlaylistsPanel {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus);
-                    if event.click_count > 1 {
+                    if event.click_count > 1 && unknown {
+                        this.play_unknown(ix, None, cx);
+                    } else if event.click_count > 1 {
                         this.play(playlist_id, Some(track_id), cx);
                     } else if event.modifiers.shift || event.modifiers.secondary() {
                         this.select(ix, event.modifiers, cx);
@@ -1766,10 +1832,17 @@ impl PlaylistsPanel {
                     cx.notify();
                 }),
             );
+        // Its path is the song's names, not a file.
+        if unknown {
+            row = row.tooltip(|window, cx| {
+                Tooltip::new(rox_i18n::t!("history-unknown-row")).build(window, cx)
+            });
+        }
+
         // The shared surface draws every playlist column.
         let cover = track_columns::cover_thumb(
             &self.state,
-            (!t.path.is_empty()).then(|| std::path::Path::new(&t.path)),
+            (!t.path.is_empty() && !unknown).then(|| std::path::Path::new(&t.path)),
             self.column_shown("cover"),
             cx,
         );
@@ -2643,20 +2716,36 @@ impl PlaylistsPanel {
             Some(Row::Track(t)) => {
                 let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
                 let smart = t.smart;
-                let play_panel = weak.clone();
-                let menu = panel::track_actions(
-                    menu,
-                    self.state.clone(),
-                    vec![track_id],
-                    rox_i18n::t!("library-play"),
-                    window,
-                    cx,
-                    move |_, cx| {
-                        if let Some(this) = play_panel.upgrade() {
-                            this.update(cx, |this, cx| this.play(playlist_id, Some(track_id), cx));
-                        }
-                    },
-                );
+
+                // An Unknown favourite has nothing for the track actions to
+                // act on.
+                let menu = if unknown_play::is_unknown(&t.source) {
+                    unknown_play::play_from_menu(
+                        menu,
+                        cx.entity(),
+                        |this: &Self| this.config.unknown_source.clone(),
+                        move |this, source, cx| this.play_unknown(ix, Some(source), cx),
+                        window,
+                        cx,
+                    )
+                } else {
+                    let play_panel = weak.clone();
+                    panel::track_actions(
+                        menu,
+                        self.state.clone(),
+                        vec![track_id],
+                        rox_i18n::t!("library-play"),
+                        window,
+                        cx,
+                        move |_, cx| {
+                            if let Some(this) = play_panel.upgrade() {
+                                this.update(cx, |this, cx| {
+                                    this.play(playlist_id, Some(track_id), cx)
+                                });
+                            }
+                        },
+                    )
+                };
                 let remove_panel = weak.clone();
                 // The right press already pulled the row into the selection.
                 let remove_count = if self.selected.contains(&member_id) && self.selected.len() > 1

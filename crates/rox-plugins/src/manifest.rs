@@ -112,7 +112,22 @@ pub struct SourceCap {
     /// listed in rox's own menus.
     #[serde(default)]
     pub actions: Vec<ActionDecl>,
+    /// The track actions that add to and take from the service's own
+    /// favourites, which a heart in rox runs while Sync Favourites is on.
+    #[serde(default)]
+    pub favourites: Option<FavouritesDecl>,
 }
+
+/// Names two of the plugin's own track actions. Rows say they're in the
+/// service's favourites with the [`FAVOURITE_FLAG`] flag.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct FavouritesDecl {
+    pub add: String,
+    pub remove: String,
+}
+
+/// The row flag a heart reads for the service's side.
+pub const FAVOURITE_FLAG: &str = "favourite";
 
 /// One entry a plugin adds to rox's menus. Nothing in it runs in rox:
 /// picking it calls `source.action`, and the work happens in the plugin.
@@ -278,6 +293,24 @@ fn check_actions(manifest: &Manifest) -> Result<(), String> {
         if !params_ok {
             return refuse("has params that aren't a JSON Schema object");
         }
+    }
+
+    let Some(favourites) = &source.favourites else {
+        return Ok(());
+    };
+
+    for id in [&favourites.add, &favourites.remove] {
+        let declared = source.actions.iter().find(|action| action.id == *id);
+        if !declared.is_some_and(|action| action.offered_on("track")) {
+            return Err(format!(
+                "{FILE}: favourites names {id:?}, which isn't an action on tracks"
+            ));
+        }
+    }
+    if favourites.add == favourites.remove {
+        return Err(format!(
+            "{FILE}: favourites adds and removes with one action"
+        ));
     }
 
     Ok(())
@@ -733,6 +766,7 @@ mod tests {
                 links: false,
                 lyrics: false,
                 actions: Vec::new(),
+                favourites: None,
             })
         );
     }
@@ -783,6 +817,40 @@ mod tests {
             add.applies_to(None) && drop.applies_to(None),
             "a row whose flags nobody knows can take either"
         );
+    }
+
+    fn with_favourites(favourites: &str) -> String {
+        with_actions(
+            r#"[{ "id": "add", "label": "Add", "on": ["track"], "when": "!favourite" },
+                { "id": "drop", "label": "Drop", "on": ["track"], "when": "favourite" },
+                { "id": "save", "label": "Save", "on": ["node"] }]"#,
+        )
+        .replace(
+            r#""scrobble": false"#,
+            &format!(r#""scrobble": false, "favourites": {favourites}"#),
+        )
+    }
+
+    #[test]
+    fn favourites_name_two_track_actions() {
+        let manifest = parse(&with_favourites(r#"{ "add": "add", "remove": "drop" }"#)).unwrap();
+        assert_eq!(
+            manifest.capabilities.source.unwrap().favourites,
+            Some(FavouritesDecl {
+                add: "add".into(),
+                remove: "drop".into()
+            })
+        );
+
+        let cases = [
+            (r#"{ "add": "add", "remove": "gone" }"#, "\"gone\""),
+            (r#"{ "add": "save", "remove": "drop" }"#, "on tracks"),
+            (r#"{ "add": "add", "remove": "add" }"#, "one action"),
+        ];
+        for (favourites, why) in cases {
+            let err = parse(&with_favourites(favourites)).unwrap_err();
+            assert!(err.contains(why), "{favourites}: {err}");
+        }
     }
 
     #[test]

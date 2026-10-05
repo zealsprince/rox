@@ -512,6 +512,7 @@ button-state-capture-on = On
 button-state-capture-off = Off
 button-state-favourite = Favourite
 button-state-favourite-on = Favourite
+button-state-favourite-half = Favourite on One Side
 button-state-favourite-off = Not Favourite
 button-state-favourite-none = Nothing to Mark
 button-state-mini = Mini Layout
@@ -1271,6 +1272,8 @@ settings-plugins-failed-title = Questo plugin non può girare
 settings-plugins-sync-failed = L'ultima sincronizzazione non è riuscita
 settings-plugins-scrobble = Scrobbla gli ascolti
     .description = Invia ai tuoi servizi di scrobbling ciò che questo plugin riproduce. Offerto perché il plugin lo chiede
+settings-plugins-favourites = Sincronizza i preferiti
+    .description = Un cuore su un brano di un plugin lo aggiunge anche ai preferiti del servizio del plugin, se il plugin lo offre. I cuori di prima dell'attivazione restano dove sono e appaiono pieni a metà finché non ci fai clic
 settings-plugins-lyrics = Testi
     .description = Chiede a questo plugin i testi dei suoi brani prima dei fornitori di testi. Offerto perché il plugin li fornisce
 settings-plugins-developer = Modalità sviluppatore: finché rox resta aperto, una modifica alla cartella di questo plugin viene approvata da sola e lo riavvia. Una modifica a ciò che dichiara il suo manifest lo spegne comunque
@@ -1285,6 +1288,7 @@ settings-plugins-card-title = Attivare "{ $name }"?
 settings-plugins-card-runs = Gira come programma su questo computer, con i tuoi permessi. rox non lo isola.
 settings-plugins-card-source = Aggiunge { $label } come fonte: rox la sfoglia, la cerca, la sincronizza e la riproduce tramite il plugin.
 settings-plugins-card-scrobbles = Chiede di scrobblare ciò che riproduce.
+settings-plugins-card-favourites = Può aggiungere i suoi brani ai preferiti del suo servizio quando attivi Sincronizza i preferiti.
 settings-plugins-card-lyrics = Offre i testi dei suoi brani. rox li chiede solo dopo che li attivi.
 settings-plugins-card-actions = Aggiunge ai menu di rox: { $actions }
 settings-plugins-card-program-found = Usa { $program }, presente su questo computer.
@@ -2358,6 +2362,7 @@ lastfm-import-added = { $count ->
     [one] , { $count } aggiunta ai preferiti
    *[other] , { $count } aggiunte ai preferiti
 }
+lastfm-import-unknown = , { $count } non presenti nella tua libreria
 lastfm-import-plays-read = { $count ->
     [one] Letto { $count } brano con riproduzioni
    *[other] Letti { $count } brani con riproduzioni
@@ -3913,6 +3918,8 @@ slide-title = Diapositiva
 theme-toggle-to-dark = Passa al tema scuro
 theme-toggle-to-light = Passa al tema chiaro
 transport-favourite-add = Aggiungi ai preferiti
+transport-favourite-half-here = Preferito qui, ma non sul servizio del plugin. Fai clic per aggiungerlo lì
+transport-favourite-half-there = Preferito sul servizio del plugin, ma non qui. Fai clic per aggiungerlo qui
 transport-favourite-nothing = Niente da aggiungere ai preferiti
 transport-favourite-remove = Rimuovi dai preferiti
 transport-live = IN DIRETTA

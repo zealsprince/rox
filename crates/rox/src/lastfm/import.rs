@@ -7,6 +7,7 @@
 //! [`rox_library::playlists::reattach`]: exact after folding, a bracketed
 //! qualifier gets a second look, and anything ambiguous is left for a human.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,12 +17,9 @@ use gpui::{App, Entity, Global, SharedString};
 use rox_library::store;
 
 use rox_core::settings::Settings;
-use rox_net::providers::{agent, net_reason};
 use rox_services::catalog::Library;
 use rox_services::lastfm::Scrobbler;
 use rox_services::names::Index;
-
-const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
 /// The API caps this itself; paging reads the page count the response gives.
 const PAGE: usize = 200;
@@ -311,23 +309,16 @@ struct Pages {
 
 /// Unsigned: a public read of a named account needs an api key, no session.
 fn fetch_page(key: &str, user: &str, page: usize) -> Result<(Vec<Loved>, Pages), String> {
-    let request = agent()
-        .get(API)
-        .query("method", "user.getlovedtracks")
-        .query("user", user)
-        .query("api_key", key)
-        .query("limit", &PAGE.to_string())
-        .query("page", &page.to_string())
-        .query("format", "json");
-    // An API error still has a JSON body, so a status failure parses too.
-    let text = match request.call() {
-        Ok(response) => response.into_string().map_err(|e| e.to_string())?,
-        Err(ureq::Error::Status(_, response)) => {
-            response.into_string().map_err(|e| e.to_string())?
-        }
-        Err(e) => return Err(net_reason(&e)),
-    };
-    parse_page(&text)
+    let query = BTreeMap::from([
+        ("method", "user.getlovedtracks".to_string()),
+        ("user", user.to_string()),
+        ("api_key", key.to_string()),
+        ("limit", PAGE.to_string()),
+        ("page", page.to_string()),
+        ("format", "json".to_string()),
+    ]);
+
+    parse_page(&rox_net::lastfm::user::get(&query)?)
 }
 
 fn parse_page(text: &str) -> Result<(Vec<Loved>, Pages), String> {

@@ -1,13 +1,15 @@
 //! Unsigned public reads against a named account: the scrobble history
 //! behind the play-count import, and the registration date that floors its
-//! invented timestamps. Errors go through [`crate::providers::net_reason`]
-//! so the api key in the URL never reaches a log.
+//! invented timestamps. [`get`] is the one retrying read both Last.fm imports
+//! go through. Errors go through [`crate::providers::net_reason`] so the api
+//! key in the URL never reaches a log.
 //!
 //! `user.getRecentTracks` is the only Last.fm method that dates a play.
 //! The now-playing row, and the odd entry Last.fm has no time for, come
 //! back with `played_at: None` for the caller to handle.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use super::api_root;
 use crate::providers::{agent, net_reason};
@@ -70,8 +72,36 @@ pub fn registered_at(key: &str, user: &str) -> Result<Option<i64>, String> {
     parse_info(&get(&query)?)
 }
 
-/// A status failure still carries a JSON error body, so it reads like a success.
-fn get(query: &BTreeMap<&str, String>) -> Result<String, String> {
+/// Error codes Last.fm means as "try again": operation failed (8), service
+/// offline (11), temporarily unavailable (16) and rate limited (29).
+const TRANSIENT: [usize; 4] = [8, 11, 16, 29];
+
+/// Between attempts at one request. A history import walks hundreds of pages
+/// and a failed page ends the run before its bound is saved, so a code 8 a
+/// retry would clear costs the whole import.
+const RETRY_WAITS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(4),
+    Duration::from_secs(15),
+];
+
+/// One unsigned read of the API, retried while Last.fm answers a transient
+/// error. A status failure still carries a JSON error body, so it reads like
+/// a success and the caller's parse reports it. Blocking, and up to 20 s
+/// longer than the request when Last.fm keeps failing.
+pub fn get(query: &BTreeMap<&str, String>) -> Result<String, String> {
+    let mut waits = RETRY_WAITS.iter();
+
+    loop {
+        let body = get_once(query)?;
+        match (transient(&body), waits.next()) {
+            (true, Some(&wait)) => std::thread::sleep(wait),
+            _ => return Ok(body),
+        }
+    }
+}
+
+fn get_once(query: &BTreeMap<&str, String>) -> Result<String, String> {
     let mut request = agent().get(&api_root());
     for (name, value) in query {
         request = request.query(name, value);
@@ -82,6 +112,13 @@ fn get(query: &BTreeMap<&str, String>) -> Result<String, String> {
         Err(ureq::Error::Status(_, response)) => response.into_string().map_err(|e| e.to_string()),
         Err(e) => Err(net_reason(&e)),
     }
+}
+
+fn transient(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|body| body.get("error").map(number_of))
+        .is_some_and(|code| TRANSIENT.contains(&code))
 }
 
 fn parse_recent(text: &str) -> Result<RecentPage, String> {
@@ -223,6 +260,19 @@ mod tests {
         let page = parse_recent(PAGE).unwrap();
         assert_eq!(page.scrobbles[0].album, "Music Has the Right to Children");
         assert_eq!(page.scrobbles[1].album, "", "no album on the row");
+    }
+
+    #[test]
+    fn only_a_try_again_error_retries() {
+        let failed = r#"{"error":8,"message":"Operation failed - Most likely the backend service failed. Please try again."}"#;
+        assert!(transient(failed));
+        assert!(transient(
+            r#"{"error":"29","message":"Rate limit exceeded"}"#
+        ));
+
+        assert!(!transient(r#"{"error":6,"message":"User not found"}"#));
+        assert!(!transient(PAGE), "a page is no error");
+        assert!(!transient("<html>bad gateway</html>"));
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! Idempotent: a scrobble is its track plus its second, a rerun only asks for
 //! what arrived since, and the count half only fills gaps it can still see.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,7 +23,6 @@ use rox_core::settings::Settings;
 use rox_library::listens::{self, Ladder};
 use rox_library::{store, unknown};
 use rox_net::lastfm::user::{self, Scrobble};
-use rox_net::providers::{agent, net_reason};
 use rox_services::catalog::Library;
 
 use rox_services::echoes;
@@ -500,24 +499,17 @@ fn fetch_counts(key: &str, user: &str, progress: &Progress) -> Result<Vec<TopTra
 }
 
 fn fetch_page(key: &str, user: &str, page: usize) -> Result<(Vec<TopTrack>, Pages), String> {
-    let request = agent()
-        .get(&rox_net::lastfm::api_root())
-        .query("method", "user.gettoptracks")
-        .query("user", user)
-        .query("api_key", key)
-        .query("period", "overall")
-        .query("limit", &PAGE.to_string())
-        .query("page", &page.to_string())
-        .query("format", "json");
+    let query = BTreeMap::from([
+        ("method", "user.gettoptracks".to_string()),
+        ("user", user.to_string()),
+        ("api_key", key.to_string()),
+        ("period", "overall".to_string()),
+        ("limit", PAGE.to_string()),
+        ("page", page.to_string()),
+        ("format", "json".to_string()),
+    ]);
 
-    let text = match request.call() {
-        Ok(response) => response.into_string().map_err(|e| e.to_string())?,
-        Err(ureq::Error::Status(_, response)) => {
-            response.into_string().map_err(|e| e.to_string())?
-        }
-        Err(e) => return Err(net_reason(&e)),
-    };
-    parse_page(&text)
+    parse_page(&user::get(&query)?)
 }
 
 fn parse_page(text: &str) -> Result<(Vec<TopTrack>, Pages), String> {

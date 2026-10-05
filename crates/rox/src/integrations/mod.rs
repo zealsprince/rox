@@ -5,6 +5,7 @@
 pub mod broadcast;
 pub mod drive;
 pub mod ipc;
+mod ipc_plugins;
 #[cfg(target_os = "linux")]
 mod kwin;
 pub mod media_controls;

@@ -340,6 +340,7 @@ plugin-action-failed = { $action } に失敗しました
 plugin-action-stopped = { $action } を停止しました
 plugin-action-show-in-folder = フォルダで表示
 plugin-action-open-link = リンクを開く
+plugin-action-by-client = { $action } (MCP クライアントが実行)
 shader-pick-missing = { $name } (見つかりません)
 shader-pick-custom = カスタム
 
@@ -1151,6 +1152,8 @@ settings-mcp-client-config = クライアント設定
     .description = MCP クライアント (Claude Code、Claude Desktop、その他何でも) のサーバー一覧に貼り付けると、ライブラリ・再生中の曲・再生操作について rox に問い合わせられる。rox が起動している必要があり、ツールは制御ソケット経由で動く
 settings-mcp-enable = MCP サーバーを有効にする
     .description = 接続した MCP クライアントからのツール呼び出しに応じる。プロキシは呼び出しごとにこれを見るので、オフのあいだクライアントは理由付きで拒否される。下の設定はどちらの状態でも用意できる
+settings-mcp-plugins = MCP クライアントにプラグインを使わせる
+    .description = 接続したクライアントがプラグインを閲覧・検索し、プラグインが宣言するアクションを実行できるようにする。プラグインの返答はそのままモデルに届き、アクションはメニューから選んだときと同じようにプラグインのサービスに作用する。クライアントが実行したアクションはすべて通知で表示される
 
 ## Settings: ML models
 settings-mlmodels-checking = 確認中...

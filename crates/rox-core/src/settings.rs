@@ -482,6 +482,10 @@ pub struct Settings {
     /// Whether MCP answers tool calls. The rox-mcp proxy checks it on every
     /// call, so a flip applies to the next tool use.
     pub mcp_enabled: bool,
+    /// Whether MCP clients may browse plugins and run their actions. Its own
+    /// switch because a plugin's text reaches the model and its actions act on
+    /// the plugin's service.
+    pub mcp_plugins: bool,
     /// Whether the library may compute the acoustic vectors behind "more like
     /// this". Separate from the AI switches, since it costs decoding time.
     pub acoustic_analysis: bool,
@@ -3398,6 +3402,7 @@ impl Default for Settings {
             plugins_enabled: false,
             program_folders: String::new(),
             mcp_enabled: false,
+            mcp_plugins: false,
             acoustic_analysis: false,
             acoustic_auto: false,
             tempo_analysis: false,

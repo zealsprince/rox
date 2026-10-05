@@ -124,11 +124,11 @@ fn run(
         let started = task.await;
 
         cx.update(|cx| match started {
-            Ok(Started::Done(outcome)) => finished(&label, outcome, origin, cx),
+            Ok(Started::Done(outcome)) => finished(&label, outcome, true, origin, cx),
 
             Ok(Started::Job(job)) => {
                 crate::openers::task_started(cx);
-                watch(job, label, origin, cx);
+                watch(job, label, true, origin, cx);
             }
 
             Err(e) => {
@@ -141,9 +141,33 @@ fn run(
     .detach();
 }
 
+/// What an MCP client's action answered, toasted the way a menu's is so the
+/// user sees what was done through the plugin.
+pub fn client_ran(label: &str, outcome: Outcome, origin: AnyWindowHandle, cx: &mut App) {
+    finished(label, outcome, false, origin, cx);
+}
+
+pub fn client_failed(label: &str, error: String, origin: AnyWindowHandle, cx: &mut App) {
+    failed(label, error, origin, cx);
+}
+
+/// Polls a job an MCP client started until it ends, and toasts the end.
+pub fn watch_client_job(
+    job: std::sync::Arc<plugin_actions::Job>,
+    label: String,
+    origin: AnyWindowHandle,
+    cx: &mut App,
+) {
+    crate::openers::task_started(cx);
+    watch(job, label, false, origin, cx);
+}
+
+/// `asked` is whether the user picked the action here, rather than an MCP
+/// client running it.
 fn watch(
     job: std::sync::Arc<plugin_actions::Job>,
     label: String,
+    asked: bool,
     origin: AnyWindowHandle,
     cx: &mut App,
 ) {
@@ -153,7 +177,7 @@ fn watch(
         let end = task.await;
 
         cx.update(|cx| match end {
-            JobEnd::Finished(outcome) => finished(&label, outcome, origin, cx),
+            JobEnd::Finished(outcome) => finished(&label, outcome, asked, origin, cx),
             JobEnd::Failed(e) => failed(&label, e, origin, cx),
 
             JobEnd::Stopped => {
@@ -171,10 +195,12 @@ fn watch(
 
 /// A result that names a folder or a page keeps its toast up until it's
 /// used or dismissed, since the button is the point of it.
-fn finished(label: &str, outcome: Outcome, origin: AnyWindowHandle, cx: &mut App) {
+fn finished(label: &str, outcome: Outcome, asked: bool, origin: AnyWindowHandle, cx: &mut App) {
     // An answer that's only a path is the action itself, like Show in Folder:
-    // the click already asked for it, so it opens without a toast.
-    if outcome.message.is_empty()
+    // the click already asked for it, so it opens without a toast. An MCP
+    // client never gets a file manager opened without the user's click.
+    if asked
+        && outcome.message.is_empty()
         && outcome.link.is_none()
         && let Some(path) = &outcome.reveal
     {
@@ -189,6 +215,13 @@ fn finished(label: &str, outcome: Outcome, origin: AnyWindowHandle, cx: &mut App
 
     let pinned = outcome.reveal.is_some() || outcome.link.is_some();
     let mut toast = Toast::new(Tone::Good, message).pinned(pinned);
+
+    if !asked {
+        toast = toast.title(rox_i18n::t!(
+            "plugin-action-by-client",
+            action = label.to_string()
+        ));
+    }
 
     if let Some(path) = outcome.reveal {
         toast = toast.action(

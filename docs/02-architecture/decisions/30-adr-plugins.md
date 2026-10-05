@@ -610,3 +610,9 @@ only, so each source has one switch and no second one controls the same thing.
 
 The declaration sits under `capabilities.source` beside `links`, so `api` stays 1, and
 turning it on shows on the re-approval card as a new capability.
+
+**Amended 2026-10-05: actions from MCP.** An MCP client can browse and search a plugin
+and run its actions through the control socket, behind a switch of its own. [ADR
+22](22-adr-control-surface.md)'s amendment has the surface and the gate. The plugin
+hears the same `source.action`, `source.browse` and `source.search` a menu or the source
+browser sends, so nothing in this record moves.

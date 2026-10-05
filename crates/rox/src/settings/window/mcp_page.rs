@@ -1,6 +1,6 @@
 //! The MCP settings page (ADR 22): the switch that lets rox-mcp serve requests,
-//! and the config snippet a client pastes, built for however this copy was
-//! installed.
+//! the one that lets its clients reach plugins, and the config snippet a client
+//! pastes, built for however this copy was installed.
 
 use super::*;
 
@@ -8,6 +8,12 @@ impl SettingsWindow {
     fn set_mcp_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.mcp_enabled = on;
         Settings::update(move |s| s.mcp_enabled = on);
+        cx.notify();
+    }
+
+    fn set_mcp_plugins(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.mcp_plugins = on;
+        Settings::update(move |s| s.mcp_plugins = on);
         cx.notify();
     }
 
@@ -26,6 +32,7 @@ impl SettingsWindow {
                 .selectable(true)
                 .text_xs();
         let toggle = panel::toggle(self.mcp_enabled, Self::set_mcp_enabled, cx);
+        let plugins = panel::toggle(self.mcp_plugins, Self::set_mcp_plugins, cx);
         PageBody::new().section(Section::new(
             q,
             icons::LINK,
@@ -47,6 +54,11 @@ impl SettingsWindow {
                     "settings-mcp-enable",
                     &["mcp", "enable", "server", "tools"],
                     toggle,
+                )
+                .keyed(
+                    "settings-mcp-plugins",
+                    &["mcp", "plugins", "actions", "browse"],
+                    plugins,
                 )
                 .custom(
                     &["mcp", "client", "config", "claude", "agent"],

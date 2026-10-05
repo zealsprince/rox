@@ -360,6 +360,7 @@ plugin-action-failed = Échec de { $action }
 plugin-action-stopped = { $action } arrêté
 plugin-action-show-in-folder = Afficher dans le dossier
 plugin-action-open-link = Ouvrir le lien
+plugin-action-by-client = { $action }, lancé par un client MCP
 shader-pick-missing = { $name } (manquant)
 shader-pick-custom = Personnalisé
 
@@ -1205,6 +1206,8 @@ settings-mcp-client-config = Config client
     .description = À coller dans la liste de serveurs d'un client MCP (Claude Code, Claude Desktop, ou un autre) pour qu'il interroge rox sur la bibliothèque, ce qui joue et le transport. rox doit tourner ; les outils passent par son socket de contrôle
 settings-mcp-enable = Activer le serveur MCP
     .description = Répondre aux appels d'outils des clients MCP connectés. Le proxy vérifie ce réglage à chaque appel, donc tant qu'il est désactivé les clients sont refusés avec la raison ; la config ci-dessous se prépare dans les deux cas
+settings-mcp-plugins = Laisser les clients MCP utiliser les plugins
+    .description = Permettre aux clients connectés de parcourir et de chercher dans les plugins, et de lancer les actions qu'ils déclarent. Ce qu'un plugin répond parvient au modèle tel quel, et une action agit sur le service du plugin comme si elle était choisie dans un menu. Chaque action lancée par un client affiche une notification
 
 ## Settings: ML models
 settings-mlmodels-checking = Vérification...

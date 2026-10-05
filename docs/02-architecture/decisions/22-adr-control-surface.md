@@ -85,3 +85,29 @@ Out of scope: remote access to the socket (anyone who wants it can proxy it; rox
 the surface local), and the Jellyfin and streaming-service integrations, which point the
 opposite direction, rox as a client of remote services rather than a service to local
 clients.
+
+**Amended 2026-10-05: plugins over the socket.** Andrew's product call, after asking
+whether MCP could talk to plugins: MCP may call into a plugin, and a plugin still never
+calls out. The socket gains `plugins.list`, `plugins.browse`, `plugins.search` and
+`plugins.action`, the same calls the source browser and the action menus make, and
+`rox-mcp` gains a tool for each. A job an action starts shows in `tasks.status` under
+`plugin_jobs`, and `tasks.stop` takes its number. [ADR 30](30-adr-plugins.md)'s line
+holds: every call is one rox makes, so a plugin can't tell a socket client was behind
+it and gets no way to call back.
+
+MCP's reach into plugins has its own switch, "Let MCP Clients Use Plugins" on the MCP
+page, off by default and checked on every call like the other two. Turning MCP on for
+playback shouldn't hand a model every plugin's actions. An action acts on the plugin's
+service and can change things there. A plugin's titles, notices and messages also reach
+the model as they are, which puts third-party text in the same context as tools that
+start hour-long passes and rewrite tags. With the switch off, `rox-mcp` refuses the
+plugin tools and holds `plugin_jobs` back from `get_tasks`, and the tools' descriptions
+tell the model to read plugin text as data. The socket doesn't check the switch itself:
+it can't tell `rox-mcp` from `roxctl`, and the switch is about AI tooling. Rows a plugin
+synced were already in `library.search` and stay there either way, since they're the
+user's library.
+
+A client's action is held to what the menu would offer: declared where it's run, on
+items whose known flags allow it, with params that fit the action's schema. It ends in
+the toast a picked action gets, titled as a client's. An outcome that only names a
+folder never opens the file manager, since no click asked for it.

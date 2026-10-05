@@ -340,6 +340,7 @@ plugin-action-failed = { $action } 失败
 plugin-action-stopped = { $action } 已停止
 plugin-action-show-in-folder = 在文件夹中显示
 plugin-action-open-link = 打开链接
+plugin-action-by-client = { $action }（由 MCP 客户端运行）
 shader-pick-missing = { $name }（缺失）
 shader-pick-custom = 自定义
 
@@ -1151,6 +1152,8 @@ settings-mcp-client-config = 客户端配置
     .description = 贴进 MCP 客户端的服务器列表（Claude Code、Claude Desktop 或别的），它就能向 rox 查询媒体库、正在播放的内容和播放控制。rox 必须在运行；这些工具跑在它的控制套接字上
 settings-mcp-enable = 启用 MCP 服务器
     .description = 响应已连接 MCP 客户端的工具调用。代理每次调用都会查这一项，所以关着时客户端会收到带理由的拒绝；下面的配置无论开关都能设好
+settings-mcp-plugins = 允许 MCP 客户端使用插件
+    .description = 允许已连接的客户端浏览和搜索插件，并运行插件声明的操作。插件的回答会原样传给模型，操作对插件服务的作用与从菜单中选择时相同。客户端运行的每个操作都会显示通知
 
 ## Settings: ML models
 settings-mlmodels-checking = 正在检查…

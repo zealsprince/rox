@@ -4,7 +4,7 @@
 //! can never say something the UI wouldn't.
 //!
 //! Surface, version 1: `transport.*`, `queue.*`, `library.*`, `tasks.*`,
-//! `ai.status`, and `event.*` pushes after `subscribe`. `debug.*` is the
+//! `plugins.*`, `ai.status`, and `event.*` pushes after `subscribe`. `debug.*` is the
 //! runtime test surface; its input half is the sibling `drive` module.
 
 use std::path::PathBuf;
@@ -104,11 +104,15 @@ fn publish_events(state: &AppState, events: rox_ipc::Events, cx: &mut App) {
     .detach();
 }
 
-/// The blocking answers (art reads, search) respond from the background executor.
+/// The blocking answers (art reads, search, plugin calls) respond from the
+/// background executor.
 fn dispatch(state: &AppState, request: Request, cx: &mut App) {
     match request.method.as_str() {
         "library.search" => return search(state, request, cx),
         "library.artwork" => return artwork(request, cx),
+        "plugins.browse" => return super::ipc_plugins::browse(state, request, cx),
+        "plugins.search" => return super::ipc_plugins::search(state, request, cx),
+        "plugins.action" => return super::ipc_plugins::action(request, cx),
         _ => {}
     }
     let result = route(state, &request.method, &request.params, cx);
@@ -261,6 +265,7 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         "tasks.status" => Ok(tasks_status(state, cx)),
         "tasks.start" => tasks_start(state, params, cx),
         "tasks.stop" => tasks_stop(params, cx),
+        "plugins.list" => Ok(super::ipc_plugins::list()),
         // rox-mcp asks this before each tool call (ADR 22). The socket stays up
         // either way; the toggles only gate AI tooling.
         "ai.status" => {
@@ -268,6 +273,7 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             Ok(json!({
                 "enabled": settings.ai_enabled,
                 "mcp": settings.mcp_enabled,
+                "plugins": settings.mcp_plugins,
             }))
         }
         "debug.settings" => {
@@ -425,6 +431,7 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
                 "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
             })),
         ),
+        "plugin_jobs": super::ipc_plugins::jobs(),
     })
 }
 
@@ -554,8 +561,13 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
     Ok(reply)
 }
 
-/// Workers drop out at the next file, hence "stopping".
+/// Workers drop out at the next file, hence "stopping". `{"job": n}` stops a
+/// plugin action's job instead.
 fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
+    if let Some(serial) = params.get("job").and_then(Value::as_u64) {
+        return super::ipc_plugins::stop_job(serial);
+    }
+
     let pass = pass_param(params)?;
     let running = match pass {
         "acoustic" => crate::embeddings::progress(cx).is_some(),

@@ -208,9 +208,7 @@ impl SettingsWindow {
     }
 
     fn set_backdrop_windows(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.backdrop_all_windows = on;
-        palette::set_backdrop_all_windows(on, cx);
-        Settings::update(move |s| s.look.bundle.appearance.backdrop_all_windows = on);
+        crate::workspace::set_backdrop_all_windows(on, cx);
         cx.notify();
     }
 
@@ -820,7 +818,11 @@ impl SettingsWindow {
                     .keyed(
                         "settings-appearance-backdrop-all-windows",
                         &["transparency", "backdrop", "child windows", "everywhere"],
-                        panel::toggle(self.backdrop_all_windows, Self::set_backdrop_windows, cx),
+                        panel::toggle(
+                            palette::backdrop_all_windows(),
+                            Self::set_backdrop_windows,
+                            cx,
+                        ),
                     )
                 },
             ))

@@ -19,16 +19,18 @@ use gpui::{
     img, linear_color_stop, linear_gradient, point, prelude::*, px, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewStyle};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
 use rox_library::projection::FilterField;
 use rox_net::providers::lastfm::{BioLink, TopTrack};
 use rox_net::providers::theaudiodb::ArtistProfile;
+use rox_services::plugins;
 use serde::{Deserialize, Serialize};
 
 use crate::artists::{self, Artist, SizedImage};
@@ -107,6 +109,9 @@ pub struct BiographyConfig {
     pub top_tracks: bool,
     pub top_tracks_count: usize,
     pub similar: bool,
+    /// The plugin a top track the library doesn't hold is searched on: the
+    /// last one picked from Play From.
+    pub plugin_source: Option<String>,
 }
 
 impl Default for BiographyConfig {
@@ -134,8 +139,26 @@ impl Default for BiographyConfig {
             top_tracks: true,
             top_tracks_count: 5,
             similar: true,
+            plugin_source: None,
         }
     }
+}
+
+/// A top track the library doesn't hold, by the names a plugin search sends.
+#[derive(Clone)]
+struct Unheld {
+    /// The folded artist the sheet is keyed by.
+    key: String,
+    artist: String,
+    title: String,
+}
+
+/// Where a plugin search for an unheld top track got to.
+#[derive(Clone)]
+enum Finding {
+    Searching,
+    /// Why it didn't play: no plugin, no match, or the plugin failing.
+    Missed(SharedString),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +198,14 @@ pub struct BiographyPanel {
     /// Library ids for the top tracks, keyed by the folded artist; None is a
     /// track the library doesn't hold.
     matches: Option<(String, Vec<Option<i64>>)>,
+    /// Where the last plugin search for a top track got to, keyed by the
+    /// folded artist and the title, and shown in that row's play slot.
+    finding: Option<(String, String, Finding)>,
+    /// Bumped per search, so a slow answer never plays over a newer click.
+    finding_gen: u64,
+    /// The context menu builder gets no position, so the right press records
+    /// its track here.
+    menu_row: Option<Unheld>,
     scroll: ScrollHandle,
     focus: FocusHandle,
     opacity_scrub: ScrubState,
@@ -265,6 +296,9 @@ impl BiographyPanel {
             fade: None,
             advanced_at: Instant::now(),
             matches: None,
+            finding: None,
+            finding_gen: 0,
+            menu_row: None,
             scroll: ScrollHandle::default(),
             focus: cx.focus_handle().tab_stop(true),
             opacity_scrub: ScrubState::default(),
@@ -628,6 +662,129 @@ impl BiographyPanel {
                 player.play_now(keys, cx);
             }
         });
+    }
+
+    /// A top track the library doesn't hold has nothing to open, so a plugin
+    /// searches for the song. A Play From pick becomes the plugin for the
+    /// play buttons and the double click too.
+    fn play_unheld(
+        &mut self,
+        wanted: Unheld,
+        picked: Option<String>,
+        queue: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let sources = plugins::searchable_sources();
+        if picked.is_some() {
+            self.config.plugin_source = picked.clone();
+            panel::refresh_tab_panel(&self.tab_panel, cx);
+        }
+
+        // A remembered plugin that's since stopped doesn't count.
+        let remembered = self
+            .config
+            .plugin_source
+            .clone()
+            .filter(|source| sources.iter().any(|(id, _)| id == source));
+        let only = (sources.len() == 1).then(|| sources[0].0.clone());
+        let Some(source) = picked.or(remembered).or(only) else {
+            let message = match sources.is_empty() {
+                true => rox_i18n::t!("history-no-plugins"),
+                false => rox_i18n::t!("history-pick-plugin"),
+            };
+            self.finding = Some((wanted.key, wanted.title, Finding::Missed(message)));
+            cx.notify();
+            return;
+        };
+
+        let label = sources
+            .iter()
+            .find(|(id, _)| *id == source)
+            .map_or_else(|| source.clone(), |(_, label)| label.clone());
+        let Unheld { key, artist, title } = wanted;
+        self.finding_gen += 1;
+        let generation = self.finding_gen;
+        self.finding = Some((key.clone(), title.clone(), Finding::Searching));
+        cx.notify();
+
+        let library = self.state.library.clone();
+        let found = plugins::find_track(library, &source, artist, title.clone(), cx);
+        cx.spawn(async move |this, cx| {
+            let found = found.await;
+            this.update(cx, |this, cx| {
+                if this.finding_gen != generation {
+                    return;
+                }
+
+                let message = match found {
+                    Ok(Some(track)) => {
+                        this.state.player.update(cx, |player, cx| {
+                            if queue {
+                                player.enqueue(vec![track], cx);
+                            } else {
+                                player.play_now(vec![track], cx);
+                            }
+                        });
+                        None
+                    }
+
+                    Ok(None) => Some(rox_i18n::t!(
+                        "history-not-found",
+                        source = label,
+                        title = title.clone()
+                    )),
+
+                    Err(reason) => Some(rox_i18n::t!(
+                        "history-find-failed",
+                        source = label,
+                        reason = reason
+                    )),
+                };
+                this.finding = message.map(|message| (key, title, Finding::Missed(message)));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The plugins an unheld top track can be searched on, with the
+    /// remembered pick checked.
+    fn play_from_menu(
+        &self,
+        menu: PopupMenu,
+        wanted: Unheld,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let sources = plugins::searchable_sources();
+        if sources.is_empty() {
+            return menu
+                .item(PopupMenuItem::new(rox_i18n::t!("history-no-plugins")).disabled(true));
+        }
+
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            for (source, label) in sources {
+                let checked = source.clone();
+                let wanted = wanted.clone();
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    move |this: &Self| this.config.plugin_source.as_ref() == Some(&checked),
+                    move |this, cx| {
+                        this.play_unheld(wanted.clone(), Some(source.clone()), false, cx)
+                    },
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("history-play-from"),
+            submenu,
+        ))
     }
 
     fn config_menu(
@@ -1002,6 +1159,12 @@ impl Panel for BiographyPanel {
         false
     }
 
+    /// The body serves a Play From menu over unheld top tracks, so the tab
+    /// panel's body right-click stays out.
+    fn content_context_menu(&self, _cx: &App) -> bool {
+        true
+    }
+
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -1084,6 +1247,37 @@ impl Render for BiographyPanel {
 
 impl BiographyPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // Capture phase runs before any row records itself, so a press off
+        // the unheld top tracks leaves no target and the menu falls back to
+        // the panel's.
+        let content = self.content(window, cx).capture_any_mouse_down(cx.listener(
+            |this, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Right {
+                    this.menu_row = None;
+                }
+            },
+        ));
+
+        let weak = cx.entity().downgrade();
+        div()
+            .size_full()
+            .child(content.context_menu(move |menu, window, cx| {
+                let Some(this) = weak.upgrade() else {
+                    return menu;
+                };
+
+                let wanted = this.read(cx).menu_row.clone();
+                this.update(cx, |this, cx| match wanted {
+                    Some(wanted) => {
+                        let menu = this.play_from_menu(menu, wanted, window, cx);
+                        this.dropdown_menu(menu.separator(), window, cx)
+                    }
+                    None => this.dropdown_menu(menu, window, cx),
+                })
+            }))
+    }
+
+    fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // The floor at surface opacity, so the window backdrop (ADR 10) shows
         // through.
         let root = div().size_full().bg(palette::bg_root());
@@ -1556,21 +1750,36 @@ impl BiographyPanel {
             .gap(px(2.))
             .child(heading(rox_i18n::t!("biography-top-tracks-heading")));
         for (i, track) in tracks.iter().take(shown).enumerate() {
-            let id = matches.get(i).copied().flatten();
-            list = list.child(self.top_track_row(i, track, id, cx));
+            let held = match matches.get(i).copied().flatten() {
+                Some(id) => Ok(id),
+                None => Err(Unheld {
+                    key: key.to_string(),
+                    artist: artist.info.name.clone(),
+                    title: track.name.clone(),
+                }),
+            };
+            list = list.child(self.top_track_row(i, track, held, cx));
         }
         Some(list)
     }
 
-    /// A row the library doesn't hold reads faint and is inert.
+    /// A row the library doesn't hold reads faint, and its play actions search
+    /// a plugin for the song.
     fn top_track_row(
         &self,
         i: usize,
         track: &TopTrack,
-        id: Option<i64>,
+        held: Result<i64, Unheld>,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Stateful<Div> {
         let group: SharedString = format!("biography-top-track-{i}").into();
+        let glyph = |path: &'static str| {
+            svg()
+                .path(path)
+                .size(px(12.))
+                .text_color(palette::accent())
+                .cursor_pointer()
+        };
         let mut actions = div()
             .flex_none()
             .w(px(TRACK_ACTIONS_W))
@@ -1579,6 +1788,7 @@ impl BiographyPanel {
             .items_center()
             .gap(px(6.));
         let mut row = div()
+            .id(("biography-top-track", i))
             .group(group.clone())
             .w_full()
             .flex()
@@ -1588,15 +1798,15 @@ impl BiographyPanel {
             .px(tokens::SPACE_XS)
             .py(px(2.))
             .rounded(tokens::RADIUS);
-        let selected = id.is_some_and(|id| self.state.selection.read(cx).tracks() == [id]);
-        if let Some(id) = id {
-            let glyph = |path: &'static str| {
-                svg()
-                    .path(path)
-                    .size(px(12.))
-                    .text_color(palette::accent())
-                    .cursor_pointer()
-            };
+        let selected = held
+            .as_ref()
+            .is_ok_and(|&id| self.state.selection.read(cx).tracks() == [id]);
+        let title_color = match held {
+            Ok(_) => palette::text(),
+            Err(_) => palette::text_faint(),
+        };
+
+        if let Ok(id) = held {
             actions = actions
                 .opacity(0.)
                 .group_hover(group, |s| s.opacity(1.))
@@ -1630,12 +1840,81 @@ impl BiographyPanel {
                         }
                     }),
                 );
+        } else if let Err(wanted) = held {
+            let (play, queue, open) = (wanted.clone(), wanted.clone(), wanted.clone());
+            let finding = self
+                .finding
+                .as_ref()
+                .filter(|(key, title, _)| *key == wanted.key && *title == wanted.title)
+                .map(|(_, _, finding)| finding.clone());
+            let retry = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                this.play_unheld(play.clone(), None, false, cx);
+            });
+
+            // The play slot stays up while it reports a search, so the spinner
+            // and the warning show without a hover.
+            let slot = match finding {
+                None => glyph(icons::PLAY)
+                    .opacity(0.)
+                    .group_hover(group.clone(), |s| s.opacity(1.))
+                    .on_mouse_down(MouseButton::Left, retry)
+                    .into_any_element(),
+
+                Some(Finding::Searching) => div()
+                    .flex()
+                    .child(Spinner::new().xsmall().color(palette::accent().into()))
+                    .into_any_element(),
+
+                Some(Finding::Missed(message)) => div()
+                    .id(("biography-top-track-missed", i))
+                    .flex()
+                    .cursor_pointer()
+                    .child(
+                        svg()
+                            .path(icons::ALERT)
+                            .size(px(12.))
+                            .text_color(palette::tone_warn()),
+                    )
+                    .tooltip(move |window, cx| Tooltip::new(message.clone()).build(window, cx))
+                    .on_mouse_down(MouseButton::Left, retry)
+                    .into_any_element(),
+            };
+
+            actions = actions.child(slot).child(
+                glyph(icons::PLUS)
+                    .opacity(0.)
+                    .group_hover(group, |s| s.opacity(1.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.play_unheld(queue.clone(), None, true, cx);
+                        }),
+                    ),
+            );
+            row = row
+                .cursor_pointer()
+                .hover(|d| d.bg(palette::bg_control_hover()))
+                .tooltip(|window, cx| {
+                    Tooltip::new(rox_i18n::t!("history-unknown-row")).build(window, cx)
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        if event.click_count > 1 {
+                            this.play_unheld(open.clone(), None, false, cx);
+                        }
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _: &MouseDownEvent, _, _| {
+                        this.menu_row = Some(wanted.clone());
+                    }),
+                );
         }
-        let title_color = if id.is_some() {
-            palette::text()
-        } else {
-            palette::text_faint()
-        };
+
         row.child(actions)
             .child(
                 div()

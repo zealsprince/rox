@@ -249,7 +249,6 @@ struct SettingsWindow {
     keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
-    backdrop_all_windows: bool,
     /// The Milkdrop backdrop's sliders. The config itself lives in a live
     /// cache, with the file write debounced behind it.
     backdrop_visual_strength_scrub: ScrubState,
@@ -262,7 +261,6 @@ struct SettingsWindow {
     font_size: f32,
     frame: Frame,
     restore_last_track: bool,
-    watch_library: bool,
     /// Flipping it reloads the projection so the symbol tables re-intern.
     fold_case: bool,
     split_genre_compounds: bool,
@@ -987,7 +985,6 @@ impl SettingsWindow {
             keep_theme: settings.look.bundle.appearance.keep_theme,
             surface_opacity: settings.look.bundle.appearance.surface_opacity,
             backdrop_strength: settings.look.bundle.appearance.backdrop_strength,
-            backdrop_all_windows: settings.look.bundle.appearance.backdrop_all_windows,
             backdrop_visual_strength_scrub: ScrubState::default(),
             backdrop_visual_scale_scrub: ScrubState::default(),
             backdrop_visual_duration_scrub: ScrubState::default(),
@@ -998,7 +995,6 @@ impl SettingsWindow {
             font_size: settings.app_font_size,
             frame: appearance_frame,
             restore_last_track: settings.restore_last_track,
-            watch_library: settings.watch_library,
             fold_case: settings.fold_case,
             split_genre_compounds: settings.split_genre_compounds,
             split_genre_compounds_scanned: settings.split_genre_compounds,

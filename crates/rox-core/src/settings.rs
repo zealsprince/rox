@@ -1596,6 +1596,29 @@ pub fn note_backdrop_shader(config: Option<PostShaderConfig>) {
     *BACKDROP_SHADER.write().unwrap() = config;
 }
 
+/// The switch alone, without cloning the source for one bool.
+pub fn backdrop_shader_on() -> bool {
+    BACKDROP_SHADER
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|config| config.enabled)
+}
+
+/// The screen shader's switch as the shell last applied it. Live like
+/// `hide_menubar`, because the menu row, the Shader page, the hotkey and
+/// custom controls all have to show one state.
+static POST_SHADER_ON: AtomicBool = AtomicBool::new(false);
+
+pub fn post_shader_on() -> bool {
+    POST_SHADER_ON.load(Ordering::Relaxed)
+}
+
+/// Cache only: the shell's apply is what turns the shader on or off.
+pub fn note_post_shader_on(on: bool) {
+    POST_SHADER_ON.store(on, Ordering::Relaxed);
+}
+
 /// The Milkdrop backdrop's live, merged config. The skipped fields belong to
 /// [`MilkdropLook`] and are filled from the look on load and on apply, so
 /// the machine file never carries a second copy.

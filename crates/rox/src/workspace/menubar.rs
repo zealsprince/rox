@@ -1453,7 +1453,7 @@ impl Workspace {
             MenuAction::ToggleDecorations => settings::os_decorations(),
             MenuAction::ToggleQuitToTray => settings::quit_to_tray(),
             MenuAction::ToggleArtTheming => palette::art_theming(),
-            MenuAction::TogglePostShader => crate::workspace::post_shader_on(),
+            MenuAction::TogglePostShader => settings::post_shader_on(),
             _ => false,
         };
         let player = self.state.player.read(cx);

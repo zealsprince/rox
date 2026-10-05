@@ -150,7 +150,7 @@ fn native_label(item: MenuItem, playing: bool) -> String {
             switching(palette::art_theming(), rox_i18n::t!("menu-song-theming"))
         }
         MenuAction::TogglePostShader => switching(
-            crate::workspace::post_shader_on(),
+            settings::post_shader_on(),
             rox_i18n::t!("menu-overlay-shader"),
         ),
         MenuAction::ToggleQuitToTray => switching(

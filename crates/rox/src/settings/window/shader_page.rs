@@ -46,7 +46,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Section {
-        let enabled = crate::workspace::post_shader_on();
+        let enabled = settings::post_shader_on();
         let all_windows = self.post_shader_all_windows;
         let run_idle = self.post_shader_run_idle;
         let error = crate::workspace::post_shader_error();
@@ -553,25 +553,12 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Absent reads as default with All Windows on; a look that leaves its
-    /// children bare turns it off explicitly.
     fn backdrop_config() -> settings::PostShaderConfig {
-        settings::backdrop_shader().unwrap_or_else(|| settings::PostShaderConfig {
-            all_windows: true,
-            ..Default::default()
-        })
+        crate::workspace::backdrop_shader_config()
     }
 
-    /// No confirm for the backdrop: the panels paint over it, so it can never
-    /// bury its own switch. A config cleared back to nothing collapses to None,
-    /// so exports carry no empty block.
     fn write_backdrop(&mut self, config: settings::PostShaderConfig, cx: &mut Context<Self>) {
-        let config =
-            (config.configured() || !config.routes.is_empty() || !config.manual.is_empty())
-                .then_some(config);
-        settings::note_backdrop_shader(config.clone());
-        Settings::update(move |s| s.look.bundle.backdrop_shader = config);
-        crate::workspace::refresh_backdrop(cx);
+        crate::workspace::write_backdrop_shader(config, cx);
         cx.notify();
     }
 
@@ -622,9 +609,7 @@ impl SettingsWindow {
         self.edit_backdrop_source(Some(name), String::new(), None, cx);
     }
 
-    /// Written through the same cache, file and repaint as
-    /// [`write_backdrop`](Self::write_backdrop), outside this window since the
-    /// editor outlives it.
+    /// Written outside this window, since the editor outlives it.
     fn edit_backdrop_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         use panel::shader::edit::{EditKey, ShaderEditTarget};
 
@@ -652,10 +637,7 @@ impl SettingsWindow {
                         config.name = None;
                         config.source = source;
                         config.path = bookmark.clone();
-                        let config = Some(config);
-                        settings::note_backdrop_shader(config.clone());
-                        Settings::update(move |s| s.look.bundle.backdrop_shader = config);
-                        crate::workspace::refresh_backdrop(cx);
+                        crate::workspace::write_backdrop_shader(config, cx);
                     }),
                 })
             }

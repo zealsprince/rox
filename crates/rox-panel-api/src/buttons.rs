@@ -12,23 +12,38 @@
 //! The stock look is seed data that makes a new button a working clone of the
 //! native control. Nothing in `rox-panels` renders through here. Left out:
 //! A-B's breathing dot, the play button's accent fill, and mute's level split,
-//! which no case can say; favourite, rating, the mini layout, and the post
-//! shader's live flag, which aren't readable from here.
+//! which no case can say, and the rating, which no command sets.
 
 use rox_core::continuation;
 use rox_core::settings::{self, GainModeSetting, ShuffleMode};
 use rox_design::assets::icons;
 use rox_design::palette;
 use rox_playback::{broadcast, icy};
+use rox_services::catalog::Library;
 use rox_services::discord_presence::DiscordPresence;
 use rox_services::lastfm::Scrobbler;
 use rox_services::player::{self, AbState, LoopMode, Player};
 
+use crate::marks::Marks;
+
 /// The live state a reader may look at, borrowed for one draw.
 pub struct Live<'a> {
     pub player: &'a Player,
+    pub library: &'a Library,
     pub scrobbler: &'a Scrobbler,
     pub discord: &'a DiscordPresence,
+    /// The playing track's marks. Resolving them costs queries, so the host
+    /// only does it when a placed button [`needs_marks`]; None otherwise and
+    /// while nothing plays.
+    pub marks: Option<Marks>,
+    pub shell: Shell,
+}
+
+/// What only the shell can say about the window a button draws in. The host
+/// fills it in, since this crate can't name a workspace.
+#[derive(Clone, Copy, Default)]
+pub struct Shell {
+    pub mini: bool,
 }
 
 pub struct StateSpec {
@@ -73,6 +88,32 @@ pub const STATES: &[StateSpec] = &[
                 label_key: "button-state-playback-paused",
                 icon: icons::PLAY,
                 color: "text",
+            },
+        ],
+    },
+    StateSpec {
+        id: "player.favourite",
+        label_key: "button-state-favourite",
+        action: "toggle_favourite",
+        read: read_favourite,
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-favourite-on",
+                icon: icons::HEART_FILLED,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-favourite-off",
+                icon: icons::HEART,
+                color: "text",
+            },
+            StateCase {
+                id: "none",
+                label_key: "button-state-favourite-none",
+                icon: icons::HEART,
+                color: "text_faint",
             },
         ],
     },
@@ -451,6 +492,27 @@ pub const STATES: &[StateSpec] = &[
         ],
     },
     StateSpec {
+        id: "app.mini",
+        label_key: "button-state-mini",
+        action: "toggle_mini",
+        read: read_mini,
+        // The glyph is the way the click goes, like the native mini toggle.
+        cases: &[
+            StateCase {
+                id: "mini",
+                label_key: "button-state-mini-mini",
+                icon: icons::MAXIMIZE,
+                color: "text",
+            },
+            StateCase {
+                id: "primary",
+                label_key: "button-state-mini-primary",
+                icon: icons::MINIMIZE,
+                color: "text",
+            },
+        ],
+    },
+    StateSpec {
         id: "app.menubar",
         label_key: "button-state-menubar",
         action: "toggle_menubar",
@@ -657,6 +719,128 @@ pub const STATES: &[StateSpec] = &[
         ],
     },
     StateSpec {
+        id: "app.watch_folders",
+        label_key: "button-state-watch-folders",
+        action: "toggle_watch_folders",
+        read: read_watch_folders,
+        // What was asked for: past the platform's watch ceiling the watcher
+        // never arms, same as the settings page keeps the preference.
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-watch-folders-on",
+                icon: icons::FOLDER,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-watch-folders-off",
+                icon: icons::FOLDER,
+                color: "text_faint",
+            },
+        ],
+    },
+    StateSpec {
+        id: "app.post_shader",
+        label_key: "button-state-post-shader",
+        action: "toggle_post_shader",
+        read: read_post_shader,
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-post-shader-on",
+                icon: icons::BLEND,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-post-shader-off",
+                icon: icons::BLEND,
+                color: "text_faint",
+            },
+        ],
+    },
+    StateSpec {
+        id: "app.backdrop_shader",
+        label_key: "button-state-backdrop-shader",
+        action: "toggle_backdrop_shader",
+        read: read_backdrop_shader,
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-backdrop-shader-on",
+                icon: icons::LAYERS,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-backdrop-shader-off",
+                icon: icons::LAYERS,
+                color: "text_faint",
+            },
+        ],
+    },
+    StateSpec {
+        id: "app.backdrop_all_windows",
+        label_key: "button-state-backdrop-all-windows",
+        action: "toggle_backdrop_all_windows",
+        read: read_backdrop_all_windows,
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-backdrop-all-windows-on",
+                icon: icons::APP_WINDOW,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-backdrop-all-windows-off",
+                icon: icons::APP_WINDOW,
+                color: "text_faint",
+            },
+        ],
+    },
+    StateSpec {
+        id: "app.milkdrop_backdrop",
+        label_key: "button-state-milkdrop-backdrop",
+        action: "toggle_milkdrop_backdrop",
+        read: read_milkdrop_backdrop,
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-milkdrop-backdrop-on",
+                icon: icons::AUDIO_LINES,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-milkdrop-backdrop-off",
+                icon: icons::AUDIO_LINES,
+                color: "text_faint",
+            },
+        ],
+    },
+    StateSpec {
+        id: "app.milkdrop_hard_cuts",
+        label_key: "button-state-milkdrop-hard-cuts",
+        action: "toggle_milkdrop_hard_cuts",
+        read: read_milkdrop_hard_cuts,
+        cases: &[
+            StateCase {
+                id: "on",
+                label_key: "button-state-milkdrop-hard-cuts-on",
+                icon: icons::ACTIVITY,
+                color: "accent",
+            },
+            StateCase {
+                id: "off",
+                label_key: "button-state-milkdrop-hard-cuts-off",
+                icon: icons::ACTIVITY,
+                color: "text_faint",
+            },
+        ],
+    },
+    StateSpec {
         id: "app.milkdrop_lock",
         label_key: "button-state-milkdrop-lock",
         action: "toggle_milkdrop_lock",
@@ -691,11 +875,35 @@ fn spec(id: &str) -> Option<&'static StateSpec> {
     STATES.iter().find(|spec| spec.id == id)
 }
 
+/// The states that read [`Live::marks`].
+const MARKED: &[&str] = &["player.favourite"];
+
+pub fn needs_marks(id: &str) -> bool {
+    MARKED.contains(&id)
+}
+
 fn read_playback(live: &Live) -> &'static str {
     if live.player.is_playing() {
         "playing"
     } else {
         "paused"
+    }
+}
+
+fn read_favourite(live: &Live) -> &'static str {
+    match live.marks {
+        Some(Marks {
+            id: Some(_),
+            favourite,
+            ..
+        }) => {
+            if favourite {
+                "on"
+            } else {
+                "off"
+            }
+        }
+        _ => "none",
     }
 }
 
@@ -822,6 +1030,10 @@ fn read_resize_lock(_live: &Live) -> &'static str {
     }
 }
 
+fn read_mini(live: &Live) -> &'static str {
+    if live.shell.mini { "mini" } else { "primary" }
+}
+
 fn read_menubar(_live: &Live) -> &'static str {
     if settings::hide_menubar() {
         "hidden"
@@ -880,6 +1092,50 @@ fn read_broadcast(_live: &Live) -> &'static str {
 
 fn read_capture(_live: &Live) -> &'static str {
     if icy::capturing() { "on" } else { "off" }
+}
+
+fn read_watch_folders(live: &Live) -> &'static str {
+    if live.library.watch_on() { "on" } else { "off" }
+}
+
+fn read_post_shader(_live: &Live) -> &'static str {
+    if settings::post_shader_on() {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn read_backdrop_shader(_live: &Live) -> &'static str {
+    if settings::backdrop_shader_on() {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn read_backdrop_all_windows(_live: &Live) -> &'static str {
+    if palette::backdrop_all_windows() {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn read_milkdrop_hard_cuts(_live: &Live) -> &'static str {
+    if settings::backdrop_visual().hard_cuts {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn read_milkdrop_backdrop(_live: &Live) -> &'static str {
+    if settings::backdrop_visual().enabled {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 fn read_milkdrop_lock(_live: &Live) -> &'static str {
@@ -946,6 +1202,14 @@ mod tests {
         for (i, spec) in STATES.iter().enumerate() {
             let dupe = STATES[..i].iter().any(|other| other.id == spec.id);
             assert!(!dupe, "{} is listed twice", spec.id);
+        }
+    }
+
+    /// A typo here leaves a favourite button reading "none" forever.
+    #[test]
+    fn marked_states_exist() {
+        for id in MARKED {
+            assert!(spec(id).is_some(), "{id} is marked but not a state");
         }
     }
 

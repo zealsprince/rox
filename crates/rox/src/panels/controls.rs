@@ -22,13 +22,16 @@ use serde::{Deserialize, Serialize};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::buttons::{self, StateSpec};
+use rox_panel_api::marks::{MarkCache, Marks};
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
 use rox_panel_api::position_bound;
+use rox_panel_api::source::TrackSource;
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_panel_kit::{
     Align, PickRow, Tip, icon_picker, justify, picker, search_picker, setting_block, setting_row,
 };
+use rox_services::catalog::LibraryEvent;
 
 use crate::keymap::{self, Group};
 
@@ -435,6 +438,20 @@ fn button_element(
     Tip::keyed(id, tip).apply(body)
 }
 
+/// The playing track's marks, when `wanted`. Unwanted drops the held ones,
+/// so a button placed later doesn't start from a stale track.
+fn playing_marks(cache: &mut MarkCache, state: &AppState, wanted: bool, cx: &App) -> Option<Marks> {
+    let key = wanted
+        .then(|| TrackSource::Playing.resolve(state, cx))
+        .flatten();
+    let Some(key) = key else {
+        cache.clear();
+        return None;
+    };
+
+    Some(cache.resolve(&key, state.library.read(cx)))
+}
+
 pub struct ControlsPanel {
     state: AppState,
     config: ControlsConfig,
@@ -443,9 +460,12 @@ pub struct ControlsPanel {
     tips: HashMap<(u64, String), (Entity<InputState>, Subscription)>,
     /// Unfolded blocks on the settings page, never saved.
     open: HashSet<u64>,
+    /// Resolved only while a placed button shows a mark.
+    marks: MarkCache,
     _player_changed: Subscription,
     _scrobbler_changed: Subscription,
     _discord_changed: Subscription,
+    _library_changed: Subscription,
 }
 
 impl ControlsPanel {
@@ -459,6 +479,14 @@ impl ControlsPanel {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         let _scrobbler_changed = cx.observe(&state.scrobbler, |_, _, cx| cx.notify());
         let _discord_changed = cx.observe(&state.discord, |_, _, cx| cx.notify());
+        let _library_changed = cx.subscribe(
+            &state.library,
+            |this: &mut Self, library, event: &LibraryEvent, cx| {
+                if this.marks.apply(event, library.read(cx)) {
+                    cx.notify();
+                }
+            },
+        );
 
         ControlsPanel {
             state,
@@ -467,17 +495,30 @@ impl ControlsPanel {
             tab_panel: None,
             tips: HashMap::new(),
             open: HashSet::new(),
+            marks: MarkCache::default(),
             _player_changed,
             _scrobbler_changed,
             _discord_changed,
+            _library_changed,
         }
     }
 
-    fn live_cases(&self, placed: &[Placed<'_>], cx: &App) -> Vec<Option<&'static str>> {
+    fn live_cases(
+        &self,
+        placed: &[Placed<'_>],
+        marks: Option<Marks>,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<Option<&'static str>> {
         let live = buttons::Live {
             player: self.state.player.read(cx),
+            library: self.state.library.read(cx),
             scrobbler: self.state.scrobbler.read(cx),
             discord: self.state.discord.read(cx),
+            marks,
+            shell: buttons::Shell {
+                mini: crate::workspace::mini_showing(window, cx),
+            },
         };
         placed
             .iter()
@@ -488,9 +529,13 @@ impl ControlsPanel {
             .collect()
     }
 
-    fn body(&mut self, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let placed = placed(&self.config.items, &self.config.buttons);
-        let cases = self.live_cases(&placed, cx);
+        let marked = placed
+            .iter()
+            .any(|slot| matches!(slot, Placed::Button(def) if buttons::needs_marks(&def.state)));
+        let marks = playing_marks(&mut self.marks, &self.state, marked, cx);
+        let cases = self.live_cases(&placed, marks, window, cx);
         let unbound = !position_bound::allowed(&self.state, cx);
 
         let strip = div()
@@ -1138,9 +1183,9 @@ impl Panel for ControlsPanel {
 }
 
 impl Render for ControlsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 

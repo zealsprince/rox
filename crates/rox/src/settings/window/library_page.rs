@@ -6,7 +6,6 @@ use super::*;
 
 impl SettingsWindow {
     fn set_watch_library(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.watch_library = on;
         self.library
             .update(cx, |library, cx| library.set_watch(on, cx));
         cx.notify();
@@ -219,6 +218,7 @@ impl SettingsWindow {
         // nothing twice.
         let dirs = self.root_stats.iter().map(|(_, s)| s.dirs).sum::<u64>();
         let over_limit = rox_services::catalog::watch_limit_dirs().filter(|limit| dirs > *limit);
+        let watch_on = self.library.read(cx).watch_on();
         let lead_in = div()
             .text_xs()
             .text_color(palette::text_muted())
@@ -412,7 +412,7 @@ impl SettingsWindow {
                         None => rows.keyed(
                             "settings-library-watch-folders",
                             &["monitor", "auto", "live"],
-                            panel::toggle(self.watch_library, Self::set_watch_library, cx),
+                            panel::toggle(watch_on, Self::set_watch_library, cx),
                         ),
                     };
                     rows.keyed(

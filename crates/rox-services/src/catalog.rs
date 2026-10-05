@@ -822,6 +822,12 @@ impl Library {
         self.watcher.is_some()
     }
 
+    /// The preference, which holds past the watch ceiling where
+    /// [`watching`](Self::watching) stays false.
+    pub fn watch_on(&self) -> bool {
+        self.watch_on
+    }
+
     /// Past [`watch_limit_dirs`] the watcher doesn't arm and the toggle grays
     /// out.
     pub fn watch_limited(&self) -> bool {

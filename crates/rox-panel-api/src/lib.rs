@@ -14,6 +14,7 @@ pub mod charts;
 pub mod cue_ui;
 pub mod fallback_chrome;
 pub mod group_head;
+pub mod marks;
 pub mod openers;
 pub mod panel;
 pub mod panel_settings;

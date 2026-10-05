@@ -46,7 +46,7 @@ use crate::player::fmt_time;
 use crate::playing_bars::{self, PlayingBars};
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::selection::SelectionEvent;
-use crate::settings::ui::{SmallButton, icon_button};
+use crate::settings::ui::{IconButton, SmallButton, icon_button};
 use crate::thumbs::Thumb;
 
 /// Every row is two lines tall, node or track.
@@ -101,6 +101,10 @@ const SORT_CAP: usize = 1000;
 
 /// Tracks the home shows after the playing one.
 const UP_NEXT: usize = 3;
+
+/// Up Next folded to its first track on one line.
+const UP_NEXT_LINE_H: Pixels = px(28.);
+const UP_NEXT_ART: Pixels = px(20.);
 
 /// The tracks a play queues: up to `cap` around the clicked one, half of
 /// them behind it for Prev, the rest ahead, a short side's share going to
@@ -681,6 +685,7 @@ pub struct SourceBrowserPanel {
     /// What plays after the audible track, read when the queue or the track
     /// moves.
     up_next: Vec<(u64, TrackKey)>,
+    up_next_open: bool,
     queue_rev: Option<u64>,
     /// The Up Next entry a click picked. A double click plays it.
     queue_picked: Option<u64>,
@@ -755,9 +760,10 @@ impl SourceBrowserPanel {
                 this.up_next = player.up_next(UP_NEXT);
 
                 let picked = this.queue_picked;
-                if !picked
-                    .is_some_and(|picked| this.up_next.iter().any(|(entry, _)| *entry == picked))
-                {
+                let now = player.playing_entry();
+                if !picked.is_some_and(|picked| {
+                    Some(picked) == now || this.up_next.iter().any(|(entry, _)| *entry == picked)
+                }) {
                     this.queue_picked = None;
                 }
             }
@@ -820,6 +826,7 @@ impl SourceBrowserPanel {
             reveal_playing: false,
             fresh: None,
             up_next: Vec::new(),
+            up_next_open: false,
             queue_rev: None,
             queue_picked: None,
             queue_menu: None,
@@ -2392,6 +2399,7 @@ impl SourceBrowserPanel {
                 .child(text)
         };
 
+        let now = self.state.player.read(cx).playing_entry();
         let back = self.back_link(&playing, cx);
         let title = div()
             .flex()
@@ -2408,21 +2416,114 @@ impl SourceBrowserPanel {
             .border_b_1()
             .border_color(palette::border())
             .child(title)
-            .child(self.queue_row("source-now", 0, &playing, None, cx));
+            .child(self.queue_row("source-now", 0, &playing, now, true, cx));
+
+        if self.up_next.is_empty() {
+            return Some(block);
+        }
+
+        let toggle = self.up_next_toggle(cx);
+        if !self.up_next_open {
+            return Some(block.child(self.up_next_line(toggle, cx)));
+        }
 
         let next = self
             .up_next
             .iter()
             .enumerate()
-            .map(|(ix, (entry, key))| self.queue_row("source-next", ix, key, Some(*entry), cx))
+            .map(|(ix, (entry, key))| {
+                self.queue_row("source-next", ix, key, Some(*entry), false, cx)
+            })
             .collect::<Vec<_>>();
 
-        Some(match next.is_empty() {
-            true => block,
-            false => block
-                .child(heading(rox_i18n::t!("source-browser-up-next")))
-                .children(next),
+        let title = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .pr(tokens::SPACE_XS)
+            .child(heading(rox_i18n::t!("source-browser-up-next")))
+            .child(toggle);
+
+        Some(block.child(title).children(next))
+    }
+
+    /// Folds Up Next to its first track or opens it to all of them.
+    fn up_next_toggle(&self, cx: &mut Context<Self>) -> IconButton {
+        let icon = match self.up_next_open {
+            true => icons::CHEVRON_UP,
+            false => icons::CHEVRON_DOWN,
+        };
+
+        let panel = cx.entity().downgrade();
+        icon_button(icon, false, move |_, _, cx| {
+            panel
+                .update(cx, |this, cx| {
+                    this.up_next_open = !this.up_next_open;
+                    cx.notify();
+                })
+                .ok();
         })
+        .keyed("source-up-next-toggle")
+    }
+
+    /// Folded Up Next: the first track's title and artist on one line, with
+    /// the toggle outside the row so pressing it doesn't pick the track.
+    fn up_next_line(&self, toggle: IconButton, cx: &mut Context<Self>) -> Div {
+        let (entry, key) = self.up_next[0].clone();
+        let (title, artist) = self.queue_tags(&key, cx);
+        let art = self.art_sized(&self.queue_art_key(&key), icons::MUSIC, UP_NEXT_ART, cx);
+        let picked = Some(entry) == self.queue_picked;
+
+        let row = div()
+            .id(("source-next", 0usize))
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .pl(tokens::SPACE_SM)
+            .text_xs()
+            .when(picked, |row| {
+                row.bg(palette::alpha(palette::accent(), 0x26))
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("source-browser-up-next")),
+            )
+            .child(art)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(palette::text())
+                    .child(SharedString::from(title)),
+            )
+            .when(!artist.is_empty(), |row| {
+                row.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(palette::text_muted())
+                        .child(SharedString::from(artist)),
+                )
+            });
+
+        div()
+            .flex_none()
+            .h(UP_NEXT_LINE_H)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .pr(tokens::SPACE_XS)
+            .child(self.queue_presses(row, &key, Some(entry), cx))
+            .child(toggle)
     }
 
     /// The place the playing track was played from, named the way its crumb
@@ -2486,33 +2587,45 @@ impl SourceBrowserPanel {
             .into_any_element()
     }
 
-    /// One queue entry by its tags. An Up Next entry, `entry`, picks on a
-    /// click and plays on a double click, the Queue panel's way.
+    /// The thumb key for a queue entry's cover. Only this source's tracks
+    /// have one here.
+    fn queue_art_key(&self, key: &TrackKey) -> String {
+        match key.source.as_ref() == self.source() {
+            true => key.path.to_string_lossy().into_owned(),
+            false => String::new(),
+        }
+    }
+
+    /// A queue entry's title and artist, or its path when the library
+    /// doesn't know it.
+    fn queue_tags(&self, key: &TrackKey, cx: &mut Context<Self>) -> (String, String) {
+        match self.state.library.read(cx).meta_for_key(key) {
+            Some(meta) => (meta.title, meta.artist),
+            None => (key.path.to_string_lossy().into_owned(), String::new()),
+        }
+    }
+
+    /// One queue entry by its tags. `now` is the Now Playing row, which
+    /// wears the bars and the accent.
     fn queue_row(
         &self,
         id: &'static str,
         ix: usize,
         key: &TrackKey,
         entry: Option<u64>,
+        now: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let meta = self.state.library.read(cx).meta_for_key(key);
-        let (title, artist) = match meta {
-            Some(meta) => (meta.title, meta.artist),
-            None => (key.path.to_string_lossy().into_owned(), String::new()),
-        };
+        let (title, artist) = self.queue_tags(key, cx);
 
-        let path = match key.source.as_ref() == self.source() {
-            true => key.path.to_string_lossy().into_owned(),
-            false => String::new(),
-        };
-        let art = match entry {
-            None => self.playing_art(&path, cx),
-            Some(_) => self.art(&path, icons::MUSIC, cx),
+        let path = self.queue_art_key(key);
+        let art = match now {
+            true => self.playing_art(&path, cx),
+            false => self.art(&path, icons::MUSIC, cx),
         };
 
         let picked = entry.is_some() && entry == self.queue_picked;
-        div()
+        let row = div()
             .id((id, ix))
             .h(ROW_H)
             .flex_none()
@@ -2524,46 +2637,53 @@ impl SourceBrowserPanel {
             .when(picked, |row| {
                 row.bg(palette::alpha(palette::accent(), 0x26))
             })
-            .on_mouse_down(MouseButton::Right, {
-                let key = key.clone();
-                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                    // An Up Next row is picked like a left press would. Now
-                    // Playing's entry is whichever is audible when pressed.
-                    if let Some(entry) = entry {
-                        window.focus(&this.focus);
-                        this.pick_up_next(entry, cx);
-                    }
-
-                    let entry = entry.or_else(|| this.state.player.read(cx).playing_entry());
-                    this.queue_menu = entry.map(|entry| (entry, key.clone()));
-                })
-            })
-            .when_some(entry, |row, entry| {
-                row.cursor_pointer()
-                    .hover(|row| row.bg(palette::bg_control_hover()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            window.focus(&this.focus);
-                            match event.click_count > 1 {
-                                true => this.play_up_next(entry, cx),
-                                false => this.pick_up_next(entry, cx),
-                            }
-                        }),
-                    )
-            })
             .child(art)
-            .child(Self::two_lines(
-                title.into(),
-                artist.into(),
-                entry.is_none(),
-                false,
-            ))
-            .into_any_element()
+            .child(Self::two_lines(title.into(), artist.into(), now, false));
+
+        self.queue_presses(row, key, entry, cx).into_any_element()
     }
 
-    /// One highlight at a time: picking in Up Next clears the list's.
-    fn pick_up_next(&mut self, entry: u64, cx: &mut Context<Self>) {
+    /// A right press opens the queue menu. A row with its queue `entry` also
+    /// picks on a click and plays on a double click, the Queue panel's way.
+    fn queue_presses(
+        &self,
+        row: gpui::Stateful<Div>,
+        key: &TrackKey,
+        entry: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        row.on_mouse_down(MouseButton::Right, {
+            let key = key.clone();
+            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                // The row is picked like a left press would. Without an
+                // entry, the menu takes whichever is audible when pressed.
+                if let Some(entry) = entry {
+                    window.focus(&this.focus);
+                    this.pick_queued(entry, cx);
+                }
+
+                let entry = entry.or_else(|| this.state.player.read(cx).playing_entry());
+                this.queue_menu = entry.map(|entry| (entry, key.clone()));
+            })
+        })
+        .when_some(entry, |row, entry| {
+            row.cursor_pointer()
+                .hover(|row| row.bg(palette::bg_control_hover()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        window.focus(&this.focus);
+                        match event.click_count > 1 {
+                            true => this.play_queued_entry(entry, cx),
+                            false => this.pick_queued(entry, cx),
+                        }
+                    }),
+                )
+        })
+    }
+
+    /// One highlight at a time: picking a queue row clears the list's.
+    fn pick_queued(&mut self, entry: u64, cx: &mut Context<Self>) {
         self.selected.clear();
         self.anchor = None;
         self.cursor = None;
@@ -2574,7 +2694,7 @@ impl SourceBrowserPanel {
     /// Moves the entry up before jumping, as the Queue panel does, so the
     /// ones before it stay queued. A double click means play, so a paused
     /// player starts.
-    fn play_up_next(&mut self, entry: u64, cx: &mut Context<Self>) {
+    fn play_queued_entry(&mut self, entry: u64, cx: &mut Context<Self>) {
         self.queue_picked = None;
 
         let player = self.state.player.read(cx);
@@ -2601,7 +2721,7 @@ impl SourceBrowserPanel {
         let panel = cx.entity().downgrade();
         let play = move |_: &mut Window, cx: &mut App| {
             panel
-                .update(cx, |this, cx| this.play_up_next(entry, cx))
+                .update(cx, |this, cx| this.play_queued_entry(entry, cx))
                 .ok();
         };
 

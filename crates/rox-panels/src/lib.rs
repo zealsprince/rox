@@ -50,7 +50,8 @@ pub(crate) use rox_design as design;
 pub(crate) use rox_design::assets;
 pub(crate) use rox_net::providers;
 pub(crate) use rox_panel_api::{
-    bookmark_ui, group_head, panel, panel_settings, query, rating_ui, signal_ui, source, track_ui,
+    bookmark_ui, group_head, marks, panel, panel_settings, query, rating_ui, signal_ui, source,
+    track_ui,
 };
 pub(crate) use rox_playback::continuation;
 // Not `history`: that name is the panel here, so the listen recorder stays

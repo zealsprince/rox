@@ -13,7 +13,6 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::spinner::Spinner;
 use gpui_component::{Icon, Side};
 use rox_dock::{Panel, PanelEvent, TabPanel};
-use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use rox_playback::StreamState;
@@ -23,6 +22,7 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::continuation;
 use crate::design::{palette, tokens};
+use crate::marks::{MarkCache, Marks};
 use crate::panel::{
     self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, justify,
 };
@@ -339,18 +339,9 @@ pub struct TransportPanel {
     volume_at: Option<Point<Pixels>>,
     volume_scrub: ScrubState,
     /// Cached so a frame never turns into a database lookup.
-    heart: Option<Heart>,
+    marks: MarkCache,
     _player_changed: Subscription,
     _library_changed: Subscription,
-}
-
-/// The key it was resolved from, its catalog id (None for a file the
-/// library doesn't know), its favourite state, and its rating.
-struct Heart {
-    key: TrackKey,
-    id: Option<i64>,
-    on: bool,
-    rating: u8,
 }
 
 /// A click does something and a hold opens its shades: shuffle order,
@@ -444,18 +435,12 @@ impl TransportPanel {
         // Play state, loop and shuffle change on a user action, never on the
         // position tick, so the gated observe does.
         let _player_changed = observe_view(&state.player, cx);
-        // Any playlist change moves the heart. A rescan can remap ids to paths,
-        // so it drops the cache.
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut Self, _, event: &LibraryEvent, cx| match event {
-                LibraryEvent::PlaylistsChanged => this.refresh_favourite(cx),
-                LibraryEvent::Rated => this.refresh_rating(cx),
-                LibraryEvent::Updated => {
-                    this.heart = None;
+            |this: &mut Self, library, event: &LibraryEvent, cx| {
+                if this.marks.apply(event, library.read(cx)) {
                     cx.notify();
                 }
-                _ => {}
             },
         );
         TransportPanel {
@@ -471,7 +456,7 @@ impl TransportPanel {
             mode_menu: None,
             volume_at: None,
             volume_scrub: ScrubState::default(),
-            heart: None,
+            marks: MarkCache::default(),
             press_seq: 0,
             _player_changed,
             _library_changed,
@@ -952,67 +937,13 @@ impl TransportPanel {
 
     /// Resolves and caches on a track change. No id while nothing plays or
     /// the library doesn't know the file.
-    fn current_heart(&mut self, cx: &App) -> (Option<i64>, bool) {
+    fn current_marks(&mut self, cx: &App) -> Marks {
         let Some(key) = TrackSource::Playing.resolve(&self.state, cx) else {
-            self.heart = None;
-            return (None, false);
+            self.marks.clear();
+            return Marks::default();
         };
-        if self.heart.as_ref().map(|heart| &heart.key) != Some(&key) {
-            let library = self.state.library.read(cx);
-            let id = library.id_for_key(&key);
-            let on = id.is_some_and(|id| library.is_favourite(id));
-            let rating = id
-                .and_then(|id| library.ratings_for(&[id]).get(&id).copied())
-                .unwrap_or(0);
-            self.heart = Some(Heart {
-                key,
-                id,
-                on,
-                rating,
-            });
-        }
-        self.heart
-            .as_ref()
-            .map_or((None, false), |heart| (heart.id, heart.on))
-    }
 
-    fn current_rating(&mut self, cx: &App) -> (Option<i64>, u8) {
-        self.current_heart(cx);
-        self.heart
-            .as_ref()
-            .map_or((None, 0), |heart| (heart.id, heart.rating))
-    }
-
-    /// The id stays put, so this is one single-track query rather than a
-    /// resolve.
-    fn refresh_favourite(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.heart.as_ref().and_then(|heart| heart.id) else {
-            return;
-        };
-        let on = self.state.library.read(cx).is_favourite(id);
-        if let Some(heart) = self.heart.as_mut() {
-            heart.on = on;
-        }
-        cx.notify();
-    }
-
-    /// The id stays put, so this costs one lookup.
-    fn refresh_rating(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.heart.as_ref().and_then(|heart| heart.id) else {
-            return;
-        };
-        let rating = self
-            .state
-            .library
-            .read(cx)
-            .ratings_for(&[id])
-            .get(&id)
-            .copied()
-            .unwrap_or(0);
-        if let Some(heart) = self.heart.as_mut() {
-            heart.rating = rating;
-        }
-        cx.notify();
+        self.marks.resolve(&key, self.state.library.read(cx))
     }
 
     /// Similar reads as Random while there's nothing to draw it from, the
@@ -1305,12 +1236,14 @@ impl TransportPanel {
         }
         // Resolving costs a lookup, so only while the heart is shown.
         let (heart_id, heart_on) = if self.config.items.contains(&PlaybackItem::Favourite) {
-            self.current_heart(cx)
+            let marks = self.current_marks(cx);
+            (marks.id, marks.favourite)
         } else {
             (None, false)
         };
         let (rating_id, rating_value) = if self.config.items.contains(&PlaybackItem::Rating) {
-            self.current_rating(cx)
+            let marks = self.current_marks(cx);
+            (marks.id, marks.rating)
         } else {
             (None, 0)
         };

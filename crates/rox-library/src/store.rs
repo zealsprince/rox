@@ -351,6 +351,14 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         up: crate::members::add_go_to,
         rescan: false,
     },
+    // Plugin rows stored with an empty album artist take the track artist,
+    // the fallback new rows get in members::row_for. No mtime reset: plugin
+    // rows have no file to re-read.
+    crate::migrate::Migration {
+        name: "plugin-album-artist",
+        up: crate::members::backfill_album_artist,
+        rescan: false,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {

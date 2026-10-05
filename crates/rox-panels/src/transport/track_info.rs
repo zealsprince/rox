@@ -24,6 +24,7 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::group_head;
+use crate::marks::MarkCache;
 use crate::panel::{
     self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, justify,
 };
@@ -607,8 +608,8 @@ pub struct TrackInfoPanel {
     /// Keyed on the queue revision, so the snapshot pass and the lookup only
     /// rerun when the queue moves.
     queue_info: Option<(u64, usize, Option<String>)>,
-    /// Cached like the tags; cleared when the catalog or the playlists move.
-    favourite: Option<(TrackKey, Option<i64>, bool)>,
+    /// Cached like the tags. The rating shown comes off the tags, not this.
+    marks: MarkCache,
     /// One per text run, in row order; rebuilt when the arrangement changes
     /// shape.
     marquees: Vec<MarqueeScroll>,
@@ -634,10 +635,10 @@ impl TrackInfoPanel {
         let _player_changed = observe_view(&state.player, cx);
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut Self, _, event: &LibraryEvent, cx| {
+            |this: &mut Self, library, event: &LibraryEvent, cx| {
                 // A favourites toggle anywhere moves the heart; the tags stand.
                 if matches!(event, LibraryEvent::PlaylistsChanged) {
-                    this.favourite = None;
+                    this.marks.apply(event, library.read(cx));
                     cx.notify();
                     return;
                 }
@@ -652,7 +653,7 @@ impl TrackInfoPanel {
                 }
                 this.meta = None;
                 this.queue_info = None;
-                this.favourite = None;
+                this.marks.clear();
                 cx.notify();
             },
         );
@@ -661,7 +662,7 @@ impl TrackInfoPanel {
             config,
             meta: None,
             queue_info: None,
-            favourite: None,
+            marks: MarkCache::default(),
             marquees: Vec::new(),
             cycle: RowCycle::new(),
             marquee_key: None,
@@ -856,15 +857,8 @@ impl TrackInfoPanel {
     }
 
     fn favourite_for(&mut self, key: &TrackKey, cx: &App) -> (Option<i64>, bool) {
-        if self.favourite.as_ref().map(|(k, ..)| k) != Some(key) {
-            let library = self.state.library.read(cx);
-            let id = library.id_for_key(key);
-            let on = id.is_some_and(|id| library.is_favourite(id));
-            self.favourite = Some((key.clone(), id, on));
-        }
-        self.favourite
-            .as_ref()
-            .map_or((None, false), |(_, id, on)| (*id, *on))
+        let marks = self.marks.resolve(key, self.state.library.read(cx));
+        (marks.id, marks.favourite)
     }
 
     /// A click runs the favourite panel's toggle. Scaled with its row, so a

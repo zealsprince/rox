@@ -113,6 +113,28 @@ pub(crate) fn add_go_to(conn: &Connection) -> rusqlite::Result<()> {
     ))
 }
 
+/// Plugin rows stored before [`album_artist_of`] took the track artist. Only
+/// fills the empty ones, so an album artist a plugin did send stays.
+pub(crate) fn backfill_album_artist(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE tracks SET album_artist = artist
+          WHERE substr(source, 1, ?1) = ?2 AND album_artist = ''",
+        params![cue::PLUGIN_PREFIX.len(), cue::PLUGIN_PREFIX],
+    )?;
+
+    Ok(())
+}
+
+/// Falls back to the track artist, as the scanner does for a file with no album
+/// artist tag. An empty one ranks first in the canonical order, so the row would
+/// file ahead of every artist.
+fn album_artist_of(track: &PluginTrack) -> &str {
+    match track.album_artist.is_empty() {
+        true => &track.artist,
+        false => &track.album_artist,
+    }
+}
+
 /// The row a plugin track becomes. It stores no stream URL: a plugin row
 /// plays through the plugin, keyed by its path.
 pub fn row_for(track: &PluginTrack, now: i64) -> TrackRow {
@@ -124,7 +146,7 @@ pub fn row_for(track: &PluginTrack, now: i64) -> TrackRow {
         remote_live: track.live,
         title: track.title.clone(),
         artist: track.artist.clone(),
-        album_artist: track.album_artist.clone(),
+        album_artist: album_artist_of(track).to_string(),
         album: track.album.clone(),
         title_sort: String::new(),
         artist_sort: String::new(),
@@ -917,6 +939,68 @@ mod tests {
         drop_collection(&mut conn, DEMO, "liked").unwrap();
         assert_eq!(stored_go_to(&conn, "a"), None);
         assert_eq!(stored_go_to(&conn, "b"), None);
+    }
+
+    fn album_artists(conn: &Connection) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare("SELECT source, album_artist FROM tracks ORDER BY source, path")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_track_without_an_album_artist_takes_its_artist() {
+        let mut conn = store();
+        let bare = PluginTrack {
+            album_artist: String::new(),
+            ..track("a", "A")
+        };
+        let credited = PluginTrack {
+            artist: "Guest".into(),
+            ..track("b", "B")
+        };
+        pick(&mut conn, DEMO, &[bare, credited]).unwrap();
+
+        assert_eq!(
+            album_artists(&conn),
+            [
+                (DEMO.into(), "Artist".into()),
+                (DEMO.into(), "Artist".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_rows_stored_without_an_album_artist_are_backfilled() {
+        let conn = Connection::open_in_memory().unwrap();
+        store::run_ladder_before(&conn, "plugin-album-artist").unwrap();
+        for (source, path, album_artist) in [
+            (DEMO, "a", ""),
+            (DEMO, "b", "Various Artists"),
+            ("local", "/m/c.flac", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO tracks (source, path, title, artist, album_artist, album, genre,
+                                     year, track_no, duration_ms, size, mtime)
+                 VALUES (?1, ?2, 'T', 'Artist', ?3, 'Album', '', 0, 0, 0, 0, 0)",
+                params![source, path, album_artist],
+            )
+            .unwrap();
+        }
+
+        store::init_schema(&conn).unwrap();
+        assert_eq!(
+            album_artists(&conn),
+            [
+                ("local".into(), "".into()),
+                (DEMO.into(), "Artist".into()),
+                (DEMO.into(), "Various Artists".into()),
+            ],
+            "only an empty plugin album artist is filled"
+        );
     }
 
     #[test]

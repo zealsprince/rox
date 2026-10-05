@@ -8,7 +8,7 @@
 //! playback's sake.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
@@ -245,15 +245,6 @@ pub(crate) fn note_post_shader_error(message: String) {
     *POST_SHADER_ERROR.write().unwrap() = Some(message);
 }
 
-/// The shader switch as it currently stands, a live copy of the settings
-/// file's. A static like `hide_menubar`'s, because the Appearance toggle, the
-/// menu row, and the hotkey all flip it and all have to show one state.
-static POST_SHADER_ON: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn post_shader_on() -> bool {
-    POST_SHADER_ON.load(Ordering::Relaxed)
-}
-
 /// The screen shader's config as the last apply read it off the file, with
 /// a counter that moves every time it does. The settings window's Shader
 /// page keeps a copy of the config so it isn't reading five shards per
@@ -332,7 +323,7 @@ pub(crate) fn post_shader_overlay() -> Option<bool> {
 /// unscoped, applies immediately, and never prompts in either direction.
 pub(crate) fn toggle_post_shader(cx: &mut App) {
     let on = !Settings::load().post_shader.enabled;
-    POST_SHADER_ON.store(on, Ordering::Relaxed);
+    settings::note_post_shader_on(on);
     Settings::update(move |s| s.post_shader.enabled = on);
     apply_post_shader(cx);
 }
@@ -477,6 +468,27 @@ pub(crate) fn refresh_backdrop(cx: &mut App) {
     }
 }
 
+/// The look's backdrop shader to edit. Absent reads as default with All
+/// Windows on; a look that leaves its children bare turns it off explicitly.
+pub(crate) fn backdrop_shader_config() -> PostShaderConfig {
+    settings::backdrop_shader().unwrap_or_else(|| PostShaderConfig {
+        all_windows: true,
+        ..Default::default()
+    })
+}
+
+/// Into the cache, the bundle and every window at once. No confirm: the
+/// panels paint over the backdrop, so it can never bury its own switch. A
+/// config cleared back to nothing collapses to None, so exports carry no
+/// empty block.
+pub(crate) fn write_backdrop_shader(config: PostShaderConfig, cx: &mut App) {
+    let config = (config.configured() || !config.routes.is_empty() || !config.manual.is_empty())
+        .then_some(config);
+    settings::note_backdrop_shader(config.clone());
+    Settings::update(move |s| s.look.bundle.backdrop_shader = config);
+    refresh_backdrop(cx);
+}
+
 /// Hand the backdrop layer its shade, once at startup. The layer is in
 /// rox-services, under the shader machinery, so it calls back up through
 /// this hook; which windows get the shade is decided here, since the
@@ -518,6 +530,36 @@ pub(crate) fn install_backdrop_shade() {
 /// drift apart.
 fn backdrop_allowed(window: &Window, cx: &App) -> bool {
     rox_design::palette::backdrop_all_windows() || workspace_window(window, cx)
+}
+
+/// Whether the workspace in `window` is on its mini layout. A child window
+/// answers for the front workspace, the one the mini command swaps.
+pub(crate) fn mini_showing(window: &Window, cx: &App) -> bool {
+    let Some(windows) = cx.try_global::<WorkspaceWindows>() else {
+        return false;
+    };
+
+    let handle = window.window_handle();
+    let own = windows
+        .open
+        .iter()
+        .find(|w| w.handle == handle)
+        .and_then(|w| typed_workspace(&w.workspace));
+
+    own.or_else(|| {
+        windows
+            .open
+            .iter()
+            .find_map(|w| typed_workspace(&w.workspace))
+    })
+    .is_some_and(|workspace| workspace.read(cx).on_mini())
+}
+
+/// The Transparency section's All Windows switch, into the palette's live
+/// copy and the bundle at once.
+pub(crate) fn set_backdrop_all_windows(on: bool, cx: &mut App) {
+    rox_design::palette::set_backdrop_all_windows(on, cx);
+    Settings::update(move |s| s.look.bundle.appearance.backdrop_all_windows = on);
 }
 
 /// Whether this window is one of the open workspaces, which always get
@@ -600,7 +642,7 @@ fn post_shader_watch(config: &PostShaderConfig) -> Option<PathBuf> {
 pub(crate) fn apply_post_shader(cx: &mut App) {
     cx.defer(|cx| {
         let config = Settings::load().post_shader;
-        POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
+        settings::note_post_shader_on(config.enabled);
         // Publish what the file said before any window compiles it, so a
         // settings window open over this apply can catch its copies up.
         *POST_SHADER_APPLIED.write().unwrap() = Some(config.clone());
@@ -1318,7 +1360,13 @@ actions!(
         ToggleDiscord,
         ToggleBroadcast,
         ToggleCapture,
+        ToggleMilkdropBackdrop,
+        ToggleMilkdropHardCuts,
+        RandomMilkdropPreset,
         ToggleMilkdropLock,
+        ToggleBackdropShader,
+        ToggleBackdropAllWindows,
+        ToggleWatchFolders,
         ToggleMini,
         SaveLayout,
         SaveWorkspace,
@@ -1875,6 +1923,40 @@ pub fn init(cx: &mut App) {
         Settings::update(move |s| s.capture.enabled = on);
         rox_services::capture::apply();
         refresh_all_windows(cx);
+    });
+
+    cx.on_action(|_: &ToggleMilkdropBackdrop, cx| {
+        let mut config = settings::backdrop_visual();
+        config.enabled = !config.enabled;
+        crate::backdrop_visual::switch(config, cx);
+    });
+
+    cx.on_action(|_: &ToggleMilkdropHardCuts, cx| {
+        let mut config = settings::backdrop_visual();
+        config.hard_cuts = !config.hard_cuts;
+        crate::backdrop_visual::switch(config, cx);
+    });
+
+    cx.on_action(|_: &RandomMilkdropPreset, cx| crate::backdrop_visual::random_preset(cx));
+
+    cx.on_action(|_: &ToggleBackdropShader, cx| {
+        let mut config = backdrop_shader_config();
+        config.enabled = !config.enabled;
+        write_backdrop_shader(config, cx);
+    });
+
+    cx.on_action(|_: &ToggleBackdropAllWindows, cx| {
+        set_backdrop_all_windows(!rox_design::palette::backdrop_all_windows(), cx);
+    });
+
+    cx.on_action(|_: &ToggleWatchFolders, cx| {
+        let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) else {
+            return;
+        };
+
+        state
+            .library
+            .update(cx, |library, cx| library.set_watch(!library.watch_on(), cx));
     });
 
     cx.on_action(|_: &ToggleMilkdropLock, cx| {
@@ -4004,7 +4086,7 @@ impl Workspace {
         let config = Settings::load().post_shader;
         // Keep the live switch and the slot feeds in step; the startup path
         // comes through here before any app-level apply has run.
-        POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
+        settings::note_post_shader_on(config.enabled);
         set_post_shader_routes(config.routes.clone());
         set_post_shader_manual(config.manual.clone());
         if !config.enabled {

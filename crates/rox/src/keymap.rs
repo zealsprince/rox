@@ -32,14 +32,15 @@ use crate::workspace::{
     NewWindow, NextBookmark, NextTrack, OpenAbout, OpenChat, OpenConsole, OpenDiscussions,
     OpenEqualizer, OpenGoTo, OpenHealth, OpenPowerSearch, OpenPresetPicker, OpenQuickPlay,
     OpenSettings, OpenSignals, OpenStats, OpenTasks, OpenWelcome, PlayRandom, PlaySimilar,
-    PrevBookmark, PreviousTrack, Quit, ReportIssue, RescanLibrary, ResetFontSize, RomanizeLibrary,
-    SaveLayout, SaveWorkspace, SleepOff, StepBackward, StepForward, StopPlayback, TagGenres,
-    ToggleArtTheming, ToggleBroadcast, ToggleCapture, ToggleContinuation, ToggleCrossfade,
-    ToggleCrossfadeAlbums, ToggleDecorations, ToggleDesignMode, ToggleDiscord, ToggleEq,
-    ToggleExclusiveOutput, ToggleFavourite, ToggleMenubar, ToggleMilkdropLock, ToggleMini,
-    ToggleMute, TogglePostShader, ToggleQuitToTray, ToggleReadings, ToggleResizeLock,
-    ToggleScrobbling, ToggleSeams, ToggleShuffle, ToggleStopAfter, ToggleTheme, VolumeDown,
-    VolumeUp,
+    PrevBookmark, PreviousTrack, Quit, RandomMilkdropPreset, ReportIssue, RescanLibrary,
+    ResetFontSize, RomanizeLibrary, SaveLayout, SaveWorkspace, SleepOff, StepBackward, StepForward,
+    StopPlayback, TagGenres, ToggleArtTheming, ToggleBackdropAllWindows, ToggleBackdropShader,
+    ToggleBroadcast, ToggleCapture, ToggleContinuation, ToggleCrossfade, ToggleCrossfadeAlbums,
+    ToggleDecorations, ToggleDesignMode, ToggleDiscord, ToggleEq, ToggleExclusiveOutput,
+    ToggleFavourite, ToggleMenubar, ToggleMilkdropBackdrop, ToggleMilkdropHardCuts,
+    ToggleMilkdropLock, ToggleMini, ToggleMute, TogglePostShader, ToggleQuitToTray, ToggleReadings,
+    ToggleResizeLock, ToggleScrobbling, ToggleSeams, ToggleShuffle, ToggleStopAfter, ToggleTheme,
+    ToggleWatchFolders, VolumeDown, VolumeUp,
 };
 
 /// Workspace-wide except while the search box, a type-ahead phrase, the
@@ -693,6 +694,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             rox_i18n::t_static("keymap-rescan-library.description")
         ),
         command!(
+            "toggle_watch_folders",
+            rox_i18n::t_static("keymap-toggle-watch-folders"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            ToggleWatchFolders,
+            rox_i18n::t_static("keymap-toggle-watch-folders.description")
+        ),
+        command!(
             "abort_scan",
             rox_i18n::t_static("keymap-abort-scan"),
             Group::Library,
@@ -1087,6 +1097,24 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             rox_i18n::t_static("keymap-toggle-post-shader.description")
         ),
         command!(
+            "toggle_backdrop_shader",
+            rox_i18n::t_static("keymap-toggle-backdrop-shader"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleBackdropShader,
+            rox_i18n::t_static("keymap-toggle-backdrop-shader.description")
+        ),
+        command!(
+            "toggle_backdrop_all_windows",
+            rox_i18n::t_static("keymap-toggle-backdrop-all-windows"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleBackdropAllWindows,
+            rox_i18n::t_static("keymap-toggle-backdrop-all-windows.description")
+        ),
+        command!(
             "toggle_theme",
             rox_i18n::t_static("keymap-toggle-theme"),
             Group::View,
@@ -1157,6 +1185,33 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             &[],
             ToggleReadings,
             rox_i18n::t_static("keymap-toggle-readings.description")
+        ),
+        command!(
+            "toggle_milkdrop_backdrop",
+            rox_i18n::t_static("keymap-toggle-milkdrop-backdrop"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleMilkdropBackdrop,
+            rox_i18n::t_static("keymap-toggle-milkdrop-backdrop.description")
+        ),
+        command!(
+            "toggle_milkdrop_hard_cuts",
+            rox_i18n::t_static("keymap-toggle-milkdrop-hard-cuts"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleMilkdropHardCuts,
+            rox_i18n::t_static("keymap-toggle-milkdrop-hard-cuts.description")
+        ),
+        command!(
+            "random_milkdrop_preset",
+            rox_i18n::t_static("keymap-random-milkdrop-preset"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            RandomMilkdropPreset,
+            rox_i18n::t_static("keymap-random-milkdrop-preset.description")
         ),
         command!(
             "toggle_milkdrop_lock",

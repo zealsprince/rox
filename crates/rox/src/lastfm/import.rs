@@ -283,8 +283,8 @@ fn run(
         let found = index.resolve(&track.artist, &track.title);
         if found.is_empty() {
             // The loved list has no album to give the row.
-            let row = unknown::row(&conn, &track.artist, &track.title, "")
-                .map_err(|e| e.to_string())?;
+            let row =
+                unknown::row(&conn, &track.artist, &track.title, "").map_err(|e| e.to_string())?;
             ids.push(row);
             unknown += 1;
             continue;

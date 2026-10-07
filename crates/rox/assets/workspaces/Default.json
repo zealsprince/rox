@@ -649,6 +649,9 @@
                               "max_height": 24.0,
                               "show_total": false,
                               "scrobble_marker": true,
+                              "thickness": 4.0,
+                              "rounding": 8.0,
+                              "playhead_max": 16.0,
                               "live_dash_len": 2.0,
                               "live_sweep": true,
                               "items": [
@@ -693,6 +696,7 @@
                                   "gradient": "theme",
                                   "gradient_lo": "#33aacc",
                                   "gradient_hi": "#cc5588",
+                                  "gradient_curve": 4.0,
                                   "outline": false,
                                   "outline_width": 1.0,
                                   "caps": true,
@@ -717,10 +721,19 @@
                               "children": [],
                               "info": {
                                 "panel": {
+                                  "theme": {
+                                    "colors": {
+                                      "highlight": "border_light"
+                                    }
+                                  },
                                   "bar_width": 3.0,
                                   "bar_gap": 2.0,
                                   "outline": false,
                                   "loudness": true,
+                                  "shade_played": false,
+                                  "split_bars": true,
+                                  "played_bars": "accent",
+                                  "unplayed_bars": "text_faint",
                                   "scrobble_marker": false
                                 }
                               }

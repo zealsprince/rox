@@ -478,6 +478,12 @@ pub struct PanelTheme {
     /// [`PANEL_FONT_SCALE_MIN`]..=[`PANEL_FONT_SCALE_MAX`] at render.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_scale: Option<f32>,
+    /// The panel's own [`SliderLook`](crate::tokens::SliderLook) rounding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slider_rounding: Option<f32>,
+    /// Whether the panel's sliders draw their knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slider_knob: Option<bool>,
 }
 
 /// Hand-written on the reading side so the legacy border mask has a field.
@@ -493,6 +499,8 @@ struct PanelThemeRepr {
     border_edges: Option<BorderEdges>,
     font: Option<String>,
     font_scale: Option<f32>,
+    slider_rounding: Option<f32>,
+    slider_knob: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for PanelTheme {
@@ -508,6 +516,8 @@ impl<'de> Deserialize<'de> for PanelTheme {
             legacy_border_edges: repr.border_edges.filter(|edges| *edges != BorderEdges::ALL),
             font: repr.font,
             font_scale: repr.font_scale,
+            slider_rounding: repr.slider_rounding,
+            slider_knob: repr.slider_knob,
         })
     }
 }
@@ -532,6 +542,8 @@ impl PanelTheme {
             && self.legacy_border_edges.is_none()
             && self.font.is_none()
             && self.font_scale.is_none()
+            && self.slider_rounding.is_none()
+            && self.slider_knob.is_none()
     }
 
     /// Seeds the settings pickers; the live read path goes through
@@ -574,7 +586,11 @@ impl PanelTheme {
     /// Unknown and unparsable entries are dropped. None while no color or
     /// opacity overrides, so renders skip the scope push.
     pub fn scope(&self) -> Option<Scope> {
-        if self.colors.is_empty() && self.surface_opacity.is_none() {
+        if self.colors.is_empty()
+            && self.surface_opacity.is_none()
+            && self.slider_rounding.is_none()
+            && self.slider_knob.is_none()
+        {
             return None;
         }
         let colors: Vec<(&'static str, ScopeColor)> = ROLES
@@ -591,6 +607,8 @@ impl PanelTheme {
         Some(Scope {
             colors: colors.into(),
             surface_opacity: self.surface_opacity.map(|o| o.clamp(0.0, 1.0)),
+            slider_rounding: self.slider_rounding,
+            slider_knob: self.slider_knob,
         })
     }
 }
@@ -826,12 +844,23 @@ enum ScopeColor {
 pub struct Scope {
     colors: Arc<[(&'static str, ScopeColor)]>,
     surface_opacity: Option<f32>,
+    slider_rounding: Option<f32>,
+    slider_knob: Option<bool>,
 }
 
 thread_local! {
     /// Innermost last, so nested themed subtrees stack. Thread-local is
     /// enough: rendering and the paint closures run on the UI thread.
     static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The innermost panel's slider overrides, rounding then knob.
+pub(crate) fn scope_slider() -> (Option<f32>, Option<bool>) {
+    SCOPES.with(|scopes| {
+        scopes.borrow().last().map_or((None, None), |scope| {
+            (scope.slider_rounding, scope.slider_knob)
+        })
+    })
 }
 
 /// A reference samples the live app palette at read time, so it eases.

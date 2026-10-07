@@ -380,10 +380,12 @@ impl SettingsWindow {
                 // Off the live static: the zoom shortcuts may have written it
                 // during the wait.
                 let font_size = palette::app_font_size();
+                let slider = tokens::app_slider_look();
                 Settings::update(move |s| {
                     s.look.bundle.appearance.surface_opacity = surface;
                     s.look.bundle.appearance.backdrop_strength = backdrop;
                     s.look.bundle.appearance.frame = frame;
+                    s.look.bundle.appearance.slider = slider;
                     s.app_font_size = font_size;
                     if let Some((mode, palette)) = palette {
                         *s.palette_map_mut(mode) = palette;
@@ -409,6 +411,29 @@ impl SettingsWindow {
     fn set_rounding(&mut self, value: f32, cx: &mut Context<Self>) {
         self.frame.rounding = value;
         self.frame_edited(cx);
+    }
+
+    // The slider look reads and writes the token static, so a workspace
+    // apply shows up here without a cached copy to resync.
+
+    fn set_slider_rounding(&mut self, rounding: f32, cx: &mut Context<Self>) {
+        let look = tokens::SliderLook {
+            rounding,
+            ..tokens::app_slider_look()
+        };
+        tokens::set_slider_look(look, cx);
+        self.persist_appearance_soon(cx);
+        cx.notify();
+    }
+
+    fn set_slider_knob(&mut self, knob: bool, cx: &mut Context<Self>) {
+        let look = tokens::SliderLook {
+            knob,
+            ..tokens::app_slider_look()
+        };
+        tokens::set_slider_look(look, cx);
+        Settings::update(move |s| s.look.bundle.appearance.slider = look);
+        cx.notify();
     }
 
     fn set_border(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
@@ -887,6 +912,22 @@ impl SettingsWindow {
                         "settings-appearance-panel-seams",
                         &["divider", "gutter", "grid lines"],
                         panel::toggle(settings::seams(), Self::set_seams, cx),
+                    )
+                    .keyed(
+                        "settings-appearance-slider-rounding",
+                        &["corner radius", "rounded", "volume", "square"],
+                        self.frame_row(
+                            &self.slider_rounding_scrub,
+                            tokens::app_slider_look().rounding,
+                            tokens::SLIDER_ROUNDING_MAX,
+                            Self::set_slider_rounding,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "settings-appearance-slider-knob",
+                        &["handle", "thumb", "volume", "drag"],
+                        panel::toggle(tokens::app_slider_look().knob, Self::set_slider_knob, cx),
                     )
                 },
             ))

@@ -24,7 +24,6 @@
                           "anchor": true,
                           "max_width": 24.0,
                           "max_height": 24.0,
-                          "min_width": 24.0,
                           "min_height": 24.0,
                           "align": "left"
                         }
@@ -601,6 +600,10 @@
                           "max_height": 24.0,
                           "show_total": false,
                           "scrobble_marker": false,
+                          "thickness": 4.0,
+                          "rounding": 6.0,
+                          "playhead_width": 12.0,
+                          "playhead_max": 12.0,
                           "items": [
                             "elapsed",
                             "strip",
@@ -768,6 +771,10 @@
                       "max_height": 20.0,
                       "show_total": false,
                       "scrobble_marker": false,
+                      "thickness": 4.0,
+                      "rounding": 6.0,
+                      "playhead_width": 12.0,
+                      "playhead_max": 12.0,
                       "items": [
                         "elapsed",
                         "strip",
@@ -914,6 +921,7 @@
       "rounding": 0.0,
       "border": 0.0
     },
+    "seams": false,
     "keep_theme": true,
     "art_theming": true,
     "app_font": "Segoe UI",

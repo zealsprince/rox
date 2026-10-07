@@ -77,9 +77,17 @@ impl ScrubState {
 }
 
 /// `dimmed` fades the fill and keeps the knob, the volume strip's muted look.
-pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window: &mut Window) {
+/// `look` is [`tokens::slider_look`] read at build time, inside the panel's
+/// scope.
+pub fn paint_slider(
+    fraction: f32,
+    dimmed: bool,
+    look: tokens::SliderLook,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
     let track_h = tokens::SLIDER_TRACK_H;
-    let knob = tokens::SLIDER_KNOB;
+    let knob = if look.knob { tokens::SLIDER_KNOB } else { 0.0 };
 
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
@@ -89,6 +97,7 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
 
     let knob_x = knob / 2.0 + fraction.clamp(0.0, 1.0) * (w - knob);
     let track_y = bounds.origin.y + px((h - track_h) / 2.0);
+    let track_r = px(look.rounding.min(track_h / 2.0));
     // A core-role wash, not a surface read, so the track stays visible when
     // surface opacity thins the panel to nothing.
     window.paint_quad(
@@ -96,8 +105,10 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
             Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(track_h))),
             palette::alpha(palette::accent(), 0x33),
         )
-        .corner_radii(px(track_h / 2.0)),
+        .corner_radii(track_r),
     );
+    // With no knob to carry the muted level, the fill has to stay readable.
+    let dimmed_fill = if look.knob { 0x33 } else { 0x80 };
     window.paint_quad(
         fill(
             Bounds::new(
@@ -105,13 +116,18 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
                 size(px(knob_x), px(track_h)),
             ),
             if dimmed {
-                palette::alpha(palette::accent(), 0x33)
+                palette::alpha(palette::accent(), dimmed_fill)
             } else {
                 palette::accent()
             },
         )
-        .corner_radii(px(track_h / 2.0)),
+        .corner_radii(track_r.min(px(knob_x / 2.0))),
     );
+
+    if !look.knob {
+        return;
+    }
+
     window.paint_quad(
         fill(
             Bounds::new(
@@ -127,7 +143,7 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
                 palette::highlight()
             },
         )
-        .corner_radii(px(knob / 2.0)),
+        .corner_radii(px(look.rounding.min(knob / 2.0))),
     );
 }
 

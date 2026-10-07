@@ -844,6 +844,7 @@ impl TransportPanel {
     ) -> AnyElement {
         let scrub = self.volume_scrub.clone();
         let player = self.state.player.clone();
+        let look = tokens::slider_look();
         let card = div()
             // The card takes its own clicks, so a press on the slider doesn't close
             // it.
@@ -883,7 +884,7 @@ impl TransportPanel {
                                 move |bounds, _, _| scrub.set_bounds(bounds)
                             },
                             move |bounds, _, window, _| {
-                                panel::paint_slider(volume, muted, bounds, window);
+                                panel::paint_slider(volume, muted, look, bounds, window);
                                 panel::scrub_on_paint(&scrub, window, {
                                     let player = player.clone();
                                     move |fraction, cx| {
@@ -992,6 +993,10 @@ impl TransportPanel {
 impl PanelSettings for TransportPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    fn has_slider(&self) -> bool {
+        true
     }
 
     fn chrome(&self) -> &PanelChrome {

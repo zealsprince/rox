@@ -18,6 +18,7 @@ use gpui::{App, SharedString};
 use rox_core::settings::{self, NamedShader, Settings, WORKSPACE_VERSION, WorkspaceBundle};
 use rox_design::assets;
 use rox_design::palette::{self, Palette};
+use rox_design::tokens;
 use rox_panel_api::panel::shader;
 
 /// Building the list costs a directory read and nothing more.
@@ -642,6 +643,7 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     settings::set_app_font(a.app_font.clone(), cx);
     settings::set_rating_style(a.rating_style, cx);
     settings::set_rating_dots(a.rating_dots, cx);
+    tokens::set_slider_look(a.slider, cx);
     settings::set_hide_menubar(a.hide_menubar, cx);
     settings::set_menubar_buttons(a.menubar_buttons, cx);
     settings::set_os_decorations(a.os_decorations);

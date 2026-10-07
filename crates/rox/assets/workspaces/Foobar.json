@@ -59,6 +59,10 @@
                           "max_height": 24.0,
                           "show_total": true,
                           "scrobble_marker": false,
+                          "thickness": 4.0,
+                          "rounding": 8.0,
+                          "playhead_width": 4.0,
+                          "playhead_full": false,
                           "items": [
                             "elapsed",
                             "strip",
@@ -364,6 +368,10 @@
     "keep_theme": false,
     "art_theming": false,
     "rating_style": "stars",
+    "slider": {
+      "rounding": 2.0,
+      "knob": true
+    },
     "quick_play": {
       "show_cover": true,
       "show_subtitle": true,

@@ -1087,6 +1087,7 @@ struct PanelSettingsWindow<P: PanelSettings> {
     padding_split: bool,
     border_split: bool,
     font_scale_scrub: ScrubState,
+    slider_rounding_scrub: ScrubState,
     /// The Shader page's span sliders and open rows. Ephemeral: a fold is
     /// where you are, not what you set.
     shader_routes: RouteEditState,
@@ -1211,6 +1212,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             padding_split: split_knob(chrome.theme.padding.unwrap_or(app_frame.padding)),
             border_split: split_knob(chrome.theme.border_sides(app_frame.border)),
             font_scale_scrub: ScrubState::default(),
+            slider_rounding_scrub: ScrubState::default(),
             shader_routes: RouteEditState::default(),
             shader_slots: (0..shader::SLOTS).map(|_| ScrubState::default()).collect(),
             shader_name: ShaderNameField::default(),
@@ -1524,6 +1526,47 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
 
     fn reset_font_scale(&mut self, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.font_scale = None, cx);
+    }
+
+    // Zero rounding and a hidden knob are real overrides; the resets go back
+    // to the workspace's slider look.
+
+    fn set_slider_rounding(&mut self, value: f32, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.slider_rounding = Some(value), cx);
+    }
+
+    fn reset_slider_rounding(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.slider_rounding = None, cx);
+    }
+
+    fn set_slider_knob(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.slider_knob = Some(on), cx);
+    }
+
+    fn reset_slider_knob(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.slider_knob = None, cx);
+    }
+
+    /// Unset, the toggle shows the workspace's knob. The reset joins on the
+    /// left, matching the frame sliders.
+    fn slider_knob_row(&self, value: Option<bool>, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .when(value.is_some(), |row| {
+                row.child(settings_ui::icon_button(
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(|this, _, _, cx| this.reset_slider_knob(cx)),
+                ))
+            })
+            .child(panel::toggle(
+                value.unwrap_or(tokens::app_slider_look().knob),
+                Self::set_slider_knob,
+                cx,
+            ))
     }
 
     /// Unset, the slider rests at 100%. The reset joins on the left, so the
@@ -2341,6 +2384,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         theme: &PanelTheme,
         extra: Option<AnyElement>,
         own_font: bool,
+        has_slider: bool,
         columns: usize,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -2592,6 +2636,51 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .into_any_element()
         });
 
+        let slider_section = has_slider.then(|| {
+            let reset = small_button(
+                rox_i18n::t!("panel-reset"),
+                icons::REFRESH_CW,
+                theme.slider_rounding.is_none() && theme.slider_knob.is_none(),
+                cx.listener(|this, _, _, cx| {
+                    this.update_theme(
+                        |theme| {
+                            theme.slider_rounding = None;
+                            theme.slider_knob = None;
+                        },
+                        cx,
+                    )
+                }),
+            );
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    rox_i18n::t!("panel-slider-rounding"),
+                    Some(rox_i18n::t!("panel-slider-rounding.description")),
+                    self.frame_slider(
+                        &self.slider_rounding_scrub,
+                        theme.slider_rounding,
+                        tokens::app_slider_look().rounding,
+                        tokens::SLIDER_ROUNDING_MAX,
+                        Self::set_slider_rounding,
+                        Self::reset_slider_rounding,
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("panel-slider-knob"),
+                    Some(rox_i18n::t!("panel-slider-knob.description")),
+                    self.slider_knob_row(theme.slider_knob, cx),
+                ));
+            section(
+                rox_i18n::t!("panel-section-slider"),
+                Some(reset.into_any_element()),
+                body,
+            )
+            .into_any_element()
+        });
+
         div()
             .flex()
             .flex_col()
@@ -2607,6 +2696,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 frame,
             ))
             .children(font_section)
+            .children(slider_section)
             .children(extra)
             .child(section(
                 rox_i18n::t!("panel-section-colors"),
@@ -2720,8 +2810,9 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             let theme = panel.read(cx).theme();
                             self.sync_swatches(&theme, window, cx);
                             let own_font = panel.read(cx).has_own_font();
+                            let has_slider = panel.read(cx).has_slider();
                             let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
-                            self.appearance_page(&theme, extra, own_font, columns, cx)
+                            self.appearance_page(&theme, extra, own_font, has_slider, columns, cx)
                                 .into_any_element()
                         }
                         1 => {

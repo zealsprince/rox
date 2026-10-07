@@ -396,33 +396,6 @@
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "window controls",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "locked": true,
-                          "anchor": true,
-                          "max_width": 26.0,
-                          "style": "icons",
-                          "items": [
-                            "mini"
-                          ],
-                          "pin_mini_only": false,
-                          "align": "left"
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
                       "panel_name": "track info",
                       "children": [],
                       "info": {
@@ -458,6 +431,7 @@
                           "min_width": 96.0,
                           "style": "icons",
                           "items": [
+                            "mini",
                             "minimize",
                             "maximize",
                             "close"
@@ -478,8 +452,7 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    32.0,
-                    364.0,
+                    396.0,
                     96.0
                   ],
                   "axis": 0

@@ -92,6 +92,7 @@ impl GoTo {
             .unwrap_or(0.0);
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
+        let look = tokens::slider_look();
         let track = div()
             .flex_1()
             .min_w_0()
@@ -115,7 +116,7 @@ impl GoTo {
                         move |bounds, _, _| scrub.set_bounds(bounds)
                     },
                     move |bounds, _, window, _| {
-                        panel::paint_slider(progress, false, bounds, window);
+                        panel::paint_slider(progress, false, look, bounds, window);
                         panel::scrub_on_paint(&scrub, window, {
                             let player = player.clone();
                             move |fraction, cx| panel::seek_fraction(&player, fraction, cx)

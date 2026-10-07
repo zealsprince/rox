@@ -9,8 +9,10 @@ use gpui::{
     MouseButton, Pixels, ScrollHandle, SharedString, Stateful, StyleRefinement, Window, div,
     prelude::*, px, svg,
 };
-use gpui_component::Selectable;
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
+use gpui_component::{Icon, Selectable, Sizable as _};
 
 use rox_design::assets::icons;
 use rox_design::palette::{self, ROLES, Side, Sides};
@@ -1658,6 +1660,56 @@ pub fn color_cell(
                 .child(label.into()),
         )
         .when_some(trailing, |d, trailing| d.child(trailing))
+}
+
+/// The link button beside a swatch: its menu points the color at an app
+/// palette role, grouped as the role grid groups them. Filled with the
+/// accent while linked, so a link reads apart from a literal hex.
+pub fn role_link<P: 'static>(
+    id: impl Into<ElementId>,
+    linked: Option<&'static str>,
+    skip: Option<&'static str>,
+    pick: impl Fn(&mut P, &'static str, &mut Window, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> AnyElement {
+    let weak = cx.entity().downgrade();
+    Button::new(id)
+        .icon(Icon::default().path(icons::LINK))
+        .xsmall()
+        .map(|b| {
+            if linked.is_some() {
+                b.primary()
+            } else {
+                b.ghost()
+            }
+        })
+        .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.scrollable(true).max_h(px(320.));
+            let mut group = "";
+            for target in ROLES {
+                if skip == Some(target.name) {
+                    continue;
+                }
+                if target.group != group {
+                    group = target.group;
+                    menu = menu.item(PopupMenuItem::label(group));
+                }
+
+                let weak = weak.clone();
+                let pick = pick.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(target.label)
+                        .checked(linked == Some(target.name))
+                        .on_click(move |_, window, cx| {
+                            if let Some(this) = weak.upgrade() {
+                                this.update(cx, |this, cx| pick(this, target.name, window, cx));
+                            }
+                        }),
+                );
+            }
+            menu
+        })
+        .into_any_element()
 }
 
 pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> Div {

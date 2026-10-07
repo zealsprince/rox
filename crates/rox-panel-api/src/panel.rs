@@ -1430,6 +1430,12 @@ pub trait PanelSettings: Panel {
         false
     }
 
+    /// Whether the panel draws a value slider, so the Appearance page offers
+    /// the slider overrides.
+    fn has_slider(&self) -> bool {
+        false
+    }
+
     fn theme(&self) -> PanelTheme {
         self.chrome().theme.clone()
     }

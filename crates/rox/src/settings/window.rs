@@ -294,6 +294,7 @@ struct SettingsWindow {
     margin_scrub: SidesScrub,
     padding_scrub: SidesScrub,
     rounding_scrub: ScrubState,
+    slider_rounding_scrub: ScrubState,
     border_scrub: SidesScrub,
     /// Window state rather than settings, seeded from the knobs whose sides
     /// already differ.
@@ -1019,6 +1020,7 @@ impl SettingsWindow {
             margin_scrub: SidesScrub::default(),
             padding_scrub: SidesScrub::default(),
             rounding_scrub: ScrubState::default(),
+            slider_rounding_scrub: ScrubState::default(),
             border_scrub: SidesScrub::default(),
             margin_split: appearance_frame.margin.uniform().is_none(),
             padding_split: appearance_frame.padding.uniform().is_none(),

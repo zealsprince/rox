@@ -97,7 +97,7 @@ the crate free of a DSP dependency until one is justified.
 `SpectrumConfig` is the per-view config, serialized into the panel's layout node (see
 [panels](06-panels.md#the-panel-config-model)): `freq_lo` / `freq_hi` (analyzed range,
 default 30 Hz to 16 kHz), `bar_width`, `bar_gap`, `fft_size` (default 8192), `gradient`,
-`outline`, `caps`, `freeze`, `cap_gravity`, `labels`, and the split-zoning knobs
+`gradient_curve` (the ramp's exponent on the level, default 1.5), `outline`, `caps`, `freeze`, `cap_gravity`, `labels`, and the split-zoning knobs
 `split` / `split_hz` / `fft_size_hi`. Split zoning analyzes below and above `split_hz`
 at different window sizes, so each end of the range trades reactivity for resolution on
 its own.

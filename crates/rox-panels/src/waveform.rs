@@ -1,8 +1,9 @@
 //! The waveform panel: the whole track's amplitude as mirrored bars around
-//! a center line, played bars in the accent and the rest a dim ghost, with
-//! a playhead on the position clock. Click or drag to seek. Options add an
+//! a center line in the accent, a wash behind the played side, and a
+//! playhead on the position clock. Click or drag to seek. Options add an
 //! RMS loudness band inside the envelope, a color source (the ramp the
-//! spectrum and VU share), and one row per channel. Peaks come from the
+//! spectrum and VU share) or a bar color per side of the playhead, and one
+//! row per channel. Peaks come from the
 //! disk cache ([`crate::peaks`]) or a background decode that fills it,
 //! with a gray pulsing stand-in meanwhile. A track with no file shows the
 //! stand-in until its waveform is built from the downloaded stream. Every change of what the strip
@@ -55,7 +56,7 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::peaks;
 use crate::settings::ui as settings_ui;
-use crate::spectrum::{Gradient, gradient_choices, ramp_color};
+use crate::spectrum::{CURVE_DEFAULT, Gradient, gradient_choices, ramp_color};
 use crate::transport::seek::{self, live_tint};
 
 /// The paint resamples these down to the bars that fit.
@@ -144,6 +145,15 @@ pub struct WaveformConfig {
     /// The bin's RMS as a flatter band inside the peak envelope, so a quiet
     /// but spiky passage reads differently from a loud one.
     pub loudness: bool,
+    /// A wash in the bar color behind the played side.
+    pub shade_played: bool,
+    /// The two colors below stand in for the color source, one each side
+    /// of the playhead.
+    pub split_bars: bool,
+    /// A palette role name follows the theme live, the way an Appearance
+    /// link does; a hex holds still.
+    pub played_bars: String,
+    pub unplayed_bars: String,
     /// The envelope sits at the bottom of the ramp, the band at the top.
     pub gradient: Gradient,
     pub gradient_lo: String,
@@ -171,6 +181,10 @@ impl Default for WaveformConfig {
             bar_gap: tokens::BAR_GAP,
             outline: false,
             loudness: false,
+            shade_played: true,
+            split_bars: false,
+            played_bars: SIDE_DEFAULTS[0].into(),
+            unplayed_bars: SIDE_DEFAULTS[1].into(),
             gradient: Gradient::default(),
             gradient_lo: "#22aa44".into(),
             gradient_hi: "#dd3322".into(),
@@ -224,6 +238,37 @@ impl WaveformConfig {
             palette::parse_hex(&self.gradient_hi).unwrap_or_else(palette::accent),
         )
     }
+
+    /// Played then unplayed.
+    fn side_values(&self) -> [&str; 2] {
+        [&self.played_bars, &self.unplayed_bars]
+    }
+
+    fn side_colors(&self) -> [Rgba; 2] {
+        let [played, unplayed] = self.side_values();
+        [
+            bar_color(played, SIDE_DEFAULTS[0]),
+            bar_color(unplayed, SIDE_DEFAULTS[1]),
+        ]
+    }
+}
+
+/// The split bar colors out of the box, played then unplayed: links, so
+/// they move with the theme and song theming.
+const SIDE_DEFAULTS: [&str; 2] = ["accent", "text_faint"];
+
+fn linked_role(value: &str) -> Option<&'static palette::Role> {
+    let value = value.trim();
+    palette::ROLES.iter().find(|role| role.name == value)
+}
+
+/// Junk from a hand edit takes the side's default link.
+fn bar_color(value: &str, default: &str) -> Rgba {
+    let role = |value| linked_role(value).map(|role| (role.get)(&palette::resolved()));
+    palette::parse_hex(value)
+        .or_else(|| role(value))
+        .or_else(|| role(default))
+        .unwrap_or_else(palette::accent)
 }
 
 /// Kept beside its source text so an edit is caught by a string compare.
@@ -442,8 +487,8 @@ enum Shape {
     Peaks(Arc<PeakLanes>, bool, f32),
     /// Peaks with bins still to come, which draw as the stand-in.
     Building(Arc<PeakLanes>, Arc<Arrivals>, Option<f32>, bool, f32),
-    /// Oldest at the left. Every column is played, so no ghost half and no
-    /// playhead.
+    /// Oldest at the left. Every column is played, so no unplayed half and
+    /// no playhead.
     Live(Arc<Vec<PeakBin>>),
     /// Nothing sampled or stored, so it's the same picture at every width.
     /// The clock rides along like the playhead, so a paused station holds its
@@ -648,7 +693,8 @@ pub struct WaveformPanel {
     live_scrub: ScrubState,
     /// Built the first time the settings page shows them.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
-    _ramp_changes: Vec<Subscription>,
+    side_pickers: Option<[Entity<ColorPickerState>; 2]>,
+    _picker_changes: Vec<Subscription>,
     value_edit: panel::ValueEdit,
     /// Time zero for the generating animation's phase.
     epoch: Instant,
@@ -730,7 +776,8 @@ impl WaveformPanel {
             gap_scrub: ScrubState::default(),
             live_scrub: ScrubState::default(),
             ramp_pickers: None,
-            _ramp_changes: Vec::new(),
+            side_pickers: None,
+            _picker_changes: Vec::new(),
             value_edit: panel::ValueEdit::default(),
             epoch: Instant::now(),
             stand_in_since: 0.0,
@@ -957,6 +1004,98 @@ impl WaveformPanel {
         }
         self.to = shape;
         self.morph_at = Instant::now();
+    }
+
+    /// None is a cleared hex field.
+    fn hex_picker(
+        &mut self,
+        seed: Rgba,
+        write: fn(&mut Self, Option<Rgba>, &mut Window, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ColorPickerState> {
+        let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(seed));
+        let sub = cx.subscribe_in(
+            &picker,
+            window,
+            move |this, _, event: &ColorPickerEvent, window, cx| {
+                let ColorPickerEvent::Change(color) = event;
+                write(this, color.map(Rgba::from), window, cx);
+                cx.notify();
+            },
+        );
+        self._picker_changes.push(sub);
+        picker
+    }
+
+    fn side_value(&mut self, side: usize) -> &mut String {
+        if side == 0 {
+            &mut self.config.played_bars
+        } else {
+            &mut self.config.unplayed_bars
+        }
+    }
+
+    /// A typed hex is already on the swatch. Clearing the field goes back to
+    /// the default link, as the Appearance grid's reset does.
+    fn side_edited(
+        &mut self,
+        side: usize,
+        color: Option<Rgba>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match color {
+            Some(color) => *self.side_value(side) = palette::to_hex(color),
+            None => self.set_side(side, SIDE_DEFAULTS[side], window, cx),
+        }
+    }
+
+    /// A link or a reset, so the swatch takes the color it resolves to.
+    fn set_side(&mut self, side: usize, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        *self.side_value(side) = value.into();
+        let color = self.config.side_colors()[side];
+        if let Some(pickers) = &self.side_pickers {
+            pickers[side].update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
+        cx.notify();
+    }
+
+    /// The swatch, its palette link, and a reset once it's off the default.
+    fn side_control(
+        &self,
+        side: usize,
+        picker: &Entity<ColorPickerState>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let value = self.config.side_values()[side];
+        let linked = linked_role(value).map(|role| role.name);
+        let link = settings_ui::role_link(
+            ("bars-link", side),
+            linked,
+            None,
+            move |this: &mut Self, role, window, cx| this.set_side(side, role, window, cx),
+            cx,
+        );
+        let reset = (value != SIDE_DEFAULTS[side]).then(|| {
+            settings_ui::icon_button(
+                icons::REFRESH_CW,
+                false,
+                cx.listener(move |this, _, window, cx| {
+                    this.set_side(side, SIDE_DEFAULTS[side], window, cx)
+                }),
+            )
+        });
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .child(ColorPicker::new(picker).small())
+            .child(link)
+            .when_some(reset, |d, reset| d.child(reset))
+            .into_any_element()
     }
 
     fn set_bar_width(&mut self, width: f32, cx: &mut Context<Self>) {
@@ -1311,33 +1450,67 @@ fn trace_gaps(gaps: &[LiveGap], secs: f32) -> Vec<f32> {
         .collect()
 }
 
-/// Flat mode is a half-lit envelope under a full-strength band.
+/// A half-lit envelope under a full-strength band.
+fn flat_layers(color: Rgba) -> (Rgba, Rgba) {
+    (palette::alpha(color, 0x80), color)
+}
+
 fn layer_colors(config: &WaveformConfig) -> (Rgba, Rgba) {
     match config.gradient {
-        Gradient::Off => (palette::alpha(palette::accent(), 0x80), palette::accent()),
+        Gradient::Off => flat_layers(palette::accent()),
         gradient => {
             let custom = config.custom_ramp();
             (
-                ramp_color(gradient, 0.0, custom),
-                ramp_color(gradient, 1.0, custom),
+                ramp_color(gradient, 0.0, custom, CURVE_DEFAULT),
+                ramp_color(gradient, 1.0, custom, CURVE_DEFAULT),
             )
         }
     }
 }
 
-/// A fifth of the color's own alpha. Scaled rather than set, so a ramp
-/// color keeps its alpha.
-fn ghost(color: Rgba) -> Rgba {
-    Rgba {
-        a: color.a * 0.2,
-        ..color
+/// Each side's (envelope, band). The split colors take the place of the
+/// color source.
+#[derive(Clone, Copy)]
+struct Layers {
+    played: (Rgba, Rgba),
+    unplayed: (Rgba, Rgba),
+}
+
+impl Layers {
+    /// With the band off, the envelope takes the band's full-strength color.
+    fn for_config(config: &WaveformConfig) -> Layers {
+        let (played, unplayed) = if config.split_bars {
+            let [played, unplayed] = config.side_colors();
+            (flat_layers(played), flat_layers(unplayed))
+        } else {
+            let source = layer_colors(config);
+            (source, source)
+        };
+        let banded = |(envelope, band): (Rgba, Rgba)| {
+            if config.loudness {
+                (envelope, band)
+            } else {
+                (band, band)
+            }
+        };
+
+        Layers {
+            played: banded(played),
+            unplayed: banded(unplayed),
+        }
+    }
+
+    fn side(&self, played: bool) -> (Rgba, Rgba) {
+        if played { self.played } else { self.unplayed }
     }
 }
 
+/// Light enough that the bars read over it at full strength.
+const PLAYED_WASH: u8 = 0x4d;
+
 /// A shape whose lane layout differs maps into the display's: a single
 /// lane fills every row, a wider set folds together. `x_mid` and `w`
-/// place the bar against the playhead; `layers` is [`layer_colors`]
-/// resolved for the config.
+/// place the bar against the playhead.
 #[allow(clippy::too_many_arguments)]
 fn sample(
     shape: &Shape,
@@ -1350,14 +1523,14 @@ fn sample(
     t: f32,
     center: f32,
     max_bar: f32,
-    layers: (Rgba, Rgba),
+    layers: Layers,
 ) -> Bar {
     match shape {
         Shape::Blank => Bar::flat(center, palette::alpha(palette::text_muted(), 0)),
         Shape::Placeholder(since) => {
             placeholder_sample(i, lane, count, stand_in_clock(t, *since), center, max_bar)
         }
-        // No ghost half: every column already played. The trace is cut to this
+        // Every column already played. The trace is cut to this
         // bar count, so the fold only runs on the frame between a resize and the
         // restart.
         Shape::Live(cols) => {
@@ -1370,21 +1543,21 @@ fn sample(
                 return Bar::flat(center, palette::alpha(palette::accent(), 0));
             };
 
-            envelope_bar(bin, center, max_bar, layers.0, layers.1)
+            envelope_bar(bin, center, max_bar, layers.played.0, layers.played.1)
         }
-        // Full colors like the trace: a stream has no past half to ghost.
+        // Played colors like the trace: a stream has no unplayed half.
         Shape::Motion(expr, clock) => envelope_bar(
             motion_bin(expr, x_mid / w, *clock),
             center,
             max_bar,
-            layers.0,
-            layers.1,
+            layers.played.0,
+            layers.played.1,
         ),
         Shape::Peaks(set, split, progress) => {
             let data = display_lanes(set, *split);
-            let played = x_mid <= progress.clamp(0.0, 1.0) * w;
+            let side = layers.side(x_mid <= progress.clamp(0.0, 1.0) * w);
             let fold = |lane: &[PeakBin]| bucket(lane, i, count);
-            peaks_sample(data, lane, lanes, &fold, played, center, max_bar, layers)
+            peaks_sample(data, lane, lanes, &fold, center, max_bar, side)
         }
         Shape::Building(set, arrived, since, split, progress) => building_sample(
             set,
@@ -1423,7 +1596,7 @@ fn building_sample(
     (t, pulse): (f32, f32),
     center: f32,
     max_bar: f32,
-    layers: (Rgba, Rgba),
+    layers: Layers,
 ) -> Bar {
     let stand_in = placeholder_sample(i, lane, count, pulse, center, max_bar);
     if arrived.is_empty() {
@@ -1449,8 +1622,8 @@ fn building_sample(
     let fold = |bins: &[PeakBin]| bins.get(range.clone()).map(|bins| fold_bins(bins, scale));
 
     let data = display_lanes(set, split);
-    let played = x_mid <= progress.clamp(0.0, 1.0) * w;
-    let peaks = peaks_sample(data, lane, lanes, &fold, played, center, max_bar, layers);
+    let side = layers.side(x_mid <= progress.clamp(0.0, 1.0) * w);
+    let peaks = peaks_sample(data, lane, lanes, &fold, center, max_bar, side);
     if u >= 1.0 {
         return peaks;
     }
@@ -1486,10 +1659,9 @@ fn peaks_sample(
     lane: usize,
     lanes: usize,
     fold: &dyn Fn(&[PeakBin]) -> Option<PeakBin>,
-    played: bool,
     center: f32,
     max_bar: f32,
-    layers: (Rgba, Rgba),
+    (envelope, band): (Rgba, Rgba),
 ) -> Bar {
     let extremes = match data.len() {
         0 => None,
@@ -1508,12 +1680,6 @@ fn peaks_sample(
     };
     let Some(bin) = extremes else {
         return Bar::flat(center, palette::alpha(palette::accent(), 0));
-    };
-
-    let (envelope, band) = if played {
-        layers
-    } else {
-        (ghost(layers.0), ghost(layers.1))
     };
 
     envelope_bar(bin, center, max_bar, envelope, band)
@@ -1558,13 +1724,25 @@ fn paint_morph(
     let u = u.clamp(0.0, 1.0);
     let u = u * u * (3.0 - 2.0 * u);
 
-    // With the band off, the envelope takes the band's full-strength color.
-    let (envelope, band) = layer_colors(config);
-    let layers = if config.loudness {
-        (envelope, band)
-    } else {
-        (band, band)
-    };
+    let layers = Layers::for_config(config);
+
+    // Under the bars, fading across a morph like the playhead.
+    if config.shade_played {
+        for (shape, weight) in [(from, 1.0 - u), (to, u)] {
+            let (Shape::Peaks(_, _, progress) | Shape::Building(.., progress)) = shape else {
+                continue;
+            };
+            let alpha = (PLAYED_WASH as f32 * weight) as u8;
+            if alpha == 0 {
+                continue;
+            }
+
+            window.paint_quad(fill(
+                Bounds::new(bounds.origin, size(px(progress.clamp(0.0, 1.0) * w), px(h))),
+                palette::alpha(layers.played.1, alpha),
+            ));
+        }
+    }
 
     for lane in 0..lanes {
         let center = lane_h * lane as f32 + lane_h / 2.0;
@@ -1723,30 +1901,61 @@ impl PanelSettings for WaveformPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Built on first need; each edit writes its hex back, the format the
-        // dump stores.
+        // Built on first need.
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
-            let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
-                let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(seed));
-                let sub = cx.subscribe_in(
-                    &picker,
-                    window,
-                    move |this, _, event: &ColorPickerEvent, _, cx| {
-                        let ColorPickerEvent::Change(color) = event;
-                        if let Some(color) = color {
-                            write(this, Rgba::from(*color));
-                            cx.notify();
-                        }
-                    },
-                );
-                self._ramp_changes.push(sub);
-                picker
-            };
-            let lo = build(lo, |this, c| this.config.gradient_lo = palette::to_hex(c));
-            let hi = build(hi, |this, c| this.config.gradient_hi = palette::to_hex(c));
+            let lo = self.hex_picker(
+                lo,
+                |this, c, _, _| {
+                    if let Some(c) = c {
+                        this.config.gradient_lo = palette::to_hex(c);
+                    }
+                },
+                window,
+                cx,
+            );
+            let hi = self.hex_picker(
+                hi,
+                |this, c, _, _| {
+                    if let Some(c) = c {
+                        this.config.gradient_hi = palette::to_hex(c);
+                    }
+                },
+                window,
+                cx,
+            );
             self.ramp_pickers = Some([lo, hi]);
         }
+        if self.config.split_bars && self.side_pickers.is_none() {
+            let [played, unplayed] = self.config.side_colors();
+            let played = self.hex_picker(
+                played,
+                |this, c, window, cx| this.side_edited(0, c, window, cx),
+                window,
+                cx,
+            );
+            let unplayed = self.hex_picker(
+                unplayed,
+                |this, c, window, cx| this.side_edited(1, c, window, cx),
+                window,
+                cx,
+            );
+            self.side_pickers = Some([played, unplayed]);
+        }
+        // A linked swatch follows the palette under it, theme switches and
+        // song theming included.
+        if let Some(pickers) = self.side_pickers.clone() {
+            let colors = self.config.side_colors();
+            for (side, value) in self.config.side_values().into_iter().enumerate() {
+                let color = colors[side];
+                if linked_role(value).is_some()
+                    && pickers[side].read(cx).value() != Some(color.into())
+                {
+                    pickers[side].update(cx, |picker, cx| picker.set_value(color, window, cx));
+                }
+            }
+        }
+        let split = self.config.split_bars;
         let (bar_w, gap) = self.config.bars();
         let live_secs = self.config.live_secs();
         let strip = div()
@@ -1802,35 +2011,77 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                rox_i18n::t!("waveform-gradient-mode"),
-                Some(rox_i18n::t!("waveform-gradient-mode.description")),
-                choices_shared(
-                    &gradient_choices(),
-                    self.config.gradient,
-                    |this: &mut Self, gradient, cx| {
-                        this.config.gradient = gradient;
+                rox_i18n::t!("waveform-shade-played"),
+                Some(rox_i18n::t!("waveform-shade-played.description")),
+                toggle(
+                    self.config.shade_played,
+                    |this: &mut Self, on, cx| {
+                        this.config.shade_played = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                rox_i18n::t!("waveform-split-bars"),
+                Some(rox_i18n::t!("waveform-split-bars.description")),
+                toggle(
+                    split,
+                    |this: &mut Self, on, cx| {
+                        this.config.split_bars = on;
                         cx.notify();
                     },
                     cx,
                 ),
             ))
             .when_some(
-                (self.config.gradient == Gradient::Custom)
-                    .then(|| self.ramp_pickers.clone())
-                    .flatten(),
-                |d, [lo, hi]| {
+                split.then(|| self.side_pickers.clone()).flatten(),
+                |d, [played, unplayed]| {
                     d.child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-base-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
-                        ColorPicker::new(&lo).small(),
+                        rox_i18n::t!("waveform-played-bars"),
+                        Some(rox_i18n::t!("waveform-played-bars.description")),
+                        self.side_control(0, &played, cx),
                     ))
                     .child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-tip-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
-                        ColorPicker::new(&hi).small(),
+                        rox_i18n::t!("waveform-unplayed-bars"),
+                        Some(rox_i18n::t!("waveform-unplayed-bars.description")),
+                        self.side_control(1, &unplayed, cx),
                     ))
                 },
             )
+            // The split colors replace the source, so its rows step aside.
+            .when(!split, |d| {
+                d.child(setting_row(
+                    rox_i18n::t!("waveform-gradient-mode"),
+                    Some(rox_i18n::t!("waveform-gradient-mode.description")),
+                    choices_shared(
+                        &gradient_choices(),
+                        self.config.gradient,
+                        |this: &mut Self, gradient, cx| {
+                            this.config.gradient = gradient;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when_some(
+                    (self.config.gradient == Gradient::Custom)
+                        .then(|| self.ramp_pickers.clone())
+                        .flatten(),
+                    |d, [lo, hi]| {
+                        d.child(setting_row(
+                            rox_i18n::t!("spectrum-gradient-base-color"),
+                            Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
+                            ColorPicker::new(&lo).small(),
+                        ))
+                        .child(setting_row(
+                            rox_i18n::t!("spectrum-gradient-tip-color"),
+                            Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
+                            ColorPicker::new(&hi).small(),
+                        ))
+                    },
+                )
+            })
             .child(setting_row(
                 rox_i18n::t!("waveform-split-channels"),
                 Some(rox_i18n::t!("waveform-split-channels.description")),
@@ -2428,7 +2679,10 @@ mod tests {
         };
         let arrived = vec![None, Some(0.0), None, None];
         let shape = Shape::Building(Arc::new(lanes), Arc::new(arrived), None, false, 1.0);
-        let layers = (palette::accent(), palette::accent());
+        let layers = Layers {
+            played: (palette::accent(), palette::accent()),
+            unplayed: (palette::accent(), palette::accent()),
+        };
         let bar = |i, t| {
             sample(
                 &shape,
@@ -2495,7 +2749,10 @@ mod tests {
         };
         let lanes = Arc::new(vec![vec![bin(0.1), bin(0.8)]]);
         let shape = |arrived| Shape::Building(lanes.clone(), Arc::new(arrived), None, false, 1.0);
-        let layers = (palette::accent(), palette::accent());
+        let layers = Layers {
+            played: (palette::accent(), palette::accent()),
+            unplayed: (palette::accent(), palette::accent()),
+        };
         let top = |shape: &Shape, t| sample(shape, 0, 1, 0, 1, 0.5, 1.0, t, 50.0, 40.0, layers).top;
 
         let both = shape(vec![Some(0.0), Some(0.0)]);
@@ -2688,6 +2945,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn split_bars_color_each_side_of_the_playhead() {
+        let bin = PeakBin {
+            lo: -0.5,
+            hi: 0.5,
+            rms: 0.25,
+        };
+        let shape = Shape::Peaks(Arc::new(vec![vec![bin; 2]]), false, 0.5);
+        let config = WaveformConfig {
+            split_bars: true,
+            played_bars: "#ff0000".into(),
+            unplayed_bars: "#0000ff".into(),
+            ..WaveformConfig::default()
+        };
+        let layers = Layers::for_config(&config);
+        let bar = |i: usize| {
+            sample(
+                &shape,
+                0,
+                1,
+                i,
+                2,
+                i as f32 + 0.5,
+                2.0,
+                0.0,
+                50.0,
+                40.0,
+                layers,
+            )
+        };
+
+        assert_eq!(bar(0).envelope, gpui::rgb(0xff0000), "behind the playhead");
+        assert_eq!(bar(1).envelope, gpui::rgb(0x0000ff), "ahead of it");
+    }
+
+    #[test]
+    fn a_bar_color_follows_a_link_and_shrugs_off_junk() {
+        let palette = palette::resolved();
+        assert_eq!(bar_color("accent", "text_faint"), palette.accent, "linked");
+        assert_eq!(
+            bar_color(" highlight ", "accent"),
+            palette.highlight,
+            "trimmed"
+        );
+        assert_eq!(
+            bar_color("#ff0000", "accent"),
+            gpui::rgb(0xff0000),
+            "a hex holds"
+        );
+        assert_eq!(
+            bar_color("sparkle", "text_faint"),
+            palette.text_faint,
+            "junk takes the default link"
+        );
     }
 
     #[test]

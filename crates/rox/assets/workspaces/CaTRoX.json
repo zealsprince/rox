@@ -453,6 +453,7 @@
                           "max_height": 24.0,
                           "show_total": false,
                           "scrobble_marker": false,
+                          "playhead": false,
                           "items": [
                             "elapsed",
                             "strip",
@@ -615,6 +616,10 @@
     "art_theming": false,
     "rating_style": "stars",
     "rating_dots": true,
+    "slider": {
+      "rounding": 0.0,
+      "knob": false
+    },
     "quick_play": {
       "show_cover": true,
       "show_subtitle": true,

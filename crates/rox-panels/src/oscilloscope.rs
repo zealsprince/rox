@@ -30,7 +30,7 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
-use crate::spectrum::{Gradient, gradient_choices, ramp_color};
+use crate::spectrum::{CURVE_DEFAULT, Gradient, curve_row, gradient_choices, ramp_color};
 
 const WINDOW_MS_MIN: f32 = 1.0;
 const WINDOW_MS_MAX: f32 = 100.0;
@@ -151,6 +151,7 @@ pub struct OscilloscopeConfig {
     /// `#rrggbb`: the quiet base and the loud tip.
     pub gradient_lo: String,
     pub gradient_hi: String,
+    pub gradient_curve: f32,
     /// Zero draws the standing frame alone.
     pub persistence: f32,
     pub freeze: bool,
@@ -171,6 +172,7 @@ impl Default for OscilloscopeConfig {
             gradient: Gradient::default(),
             gradient_lo: "#22aa44".into(),
             gradient_hi: "#dd3322".into(),
+            gradient_curve: CURVE_DEFAULT,
             persistence: 0.0,
             freeze: true,
         }
@@ -523,7 +525,7 @@ fn paint_lanes(
     let gain = config.gain();
     let custom = config.custom_ramp();
     let half = config.line_w() / 2.0;
-    let base = ramp_color(config.gradient, 0.0, custom);
+    let base = ramp_color(config.gradient, 0.0, custom, config.gradient_curve);
     for (i, lane) in lanes.iter().enumerate() {
         let cols = lane.len();
         if cols < 2 {
@@ -600,7 +602,10 @@ fn paint_lanes(
             let t = (step as f32 + 0.5) / RAMP_STEPS as f32;
             window.paint_path(
                 path,
-                palette::alpha(ramp_color(config.gradient, t, custom), alpha),
+                palette::alpha(
+                    ramp_color(config.gradient, t, custom, config.gradient_curve),
+                    alpha,
+                ),
             );
         }
     }
@@ -616,6 +621,7 @@ pub struct OscilloscopePanel {
     level_scrub: ScrubState,
     line_w_scrub: ScrubState,
     persist_scrub: ScrubState,
+    curve_scrub: ScrubState,
     value_edit: panel::ValueEdit,
     /// Built on the first settings render: the picker state needs a window.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
@@ -639,6 +645,7 @@ impl OscilloscopePanel {
             level_scrub: ScrubState::default(),
             line_w_scrub: ScrubState::default(),
             persist_scrub: ScrubState::default(),
+            curve_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
             ramp_pickers: None,
             _ramp_changes: Vec::new(),
@@ -946,7 +953,19 @@ impl PanelSettings for OscilloscopePanel {
                         ColorPicker::new(&hi).small(),
                     ))
                 },
-            );
+            )
+            .when(self.config.gradient != Gradient::Off, |d| {
+                d.child(curve_row(
+                    &self.curve_scrub,
+                    &self.value_edit,
+                    self.config.gradient_curve,
+                    |this: &mut Self, curve, cx| {
+                        this.config.gradient_curve = curve;
+                        cx.notify();
+                    },
+                    cx,
+                ))
+            });
         div()
             .flex()
             .flex_col()

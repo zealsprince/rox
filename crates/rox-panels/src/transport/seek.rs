@@ -128,6 +128,8 @@ pub struct SeekConfig {
     pub bookmarks: bool,
     pub thickness: f32,
     pub rounding: f32,
+    /// Off, the fill's edge alone marks the position.
+    pub playhead: bool,
     pub playhead_width: f32,
     /// The playhead spans the strip's full height; off, it hugs the line.
     pub playhead_full: bool,
@@ -151,6 +153,7 @@ impl Default for SeekConfig {
             bookmarks: true,
             thickness: tokens::SEEK_STRIP_H,
             rounding: 0.0,
+            playhead: true,
             playhead_width: tokens::PLAYHEAD_W,
             playhead_full: true,
             playhead_max: 0.0,
@@ -178,6 +181,8 @@ struct SeekConfigDump {
     thickness: f32,
     #[serde(default)]
     rounding: f32,
+    #[serde(default = "default_true")]
+    playhead: bool,
     #[serde(default = "default_playhead_width")]
     playhead_width: f32,
     #[serde(default = "default_true")]
@@ -236,6 +241,7 @@ impl From<SeekConfigDump> for SeekConfig {
             bookmarks: dump.bookmarks,
             thickness: dump.thickness,
             rounding: dump.rounding,
+            playhead: dump.playhead,
             playhead_width: dump.playhead_width,
             playhead_full: dump.playhead_full,
             playhead_max: dump.playhead_max,
@@ -542,35 +548,43 @@ impl PanelSettings for SeekStripPanel {
             .child(panel::setting_row(
                 rox_i18n::t!("seek-playhead"),
                 Some(rox_i18n::t!("seek-playhead.description")),
+                // Off keeps the full-or-line pick, so turning it back on
+                // brings the old head back.
                 panel::choices_shared(
                     &[
-                        (rox_i18n::t!("seek-playhead-full"), true),
-                        (rox_i18n::t!("seek-playhead-line"), false),
+                        (rox_i18n::t!("seek-playhead-full"), Some(true)),
+                        (rox_i18n::t!("seek-playhead-line"), Some(false)),
+                        (rox_i18n::t!("seek-playhead-off"), None),
                     ],
-                    self.config.playhead_full,
-                    |this: &mut Self, full, cx| {
-                        this.config.playhead_full = full;
+                    self.config.playhead.then_some(self.config.playhead_full),
+                    |this: &mut Self, pick, cx| {
+                        this.config.playhead = pick.is_some();
+                        if let Some(full) = pick {
+                            this.config.playhead_full = full;
+                        }
                         cx.notify();
                     },
                     cx,
                 ),
             ))
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-playhead-width"),
-                Some(rox_i18n::t!("seek-playhead-width.description")),
-                settings_ui::scalar(
-                    &self.playhead_scrub,
-                    &self.value_edit,
-                    self.config.playhead_width,
-                    settings_ui::span(1., 8., " px"),
-                    |this: &mut Self, width, cx| {
-                        this.config.playhead_width = width;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.playhead_full, |d| {
+            .when(self.config.playhead, |d| {
+                d.child(panel::setting_row(
+                    rox_i18n::t!("seek-playhead-width"),
+                    Some(rox_i18n::t!("seek-playhead-width.description")),
+                    settings_ui::scalar(
+                        &self.playhead_scrub,
+                        &self.value_edit,
+                        self.config.playhead_width,
+                        settings_ui::span(1., 8., " px"),
+                        |this: &mut Self, width, cx| {
+                            this.config.playhead_width = width;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
+            .when(self.config.playhead && self.config.playhead_full, |d| {
                 d.child(panel::setting_row(
                     rox_i18n::t!("seek-playhead-max-height"),
                     Some(rox_i18n::t!("seek-playhead-max-height.description")),
@@ -703,6 +717,7 @@ impl PanelSettings for SeekStripPanel {
 struct StripLook {
     thickness: f32,
     rounding: f32,
+    playhead: bool,
     playhead_width: f32,
     playhead_full: bool,
     playhead_max: f32,
@@ -721,6 +736,7 @@ impl From<&SeekConfig> for StripLook {
         StripLook {
             thickness: config.thickness,
             rounding: config.rounding,
+            playhead: config.playhead,
             playhead_width: config.playhead_width,
             playhead_full: config.playhead_full,
             playhead_max: config.playhead_max,
@@ -848,6 +864,10 @@ fn buffered_fractions(player: &Player) -> Vec<(f32, f32)> {
 /// Full height, capped when configured, or the line's height when it
 /// hugs; centered either way. The station strip draws the same head.
 fn paint_playhead(head_x: f32, look: StripLook, bounds: Bounds<Pixels>, window: &mut Window) {
+    if !look.playhead {
+        return;
+    }
+
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
     let line_h = look.thickness.clamp(1.0, h);

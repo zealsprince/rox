@@ -25,6 +25,7 @@ use rox_playback::engine::LoopMode;
 use rox_viz::signal::{Route, Signal};
 
 use rox_design::palette::{self, Palette, Sides};
+use rox_design::tokens::SliderLook;
 
 use crate::acoustic;
 use crate::continuation;
@@ -2798,6 +2799,8 @@ pub struct AppearanceBundle {
     pub rating_style: RatingStyle,
     /// Whether unfilled star slots draw a faint dot.
     pub rating_dots: bool,
+    /// How the value sliders draw.
+    pub slider: SliderLook,
     /// The quick-play modal's appearance.
     pub quick_play: QuickPlayConfig,
     /// The Milkdrop backdrop's look. Per-machine state lives in
@@ -2836,6 +2839,7 @@ impl Default for AppearanceBundle {
             app_font: None,
             rating_style: RatingStyle::default(),
             rating_dots: false,
+            slider: SliderLook::DEFAULT,
             quick_play: QuickPlayConfig::default(),
             milkdrop: MilkdropLook::default(),
             hide_menubar: false,

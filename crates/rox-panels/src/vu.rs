@@ -27,7 +27,10 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
-use crate::spectrum::{Gradient, Orientation, gradient_choices, orientation_choices, ramp_color};
+use crate::spectrum::{
+    CURVE_DEFAULT, Gradient, Orientation, curve_row, gradient_choices, orientation_choices,
+    ramp_color,
+};
 
 const MAX_METERS: usize = 2;
 
@@ -134,6 +137,7 @@ pub struct VuConfig {
     /// `#rrggbb`: the quiet base and the loud tip.
     pub gradient_lo: String,
     pub gradient_hi: String,
+    pub gradient_curve: f32,
     pub seg_height: f32,
     pub seg_gap: f32,
     pub caps: bool,
@@ -154,6 +158,7 @@ impl Default for VuConfig {
             gradient: Gradient::default(),
             gradient_lo: "#22aa44".into(),
             gradient_hi: "#dd3322".into(),
+            gradient_curve: CURVE_DEFAULT,
             seg_height: 4.0,
             seg_gap: 1.0,
             caps: true,
@@ -399,6 +404,7 @@ impl Meters {
         }
 
         let custom = config.custom_ramp();
+        let curve = config.gradient_curve;
         let seg_h = config.seg_h();
         let cell = seg_h + config.seg_gap();
         let cells = ((max_d / cell) as usize).max(1);
@@ -409,20 +415,20 @@ impl Meters {
             if config.style == MeterStyle::Segments {
                 let lit = (level * cells as f32).round() as usize;
                 for c in 0..lit {
-                    let color =
-                        ramp_color(config.gradient, (c as f32 + 0.5) / cells as f32, custom);
+                    let t = (c as f32 + 0.5) / cells as f32;
+                    let color = ramp_color(config.gradient, t, custom, curve);
                     window.paint_quad(fill(rect(a, meter_w, c as f32 * cell, seg_h), color));
                 }
                 if lit == 0 {
                     window.paint_quad(fill(
                         rect(a, meter_w, 0.0, seg_h),
-                        palette::alpha(ramp_color(config.gradient, 0.0, custom), 0x40),
+                        palette::alpha(ramp_color(config.gradient, 0.0, custom, curve), 0x40),
                     ));
                 }
             } else {
                 let bar = rect(a, meter_w, 0.0, (level * max_d).max(2.0));
-                let base = ramp_color(config.gradient, 0.0, custom);
-                let tip = ramp_color(config.gradient, level, custom);
+                let base = ramp_color(config.gradient, 0.0, custom, curve);
+                let tip = ramp_color(config.gradient, level, custom, curve);
                 window.paint_quad(fill(
                     bar,
                     linear_gradient(
@@ -460,6 +466,7 @@ pub struct VuPanel {
     seg_h_scrub: ScrubState,
     seg_gap_scrub: ScrubState,
     gravity_scrub: ScrubState,
+    curve_scrub: ScrubState,
     value_edit: panel::ValueEdit,
     /// Built on the first settings render: the picker state needs a window.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
@@ -481,6 +488,7 @@ impl VuPanel {
             seg_h_scrub: ScrubState::default(),
             seg_gap_scrub: ScrubState::default(),
             gravity_scrub: ScrubState::default(),
+            curve_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
             ramp_pickers: None,
             _ramp_changes: Vec::new(),
@@ -743,7 +751,19 @@ impl PanelSettings for VuPanel {
                         ColorPicker::new(&hi).small(),
                     ))
                 },
-            );
+            )
+            .when(self.config.gradient != Gradient::Off, |d| {
+                d.child(curve_row(
+                    &self.curve_scrub,
+                    &self.value_edit,
+                    self.config.gradient_curve,
+                    |this: &mut Self, curve, cx| {
+                        this.config.gradient_curve = curve;
+                        cx.notify();
+                    },
+                    cx,
+                ))
+            });
         let peaks = div()
             .flex()
             .flex_col()

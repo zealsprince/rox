@@ -2091,13 +2091,23 @@ impl Player {
         let seen = self.draw_seen();
         let drawn = {
             let library = library.read(cx);
-            let all: &[i64] = library
+
+            // The browse order, never every row: played-only plugin tracks,
+            // stations and hidden sources are in the projection too.
+            let all: Vec<i64> = library
                 .projection()
-                .map(|p| p.db_id.as_slice())
+                .map(|p| {
+                    library
+                        .order()
+                        .iter()
+                        .map(|&row| p.db_id[row as usize])
+                        .collect()
+                })
                 .unwrap_or_default();
+
             // A stale scope falls back to the whole library.
-            draw_run(library, random_pool(&scope, all), &seen)
-                .or_else(|| draw_run(library, all, &seen))
+            draw_run(library, random_pool(&scope, &all), &seen)
+                .or_else(|| draw_run(library, &all, &seen))
         };
         let Some((keys, start)) = drawn else { return };
         self.play_at(keys, start, cx);

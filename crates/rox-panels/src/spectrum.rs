@@ -80,6 +80,12 @@ const HOLD_GRAVITY: f32 = 0.05;
 const GRAVITY_MIN: f32 = 0.01;
 const GRAVITY_MAX: f32 = 1.0;
 
+/// The ramp's exponent on the level. Above 1 the mids stay muted and only
+/// the top lights up; below 1 the tip color arrives early.
+pub const CURVE_DEFAULT: f32 = 1.5;
+const CURVE_MIN: f32 = 0.25;
+const CURVE_MAX: f32 = 4.0;
+
 const FFT_CHOICES: &[(&str, usize)] = &[
     ("512", 512),
     ("1k", 1024),
@@ -272,6 +278,30 @@ pub fn gradient_choices() -> [(SharedString, Gradient); 4] {
     ]
 }
 
+/// Shared with the VU meter and oscilloscope panels.
+pub fn curve_row<P: 'static>(
+    scrub: &ScrubState,
+    edit: &panel::ValueEdit,
+    curve: f32,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    setting_row(
+        rox_i18n::t!("spectrum-gradient-curve"),
+        Some(rox_i18n::t!("spectrum-gradient-curve.description")),
+        settings_ui::scalar(
+            scrub,
+            edit,
+            curve.clamp(CURVE_MIN, CURVE_MAX),
+            settings_ui::span(CURVE_MIN, CURVE_MAX, "")
+                .decimals(2)
+                .hard(),
+            apply,
+            cx,
+        ),
+    )
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpectrumConfig {
@@ -300,6 +330,7 @@ pub struct SpectrumConfig {
     pub gradient: Gradient,
     pub gradient_lo: String,
     pub gradient_hi: String,
+    pub gradient_curve: f32,
     pub outline: bool,
     pub outline_width: f32,
     pub caps: bool,
@@ -329,6 +360,7 @@ impl Default for SpectrumConfig {
             gradient: Gradient::default(),
             gradient_lo: "#33aacc".into(),
             gradient_hi: "#cc5588".into(),
+            gradient_curve: CURVE_DEFAULT,
             outline: false,
             outline_width: 1.0,
             caps: true,
@@ -825,14 +857,19 @@ impl Bars {
 }
 
 fn bar_color(config: &SpectrumConfig, t: f32) -> Rgba {
-    ramp_color(config.gradient, t, config.custom_ramp())
+    ramp_color(
+        config.gradient,
+        t,
+        config.custom_ramp(),
+        config.gradient_curve,
+    )
 }
 
-/// Curved so the mids stay muted and only the top lights up. The cover
-/// ramp stops short of full highlight so the caps stay legible on a pinned
-/// band.
-pub fn ramp_color(gradient: Gradient, t: f32, custom: (Rgba, Rgba)) -> Rgba {
-    let t = t.clamp(0.0, 1.0).powf(1.5);
+/// `curve` bends the level before the blend, see [`CURVE_DEFAULT`]. The
+/// cover ramp stops short of full highlight so the caps stay legible on a
+/// pinned band.
+pub fn ramp_color(gradient: Gradient, t: f32, custom: (Rgba, Rgba), curve: f32) -> Rgba {
+    let t = t.clamp(0.0, 1.0).powf(curve.clamp(CURVE_MIN, CURVE_MAX));
     match gradient {
         Gradient::Off => palette::accent(),
         Gradient::Theme => palette::mix(
@@ -1037,6 +1074,7 @@ pub struct SpectrumPanel {
     block_gap_scrub: ScrubState,
     outline_w_scrub: ScrubState,
     gravity_scrub: ScrubState,
+    curve_scrub: ScrubState,
     split_scrub: ScrubState,
     value_edit: panel::ValueEdit,
     /// Built on the first settings render: the picker state needs a window.
@@ -1064,6 +1102,7 @@ impl SpectrumPanel {
             block_gap_scrub: ScrubState::default(),
             outline_w_scrub: ScrubState::default(),
             gravity_scrub: ScrubState::default(),
+            curve_scrub: ScrubState::default(),
             split_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
             ramp_pickers: None,
@@ -1422,6 +1461,23 @@ impl PanelSettings for SpectrumPanel {
                         ColorPicker::new(&hi).small(),
                     ))
                 },
+            )
+            // The line fills its area in one two-stop sweep, so it has no
+            // per-level color to bend.
+            .when(
+                self.config.gradient != Gradient::Off && self.config.style != SpectrumStyle::Line,
+                |d| {
+                    d.child(curve_row(
+                        &self.curve_scrub,
+                        &self.value_edit,
+                        self.config.gradient_curve,
+                        |this: &mut Self, curve, cx| {
+                            this.config.gradient_curve = curve;
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                },
             );
         let peaks = div()
             .flex()
@@ -1685,6 +1741,26 @@ impl SpectrumPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_curve_bends_the_middle_and_pins_the_ends() {
+        let ramp = (gpui::rgb(0x000000), gpui::rgb(0xffffff));
+        let at = |t, curve| ramp_color(Gradient::Custom, t, ramp, curve);
+
+        assert_eq!(at(0.5, 1.0), palette::mix(ramp.0, ramp.1, 0.5), "straight");
+        assert_eq!(
+            at(0.5, 2.0),
+            palette::mix(ramp.0, ramp.1, 0.25),
+            "held back"
+        );
+        for curve in [CURVE_MIN, CURVE_DEFAULT, CURVE_MAX] {
+            assert_eq!(at(0.0, curve), ramp.0, "base at {curve}");
+            assert_eq!(at(1.0, curve), ramp.1, "tip at {curve}");
+        }
+
+        // A typed zero would light every band at the tip.
+        assert_eq!(at(0.5, 0.0), at(0.5, CURVE_MIN), "clamped");
+    }
 
     #[test]
     fn labels_read_the_old_bool_as_the_pitch_scale() {

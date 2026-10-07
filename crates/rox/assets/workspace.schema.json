@@ -114,6 +114,10 @@
         "keep_theme": false,
         "rating_style": "stars",
         "rating_dots": false,
+        "slider": {
+          "rounding": 6.0,
+          "knob": true
+        },
         "quick_play": {
           "show_cover": false,
           "show_subtitle": true,
@@ -604,6 +608,14 @@
           "type": "boolean",
           "default": false
         },
+        "slider": {
+          "description": "How the value sliders draw.",
+          "$ref": "#/$defs/SliderLook",
+          "default": {
+            "rounding": 6.0,
+            "knob": true
+          }
+        },
         "quick_play": {
           "description": "The quick-play modal's appearance.",
           "$ref": "#/$defs/QuickPlayConfig",
@@ -726,6 +738,23 @@
         "stars",
         "numeric"
       ]
+    },
+    "SliderLook": {
+      "description": "How every value slider draws: the volume strips and the settings sliders.",
+      "type": "object",
+      "properties": {
+        "rounding": {
+          "description": "Corner radius in px, capped at a pill for the track and the knob each.",
+          "type": "number",
+          "format": "float",
+          "default": 6.0
+        },
+        "knob": {
+          "description": "Whether the drag knob draws. Off, the fill alone shows the level.",
+          "type": "boolean",
+          "default": true
+        }
+      }
     },
     "QuickPlayConfig": {
       "description": "How the quick-play modal draws its result list.",

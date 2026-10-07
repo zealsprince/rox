@@ -266,6 +266,10 @@ impl PanelSettings for VolumePanel {
         self.state.clone()
     }
 
+    fn has_slider(&self) -> bool {
+        true
+    }
+
     fn chrome(&self) -> &PanelChrome {
         &self.config.chrome
     }
@@ -429,6 +433,7 @@ impl VolumePanel {
 
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
+        let look = tokens::slider_look();
         let slider = div()
             .flex_1()
             .min_w(tokens::SLIDER_MIN_W)
@@ -455,7 +460,7 @@ impl VolumePanel {
                     },
                     // A hand-edited volume past 100% shows as full.
                     move |bounds, _, window, _| {
-                        panel::paint_slider(volume, muted, bounds, window);
+                        panel::paint_slider(volume, muted, look, bounds, window);
                         panel::scrub_on_paint(&scrub, window, {
                             let player = player.clone();
                             move |fraction, cx| {

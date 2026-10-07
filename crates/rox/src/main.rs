@@ -71,6 +71,7 @@ use rox_core::settings::{
 use rox_core::{APP_ID, logging};
 use rox_design::assets::Assets;
 use rox_design::palette;
+use rox_design::tokens;
 use rox_net::providers;
 use rox_services::acoustic::set_acoustic_model;
 use workspace::Workspace;
@@ -390,6 +391,7 @@ fn main() {
         palette::set_app_font_size(settings.app_font_size, cx);
         set_rating_style(settings.look.bundle.appearance.rating_style, cx);
         set_rating_dots(settings.look.bundle.appearance.rating_dots, cx);
+        tokens::set_slider_look(settings.look.bundle.appearance.slider, cx);
         set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
         set_menubar_buttons(settings.look.bundle.appearance.menubar_buttons, cx);
         set_os_decorations(settings.look.bundle.appearance.os_decorations);

@@ -735,6 +735,7 @@ impl<P: 'static> RenderOnce for SliderStrip<P> {
             entity,
             apply,
         } = self;
+        let look = tokens::slider_look();
         div()
             .map(|d| match width {
                 SliderWidth::Fixed => d.w(SLIDER_W).flex_none(),
@@ -791,7 +792,7 @@ impl<P: 'static> RenderOnce for SliderStrip<P> {
                     {
                         let scrub = scrub.clone();
                         move |bounds, _, window, _| {
-                            paint_slider(fraction, false, bounds, window);
+                            paint_slider(fraction, false, look, bounds, window);
                             scrub_on_paint(&scrub, window, {
                                 let entity = entity.clone();
                                 let apply = apply.clone();

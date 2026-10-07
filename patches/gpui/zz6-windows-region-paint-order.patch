@@ -1,0 +1,84 @@
+Screen-shader regions run at their paint order on Windows too.
+
+The DirectX renderer still ran every region in one go at the overlay
+boundary, over the fully composed main scene, where the blade path has
+split at each region since user-shader-underlays. A backdrop recorded
+under the panels (the Milkdrop backdrop, or a backdrop shader that needs
+the region pass) painted over the whole window instead, hiding every
+panel, and with All Windows on it took the settings window as well. Now
+each region batch runs where it stands and the main target comes back
+for whatever draws next.
+
+--- a/src/platform/windows/directx_renderer.rs
++++ b/src/platform/windows/directx_renderer.rs
+@@ -359,15 +359,7 @@
+         let offscreen = needs_scene_target && self.shaders.scene.is_some();
+ 
+         self.pre_draw(opaque)?;
+-        // `Scene::finish` sorted the entries by paint order, which is the order
+-        // they run in. Splitting the main pass at the overlay boundary costs an
+-        // extra pass, so only do it when there's a region sequence to slot in.
+-        let mut regions_done = false;
+         for batch in scene.batches() {
+-            if offscreen && has_regions && !regions_done && batch.is_overlay() {
+-                regions_done = true;
+-                self.draw_shader_regions(scene);
+-            }
+             match batch {
+                 PrimitiveBatch::Shadows(shadows) => self.draw_shadows(shadows),
+                 PrimitiveBatch::Quads(quads) => self.draw_quads(quads),
+@@ -386,11 +378,17 @@
+                 } => self.draw_polychrome_sprites(texture_id, sprites),
+                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(surfaces),
+                 // rox patch: the in-scene primitive draws here like any other
+-                // batch. Regions don't - they're in the scene so cached views
+-                // replay them, and the whole sequence runs at the overlay
+-                // boundary below.
++                // batch, and so do regions, at their place in the paint order.
++                // A region reads what's composed so far and everything painted
++                // after draws over its result, which is what keeps a backdrop
++                // treatment under the panels. Same rule as the blade path.
+                 PrimitiveBatch::UserShaders(user_shaders) => self.draw_user_shaders(user_shaders),
+-                PrimitiveBatch::UserShaderRegions(_) => Ok(()),
++                PrimitiveBatch::UserShaderRegions(regions) => {
++                    if offscreen {
++                        self.draw_shader_regions(regions);
++                    }
++                    Ok(())
++                }
+             }.context(format!("scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
+                     scene.paths.len(),
+                     scene.shadows.len(),
+@@ -401,13 +399,9 @@
+                     scene.surfaces.len(),))?;
+         }
+ 
+-        // rox patch: a frame with no overlay never hit the boundary above, so
+-        // the region sequence runs here instead; then the post pass, or a
+-        // straight copy when regions ran without one.
++        // rox patch: the post pass, or a straight copy when regions ran
++        // without one.
+         if offscreen {
+-            if has_regions && !regions_done {
+-                self.draw_shader_regions(scene);
+-            }
+             if self.shaders.post.is_some() {
+                 self.draw_post_pass();
+             } else {
+@@ -2627,11 +2621,11 @@
+         update_buffer(&self.devices.device_context, &instances.buffer, run)
+     }
+ 
+-    /// Runs every region entry in paint order, so a later one reads what the
+-    /// earlier ones left behind, then puts the main target back for whatever
+-    /// draws next.
+-    fn draw_shader_regions(&mut self, scene: &Scene) {
+-        for region in scene.user_shader_regions() {
++    /// Runs one batch's region entries in paint order, so a later one reads
++    /// what the earlier ones left behind, then puts the main target back for
++    /// whatever draws next.
++    fn draw_shader_regions(&mut self, regions: &[UserShaderRegion]) {
++        for region in regions {
+             self.draw_shader_region(region);
+         }
+         unsafe {

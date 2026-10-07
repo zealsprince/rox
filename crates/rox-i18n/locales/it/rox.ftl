@@ -886,6 +886,8 @@ settings-application-portable-not-writable = La cartella dell'app non è scrivib
 settings-application-portable-restart-note = Vale dal prossimo avvio; questa sessione resta sulla cartella attuale
 settings-application-remain-in-tray = Resta nell'area di notifica
     .description = Tieni la musica in riproduzione quando si chiude l'ultima finestra, con l'icona nell'area di notifica (il dock su macOS) come via di ritorno
+settings-application-mini-on-top = Lettore mini in primo piano
+    .description = Tieni la finestra sopra le altre mentre è sul layout mini. È lo stesso fissaggio che lì imposta il pulsante dei controlli finestra
 settings-application-section-ai = AI
 settings-application-section-control-socket = Socket di controllo
 settings-application-section-data = Dati
@@ -2318,7 +2320,6 @@ panel-catalog-bookmarks = Segnalibri
 panel-catalog-stations = Stazioni
 panel-catalog-menu = Menu
 panel-catalog-metadata = Metadati
-panel-catalog-mini-toggle = Interruttore mini
 panel-catalog-oscilloscope = Oscilloscopio
 panel-catalog-overlay = Overlay
 panel-catalog-particles = Particelle
@@ -2955,9 +2956,7 @@ drawer-trigger-selection = Selezione
 
 ## Mini player
 mini-tip-back = Torna al layout completo
-mini-tip-none = Nessun layout mini assegnato
 mini-tip-shrink = Riduci al lettore mini
-mini-title = Interruttore mini
 
 ## System tray
 tray-open = Apri
@@ -2966,14 +2965,15 @@ tray-play = Riproduci
 tray-quit = Esci
 
 ## Window controls
+window-controls-close = Chiudi
+window-controls-maximize = Ingrandisci
 window-controls-mini-toggle = Interruttore mini
-    .description = Metti davanti l'interruttore del layout mini; compare quando un layout mini è assegnato
 window-controls-minimize = Riduci a icona
+window-controls-pieces = Pulsanti
+    .description = Trascina lungo la barra per riordinare; trascina tra le righe, o usa la x e il più di un chip, per nascondere e mostrare. L'interruttore mini compare quando un layout mini è assegnato
 window-controls-pin = Fissa
-    .description = Un pulsante che tiene la finestra sopra le altre; su Wayland serve KWin e un'installazione fuori da Flatpak
-window-controls-pin-hide = Nascondi
-window-controls-pin-mini = Solo nel mini
-window-controls-pin-show = Mostra
+window-controls-pin-mini-only = Fissa solo in mini
+    .description = Mostra il pulsante per fissare solo mentre la finestra è sul layout mini. Su Wayland fissare richiede KWin e un'installazione fuori da Flatpak
 window-controls-pin-tip-off = Smetti di tenere sopra le altre finestre
 window-controls-pin-tip-on = Tieni sopra le altre finestre
 window-controls-style = Stile
@@ -4001,7 +4001,6 @@ panel-title-history = Cronologia
 panel-title-lyrics = Testo
 panel-title-menu = Menu
 panel-title-metadata = Metadati
-panel-title-mini-toggle = Interruttore mini
 panel-title-output = Uscita
 panel-title-overlay = Overlay
 panel-title-playlists = Playlist

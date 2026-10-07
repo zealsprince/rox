@@ -73,7 +73,13 @@
                           "max_height": 24.0,
                           "min_width": 128.0,
                           "style": "icons",
-                          "mini": true,
+                          "items": [
+                            "mini",
+                            "minimize",
+                            "maximize",
+                            "close"
+                          ],
+                          "pin_mini_only": false,
                           "align": "right"
                         }
                       }

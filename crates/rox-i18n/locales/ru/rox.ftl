@@ -891,6 +891,8 @@ settings-application-portable-not-writable = Папка приложения н�
 settings-application-portable-restart-note = Применится при следующем запуске; этот сеанс останется на текущей папке
 settings-application-remain-in-tray = Оставаться в трее
     .description = Не останавливать музыку, когда закрыто последнее окно; вернуться можно через значок в трее, на macOS через док
+settings-application-mini-on-top = Мини-плеер поверх окон
+    .description = Держать окно поверх остальных, пока оно на мини-макете. Это то же закрепление, что ставит там кнопка закрепления в управлении окном
 settings-application-section-ai = ИИ
 settings-application-section-control-socket = Управляющий сокет
 settings-application-section-data = Данные
@@ -2312,7 +2314,6 @@ panel-catalog-bookmarks = Закладки
 panel-catalog-stations = Радиостанции
 panel-catalog-menu = Меню
 panel-catalog-metadata = Метаданные
-panel-catalog-mini-toggle = Переключатель мини
 panel-catalog-oscilloscope = Осциллограф
 panel-catalog-overlay = Наложение
 panel-catalog-particles = Частицы
@@ -2903,9 +2904,7 @@ drawer-trigger-selection = Выбор
 
 ## Mini player
 mini-tip-back = Назад к полному макету
-mini-tip-none = Мини-макет не назначен
 mini-tip-shrink = Свернуть до мини-плеера
-mini-title = Переключатель мини
 
 ## System tray
 tray-open = Открыть
@@ -2914,14 +2913,15 @@ tray-play = Воспроизвести
 tray-quit = Выход
 
 ## Window controls
+window-controls-close = Закрыть
+window-controls-maximize = Развернуть
 window-controls-mini-toggle = Переключатель мини
-    .description = Ставить переключатель мини-макета первым; появляется, как только мини-макет назначен
 window-controls-minimize = Свернуть
+window-controls-pieces = Кнопки
+    .description = Тяните вдоль полосы, чтобы менять порядок; тяните между строками либо жмите x и плюс на плашке, чтобы скрывать и показывать. Переключатель мини появляется, как только мини-макет назначен
 window-controls-pin = Закрепить
-    .description = Кнопка, которая держит окно поверх остальных; в Wayland нужен KWin и установка не из Flatpak
-window-controls-pin-hide = Скрыть
-window-controls-pin-mini = Только в мини
-window-controls-pin-show = Показать
+window-controls-pin-mini-only = Закреплять только в мини
+    .description = Показывать кнопку закрепления, только пока окно на мини-макете. В Wayland для закрепления нужен KWin и установка не из Flatpak
 window-controls-pin-tip-off = Больше не держать поверх других окон
 window-controls-pin-tip-on = Держать поверх других окон
 window-controls-style = Стиль
@@ -3977,7 +3977,6 @@ panel-title-history = История
 panel-title-lyrics = Текст песни
 panel-title-menu = Меню
 panel-title-metadata = Метаданные
-panel-title-mini-toggle = Переключатель мини
 panel-title-output = Вывод
 panel-title-overlay = Наложение
 panel-title-playlists = Плейлисты

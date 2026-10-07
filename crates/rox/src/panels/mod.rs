@@ -6,7 +6,6 @@ pub mod controls;
 pub mod drawer;
 pub mod group;
 pub mod menu;
-pub mod mini;
 pub mod overlay;
 pub mod queue_widget;
 pub mod slide;

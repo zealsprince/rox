@@ -914,6 +914,8 @@ settings-application-portable-not-writable = The app's folder is not writable
 settings-application-portable-restart-note = Applies on the next launch; this run stays on its current folder
 settings-application-remain-in-tray = Remain in Tray
     .description = Keep the music playing when the last window closes, with the tray icon (the dock on macOS) as the way back in
+settings-application-mini-on-top = Mini Player on Top
+    .description = Keep the window above others while it's on the mini layout. It's the same pin the window controls' pin button sets there
 settings-application-section-ai = AI
 settings-application-section-control-socket = Control Socket
 settings-application-section-data = Data
@@ -2386,7 +2388,6 @@ panel-catalog-bookmarks = Bookmarks
 panel-catalog-stations = Stations
 panel-catalog-menu = Menu
 panel-catalog-metadata = Metadata
-panel-catalog-mini-toggle = Mini Toggle
 panel-catalog-oscilloscope = Oscilloscope
 panel-catalog-overlay = Overlay
 panel-catalog-particles = Particles
@@ -2958,9 +2959,7 @@ drawer-trigger-selection = Selection
 ## Mini player
 
 mini-tip-back = Back to the full layout
-mini-tip-none = No mini layout assigned
 mini-tip-shrink = Shrink to the mini player
-mini-title = Mini Toggle
 
 ## System tray
 
@@ -2971,14 +2970,15 @@ tray-quit = Quit
 
 ## Window controls
 
+window-controls-close = Close
+window-controls-maximize = Maximize
 window-controls-mini-toggle = Mini Toggle
-    .description = Lead with the mini-layout toggle; shows once a mini layout is assigned
 window-controls-minimize = Minimize
+window-controls-pieces = Buttons
+    .description = Drag along the bar to reorder; drag between the rows, or use a chip's x and plus, to hide and show. The mini toggle shows once a mini layout is assigned
 window-controls-pin = Pin
-    .description = A button that keeps the window above others; on Wayland it needs KWin and an install outside Flatpak
-window-controls-pin-hide = Hide
-window-controls-pin-mini = Show for Mini
-window-controls-pin-show = Show
+window-controls-pin-mini-only = Pin Only on Mini
+    .description = Show the pin only while the window is on the mini layout. Pinning on Wayland needs KWin and an install outside Flatpak
 window-controls-pin-tip-off = Stop keeping above other windows
 window-controls-pin-tip-on = Keep above other windows
 window-controls-style = Style
@@ -4040,7 +4040,6 @@ panel-title-history = History
 panel-title-lyrics = Lyrics
 panel-title-menu = Menu
 panel-title-metadata = Metadata
-panel-title-mini-toggle = Mini Toggle
 panel-title-output = Output
 panel-title-overlay = Overlay
 panel-title-playlists = Playlists

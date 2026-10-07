@@ -894,6 +894,8 @@ settings-application-portable-not-writable = Le dossier de l'application n'est p
 settings-application-portable-restart-note = S'applique au prochain lancement ; cette session reste sur son dossier actuel
 settings-application-remain-in-tray = Rester dans la zone de notification
     .description = Garder la musique en lecture quand la dernière fenêtre se ferme, avec l'icône de la zone de notification (le dock sur macOS) comme moyen de revenir
+settings-application-mini-on-top = Mini-lecteur au premier plan
+    .description = Garder la fenêtre au-dessus des autres quand elle est sur la disposition mini. C'est le même épinglage que le bouton des contrôles de fenêtre y règle
 settings-application-section-ai = IA
 settings-application-section-control-socket = Socket de contrôle
 settings-application-section-data = Données
@@ -2361,7 +2363,6 @@ panel-catalog-bookmarks = Signets
 panel-catalog-stations = Stations
 panel-catalog-menu = Menu
 panel-catalog-metadata = Métadonnées
-panel-catalog-mini-toggle = Bascule mini
 panel-catalog-oscilloscope = Oscilloscope
 panel-catalog-overlay = Surcouche
 panel-catalog-particles = Particules
@@ -2979,9 +2980,7 @@ drawer-trigger-selection = Sélection
 
 ## Mini player
 mini-tip-back = Retour à la disposition complète
-mini-tip-none = Aucune disposition mini assignée
 mini-tip-shrink = Réduire au mini-lecteur
-mini-title = Bascule mini
 
 ## System tray
 tray-open = Ouvrir
@@ -2990,14 +2989,15 @@ tray-play = Lire
 tray-quit = Quitter
 
 ## Window controls
+window-controls-close = Fermer
+window-controls-maximize = Agrandir
 window-controls-mini-toggle = Bascule mini
-    .description = Mettre en tête la bascule de disposition mini ; elle apparaît dès qu'une disposition mini est assignée
 window-controls-minimize = Réduire
+window-controls-pieces = Boutons
+    .description = Fais glisser le long de la barre pour réordonner ; fais glisser entre les rangées, ou utilise le x et le plus d'une pastille, pour masquer et afficher. La bascule mini apparaît dès qu'une disposition mini est assignée
 window-controls-pin = Épingler
-    .description = Un bouton qui garde la fenêtre au-dessus des autres ; sous Wayland, il lui faut KWin et une installation hors Flatpak
-window-controls-pin-hide = Masquer
-window-controls-pin-mini = Seulement en mini
-window-controls-pin-show = Afficher
+window-controls-pin-mini-only = Épingler seulement en mini
+    .description = Afficher le bouton d'épinglage seulement quand la fenêtre est sur la disposition mini. Sous Wayland, l'épinglage demande KWin et une installation hors Flatpak
 window-controls-pin-tip-off = Ne plus garder au-dessus des autres fenêtres
 window-controls-pin-tip-on = Garder au-dessus des autres fenêtres
 window-controls-style = Style
@@ -4028,7 +4028,6 @@ panel-title-history = Historique
 panel-title-lyrics = Paroles
 panel-title-menu = Menu
 panel-title-metadata = Métadonnées
-panel-title-mini-toggle = Bascule mini
 panel-title-output = Sortie
 panel-title-overlay = Surcouche
 panel-title-playlists = Playlists

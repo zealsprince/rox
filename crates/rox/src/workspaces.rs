@@ -848,6 +848,38 @@ mod tests {
         }
     }
 
+    /// Old layouts load through the legacy fold, but a shipped bundle should
+    /// already be in the current shape: no retired mini toggle panel, and
+    /// every window controls panel holding its own item list. Walks every
+    /// node, docks and composite children included.
+    #[test]
+    fn every_shipped_window_controls_is_current() {
+        fn walk(node: &serde_json::Value, stem: &str) {
+            match node {
+                serde_json::Value::Object(map) => {
+                    let name = map.get("panel_name").and_then(|name| name.as_str());
+                    assert_ne!(name, Some("mini toggle"), "{stem}: a retired mini toggle");
+                    if name == Some("window controls") {
+                        let info = &node["info"]["panel"];
+                        assert!(info.get("items").is_some(), "{stem}: legacy shape {info}");
+                        let read: Result<crate::panels::window_controls::WindowControlsConfig, _> =
+                            serde_json::from_value(info.clone());
+                        assert!(read.is_ok(), "{stem}: {info}");
+                    }
+                    map.values().for_each(|value| walk(value, stem));
+                }
+                serde_json::Value::Array(values) => {
+                    values.iter().for_each(|value| walk(value, stem));
+                }
+                _ => {}
+            }
+        }
+        for (stem, bytes) in rox_design::assets::shipped_workspaces() {
+            let bundle: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            walk(&bundle, &stem);
+        }
+    }
+
     /// The splitter and assets only run at registration, so without this a
     /// mistyped `// @pass` or a mangled plate ships as a blank panel. The WGSL
     /// itself is naga's gate.

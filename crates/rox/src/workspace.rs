@@ -41,11 +41,10 @@ use crate::panels::controls::ControlsPanel;
 use crate::panels::drawer::DrawerPanel;
 use crate::panels::group::GroupPanel;
 use crate::panels::menu::{MenuConfig, MenuPanel};
-use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
 use crate::panels::overlay::OverlayPanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::slide::SlidePanel;
-use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
+use crate::panels::window_controls::{ControlItem, WindowControlsConfig, WindowControlsPanel};
 use crate::pass_prompt;
 use crate::quick_play::QuickPlay;
 use rox_core::settings::{
@@ -688,6 +687,31 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
             window.update(cx, |_, window, _| window.refresh()).ok();
         }
     });
+}
+
+/// The settings window's mini pin: the same record the pin button writes,
+/// so the next switch to the mini restores it. A window on the mini right
+/// now takes it live.
+pub(crate) fn set_mini_pinned(mini: String, pinned: bool, cx: &mut App) {
+    settings::set_layout_pinned(mini.clone(), pinned);
+
+    let open: Vec<(AnyWindowHandle, Entity<Workspace>)> = cx
+        .default_global::<WorkspaceWindows>()
+        .open
+        .iter()
+        .filter_map(|w| Some((w.handle, typed_workspace(&w.workspace)?)))
+        .collect();
+    for (handle, workspace) in open {
+        handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    if workspace.active_layout.as_deref() == Some(mini.as_str()) {
+                        workspace.set_pinned(pinned, window, cx);
+                    }
+                });
+            })
+            .ok();
+    }
 }
 
 /// Shade every eligible window that isn't running the source yet: child
@@ -2211,11 +2235,16 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
         let config: WindowControlsConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| WindowControlsPanel::new(s.clone(), ws.clone(), config, cx)))
     });
+    // The retired mini toggle panel restores as window controls holding
+    // just the mini button. Chrome and alignment read straight across,
+    // both configs flatten the same shape; the next save writes window
+    // controls, and the migration is done. [compat]
     let s = state.clone();
     let ws = workspace.clone();
     register_panel(cx, "mini toggle", move |_, _, info, _, cx| {
-        let config: MiniToggleConfig = panel::config_from_info(info);
-        Box::new(cx.new(|cx| MiniTogglePanel::new(s.clone(), ws.clone(), config, cx)))
+        let mut config: WindowControlsConfig = panel::config_from_info(info);
+        config.items = vec![ControlItem::Mini];
+        Box::new(cx.new(|cx| WindowControlsPanel::new(s.clone(), ws.clone(), config, cx)))
     });
     let s = state.clone();
     register_panel(cx, "menu", move |_, _, info, _, cx| {
@@ -4978,9 +5007,7 @@ impl Workspace {
         };
 
         if let Some(leaving) = leaving {
-            Settings::update(move |s| {
-                s.windows.placements.insert(leaving, here);
-            });
+            settings::save_layout_placement(leaving, here);
         }
 
         let arriving = Settings::load()
@@ -5005,8 +5032,18 @@ impl Workspace {
         placement::pinned(window, cx).unwrap_or(self.pinned)
     }
 
+    /// Recorded against the layout straight away rather than on the way out,
+    /// so the settings window's mini pin reads the same state this button
+    /// sets.
     pub(crate) fn toggle_pin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pinned = !self.pinned(window, cx);
+        self.set_pinned(pinned, window, cx);
+        if let Some(active) = self.active_layout.clone() {
+            settings::set_layout_pinned(active, pinned);
+        }
+    }
+
+    fn set_pinned(&mut self, pinned: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.pinned = pinned;
         placement::set_pinned(window, pinned, cx);
         self.save_layout_soon(window, cx);

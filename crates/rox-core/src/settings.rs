@@ -3352,6 +3352,47 @@ pub struct LayoutPlacement {
     pub pinned: bool,
 }
 
+/// Each layout's remembered pin, cached because the settings window reads
+/// the mini's per render. Every placement write goes through the two
+/// setters below, which keep it and the file in step.
+static LAYOUT_PINS: LazyLock<RwLock<BTreeMap<String, bool>>> = LazyLock::new(|| {
+    let pins = Settings::load()
+        .windows
+        .placements
+        .iter()
+        .map(|(name, placement)| (name.clone(), placement.pinned))
+        .collect();
+    RwLock::new(pins)
+});
+
+pub fn layout_pinned(name: &str) -> bool {
+    LAYOUT_PINS
+        .read()
+        .unwrap()
+        .get(name)
+        .copied()
+        .unwrap_or(false)
+}
+
+pub fn save_layout_placement(name: String, placement: LayoutPlacement) {
+    LAYOUT_PINS
+        .write()
+        .unwrap()
+        .insert(name.clone(), placement.pinned);
+    Settings::update(move |s| {
+        s.windows.placements.insert(name, placement);
+    });
+}
+
+/// Keeps the layout's origin, so a pin set from settings doesn't forget
+/// where the window sat.
+pub fn set_layout_pinned(name: String, pinned: bool) {
+    LAYOUT_PINS.write().unwrap().insert(name.clone(), pinned);
+    Settings::update(move |s| {
+        s.windows.placements.entry(name).or_default().pinned = pinned;
+    });
+}
+
 /// Seed the shared threshold from the Last.fm account's legacy copy, only
 /// while the settings file has never written it. `core` is the parsed file,
 /// the only place that says whether the knob was written or defaulted.

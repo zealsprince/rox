@@ -1,5 +1,6 @@
 //! The Application settings page: the AI and plugin gates, launch and
-//! updates, layout, window residency, the data folder and the control socket.
+//! updates, layout, window residency and the mini pin, the data folder and the
+//! control socket.
 
 use super::*;
 
@@ -9,6 +10,14 @@ impl SettingsWindow {
         settings::set_quit_to_tray(on);
         Settings::update(move |s| s.quit_to_tray = on);
         tray::sync(cx);
+        cx.notify();
+    }
+
+    fn set_mini_pinned(&mut self, on: bool, cx: &mut Context<Self>) {
+        let Some(mini) = self.mini_layout.clone() else {
+            return;
+        };
+        crate::workspace::set_mini_pinned(mini, on, cx);
         cx.notify();
     }
 
@@ -67,6 +76,13 @@ impl SettingsWindow {
     }
 
     pub(super) fn application_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        // Needs a mini layout to pin and a platform that can keep a window
+        // above the rest.
+        let mini_pin = self
+            .mini_layout
+            .as_deref()
+            .filter(|_| placement::available(cx))
+            .map(settings::layout_pinned);
         let portable_control: AnyElement = if !self.portable_writable {
             readout(rox_i18n::t!("settings-application-portable-not-writable").to_string())
                 .into_any_element()
@@ -169,23 +185,30 @@ impl SettingsWindow {
                     )
                 },
             ))
-            // Only where something can bring a window back: a resident process
-            // with no way in is worse than quitting.
-            .when(tray::supported(), |page| {
-                page.section(Section::new(
-                    q,
-                    icons::APP_WINDOW,
-                    rox_i18n::t!("settings-application-section-window"),
-                    None,
-                    |rows| {
+            .section(Section::new(
+                q,
+                icons::APP_WINDOW,
+                rox_i18n::t!("settings-application-section-window"),
+                None,
+                |rows| {
+                    // Only where something can bring a window back: a resident
+                    // process with no way in is worse than quitting.
+                    rows.when(tray::supported(), |rows| {
                         rows.keyed(
                             "settings-application-remain-in-tray",
                             &["quit", "minimize", "background"],
                             panel::toggle(settings::quit_to_tray(), Self::set_quit_to_tray, cx),
                         )
-                    },
-                ))
-            })
+                    })
+                    .when_some(mini_pin, |rows, pinned| {
+                        rows.keyed(
+                            "settings-application-mini-on-top",
+                            &["pin", "always on top", "above", "float", "mini"],
+                            panel::toggle(pinned, Self::set_mini_pinned, cx),
+                        )
+                    })
+                },
+            ))
             .section(Section::new(
                 q,
                 icons::DATABASE,

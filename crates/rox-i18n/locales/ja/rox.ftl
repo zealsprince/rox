@@ -874,6 +874,8 @@ settings-application-portable-not-writable = アプリのフォルダーに書�
 settings-application-portable-restart-note = 次回の起動から効きます。今回の実行は今のフォルダーのままです
 settings-application-remain-in-tray = トレイに残す
     .description = 最後のウィンドウを閉じても音楽を止めず、トレイアイコン (macOS では Dock) から戻れるようにする
+settings-application-mini-on-top = ミニプレーヤーを最前面に
+    .description = ミニレイアウトの間はウィンドウを他のウィンドウより前面に保つ。ウィンドウコントロールの固定ボタンがそこで切り替えるのと同じ設定
 settings-application-section-ai = AI
 settings-application-section-control-socket = 制御ソケット
 settings-application-section-data = データ
@@ -2264,7 +2266,6 @@ panel-catalog-bookmarks = ブックマーク
 panel-catalog-stations = ラジオ局
 panel-catalog-menu = メニュー
 panel-catalog-metadata = メタデータ
-panel-catalog-mini-toggle = ミニ切り替え
 panel-catalog-oscilloscope = オシロスコープ
 panel-catalog-overlay = オーバーレイ
 panel-catalog-particles = パーティクル
@@ -2800,9 +2801,7 @@ drawer-trigger-selection = 選択
 
 ## Mini player
 mini-tip-back = 通常のレイアウトに戻る
-mini-tip-none = ミニレイアウトが割り当てられていません
 mini-tip-shrink = ミニプレイヤーに縮める
-mini-title = ミニ切り替え
 
 ## System tray
 tray-open = 開く
@@ -2811,14 +2810,15 @@ tray-play = 再生
 tray-quit = 終了
 
 ## Window controls
+window-controls-close = 閉じる
+window-controls-maximize = 最大化
 window-controls-mini-toggle = ミニ切り替え
-    .description = ミニレイアウトの切り替えを先頭に置く。ミニレイアウトが割り当てられると出る
 window-controls-minimize = 最小化
+window-controls-pieces = ボタン
+    .description = バーに沿ってドラッグして並べ替え。行をまたいでドラッグするか、チップの x と + で表示と非表示を切り替える。ミニ切り替えはミニレイアウトが割り当てられると出る
 window-controls-pin = 最前面に固定
-    .description = ウィンドウを他のウィンドウより前面に保つボタン。Wayland では KWin と Flatpak 以外のインストールが必要
-window-controls-pin-hide = 非表示
-window-controls-pin-mini = ミニのみ
-window-controls-pin-show = 表示
+window-controls-pin-mini-only = ミニのときだけ固定ボタン
+    .description = ウィンドウがミニレイアウトのときだけ固定ボタンを出す。Wayland での固定には KWin と Flatpak 以外のインストールが必要
 window-controls-pin-tip-off = 前面固定を解除
 window-controls-pin-tip-on = 他のウィンドウより前面に保つ
 window-controls-style = スタイル
@@ -3817,7 +3817,6 @@ panel-title-history = 履歴
 panel-title-lyrics = 歌詞
 panel-title-menu = メニュー
 panel-title-metadata = メタデータ
-panel-title-mini-toggle = ミニ切り替え
 panel-title-output = 出力
 panel-title-overlay = オーバーレイ
 panel-title-playlists = プレイリスト

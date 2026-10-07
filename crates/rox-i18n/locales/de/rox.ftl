@@ -879,6 +879,8 @@ settings-application-portable-not-writable = Der Ordner der App ist nicht beschr
 settings-application-portable-restart-note = Gilt ab dem nächsten Start; dieser Lauf bleibt bei seinem aktuellen Ordner
 settings-application-remain-in-tray = Im Tray bleiben
     .description = Die Musik weiterlaufen lassen, wenn das letzte Fenster schließt, mit dem Tray-Symbol (unter macOS dem Dock) als Weg zurück
+settings-application-mini-on-top = Mini-Player im Vordergrund
+    .description = Das Fenster über anderen halten, solange es auf dem Mini-Layout ist. Dieselbe Anheftung, die die Anheften-Schaltfläche der Fenstersteuerung dort setzt
 settings-application-section-ai = KI
 settings-application-section-control-socket = Steuersocket
 settings-application-section-data = Daten
@@ -2298,7 +2300,6 @@ panel-catalog-bookmarks = Lesezeichen
 panel-catalog-stations = Sender
 panel-catalog-menu = Menü
 panel-catalog-metadata = Metadaten
-panel-catalog-mini-toggle = Mini-Umschalter
 panel-catalog-oscilloscope = Oszilloskop
 panel-catalog-overlay = Overlay
 panel-catalog-particles = Partikel
@@ -2899,9 +2900,7 @@ drawer-trigger-selection = Auswahl
 
 ## Mini player
 mini-tip-back = Zurück zum vollen Layout
-mini-tip-none = Kein Mini-Layout zugewiesen
 mini-tip-shrink = Auf den Mini-Player schrumpfen
-mini-title = Mini-Umschalter
 
 ## System tray
 tray-open = Öffnen
@@ -2910,14 +2909,15 @@ tray-play = Abspielen
 tray-quit = Beenden
 
 ## Window controls
+window-controls-close = Schließen
+window-controls-maximize = Maximieren
 window-controls-mini-toggle = Mini-Umschalter
-    .description = Mit dem Mini-Layout-Umschalter beginnen; erscheint, sobald ein Mini-Layout zugewiesen ist
 window-controls-minimize = Minimieren
+window-controls-pieces = Schaltflächen
+    .description = Entlang der Leiste ziehen zum Umordnen; zwischen die Zeilen ziehen, oder x und Plus eines Chips nutzen, zum Aus- und Einblenden. Der Mini-Umschalter erscheint, sobald ein Mini-Layout zugewiesen ist
 window-controls-pin = Anheften
-    .description = Eine Schaltfläche, die das Fenster über anderen hält; unter Wayland braucht sie KWin und eine Installation außerhalb von Flatpak
-window-controls-pin-hide = Ausblenden
-window-controls-pin-mini = Nur im Mini
-window-controls-pin-show = Anzeigen
+window-controls-pin-mini-only = Anheften nur im Mini
+    .description = Die Anheften-Schaltfläche nur zeigen, solange das Fenster auf dem Mini-Layout ist. Unter Wayland braucht Anheften KWin und eine Installation außerhalb von Flatpak
 window-controls-pin-tip-off = Nicht mehr über anderen Fenstern halten
 window-controls-pin-tip-on = Über anderen Fenstern halten
 window-controls-style = Stil
@@ -3939,7 +3939,6 @@ panel-title-history = Verlauf
 panel-title-lyrics = Songtext
 panel-title-menu = Menü
 panel-title-metadata = Metadaten
-panel-title-mini-toggle = Mini-Umschalter
 panel-title-output = Ausgabe
 panel-title-overlay = Overlay
 panel-title-playlists = Playlists

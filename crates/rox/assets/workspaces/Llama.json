@@ -74,7 +74,13 @@
                           "max_height": 24.0,
                           "min_width": 96.0,
                           "style": "icons",
-                          "mini": true,
+                          "items": [
+                            "mini",
+                            "minimize",
+                            "maximize",
+                            "close"
+                          ],
+                          "pin_mini_only": false,
                           "align": "right"
                         }
                       }
@@ -390,13 +396,18 @@
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "mini toggle",
+                      "panel_name": "window controls",
                       "children": [],
                       "info": {
                         "panel": {
                           "locked": true,
                           "anchor": true,
                           "max_width": 26.0,
+                          "style": "icons",
+                          "items": [
+                            "mini"
+                          ],
+                          "pin_mini_only": false,
                           "align": "left"
                         }
                       }
@@ -446,7 +457,12 @@
                           "max_height": 24.0,
                           "min_width": 96.0,
                           "style": "icons",
-                          "mini": false,
+                          "items": [
+                            "minimize",
+                            "maximize",
+                            "close"
+                          ],
+                          "pin_mini_only": false,
                           "align": "right"
                         }
                       }

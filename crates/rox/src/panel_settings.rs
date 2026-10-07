@@ -14,7 +14,6 @@ use crate::panels::controls::ControlsPanel;
 use crate::panels::drawer::DrawerPanel;
 use crate::panels::group::GroupPanel;
 use crate::panels::menu::MenuPanel;
-use crate::panels::mini::MiniTogglePanel;
 use crate::panels::overlay::OverlayPanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::slide::SlidePanel;
@@ -99,7 +98,6 @@ macro_rules! with_settings_panel {
             DrawerPanel,
             SlidePanel,
             FolderTreePanel,
-            MiniTogglePanel,
             ThemeTogglePanel,
             SpacerPanel,
             VuPanel,

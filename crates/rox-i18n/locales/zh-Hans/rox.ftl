@@ -874,6 +874,8 @@ settings-application-portable-not-writable = 应用所在的文件夹不可写
 settings-application-portable-restart-note = 下次启动生效；这次运行仍用当前文件夹
 settings-application-remain-in-tray = 留在托盘
     .description = 最后一个窗口关闭时音乐继续播，托盘图标（macOS 上是程序坞）是回去的路
+settings-application-mini-on-top = 迷你播放器置顶
+    .description = 窗口处于迷你布局时保持在其他窗口之上。和窗口控制的置顶按钮在那里设置的是同一个状态
 settings-application-section-ai = AI
 settings-application-section-control-socket = 控制套接字
 settings-application-section-data = 数据
@@ -2263,7 +2265,6 @@ panel-catalog-bookmarks = 书签
 panel-catalog-stations = 电台
 panel-catalog-menu = 菜单
 panel-catalog-metadata = 元数据
-panel-catalog-mini-toggle = 迷你切换
 panel-catalog-oscilloscope = 示波器
 panel-catalog-overlay = 覆盖层
 panel-catalog-particles = 粒子
@@ -2799,9 +2800,7 @@ drawer-trigger-selection = 选中
 
 ## Mini player
 mini-tip-back = 回到完整布局
-mini-tip-none = 没有指定迷你布局
 mini-tip-shrink = 收成迷你播放器
-mini-title = 迷你切换
 
 ## System tray
 tray-open = 打开
@@ -2810,14 +2809,15 @@ tray-play = 播放
 tray-quit = 退出
 
 ## Window controls
+window-controls-close = 关闭
+window-controls-maximize = 最大化
 window-controls-mini-toggle = 迷你切换
-    .description = 把迷你布局切换放在最前面；指定了迷你布局后才显示
 window-controls-minimize = 最小化
+window-controls-pieces = 按钮
+    .description = 沿着这条栏拖动可以重排；在两行之间拖动，或者用小标签上的 x 和 +，来隐藏和显示。迷你切换要指定了迷你布局后才显示
 window-controls-pin = 置顶
-    .description = 让窗口保持在其他窗口之上的按钮；在 Wayland 上需要 KWin，且不能是 Flatpak 版
-window-controls-pin-hide = 隐藏
-window-controls-pin-mini = 仅迷你
-window-controls-pin-show = 显示
+window-controls-pin-mini-only = 只在迷你布局显示置顶
+    .description = 只在窗口处于迷你布局时显示置顶按钮。在 Wayland 上置顶需要 KWin，且不能是 Flatpak 版
 window-controls-pin-tip-off = 取消置顶
 window-controls-pin-tip-on = 保持在其他窗口之上
 window-controls-style = 样式
@@ -3816,7 +3816,6 @@ panel-title-history = 播放历史
 panel-title-lyrics = 歌词
 panel-title-menu = 菜单
 panel-title-metadata = 元数据
-panel-title-mini-toggle = 迷你切换
 panel-title-output = 输出
 panel-title-overlay = 覆盖层
 panel-title-playlists = 播放列表

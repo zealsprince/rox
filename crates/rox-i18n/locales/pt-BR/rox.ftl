@@ -885,6 +885,8 @@ settings-application-portable-not-writable = A pasta do aplicativo não permite 
 settings-application-portable-restart-note = Vale a partir do próximo início; esta execução continua na pasta atual
 settings-application-remain-in-tray = Continuar na bandeja
     .description = Manter a música tocando quando a última janela fecha, com o ícone da bandeja (o dock no macOS) como o caminho de volta
+settings-application-mini-on-top = Player mini sempre no topo
+    .description = Manter a janela acima das outras enquanto ela está no layout mini. É a mesma fixação que o botão de fixar dos controles de janela define ali
 settings-application-section-ai = IA
 settings-application-section-control-socket = Socket de controle
 settings-application-section-data = Dados
@@ -2307,7 +2309,6 @@ panel-catalog-bookmarks = Marcadores
 panel-catalog-stations = Estações
 panel-catalog-menu = Menu
 panel-catalog-metadata = Metadados
-panel-catalog-mini-toggle = Alternar mini
 panel-catalog-oscilloscope = Osciloscópio
 panel-catalog-overlay = Overlay
 panel-catalog-particles = Partículas
@@ -2917,9 +2918,7 @@ drawer-trigger-selection = Seleção
 
 ## Mini player
 mini-tip-back = Voltar para o layout completo
-mini-tip-none = Nenhum layout mini atribuído
 mini-tip-shrink = Encolher para o mini player
-mini-title = Alternar mini
 
 ## System tray
 tray-open = Abrir
@@ -2928,14 +2927,15 @@ tray-play = Reproduzir
 tray-quit = Sair
 
 ## Window controls
+window-controls-close = Fechar
+window-controls-maximize = Maximizar
 window-controls-mini-toggle = Alternar mini
-    .description = Começar pelo botão de alternar o layout mini; aparece assim que um layout mini for atribuído
 window-controls-minimize = Minimizar
+window-controls-pieces = Botões
+    .description = Arraste ao longo da barra para reordenar; arraste entre as linhas, ou use o x e o mais de um chip, para esconder e mostrar. O alternar mini aparece assim que um layout mini for atribuído
 window-controls-pin = Fixar
-    .description = Um botão que mantém a janela acima das outras; no Wayland precisa do KWin e de uma instalação fora do Flatpak
-window-controls-pin-hide = Ocultar
-window-controls-pin-mini = Só no mini
-window-controls-pin-show = Mostrar
+window-controls-pin-mini-only = Fixar só no mini
+    .description = Mostrar o botão de fixar só enquanto a janela está no layout mini. No Wayland, fixar precisa do KWin e de uma instalação fora do Flatpak
 window-controls-pin-tip-off = Parar de manter acima das outras janelas
 window-controls-pin-tip-on = Manter acima das outras janelas
 window-controls-style = Estilo
@@ -3961,7 +3961,6 @@ panel-title-history = Histórico
 panel-title-lyrics = Letra
 panel-title-menu = Menu
 panel-title-metadata = Metadados
-panel-title-mini-toggle = Alternar mini
 panel-title-output = Saída
 panel-title-overlay = Overlay
 panel-title-playlists = Playlists

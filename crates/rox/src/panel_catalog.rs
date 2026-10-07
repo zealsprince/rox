@@ -13,7 +13,6 @@ use crate::panels::controls::{ControlsConfig, ControlsPanel};
 use crate::panels::drawer::{DrawerConfig, DrawerPanel};
 use crate::panels::group::{GroupConfig, GroupPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
-use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
@@ -399,17 +398,6 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
             build: |state, ws, _, cx| {
                 Arc::new(cx.new(|cx| {
                     WindowControlsPanel::new(state.clone(), ws, WindowControlsConfig::default(), cx)
-                }))
-            },
-        },
-        PanelDef {
-            label: "panel-catalog-mini-toggle",
-            name: "mini toggle",
-            icon: icons::MINIMIZE,
-            placement: PanelPlacement::Bottom,
-            build: |state, ws, _, cx| {
-                Arc::new(cx.new(|cx| {
-                    MiniTogglePanel::new(state.clone(), ws, MiniToggleConfig::default(), cx)
                 }))
             },
         },

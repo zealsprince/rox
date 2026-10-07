@@ -893,6 +893,8 @@ settings-application-portable-not-writable = No se puede escribir en la carpeta 
 settings-application-portable-restart-note = Se aplica en el siguiente arranque; esta ejecución sigue con su carpeta actual
 settings-application-remain-in-tray = Quedarse en la bandeja
     .description = Mantén la música sonando cuando se cierra la última ventana, con el icono de la bandeja (el dock en macOS) como forma de volver
+settings-application-mini-on-top = Reproductor mini siempre encima
+    .description = Mantén la ventana sobre las demás mientras está en la disposición mini. Es el mismo fijado que pone ahí el botón de fijar de los controles de ventana
 settings-application-section-ai = IA
 settings-application-section-control-socket = Socket de control
 settings-application-section-data = Datos
@@ -2349,7 +2351,6 @@ panel-catalog-bookmarks = Marcadores
 panel-catalog-stations = Emisoras
 panel-catalog-menu = Menú
 panel-catalog-metadata = Metadatos
-panel-catalog-mini-toggle = Alternar mini
 panel-catalog-oscilloscope = Osciloscopio
 panel-catalog-overlay = Superposición
 panel-catalog-particles = Partículas
@@ -2983,9 +2984,7 @@ drawer-trigger-selection = Selección
 
 ## Mini player
 mini-tip-back = Volver a la disposición completa
-mini-tip-none = No hay disposición mini asignada
 mini-tip-shrink = Encoger al mini reproductor
-mini-title = Alternar mini
 
 ## System tray
 tray-open = Abrir
@@ -2994,14 +2993,15 @@ tray-play = Reproducir
 tray-quit = Salir
 
 ## Window controls
+window-controls-close = Cerrar
+window-controls-maximize = Maximizar
 window-controls-mini-toggle = Alternar mini
-    .description = Empieza por el botón de disposición mini; aparece en cuanto hay una disposición mini asignada
 window-controls-minimize = Minimizar
+window-controls-pieces = Botones
+    .description = Arrastra a lo largo de la barra para reordenar; arrastra entre las filas, o usa la x y el más de una ficha, para ocultar y mostrar. El botón mini aparece en cuanto hay una disposición mini asignada
 window-controls-pin = Fijar
-    .description = Un botón que mantiene la ventana sobre las demás; en Wayland necesita KWin y una instalación fuera de Flatpak
-window-controls-pin-hide = Ocultar
-window-controls-pin-mini = Solo en mini
-window-controls-pin-show = Mostrar
+window-controls-pin-mini-only = Fijar solo en mini
+    .description = Muestra el botón de fijar solo mientras la ventana está en la disposición mini. En Wayland, fijar necesita KWin y una instalación fuera de Flatpak
 window-controls-pin-tip-off = Dejar de mantener sobre las demás ventanas
 window-controls-pin-tip-on = Mantener sobre las demás ventanas
 window-controls-style = Estilo
@@ -4035,7 +4035,6 @@ panel-title-history = Historial
 panel-title-lyrics = Letras
 panel-title-menu = Menú
 panel-title-metadata = Metadatos
-panel-title-mini-toggle = Alternar mini
 panel-title-output = Salida
 panel-title-overlay = Superposición
 panel-title-playlists = Listas de reproducción

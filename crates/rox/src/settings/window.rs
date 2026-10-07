@@ -25,7 +25,7 @@ use gpui_component::{Icon, Root, Sizable as _};
 use crate::backdrop_visual::BackdropRotation;
 use crate::convert;
 use crate::embeddings;
-use crate::integrations::tray;
+use crate::integrations::{placement, tray};
 use crate::lastfm::{import, plays_import};
 use crate::panel_settings;
 use crate::pass_prompt;

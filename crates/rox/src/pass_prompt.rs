@@ -16,7 +16,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel;
 use rox_panel_kit::ScrubState;
-use rox_panel_kit::ui::{self as settings_ui, dialog_button, dialog_icon_button};
+use rox_panel_kit::ui::{self as settings_ui, dialog_button, dialog_card, dialog_icon_button};
 use rox_services::catalog::Library;
 
 /// How long a worker drag settles before the count is written. Writing per tick
@@ -517,108 +517,89 @@ pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> O
             .p(tokens::SPACE_MD)
             .bg(gpui::rgba(0x00000066))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w(px(400.))
-                    .max_w_full()
-                    .rounded(tokens::RADIUS)
-                    .bg(palette::bg_menu_opaque())
-                    .border_1()
-                    .border_color(palette::border_light())
-                    .shadow_md()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(tokens::SPACE_MD)
-                            .p(tokens::SPACE_MD)
-                            .child(div().child(copy.title))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette::text_muted())
-                                    .child(copy.body),
-                            )
-                            .children(prompt.takes_workers().then(|| {
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(tokens::SPACE_MD)
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_xs()
-                                            .child(rox_i18n::t!("pass-workers")),
-                                    )
-                                    .child(div().flex_1().child(settings_ui::scalar_sized(
-                                        &prompt.scrub,
-                                        this.value_edit(),
-                                        prompt.workers.min(cores) as f32,
-                                        settings_ui::span(1.0, cores as f32, "").hard(),
-                                        panel::SliderWidth::Fill,
-                                        set_workers::<V>,
-                                        cx,
-                                    )))
-                            }))
-                            .children(scope_row(prompt, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(tokens::SPACE_SM)
-                            .px(tokens::SPACE_MD)
-                            .py(tokens::SPACE_SM)
-                            .border_t_1()
-                            .border_color(palette::border())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if failed {
-                                        palette::tone_warn()
-                                    } else {
-                                        palette::text_muted()
-                                    })
-                                    .child(timing),
-                            )
-                            .children(shortfall.map(|note| {
-                                div().text_xs().text_color(palette::tone_warn()).child(note)
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(tokens::SPACE_SM)
-                                    .child(div().flex_none().children(probe_button))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .flex_none()
-                                            .items_center()
-                                            .gap(tokens::SPACE_SM)
-                                            .child(dialog_button(
-                                                rox_i18n::t!("settings-common-cancel"),
-                                                false,
-                                                cx.listener(|this: &mut V, _, _, cx| {
-                                                    cancel(this, cx)
-                                                }),
-                                            ))
-                                            .child(dialog_button(
-                                                copy.action,
-                                                true,
-                                                cx.listener(|this: &mut V, _, _, cx| {
-                                                    start(this, cx)
-                                                }),
-                                            )),
-                                    ),
-                            ),
-                    ),
+                dialog_card(
+                    "pass-prompt-body",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_MD)
+                        .child(div().child(copy.title))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(copy.body),
+                        )
+                        .children(prompt.takes_workers().then(|| {
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(tokens::SPACE_MD)
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .child(rox_i18n::t!("pass-workers")),
+                                )
+                                .child(div().flex_1().child(settings_ui::scalar_sized(
+                                    &prompt.scrub,
+                                    this.value_edit(),
+                                    prompt.workers.min(cores) as f32,
+                                    settings_ui::span(1.0, cores as f32, "").hard(),
+                                    panel::SliderWidth::Fill,
+                                    set_workers::<V>,
+                                    cx,
+                                )))
+                        }))
+                        .children(scope_row(prompt, cx)),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_SM)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if failed {
+                                    palette::tone_warn()
+                                } else {
+                                    palette::text_muted()
+                                })
+                                .child(timing),
+                        )
+                        .children(shortfall.map(|note| {
+                            div().text_xs().text_color(palette::tone_warn()).child(note)
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(tokens::SPACE_SM)
+                                .child(div().flex_none().children(probe_button))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .flex_none()
+                                        .items_center()
+                                        .gap(tokens::SPACE_SM)
+                                        .child(dialog_button(
+                                            rox_i18n::t!("settings-common-cancel"),
+                                            false,
+                                            cx.listener(|this: &mut V, _, _, cx| cancel(this, cx)),
+                                        ))
+                                        .child(dialog_button(
+                                            copy.action,
+                                            true,
+                                            cx.listener(|this: &mut V, _, _, cx| start(this, cx)),
+                                        )),
+                                ),
+                        ),
+                )
+                .w(px(400.)),
             ),
     )
 }

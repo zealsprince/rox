@@ -886,6 +886,12 @@ impl SettingsWindow {
         let plugin_lead = plugin.map(|card| card.lead.clone()).unwrap_or_default();
         let plugin_lines = plugin.map(|card| card.lines.clone()).unwrap_or_default();
         let split = self.splits_yes(self.pending.as_ref()?);
+        // The shader list and the hotkey line need the room.
+        let width = if split || screen.is_some() || plugin.is_some() {
+            380.
+        } else {
+            320.
+        };
         let listens = self.listens();
         let (title, body, confirm, second): (
             SharedString,
@@ -1007,86 +1013,78 @@ impl SettingsWindow {
                         cx.stop_propagation();
                     }
                 }))
+                .p(tokens::SPACE_MD)
                 .bg(gpui::rgba(0x00000066))
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        // The shader list and the hotkey line need the room.
-                        .w(px(if split || screen.is_some() || plugin.is_some() {
-                            380.
-                        } else {
-                            320.
-                        }))
-                        .p(tokens::SPACE_MD)
-                        .rounded(tokens::RADIUS)
-                        .bg(palette::bg_menu_opaque())
-                        .border_1()
-                        .border_color(palette::border_light())
-                        .shadow_md()
-                        .child(div().child(title))
-                        .children(card.and_then(|card| card.byline.clone()).map(line))
-                        .children(card.and_then(|card| card.description.clone()).map(line))
-                        .children(card.and_then(|card| card.requires.clone()).map(line))
-                        .children(plugin_lead.into_iter().map(line))
-                        .child(line(body))
-                        .children(plugin_lines.into_iter().map(line))
-                        // A screen shader covers the window, so say so before the
-                        // apply, with the way back off.
-                        .children(screen.clone().map(line))
-                        .children(screen.map(|_| {
-                            kbd_line([
-                                Seg::Text(rox_i18n::t!("workspace-screen-shader-hint-before")),
-                                Seg::Key(chord("Shift+X")),
-                                Seg::Text(rox_i18n::t!("workspace-hint-or")),
-                                Seg::Key(rox_i18n::t!("menu-window")),
-                                Seg::Text(rox_i18n::t!("workspace-hint-then")),
-                                Seg::Key(rox_i18n::t!("menu-overlay-shader")),
-                            ])
-                            .text_xs()
-                        }))
-                        .children(shaders.clone().map(line))
-                        // Shaders from a look are somebody else's code, so the
-                        // yes that runs them says so.
-                        .children(split.then(|| {
-                            line(if shaders.is_some() {
-                                rox_i18n::t!("workspace-apply-shaders-approve-body")
-                            } else {
-                                rox_i18n::t!("workspace-apply-shaders-plain-body")
-                            })
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .justify_end()
-                                .gap(tokens::SPACE_SM)
-                                .child(dialog_button(
-                                    rox_i18n::t!("workspace-dialog-cancel"),
-                                    false,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.pending = None;
-                                        cx.notify();
-                                    }),
-                                ))
-                                .child(dialog_button(
-                                    confirm,
-                                    !split,
+                    dialog_card(
+                        "settings-confirm-body",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_MD)
+                            .child(div().child(title))
+                            .children(card.and_then(|card| card.byline.clone()).map(line))
+                            .children(card.and_then(|card| card.description.clone()).map(line))
+                            .children(card.and_then(|card| card.requires.clone()).map(line))
+                            .children(plugin_lead.into_iter().map(line))
+                            .child(line(body))
+                            .children(plugin_lines.into_iter().map(line))
+                            // A screen shader covers the window, so say so before the
+                            // apply, with the way back off.
+                            .children(screen.clone().map(line))
+                            .children(screen.map(|_| {
+                                kbd_line([
+                                    Seg::Text(rox_i18n::t!("workspace-screen-shader-hint-before")),
+                                    Seg::Key(chord("Shift+X")),
+                                    Seg::Text(rox_i18n::t!("workspace-hint-or")),
+                                    Seg::Key(rox_i18n::t!("menu-window")),
+                                    Seg::Text(rox_i18n::t!("workspace-hint-then")),
+                                    Seg::Key(rox_i18n::t!("menu-overlay-shader")),
+                                ])
+                                .text_xs()
+                            }))
+                            .children(shaders.clone().map(line))
+                            // Shaders from a look are somebody else's code, so the
+                            // yes that runs them says so.
+                            .children(split.then(|| {
+                                line(if shaders.is_some() {
+                                    rox_i18n::t!("workspace-apply-shaders-approve-body")
+                                } else {
+                                    rox_i18n::t!("workspace-apply-shaders-plain-body")
+                                })
+                            })),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap(tokens::SPACE_SM)
+                            .child(dialog_button(
+                                rox_i18n::t!("workspace-dialog-cancel"),
+                                false,
+                                cx.listener(|this, _, _, cx| {
+                                    this.pending = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(dialog_button(
+                                confirm,
+                                !split,
+                                cx.listener(|this, _, window, cx| {
+                                    this.confirm_pending(Yes::First, window, cx)
+                                }),
+                            ))
+                            .children(second.map(|label| {
+                                dialog_button(
+                                    label,
+                                    true,
                                     cx.listener(|this, _, window, cx| {
-                                        this.confirm_pending(Yes::First, window, cx)
+                                        this.confirm_pending(Yes::Second, window, cx)
                                     }),
-                                ))
-                                .children(second.map(|label| {
-                                    dialog_button(
-                                        label,
-                                        true,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.confirm_pending(Yes::Second, window, cx)
-                                        }),
-                                    )
-                                })),
-                        ),
+                                )
+                            })),
+                    )
+                    .w(px(width)),
                 ),
         )
     }

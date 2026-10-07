@@ -536,9 +536,13 @@ impl Render for ActionForm {
             .text_color(palette::text_bright())
             .text_sm()
             .child(
+                // The window is fixed, and descriptions outgrow the row height
+                // its size assumes at a large app font.
                 div()
+                    .id("plugin-action-fields")
                     .flex_1()
                     .min_h_0()
+                    .overflow_y_scroll()
                     .p(tokens::SPACE_MD)
                     .flex()
                     .flex_col()

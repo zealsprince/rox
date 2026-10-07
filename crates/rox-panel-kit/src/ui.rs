@@ -846,6 +846,43 @@ impl RenderOnce for DialogButton {
     }
 }
 
+/// The card of a popup drawn inside a window. It caps at the scrim's height,
+/// so the body scrolls and the footer stays on screen however large the app
+/// font gets. Pad the scrim, or the cap leaves no margin.
+pub fn dialog_card(
+    id: impl Into<ElementId>,
+    body: impl IntoElement,
+    footer: impl IntoElement,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .max_w_full()
+        .max_h_full()
+        .rounded(tokens::RADIUS)
+        .bg(palette::bg_menu_opaque())
+        .border_1()
+        .border_color(palette::border_light())
+        .shadow_md()
+        .child(
+            div()
+                .id(id)
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(tokens::SPACE_MD)
+                .child(body),
+        )
+        .child(
+            div()
+                .flex_none()
+                .px(tokens::SPACE_MD)
+                .py(tokens::SPACE_SM)
+                .border_t_1()
+                .border_color(palette::border())
+                .child(footer),
+        )
+}
+
 /// For the secondary action in a dialog's footer beside the confirm pair.
 pub fn dialog_icon_button(
     label: impl Into<SharedString>,

@@ -8,7 +8,7 @@
 //! it exists to undo.
 
 use gpui::{
-    App, Bounds, Context, Entity, EntityId, FocusHandle, Global, KeyBinding, Subscription,
+    App, Bounds, Context, Div, Entity, EntityId, FocusHandle, Global, KeyBinding, Subscription,
     WeakEntity, Window, WindowHandle, actions, div, prelude::*, px, size,
 };
 use gpui_component::Root;
@@ -146,6 +146,35 @@ impl ShaderConfirm {
             });
         }
     }
+
+    fn footer(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_end()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(small_button(
+                rox_i18n::t!("shader-confirm-revert"),
+                icons::CLOSE,
+                false,
+                cx.listener(|this, _, _, cx| this.close(cx)),
+            ))
+            .child(small_button(
+                rox_i18n::t!("shader-confirm-keep"),
+                icons::CHECK,
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.kept = true;
+                    this.close(cx);
+                }),
+            ))
+    }
 }
 
 impl Render for ShaderConfirm {
@@ -173,9 +202,14 @@ impl Render for ShaderConfirm {
                 })
                 .children(self.backdrop.layer(&self.now_art, window, cx))
                 .child(
+                    // Scrolls rather than clips, so a large app font can't push
+                    // the hint out of reach.
                     div()
+                        .id("shader-confirm-body")
                         .flex_1()
                         .min_h_0()
+                        .overflow_y_scroll()
+                        .bg(palette::bg_elevated())
                         .flex()
                         .flex_col()
                         .p(tokens::SPACE_MD)
@@ -188,32 +222,9 @@ impl Render for ShaderConfirm {
                                 Seg::Text(rox_i18n::t!("shader-confirm-hint-after")),
                             ])
                             .text_xs(),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_end()
-                                .gap(tokens::SPACE_SM)
-                                .child(small_button(
-                                    rox_i18n::t!("shader-confirm-revert"),
-                                    icons::CLOSE,
-                                    false,
-                                    cx.listener(|this, _, _, cx| this.close(cx)),
-                                ))
-                                .child(small_button(
-                                    rox_i18n::t!("shader-confirm-keep"),
-                                    icons::CHECK,
-                                    false,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.kept = true;
-                                        this.close(cx);
-                                    }),
-                                )),
                         ),
                 )
+                .child(self.footer(cx))
                 .into_any_element()
         })
     }

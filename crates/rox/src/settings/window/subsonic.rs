@@ -357,40 +357,41 @@ impl SettingsWindow {
                         cx.stop_propagation();
                     }
                 }))
+                .p(tokens::SPACE_MD)
                 .bg(gpui::rgba(0x00000066))
                 .child(
-                    div()
-                        .id(SharedString::from(format!("subsonic-dialog-{id}")))
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        .w(px(560.))
-                        .p(tokens::SPACE_MD)
-                        .rounded(tokens::RADIUS)
-                        // The page's floor rather than the menu fill, where a
-                        // switch's track would vanish.
-                        .bg(palette::bg_root_opaque())
-                        .border_1()
-                        .border_color(palette::border_light())
-                        .shadow_md()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(tokens::SPACE_XS)
-                                .child(title)
-                                // "Subsonic" names the API, so the add dialog says which
-                                // servers it means.
-                                .when(form.fresh, |d| {
-                                    d.child(
-                                        div().text_xs().text_color(palette::text_muted()).child(
-                                            rox_i18n::t!("settings-library-subsonic-add-note"),
-                                        ),
-                                    )
-                                }),
-                        )
-                        .child(self.subsonic_fields(ix, cx))
-                        .child(buttons),
+                    dialog_card(
+                        SharedString::from(format!("subsonic-dialog-{id}")),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_MD)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(tokens::SPACE_XS)
+                                    .child(title)
+                                    // "Subsonic" names the API, so the add dialog says which
+                                    // servers it means.
+                                    .when(form.fresh, |d| {
+                                        d.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(palette::text_muted())
+                                                .child(rox_i18n::t!(
+                                                    "settings-library-subsonic-add-note"
+                                                )),
+                                        )
+                                    }),
+                            )
+                            .child(self.subsonic_fields(ix, cx)),
+                        buttons,
+                    )
+                    .w(px(560.))
+                    // The page's floor rather than the menu fill, where a
+                    // switch's track would vanish.
+                    .bg(palette::bg_root_opaque()),
                 ),
         )
     }

@@ -57,7 +57,7 @@ use rox_panel_api::signal_ui::{self, routes::RouteEditState};
 use rox_panel_kit::ScrubState;
 use rox_panel_kit::ui::{
     self as settings_ui, PageBody, Query, Rows, SECTION_GAP, Section, Seg, SidesScrub, chord,
-    dialog_button, grid_columns, icon_button, kbd, kbd_line, sidebar, small_button,
+    dialog_button, dialog_card, grid_columns, icon_button, kbd, kbd_line, sidebar, small_button,
 };
 use rox_playback::continuation;
 use rox_playback::engine;

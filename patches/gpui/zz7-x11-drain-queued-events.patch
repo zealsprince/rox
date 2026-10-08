@@ -1,0 +1,22 @@
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -1606,7 +1606,18 @@
+             return;
+         };
+ 
+-        event_loop.run(None, &mut self.clone(), |_| {}).log_err();
++        // rox patch: any round trip on this connection (gpui's own replies,
++        // Mesa's WSI shares it too) leaves the events libxcb read meanwhile in
++        // its in-memory queue. The socket then reads empty, so the X11 source
++        // never fires for them and a MapNotify can sit there until unrelated
++        // traffic shows up, which under Xvfb with no window manager is never.
++        // Drain the queue before every sleep.
++        event_loop
++            .run(None, &mut self.clone(), |client| {
++                let xcb_connection = client.0.borrow().xcb_connection.clone();
++                client.process_x11_events(&xcb_connection).log_err();
++            })
++            .log_err();
+     }
+ 
+     fn active_window(&self) -> Option<AnyWindowHandle> {

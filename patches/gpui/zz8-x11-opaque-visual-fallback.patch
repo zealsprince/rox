@@ -1,0 +1,66 @@
+--- a/src/platform/blade/blade_context.rs
++++ b/src/platform/blade/blade_context.rs
+@@ -9,6 +9,12 @@
+ }
+ 
+ impl BladeContext {
++    // rox patch: lets the X11 window pick its visual, see
++    // `argb_visual_usable` there.
++    pub fn is_software_emulated(&self) -> bool {
++        self.gpu.device_information().is_software_emulated
++    }
++
+     pub fn new() -> anyhow::Result<Self> {
+         let device_id_forced = match std::env::var("ZED_DEVICE_ID") {
+             Ok(val) => parse_pci_id(&val)
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -173,6 +173,35 @@
+     black_pixel: u32,
+ }
+ 
++// rox patch: frames a CPU Vulkan driver presents to a 32-bit visual never
++// reach the screen, composited or not (lavapipe under Xvfb and xcompmgr, VMs
++// without 3D). On a real GPU an ARGB window still needs a compositing manager
++// to be see-through at all. EWMH names that selection after the screen
++// number, not the root window.
++fn argb_visual_usable(xcb: &XCBConnection, screen_index: usize, gpu: &BladeContext) -> bool {
++    if gpu.is_software_emulated() {
++        return false;
++    }
++
++    let name = format!("_NET_WM_CM_S{screen_index}");
++    let Some(atom) = xcb
++        .intern_atom(true, name.as_bytes())
++        .ok()
++        .and_then(|cookie| cookie.reply().ok())
++        .map(|reply| reply.atom)
++    else {
++        return false;
++    };
++    if atom == x11rb::NONE {
++        return false;
++    }
++
++    xcb.get_selection_owner(atom)
++        .ok()
++        .and_then(|cookie| cookie.reply().ok())
++        .is_some_and(|reply| reply.owner != x11rb::NONE)
++}
++
+ fn find_visuals(xcb: &XCBConnection, screen_index: usize) -> VisualSet {
+     let screen = &xcb.setup().roots[screen_index];
+     let mut set = VisualSet {
+@@ -407,7 +436,11 @@
+         let visual_set = find_visuals(xcb, x_screen_index);
+ 
+         let visual = match visual_set.transparent {
+-            Some(visual) => visual,
++            Some(visual) if argb_visual_usable(xcb, x_screen_index, gpu_context) => visual,
++            Some(_) => {
++                log::info!("Software renderer or no compositing manager, using an opaque visual");
++                visual_set.inherit
++            }
+             None => {
+                 log::warn!("Unable to find a transparent visual",);
+                 visual_set.inherit

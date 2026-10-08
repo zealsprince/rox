@@ -83,13 +83,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The Linux leg builds inside Debian bookworm: glibc 2.36 is the
-          # floor the AppImage promises, and the tarball and deb inherit it,
-          # which takes Debian 12 along. The other two entries leave the key
-          # out, which evaluates to empty and runs straight on the runner.
+          # The Linux leg builds inside Ubuntu 22.04: glibc 2.35 is the floor
+          # the AppImage promises, and the tarball and deb inherit it, which
+          # takes Debian 12 along. It's also the oldest Ubuntu LTS the AppImage
+          # catalog tests on, and bundled lavapipe from anything newer won't
+          # load there. The other two entries leave the key out, which
+          # evaluates to empty and runs straight on the runner.
           - os: ubuntu-latest
             artifact: linux-x86_64
-            container: debian:bookworm
+            container: ubuntu:22.04
           - os: macos-latest
             artifact: macos-aarch64
           - os: windows-latest
@@ -114,7 +116,7 @@ jobs:
       DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
       ACOUSTID_CLIENT_KEY: ${{ secrets.ACOUSTID_CLIENT_KEY }}
     steps:
-      # Before the checkout, because the bookworm image is bare: without git
+      # Before the checkout, because the Ubuntu image is bare: without git
       # in it actions/checkout falls back to a REST tarball with no .git,
       # and the projectM vendoring needs a real clone. We're root in the container, so no sudo. git and curl serve
       # checkout, the toolchain installer and install-action; dpkg-dev is
@@ -215,8 +217,8 @@ jobs:
           tool: cargo-deb
 
       # Same binaries as the tarball, wrapped with the .desktop entry and
-      # icons for menu integration and clean uninstall. Built in the bookworm
-      # container, so the glibc floor is 2.36 and Debian 12 is covered along
+      # icons for menu integration and clean uninstall. Built in the Ubuntu
+      # 22.04 container, so the glibc floor is 2.35 and Debian 12 is covered along
       # with everything newer. Layout and dependencies live in
       # [package.metadata.deb] in crates/rox/Cargo.toml.
       - name: Package (Linux .deb)
@@ -227,7 +229,7 @@ jobs:
       # entry, icons, metainfo, the xkbcommon libraries the AppImage
       # excludelist leaves out, and lavapipe as the Vulkan driver of last
       # resort. Everything else comes from the host, and
-      # the bookworm build is what makes the glibc floor hold. The script
+      # the Ubuntu 22.04 build is what makes the glibc floor hold. The script
       # pins appimagetool and the static runtime by hash, embeds the update
       # information and writes the .zsync that AppImageUpdate diffs against.
       - name: Package (Linux AppImage)

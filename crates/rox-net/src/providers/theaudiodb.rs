@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{agent, net_reason, normalize, string};
 
-/// The public test key: low rate limit, enough for one-artist lookups.
-const API_KEY: &str = "2";
+/// The public test key: low rate limit, enough for one-artist lookups. The
+/// old key "2" was retired and now 404s.
+const API_KEY: &str = "123";
 
 /// Serialized into the artist store's cache; missing fields default so old
 /// entries still load.

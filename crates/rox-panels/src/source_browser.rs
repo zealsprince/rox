@@ -792,9 +792,11 @@ impl SourceBrowserPanel {
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
 
         let search = cx.new(|cx| {
-            SearchBox::new(rox_i18n::t!("source-browser-search"), "", window, cx)
+            let mut search = SearchBox::new(rox_i18n::t!("source-browser-search"), "", window, cx)
                 .small()
-                .icon()
+                .icon();
+            search.set_completions(Some(rox_panel_api::suggest::criteria_provider()), cx);
+            search
         });
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
 

@@ -1,7 +1,7 @@
 {
   "id": "tones",
   "name": "Tones",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "api": 1,
   "entry": {
     "script": { "path": "tones.py", "interpreter": "python3" }

@@ -32,15 +32,15 @@ use crate::workspace::{
     NewWindow, NextBookmark, NextTrack, OpenAbout, OpenChat, OpenConsole, OpenDiscussions,
     OpenEqualizer, OpenGoTo, OpenHealth, OpenPowerSearch, OpenPresetPicker, OpenQuickPlay,
     OpenSettings, OpenSignals, OpenStats, OpenTasks, OpenWelcome, PlayRandom, PlaySimilar,
-    PrevBookmark, PreviousTrack, Quit, RandomMilkdropPreset, ReportIssue, RescanLibrary,
-    ResetFontSize, RomanizeLibrary, SaveLayout, SaveWorkspace, SleepOff, StepBackward, StepForward,
-    StopPlayback, TagGenres, ToggleArtTheming, ToggleBackdropAllWindows, ToggleBackdropShader,
-    ToggleBroadcast, ToggleCapture, ToggleContinuation, ToggleCrossfade, ToggleCrossfadeAlbums,
-    ToggleDecorations, ToggleDesignMode, ToggleDiscord, ToggleEq, ToggleExclusiveOutput,
-    ToggleFavourite, ToggleMenubar, ToggleMilkdropBackdrop, ToggleMilkdropHardCuts,
-    ToggleMilkdropLock, ToggleMini, ToggleMute, TogglePostShader, ToggleQuitToTray, ToggleReadings,
-    ToggleResizeLock, ToggleScrobbling, ToggleSeams, ToggleShuffle, ToggleStopAfter, ToggleTheme,
-    ToggleWatchFolders, VolumeDown, VolumeUp,
+    PrevBookmark, PreviousTrack, Quit, RandomMilkdropPreset, RenameTrack, ReportIssue,
+    RescanLibrary, ResetFontSize, RomanizeLibrary, SaveLayout, SaveWorkspace, SleepOff,
+    StepBackward, StepForward, StopPlayback, TagGenres, ToggleArtTheming, ToggleBackdropAllWindows,
+    ToggleBackdropShader, ToggleBroadcast, ToggleCapture, ToggleContinuation, ToggleCrossfade,
+    ToggleCrossfadeAlbums, ToggleDecorations, ToggleDesignMode, ToggleDiscord, ToggleEq,
+    ToggleExclusiveOutput, ToggleFavourite, ToggleMenubar, ToggleMilkdropBackdrop,
+    ToggleMilkdropHardCuts, ToggleMilkdropLock, ToggleMini, ToggleMute, TogglePostShader,
+    ToggleQuitToTray, ToggleReadings, ToggleResizeLock, ToggleScrobbling, ToggleSeams,
+    ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders, VolumeDown, VolumeUp,
 };
 
 /// Workspace-wide except while the search box, a type-ahead phrase, the
@@ -682,6 +682,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleCapture,
             rox_i18n::t_static("keymap-toggle-capture.description")
         ),
+        command!(
+            "rename_track",
+            rox_i18n::t_static("keymap-rename-track"),
+            Group::Library,
+            PLAYBACK,
+            &["f2"],
+            RenameTrack,
+            rox_i18n::t_static("keymap-rename-track.description")
+        ),
         // Library operations ship unbound except health and power search: an
         // afternoon-long pass shouldn't be reachable by accident.
         command!(
@@ -1313,6 +1322,7 @@ fn fixed() -> Vec<KeyBinding> {
     [
         crate::tags::editor::bindings(),
         crate::tags::rename::bindings(),
+        crate::tags::title::bindings(),
         crate::tags::repair::bindings(),
         crate::smart_playlist::bindings(),
         crate::playlist_create::bindings(),
@@ -1320,7 +1330,6 @@ fn fixed() -> Vec<KeyBinding> {
         crate::bake_dialog::bindings(),
         crate::convert_dialog::bindings(),
         crate::lyrics::edit::bindings(),
-        crate::lyrics::matcher::bindings(),
         crate::shader_editor::bindings(),
         crate::cover::editor::bindings(),
         crate::settings::shader_confirm::bindings(),

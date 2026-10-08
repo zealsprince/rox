@@ -2195,6 +2195,8 @@ keymap-clear-queue = Clear Queue
     .description = Empty the up-next queue. The playing track and the context around it stay
 keymap-toggle-favourite = Toggle Favourite
     .description = Favourite the playing track, or take the mark back off it
+keymap-rename-track = Rename Track
+    .description = Edit the title of the track last picked in any list
 keymap-volume-up = Lauter
     .description = Erhöht die Lautstärke um eine Stufe
 keymap-volume-down = Leiser
@@ -2667,6 +2669,9 @@ playlist-create-placeholder = Playlistname
 playlist-create-rename-title = Playlist umbenennen
 playlist-create-title = Neue Playlist
 playlist-create-window-title = rox - { $verb }
+track-title-not-savable = Give the track a title to save it
+track-title-saving = Saving the title...
+track-title-window-title = rox - Rename Track
 
 ## Cover tools
 cover-art-back = Rückseite

@@ -35,6 +35,7 @@ use rox_plugins::{Host, HostConfig, Loaded, Options, Status, Stream, loader, wir
 
 use crate::catalog::Library;
 use crate::player::Player;
+use crate::plugin_criteria::Criteria;
 
 const NO_HOST: &str = "no plugin host";
 
@@ -54,6 +55,10 @@ const PREOPEN_LEAD: Duration = Duration::from_secs(20);
 
 /// A sync past this many pages is a plugin looping on its own cursor.
 const MAX_SYNC_PAGES: usize = 2000;
+
+/// Pages one criteria search walks for a row before it stops and hands back
+/// the cursor. Each is a listing call with its own timeout.
+const CRITERIA_PAGES: usize = 4;
 
 /// How long an open or a cover waits for the first [`apply`] before refusing.
 const FIRST_APPLY_WAIT: Duration = Duration::from_secs(10);
@@ -1603,15 +1608,59 @@ pub fn browse(
     listing(source, "source.browse", params, cx)
 }
 
+/// A search as a person typed it, criteria and all ([`Criteria`]).
 pub fn search(
     source: &str,
-    query: String,
+    typed: String,
     view: Option<String>,
     cursor: Option<String>,
     cx: &App,
 ) -> Task<Result<Page, String>> {
-    let mut params = json!({ "query": query, "cursor": cursor });
-    with_view(&mut params, view);
+    let criteria = Criteria::parse(&typed);
+    let source = source.to_string();
+
+    cx.background_executor().spawn(async move {
+        await_first_apply(&source);
+        let host = host_for(&source)?;
+        let timeout = host.timeouts().listing;
+
+        let ask = |cursor: Option<String>| {
+            let mut params = json!({ "query": criteria.text, "cursor": cursor });
+            with_view(&mut params, view.clone());
+            if let (Some(wire), Some(params)) = (criteria.wire(), params.as_object_mut()) {
+                params.insert("criteria".into(), wire);
+            }
+
+            host.call("source.search", params, timeout)
+                .and_then(wire::decode::<wire::Page>)
+        };
+
+        // A page the criteria empty out reads as the end of the results,
+        // so walk on a few pages for one that has any. The first page's
+        // views and columns stand for the walk.
+        let mut first = ask(cursor)?;
+        first.entries = criteria.keep(first.entries);
+        let mut walked = 1;
+        while !Criteria::any_rows(&first.entries)
+            && first.cursor.is_some()
+            && walked < CRITERIA_PAGES
+        {
+            let next = ask(first.cursor.take())?;
+            first.entries = criteria.keep(next.entries);
+            first.cursor = next.cursor;
+            walked += 1;
+        }
+
+        let listed = page(first);
+        crate::plugin_actions::note(&source, &listed.flags);
+        Ok(listed)
+    })
+}
+
+/// The service's own words, untouched: a song's title can hold quotes and
+/// colons that mean nothing as criteria.
+fn search_text(source: &str, query: String, cx: &App) -> Task<Result<Page, String>> {
+    let params = json!({ "query": query, "cursor": null });
 
     listing(source, "source.search", params, cx)
 }
@@ -2626,7 +2675,7 @@ pub fn find_track(
     cx: &mut App,
 ) -> Task<Result<Option<TrackKey>, String>> {
     let source = source.to_string();
-    let searched = search(&source, format!("{artist} {title}"), None, None, cx);
+    let searched = search_text(&source, format!("{artist} {title}"), cx);
 
     cx.spawn(async move |cx| {
         let page = searched.await?;

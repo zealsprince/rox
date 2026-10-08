@@ -208,7 +208,7 @@ def hello(params):
         state["volume"] = volume
 
     log(f"hello from rox, api {params.get('api')}, on {params.get('platform')}")
-    return {"name": "Tones", "version": "0.1.0", "api": API}
+    return {"name": "Tones", "version": "1.0.0", "api": API}
 
 
 def browse(params):

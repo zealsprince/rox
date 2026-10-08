@@ -172,7 +172,8 @@ what its command did without a second round trip:
                          of a plugin's catalog, its roots when there's no
                          node.
   plugins.search         {"source", "query", "view"?, "cursor"?}; the same
-                         page shape.
+                         page shape. The query takes the criteria the
+                         External Sources search box does.
   plugins.action         {"source", "action", "items"?, "params"?}; runs a
                          declared action as its menu item would, and
                          answers its message or a job number.
@@ -308,7 +309,9 @@ The tools:
   plugin_browse    source, optional node, view, and cursor. A place in a
                    plugin's catalog: its roots, or a node's contents.
   plugin_search    source and query, optional view and cursor. Answers in
-                   plugin_browse's shape.
+                   plugin_browse's shape. The query takes artist:, title:
+                   and album: terms and "quoted phrases", which every
+                   result has to match.
   plugin_action    source and action, optional items and params. Runs the
                    action as its menu item would; a long one answers with
                    a job number for get_tasks and stop_task.
@@ -350,6 +353,12 @@ is in the library. Library, beside the panel's search box, lists what
 the plugin has put there: its kept collections and the tracks added one
 at a time. Remove on the Plugins page drops the plugin's tracks, synced
 collections and settings, and leaves its folder where it is.
+
+The panel's search box takes artist:, title: and album: terms and
+"quoted phrases", and every result has to match them. That finds a song
+the service would rank pages under famous ones sharing a word. Quote a
+term with spaces, as in artist:"Bright White Lightning". Plain words only
+steer the service's own search.
 
 A plugin track's menu in the library, a playlist, the queue or history
 takes it back out the way it came in. A track added on its own gets

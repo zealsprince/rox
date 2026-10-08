@@ -1,15 +1,18 @@
 //! The lyrics match window: an online search verified before it writes.
-//! Apply saves the picked sheet through the editor's save path to the
+//! The artist and title boxes start from the track and search again as
+//! they're edited, for a song the providers know under another name. Apply
+//! saves the picked sheet through the editor's save path to the
 //! Providers page's destination, or the store for a track with no file.
 //!
 //! Keyed by subject rather than path: a station's words belong to the song
 //! it announced, not the stream URL.
 
 use gpui::{
-    App, Bounds, Context, Div, Entity, FocusHandle, Global, KeyBinding, ScrollHandle, SharedString,
-    Subscription, Window, WindowHandle, actions, div, prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, Global, ScrollHandle, SharedString, Subscription, Task,
+    Window, WindowHandle, div, prelude::*, px, size,
 };
-use gpui_component::Root;
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::{Root, Sizable as _};
 
 use rox_core::fmt::fmt_ms;
 use rox_library::lyrics::{self, Subject};
@@ -22,21 +25,14 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers::{self, LyricsCandidate, TrackQuery};
 use rox_panel_api::panel::AppState;
-use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, Seg, kbd_line, section};
+use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::lyrics::{LyricsTarget, PluginLyrics, save_target};
 use rox_services::player::fmt_time;
 
 const DEFAULT_SIZE: (f32, f32) = (720., 560.);
 
-actions!(lyrics_match, [Apply]);
-
-const CONTEXT: &str = "LyricsMatch";
-
-/// On the window root: there are no fields here to take Enter first.
-pub fn bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new("enter", Apply, Some(CONTEXT))]
-}
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 
 #[derive(Default)]
 struct OpenMatchers(Vec<(Subject, WindowHandle<Root>)>);
@@ -69,17 +65,25 @@ pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
 
 struct LyricsMatch {
     subject: Subject,
-    line: SharedString,
     duration_ms: u32,
+    /// The track's own query, for the album and duration the boxes don't show.
+    base: TrackQuery,
+    artist_input: Entity<InputState>,
+    title_input: Entity<InputState>,
+    plugin: Option<PluginLyrics>,
+    /// The plugin's sheet once it answered. It's keyed by the track, not the
+    /// words in the boxes, so it's asked once and leads every search after.
+    mine: Option<Option<LyricsCandidate>>,
+    /// Replacing it cancels the last timer and any request in flight.
+    search_task: Option<Task<()>>,
     phase: Phase<LyricsCandidate>,
     selected: Option<usize>,
     saving: bool,
     error: Option<SharedString>,
     preview_scroll: ScrollHandle,
-    /// Held so the Enter binding has a dispatch path; nothing else takes focus.
-    focus: FocusHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
+    _input_events: Vec<Subscription>,
     _backdrop_changed: Subscription,
 }
 
@@ -94,63 +98,127 @@ impl LyricsMatch {
             subject,
             query,
             plugin,
-        } = target.clone();
+        } = target;
         let duration_ms = query
             .duration_secs
             .map(|secs| (secs * 1000.0) as u32)
             .unwrap_or(0);
-        let line = target.label();
+
+        let artist_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rox_i18n::t!("head-piece-artist"))
+                .default_value(query.artist.clone())
+        });
+        let title_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rox_i18n::t!("info-item-title"))
+                .default_value(query.title.clone())
+        });
+        let _input_events = [&artist_input, &title_input]
+            .map(|input| {
+                cx.subscribe_in(
+                    input,
+                    window,
+                    |this, _, event: &InputEvent, _, cx| match event {
+                        InputEvent::Change => this.search_soon(true, cx),
+                        InputEvent::PressEnter { .. } => this.search_soon(false, cx),
+                        _ => {}
+                    },
+                )
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        let focus = cx.focus_handle();
-        window.focus(&focus);
-        let this = LyricsMatch {
+
+        let mut this = LyricsMatch {
             subject,
-            line: line.into(),
             duration_ms,
+            base: query,
+            artist_input,
+            title_input,
+            plugin,
+            mine: None,
+            search_task: None,
             phase: Phase::Searching,
             selected: None,
             saving: false,
             error: None,
             preview_scroll: ScrollHandle::new(),
-            focus,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
+            _input_events,
             _backdrop_changed,
         };
-        // Nothing to match on: say so rather than search for an empty result.
-        // A plugin answers by the track itself, so it still gets asked.
-        if plugin.is_none() && (query.artist.is_empty() || query.title.is_empty()) {
-            let mut this = this;
-            this.phase = Phase::Failed(rox_i18n::t!("lyrics-matcher-no-query"));
-            return this;
-        }
-        this.search(query, plugin, cx);
+        this.search_soon(false, cx);
         this
     }
 
-    fn search(&self, query: TrackQuery, plugin: Option<PluginLyrics>, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let result = cx
+    fn query(&self, cx: &App) -> TrackQuery {
+        TrackQuery {
+            artist: self.artist_input.read(cx).value().trim().to_string(),
+            title: self.title_input.read(cx).value().trim().to_string(),
+            ..self.base.clone()
+        }
+    }
+
+    fn search_soon(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let query = self.query(cx);
+        self.selected = None;
+        self.preview_scroll.set_offset(Default::default());
+
+        // Nothing to match on: say so rather than search for an empty result.
+        // A plugin answers by the track itself, so it still gets asked.
+        if self.plugin.is_none() && (query.artist.is_empty() || query.title.is_empty()) {
+            self.search_task = None;
+            self.phase = Phase::Failed(rox_i18n::t!("lyrics-matcher-no-query"));
+            cx.notify();
+            return;
+        }
+
+        self.phase = Phase::Searching;
+        cx.notify();
+
+        let plugin = match self.mine {
+            Some(_) => None,
+            None => self.plugin.clone(),
+        };
+        let kept = self.mine.clone();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            }
+
+            let (mine, online) = cx
                 .background_executor()
-                .spawn(async move { search_with(&query, plugin.as_ref()) })
+                .spawn(async move {
+                    let mine = match &plugin {
+                        Some(plugin) => ask_plugin(plugin, &query),
+                        None => kept.flatten(),
+                    };
+                    (mine, search_online(&query))
+                })
                 .await;
+
             this.update(cx, |this, cx| {
-                match result {
-                    Ok(found) => {
-                        this.selected = (!found.is_empty()).then_some(0);
-                        this.phase = Phase::Ready(found);
-                    }
-                    Err(e) => {
-                        log::warn!("lyrics search: {e}");
-                        this.phase =
-                            Phase::Failed(rox_i18n::t!("lyrics-matcher-search-failed", error = e));
-                    }
-                }
+                this.mine = Some(mine.clone());
+                this.fill(merge(mine, online));
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
+    }
+
+    fn fill(&mut self, result: Result<Vec<LyricsCandidate>, String>) {
+        match result {
+            Ok(found) => {
+                self.selected = (!found.is_empty()).then_some(0);
+                self.phase = Phase::Ready(found);
+            }
+            Err(e) => {
+                log::warn!("lyrics search: {e}");
+                self.phase = Phase::Failed(rox_i18n::t!("lyrics-matcher-search-failed", error = e));
+            }
+        }
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -203,21 +271,28 @@ impl LyricsMatch {
         .detach();
     }
 
-    fn track_row(&self) -> Div {
+    fn search_fields(&self) -> Div {
+        let field = |label: SharedString, input: &Entity<InputState>| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_XS)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(label),
+                )
+                .child(Input::new(input).small())
+        };
         div()
             .flex()
             .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_MD)
-            .child(div().flex_1().min_w_0().truncate().child(self.line.clone()))
-            .when(self.duration_ms > 0, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_color(palette::text_muted())
-                        .child(fmt_ms(self.duration_ms)),
-                )
-            })
+            .gap(tokens::SPACE_SM)
+            .child(field(rox_i18n::t!("head-piece-artist"), &self.artist_input))
+            .child(field(rox_i18n::t!("info-item-title"), &self.title_input))
     }
 
     fn candidate_list(&self, found: &[LyricsCandidate], cx: &mut Context<Self>) -> Div {
@@ -361,20 +436,15 @@ impl LyricsMatch {
         None
     }
 
+    /// No Enter binding: the query boxes use Enter to search now, and a window
+    /// binding would apply off results that search is about to replace.
     fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
         let hint = match self.blocker() {
             Some(reason) => div()
                 .text_xs()
                 .text_color(palette::tone_warn())
-                .child(reason)
-                .into_any_element(),
-            None => kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to apply".into()),
-            ])
-            .text_xs()
-            .into_any_element(),
+                .child(reason),
+            None => div(),
         };
         div()
             .flex()
@@ -427,6 +497,15 @@ impl Render for LyricsMatch {
             _ => None,
         };
 
+        // The track's own length, to hold each match's against.
+        let duration = (self.duration_ms > 0).then(|| {
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(fmt_ms(self.duration_ms))
+                .into_any_element()
+        });
+
         let content = match &self.phase {
             Phase::Searching => note("Searching..."),
             Phase::Failed(e) => crate::console_window::notice(e.clone()),
@@ -452,9 +531,6 @@ impl Render for LyricsMatch {
             .size_full()
             .flex()
             .flex_col()
-            .track_focus(&self.focus)
-            .key_context(CONTEXT)
-            .on_action(cx.listener(|this, _: &Apply, window, cx| this.apply(window, cx)))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
@@ -469,9 +545,9 @@ impl Render for LyricsMatch {
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
                     .child(section(
-                        rox_i18n::t!("menu-section-track"),
-                        None,
-                        self.track_row(),
+                        rox_i18n::t!("query-search"),
+                        duration,
+                        self.search_fields(),
                     ))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
@@ -490,24 +566,28 @@ impl Render for LyricsMatch {
     }
 }
 
-/// The plugin's own sheet leads, since it's for this very track. A plugin
-/// that fails only costs its row: the providers still answer. Blocking.
-fn search_with(
-    query: &TrackQuery,
-    plugin: Option<&PluginLyrics>,
-) -> Result<Vec<LyricsCandidate>, String> {
-    let mine = plugin.and_then(|plugin| {
-        plugin.ask(query).unwrap_or_else(|e| {
-            log::warn!("lyrics from {}: {e}", plugin.source);
-            None
-        })
-    });
+/// A plugin that fails only costs its row: the providers still answer.
+/// Blocking.
+fn ask_plugin(plugin: &PluginLyrics, query: &TrackQuery) -> Option<LyricsCandidate> {
+    plugin.ask(query).unwrap_or_else(|e| {
+        log::warn!("lyrics from {}: {e}", plugin.source);
+        None
+    })
+}
 
-    let online = match query.artist.is_empty() || query.title.is_empty() {
+/// Blocking.
+fn search_online(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
+    match query.artist.is_empty() || query.title.is_empty() {
         true => Ok(Vec::new()),
         false => providers::search_lyrics(query),
-    };
+    }
+}
 
+/// The plugin's own sheet leads, since it's for this very track.
+fn merge(
+    mine: Option<LyricsCandidate>,
+    online: Result<Vec<LyricsCandidate>, String>,
+) -> Result<Vec<LyricsCandidate>, String> {
     match (mine, online) {
         (Some(mine), Ok(mut found)) => {
             found.insert(0, mine);

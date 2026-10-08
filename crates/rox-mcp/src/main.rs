@@ -314,7 +314,10 @@ fn base_tools() -> Value {
             "name": "plugin_search",
             "description": format!(
                 "Search a plugin's catalog. Answers in plugin_browse's shape. \
-                 {PLUGIN_TEXT}"
+                 The query takes artist:, title: and album: terms and \
+                 \"quoted phrases\", which every result has to match; \
+                 quote a term with spaces (title:\"ma version\"). Plain \
+                 words only steer the service's own search. {PLUGIN_TEXT}"
             ),
             "inputSchema": {
                 "type": "object",

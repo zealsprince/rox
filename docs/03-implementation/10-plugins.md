@@ -98,7 +98,7 @@ The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
 {
   "id": "tones",
   "name": "Tones",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "api": 1,
   "entry": {
     "script": { "path": "tones.py", "interpreter": "python3" }
@@ -205,7 +205,7 @@ is logged and dropped (`parse_line`, `wire.rs:92-117`).
 
 ```json
 > {"jsonrpc":"2.0","id":1,"method":"hello","params":{"api":1,"config":{"volume":30},"data_dir":"/home/me/.local/share/rox/plugin-data/tones","platform":"linux-x86_64","locale":"en-CA","features":["notice"]}}
-< {"jsonrpc":"2.0","id":1,"result":{"name":"Tones","version":"0.1.0","api":1}}
+< {"jsonrpc":"2.0","id":1,"result":{"name":"Tones","version":"1.0.0","api":1}}
 ```
 
 `config` is the plugin's settings as the Plugins page stored them, `{}` or `null` when
@@ -302,8 +302,30 @@ source menus bracket it the same way.
 
 Same page shape as browse, so a search can return nodes as well as tracks.
 
+What the user types can carry criteria: `artist:`, `title:` and `album:` terms, and
+`"quoted phrases"`, with `title:"two words"` quoting a term that has a space
+(`Criteria::parse`, `rox-services/src/plugin_criteria.rs`). `query` is every word typed
+with the syntax taken off, so a plugin that knows nothing of criteria still searches its
+service for all of it. When there are any, `params.criteria` carries them as typed, each
+key present only when used:
+
+```json
+> {"jsonrpc":"2.0","id":4,"method":"source.search","params":{"query":"Dubmood ma version","cursor":null,"criteria":{"phrases":["Dubmood"],"title":["ma version"]}}}
+```
+
+rox holds every result to them itself, so a plugin can ignore the key. A track meets an
+`artist` term in its artist or album artist, `title` in its title, `album` in its album,
+and a phrase in any of the four, compared folded the way library search is. A node meets
+what its kind names (an artist node's title for `artist`, an album node's title for
+`album` and subtitle for `artist`) and a phrase in its title or subtitle; any other
+field fails it. A heading whose rows all drop out goes with them. Bare words filter
+nothing, so a plain search lists what the plugin sent. A page the criteria empty out
+would read as the end, so rox asks for the next one, up to `CRITERIA_PAGES` (4) pages
+in all, and hands back the last cursor (`search`, `rox-services/src/plugins.rs`).
+
 History also searches to play a song it knows only by name, sending `"{artist} {title}"`
-to the source the user chose (`find_track`, `rox-services/src/plugins.rs`). It reads
+to the source the user chose (`find_track`, `rox-services/src/plugins.rs`), as plain
+text with no criteria, since a title can hold quotes and colons. It reads
 the first page's tracks and takes the first one that's the same song by the rules the
 Last.fm import matches with (`names::Index`): names folded, and a bracketed qualifier
 only matching when it settles on a single title. When no result is that song, nothing
@@ -435,7 +457,9 @@ sheet through the same path a provider's match takes, without `AUTO_SAVE_CONFIDE
 the answer is for this very track, so it comes in at confidence 1. A plugin with none,
 or that fails, falls through to the providers when online lookups are on. The No Lyrics
 mark still stops both. The match window lists the plugin's sheet first, under the
-plugin's label, then the providers' (`search_with`, `rox/src/lyrics/matcher.rs`). Find
+plugin's label, then the providers' (`merge`, `rox/src/lyrics/matcher.rs`). Its artist
+and title boxes search the providers again as they're edited; the plugin's sheet is
+asked for once and leads every search, since it answers by the track. Find
 Online shows for a plugin track with the switch on even while online lookups are off,
 since the switch is the user's choice for that source.
 
@@ -884,6 +908,7 @@ The services side is `crates/rox-services/src/plugins.rs` (the host table, apply
 approval, browse, search, sync, pick, covers, the opener and the pre-open), with
 `sources.rs` (`live_ids`, hiding and departing rows), `lastfm.rs` (the scrobble gate),
 `plugin_favourites.rs` (Sync Favourites and the half heart),
+`plugin_criteria.rs` (parsing and holding results to search criteria),
 `lyrics.rs` (`PluginLyrics`, the lyrics gate),
 `openers.rs` (the opener slot) and `thumbs.rs` (covers through the plugin). Records and
 approvals are `PluginRecord`, `SyncedCollection` and `approved_plugins` in

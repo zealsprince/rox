@@ -307,6 +307,37 @@ fn field_completions(typed: &str) -> Option<Vec<String>> {
     )
 }
 
+/// The `field:` pins a plugin search's criteria take that a bare word
+/// starts, under the same two-char floor as the library's.
+fn criteria_completions(typed: &str) -> Option<Vec<String>> {
+    if typed.len() < 2 {
+        return None;
+    }
+    Some(
+        rox_services::plugin_criteria::FIELDS
+            .iter()
+            .filter(|field| field.starts_with(typed))
+            .map(|field| format!("{field}:"))
+            .collect(),
+    )
+}
+
+/// Each item rewrites the typed word with its term, which the word prefixes.
+fn term_items(terms: Vec<String>, typed: &str, span: lsp_types::Range) -> Vec<CompletionItem> {
+    terms
+        .into_iter()
+        .map(|term| CompletionItem {
+            filter_text: Some(term[..typed.len()].to_string()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: span,
+                new_text: term.clone(),
+            })),
+            label: term,
+            ..Default::default()
+        })
+        .collect()
+}
+
 /// The handful of comparisons worth one click, not every legal form.
 fn numeric_hints(field: QueryField) -> &'static [&'static str] {
     match field {
@@ -425,20 +456,55 @@ impl CompletionProvider for QuerySuggestions {
             };
             let span =
                 lsp_types::Range::new(text.offset_to_position(start), text.offset_to_position(end));
-            terms
-                .into_iter()
-                .map(|term| CompletionItem {
-                    // The typed text is a prefix of every label here.
-                    filter_text: Some(term[..typed.len()].to_string()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range: span,
-                        new_text: term.clone(),
-                    })),
-                    label: term,
-                    ..Default::default()
-                })
-                .collect()
+            term_items(terms, &typed, span)
         };
+        Task::ready(Ok(CompletionResponse::Array(items)))
+    }
+
+    fn is_completion_trigger(
+        &self,
+        _offset: usize,
+        _new_text: &str,
+        _cx: &mut Context<InputState>,
+    ) -> bool {
+        true
+    }
+}
+
+/// The library search's field menu for a plugin search box: a bare word
+/// completes to the criteria fields (`plugin_criteria`). No values, since
+/// the service's catalog isn't held here.
+pub fn criteria_provider() -> Rc<dyn CompletionProvider> {
+    Rc::new(CriteriaSuggestions)
+}
+
+struct CriteriaSuggestions;
+
+impl CompletionProvider for CriteriaSuggestions {
+    fn completions(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _trigger: CompletionContext,
+        _window: &mut Window,
+        _cx: &mut Context<InputState>,
+    ) -> Task<anyhow::Result<CompletionResponse>> {
+        let string = text.to_string();
+        let items = token_at(&string, offset.min(string.len()))
+            .map(|(start, end)| (start, end, &string[start..end]))
+            // A colon means the field is already typed, a quote a phrase.
+            .filter(|(_, _, raw)| !raw.contains([':', '"']))
+            .and_then(|(start, end, raw)| {
+                let typed = raw.to_lowercase();
+                let terms = criteria_completions(&typed)?;
+                let span = lsp_types::Range::new(
+                    text.offset_to_position(start),
+                    text.offset_to_position(end),
+                );
+                Some(term_items(terms, &typed, span))
+            })
+            .unwrap_or_default();
+
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
 
@@ -510,5 +576,14 @@ mod tests {
         assert!(field_completions("-a").is_none());
         assert!(field_completions("-").is_none());
         assert!(field_completions("-zzz").unwrap().is_empty());
+    }
+
+    #[test]
+    fn plugin_words_complete_to_criteria_fields_only() {
+        assert_eq!(criteria_completions("ar").unwrap(), ["artist:"]);
+        assert_eq!(criteria_completions("al").unwrap(), ["album:"]);
+        // The library's other fields mean nothing to a plugin.
+        assert!(criteria_completions("ge").unwrap().is_empty());
+        assert!(criteria_completions("a").is_none());
     }
 }

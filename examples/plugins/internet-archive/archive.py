@@ -41,7 +41,7 @@ import urllib.parse
 import urllib.request
 
 API = 1
-VERSION = "0.1.0"
+VERSION = "1.0.0"
 
 SEARCH_URL = "https://archive.org/advancedsearch.php"
 METADATA_URL = "https://archive.org/metadata/"

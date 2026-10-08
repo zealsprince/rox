@@ -640,3 +640,21 @@ the session, so a row the plugin said nothing about draws its local heart.
 
 The declaration sits under `capabilities.source`, so `api` stays 1, and the re-approval
 card shows it as a new capability.
+
+**Amended 2026-10-07: criteria in a search.** Andrew's product call, after a song he
+searched for by artist and title came back nineteenth, under famous songs that shared a
+word, because a service matched any word and ranked by popularity. The search box takes
+`artist:`, `title:` and `album:` terms and quoted phrases, and every result has to meet
+them. rox holds the results to the criteria itself, so they work on every plugin,
+including one written before this. `source.search` gains an optional `criteria` key
+carrying them as typed, sent only when there are some, for a plugin that can ask its
+service more precisely. `query` still holds every word, criteria included, so a plugin
+that ignores the key loses nothing.
+
+Bare words stay the service's to interpret and filter nothing, so a plain search lists
+exactly what it did. Filtering on rox's side can empty a page, which would read as the
+end of the results, so a criteria search walks a few pages for one with rows before it
+hands back. History's play-by-name search sends plain text and never parses: a title can
+hold quotes and colons.
+
+The key is optional and plugins already ignore keys they don't know, so `api` stays 1.

@@ -1377,6 +1377,7 @@ actions!(
         ToggleExclusiveOutput,
         CycleReplayGainMode,
         ToggleFavourite,
+        RenameTrack,
         AbortScan,
         ToggleSeams,
         ToggleReadings,
@@ -1849,6 +1850,18 @@ pub fn init(cx: &mut App) {
             };
 
             rox_services::plugin_favourites::toggle(&ws.state.library, id, cx);
+        });
+    });
+
+    // F2: the last pick in any panel, so it works from whichever list the
+    // track was chosen in. A multi-pick retitles its first track only.
+    cx.on_action(|_: &RenameTrack, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            let Some(&id) = ws.state.selection.read(cx).tracks().first() else {
+                return;
+            };
+
+            crate::tags::title::open(ws.state.clone(), id, cx);
         });
     });
 

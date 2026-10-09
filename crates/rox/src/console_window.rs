@@ -298,7 +298,9 @@ impl ConsoleWindow {
                 rox_i18n::t!("console-empty-filtered")
             };
             return div()
-                .size_full()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -319,8 +321,12 @@ impl ConsoleWindow {
         if self.follow {
             self.scroll.set_offset(point(px(0.), px(-1_000_000.)));
         }
+        // Fills what the toolbar leaves. size_full here is a whole window tall and
+        // pushes the tail of the log off the bottom.
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .relative()
             .child(
                 div()

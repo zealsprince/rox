@@ -338,11 +338,17 @@ impl Capture {
                 .await;
 
             match written {
-                // Explicitly: the capture folder needn't be a library root.
+                // Only under a library folder. A row outside every root has no
+                // scan or watcher to drop it once the file is deleted. Indexed
+                // here rather than left to the watcher, which may be off.
                 Ok(path) => {
                     log::info!("capture: saved {}", path.display());
                     library
-                        .update(cx, |library, cx| library.reindex_written(vec![path], cx))
+                        .update(cx, |library, cx| {
+                            if library.roots().iter().any(|root| path.starts_with(root)) {
+                                library.reindex_written(vec![path], cx);
+                            }
+                        })
                         .ok();
                 }
 

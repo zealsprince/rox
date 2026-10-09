@@ -1219,6 +1219,7 @@ settings-library-tempo-status-tagged = { $total ->
    *[other] All { $total } scanned tracks have a tempo tag
 }
 settings-library-tempo-status-tagged-some = { $covered } of { $total } scanned tracks have a tempo tag
+settings-library-unreachable-tip = rox can't reach this folder. Its tracks stay in the library but won't play until it's back.
 settings-library-watch-folders = Watch folders
     .description = Fold added, edited, and deleted files into the library as they happen, without a manual rescan
 settings-library-write-stored = Write What's Stored Into the Files
@@ -1280,6 +1281,9 @@ settings-playback-capture-choose = Choose Folder...
 settings-playback-capture-enable = Save Songs From Streaming Sources
     .description = Writes every song a stream plays start to finish into the capture folder, in the stream's own format with nothing re-encoded, tagged with the station. The song's cover goes in beside it under the same name, when one can be found. The song boundaries come from the titles the station announces, and those run a few seconds ahead of or behind the audio, so a saved song can carry the tail of the one before it. A song longer than the live buffer is never saved, so a podcast or a mix stays on air.
 settings-playback-capture-folder = Capture Folder
+settings-playback-capture-library = Add to Library
+    .description = Make the capture folder a library source, so saved songs show up with the rest. Off removes them from the library, not from disk.
+settings-playback-capture-library-held = Already in the library through { $source }
 settings-playback-capture-pattern = Capture Names
     .description = How a saved song is named under the capture folder. A / makes a folder, so the default files an evening of radio by station instead of piling it up flat. The extension follows the stream.
 settings-playback-capture-pattern-date = %date% is the day the song was saved, as 2026-09-18.

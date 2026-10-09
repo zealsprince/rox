@@ -399,6 +399,9 @@ struct SettingsWindow {
     /// Something asked mid-walk, so one more walk follows.
     storage_remeasure: bool,
     root_stats: Vec<(PathBuf, Stats)>,
+    /// Checked with the stats, off the UI thread: a hung mount blocks the
+    /// listing.
+    unreachable_roots: Vec<PathBuf>,
     /// Counted on library events, never in a paint.
     rg_coverage: GainCoverage,
     rg_job: Option<Arc<replaygain_job::Progress>>,
@@ -1091,6 +1094,7 @@ impl SettingsWindow {
             storage_measuring: false,
             storage_remeasure: false,
             root_stats,
+            unreachable_roots: Vec::new(),
             rg_coverage,
             rg_job,
             layout_name: cx.new(|cx| {

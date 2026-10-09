@@ -3,6 +3,7 @@
 //! catch-up. Subsonic rows come from `subsonic`.
 
 use super::*;
+use gpui_component::tooltip::Tooltip;
 
 impl SettingsWindow {
     fn set_watch_library(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -185,6 +186,24 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let path: SharedString = root.to_string_lossy().into_owned().into();
+
+        // The scan leaves the rows alone while the folder is gone, so the counts
+        // still read as a healthy library without it.
+        let unreachable = self.unreachable_roots.iter().any(|r| r == root).then(|| {
+            div()
+                .id(SharedString::from(format!("unreachable-{path}")))
+                .flex_none()
+                .child(
+                    svg()
+                        .path(icons::ALERT)
+                        .size(px(14.))
+                        .text_color(palette::tone_bad()),
+                )
+                .tooltip(|window, cx| {
+                    Tooltip::new(rox_i18n::t!("settings-library-unreachable-tip")).build(window, cx)
+                })
+        });
+
         let remove = icon_button(icons::CLOSE, scanning, {
             let root = root.to_path_buf();
             cx.listener(move |this, _, _, cx| {
@@ -203,7 +222,17 @@ impl SettingsWindow {
             .py(tokens::SPACE_XS)
             .border_b_1()
             .border_color(palette::border())
-            .child(div().flex_1().min_w_0().truncate().child(path))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .children(unreachable)
+                    .child(div().min_w_0().truncate().child(path)),
+            )
             .child(number_cell(TRACKS_COL_W, stats.tracks.to_string()))
             .child(number_cell(ALBUMS_COL_W, stats.albums.to_string()))
             .child(number_cell(SIZE_COL_W, human_size(stats.bytes)))
@@ -500,22 +529,29 @@ impl SettingsWindow {
                 .background_executor()
                 .spawn(async move {
                     let conn = rox_library::store::open(&db).ok()?;
-                    Some(
-                        roots
-                            .into_iter()
-                            .map(|root| {
-                                let stats = rox_library::store::stats_under(&conn, &root)
-                                    .unwrap_or_default();
-                                (root, stats)
-                            })
-                            .collect::<Vec<_>>(),
-                    )
+                    let unreachable = roots
+                        .iter()
+                        .filter(|root| !rox_library::scanner::root_listable(root))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let stats = roots
+                        .into_iter()
+                        .map(|root| {
+                            let stats =
+                                rox_library::store::stats_under(&conn, &root).unwrap_or_default();
+                            (root, stats)
+                        })
+                        .collect::<Vec<_>>();
+                    Some((stats, unreachable))
                 })
                 .await;
             // A database that wouldn't open leaves the rows as they were.
-            let Some(measured) = measured else { return };
+            let Some((measured, unreachable)) = measured else {
+                return;
+            };
             this.update(cx, |this, cx| {
                 this.root_stats = measured;
+                this.unreachable_roots = unreachable;
                 cx.notify();
             })
             .ok();

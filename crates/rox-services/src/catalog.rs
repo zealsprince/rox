@@ -2216,6 +2216,7 @@ fn load(
                 summary.unchanged += s.unchanged;
                 summary.untagged += s.untagged;
                 summary.removed += s.removed;
+                summary.unreachable += s.unreachable;
                 if s.aborted {
                     summary.aborted = true;
                     break;
@@ -2524,6 +2525,11 @@ fn status_line(
         }
         if s.removed > 0 {
             parts.push(format!("{} removed", count(s.removed)));
+        }
+        match s.unreachable {
+            0 => {}
+            1 => parts.push("1 folder unreachable".into()),
+            n => parts.push(format!("{} folders unreachable", count(n))),
         }
         if s.aborted {
             parts.push("stopped early".into());

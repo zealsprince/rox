@@ -347,6 +347,20 @@ impl SettingsWindow {
                 .when(enabled, |rows| {
                     let folder = self.capture_folder.clone();
 
+                    // The switch reads the source list, so there's no setting
+                    // to drift from it. A source above the capture folder
+                    // already holds it, and the switch can't take that away.
+                    let library = self.library.read(cx);
+                    let roots = library.roots();
+                    let busy = library.busy().is_some();
+                    let in_library = roots.iter().any(|root| folder.starts_with(root));
+                    let holder = roots
+                        .iter()
+                        .find(|root| **root != folder && folder.starts_with(root))
+                        .map(|root| root.display().to_string());
+                    let held = holder.is_some();
+                    let library_keywords = ["capture", "library", "source", "folder", "add"];
+
                     // The renamer's vocabulary; the tip adds the three names a
                     // broadcast reads its own way.
                     let notes = vec![
@@ -398,6 +412,30 @@ impl SettingsWindow {
                                 },
                             )),
                     )
+                    .when_some(holder, |rows, holder| {
+                        rows.row_dyn(
+                            &library_keywords,
+                            rox_i18n::t!("settings-playback-capture-library"),
+                            Some(rox_i18n::t!(
+                                "settings-playback-capture-library-held",
+                                source = holder
+                            )),
+                            panel::toggle_locked(true),
+                        )
+                    })
+                    .when(!held, |rows| {
+                        let control = if busy {
+                            panel::toggle_locked(in_library).into_any_element()
+                        } else {
+                            panel::toggle(in_library, Self::set_capture_in_library, cx)
+                                .into_any_element()
+                        };
+                        rows.keyed(
+                            "settings-playback-capture-library",
+                            &library_keywords,
+                            control,
+                        )
+                    })
                     .custom(
                         &[
                             "capture",
@@ -458,6 +496,26 @@ impl SettingsWindow {
     fn set_capture_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         Settings::update(move |s| s.capture.enabled = on);
         rox_services::capture::apply();
+        cx.notify();
+    }
+
+    /// Adds or removes the capture folder as a library folder. Removing drops
+    /// its tracks from the library, never the files.
+    fn set_capture_in_library(&mut self, on: bool, cx: &mut Context<Self>) {
+        let folder = self.capture_folder.clone();
+        self.library.update(cx, |library, cx| {
+            if !on {
+                library.remove_root(&folder, cx);
+                return;
+            }
+
+            // Before any capture lands, or the scan reads the folder as
+            // unreachable.
+            if let Err(e) = std::fs::create_dir_all(&folder) {
+                log::warn!("capture: creating the folder failed: {e}");
+            }
+            library.add_root(folder, cx);
+        });
         cx.notify();
     }
 

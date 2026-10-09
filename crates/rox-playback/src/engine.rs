@@ -831,6 +831,8 @@ impl Engine {
     /// Open without adopting: no cursor move, segment, or publish. Split out so a
     /// skip pays for the open while the old track still plays.
     fn open_file_at(&mut self, mut p: usize) -> Option<(Source, usize, TrackInfo)> {
+        let mut unreadable = None;
+
         while p < self.order.len() {
             let i = self.order[p].idx;
 
@@ -887,8 +889,11 @@ impl Engine {
                     // Skip to the next entry, and clear `Opening` so it doesn't stick.
                     if streamed {
                         self.shared.publish_stream(i, StreamState::Dropped);
-                        // Streams send the refusal up; a missing local file is obvious enough.
+                        // Streams send the refusal up; a missing local file is obvious
+                        // enough while something after it plays.
                         self.shared.publish_refusal(e.clone());
+                    } else {
+                        unreadable = Some(format!("{}: {e}", self.queue[i].label()));
                     }
 
                     log::warn!("skipping {}: {e}", self.queue[i].label());
@@ -896,6 +901,13 @@ impl Engine {
                 }
             }
         }
+
+        // Nothing past it opened either (a moved or unmounted library), so the
+        // skip is no longer obvious.
+        if let Some(reason) = unreadable {
+            self.shared.publish_refusal(reason);
+        }
+
         None
     }
 
@@ -3912,6 +3924,23 @@ mod tests {
         // No source moves the frozen clock, so a published fade would never clear.
         assert_eq!(e.shared.fade_len.load(Ordering::Acquire), 0);
         assert!(e.shared.crossfade().is_none());
+    }
+
+    #[test]
+    fn a_missing_file_says_why_only_when_nothing_after_it_opens() {
+        let fx = Fixtures::new("missing-refusal");
+        let mut e = engine_over(vec![
+            local(fx.missing("gone.wav")),
+            local(fx.wav("b.wav", 1.0)),
+            local(fx.missing("also-gone.wav")),
+        ]);
+
+        assert!(e.open_at(0).is_some());
+        assert_eq!(e.shared.take_refusal(), None, "b.wav played over the skip");
+
+        assert!(e.open_at(2).is_none());
+        let reason = e.shared.take_refusal().expect("a dead end says why");
+        assert!(reason.starts_with("also-gone.wav: "), "{reason}");
     }
 
     #[test]

@@ -44,8 +44,17 @@ pub struct ScanSummary {
     /// Indexed by filename because the tags wouldn't read.
     pub untagged: usize,
     pub removed: usize,
+    /// Roots that wouldn't list. Their rows stay put.
+    pub unreachable: usize,
     /// Stopped by `progress`. What was counted is stored; the rest never ran.
     pub aborted: bool,
+}
+
+/// Whether a root lists at all. An unplugged drive or a dropped mount reads
+/// as an empty folder to the walk, so nothing gets pruned against one that
+/// doesn't.
+pub fn root_listable(root: &Path) -> bool {
+    std::fs::read_dir(root).is_ok()
 }
 
 /// Scan `root` recursively into the store. Blocking. Excluded paths fall out
@@ -174,10 +183,11 @@ pub fn scan(
         }
     }
 
-    // Prune stored rows the walk didn't find. Never after an aborted walk, and
-    // never when the root won't list (unplugged drive, dropped mount): both read
-    // as empty while the files are still there.
-    if !summary.aborted && std::fs::read_dir(root).is_ok() {
+    // Prune stored rows the walk didn't find. Never after an aborted walk, which
+    // stopped short of files that are still there.
+    if !root_listable(root) {
+        summary.unreachable = 1;
+    } else if !summary.aborted {
         summary.removed = store::prune_missing(conn, root, &walk.audio)?;
     }
     // Relink playlist members, listens and bookmarks orphaned by an earlier
@@ -1003,6 +1013,31 @@ mod tests {
             walked.is_empty(),
             "a walk from inside still anchors at the root"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_vanished_root_keeps_its_rows_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("rox-scanner-vanished-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("Music");
+        std::fs::create_dir_all(root.join("Album")).unwrap();
+        std::fs::write(root.join("Album/a.mp3"), b"not audio").unwrap();
+
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+        let s = scan(&mut conn, &root, &Exclusions::default(), |_, _, _| true).unwrap();
+        assert_eq!((s.indexed, s.unreachable), (1, 0));
+
+        std::fs::remove_dir_all(&root).unwrap();
+        let s = scan(&mut conn, &root, &Exclusions::default(), |_, _, _| true).unwrap();
+        assert_eq!(
+            s.removed, 0,
+            "an unlistable root reads as empty, not as deleted"
+        );
+        assert_eq!(s.unreachable, 1);
+        assert_eq!(store::count(&conn).unwrap(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

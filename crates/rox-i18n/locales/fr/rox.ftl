@@ -1206,6 +1206,7 @@ settings-library-tempo-status-tagged = { $total ->
    *[other] Les { $total } pistes analysées ont toutes un tag de tempo
 }
 settings-library-tempo-status-tagged-some = { $covered } pistes analysées sur { $total } ont un tag de tempo
+settings-library-unreachable-tip = rox n'atteint pas ce dossier. Ses morceaux restent dans la bibliothèque, mais ne se liront pas avant son retour.
 settings-library-watch-folders = Surveiller les dossiers
     .description = Intégrer les fichiers ajoutés, modifiés et supprimés dans la bibliothèque au fil de l'eau, sans réanalyse manuelle
 settings-library-write-stored = Écrire ce qui est stocké dans les fichiers
@@ -1264,6 +1265,9 @@ settings-playback-capture-choose = Choisir un dossier...
 settings-playback-capture-enable = Enregistrer les morceaux des sources en streaming
     .description = Écrit dans le dossier d'enregistrement chaque morceau qu'un flux joue du début à la fin, dans le format du flux et sans rien réencoder, étiqueté avec la station. La pochette du morceau est enregistrée à côté sous le même nom, quand il y en a une. Les limites entre morceaux viennent des titres annoncés par la station, et ceux-ci arrivent quelques secondes avant ou après l'audio, donc un enregistrement peut contenir la fin du morceau précédent. Un morceau plus long que le tampon en direct n'est jamais enregistré, un podcast ou un mix reste donc à l'antenne.
 settings-playback-capture-folder = Dossier d'enregistrement
+settings-playback-capture-library = Ajouter à la bibliothèque
+    .description = Fait du dossier de capture une source de la bibliothèque, pour que les chansons enregistrées apparaissent avec le reste. Désactivé, elles quittent la bibliothèque, pas le disque.
+settings-playback-capture-library-held = Déjà dans la bibliothèque via { $source }
 settings-playback-capture-pattern = Noms des enregistrements
     .description = Comment un morceau enregistré est nommé dans le dossier d'enregistrement. Un / crée un dossier, donc le réglage par défaut classe une soirée de radio par station au lieu de tout empiler à plat. L'extension vient du flux.
 settings-playback-capture-pattern-date = %date% est le jour où le morceau a été enregistré, sous la forme 2026-09-18.

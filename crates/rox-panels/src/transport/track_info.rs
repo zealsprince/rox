@@ -1290,7 +1290,7 @@ impl TrackInfoPanel {
             // account in the log.
             let line: Option<SharedString> = match error {
                 Some(error) => Some(error),
-                None if active => Some(rox_i18n::t!("track-info-opening")),
+                None if active && !ended => Some(rox_i18n::t!("track-info-opening")),
                 None => None,
             };
             let chip = items

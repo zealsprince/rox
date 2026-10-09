@@ -1194,6 +1194,7 @@ settings-library-tempo-status-tagged = { $total ->
    *[other] Las { $total } pistas escaneadas tienen una etiqueta de tempo
 }
 settings-library-tempo-status-tagged-some = { $covered } de { $total } pistas escaneadas tienen una etiqueta de tempo
+settings-library-unreachable-tip = rox no llega a esta carpeta. Sus pistas siguen en la biblioteca, pero no sonarán hasta que vuelva.
 settings-library-watch-folders = Vigilar carpetas
     .description = Incorpora a la biblioteca los archivos añadidos, editados y borrados según ocurre, sin volver a escanear a mano
 settings-library-write-stored = Escribir lo guardado en los archivos
@@ -1252,6 +1253,9 @@ settings-playback-capture-choose = Elegir carpeta...
 settings-playback-capture-enable = Guardar canciones de fuentes en streaming
     .description = Escribe en la carpeta de capturas cada canción que un stream reproduce de principio a fin, en el formato del propio stream y sin recodificar nada, etiquetada con la emisora. La portada de la canción se guarda al lado con el mismo nombre, cuando se encuentra alguna. Los límites entre canciones vienen de los títulos que anuncia la emisora, y esos llegan unos segundos antes o después del audio, así que una captura puede llevar el final de la canción anterior. Una canción más larga que el búfer en directo nunca se guarda, así que un pódcast o una mezcla se quedan en el aire.
 settings-playback-capture-folder = Carpeta de capturas
+settings-playback-capture-library = Añadir a la biblioteca
+    .description = Convierte la carpeta de capturas en una fuente de la biblioteca, para que las canciones guardadas aparezcan con el resto. Desactivado las quita de la biblioteca, no del disco.
+settings-playback-capture-library-held = Ya está en la biblioteca a través de { $source }
 settings-playback-capture-pattern = Nombres de las capturas
     .description = Cómo se llama una canción guardada dentro de la carpeta de capturas. Una / crea una carpeta, así que la opción predeterminada archiva una noche de radio por emisora en vez de amontonarlo todo. La extensión viene del stream.
 settings-playback-capture-pattern-date = %date% es el día en que se guardó la canción, como 2026-09-18.

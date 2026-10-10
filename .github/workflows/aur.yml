@@ -1,14 +1,16 @@
-# Publishes release bumps to the two AUR packages: rox-player builds the
-# tagged tarball, rox-player-git builds HEAD. The PKGBUILDs live in their AUR
-# repos and have a primary maintainer of their own, so this edits them in
-# place instead of overwriting them from a template kept here: version,
-# pkgrel, and checksum for rox-player, just the displayed pkgver for
-# rox-player-git, whose pkgver() computes the real one at build time. The
-# rox-player update is test-built in a clean Arch container before either
+# Publishes release bumps to the three AUR packages: rox-player builds the
+# tagged tarball, rox-player-bin installs the release's linux-x86_64 tarball,
+# rox-player-git builds HEAD. The PKGBUILDs live in their AUR repos and have
+# a primary maintainer of their own, so this edits them in place instead of
+# overwriting them from a template kept here: version, pkgrel, and checksum
+# for rox-player and rox-player-bin, just the displayed pkgver for
+# rox-player-git, whose pkgver() computes the real one at build time. Both
+# versioned updates are test-built in a clean Arch container before any
 # package is pushed, so a missing system dep or a vendor script break stops
-# here instead of on every AUR user's machine.
+# here instead of on every AUR user's machine. A rox-player-bin failure only
+# holds back rox-player-bin itself.
 #
-# A release candidate can't push either package: rox-player tracks stable and
+# A release candidate can't push any package: rox-player tracks stable and
 # a pkgver won't hold the hyphen in 1.25.0-rc.1. It still test-builds, which is
 # the point of cutting one. rox-player-git is the package that fits there,
 # since its source is the git tree and pointing it at the candidate tag needs
@@ -22,7 +24,7 @@
 # always takes the push path: `candidate` is a workflow_call input only.
 #
 # Needs one secret, AUR_SSH_PRIVATE_KEY: a private key whose public half is
-# registered on an AUR account with co-maintainer access to both packages.
+# registered on an AUR account with co-maintainer access to all three packages.
 # When it's unset the run warns and skips, same as the website rebuild.
 name: AUR
 
@@ -115,6 +117,45 @@ jobs:
           fi
           echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/aur_known_hosts" >> "$GITHUB_ENV"
 
+      # The binary package takes its checksum from the release's own
+      # SHA256SUMS.txt, so it matches the asset the release job uploaded. The
+      # release job runs before this one, so the asset is already there.
+      # These two steps may fail without failing the job: rox-player-bin has
+      # a primary maintainer of its own, and a break there must not hold back
+      # rox-player and rox-player-git. Push checks bin_test's outcome.
+      - name: Update rox-player-bin
+        id: bin_update
+        if: steps.gate.outputs.push == 'true'
+        continue-on-error: true
+        run: |
+          git clone ssh://aur@aur.archlinux.org/rox-player-bin.git
+          cd rox-player-bin
+          curl -fsSLo SHA256SUMS.txt \
+            "https://github.com/zealsprince/rox/releases/download/v$VERSION/SHA256SUMS.txt"
+          sha=$(awk -v f="rox-v$VERSION-linux-x86_64.tar.gz" '$2 == f { print $1 }' SHA256SUMS.txt)
+          rm SHA256SUMS.txt
+          if [ -z "$sha" ]; then
+            echo "::error::No linux-x86_64 tarball checksum in SHA256SUMS.txt for v$VERSION"
+            exit 1
+          fi
+          sed -i \
+            -e "s/^pkgver=.*/pkgver=$VERSION/" \
+            -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums=.*/sha256sums=('$sha')/" \
+            PKGBUILD
+          chown -R builder .
+          sudo -Hu builder makepkg --printsrcinfo > .SRCINFO
+
+      # No compile here, so this mostly checks the download, the checksum and
+      # the tarball layout package() expects.
+      - name: Test build rox-player-bin
+        id: bin_test
+        if: steps.gate.outputs.push == 'true' && steps.bin_update.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cd rox-player-bin
+          sudo -Hu builder makepkg -s --noconfirm
+
       # The checksum comes from hashing the tag tarball ourselves, the same
       # trust model updpkgsums uses. The download keeps makepkg's expected
       # filename so the test build reuses it instead of fetching again.
@@ -174,10 +215,20 @@ jobs:
 
       # Explicit adds so makepkg leftovers (src/, pkg/, the tarball) never
       # ride along. Skipping a no-op diff keeps dispatch re-runs idempotent.
+      # rox-player-bin goes last and only after its test build passed, so a
+      # failed push there can't stop the other two.
       - name: Push
         if: steps.gate.outputs.push == 'true'
+        env:
+          BIN_TEST: ${{ steps.bin_test.outcome }}
         run: |
-          for pkg in rox-player rox-player-git; do
+          pkgs="rox-player rox-player-git"
+          if [ "$BIN_TEST" = "success" ]; then
+            pkgs="$pkgs rox-player-bin"
+          else
+            echo "::warning::rox-player-bin update or test build failed, not pushing it"
+          fi
+          for pkg in $pkgs; do
             git -C "$pkg" add PKGBUILD .SRCINFO
             if git -C "$pkg" diff --cached --quiet; then
               echo "$pkg is already at v$VERSION"

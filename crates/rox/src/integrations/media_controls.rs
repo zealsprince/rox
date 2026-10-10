@@ -138,7 +138,7 @@ impl MediaKeys {
     }
 
     pub fn set_cover(&mut self, url: Option<String>) {
-        self.cover = url;
+        self.cover = url.map(souvlaki_cover_url);
         self.emit();
     }
 
@@ -414,6 +414,25 @@ fn window_hwnd(window: &Window) -> Option<*mut std::ffi::c_void> {
 #[cfg(not(target_os = "windows"))]
 fn window_hwnd(_window: &Window) -> Option<*mut std::ffi::c_void> {
     None
+}
+
+/// souvlaki's SMTC backend strips `file://` and hands the rest straight to
+/// `StorageFile::GetFileFromPathAsync`, so a real URL arrives as
+/// `/C:/Users/...` and the thumbnail is rejected. Feed it the native path.
+#[cfg(target_os = "windows")]
+fn souvlaki_cover_url(url: String) -> String {
+    let path = url::Url::parse(&url)
+        .ok()
+        .and_then(|u| u.to_file_path().ok());
+    match path {
+        Some(path) => format!("file://{}", path.display()),
+        None => url,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn souvlaki_cover_url(url: String) -> String {
+    url
 }
 
 /// Write the cover to a scratch file and return its `file://` URL: souvlaki

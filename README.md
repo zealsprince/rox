@@ -164,7 +164,7 @@ Release candidates ship ahead of a release as GitHub prereleases; the in-app upd
 offers them once you turn on Include Release Candidates under Settings > Application.
 
 - **Linux**
-  - **Arch Linux** - Available on the AUR as [`rox-player`](https://aur.archlinux.org/packages/rox-player).
+  - **Arch Linux** - Available on the AUR as [`rox-player`](https://aur.archlinux.org/packages/rox-player), built from source, or [`rox-player-bin`](https://aur.archlinux.org/packages/rox-player-bin), the prebuilt release tarball.
   - **Flatpak** - Download the `.flatpak` bundle from the release and run `flatpak install rox-v*.flatpak`; the runtime comes from Flathub.
   - **AppImage** - Download it, `chmod +x` it, and run it. The first launch offers a menu entry. It carries update information, so AppImageUpdate and the launchers that use it can update it with a delta download.
   - **Tarball** - Unpack the tarball and run `./rox`.

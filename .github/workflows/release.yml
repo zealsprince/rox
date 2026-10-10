@@ -10,10 +10,10 @@
 # and publishes as a GitHub prerelease, which keeps it off the "latest"
 # endpoint the site and the in-app check read for stable builds; both offer
 # candidates only to people who opted in. The AUR isn't updated for candidates,
-# since rox-player tracks stable and pacman versions can't carry the hyphen
-# anyway, but the candidate does test-build the packaging so a break there
-# surfaces here instead of on the stable tag. Cutting the release itself is
-# then a bump to the bare version.
+# since rox-player and rox-player-bin track stable and pacman versions can't
+# carry the hyphen anyway, but the candidate does test-build the packaging so
+# a break there surfaces here instead of on the stable tag. Cutting the
+# release itself is then a bump to the bare version.
 name: Release
 
 on:
@@ -431,11 +431,12 @@ jobs:
   # run at all.
   aur:
     needs: [check, release]
-    # Candidates never reach the AUR: rox-player is the stable package, and
-    # a pkgver can't hold the hyphen anyway. They still run the job, which
-    # test-builds the packaging against the tag it just cut, so a break in
-    # prepare() or a new system dep fails on the candidate rather than on the
-    # stable release. The stable release that follows publishes as usual.
+    # Candidates never reach the AUR: rox-player and rox-player-bin are the
+    # stable packages, and a pkgver can't hold the hyphen anyway. They still
+    # run the job, which test-builds the packaging against the tag it just
+    # cut, so a break in prepare() or a new system dep fails on the candidate
+    # rather than on the stable release. The stable release that follows
+    # publishes as usual.
     permissions: {}
     uses: ./.github/workflows/aur.yml
     with:

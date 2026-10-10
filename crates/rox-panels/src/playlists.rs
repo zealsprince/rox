@@ -47,6 +47,7 @@ use crate::track_ui::track_columns::{
 };
 use crate::track_ui::track_drag::PlayDrag;
 use crate::unknown_play;
+use rox_library::cue::TrackKey;
 use rox_library::playlist_file::Format;
 use rox_library::playlists::{PlaylistKind, PlaylistTrack};
 use rox_library::projection::{FilterSet, Filterable, Term, parse_query};
@@ -446,6 +447,9 @@ pub struct PlaylistsPanel {
     /// Reloaded every refresh, since a favourite toggle emits the same event
     /// as a playlist edit.
     favourites: HashSet<i64>,
+    /// The change detector for the highlight, since the player notifies
+    /// every pump and the id behind it is a store query.
+    playing_key: Option<TrackKey>,
     playing: Option<i64>,
     /// By member id, so a rescan, expand, or reorder keeps the highlight.
     selected: HashSet<i64>,
@@ -582,6 +586,7 @@ impl PlaylistsPanel {
             expanded,
             sources: HashMap::new(),
             favourites: HashSet::new(),
+            playing_key: None,
             playing: None,
             selected: HashSet::new(),
             drag_gen: 0,
@@ -869,12 +874,15 @@ impl PlaylistsPanel {
     }
 
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
+        let key = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if key == self.playing_key {
+            return;
+        }
+        self.playing_key = key;
         let playing = self
-            .state
-            .player
-            .read(cx)
-            .now_playing()
-            .and_then(|now| self.state.library.read(cx).id_for_key(&now.key));
+            .playing_key
+            .as_ref()
+            .and_then(|key| self.state.library.read(cx).id_for_key(key));
         if playing != self.playing {
             self.playing = playing;
             if self.follow_playing {

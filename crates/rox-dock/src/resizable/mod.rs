@@ -179,14 +179,24 @@ impl ResizableState {
         // from here on. Upstream keyed this off the size still being exactly
         // PANEL_MIN_SIZE, which misfired on panels whose real share happens
         // to equal it; the explicit `None` weight is the reliable marker.
+        let mut changed = false;
         if self.weights[panel_ix].is_none() {
             self.weights[panel_ix] = Some(size);
             self.sizes[panel_ix] = size;
             self.panels[panel_ix].size = Some(size);
+            changed = true;
         }
-        self.panels[panel_ix].bounds = bounds;
-        self.panels[panel_ix].size_range = size_range;
-        cx.notify();
+        // rox addition: every panel's paint lands here every frame, so only a
+        // real change notifies.
+        let panel = &mut self.panels[panel_ix];
+        if panel.bounds != bounds || panel.size_range != size_range {
+            panel.bounds = bounds;
+            panel.size_range = size_range;
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
     }
 
     /// Move a panel's state to another index, its size moving with it, so

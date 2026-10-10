@@ -11,7 +11,7 @@ uses), and `Window::register_dynamic_texture` forgets the id and hands
 the message to the caller, who already shows registration errors. Blade
 and Metal don't fail here, so their windows wrap the call in `Ok`.
 
-Diffed against the tree with z1 through z5 applied.
+Diffed against the tree with every earlier gpui patch applied.
 
 diff -ruN -x .rox-stamp -x target a/src/platform/linux/wayland/window.rs b/src/platform/linux/wayland/window.rs
 --- a/src/platform/linux/wayland/window.rs	2026-09-10 10:01:25.501678741 -0600

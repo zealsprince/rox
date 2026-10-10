@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::PanelInfo;
 use crate::tab::{Tab, TabBar};
+use crate::watch::{Watch, Watched};
 use gpui::{
     App, AppContext, Bounds, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
@@ -119,6 +120,9 @@ pub struct TabPanel {
     /// include element bounds the way DragMoveEvent does, and the middle-drag
     /// placement math needs them.
     content_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// rox addition: this group renders cached, so it subscribes to what its
+    /// tab bar reads from outside its own subtree.
+    watch: Watch,
 }
 
 impl Panel for TabPanel {
@@ -240,6 +244,7 @@ impl TabPanel {
             context_menu: None,
             pending_middle_drag: None,
             content_bounds: Rc::new(Cell::new(Bounds::default())),
+            watch: Watch::default(),
         }
     }
 
@@ -1818,6 +1823,17 @@ impl EventEmitter<DismissEvent> for TabPanel {}
 impl EventEmitter<PanelEvent> for TabPanel {}
 impl Render for TabPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // The dock area holds the lock and panel style, the parent split
+        // answers whether this is the last group, and every tab's title shows
+        // whether or not it's the one rendered.
+        let dock_area = self.dock_area.upgrade();
+        let stack_panel = self.stack_panel.as_ref().and_then(|stack| stack.upgrade());
+        let mut watched: Vec<&dyn Watched> =
+            self.panels.iter().map(|p| p as &dyn Watched).collect();
+        watched.extend(dock_area.as_ref().map(|dock| dock as &dyn Watched));
+        watched.extend(stack_panel.as_ref().map(|stack| stack as &dyn Watched));
+        self.watch.sync(cx.entity_id(), &watched, cx);
+
         let focus_handle = self.focus_handle(cx);
         let active_panel = self.active_panel(cx);
         let state = TabState {

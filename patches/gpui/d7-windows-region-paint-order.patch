@@ -2,7 +2,7 @@ Screen-shader regions run at their paint order on Windows too.
 
 The DirectX renderer still ran every region in one go at the overlay
 boundary, over the fully composed main scene, where the blade path has
-split at each region since user-shader-underlays. A backdrop recorded
+split at each region since b3-user-shader-underlays. A backdrop recorded
 under the panels (the Milkdrop backdrop, or a backdrop shader that needs
 the region pass) painted over the whole window instead, hiding every
 panel, and with All Windows on it took the settings window as well. Now

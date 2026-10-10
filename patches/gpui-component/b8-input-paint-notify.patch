@@ -1,0 +1,50 @@
+--- a/src/input/element.rs
++++ b/src/input/element.rs
+@@ -1475,6 +1475,12 @@
+         }
+ 
+         self.state.update(cx, |state, cx| {
++            // rox patch: what the input's render reads from here. Notifying on every paint
++            // re-rendered the input, and every cached view above it, on any frame
++            // anything else drew.
++            let rerender = state.last_layout.as_ref().map(|layout| layout.line_number_width)
++                != Some(prepaint.last_layout.line_number_width)
++                || state.scroll_size != prepaint.scroll_size;
+             state.last_layout = Some(prepaint.last_layout.clone());
+             state.last_bounds = Some(bounds);
+             state.last_cursor = Some(state.cursor());
+@@ -1484,7 +1490,9 @@
+             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+             state.deferred_scroll_offset = None;
+ 
+-            cx.notify();
++            if rerender {
++                cx.notify();
++            }
+         });
+ 
+         if let Some(hitbox) = prepaint.hover_definition_hitbox.as_ref() {
+--- a/src/input/state.rs
++++ b/src/input/state.rs
+@@ -1340,7 +1340,8 @@
+         offset: Option<Point<Pixels>>,
+         cx: &mut Context<Self>,
+     ) {
+-        let mut offset = offset.unwrap_or(self.scroll_handle.offset());
++        let old_offset = self.scroll_handle.offset();
++        let mut offset = offset.unwrap_or(old_offset);
+ 
+         let safe_y_range =
+             (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.0))..px(0.);
+@@ -1354,7 +1355,10 @@
+         };
+         offset.x = offset.x.clamp(safe_x_range.start, safe_x_range.end);
+         self.scroll_handle.set_offset(offset);
+-        cx.notify();
++        // rox patch: only a move needs a redraw; paint calls this every frame.
++        if offset != old_offset {
++            cx.notify();
++        }
+     }
+ 
+     /// Scroll to make the given offset visible.

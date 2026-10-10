@@ -2,7 +2,7 @@ A sprite naming a freed atlas texture is skipped instead of panicking.
 
 A cached view replays the primitives it painted last, so a sprite can
 outlive the texture behind it when an image is dropped before that view
-repaints. `z1-remove-asset-drops-textures` frees textures as soon as an
+repaints. `c3-remove-asset-drops-textures` frees textures as soon as an
 asset goes. In the crash that prompted this, two atlas pages holding
 now-playing covers were freed a second before a frame indexed one of them
 and `BladeAtlasStorage`'s `unwrap` took the app down. `get_texture_info` now answers None for a

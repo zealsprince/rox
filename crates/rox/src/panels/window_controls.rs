@@ -229,9 +229,20 @@ impl WindowControlsPanel {
         config: WindowControlsConfig,
         cx: &mut Context<Self>,
     ) -> Self {
-        let _workspace_changed = workspace
-            .upgrade()
-            .map(|ws| cx.observe(&ws, |_, _, cx| cx.notify()));
+        // The workspace notifies on every backdrop frame, so only a change to
+        // what the buttons show is worth a render. A KWin pin flip repaints
+        // every window on its own. Not seeded here: the workspace builds its
+        // panels inside its own update, and reading it now panics.
+        let _workspace_changed = workspace.upgrade().map(|ws| {
+            let mut shown = None;
+            cx.observe(&ws, move |_, ws, cx| {
+                let now = Some(ws.read(cx).controls_state());
+                if now != shown {
+                    shown = now;
+                    cx.notify();
+                }
+            })
+        });
         WindowControlsPanel {
             state,
             config,

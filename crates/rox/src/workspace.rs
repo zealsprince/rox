@@ -4703,6 +4703,12 @@ impl Workspace {
         self.mini_layout.is_some() && self.active_layout == self.mini_layout
     }
 
+    /// What the window controls show: mini assigned, on mini, and the pin as
+    /// last set here.
+    pub(crate) fn controls_state(&self) -> (bool, bool, bool) {
+        (self.mini_assigned(), self.on_mini(), self.pinned)
+    }
+
     /// A presets-flyout pick, shared with the menu panel: build the saved
     /// panel and either put it in this window, where its kind says panels of
     /// that sort go, or open it in a window of its own. A preset deleted

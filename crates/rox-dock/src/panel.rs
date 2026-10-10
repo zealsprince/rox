@@ -3,7 +3,7 @@ use crate::resizable::PANEL_MIN_SIZE;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, EntityId, EventEmitter,
     FocusHandle, Focusable, Global, Hsla, IntoElement, Pixels, Render, SharedString, Size,
-    WeakEntity, Window,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::{button::Button, menu::PopupMenu};
 use std::{collections::HashMap, sync::Arc};
@@ -246,6 +246,10 @@ pub trait PanelView: 'static + Send + Sync {
     fn dump(&self, cx: &App) -> PanelState;
     fn inner_padding(&self, cx: &App) -> bool;
     fn content_context_menu(&self, cx: &App) -> bool;
+    /// rox addition: notify `watcher` when this panel's tab changes. A cached
+    /// tab group only redraws its tab bar when marked dirty, and an inactive
+    /// tab isn't in the view tree to mark it.
+    fn notify_on_change(&self, watcher: EntityId, cx: &mut App) -> Subscription;
 }
 
 impl<T: Panel> PanelView for Entity<T> {
@@ -354,6 +358,41 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn content_context_menu(&self, cx: &App) -> bool {
         self.read(cx).content_context_menu(cx)
+    }
+
+    fn notify_on_change(&self, watcher: EntityId, cx: &mut App) -> Subscription {
+        // Compared, not forwarded: panels observe their own group, and a
+        // blind forward would bounce notifies between the two forever.
+        let mut last = TabFace::of(self, cx);
+        cx.observe(self, move |panel, cx| {
+            let face = TabFace::of(&panel, cx);
+            if face != last {
+                last = face;
+                cx.notify(watcher);
+            }
+        })
+    }
+}
+
+/// rox addition: what a tab bar shows of a panel that isn't the active one.
+#[derive(PartialEq)]
+struct TabFace {
+    tab_name: Option<SharedString>,
+    visible: bool,
+    locked: bool,
+    closable: bool,
+    title_style: Option<TitleStyle>,
+}
+
+impl TabFace {
+    fn of(panel: &dyn PanelView, cx: &App) -> Self {
+        TabFace {
+            tab_name: panel.tab_name(cx),
+            visible: panel.visible(cx),
+            locked: panel.locked(cx),
+            closable: panel.closable(cx),
+            title_style: panel.title_style(cx),
+        }
     }
 }
 

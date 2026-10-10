@@ -5,13 +5,14 @@ use crate::resizable::{
     PANEL_MIN_SIZE, ResizablePanelEvent, ResizablePanelGroup, ResizablePanelState, ResizableState,
     resizable_panel,
 };
+use crate::watch::{Watch, Watched};
 use gpui_component::{ActiveTheme, AxisExt as _, Placement, h_flex};
 
 use super::{DockArea, Panel, PanelEvent, PanelState, PanelView, TabPanel};
 use gpui::{
     Along, App, AppContext as _, Axis, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Pixels, Render, Size, Styled, Subscription, WeakEntity,
-    Window,
+    Focusable, IntoElement, ParentElement, Pixels, Render, Size, StyleRefinement, Styled,
+    Subscription, WeakEntity, Window,
 };
 use smallvec::SmallVec;
 
@@ -26,6 +27,10 @@ pub struct StackPanel {
     /// area of a workspace can sit flush while the rest keeps its lines.
     seams: Option<bool>,
     _subscriptions: Vec<Subscription>,
+    /// rox addition: the parent split, so a change above reaches the cached
+    /// groups below. Their tab bars ask the whole chain whether they hold the
+    /// last panel.
+    watch: Watch,
 }
 
 impl Panel for StackPanel {
@@ -130,6 +135,7 @@ impl StackPanel {
             state,
             seams: None,
             _subscriptions,
+            watch: Watch::default(),
         }
     }
 
@@ -555,6 +561,10 @@ impl EventEmitter<PanelEvent> for StackPanel {}
 impl EventEmitter<DismissEvent> for StackPanel {}
 impl Render for StackPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let parent = self.parent.as_ref().and_then(|parent| parent.upgrade());
+        let watched: Vec<&dyn Watched> = parent.iter().map(|p| p as &dyn Watched).collect();
+        self.watch.sync(cx.entity_id(), &watched, cx);
+
         h_flex()
             .size_full()
             .overflow_hidden()
@@ -576,7 +586,14 @@ impl Render for StackPanel {
                                 panel.min_size(cx).along(self.axis)
                                     ..panel.max_size(cx).along(self.axis),
                             )
-                            .child(panel.view())
+                            // rox addition: cached, so a frame one group asks
+                            // for replays its siblings instead of rebuilding
+                            // them. See `watch` for what keeps them fresh.
+                            .child(
+                                panel
+                                    .view()
+                                    .cached(StyleRefinement::default().absolute().size_full()),
+                            )
                             .visible(panel.visible(cx))
                     })),
             )

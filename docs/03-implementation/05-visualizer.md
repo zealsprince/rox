@@ -329,7 +329,7 @@ frame: that path runs through the sprite atlas and needs an allocation and a `dr
 every frame for what is really a video stream. The chain path also means a Milkdrop
 frame composes like any other shader surface, so the panel takes a surface shader over
 the top. The three window calls it relies on (`register_dynamic_texture`,
-`update_user_texture`, `release_user_texture`) are the `z4-dynamic-user-textures.patch`
+`update_user_texture`, `release_user_texture`) are the `c6-dynamic-user-textures.patch`
 addition to the vendored gpui, on both the blade and DirectX backends.
 
 **Parking.** What a pause or a stop does to the picture is the config's `fade` switch,
@@ -399,7 +399,7 @@ headless GL context per platform; `gl.rs` the twenty-eight raw GL calls; `librar
 `PresetLibrary` and `Rotation`; `examples/headless.rs` the cost baseline), and
 `crates/rox-panels/src/milkdrop.rs` (`MilkdropPanel`, `MilkdropConfig`, `FRAME_WGSL`, the
 paint closure and the settings pages). `AudioFeed::since` in `crates/rox-viz/src/feed.rs`
-is the worker's audio pull, `patches/gpui/z4-dynamic-user-textures.patch` adds
+is the worker's audio pull, `patches/gpui/c6-dynamic-user-textures.patch` adds
 the three window calls the panel draws through, and
-`patches/gpui/z6-dynamic-texture-registration-errors.patch` makes the registration
+`patches/gpui/c8-dynamic-texture-registration-errors.patch` makes the registration
 report a device that refused the allocation instead of keeping an id over nothing.

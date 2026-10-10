@@ -494,6 +494,17 @@ impl Shared {
         Some((at, queue.entries.len().saturating_sub(at + 1)))
     }
 
+    /// The id of the entry at pool index `audible`, falling back to the
+    /// published cursor's. Read under the lock for the same reason as
+    /// [`Self::upcoming_from`]: the pump asks every 16 ms.
+    pub fn entry_id_at(&self, audible: Option<usize>) -> Option<u64> {
+        let queue = self.queue.lock().unwrap();
+        let at = audible
+            .and_then(|idx| queue.entries.iter().position(|e| e.idx == idx))
+            .unwrap_or(queue.cursor);
+        queue.entries.get(at).map(|e| e.id)
+    }
+
     pub fn volume(&self) -> f32 {
         f32::from_bits(self.volume_bits.load(std::sync::atomic::Ordering::Relaxed))
     }

@@ -18,9 +18,8 @@ Blade only for now. The DirectX renderer binds the register as an empty
 SRV, which samples zeros, so a mask shader there runs against a
 transparent mask instead of breaking.
 
-The z- prefix is ordering, not taxonomy: patches apply in C-collation
-glob order, this one diffs against nearly the whole user-shader series
-plus windows-server-frames-opaque, so it has to sort last.
+This one diffs against nearly the whole user-shader series plus
+c1-windows-server-frames-opaque, so it has to sort after them.
 
 diff -ruN '--exclude=target' '--exclude=.rox-stamp' '--exclude=Cargo.lock' a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
 --- a/src/platform/blade/blade_renderer.rs	2026-08-14 15:44:10.751559608 -0600

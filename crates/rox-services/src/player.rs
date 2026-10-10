@@ -1392,11 +1392,8 @@ impl Player {
     /// Falls back to the published cursor before audio starts.
     fn playing_after(&self) -> Option<u64> {
         let session = self.session.as_ref()?;
-        let snap = session.shared.queue_snapshot();
-        match self.audible_index(&snap) {
-            Some(i) => snap.entries.get(i).map(|e| e.id),
-            None => snap.entries.get(snap.cursor).map(|e| e.id),
-        }
+        let audible = self.now_playing().map(|now| now.audible_idx);
+        session.shared.entry_id_at(audible)
     }
 
     fn playing_station(&self) -> Option<u64> {

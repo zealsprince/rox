@@ -35,7 +35,7 @@ use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit};
 use crate::panel_settings;
-use crate::player::{Player, fmt_time, fmt_time_padded, song_clock};
+use crate::player::{Player, PlayerView, fmt_time, fmt_time_padded, song_clock};
 use crate::settings::ui as settings_ui;
 
 use super::{default_true, transport_panel};
@@ -292,11 +292,28 @@ pub struct SeekStripPanel {
     _cues_changed: Subscription,
 }
 
+/// What the strip draws off the player, compared per pump tick.
+#[derive(PartialEq)]
+struct StripKey {
+    view: PlayerView,
+    elapsed: i64,
+    left: i64,
+    head: i64,
+}
+
 impl SeekStripPanel {
     pub fn new(state: AppState, config: SeekConfig, cx: &mut Context<Self>) -> Self {
-        // The clock and playhead move every tick, so this uses the raw per-pump
-        // notify, not the gated observe.
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // The pump notifies every tick, but on a track the strip only changes
+        // with a clock second or a playhead step. A station's marks walk with
+        // the broadcast, so it takes every tick.
+        let mut shown = None;
+        let _player_changed = cx.observe(&state.player, move |this: &mut Self, player, cx| {
+            let now = this.strip_key(player.read(cx));
+            if now.is_none() || now != shown {
+                shown = now;
+                cx.notify();
+            }
+        });
         // A bookmark edit anywhere drops the cached marks.
         let _library_changed = cx.subscribe(
             &state.library,
@@ -347,6 +364,41 @@ impl SeekStripPanel {
             _library_changed,
             _cues_changed,
         }
+    }
+
+    /// What a track's strip shows off the player. None on a station, which
+    /// redraws every tick.
+    fn strip_key(&self, player: &Player) -> Option<StripKey> {
+        let now = player.now_playing();
+        if now.as_ref().is_some_and(|now| now.live) {
+            return None;
+        }
+
+        let (elapsed, left, head) = match &now {
+            Some(now) => {
+                let duration = now.duration_secs.unwrap_or(0.0);
+                let progress = if duration > 0.0 {
+                    now.position_secs / duration
+                } else {
+                    0.0
+                };
+                let width = f64::from(self.scrub.width().unwrap_or(0.0));
+                (
+                    now.position_secs.floor() as i64,
+                    (duration - now.position_secs).max(0.0).floor() as i64,
+                    // Half-pixel steps, so the head still glides at 2x scale.
+                    (progress * width * 2.0).round() as i64,
+                )
+            }
+            None => (0, 0, 0),
+        };
+
+        Some(StripKey {
+            view: player.view(),
+            elapsed,
+            left,
+            head,
+        })
     }
 
     /// Once per track and after an edit, so the per-tick repaint never
@@ -1727,9 +1779,9 @@ impl SeekStripPanel {
         let now = player.now_playing();
         let ab = player.ab_state();
 
-        // No frame polling: the raw observe in `new` re-renders on every pump
-        // tick, the rate the clock and playhead change at. A per-frame request
-        // would keep the window repainting through a paused session.
+        // No frame polling: the observe in `new` re-renders when the clock or
+        // the playhead moves. A per-frame request would keep the window
+        // repainting through a paused session.
 
         let root = div()
             .size_full()

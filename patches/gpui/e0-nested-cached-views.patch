@@ -1,0 +1,105 @@
+--- a/src/view.rs
++++ b/src/view.rs
+@@ -16,6 +16,13 @@
+     paint_range: Range<PaintIndex>,
+     cache_key: ViewCacheKey,
+     accessed_entities: FxHashSet<EntityId>,
++    /// rox patch: the inherited opacity the recorded paint was made under.
++    /// Opacity is applied at paint, after prepaint chose to replay, so it
++    /// can't sit in the cache key.
++    paint_opacity: f32,
++    /// rox patch: the draw the ranges above were recorded in. They index
++    /// that frame's arrays, so only the next draw may replay them.
++    drawn_at: u64,
+ }
+ 
+ #[derive(Default)]
+@@ -211,6 +218,7 @@
+                         && element_state.cache_key.text_style == text_style
+                         && !window.dirty_views.contains(&self.entity_id())
+                         && !window.refreshing
++                        && element_state.drawn_at + 1 == window.draw_index
+                     {
+                         let prepaint_start = window.prepaint_index();
+                         window.reuse_prepaint(element_state.prepaint_range.clone());
+@@ -218,11 +226,18 @@
+                             .extend_accessed(&element_state.accessed_entities);
+                         let prepaint_end = window.prepaint_index();
+                         element_state.prepaint_range = prepaint_start..prepaint_end;
++                        element_state.drawn_at = window.draw_index;
+ 
+                         return (None, element_state);
+                     }
+ 
+-                    let refreshing = mem::replace(&mut window.refreshing, true);
++                    // rox patch: a re-render here no longer forces the cached views
++                    // inside it to re-render too. Each one replays when its own
++                    // cache key holds, nothing notified it, and it was drawn last
++                    // frame: a child skipped while this view replayed holds ranges
++                    // into an older frame. A split with one animating panel stops
++                    // rebuilding its siblings every frame. `window.refresh()` still
++                    // reaches everything.
+                     let prepaint_start = window.prepaint_index();
+                     let (mut element, accessed_entities) = cx.detect_accessed_entities(|cx| {
+                         let mut element = (self.render)(self, window, cx);
+@@ -232,7 +247,6 @@
+                     });
+ 
+                     let prepaint_end = window.prepaint_index();
+-                    window.refreshing = refreshing;
+ 
+                     (
+                         Some(element),
+@@ -240,6 +254,8 @@
+                             accessed_entities,
+                             prepaint_range: prepaint_start..prepaint_end,
+                             paint_range: PaintIndex::default()..PaintIndex::default(),
++                            paint_opacity: 1.0,
++                            drawn_at: window.draw_index,
+                             cache_key: ViewCacheKey {
+                                 bounds,
+                                 content_mask,
+@@ -276,7 +292,15 @@
+                             let refreshing = mem::replace(&mut window.refreshing, true);
+                             element.paint(window, cx);
+                             window.refreshing = refreshing;
++                            element_state.paint_opacity = window.element_opacity;
+                         } else {
++                            // rox patch: a fading ancestor changes what this paint would
++                            // look like without notifying it. Replay the stale frame and
++                            // re-render on the next one.
++                            if element_state.paint_opacity != window.element_opacity {
++                                let view = self.entity_id();
++                                window.on_next_frame(move |_, cx| cx.notify(view));
++                            }
+                             window.reuse_paint(element_state.paint_range.clone());
+                         }
+ 
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -867,6 +867,9 @@
+     pub(crate) needs_present: Rc<Cell<bool>>,
+     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
+     pub(crate) refreshing: bool,
++    /// rox patch: counts draws, so a cached view knows whether its recorded
++    /// ranges index the frame just finished. See `AnyView::prepaint`.
++    pub(crate) draw_index: u64,
+     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
+     pub(crate) focus: Option<FocusId>,
+     focus_enabled: bool,
+@@ -1256,6 +1259,7 @@
+             needs_present,
+             last_input_timestamp,
+             refreshing: false,
++            draw_index: 0,
+             activation_observers: SubscriberSet::new(),
+             focus: None,
+             focus_enabled: true,
+@@ -1953,6 +1957,7 @@
+     /// the contents of the new [`Scene`], use [`Self::present`].
+     #[profiling::function]
+     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
++        self.draw_index += 1;
+         self.invalidate_entities();
+         cx.entities.clear_accessed();
+         debug_assert!(self.rendered_entity_stack.is_empty());

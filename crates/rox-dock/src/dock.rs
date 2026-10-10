@@ -3,7 +3,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use gpui::{
-    App, AppContext, Axis, Context, Element, Empty, Entity, IntoElement, MouseMoveEvent,
+    AnyView, App, AppContext, Axis, Context, Element, Empty, Entity, IntoElement, MouseMoveEvent,
     MouseUpEvent, ParentElement as _, Pixels, Point, Render, Style, StyleRefinement, Styled as _,
     WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
@@ -388,8 +388,14 @@ impl Render for Dock {
                 this.h(px(29.))
             })
             .map(|this| match &self.panel {
-                DockItem::Split { view, .. } => this.child(view.clone()),
-                DockItem::Tabs { view, .. } => this.child(view.clone()),
+                // rox addition: cached like a lone panel, so a frame from the
+                // center doesn't rebuild the side docks.
+                DockItem::Split { view, .. } => {
+                    this.child(AnyView::from(view.clone()).cached(cache_style))
+                }
+                DockItem::Tabs { view, .. } => {
+                    this.child(AnyView::from(view.clone()).cached(cache_style))
+                }
                 DockItem::Panel { view, .. } => this.child(view.clone().view().cached(cache_style)),
                 // Not support to render Tiles and Tile into Dock
                 DockItem::Tiles { .. } => this,

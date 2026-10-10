@@ -6,7 +6,7 @@
 # Metal and D3D renderers skip the batch the way blade skips surfaces off mac.
 # macOS is meant to ride the macos-blade feature rather than a Metal port.
 #
-# Applies on top of post-process-pass.patch.
+# Applies on top of a6-post-process-pass.patch.
 diff -x .rox-stamp -ruN base/src/elements/mod.rs work/src/elements/mod.rs
 --- a/src/elements/mod.rs
 +++ b/src/elements/mod.rs

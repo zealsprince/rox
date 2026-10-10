@@ -5,12 +5,12 @@
 //! their own text sizes. The marquee crawl and the row cycle handle tight
 //! panels.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
-    Pixels, Rgba, ScrollHandle, SharedString, Stateful, Subscription, WeakEntity, Window, canvas,
-    div, point, prelude::*, px, rems, svg,
+    Pixels, Rgba, ScrollHandle, SharedString, Stateful, Subscription, Task, WeakEntity, Window,
+    canvas, div, point, prelude::*, px, rems, svg,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -436,12 +436,15 @@ impl MarqueeScroll {
     /// driving) it stays put once out and rested and raises `crawl_done`. The
     /// step clamps so a stalled frame never teleports the line.
     fn advance(&mut self, overflow: f32, speed: f32, park: bool) {
-        let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
+        let elapsed = self.last_tick.elapsed().as_secs_f32();
         self.last_tick = Instant::now();
+        // A rest sleeps on a timer instead of frames, so it counts the whole
+        // gap. Only the crawl step clamps.
         if self.hold > 0.0 {
-            self.hold -= dt;
+            self.hold -= elapsed;
             return;
         }
+        let dt = elapsed.min(0.1);
         if park && self.offset >= overflow {
             self.crawl_done = true;
             return;
@@ -468,6 +471,48 @@ impl MarqueeScroll {
         self.offset += speed * dt;
         if self.offset >= period {
             self.offset -= period;
+        }
+    }
+
+    /// Holds the line where it is. Restarting the clock keeps the first step
+    /// after a resume from jumping.
+    fn freeze(&mut self) {
+        self.last_tick = Instant::now();
+    }
+
+    /// Under the cycle a crawl parked at the end is still, and the cycle runs
+    /// its own frames.
+    fn motion(&self) -> Motion {
+        if self.hold > 0.0 {
+            Motion::Resting(self.hold)
+        } else if self.crawl_done {
+            Motion::Still
+        } else {
+            Motion::Crawling
+        }
+    }
+}
+
+/// What a marquee needs from the frames after this one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Motion {
+    Still,
+    /// Seconds until the crawl sets off again.
+    Resting(f32),
+    Crawling,
+}
+
+impl Motion {
+    /// The panel's need across its runs: any crawl wants every frame, and
+    /// otherwise the soonest rest decides the wake.
+    fn and(self, other: Motion) -> Motion {
+        match (self, other) {
+            (Motion::Crawling, _) | (_, Motion::Crawling) => Motion::Crawling,
+            (Motion::Resting(a), Motion::Resting(b)) => Motion::Resting(a.min(b)),
+            (Motion::Resting(secs), Motion::Still) | (Motion::Still, Motion::Resting(secs)) => {
+                Motion::Resting(secs)
+            }
+            (Motion::Still, Motion::Still) => Motion::Still,
         }
     }
 }
@@ -617,6 +662,9 @@ pub struct TrackInfoPanel {
     cycle: RowCycle,
     /// A track change starts the crawls over.
     marquee_key: Option<TrackKey>,
+    /// Wakes the panel when a resting crawl is due to set off, so a rest
+    /// costs no frames.
+    rest_wake: Option<Task<()>>,
     speed_scrub: ScrubState,
     delay_scrub: ScrubState,
     swap_scrub: ScrubState,
@@ -667,6 +715,7 @@ impl TrackInfoPanel {
             marquees: Vec::new(),
             cycle: RowCycle::new(),
             marquee_key: None,
+            rest_wake: None,
             speed_scrub: ScrubState::default(),
             delay_scrub: ScrubState::default(),
             swap_scrub: ScrubState::default(),
@@ -1266,13 +1315,14 @@ impl TrackInfoPanel {
             settings_ui::ceiling(SWAP_SECS_MIN, SWAP_SECS_MAX),
         );
 
-        let (now, active, ended, error) = {
+        let (now, active, ended, error, playing) = {
             let player = self.state.player.read(cx);
             (
                 player.now_playing(),
                 player.is_active(),
                 player.queue_ended(),
                 player.error(),
+                player.is_playing(),
             )
         };
 
@@ -1502,6 +1552,7 @@ impl TrackInfoPanel {
         let entity_id = cx.entity_id();
         let mut chip_iter = chips.into_iter();
         let mut run_ix = 0usize;
+        let mut motion = Motion::Still;
         let mut rows: Vec<Div> = Vec::new();
         for (row_ord, (scale_ix, bits)) in plans.into_iter().enumerate() {
             // A row waiting its turn renders nothing but still counts its bits past,
@@ -1559,10 +1610,13 @@ impl TrackInfoPanel {
                         marquee.cycling = cycling;
                         row = row.child(match mode {
                             MarqueeMode::Off => run_line(&segments).into_any_element(),
-                            MarqueeMode::Scroll | MarqueeMode::Loop => marquee_line(
-                                marquee, mode, speed, &segments, run_ix, entity_id, window,
-                            )
-                            .into_any_element(),
+                            MarqueeMode::Scroll | MarqueeMode::Loop => {
+                                let (line, needs) = marquee_line(
+                                    marquee, mode, speed, playing, &segments, run_ix, entity_id,
+                                );
+                                motion = motion.and(needs);
+                                line.into_any_element()
+                            }
                         });
                     }
                     RowBit::Fixed(InfoPiece::Output) => {
@@ -1623,7 +1677,27 @@ impl TrackInfoPanel {
             }
             rows.push(row);
         }
+        self.schedule_marquees(motion, window, cx);
         shell.children(rows)
+    }
+
+    /// A crawl runs on frames. A rest sleeps until it's due, so a panel
+    /// sitting between legs costs nothing, and a still line asks for nothing.
+    fn schedule_marquees(&mut self, motion: Motion, window: &mut Window, cx: &mut Context<Self>) {
+        self.rest_wake = match motion {
+            Motion::Crawling => {
+                window.request_animation_frame();
+                None
+            }
+            Motion::Resting(secs) => {
+                let due = Duration::from_secs_f32(secs.max(0.0));
+                Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(due).await;
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }))
+            }
+            Motion::Still => None,
+        };
     }
 }
 
@@ -1686,53 +1760,59 @@ fn run_row(segments: &[(String, bool)]) -> Div {
 }
 
 /// Scroll crawls out, rests, and crawls home; loop doubles the line and
-/// wraps the offset. `run_ix` keeps the boxes' ids apart across rows.
+/// wraps the offset. `run_ix` keeps the boxes' ids apart across rows. A
+/// paused player freezes the line where it stands.
 #[allow(clippy::too_many_arguments)]
 fn marquee_line(
     marquee: &mut MarqueeScroll,
     mode: MarqueeMode,
     speed: f32,
+    playing: bool,
     segments: &[(String, bool)],
     run_ix: usize,
     entity_id: EntityId,
-    window: &mut Window,
-) -> Stateful<Div> {
+) -> (Stateful<Div>, Motion) {
     // Both start at zero, so a fresh panel stays still until the first
     // layout.
     let container = f32::from(marquee.handle.bounds().size.width);
     let overflow = f32::from(marquee.handle.max_offset().width);
-    let moving = if mode == MarqueeMode::Loop {
-        if marquee.looping {
+    let (overflowing, motion) = match mode {
+        MarqueeMode::Loop if marquee.looping => {
             // The layout is doubled: peel the second copy and the gap back off.
             let line = (overflow + container - MARQUEE_GAP) / 2.0;
             if line <= container + 0.5 {
                 marquee.reset();
-                false
-            } else {
+                (false, Motion::Still)
+            } else if playing {
                 marquee.advance_loop(line + MARQUEE_GAP, speed);
-                true
+                (true, Motion::Crawling)
+            } else {
+                marquee.freeze();
+                (true, Motion::Still)
             }
-        } else if overflow > 0.0 {
-            marquee.looping = true;
-            true
-        } else {
-            false
         }
-    } else {
-        marquee.looping = false;
-        if overflow > 0.0 {
-            marquee.advance(overflow, speed, marquee.cycling);
-            true
-        } else {
-            if marquee.offset != 0.0 {
-                marquee.reset();
+        // One more frame lays the line out doubled.
+        MarqueeMode::Loop if overflow > 0.0 => {
+            marquee.looping = true;
+            (true, Motion::Crawling)
+        }
+        MarqueeMode::Loop => (false, Motion::Still),
+        _ => {
+            marquee.looping = false;
+            if overflow <= 0.0 {
+                if marquee.offset != 0.0 {
+                    marquee.reset();
+                }
+                (false, Motion::Still)
+            } else if playing {
+                marquee.advance(overflow, speed, marquee.cycling);
+                (true, marquee.motion())
+            } else {
+                marquee.freeze();
+                (true, Motion::Still)
             }
-            false
         }
     };
-    if moving {
-        window.request_animation_frame();
-    }
     marquee
         .handle
         .set_offset(point(px(-marquee.offset), px(0.)));
@@ -1744,7 +1824,7 @@ fn marquee_line(
     let probe = canvas(
         |_, _, _| {},
         move |_, _, window, _| {
-            if (handle.max_offset().width > px(0.)) != moving {
+            if (handle.max_offset().width > px(0.)) != overflowing {
                 window.on_next_frame(move |_, cx| cx.notify(entity_id));
             }
         },
@@ -1768,7 +1848,7 @@ fn marquee_line(
     // min_w_0 lets the box shrink below its content, and flex sizes the
     // child row at max-content. Lose either and there's no overflow to
     // crawl.
-    div()
+    let line = div()
         .id(("track-marquee", run_ix))
         .flex()
         .min_w_0()
@@ -1776,7 +1856,8 @@ fn marquee_line(
         .overflow_x_scroll()
         .track_scroll(&marquee.handle)
         .child(content)
-        .child(probe)
+        .child(probe);
+    (line, motion)
 }
 
 // The width is enough of the track info line to read a title.
@@ -1789,7 +1870,12 @@ transport_panel!(
 
 #[cfg(test)]
 mod tests {
-    use super::{InfoPiece, PieceTexts, RowBit, TrackInfoConfig, editor_rows, icons, row_bits};
+    use std::time::{Duration, Instant};
+
+    use super::{
+        InfoPiece, MarqueeScroll, Motion, PieceTexts, RowBit, TrackInfoConfig, editor_rows, icons,
+        row_bits,
+    };
     use crate::panel::Align;
 
     fn texts() -> PieceTexts {
@@ -1963,5 +2049,50 @@ mod tests {
         let rows = editor_rows(&items);
         assert!(rows == vec![vec![InfoPiece::Title], vec![]]);
         assert!(rows.join(&InfoPiece::Break) == items);
+    }
+
+    #[test]
+    fn a_crawl_outranks_a_rest_and_the_soonest_rest_wins() {
+        assert_eq!(
+            Motion::Still.and(Motion::Resting(2.0)),
+            Motion::Resting(2.0)
+        );
+        assert_eq!(
+            Motion::Resting(2.0).and(Motion::Resting(0.5)),
+            Motion::Resting(0.5)
+        );
+        assert_eq!(Motion::Resting(0.5).and(Motion::Crawling), Motion::Crawling);
+        assert_eq!(Motion::Still.and(Motion::Still), Motion::Still);
+    }
+
+    #[test]
+    fn one_late_frame_ends_a_rest() {
+        // The rest sleeps on a timer, so the wake-up frame has to count the
+        // whole gap rather than the clamped crawl step.
+        let mut marquee = MarqueeScroll::new();
+        marquee.last_tick = Instant::now() - Duration::from_secs_f32(marquee.hold + 0.5);
+        marquee.advance(100.0, 30.0, false);
+        assert_eq!(marquee.motion(), Motion::Crawling);
+        assert_eq!(marquee.offset, 0.0);
+    }
+
+    #[test]
+    fn reaching_the_end_rests_for_the_delay() {
+        let mut marquee = MarqueeScroll::new();
+        marquee.hold = 0.0;
+        marquee.offset = 99.0;
+        marquee.last_tick = Instant::now() - Duration::from_millis(100);
+        marquee.advance(100.0, 30.0, false);
+        assert_eq!(marquee.offset, 100.0);
+        assert_eq!(marquee.motion(), Motion::Resting(marquee.delay));
+    }
+
+    #[test]
+    fn a_crawl_parked_by_the_cycle_asks_for_nothing() {
+        let mut marquee = MarqueeScroll::new();
+        marquee.hold = 0.0;
+        marquee.offset = 100.0;
+        marquee.advance(100.0, 30.0, true);
+        assert_eq!(marquee.motion(), Motion::Still);
     }
 }

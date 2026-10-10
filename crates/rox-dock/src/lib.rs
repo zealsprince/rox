@@ -32,6 +32,7 @@ mod stack_panel;
 mod state;
 mod tab_panel;
 mod tiles;
+mod watch;
 
 // Also vendored: the dock uses pub(crate) internals of these three
 // upstream modules (panel-group mutation, tab offsets, history flags), so

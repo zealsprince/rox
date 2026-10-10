@@ -182,7 +182,7 @@ that stays a separate ticket either way.
 
 The event-loop blocker was resolved by patching the vendored gpui rather than
 waiting for a release, the same custody the shader work already needs:
-`patches/gpui/quit-keep-event-loop.patch` drops the last-window loop stop from
+`patches/gpui/a8-quit-keep-event-loop.patch` drops the last-window loop stop from
 the Wayland, X11, and Windows backends, with a note to delete the patch once a
 crates.io gpui ships `with_quit_mode`. rox already quits itself from
 `close_workspace_window`, so removing the auto-stop is the whole change.

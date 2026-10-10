@@ -1,7 +1,7 @@
 //! A panicking background task must not take the worker thread with it.
 //!
 //! The vendored gpui spawns with `propagate_panic(true)`
-//! (patches/gpui/z5-executor-propagate-panic.patch). Without it the worker
+//! (patches/gpui/c7-executor-propagate-panic.patch). Without it the worker
 //! dies for good and the awaiter gets "Task polled after completion".
 //! The dispatcher here is a stripped-down copy of the linux one.
 

@@ -76,3 +76,23 @@ already holds at the same second is the same play counted twice, rox's record an
 Last.fm's echo of it, and is dropped. That's the one delete of a listen outside a
 confirmed clear. With no Unknown row in the library, the relink is a single indexed
 probe.
+
+**Amended 2026-10-17: an Unknown row holds its place in a play.** Andrew's call, after
+Next on a playlist mixing local tracks and Unknown rows went straight to the next local
+track, as though the songs between weren't there. A play from a playlist or the history
+keeps its Unknown rows, each as a placeholder entry in the timeline
+([ADR 16](16-adr-play-queue.md)). The engine steps over a placeholder without a refusal
+and knows nothing more about it. The player searches a plugin for the song once its
+placeholder is next, from the start of the track before it, since a search and a pick
+take longer than an open. A hit goes in after the placeholder and the placeholder comes
+out. A miss takes it out quietly, with no message per song. A Next onto one waits for its
+search, and a second Next passes it.
+
+The plugin is the one the panel that started the play would search on a double click.
+A play no panel started, like a restored queue or continuation, takes the only plugin
+running, and with several running and none picked the placeholder is skipped.
+
+The row's listens and heart move to the found track when that track starts playing, not
+when the search finds it. A hit the listener skips past leaves the playlist as it was,
+since rewriting a member nobody heard would swap the song for a guess they never
+checked. A hearted row is still claimed by a listen on the same song.

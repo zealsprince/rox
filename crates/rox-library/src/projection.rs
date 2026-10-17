@@ -457,6 +457,7 @@ pub struct Builder {
     sub: Vec<u16>,
     folder: Vec<u32>,
     source: Vec<u32>,
+    comment: Vec<u32>,
     artists: Interner,
     album_artists: Interner,
     albums: Interner,
@@ -464,6 +465,7 @@ pub struct Builder {
     codecs: Interner,
     folders: Interner,
     sources: Interner,
+    comments: Interner,
     /// A row was refused because the title arena is full. The merge can go ahead;
     /// a patch can't, since dropping rows it was asked to apply leaves the
     /// projection disagreeing with the database.
@@ -471,14 +473,15 @@ pub struct Builder {
 }
 
 impl Builder {
-    /// Artist, album artist, album and genre fold case per the setting. Codecs
-    /// and folders stay exact.
+    /// Artist, album artist, album, genre and comment fold case per the
+    /// setting. Codecs and folders stay exact.
     fn new(fold: bool) -> Self {
         Builder {
             artists: Interner::folded(fold),
             album_artists: Interner::folded(fold),
             albums: Interner::folded(fold),
             genres: Interner::folded(fold),
+            comments: Interner::folded(fold),
             ..Default::default()
         }
     }
@@ -586,6 +589,7 @@ impl Builder {
         };
         self.folder.push(self.folders.intern(&folder, ""));
         self.source.push(self.sources.intern(row.source, ""));
+        self.comment.push(self.comments.intern(row.comment, ""));
         true
     }
 
@@ -775,6 +779,11 @@ pub struct Projection {
     pub spans: HashMap<u32, crate::cue::Span>,
     pub folder: Vec<u32>,
     pub source: Vec<u32>,
+    /// Interned like genre: 40-byte comments as per-row text plus a folded copy
+    /// come to about 880 MB at 10M tracks, more than the rest of the projection.
+    /// None when no row has one, the common case, and then `comments` holds the
+    /// empty string alone.
+    comment: Option<Vec<u32>>,
     pub artists: SymTable,
     pub album_artists: SymTable,
     pub albums: SymTable,
@@ -782,6 +791,7 @@ pub struct Projection {
     pub codecs: SymTable,
     pub folders: SymTable,
     pub sources: SymTable,
+    pub comments: SymTable,
     /// Filled on the first sort that needs it, reused until a patch moves the
     /// symbol table (see [`Projection::invalidate`]).
     artist_ranks: OnceLock<Vec<u32>>,
@@ -789,6 +799,7 @@ pub struct Projection {
     album_ranks: OnceLock<Vec<u32>>,
     genre_ranks: OnceLock<Vec<u32>>,
     codec_ranks: OnceLock<Vec<u32>>,
+    comment_ranks: OnceLock<Vec<u32>>,
     /// Ranks by sort name alone for the sort columns. Boxed like [`SymIndex`]:
     /// the projection travels inside a message, and three inline `OnceLock`s add
     /// a hundred bytes to every load.
@@ -842,6 +853,7 @@ struct SymIndex {
     codecs: Option<HashMap<Box<str>, u32>>,
     folders: Option<HashMap<Box<str>, u32>>,
     sources: Option<HashMap<Box<str>, u32>>,
+    comments: Option<HashMap<Box<str>, u32>>,
 }
 
 impl SymIndex {
@@ -854,6 +866,7 @@ impl SymIndex {
             &self.codecs,
             &self.folders,
             &self.sources,
+            &self.comments,
         ]
         .into_iter()
         .flatten()
@@ -911,6 +924,8 @@ pub struct RowView<'a> {
     pub folder: &'a str,
     pub source: &'a str,
     pub sub: u16,
+    /// Empty when the file has none.
+    pub comment: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -947,6 +962,9 @@ pub enum QueryField {
     Codec,
     /// Matches the server name too, since the stored string is a digest.
     Source,
+    /// Pin-only: tagger comments are often codes, and a bare "dnb" shouldn't
+    /// take every "P_dnb" track.
+    Comment,
     /// Numeric pins take a comparison: `rating:>=4`, `plays:0`, `added:<90d`.
     /// Pin-only, since a bare number is a plausible title or year.
     Rating,
@@ -983,6 +1001,7 @@ pub const QUERY_FIELDS: &[(&str, QueryField)] = &[
     ("folder", QueryField::Folder),
     ("codec", QueryField::Codec),
     ("source", QueryField::Source),
+    ("comment", QueryField::Comment),
     ("rating", QueryField::Rating),
     ("plays", QueryField::Plays),
     ("added", QueryField::Added),
@@ -1197,6 +1216,8 @@ pub enum FilterField {
     /// The stored string, "local" or "subsonic:<digest>", so renaming a server
     /// keeps its pick.
     Source,
+    /// One item of the comment's list, per [`comment_items`].
+    Comment,
 }
 
 /// The filter panel's state: values OR within a field, fields AND across.
@@ -1296,6 +1317,8 @@ impl FilterSet {
                 }
                 FilterField::Year => values.contains(&fields.year.to_string()),
                 FilterField::Source => values.iter().any(|v| v == fields.source),
+                // A plain row list carries no comment, so no row is known to hold the pick.
+                FilterField::Comment => false,
             }
         })
     }
@@ -1316,6 +1339,37 @@ pub struct TrackFields<'a> {
     /// The folder is the parent directory, resolved like the projection's.
     pub path: &'a str,
     pub source: &'a str,
+}
+
+/// The items of a comment holding a list, "P_dnb, P_chill" or "P_dnb; P_chill".
+/// Commas always split here, whatever the genre setting says: a tagger packing
+/// codes into a comment has no single-name reading to protect.
+pub fn comment_items(s: &str) -> impl Iterator<Item = &str> {
+    s.split([',', ';'])
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+}
+
+/// Whether `pick` is one of the comment's items. An empty pick matches only a
+/// comment with none, which is the facet's Unknown.
+pub fn comment_has(s: &str, pick: &str, fold: bool) -> bool {
+    if pick.is_empty() {
+        return comment_items(s).next().is_none();
+    }
+
+    comment_items(s).any(|item| crate::value_eq(item, pick, fold))
+}
+
+/// The table a projection with no comments carries, so the empty string is
+/// always symbol 0 there and a patch that brings the first comment can pad
+/// every existing row with it.
+fn blank_comments() -> SymTable {
+    SymTable {
+        strings: vec![String::new()],
+        lower: vec![String::new()],
+        sort: Vec::new(),
+        sort_lower: Vec::new(),
+    }
 }
 
 /// With a separator boundary, so "Music/Air" never pulls in "Music/Airborne".
@@ -1385,12 +1439,14 @@ pub trait Filterable {
 /// Whether one track's fields satisfy every term, the same rules as
 /// [`Projection::search`].
 ///
-/// Numeric pins match nothing here, in every mode: a plain row list has no
-/// rating, plays or added columns, and a row whose rating was never seen isn't
-/// known to be under four stars either.
+/// Numeric and comment pins match nothing here, in every mode: a plain row
+/// list has no rating, plays, added or comment columns, and a row whose rating
+/// was never seen isn't known to be under four stars either.
 pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
     terms.iter().all(|t| {
-        if t.field.is_some_and(QueryField::numeric) {
+        if t.field
+            .is_some_and(|f| f.numeric() || f == QueryField::Comment)
+        {
             return false;
         }
         if t.mode == TermMode::Absent {
@@ -1422,7 +1478,9 @@ pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
             Some(QueryField::Codec) => contains_fold(fields.codec, &t.needle),
             Some(QueryField::Source) => source_hit(fields.source, &t.needle),
             Some(QueryField::Year) => fields.year.to_string().contains(t.needle.as_str()),
-            Some(QueryField::Rating | QueryField::Plays | QueryField::Added) => false,
+            Some(
+                QueryField::Rating | QueryField::Plays | QueryField::Added | QueryField::Comment,
+            ) => false,
         };
         hit != t.negated()
     })
@@ -1460,6 +1518,7 @@ pub enum SortKey {
     Bpm,
     /// Ordered by the name the source shows under.
     Source,
+    Comment,
 }
 
 /// `order_view` reverses the whole key on a descending sort, so the groups
@@ -1760,6 +1819,7 @@ impl Projection {
         let mut codecs = Interner::default();
         let mut folders = Interner::default();
         let mut sources = Interner::default();
+        let mut comments = Interner::folded(fold);
         let total: usize = shards.iter().map(|s| s.db_id.len()).sum();
 
         let mut out = Builder::default();
@@ -1785,6 +1845,7 @@ impl Projection {
         out.sub.reserve(total);
         out.folder.reserve(total);
         out.source.reserve(total);
+        out.comment.reserve(total);
 
         for shard in shards {
             // Drop a shard that won't fit whole: half a shard would shift every row
@@ -1806,6 +1867,7 @@ impl Projection {
             let map_c = codecs.absorb(&shard.codecs);
             let map_f = folders.absorb(&shard.folders);
             let map_s = sources.absorb(&shard.sources);
+            let map_cm = comments.absorb(&shard.comments);
             out.db_id.extend_from_slice(&shard.db_id);
             out.title.append(&shard.title);
             out.title_lower.append(&shard.title_lower);
@@ -1839,6 +1901,8 @@ impl Projection {
                 .extend(shard.folder.iter().map(|&s| map_f[s as usize]));
             out.source
                 .extend(shard.source.iter().map(|&s| map_s[s as usize]));
+            out.comment
+                .extend(shard.comment.iter().map(|&s| map_cm[s as usize]));
         }
 
         let rows = out.db_id.len();
@@ -1849,6 +1913,13 @@ impl Projection {
             None
         } else {
             Some((out.title_sort, out.title_sort_lower))
+        };
+        // The column only survives the load when some row has a comment.
+        let comments = SymTable::from(comments);
+        let (comment, comments) = if comments.strings.iter().all(String::is_empty) {
+            (None, blank_comments())
+        } else {
+            (Some(out.comment), comments)
         };
         // Resolved per source symbol, a handful of checks, then read onto the rows.
         let sources = SymTable::from(sources);
@@ -1891,6 +1962,7 @@ impl Projection {
             plays,
             folder: out.folder,
             source: out.source,
+            comment,
             artists: SymTable::from(artists),
             album_artists: SymTable::from(album_artists),
             albums: SymTable::from(albums),
@@ -1898,11 +1970,13 @@ impl Projection {
             codecs: SymTable::from(codecs),
             folders: SymTable::from(folders),
             sources,
+            comments,
             artist_ranks: OnceLock::new(),
             album_artist_ranks: OnceLock::new(),
             album_ranks: OnceLock::new(),
             genre_ranks: OnceLock::new(),
             codec_ranks: OnceLock::new(),
+            comment_ranks: OnceLock::new(),
             sort_ranks: OnceLock::new(),
             distinct_artists: OnceLock::new(),
             distinct_albums: OnceLock::new(),
@@ -1947,7 +2021,17 @@ impl Projection {
             folder: &self.folders.strings[self.folder[i] as usize],
             source: &self.sources.strings[self.source[i] as usize],
             sub: self.sub[i],
+            comment: self.comment(i),
         }
+    }
+
+    /// The row's symbol in [`Projection::comments`].
+    pub fn comment_sym(&self, row: usize) -> u32 {
+        self.comment.as_ref().map_or(0, |column| column[row])
+    }
+
+    pub fn comment(&self, row: usize) -> &str {
+        &self.comments.strings[self.comment_sym(row) as usize]
     }
 
     pub fn title_sort(&self, row: usize) -> &str {
@@ -2100,6 +2184,9 @@ impl Projection {
             },
             Title(memmem::Finder<'a>),
             TitleEmpty,
+            /// Over [`Projection::comments`]. Its own arm because the column can
+            /// be absent.
+            Comment(Vec<bool>),
             Year(Vec<bool>),
             Num(QueryField, NumTerm),
         }
@@ -2141,6 +2228,7 @@ impl Projection {
                     column: &self.genre,
                     mask: empty_syms(&self.genres),
                 },
+                QueryField::Comment => Hits::Comment(empty_syms(&self.comments)),
                 QueryField::Year => {
                     let mut mask = vec![false; u16::MAX as usize + 1];
                     mask[0] = true;
@@ -2205,6 +2293,7 @@ impl Projection {
                                 .map(|s| source_hit(s, &t.needle))
                                 .collect(),
                         },
+                        Some(QueryField::Comment) => Hits::Comment(hit(&self.comments, &t.needle)),
                         Some(QueryField::Title) => {
                             Hits::Title(memmem::Finder::new(t.needle.as_bytes()))
                         }
@@ -2248,6 +2337,7 @@ impl Projection {
                     Hits::Sym { column, mask } => mask[column[i] as usize],
                     Hits::Title(finder) => self.title_hit(finder, i),
                     Hits::TitleEmpty => self.title_lower.get(i).is_empty(),
+                    Hits::Comment(mask) => mask[self.comment_sym(i) as usize],
                     Hits::Year(mask) => mask[self.year[i] as usize],
                     Hits::Num(field, num) => num.holds(match field {
                         QueryField::Rating => rating_stars(self.rating[i].load(Ordering::Relaxed)),
@@ -2392,6 +2482,7 @@ impl Projection {
 
         enum Check<'a> {
             Sym { column: &'a [u32], ok: Vec<bool> },
+            Comment(Vec<bool>),
             Year(Vec<bool>),
         }
 
@@ -2448,6 +2539,13 @@ impl Projection {
                         .map(|s| values.iter().any(|v| v == s))
                         .collect(),
                 },
+                FilterField::Comment => Check::Comment(
+                    self.comments
+                        .strings
+                        .iter()
+                        .map(|s| values.iter().any(|v| comment_has(s, v, fold)))
+                        .collect(),
+                ),
                 FilterField::Year => {
                     let mut ok = vec![false; usize::from(u16::MAX) + 1];
                     for v in values {
@@ -2479,6 +2577,7 @@ impl Projection {
                     }
                     checks.iter().all(|c| match c {
                         Check::Sym { column, ok } => ok[column[i] as usize],
+                        Check::Comment(ok) => ok[self.comment_sym(i) as usize],
                         Check::Year(ok) => ok[self.year[i] as usize],
                     })
                 })
@@ -2588,6 +2687,10 @@ impl Projection {
     }
     fn codec_ranks(&self) -> &[u32] {
         self.codec_ranks.get_or_init(|| Self::ranks(&self.codecs))
+    }
+    fn comment_ranks(&self) -> &[u32] {
+        self.comment_ranks
+            .get_or_init(|| Self::ranks(&self.comments))
     }
 
     /// Not cached: a server rename changes the name under a standing projection.
@@ -2845,6 +2948,12 @@ impl Projection {
                 let rank = self.source_ranks();
                 self.order_view(view, descending, move |i| rank[self.source[i] as usize])
             }
+            SortKey::Comment => {
+                let rank = self.comment_ranks();
+                self.order_view(view, descending, move |i| {
+                    rank[self.comment_sym(i) as usize]
+                })
+            }
             SortKey::Bitrate => self.order_view(view, descending, |i| self.bitrate_kbps[i]),
             SortKey::SampleRate => self.order_view(view, descending, |i| self.sample_rate_hz[i]),
             SortKey::BitDepth => self.order_view(view, descending, |i| self.bit_depth[i]),
@@ -2981,13 +3090,19 @@ impl Projection {
         let c = absorb_shard(&mut self.codecs, &mut sym.codecs, false, &shard.codecs);
         let f = absorb_shard(&mut self.folders, &mut sym.folders, false, &shard.folders);
         let s = absorb_shard(&mut self.sources, &mut sym.sources, false, &shard.sources);
+        let cm = absorb_shard(&mut self.comments, &mut sym.comments, fold, &shard.comments);
         self.sym_index = Some(sym);
-        let tables = [&a, &aa, &b, &g, &c, &f, &s];
+        // The first comment in the library turns the column on. Without one the
+        // table is the empty string alone, so symbol 0 pads every existing row.
+        if self.comment.is_none() && shard.comments.table.iter().any(|c| !c.is_empty()) {
+            self.comment = Some(vec![0; self.len()]);
+        }
+        let tables = [&a, &aa, &b, &g, &c, &f, &s, &cm];
         let symbols_moved = tables.iter().any(|t| t.moved);
         // Every table: a caller may keep an order sorted on any of them.
         let reordered = tables.iter().any(|t| t.reordered);
-        let (map_a, map_aa, map_b, map_g, map_c, map_f, map_s) =
-            (a.map, aa.map, b.map, g.map, c.map, f.map, s.map);
+        let (map_a, map_aa, map_b, map_g, map_c, map_f, map_s, map_cm) =
+            (a.map, aa.map, b.map, g.map, c.map, f.map, s.map, cm.map);
 
         let mut patch = Patch {
             reordered,
@@ -3029,6 +3144,9 @@ impl Projection {
             self.folder.push(map_f[shard.folder[i] as usize]);
             let source = map_s[shard.source[i] as usize];
             self.source.push(source);
+            if let Some(column) = &mut self.comment {
+                column.push(map_cm[shard.comment[i] as usize]);
+            }
             self.dead.push(false);
             self.browsable.push(
                 source_browsable(&self.sources.strings[source as usize])
@@ -3164,6 +3282,7 @@ impl Projection {
             self.album_ranks = OnceLock::new();
             self.genre_ranks = OnceLock::new();
             self.codec_ranks = OnceLock::new();
+            self.comment_ranks = OnceLock::new();
             self.sort_ranks = OnceLock::new();
         }
     }
@@ -3182,7 +3301,8 @@ impl Projection {
                 + self.genre.capacity()
                 + self.codec.capacity()
                 + self.folder.capacity()
-                + self.source.capacity())
+                + self.source.capacity()
+                + self.comment.as_ref().map_or(0, Vec::capacity))
                 * 4
             + (self.year.capacity()
                 + self.disc_no.capacity()
@@ -3200,6 +3320,7 @@ impl Projection {
             + self.codecs.heap_bytes()
             + self.folders.heap_bytes()
             + self.sources.heap_bytes()
+            + self.comments.heap_bytes()
             + self.dead.capacity()
             + self.browsable.capacity()
             + self.hidden.capacity()
@@ -3230,6 +3351,7 @@ mod tests {
             album_artist: "Various Artists".into(),
             album: album.into(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no,
             track_no,
@@ -3262,6 +3384,7 @@ mod tests {
             album_artist: String::new(),
             album: String::new(),
             genre: String::new(),
+            comment: String::new(),
             year,
             disc_no: 0,
             track_no: 0,
@@ -4814,6 +4937,7 @@ mod tests {
                 album_artist: album_artist.into(),
                 album: album.into(),
                 genre: String::new(),
+                comment: String::new(),
                 year: 0,
                 disc_no: 0,
                 track_no: 0,
@@ -5124,6 +5248,7 @@ mod tests {
                 album_artist: album_artist.into(),
                 album: album.into(),
                 genre: String::new(),
+                comment: String::new(),
                 year: 0,
                 disc_no: 0,
                 track_no: 0,
@@ -5218,6 +5343,7 @@ mod tests {
                 album_artist: album_artist.into(),
                 album: album.into(),
                 genre: String::new(),
+                comment: String::new(),
                 year: 0,
                 disc_no: 0,
                 track_no: 0,
@@ -5400,7 +5526,7 @@ mod tests {
              {track_gain:?}/{album_gain:?} {bpm:?} {bpm_source:?} {source:?} {folder:?} sub{sub} \
              sorts {title_sort:?}/{artist_sort:?}/{aa_sort:?}/{album_sort:?} \
              keys {title_key:?}/{artist_key:?}/{aa_key:?}/{album_key:?}/{genre_key:?} \
-             span {span:?}",
+             span {span:?} comment {comment:?}",
             id = p.db_id[i],
             title = v.title,
             artist = v.artist,
@@ -5435,6 +5561,7 @@ mod tests {
             album_key = p.albums.sort_key(p.album[i] as usize),
             genre_key = p.genres.sort_key(p.genre[i] as usize),
             span = p.span(row),
+            comment = v.comment,
         )
     }
 
@@ -6171,5 +6298,203 @@ mod tests {
         let one = id_of(&conn, "/m/A/1.flac");
         let shard = shard_for_ids(&conn, &[one, one, one], false).unwrap();
         assert_eq!(shard.ids(), [one]);
+    }
+
+    fn commented(path: &str, title: &str, comment: &str) -> TrackRow {
+        let mut row = track(path, title, "Aviary", 2001);
+        row.comment = comment.into();
+        row
+    }
+
+    fn comment_library(name: &str) -> (std::path::PathBuf, rusqlite::Connection) {
+        sorted_library(
+            name,
+            &[
+                commented("/m/1.flac", "One", "P_dnb, P_chill"),
+                commented("/m/2.flac", "Two", "P_dnb"),
+                commented("/m/3.flac", "Three", ""),
+                commented("/m/4.flac", "Four", "Ripped from vinyl"),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_library_without_comments_carries_no_comment_column() {
+        let (db, conn) = sorted_library(
+            "comment-absent",
+            &[
+                track("/m/1.mp3", "One", "Alpha", 2000),
+                track("/m/2.mp3", "Two", "Beta", 2001),
+            ],
+        );
+        for p in [
+            Projection::load_serial(&conn, false).unwrap(),
+            Projection::load_parallel(&db, 2, false).unwrap(),
+        ] {
+            assert!(p.comment.is_none());
+            assert_eq!(p.comments.strings, [""]);
+            assert_eq!(p.resolve(0).comment, "");
+            assert!(titles_for(&p, "comment:one").is_empty());
+            assert_eq!(titles_for(&p, "-comment").len(), 2);
+        }
+    }
+
+    #[test]
+    fn comments_intern_into_one_column_when_any_row_has_one() {
+        let (db, conn) = comment_library("comment-interned");
+        for p in [
+            Projection::load_serial(&conn, false).unwrap(),
+            Projection::load_parallel(&db, 2, false).unwrap(),
+        ] {
+            assert!(p.comment.is_some());
+            let mut table = p.comments.strings.clone();
+            table.sort();
+            assert_eq!(table, ["", "P_dnb", "P_dnb, P_chill", "Ripped from vinyl"]);
+
+            let one = (0..p.len()).find(|&i| p.title.get(i) == "One").unwrap();
+            assert_eq!(p.resolve(one as u32).comment, "P_dnb, P_chill");
+        }
+    }
+
+    #[test]
+    fn a_folded_library_interns_comment_casings_together() {
+        let (_db, conn) = sorted_library(
+            "comment-folded",
+            &[
+                commented("/m/1.flac", "One", "P_dnb"),
+                commented("/m/2.flac", "Two", "P_dnb"),
+                commented("/m/3.flac", "Three", "p_DNB"),
+            ],
+        );
+        let p = Projection::load_serial(&conn, true).unwrap();
+        assert_eq!(p.comments.strings, ["P_dnb"]);
+
+        let exact = Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(exact.comments.strings.len(), 2);
+    }
+
+    #[test]
+    fn only_a_pinned_term_reaches_the_comment() {
+        let (_db, conn) = comment_library("comment-pinned");
+        let p = Projection::load_serial(&conn, false).unwrap();
+
+        assert!(
+            titles_for(&p, "dnb").is_empty(),
+            "a bare word skips comments"
+        );
+        assert!(titles_for(&p, "vinyl").is_empty());
+
+        let mut hits = titles_for(&p, "comment:p_dnb");
+        hits.sort();
+        assert_eq!(hits, ["One", "Two"]);
+        assert_eq!(titles_for(&p, "comment:chill"), ["One"]);
+        assert_eq!(titles_for(&p, r#"comment:"from vinyl""#), ["Four"]);
+
+        assert_eq!(titles_for(&p, "-comment"), ["Three"]);
+        let mut rest = titles_for(&p, "-comment:dnb");
+        rest.sort();
+        assert_eq!(rest, ["Four", "Three"]);
+    }
+
+    #[test]
+    fn a_plain_row_list_never_matches_a_comment_pin() {
+        let fields = TrackFields {
+            db_id: Some(1),
+            title: "dnb",
+            artist: "",
+            album_artist: "",
+            album: "",
+            genre: "",
+            year: 0,
+            codec: "",
+            path: "/m/1.flac",
+            source: "local",
+        };
+        assert!(track_matches(&parse_query("dnb"), &fields));
+        assert!(!track_matches(&parse_query("comment:dnb"), &fields));
+        assert!(!track_matches(&parse_query("-comment"), &fields));
+    }
+
+    #[test]
+    fn the_comment_column_sorts_by_comment() {
+        let (_db, conn) = comment_library("comment-sort");
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let view: Vec<u32> = (0..p.len() as u32).collect();
+        let titles = |order: Vec<u32>| -> Vec<&str> {
+            order.iter().map(|&i| p.title.get(i as usize)).collect()
+        };
+
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::Comment, false)),
+            ["Three", "Two", "One", "Four"]
+        );
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::Comment, true)),
+            ["Four", "One", "Two", "Three"]
+        );
+    }
+
+    #[test]
+    fn a_comment_pick_takes_one_item_of_the_list() {
+        let (_db, conn) = comment_library("comment-filter");
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let picked = |value: &str| -> Vec<&str> {
+            let mut filter = FilterSet::default();
+            filter.toggle(FilterField::Comment, value);
+            let mask = p.filter_mask(&filter).unwrap();
+            let mut titles: Vec<&str> = (0..p.len())
+                .filter(|&i| mask[i])
+                .map(|i| p.title.get(i))
+                .collect();
+            titles.sort();
+            titles
+        };
+
+        assert_eq!(picked("P_dnb"), ["One", "Two"]);
+        assert_eq!(picked("P_chill"), ["One"]);
+        assert!(picked("P_d").is_empty(), "a pick is a whole item");
+        assert_eq!(picked(""), ["Three"]);
+    }
+
+    #[test]
+    fn comment_items_split_on_commas_and_semicolons() {
+        assert_eq!(
+            comment_items(" P_dnb, P_chill;P_live ,, ").collect::<Vec<_>>(),
+            ["P_dnb", "P_chill", "P_live"]
+        );
+        assert!(comment_has("P_dnb, P_chill", "p_chill", true));
+        assert!(!comment_has("P_dnb, P_chill", "p_chill", false));
+        assert!(comment_has("", "", false));
+        assert!(!comment_has("P_dnb", "", false));
+    }
+
+    #[test]
+    fn a_patch_turns_the_comment_column_on() {
+        let (_db, mut conn) = library_for(
+            "comment-patch",
+            &[
+                full_row("/m/A/1.flac", "Alder", "Aviary", "First", 1, 1),
+                full_row("/m/A/2.flac", "Ash", "Aviary", "First", 1, 2),
+            ],
+        );
+        let mut live = Live::load(&conn, false);
+        assert!(live.projection.comment.is_none());
+
+        let mut tagged = full_row("/m/A/2.flac", "Ash", "Aviary", "First", 1, 2);
+        tagged.comment = "P_dnb".into();
+        let arrival = full_row("/m/A/3.flac", "Aspen", "Aviary", "First", 1, 3);
+        store::insert_batch(&mut conn, &[tagged, arrival]).unwrap();
+        let changed = vec![id_of(&conn, "/m/A/2.flac"), id_of(&conn, "/m/A/3.flac")];
+        live.sync(&conn, &changed, &[]);
+
+        assert!(live.projection.comment.is_some());
+        assert_eq!(titles_for(&live.projection, "comment:dnb"), ["Ash"]);
+        assert_eq!(titles_for(&live.projection, "-comment").len(), 2);
+
+        let fresh = Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(
+            snapshot_all(&live.projection, &live.order),
+            snapshot_all(&fresh, &fresh.sort_canonical())
+        );
     }
 }

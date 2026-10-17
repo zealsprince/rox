@@ -87,6 +87,8 @@ pub struct FolderTreeConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub cover: CoverArt,
+    /// Tints every other visible row, folders and songs alike.
+    pub stripes: bool,
     /// What happens to folders with no match under the active query.
     pub folders: FilterEffect,
     /// What happens to non-matching songs inside a folder that's shown.
@@ -114,6 +116,7 @@ impl Default for FolderTreeConfig {
         FolderTreeConfig {
             chrome: PanelChrome::default(),
             cover: CoverArt::default(),
+            stripes: true,
             // Hide folders that miss so a search narrows the tree; dim stray songs so
             // a folder still shows its whole contents.
             folders: FilterEffect::Hide,
@@ -1395,6 +1398,9 @@ impl FolderTreePanel {
                 .gap(tokens::SPACE_XS)
                 .cursor_pointer()
                 .when(dimmed, |d| d.opacity(DIM))
+                .when(self.config.stripes && !ix.is_multiple_of(2), |d| {
+                    d.bg(palette::alpha(palette::bg_elevated(), 0x80))
+                })
                 .when(lit, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
                 .hover(|d| d.bg(palette::bg_control_hover()))
                 .on_mouse_down(
@@ -1712,6 +1718,9 @@ impl PanelSettings for FolderTreePanel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
                 rox_i18n::t!("folder-tree-cover-art"),
                 Some(rox_i18n::t!("folder-tree-cover-art.description")),
@@ -1724,6 +1733,18 @@ impl PanelSettings for FolderTreePanel {
                     ],
                     self.config.cover,
                     |this: &mut Self, cover, cx| this.set_cover(cover, cx),
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                rox_i18n::t!("library-stripes"),
+                Some(rox_i18n::t!("folder-tree-stripes-description")),
+                panel::toggle(
+                    self.config.stripes,
+                    |this: &mut Self, on, cx| {
+                        this.config.stripes = on;
+                        cx.notify();
+                    },
                     cx,
                 ),
             ))
@@ -2598,5 +2619,19 @@ mod tests {
         let restored: FolderTreeConfig = serde_json::from_str(&saved).unwrap();
         assert_eq!(restored.expanded, ["Mixes"]);
         assert_eq!(restored.expanded_cues, [PathBuf::from("Mixes/mix.flac")]);
+    }
+
+    #[test]
+    fn stripes_default_on_and_round_trip() {
+        let old: FolderTreeConfig = serde_json::from_str(r#"{"expanded":["Mixes"]}"#).unwrap();
+        assert!(old.stripes);
+
+        let config = FolderTreeConfig {
+            stripes: false,
+            ..old
+        };
+        let saved = serde_json::to_string(&config).unwrap();
+        let restored: FolderTreeConfig = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.stripes);
     }
 }

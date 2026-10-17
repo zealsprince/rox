@@ -65,8 +65,8 @@ use rox_core::settings::{
     set_experimental, set_fold_case, set_gain_mode, set_hide_menubar, set_language,
     set_menubar_buttons, set_os_decorations, set_plugin_favourites, set_plugins_enabled,
     set_quit_to_tray, set_rating_dots, set_rating_style, set_resize_border, set_resize_lock,
-    set_seams, set_show_readings, set_tempo_analysis, set_theme, set_workspace_migrator,
-    split_folders, window_decorations,
+    set_seams, set_show_readings, set_tempo_analysis, set_theme, set_unknown_plugin,
+    set_workspace_migrator, split_folders, window_decorations,
 };
 use rox_core::{APP_ID, logging};
 use rox_design::assets::Assets;
@@ -231,7 +231,7 @@ fn install_openers() {
         host_settings_item: composite::host_settings_item,
         confirm_close_locked,
         task_started: tasks_window::repaint_while_running,
-        go_to_source: rox_panels::source_browser::go_to_source,
+        go_to_source: workspace::go_to_source,
     });
 }
 
@@ -409,6 +409,7 @@ fn main() {
         set_experimental(settings.experimental, cx);
         set_plugins_enabled(settings.plugins_enabled, cx);
         set_plugin_favourites(settings.plugin_favourites, cx);
+        set_unknown_plugin(settings.unknown_plugin.clone());
         rox_plugins::search::set_extra_dirs(split_folders(&settings.program_folders));
         set_acoustic_analysis(settings.acoustic_analysis, cx);
         set_tempo_analysis(settings.tempo_analysis, cx);

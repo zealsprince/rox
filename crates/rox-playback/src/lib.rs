@@ -23,6 +23,9 @@ pub mod opus;
 pub mod output;
 pub mod plugin;
 pub mod resample;
+// macOS needs nothing from it: the HAL owns the IO thread in both modes.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod rt;
 pub mod shared;
 pub mod tape;
 

@@ -87,6 +87,7 @@ fn field_label(field: FilterField) -> gpui::SharedString {
         FilterField::Year => rox_i18n::t!("filter-field-year"),
         FilterField::Folder => rox_i18n::t!("filter-field-folder"),
         FilterField::Source => rox_i18n::t!("filter-field-source"),
+        FilterField::Comment => rox_i18n::t!("filter-field-comment"),
     }
 }
 

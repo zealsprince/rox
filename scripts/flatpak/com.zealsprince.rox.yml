@@ -43,6 +43,8 @@ finish-args:
   # the same grant.
   - --device=all
   - --socket=pulseaudio
+  # Real-time priority for the output threads goes through RTKit.
+  - --system-talk-name=org.freedesktop.RealtimeKit1
   # Scrobbling, lyrics, MusicBrainz, AcoustID, the update check.
   - --share=network
   # The Strawberry set: the music folder and mounted drives. A library

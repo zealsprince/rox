@@ -386,6 +386,7 @@ impl CompletionProvider for QuerySuggestions {
                 QueryField::Genre => projection.genre_terms(),
                 QueryField::Folder => &projection.folders,
                 QueryField::Codec => &projection.codecs,
+                QueryField::Comment => &projection.comments,
                 // By display name, since a server's stored string is a digest.
                 // Only browsable sources.
                 QueryField::Source => {

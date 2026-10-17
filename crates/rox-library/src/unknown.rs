@@ -7,9 +7,10 @@
 //! A love the loved-tracks import can't match lands on one too, as a
 //! favourite.
 //!
-//! An Unknown row never plays and never browses or searches. Only the
-//! history and the favourites read it. When a copy turns up, [`adopt`] hands
-//! its listens and its heart over and drops it.
+//! An Unknown row has nothing to play and never browses or searches. Only
+//! the history and the favourites read it, and a play started there queues
+//! it as a placeholder for a plugin search to fill. When a copy turns up,
+//! [`adopt`] hands its listens and its heart over and drops it.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -195,6 +196,7 @@ mod tests {
             album_artist_sort: String::new(),
             album_sort: String::new(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 1,

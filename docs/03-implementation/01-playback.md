@@ -30,7 +30,7 @@ output callback owns nothing.
 
 - **Sample ring**: rtrb SPSC, `f32` interleaved stereo at the device rate, allocated
   once at stream open. Capacity 500 ms (`device_rate` / 2 frames, so 24,000 at 48 kHz).
-  Deep enough that a 3 ms decode-thread nap or a metadata hiccup never starves the
+  Deep enough that the decode thread's nap or a metadata hiccup never starves the
   callback; shallow enough that it drains fast on flush. The capacity is fixed for the
   life of the stream. How full the decode thread lets it get isn't; see the fill gate
   under the decode loop.
@@ -38,9 +38,11 @@ output callback owns nothing.
   of every frame it plays and ignores push failure. A slow visualizer loses samples,
   never slows audio. Pre-volume, so the spectrum and signals track the program
   material, not the listening level; chain DSP still shows because it runs upstream.
-- **Commands**: `std::sync::mpsc` into the decode thread, drained with `try_recv` at
-  the top of every loop iteration. The decode loop naps 3 ms when the ring is full and
-  20 ms when idle, so worst-case command latency stays under one video frame.
+- **Commands**: `std::sync::mpsc` into the decode thread, drained at the top of every
+  loop iteration. With the ring full the decode thread naps on that channel for half of
+  what's buffered (a quarter under a latency hold, 16 ms on a station, 250 ms at most),
+  and a command ends the nap at once, so command latency is one pass rather than the
+  nap. Paused, hung up, or played out, the thread wakes four times a second.
 
 The shared state is one `Arc`: atomics the callback may touch (`playing`, `flush`,
 `volume_bits` as f32 bits in an `AtomicU32`, `frames_consumed`, `ended`) and two
@@ -50,8 +52,9 @@ mutex-guarded lists (`segments`, per-track display info) the callback never touc
 
 The hard line from the components spec, as actual rules:
 
-- Pops the sample ring only in whole stereo frames (`slots() >= 2`), so interleave
-  can't slip. A dry ring means underrun or end of queue: emit silence, count nothing.
+- Reads the sample ring in one chunk of whole stereo frames per call, so interleave
+  can't slip and the ring costs a fence per callback rather than two per frame. A dry
+  ring means underrun or end of queue: emit silence, count nothing.
 - Paused: emit silence, pop nothing. The position clock freezes on the exact sample.
 - Flush flagged: drain and discard the whole ring, emit silence, count nothing.
 - Applies user volume (one atomic load, one multiply per sample) and converts f32 to
@@ -108,6 +111,16 @@ so a report arrives with the details a tester would forget.
 
 A claim that fails (busy, no such device) opens shared instead of erroring or going
 silent, and records the reason in `Negotiated::fallback`, which the Audio page shows.
+
+Every thread that writes to a device asks for real-time scheduling as it starts
+(`rt.rs`), since an ordinary scheduling delay longer than the buffer is an xrun. Linux
+asks RTKit over the system bus through zbus, the pure Rust D-Bus the MPRIS side already
+uses, for the exclusive writer and for the worker cpal spawns in shared mode, found by
+its thread name because cpal promotes it only behind a libdbus-backed feature. Windows
+joins the MMCSS Pro Audio class through `audio_thread_priority`, directly for the
+exclusive writer and through cpal's `realtime` feature for its shared worker. macOS
+needs nothing: the HAL owns the IO thread in both modes. A refusal is logged and audio
+runs at normal priority.
 
 Exclusive follows the file's rate, which isn't known until the decode thread opens the
 file. So a session opens at the device's rate, and the player's pump compares the

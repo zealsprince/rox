@@ -51,6 +51,12 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("settings-sources-stations-intro")),
+            )
             .child(table)
             .child(self.station_add_row(cx))
             .when_some(self.station_notice.clone(), |d, notice| {
@@ -93,10 +99,10 @@ impl SettingsWindow {
         } else {
             name.to_string().into()
         };
-        let remove = icon_button(icons::CLOSE, false, {
+        let remove = action_cell(icon_button(icons::CLOSE, false, {
             let url = station.url.clone();
             cx.listener(move |this, _, _, cx| this.remove_station(&url, cx))
-        });
+        }));
 
         div()
             // Named after the stream so its remove button is its own. See
@@ -128,10 +134,10 @@ impl SettingsWindow {
     }
 
     fn station_add_row(&self, cx: &mut Context<Self>) -> Div {
+        // Stretched, not centred, so Add stands as tall as the inputs.
         div()
             .flex()
             .flex_row()
-            .items_center()
             .gap(tokens::SPACE_SM)
             .child(
                 div()
@@ -139,8 +145,9 @@ impl SettingsWindow {
                     .min_w_0()
                     .child(Input::new(&self.station_url)),
             )
-            .child(div().w(px(160.)).child(Input::new(&self.station_name)))
-            .child(icon_button(
+            .child(div().w(px(180.)).child(Input::new(&self.station_name)))
+            .child(small_button(
+                rox_i18n::t!("settings-common-add"),
                 icons::PLUS,
                 self.station_probing,
                 cx.listener(|this, _, window, cx| this.add_station(window, cx)),
@@ -168,7 +175,7 @@ impl SettingsWindow {
     /// Two passes: the URL string first, which catches most mistakes instantly,
     /// then the stream itself, since a station's web page looks like a mount
     /// until something asks.
-    fn add_station(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn add_station(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.station_url.read(cx).value().trim().to_string();
         if url.is_empty() || self.station_probing {
             return;
@@ -323,6 +330,15 @@ impl SettingsWindow {
                     ],
                     panel::toggle(enabled, Self::set_capture_enabled, cx),
                 )
+                .when(enabled, |rows| {
+                    rows.custom(&["capture", "boundary", "title", "buffer"], || {
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(rox_i18n::t!("settings-playback-capture-caveat"))
+                            .into_any_element()
+                    })
+                })
                 // Capture can't save a song longer than the buffer. Warn, not
                 // Bad: nothing failed.
                 .when(

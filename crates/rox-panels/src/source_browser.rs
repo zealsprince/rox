@@ -216,22 +216,23 @@ struct MenuOrigin(WeakEntity<SourceBrowserPanel>);
 
 impl gpui::Global for MenuOrigin {}
 
-/// Go to from a menu outside a browser's own: the browser the menu opened in
-/// when it shows that plugin, else the first one on it in any tab group,
-/// else a new one in the newest group.
-pub fn go_to_source(
-    state: AppState,
-    source: String,
-    target: Target,
+/// Go to from a menu outside a browser's own, into an open browser: the one
+/// the menu opened in when it shows that plugin, else the first one on it in
+/// any tab group. False when none is open, and placing a new one is the
+/// app's.
+pub fn go_to_open(
+    state: &AppState,
+    source: &str,
+    target: &Target,
     window: &mut Window,
     cx: &mut App,
-) {
+) -> bool {
     let origin = cx
         .try_global::<MenuOrigin>()
         .and_then(|origin| origin.0.upgrade())
         .filter(|browser| browser.read(cx).config.source == source);
     if let Some(browser) = origin {
-        browser.update(cx, |this, cx| this.open_target(&target, cx));
+        browser.update(cx, |this, cx| this.open_target(target, cx));
 
         // The menu may have opened elsewhere since, so its tab comes forward.
         let tabs = browser
@@ -243,7 +244,7 @@ pub fn go_to_source(
             let panel: Arc<dyn PanelView> = Arc::new(browser);
             tabs.update(cx, |tabs, cx| tabs.focus_panel(&panel, window, cx));
         }
-        return;
+        return true;
     }
 
     for tabs in state.tab_hosts.read(cx).groups() {
@@ -253,24 +254,31 @@ pub fn go_to_source(
         });
 
         if let Some((panel, browser)) = found {
-            browser.update(cx, |this, cx| this.open_target(&target, cx));
+            browser.update(cx, |this, cx| this.open_target(target, cx));
             tabs.update(cx, |tabs, cx| tabs.focus_panel(&panel, window, cx));
-            return;
+            return true;
         }
     }
 
-    let Some(tabs) = state.tab_hosts.read(cx).last_live(cx) else {
-        log::warn!("Go to {}: no tab group to open {source} in", target.id);
-        return;
-    };
+    false
+}
 
+/// A new browser on `source`, already opening `target`, for Go to to place
+/// when no browser on it is open.
+pub fn opened_at(
+    state: AppState,
+    source: String,
+    target: &Target,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Entity<SourceBrowserPanel> {
     let config = SourceBrowserConfig {
         source,
         ..SourceBrowserConfig::default()
     };
-    let browser = cx.new(|cx| SourceBrowserPanel::new(state.clone(), config, window, cx));
-    browser.update(cx, |this, cx| this.open_target(&target, cx));
-    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(browser), window, cx));
+    let browser = cx.new(|cx| SourceBrowserPanel::new(state, config, window, cx));
+    browser.update(cx, |this, cx| this.open_target(target, cx));
+    browser
 }
 
 fn go_to_item(

@@ -184,10 +184,12 @@ fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
                 .find(|p| p.pic_type() == PictureType::CoverFront)
         })
         .or_else(|| pictures.first())?;
-    // Tags lie about mime types; rescue off the magic bytes.
-    let mime = match picture.mime_type() {
-        Some(MimeType::Unknown(_)) | None => sniff(picture.data())?.into(),
-        Some(mime) => mime.as_str().to_string(),
+    // Magic bytes beat a lying tag; the tag stands when the magic says nothing.
+    // A PNG declared image/jpeg fails gpui's decode outright.
+    let mime = match (sniff(picture.data()), picture.mime_type()) {
+        (Some(sniffed), _) => sniffed.to_string(),
+        (None, Some(MimeType::Unknown(_)) | None) => return None,
+        (None, Some(mime)) => mime.as_str().to_string(),
     };
     Some((picture.data().to_vec(), mime))
 }

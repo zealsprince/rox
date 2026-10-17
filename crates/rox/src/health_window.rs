@@ -1765,6 +1765,7 @@ mod tests {
             album_artist_sort: String::new(),
             album_sort: String::new(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no,
             track_no,

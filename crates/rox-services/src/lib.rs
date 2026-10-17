@@ -36,3 +36,4 @@ pub mod station_art;
 pub mod thumbs;
 pub mod track_stats;
 pub mod unknown;
+pub mod unknown_resolver;

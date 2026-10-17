@@ -124,6 +124,7 @@ pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, Strin
         pcm,
         period,
         channels as usize,
+        rate,
         shared.clone(),
         ring,
         tap_tx,
@@ -228,15 +229,16 @@ fn spawn(
     pcm: PCM,
     period: usize,
     channels: usize,
+    rate: u32,
     shared: Arc<Shared>,
     ring: Consumer<f32>,
     tap: Producer<f32>,
     stop: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, String> {
     let body = move || match sample {
-        Sample::F32 => run::<f32>(pcm, period, channels, shared, ring, tap, stop),
-        Sample::I32 => run::<i32>(pcm, period, channels, shared, ring, tap, stop),
-        Sample::I16 => run::<i16>(pcm, period, channels, shared, ring, tap, stop),
+        Sample::F32 => run::<f32>(pcm, period, channels, rate, shared, ring, tap, stop),
+        Sample::I32 => run::<i32>(pcm, period, channels, rate, shared, ring, tap, stop),
+        Sample::I16 => run::<i16>(pcm, period, channels, rate, shared, ring, tap, stop),
     };
     std::thread::Builder::new()
         .name("alsa-out".into())
@@ -251,6 +253,7 @@ fn run<T>(
     pcm: PCM,
     period: usize,
     channels: usize,
+    rate: u32,
     shared: Arc<Shared>,
     mut ring: Consumer<f32>,
     mut tap: Producer<f32>,
@@ -258,6 +261,8 @@ fn run<T>(
 ) where
     T: IoFormat + SizedSample + FromSample<f32>,
 {
+    crate::rt::promote_current(u32::try_from(period).unwrap_or(u32::MAX), rate);
+
     let mut buf = vec![T::from_sample(0.0f32); period * channels];
     let io = match pcm.io_checked::<T>() {
         Ok(io) => io,

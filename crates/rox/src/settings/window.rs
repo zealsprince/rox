@@ -513,6 +513,7 @@ struct SettingsWindow {
     _broadcast_changes: Vec<Subscription>,
     _ffmpeg_changed: Subscription,
     _exclude_submit: Subscription,
+    _station_submit: Vec<Subscription>,
     _capture_pattern_changed: Subscription,
     _discord_line_changes: Vec<Subscription>,
     _capture_album_changed: Subscription,
@@ -815,6 +816,20 @@ impl SettingsWindow {
                 .placeholder(rox_i18n::t!("settings-sources-stations-name-placeholder"))
         });
         let stations = read_stations(&library, cx);
+        let _station_submit = [&station_url, &station_name]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe_in(
+                    input,
+                    window,
+                    |this: &mut Self, _, event: &InputEvent, window, cx| {
+                        if let InputEvent::PressEnter { .. } = event {
+                            this.add_station(window, cx);
+                        }
+                    },
+                )
+            })
+            .collect();
 
         let exclude_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1183,6 +1198,7 @@ impl SettingsWindow {
             _broadcast_changes,
             _ffmpeg_changed,
             _exclude_submit,
+            _station_submit,
             _capture_pattern_changed,
             _discord_line_changes,
             _capture_album_changed,

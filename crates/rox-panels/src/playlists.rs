@@ -46,7 +46,7 @@ use crate::track_ui::track_columns::{
     ROW_HEIGHT_MIN, ROW_HEIGHT_STOCK, ROW_SPACING_MAX, SourceMark,
 };
 use crate::track_ui::track_drag::PlayDrag;
-use crate::unknown_play;
+use crate::unknown_play::{self, Lookup, Picker};
 use rox_library::cue::TrackKey;
 use rox_library::playlist_file::Format;
 use rox_library::playlists::{PlaylistKind, PlaylistTrack};
@@ -208,10 +208,6 @@ pub struct PlaylistsConfig {
     /// An index, not pixels, so it survives a height change.
     #[serde(default)]
     pub scroll_row: usize,
-    /// The plugin a double click on an Unknown favourite searches, set from
-    /// Play From.
-    #[serde(default)]
-    pub unknown_source: Option<String>,
 }
 
 // Hand-written so the columns default to the registry set and the
@@ -248,7 +244,6 @@ impl Default for PlaylistsConfig {
             resume_playing: false,
             smooth_follow: false,
             scroll_row: 0,
-            unknown_source: None,
         }
     }
 }
@@ -268,6 +263,45 @@ fn fold_head_lines(config: &PlaylistsConfig) -> (Vec<HeadPiece>, Vec<HeadPiece>,
         fold(&config.header_name_line, group_head::stock_name_line),
         fold(&config.header_meta_line, group_head::stock_meta_line),
     )
+}
+
+/// A list's stored ids in the order it plays, which flips with Reverse.
+fn play_order(config: &PlaylistsConfig, playlist_id: i64, mut ids: Vec<i64>) -> Vec<i64> {
+    if config.reversed.contains(&playlist_id) {
+        ids.reverse();
+    }
+    ids
+}
+
+/// Where a row sits in its list's play order. `pos` counts from 1 in stored
+/// order, so a reversed list counts it from the end. A list edited since the
+/// row was drawn falls back to the track's first place.
+fn play_index(ids: &[i64], reversed: bool, pos: u32, track_id: i64) -> Option<usize> {
+    let stored = (pos as usize).checked_sub(1);
+    let at = match reversed {
+        true => stored.and_then(|stored| ids.len().checked_sub(stored + 1)),
+        false => stored,
+    };
+
+    match at.filter(|&at| ids.get(at) == Some(&track_id)) {
+        Some(at) => Some(at),
+        None => ids.iter().position(|&id| id == track_id),
+    }
+}
+
+/// What a track row's menu acts on: the whole selection in drawn order when
+/// the row is part of it, that row alone otherwise.
+fn menu_tracks(rows: &[Row], selected: &HashSet<i64>, member_id: i64, track_id: i64) -> Vec<i64> {
+    if !selected.contains(&member_id) {
+        return vec![track_id];
+    }
+
+    rows.iter()
+        .filter_map(|row| match row {
+            Row::Track(t) if selected.contains(&t.member_id) => Some(t.track_id),
+            _ => None,
+        })
+        .collect()
 }
 
 // Nearly every row is a track, so padding the rare headings costs less than
@@ -466,6 +500,7 @@ pub struct PlaylistsPanel {
     /// Bumped per Unknown favourite search, so a slow answer can't play over
     /// a newer pick.
     finding_gen: u64,
+    picker: Picker,
     /// Px at the stock font size; together they make the list's stride.
     row_height: f32,
     row_spacing: f32,
@@ -595,6 +630,7 @@ impl PlaylistsPanel {
             menu_row: None,
             refusal: None,
             finding_gen: 0,
+            picker: Picker::default(),
             row_height,
             row_spacing: track_columns::fold_margin(config.row_spacing, ROW_SPACING_MAX),
             head_height,
@@ -1078,19 +1114,22 @@ impl PlaylistsPanel {
         self.refresh(cx);
     }
 
+    fn ordered_ids(&self, playlist_id: i64, cx: &App) -> Vec<i64> {
+        let ids = self.state.library.read(cx).playlist_ids(playlist_id);
+        play_order(&self.config, playlist_id, ids)
+    }
+
     fn play(&self, playlist_id: i64, start_track: Option<i64>, cx: &mut Context<Self>) {
+        let ids = self.ordered_ids(playlist_id, cx);
         let (keys, start, ids) = {
             let library = self.state.library.read(cx);
-            let mut ids = library.playlist_ids(playlist_id);
-            if self.is_reversed(playlist_id) {
-                ids.reverse();
-            }
 
-            // Paired up front: an Unknown favourite or a deleted member has
-            // no key, and dropping it later would shift the start.
+            // Paired up front: a deleted member has no key, and dropping it
+            // later would shift the start. An Unknown favourite keeps its
+            // own, which the player searches a plugin for as it comes up.
             let (ids, keys): (Vec<i64>, Vec<_>) = ids
                 .into_iter()
-                .filter_map(|id| Some((id, library.keys_for(&[id]).ok()?.pop()?)))
+                .filter_map(|id| Some((id, library.queue_keys_for(&[id]).ok()?.pop()?)))
                 .unzip();
             let start = start_track
                 .and_then(|t| ids.iter().position(|&x| x == t))
@@ -1100,36 +1139,71 @@ impl PlaylistsPanel {
         if keys.is_empty() {
             return;
         }
+
+        let source = unknown_play::session_source();
         self.state.player.update(cx, |player, cx| {
             player.play_at(keys, start, cx);
-            // After the play, never before: starting a session clears the scope.
-            // Continuation then follows the playlist's order (ADR 17).
+            // After the play, never before: starting a session clears the scope
+            // and the pick. Continuation then follows the playlist's order (ADR 17).
             player.set_scope(continuation::Scope::View(ids.into()));
+            player.set_unknown_source(source);
         });
     }
 
+    /// Leaves the scope alone: continuation stays with whatever is playing.
+    fn queue(&self, playlist_id: i64, next: bool, cx: &mut Context<Self>) {
+        let ids = self.ordered_ids(playlist_id, cx);
+        panel::queue_tracks(&self.state, &ids, next, cx);
+    }
+
     /// An Unknown favourite has nothing to open, so a plugin searches for the
-    /// song, the way History does it. A Play From pick becomes the double
-    /// click's plugin too.
-    fn play_unknown(&mut self, ix: usize, picked: Option<String>, cx: &mut Context<Self>) {
+    /// song, the way History does it. With no plugin set, the picker opens
+    /// when there's a `window` to open it in.
+    fn play_unknown(
+        &mut self,
+        ix: usize,
+        picked: Option<String>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(Row::Track(t)) = self.rows.get(ix) else {
             return;
         };
         let (unknown_id, artist, title) = (t.track_id, t.artist.clone(), t.title.clone());
 
-        if picked.is_some() {
-            self.config.unknown_source = picked.clone();
-            self.request_layout_save(cx);
-        }
+        // The list as it stands now: the hit plays among these members.
+        let ids = self.ordered_ids(t.playlist_id, cx);
+        let reversed = self.is_reversed(t.playlist_id);
+        let Some(at) = play_index(&ids, reversed, t.pos, unknown_id) else {
+            return;
+        };
+        let spot = unknown_play::Spot {
+            ids,
+            at,
+            view: None,
+        };
 
-        let (source, label) =
-            match unknown_play::source_for(picked, self.config.unknown_source.as_deref()) {
-                Ok(pick) => pick,
-                Err(why) => {
-                    self.refuse(why, cx);
-                    return;
-                }
-            };
+        let (source, label) = match (unknown_play::lookup(picked), window) {
+            (Lookup::Ready(source, label), _) => (source, label),
+
+            (Lookup::Ask, Some(window)) => {
+                let pick = move |this: &mut Self, source, cx: &mut Context<Self>| {
+                    this.play_unknown(ix, Some(source), None, cx);
+                };
+                Picker::ask(|this: &mut Self| &mut this.picker, pick, self, window, cx);
+                return;
+            }
+
+            (Lookup::Ask, None) => {
+                self.refuse(rox_i18n::t!("history-pick-plugin"), cx);
+                return;
+            }
+
+            (Lookup::Missing, _) => {
+                self.refuse(rox_i18n::t!("history-no-plugins"), cx);
+                return;
+            }
+        };
 
         self.finding_gen += 1;
         let generation = self.finding_gen;
@@ -1143,8 +1217,15 @@ impl PlaylistsPanel {
                     return;
                 }
 
-                this.refusal =
-                    unknown_play::found(&this.state, unknown_id, found, label, title, cx);
+                this.refusal = unknown_play::found(
+                    &this.state,
+                    unknown_id,
+                    spot,
+                    found,
+                    (source, label),
+                    title,
+                    cx,
+                );
                 cx.notify();
             })
             .ok();
@@ -1805,7 +1886,7 @@ impl PlaylistsPanel {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus);
                     if event.click_count > 1 && unknown {
-                        this.play_unknown(ix, None, cx);
+                        this.play_unknown(ix, None, Some(window), cx);
                     } else if event.click_count > 1 {
                         this.play(playlist_id, Some(track_id), cx);
                     } else if event.modifiers.shift || event.modifiers.secondary() {
@@ -2691,23 +2772,25 @@ impl PlaylistsPanel {
                 }
             }));
         let weak = cx.entity().downgrade();
-        root.child(content.context_menu(move |menu, window, cx| {
-            let Some(this) = weak.upgrade() else {
-                return menu;
-            };
-            this.update(cx, |this, cx| this.row_menu(menu, window, cx))
-        }))
-        .children(self.refusal.clone().map(|why| {
-            div()
-                .flex_none()
-                .px(tokens::SPACE_SM)
-                .py(tokens::SPACE_XS)
-                .border_t_1()
-                .border_color(palette::border())
-                .text_xs()
-                .text_color(palette::text_muted())
-                .child(why)
-        }))
+        let picker = self.picker.overlay(window);
+        root.children(picker)
+            .child(content.context_menu(move |menu, window, cx| {
+                let Some(this) = weak.upgrade() else {
+                    return menu;
+                };
+                this.update(cx, |this, cx| this.row_menu(menu, window, cx))
+            }))
+            .children(self.refusal.clone().map(|why| {
+                div()
+                    .flex_none()
+                    .px(tokens::SPACE_SM)
+                    .py(tokens::SPACE_XS)
+                    .border_t_1()
+                    .border_color(palette::border())
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(why)
+            }))
     }
 
     fn row_menu(
@@ -2731,8 +2814,7 @@ impl PlaylistsPanel {
                     unknown_play::play_from_menu(
                         menu,
                         cx.entity(),
-                        |this: &Self| this.config.unknown_source.clone(),
-                        move |this, source, cx| this.play_unknown(ix, Some(source), cx),
+                        move |this, source, cx| this.play_unknown(ix, Some(source), None, cx),
                         window,
                         cx,
                     )
@@ -2741,7 +2823,7 @@ impl PlaylistsPanel {
                     panel::track_actions(
                         menu,
                         self.state.clone(),
-                        vec![track_id],
+                        menu_tracks(&self.rows, &self.selected, member_id, track_id),
                         rox_i18n::t!("library-play"),
                         window,
                         cx,
@@ -2803,6 +2885,27 @@ impl PlaylistsPanel {
                             }
                         }),
                 );
+                let next_panel = weak.clone();
+                let queue_panel = weak.clone();
+                let menu = menu
+                    .item(
+                        PopupMenuItem::new(rox_i18n::t!("panel-play-next"))
+                            .icon(Icon::default().path(icons::SKIP_FORWARD))
+                            .on_click(move |_, _, cx| {
+                                if let Some(this) = next_panel.upgrade() {
+                                    this.update(cx, |this, cx| this.queue(id, true, cx));
+                                }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(rox_i18n::t!("panel-add-to-queue"))
+                            .icon(Icon::default().path(icons::LIST_MUSIC))
+                            .on_click(move |_, _, cx| {
+                                if let Some(this) = queue_panel.upgrade() {
+                                    this.update(cx, |this, cx| this.queue(id, false, cx));
+                                }
+                            }),
+                    );
                 // Editing the query is the only way to change a smart list.
                 let query_state = self.state.clone();
                 let menu = menu.when(smart, |menu| {
@@ -2860,8 +2963,78 @@ impl PlaylistsPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaylistsConfig, fold_head_lines};
+    use std::collections::HashSet;
+
+    use super::{
+        PlaylistsConfig, Row, TrackRow, fold_head_lines, menu_tracks, play_index, play_order,
+    };
     use crate::group_head::{self, HeadPiece};
+
+    fn track(member_id: i64, track_id: i64) -> Row {
+        Row::Track(TrackRow {
+            playlist_id: 1,
+            member_id,
+            track_id,
+            smart: false,
+            pos: 0,
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            title_reading: String::new(),
+            artist_reading: String::new(),
+            album_reading: String::new(),
+            year: 0,
+            genre: String::new(),
+            duration_ms: 0,
+            rating: 0,
+            plays: 0,
+            path: String::new(),
+            source: String::new(),
+        })
+    }
+
+    /// Play and both queue items read this, so a reversed list queues end
+    /// first, and only that list flips.
+    #[test]
+    fn play_order_follows_reverse_per_list() {
+        let mut config = PlaylistsConfig::default();
+        assert!(play_order(&config, 7, vec![1, 2, 3]) == vec![1, 2, 3]);
+
+        config.reversed.push(7);
+        assert!(play_order(&config, 7, vec![1, 2, 3]) == vec![3, 2, 1]);
+        assert!(play_order(&config, 8, vec![1, 2, 3]) == vec![1, 2, 3]);
+    }
+
+    /// A track listed twice plays from the copy that was clicked, not the
+    /// first one.
+    #[test]
+    fn play_index_finds_the_clicked_copy_in_play_order() {
+        let ids = vec![10, 20, 10, 30];
+        assert!(play_index(&ids, false, 3, 10) == Some(2));
+
+        let reversed = vec![30, 10, 20, 10];
+        assert!(play_index(&reversed, true, 3, 10) == Some(1));
+        assert!(play_index(&reversed, true, 1, 10) == Some(3));
+
+        // Edited since the row was drawn: the first place still finds it.
+        assert!(play_index(&[20, 10], false, 4, 10) == Some(1));
+        assert!(play_index(&[20, 30], false, 1, 10).is_none());
+    }
+
+    #[test]
+    fn menu_tracks_take_the_selection_in_drawn_order() {
+        let rows = vec![
+            track(10, 100),
+            Row::Album(0),
+            track(11, 101),
+            track(12, 102),
+        ];
+        let selected: HashSet<i64> = [12, 10].into_iter().collect();
+
+        assert!(menu_tracks(&rows, &selected, 12, 102) == vec![100, 102]);
+        assert!(menu_tracks(&rows, &selected, 11, 101) == vec![101]);
+        assert!(menu_tracks(&rows, &HashSet::new(), 10, 100) == vec![100]);
+    }
 
     /// A saved line is deduped: a hand-edited dump naming a piece twice
     /// would draw it twice.

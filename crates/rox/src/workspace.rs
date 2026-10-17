@@ -81,7 +81,7 @@ use rox_panels::playlists::PlaylistsPanel;
 use rox_panels::queue::QueuePanel;
 use rox_panels::search::{SearchConfig, SearchPanel};
 use rox_panels::shader::ShaderPanel;
-use rox_panels::source_browser::SourceBrowserPanel;
+use rox_panels::source_browser::{self, SourceBrowserPanel};
 use rox_panels::spacer::SpacerPanel;
 use rox_panels::spectrogram::SpectrogramPanel;
 use rox_panels::spectrum::SpectrumPanel;
@@ -2559,6 +2559,26 @@ pub(crate) fn with_front_workspace(
         let _ = handle.update(cx, |_, window, cx| {
             workspace.update(cx, |ws, cx| f(ws, window, cx));
         });
+    });
+}
+
+/// Go to from a menu outside an External Sources panel. A new browser goes
+/// where the Panels menu puts one: the newest tab group can be a one-line
+/// strip, and a browser opened there is out of sight.
+pub(crate) fn go_to_source(
+    state: AppState,
+    source: String,
+    target: rox_services::plugins::Target,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if source_browser::go_to_open(&state, &source, &target, window, cx) {
+        return;
+    }
+
+    with_front_workspace(cx, move |ws, window, cx| {
+        let browser = source_browser::opened_at(ws.state.clone(), source, &target, window, cx);
+        ws.add_center(Arc::new(browser), window, cx);
     });
 }
 

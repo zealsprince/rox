@@ -260,6 +260,7 @@
                             }
                           },
                           "cover": "none",
+                          "stripes": false,
                           "folders": "hide",
                           "songs": "dim",
                           "follow_playing": true,

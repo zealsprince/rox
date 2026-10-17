@@ -338,8 +338,8 @@ pub fn status(id: &str) -> Option<Status> {
 }
 
 /// Installs the stream opener, follows `player` to open upcoming plugin
-/// tracks early, expires old picks, and starts every plugin that's switched
-/// on and approved.
+/// tracks early and to fill its Unknown rows, expires old picks, and starts
+/// every plugin that's switched on and approved.
 /// Once per app; a later window's call is a no-op.
 pub fn start(library: Entity<Library>, player: Entity<Player>, cx: &mut App) {
     if STARTED.swap(true, Ordering::Relaxed) {
@@ -347,6 +347,7 @@ pub fn start(library: Entity<Library>, player: Entity<Player>, cx: &mut App) {
     }
 
     expire_picks(&library, cx);
+    crate::unknown_resolver::follow(library.clone(), player.clone(), cx);
     cx.set_global(Wiring {
         library,
         watch: None,
@@ -1098,10 +1099,15 @@ static OPENED_WARM: AtomicU64 = AtomicU64::new(0);
 static OPENED_JOINED: AtomicU64 = AtomicU64::new(0);
 static OPENED_COLD: AtomicU64 = AtomicU64::new(0);
 
+/// Whether the first [`apply`] has built the hosts, or nothing ever will.
+pub(crate) fn applied() -> bool {
+    FIRST_APPLY.is_open() || !STARTED.load(Ordering::Relaxed)
+}
+
 /// For the blocking paths that can run before the first [`apply`]. Answers
 /// at once when [`start`] never ran, since then nothing opens the gate.
 pub(crate) fn await_first_apply(source: &str) {
-    if FIRST_APPLY.is_open() || !STARTED.load(Ordering::Relaxed) {
+    if applied() {
         return;
     }
 

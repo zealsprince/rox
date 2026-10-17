@@ -414,6 +414,7 @@ fn main() {
             artist: artist.clone(),
             album: album.clone(),
             genre,
+            comment: String::new(),
             year,
             disc_no,
             track_no,

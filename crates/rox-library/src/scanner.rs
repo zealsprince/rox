@@ -672,6 +672,7 @@ fn cue_rows(
                 } else {
                     claim.genre.clone()
                 },
+                comment: image_tags.comment.clone(),
                 year: if claim.year == 0 {
                     image_tags.year
                 } else {
@@ -823,6 +824,16 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         // Vorbis repeats GENRE and ID3v2.4 null-separates TCON; lofty hands both
         // over as items.
         row.genre = crate::genre::join(tag.get_strings(lofty::tag::ItemKey::Genre));
+        // lofty hands every COMM frame over as a comment, iTunNORM and friends
+        // included, with the frame's description on the item. Only the bare one
+        // is the comment a person wrote.
+        row.comment = tag
+            .get_items(lofty::tag::ItemKey::Comment)
+            .filter(|item| item.description().is_empty())
+            .find_map(|item| item.value().text())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         row.year = tag.date().map(|d| d.year).unwrap_or(0);
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
@@ -882,6 +893,7 @@ fn fallback_row(path: &Path) -> TrackRow {
         album_artist: String::new(),
         album: String::new(),
         genre: String::new(),
+        comment: String::new(),
         year: 0,
         disc_no: 0,
         track_no: 0,
@@ -1306,6 +1318,56 @@ mod tests {
         let row = read_one(&path).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(row.genre, "Electronic; Ambient");
+    }
+
+    #[test]
+    fn the_bare_comment_scans_trimmed() {
+        use lofty::config::WriteOptions;
+        use lofty::id3::v2::{CommentFrame, Frame, Id3v2Tag};
+        use lofty::prelude::TagExt;
+
+        let dir = std::env::temp_dir().join("rox-scanner-comment");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+
+        // The described frame goes first, so a read that ignores descriptions
+        // picks it.
+        let mut tag = Id3v2Tag::new();
+        tag.insert(Frame::Comment(CommentFrame::new(
+            lofty::TextEncoding::UTF8,
+            *b"eng",
+            "iTunNORM",
+            " 00000A3B 00000A3B",
+        )));
+        tag.insert(Frame::Comment(CommentFrame::new(
+            lofty::TextEncoding::UTF8,
+            *b"eng",
+            "",
+            "  P_dnb, P_chill \n",
+        )));
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+        let tagged = read_one(&path).unwrap();
+
+        writer::commit(
+            &path,
+            &[Change {
+                field: Field::Comment,
+                value: Some("Ripped from vinyl".into()),
+            }],
+        )
+        .unwrap();
+        let edited = read_one(&path).unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(tagged.comment, "P_dnb, P_chill");
+        assert_eq!(edited.comment, "Ripped from vinyl");
     }
 
     #[test]

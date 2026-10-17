@@ -1026,6 +1026,7 @@ mod tests {
             album_artist: artist.into(),
             album: album.into(),
             genre: genre.into(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 0,
@@ -2375,7 +2376,9 @@ mod tests {
         fn the_ladder_backfills_the_source_from_the_live_row() {
             let mut conn = Connection::open_in_memory().unwrap();
             store::run_ladder_before(&conn, "listen-source").unwrap();
-            store::insert_batch(&mut conn, &[track("k1", "Song", "A", "B", "")]).unwrap();
+            // Not insert_batch, which writes columns later rungs add.
+            store::upsert_source_rows(&mut conn, "local", &[track("k1", "Song", "A", "B", "")])
+                .unwrap();
             conn.execute_batch(
                 "UPDATE tracks SET id = 1, source = 'plugin:demo';
                  INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)

@@ -95,6 +95,8 @@ pub struct TrackRow {
     pub album_artist_sort: String,
     pub album_sort: String,
     pub genre: String,
+    /// The file's standard comment, trimmed, empty when it has none.
+    pub comment: String,
     pub year: u16,
     pub disc_no: u16,
     pub track_no: u16,

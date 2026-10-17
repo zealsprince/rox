@@ -1045,19 +1045,17 @@ impl Library {
         let Some(conn) = &self.conn else {
             return Ok(Vec::new());
         };
-        let mut keys = Vec::with_capacity(ids.len());
-        for &id in ids {
-            // One query per id: a dropped id would misalign a batch.
-            let row = store::key_for_id(conn, id).map_err(|e| e.to_string())?;
-            if let Some(row) = row.filter(|row| &*row.source != unknown::SOURCE) {
-                keys.push(TrackKey {
-                    source: row.source,
-                    path: row.path,
-                    sub: self.sub_for_id(id),
-                });
-            }
-        }
-        Ok(keys)
+        keys_from(conn, ids, false, |id| self.sub_for_id(id))
+    }
+
+    /// [`keys_for`](Self::keys_for) for a play context: an Unknown row stays
+    /// in as its own key, which the player queues as a placeholder for a
+    /// plugin search to fill.
+    pub fn queue_keys_for(&self, ids: &[i64]) -> Result<Vec<TrackKey>, String> {
+        let Some(conn) = &self.conn else {
+            return Ok(Vec::new());
+        };
+        keys_from(conn, ids, true, |id| self.sub_for_id(id))
     }
 
     /// A remote locator is finished here off the registry, so the engine
@@ -1971,6 +1969,7 @@ impl Library {
                 // A refused patch leaves the library where it was, so the
                 // reload is owed.
                 let mut owed = false;
+                let mut hearts = false;
                 match result {
                     Ok((loaded, summary, watch, relinked)) => {
                         match loaded {
@@ -2001,9 +2000,10 @@ impl Library {
                         }
                         // A patch only re-reads the counts of rows it touched,
                         // and the copy that took the listens may not be one.
-                        if relinked > 0 {
+                        if relinked.listens > 0 {
                             this.reload_plays(cx);
                         }
+                        hearts = relinked.hearts;
                         // An aborted walk never finished, so it doesn't stamp
                         // last_scan.
                         let aborted = summary.as_ref().is_some_and(|s| s.aborted);
@@ -2028,6 +2028,13 @@ impl Library {
                 // A refresh is when "anything to rank by sound" can change.
                 let described = this.analyzed(crate::acoustic::acoustic_source().id());
                 rox_core::settings::set_acoustic_described(described, cx);
+                // A relinked heart changed rows behind the Library's back.
+                // Ahead of Updated, which reseeds the favourites mirrors, so
+                // Sync Favourites sends the plugin row's add as it does after
+                // a search adopts one.
+                if hearts {
+                    cx.emit(LibraryEvent::PlaylistsChanged);
+                }
                 cx.emit(LibraryEvent::Updated);
                 cx.notify();
                 // An owed rebuild goes first. On error, hold the batch rather
@@ -2177,7 +2184,8 @@ struct Touched {
     removed: Vec<i64>,
 }
 
-/// The last element is how many Unknown listens moved onto a real track.
+/// The last element is what the relink handed from Unknown rows to real
+/// tracks.
 #[allow(clippy::type_complexity)]
 fn load(
     db_path: &std::path::Path,
@@ -2185,17 +2193,19 @@ fn load(
     exclude: &Exclusions,
     progress: &ScanProgress,
     patch: Option<bool>,
-) -> Result<(Loaded, Option<ScanSummary>, Option<WatchSummary>, usize), rox_library::rusqlite::Error>
-{
+) -> Result<
+    (Loaded, Option<ScanSummary>, Option<WatchSummary>, Relinked),
+    rox_library::rusqlite::Error,
+> {
     let mut watch = None;
     let mut touched = Touched::default();
-    let mut relinked = 0;
+    let mut relinked = Relinked::default();
     let summary = match refresh {
         // A plugin sync ends in a load, and its new rows can be a hearted
         // Unknown row's song. A failure costs the relink, never the load.
         Refresh::Load => {
             if let Ok(mut conn) = store::open(db_path) {
-                relinked = relink_hearts(&mut conn);
+                relinked = relinking(&mut conn, relink_hearts);
             }
             None
         }
@@ -2222,7 +2232,7 @@ fn load(
                     break;
                 }
             }
-            relinked = relink_unknown(&mut conn);
+            relinked = relinking(&mut conn, relink_unknown);
             Some(summary)
         }
         Refresh::Remove(root) => {
@@ -2241,7 +2251,7 @@ fn load(
             scanner::reindex(&mut conn, &paths)?;
             touched.changed.extend(store::ids_for_paths(&conn, &paths)?);
             touched.changed.extend(cue_neighbours(&conn, &paths)?);
-            relinked = relink_unknown(&mut conn);
+            relinked = relinking(&mut conn, relink_unknown);
             None
         }
         Refresh::Prune(paths) => {
@@ -2267,7 +2277,7 @@ fn load(
                 exclude,
                 &mut touched,
             )?);
-            relinked = relink_unknown(&mut conn);
+            relinked = relinking(&mut conn, relink_unknown);
             None
         }
     };
@@ -2334,6 +2344,28 @@ fn relink_hearts(conn: &mut Connection) -> usize {
         log::warn!("library: moving unknown hearts onto plugin tracks: {e}");
         0
     })
+}
+
+#[derive(Default)]
+struct Relinked {
+    listens: usize,
+    hearts: bool,
+}
+
+/// Runs a relink pass and notes whether it moved a heart. A hearted Unknown
+/// row only goes by handing its heart over, so fewer of them is the tell.
+fn relinking(conn: &mut Connection, pass: fn(&mut Connection) -> usize) -> Relinked {
+    let before = hearted_unknown(conn);
+    let listens = pass(conn);
+
+    Relinked {
+        listens,
+        hearts: hearted_unknown(conn) < before,
+    }
+}
+
+fn hearted_unknown(conn: &Connection) -> usize {
+    rox_library::unknown::hearted(conn).map_or(0, |rows| rows.len())
 }
 
 /// Every row in a directory where one of these paths is a cue sheet. A new
@@ -2553,6 +2585,27 @@ fn status_line(
     format!("{tracks} ({})", parts.join(", "))
 }
 
+fn keys_from(
+    conn: &Connection,
+    ids: &[i64],
+    unknown: bool,
+    sub_for: impl Fn(i64) -> u16,
+) -> Result<Vec<TrackKey>, String> {
+    let mut keys = Vec::with_capacity(ids.len());
+    for &id in ids {
+        // One query per id: a dropped id would misalign a batch.
+        let row = store::key_for_id(conn, id).map_err(|e| e.to_string())?;
+        if let Some(row) = row.filter(|row| unknown || &*row.source != unknown::SOURCE) {
+            keys.push(TrackKey {
+                source: row.source,
+                path: row.path,
+                sub: sub_for(id),
+            });
+        }
+    }
+    Ok(keys)
+}
+
 pub fn browse(library: &Entity<Library>, cx: &mut App) {
     let rx = cx.prompt_for_paths(PathPromptOptions {
         files: false,
@@ -2575,9 +2628,34 @@ pub fn browse(library: &Entity<Library>, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Touched, resolve_m3u_entry, watch_sync};
+    use super::{Touched, keys_from, resolve_m3u_entry, watch_sync};
     use rox_library::exclude::Exclusions;
     use rox_library::store;
+
+    #[test]
+    fn a_play_context_keeps_an_unknown_row_as_its_own_key() {
+        let mut conn = rox_library::rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[plain_row("/m/Album/local.mp3")]).unwrap();
+        let local =
+            store::queue_meta_for_key(&conn, rox_library::cue::LOCAL, "/m/Album/local.mp3", 0)
+                .unwrap()
+                .id
+                .unwrap();
+        let unknown = rox_library::unknown::row(&conn, "Artist", "Song", "").unwrap();
+
+        let browse = keys_from(&conn, &[local, unknown], false, |_| 0).unwrap();
+        assert_eq!(browse.len(), 1, "an Unknown row has nothing to open");
+
+        let queued = keys_from(&conn, &[local, unknown], true, |_| 0).unwrap();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(&*queued[1].source, rox_library::unknown::SOURCE);
+        assert_eq!(
+            queued[1].origin(),
+            rox_library::cue::Origin::Unknown,
+            "the player reads this as a placeholder"
+        );
+    }
 
     #[test]
     fn watch_sync_reindexes_present_and_prunes_gone() {
@@ -2946,6 +3024,7 @@ mod tests {
             album_artist: "X".into(),
             album: "Album".into(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 0,

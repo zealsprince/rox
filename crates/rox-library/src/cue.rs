@@ -77,8 +77,9 @@ pub enum Origin {
     Radio,
     /// A plugin's catalog (ADR 30), `plugin:<id>`.
     Plugin,
-    /// A song the history knows by name only ([`crate::unknown`]). Never
-    /// plays.
+    /// A song the history knows by name only ([`crate::unknown`]). It has
+    /// nothing to open: a queue holds it as a placeholder until a plugin
+    /// search finds the song.
     Unknown,
 }
 

@@ -683,6 +683,8 @@ mod platform {
         T: SizedSample + FromSample<f32>,
     {
         unsafe {
+            crate::rt::promote_current(claimed.buffer_frames, claimed.rate);
+
             let Feed { mut ring, mut tap } = feed;
             let mut staging = vec![
                 T::from_sample(0.0f32);

@@ -45,6 +45,7 @@ use rox_viz::AudioFeed;
 
 use crate::catalog::Library;
 use crate::sources_registry;
+use crate::unknown_resolver::{self, Edit, Found, Job, Placeholders, Slot, Step, Waiting};
 
 pub use rox_core::fmt::{fmt_time, fmt_time_padded};
 // Re-exported so crates calling [`Player::loop_mode`] can name the type.
@@ -476,9 +477,10 @@ fn resolve_queue_meta(
 
 /// Where each key plays from. A remote key reads its URL and live flag off
 /// the row, and the sources registry adds the auth. A plugin key goes through
-/// as the row answers it, since the plugin serves its own bytes. A pruned row
-/// answers with an empty URL so the open fails instead of reading whatever
-/// file sits at the id's path.
+/// as the row answers it, since the plugin serves its own bytes. An Unknown
+/// row holds its place for the resolver to fill. A pruned row answers with an
+/// empty URL so the open fails instead of reading whatever file sits at the
+/// id's path.
 fn resolve_locators(
     conn: Option<&rox_library::rusqlite::Connection>,
     keys: &[TrackKey],
@@ -487,6 +489,10 @@ fn resolve_locators(
         .map(|key| {
             if key.is_local() {
                 return Locator::Local(key.path.clone());
+            }
+
+            if key.origin() == Origin::Unknown {
+                return Locator::Placeholder;
             }
 
             // Sub-aware, so a source that splits one reference into subsongs
@@ -513,6 +519,17 @@ fn resolve_locators(
 
             sources_registry::authorize(&key.source, &mut remote);
             Locator::Remote(remote)
+        })
+        .collect()
+}
+
+/// The snapshot as the Unknown row resolver reads it.
+fn slots(snap: &QueueSnapshot) -> Vec<Slot> {
+    snap.entries
+        .iter()
+        .map(|e| Slot {
+            id: e.id,
+            placeholder: matches!(e.locator, Locator::Placeholder),
         })
         .collect()
 }
@@ -910,6 +927,10 @@ pub struct Player {
     /// Where the audible station's current song started, None when nothing
     /// live is audible. The position counts the whole listen.
     song_start: Option<SongStart>,
+    /// The plugin the session's Unknown rows are searched on, the one the
+    /// panel that started it would pick.
+    unknown_source: Option<String>,
+    placeholders: Placeholders,
 }
 
 impl Player {
@@ -944,6 +965,8 @@ impl Player {
             continued_rev: None,
             last_continuation,
             song_start: None,
+            unknown_source: None,
+            placeholders: Placeholders::default(),
         }
     }
 
@@ -1202,9 +1225,13 @@ impl Player {
     /// A gapless pre-decode never shows here: nobody is waiting on it.
     pub fn opening(&self) -> Option<TrackKey> {
         let session = self.session.as_ref()?;
-        let idx = session.shared.opening()?;
+        if let Some(idx) = session.shared.opening() {
+            return self.key_at(idx);
+        }
 
-        self.key_at(idx)
+        // A Next held on a placeholder's search is the same wait.
+        let waiting = self.placeholders.waiting.as_ref()?;
+        (waiting.from == self.playing_after()).then(|| waiting.key.clone())
     }
 
     /// The audible track's download, while it lasts: a plugin stream or a
@@ -1226,15 +1253,7 @@ impl Player {
             return Vec::new();
         };
         let snap = session.shared.queue_snapshot();
-        let opening = session
-            .shared
-            .opening()
-            .and_then(|idx| snap.entries.iter().position(|e| e.idx == idx));
-        let start = opening
-            .or_else(|| self.adopted_index(&snap))
-            .or_else(|| self.audible_index(&snap))
-            .map(|i| i + 1)
-            .unwrap_or(0);
+        let start = self.decode_index(&snap).map(|i| i + 1).unwrap_or(0);
 
         snap.entries
             .get(start..)
@@ -1288,6 +1307,12 @@ impl Player {
                 Locator::Plugin(stream) => TrackKey {
                     source: rox_library::cue::source_id(&stream.source),
                     path: PathBuf::from(&stream.key),
+                    sub: 0,
+                },
+
+                Locator::Placeholder => TrackKey {
+                    source: rox_library::cue::source_id(rox_library::unknown::SOURCE),
+                    path: PathBuf::new(),
                     sub: 0,
                 },
             })
@@ -1387,6 +1412,19 @@ impl Player {
         let session = self.session.as_ref()?;
         let adopted = session.shared.segments.lock().unwrap().last()?.track;
         snap.entries.iter().position(|e| e.idx == adopted)
+    }
+
+    /// The entry the engine is opening or adopted last, ahead of the clock
+    /// near a boundary and after a skip.
+    fn decode_index(&self, snap: &QueueSnapshot) -> Option<usize> {
+        let session = self.session.as_ref()?;
+
+        session
+            .shared
+            .opening()
+            .and_then(|idx| snap.entries.iter().position(|e| e.idx == idx))
+            .or_else(|| self.adopted_index(snap))
+            .or_else(|| self.audible_index(snap))
     }
 
     /// Falls back to the published cursor before audio starts.
@@ -1615,6 +1653,8 @@ impl Player {
         remember_held(&mut self.heard, self.pool_ids.iter().flatten().copied());
         self.pool_ids = meta.ids;
         self.scope = continuation::Scope::default();
+        self.unknown_source = None;
+        self.placeholders.reset();
         self.continuing = false;
         self.continued_rev = None;
         // The marker's indices belong to the outgoing pool. The start below
@@ -2053,6 +2093,13 @@ impl Player {
         self.scope = scope;
     }
 
+    /// The plugin the session's Unknown rows are searched on. Call after the
+    /// play, like [`set_scope`](Self::set_scope). None falls back to the only
+    /// plugin running.
+    pub fn set_unknown_source(&mut self, source: Option<String>) {
+        self.unknown_source = source;
+    }
+
     /// The context's own provider as it saves itself, for the queue saved at
     /// close.
     pub fn station(&self) -> Option<String> {
@@ -2185,10 +2232,15 @@ impl Player {
             return false;
         };
         let (keys, explicit): (Vec<TrackKey>, Vec<bool>) = entries.into_iter().unzip();
-        // Same music on a new stream, so keep the scope the start clears.
+        // Same music on a new stream, so keep what the start clears. Entry ids
+        // renumber, but a found track still hands its row over when it plays.
         let scope = self.scope.clone();
+        let unknown_source = self.unknown_source.take();
+        let adopting = std::mem::take(&mut self.placeholders.adopting);
         self.start_session(keys, cursor, Some(position_secs), explicit, true, cx);
         self.scope = scope;
+        self.unknown_source = unknown_source;
+        self.placeholders.adopting = adopting;
         // A restore comes up paused.
         if was_playing && self.session.is_some() {
             self.send(Cmd::TogglePause);
@@ -2734,6 +2786,214 @@ impl Player {
     }
 
     pub fn next(&mut self, cx: &mut Context<Self>) {
+        if self.hold_for_placeholder(cx) {
+            return;
+        }
+
+        self.skip(cx);
+    }
+
+    /// Placeholders in a Next's way. The engine would step straight past one,
+    /// so the skip waits for its search instead, and true means it's waiting.
+    /// One already waited on is passed, along with any already sent away.
+    fn hold_for_placeholder(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        let snap = session.shared.queue_snapshot();
+        let order = slots(&snap);
+        if !order.iter().any(|slot| slot.placeholder) {
+            self.placeholders.waiting = None;
+            return false;
+        }
+
+        // One the engine already stepped over near a boundary has nothing
+        // left to wait for.
+        let cursor = self.decode_index(&snap).unwrap_or(snap.cursor);
+        for id in unknown_resolver::passed(&order, cursor, &self.placeholders.gone) {
+            self.send_away(id);
+        }
+
+        let audible = self.audible_index(&snap);
+        let waiting = self.placeholders.waiting.as_ref().map(|w| w.id);
+        let (skip, wait) =
+            match unknown_resolver::next_step(&order, audible, waiting, &self.placeholders.gone) {
+                Step::Skip(skip) => (skip, None),
+                Step::Wait(skip, id) => (skip, Some(id)),
+            };
+
+        for id in skip {
+            self.send_away(id);
+        }
+
+        let from = self.playing_after();
+        self.placeholders.waiting = wait.and_then(|id| {
+            let entry = snap.entries.iter().find(|e| e.id == id)?;
+            Some(Waiting {
+                id,
+                key: self.key_for(entry),
+                from,
+            })
+        });
+
+        if self.placeholders.waiting.is_none() {
+            return false;
+        }
+
+        cx.notify();
+        true
+    }
+
+    fn send_away(&mut self, id: u64) {
+        self.remove_from_queue(id);
+        self.placeholders.gone.insert(id);
+    }
+
+    /// The held Next, for the resolver's gate.
+    pub(crate) fn placeholder_waiting(&self) -> Option<u64> {
+        self.placeholders.waiting.as_ref().map(|w| w.id)
+    }
+
+    /// An earlier hit for the same song this session.
+    pub(crate) fn placeholder_found(&self, key: &TrackKey) -> Option<Found> {
+        self.placeholders.found.get(key).cloned()
+    }
+
+    /// Sends away the placeholders the engine stepped over, and answers the
+    /// searches to start: the placeholder coming up next and the one a Next
+    /// is held on, each asked once.
+    pub(crate) fn placeholder_jobs(&mut self) -> Vec<Job> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        let snap = session.shared.queue_snapshot();
+        let order = slots(&snap);
+        if !order.iter().any(|slot| slot.placeholder) {
+            return Vec::new();
+        }
+
+        let cursor = self.decode_index(&snap).unwrap_or(snap.cursor);
+        for id in unknown_resolver::passed(&order, cursor, &self.placeholders.gone) {
+            if self.placeholder_waiting() == Some(id) {
+                self.placeholders.waiting = None;
+            }
+            self.send_away(id);
+        }
+
+        let mut ids: Vec<u64> = unknown_resolver::up_next(&order, cursor, &self.placeholders.gone)
+            .into_iter()
+            .collect();
+        ids.extend(self.placeholder_waiting());
+
+        let source = unknown_resolver::source_for(
+            self.unknown_source.as_deref(),
+            rox_core::settings::unknown_plugin().as_deref(),
+            &crate::plugins::searchable_sources(),
+        );
+        let run = self.placeholders.run;
+
+        let mut jobs = Vec::new();
+        for id in ids {
+            if !self.placeholders.asked.insert(id) {
+                continue;
+            }
+
+            if let Some(entry) = snap.entries.iter().find(|e| e.id == id) {
+                jobs.push(Job {
+                    run,
+                    id,
+                    key: self.key_for(entry),
+                    source: source.clone(),
+                });
+            }
+        }
+        jobs
+    }
+
+    /// A placeholder's search came back. A hit takes its place while it's
+    /// still ahead of the decode cursor, and anything else takes it out. A
+    /// Next held on it goes on from here, unless the listener moved first.
+    pub(crate) fn land_placeholder(
+        &mut self,
+        run: u64,
+        id: u64,
+        found: Option<Found>,
+        cx: &mut Context<Self>,
+    ) {
+        if run != self.placeholders.run {
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let snap = session.shared.queue_snapshot();
+        let order = slots(&snap);
+        let cursor = self.decode_index(&snap).unwrap_or(snap.cursor);
+
+        let held = self
+            .placeholders
+            .waiting
+            .take_if(|waiting| waiting.id == id)
+            .is_some_and(|waiting| waiting.from == self.playing_after());
+
+        // Skipped by a second Next, or taken out of the queue by hand, while
+        // the search ran.
+        let entry = snap.entries.iter().find(|e| e.id == id);
+        let Some(entry) = entry.filter(|_| !self.placeholders.gone.contains(&id)) else {
+            if held {
+                self.next(cx);
+            }
+            return;
+        };
+        let explicit = entry.explicit;
+
+        if let Some(found) = &found {
+            self.placeholders
+                .found
+                .insert(self.key_for(entry), found.clone());
+        }
+
+        let hit = found.as_ref().map(|found| found.key.clone());
+        let mut swapped = false;
+        for edit in unknown_resolver::landing(&order, cursor, id, hit) {
+            match edit {
+                Edit::InsertAfter(after, key) => {
+                    if let Some(found) = &found {
+                        self.placeholders
+                            .adopting
+                            .insert(key.clone(), found.unknown_id);
+                    }
+                    self.splice(Some(after), vec![key], None, explicit, false, None, cx);
+                    swapped = true;
+                }
+
+                Edit::Remove(id) => self.send_away(id),
+            }
+        }
+
+        // The insert and the remove are ahead of this in the channel, so the
+        // skip lands on the hit, or walks on to whatever follows a miss.
+        if held {
+            match swapped {
+                true => self.skip(cx),
+                false => self.next(cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// The Unknown row a found track takes over, once that track is audible.
+    pub(crate) fn take_heard(&mut self) -> Option<(i64, TrackKey)> {
+        if self.placeholders.adopting.is_empty() {
+            return None;
+        }
+
+        let key = self.now_playing()?.key;
+        let unknown_id = self.placeholders.adopting.remove(&key)?;
+        Some((unknown_id, key))
+    }
+
+    fn skip(&mut self, cx: &mut Context<Self>) {
         self.send(Cmd::Next);
         if !self.settings.session.shuffle || self.shuffle_mode() != ShuffleMode::Similar {
             return;
@@ -4376,6 +4636,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_unknown_key_queues_as_a_placeholder() {
+        let conn = rox_library::rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let id = rox_library::unknown::row(&conn, "Artist", "Song", "").unwrap();
+        let key = store::key_for_id(&conn, id).unwrap().unwrap();
+
+        let locators = resolve_locators(Some(&conn), std::slice::from_ref(&key));
+        assert_eq!(locators, [Locator::Placeholder]);
+        assert!(!live_flags(&locators)[0]);
+
+        // Its row still answers the queue's name and id lookups.
+        let meta = resolve_queue_meta(Some(&conn), &[key]);
+        assert_eq!(meta.ids, [Some(id)]);
+    }
+
     fn album_row(path: &str, album: &str) -> rox_library::TrackRow {
         rox_library::TrackRow {
             remote_url: String::new(),
@@ -4392,6 +4668,7 @@ mod tests {
             album_artist: "X".into(),
             album: album.to_string(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 0,

@@ -44,6 +44,7 @@ use crate::query::shared_query::{self, SharedQuery};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
+use crate::unknown_play::{self, Lookup, Picker};
 
 /// Header band height in px. The ceiling only stops a stray digit making a
 /// band taller than any screen.
@@ -109,9 +110,6 @@ pub struct BiographyConfig {
     pub top_tracks: bool,
     pub top_tracks_count: usize,
     pub similar: bool,
-    /// The plugin a top track the library doesn't hold is searched on: the
-    /// last one picked from Play From.
-    pub plugin_source: Option<String>,
 }
 
 impl Default for BiographyConfig {
@@ -139,7 +137,6 @@ impl Default for BiographyConfig {
             top_tracks: true,
             top_tracks_count: 5,
             similar: true,
-            plugin_source: None,
         }
     }
 }
@@ -206,6 +203,7 @@ pub struct BiographyPanel {
     finding: Option<(String, String, Finding)>,
     /// Bumped per search, so a slow answer never plays over a newer click.
     finding_gen: u64,
+    picker: Picker,
     /// The context menu builder gets no position, so the right press records
     /// its track here.
     menu_row: Option<Unheld>,
@@ -302,6 +300,7 @@ impl BiographyPanel {
             matches: None,
             finding: None,
             finding_gen: 0,
+            picker: Picker::default(),
             menu_row: None,
             scroll: ScrollHandle::default(),
             focus: cx.focus_handle().tab_stop(true),
@@ -673,42 +672,41 @@ impl BiographyPanel {
     }
 
     /// A top track the library doesn't hold has nothing to open, so a plugin
-    /// searches for the song. A Play From pick becomes the plugin for the
-    /// play buttons and the double click too.
+    /// searches for the song. With no plugin set, the picker opens when
+    /// there's a `window` to open it in.
     fn play_unheld(
         &mut self,
         wanted: Unheld,
         picked: Option<String>,
         queue: bool,
+        window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
-        let sources = plugins::searchable_sources();
-        if picked.is_some() {
-            self.config.plugin_source = picked.clone();
-            panel::refresh_tab_panel(&self.tab_panel, cx);
-        }
-
-        // A remembered plugin that's since stopped doesn't count.
-        let remembered = self
-            .config
-            .plugin_source
-            .clone()
-            .filter(|source| sources.iter().any(|(id, _)| id == source));
-        let only = (sources.len() == 1).then(|| sources[0].0.clone());
-        let Some(source) = picked.or(remembered).or(only) else {
-            let message = match sources.is_empty() {
-                true => rox_i18n::t!("history-no-plugins"),
-                false => rox_i18n::t!("history-pick-plugin"),
-            };
-            self.finding = Some((wanted.key, wanted.title, Finding::Missed(message)));
+        let missed = |this: &mut Self, wanted: Unheld, message, cx: &mut Context<Self>| {
+            this.finding = Some((wanted.key, wanted.title, Finding::Missed(message)));
             cx.notify();
-            return;
         };
 
-        let label = sources
-            .iter()
-            .find(|(id, _)| *id == source)
-            .map_or_else(|| source.clone(), |(_, label)| label.clone());
+        let (source, label) = match (unknown_play::lookup(picked), window) {
+            (Lookup::Ready(source, label), _) => (source, label),
+
+            (Lookup::Ask, Some(window)) => {
+                let pick = move |this: &mut Self, source, cx: &mut Context<Self>| {
+                    this.play_unheld(wanted.clone(), Some(source), queue, None, cx);
+                };
+                Picker::ask(|this: &mut Self| &mut this.picker, pick, self, window, cx);
+                return;
+            }
+
+            (Lookup::Ask, None) => {
+                return missed(self, wanted, rox_i18n::t!("history-pick-plugin"), cx);
+            }
+
+            (Lookup::Missing, _) => {
+                return missed(self, wanted, rox_i18n::t!("history-no-plugins"), cx);
+            }
+        };
+
         let Unheld { key, artist, title } = wanted;
         self.finding_gen += 1;
         let generation = self.finding_gen;
@@ -757,7 +755,7 @@ impl BiographyPanel {
     }
 
     /// The plugins an unheld top track can be searched on, with the
-    /// remembered pick checked.
+    /// default checked.
     fn play_from_menu(
         &self,
         menu: PopupMenu,
@@ -765,34 +763,13 @@ impl BiographyPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let sources = plugins::searchable_sources();
-        if sources.is_empty() {
-            return menu
-                .item(PopupMenuItem::new(rox_i18n::t!("history-no-plugins")).disabled(true));
-        }
-
-        let panel = cx.entity();
-        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
-            panel::follow_panel(&panel, cx);
-            for (source, label) in sources {
-                let checked = source.clone();
-                let wanted = wanted.clone();
-                submenu = submenu.item(panel::check_row(
-                    label,
-                    None,
-                    move |this: &Self| this.config.plugin_source.as_ref() == Some(&checked),
-                    move |this, cx| {
-                        this.play_unheld(wanted.clone(), Some(source.clone()), false, cx)
-                    },
-                    &panel,
-                ));
-            }
-            submenu
-        });
-        menu.item(PopupMenuItem::submenu(
-            rox_i18n::t!("history-play-from"),
-            submenu,
-        ))
+        unknown_play::play_from_menu(
+            menu,
+            cx.entity(),
+            move |this, source, cx| this.play_unheld(wanted.clone(), Some(source), false, None, cx),
+            window,
+            cx,
+        )
     }
 
     fn config_menu(
@@ -1269,6 +1246,7 @@ impl BiographyPanel {
         let weak = cx.entity().downgrade();
         div()
             .size_full()
+            .children(self.picker.overlay(window))
             .child(content.context_menu(move |menu, window, cx| {
                 let Some(this) = weak.upgrade() else {
                     return menu;
@@ -1855,9 +1833,9 @@ impl BiographyPanel {
                 .as_ref()
                 .filter(|(key, title, _)| *key == wanted.key && *title == wanted.title)
                 .map(|(_, _, finding)| finding.clone());
-            let retry = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+            let retry = cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
-                this.play_unheld(play.clone(), None, false, cx);
+                this.play_unheld(play.clone(), None, false, Some(window), cx);
             });
 
             // The play slot stays up while it reports a search, so the spinner
@@ -1895,9 +1873,9 @@ impl BiographyPanel {
                     .group_hover(group, |s| s.opacity(1.))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
-                            this.play_unheld(queue.clone(), None, true, cx);
+                            this.play_unheld(queue.clone(), None, true, Some(window), cx);
                         }),
                     ),
             );
@@ -1909,9 +1887,9 @@ impl BiographyPanel {
                 })
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                         if event.click_count > 1 {
-                            this.play_unheld(open.clone(), None, false, cx);
+                            this.play_unheld(open.clone(), None, false, Some(window), cx);
                         }
                     }),
                 )
@@ -2079,6 +2057,12 @@ fn held_index(tables: [(FilterField, &[String]); 2]) -> HashMap<String, (FilterF
 /// an act `is_known` vouches for, so "Earth, Wind & Fire" stays whole; the
 /// longest known run wins.
 ///
+/// The vouching is weak evidence: a row with no album artist tag files under
+/// its artist string, so a credit list vouches for itself the moment it's in
+/// the library. A run whose every part is a known act on its own is read as
+/// that list, however the whole is filed. "Earth" and "Wind & Fire" aren't
+/// acts, so that one still glues.
+///
 /// An ampersand gets both readings, the whole credit and then each side,
 /// since the album artists can't tell a duo from a collab. A run the comma
 /// rule glued back together is exempt.
@@ -2091,11 +2075,14 @@ fn credits(tag: &str, is_known: &dyn Fn(&str) -> bool) -> Vec<String> {
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
                 .collect();
+            let glues =
+                |run: &[&str]| is_known(&run.join(", ")) && !run.iter().all(|part| is_known(part));
+
             let mut i = 0;
             while i < parts.len() {
                 let mut end = i + 1;
                 for j in (i + 2..=parts.len()).rev() {
-                    if is_known(&parts[i..j].join(", ")) {
+                    if glues(&parts[i..j]) {
                         end = j;
                         break;
                     }
@@ -2288,6 +2275,42 @@ mod tests {
         );
         assert_eq!(credits("A ft. B / C; D", &none), ["A", "B", "C", "D"]);
         assert_eq!(credits("  ", &none), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_known_comma_name_glues_unless_its_parts_are_acts_too() {
+        let known = |name: &str| {
+            [
+                "Earth, Wind & Fire",
+                "Bring Me The Horizon, BABYMETAL",
+                "Bring Me the Horizon",
+                "BABYMETAL",
+            ]
+            .iter()
+            .any(|act| fold_name(act) == fold_name(name))
+        };
+
+        // Filed under the whole, and no part is an act: a band with a comma.
+        assert_eq!(
+            credits("Earth, Wind & Fire", &known),
+            ["Earth, Wind & Fire"]
+        );
+
+        // Filed under the whole only because a row with no album artist tag
+        // took its credit list, and both parts have albums of their own.
+        assert_eq!(
+            credits("Bring Me The Horizon, BABYMETAL", &known),
+            ["Bring Me The Horizon", "BABYMETAL"]
+        );
+
+        // One unknown part keeps the glue, the same as before.
+        assert_eq!(
+            credits("Bring Me The Horizon, BABYMETAL", &|name: &str| {
+                fold_name(name) == fold_name("Bring Me The Horizon, BABYMETAL")
+                    || fold_name(name) == fold_name("BABYMETAL")
+            }),
+            ["Bring Me The Horizon, BABYMETAL"]
+        );
     }
 
     #[test]

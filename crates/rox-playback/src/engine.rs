@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration as StdDuration;
 use std::time::Instant;
 
@@ -149,6 +149,11 @@ pub const LIVE_IDLE_HANGUP_SECS: u64 = 1800;
 /// Refresh interval for the song marks' sliding distances: the pump's clock,
 /// so they don't step behind a smooth playhead.
 const MARKS_REFRESH: StdDuration = StdDuration::from_millis(16);
+/// Longest nap while nothing moves: paused, hung up, or played out. The idle
+/// hangup clock and a paused station's shift readout still tick at this rate.
+const IDLE_NAP: StdDuration = StdDuration::from_millis(250);
+/// Shortest nap while audio moves, so a ring a hair short never spins.
+const MIN_NAP: StdDuration = StdDuration::from_millis(1);
 
 /// Floor for sessions that never passed a length, like tests.
 const LIVE_BUFFER_MIN_SECS: u32 = 30;
@@ -261,6 +266,8 @@ pub struct Engine {
     producer: Producer<f32>,
     device_rate: u32,
     rx: Receiver<Cmd>,
+    /// A command that ended a nap, held for the next drain.
+    woken: Option<Cmd>,
     loop_mode: LoopMode,
     /// Sticky until cleared.
     stop_after: bool,
@@ -391,6 +398,7 @@ impl Engine {
             producer,
             device_rate,
             rx,
+            woken: None,
             loop_mode: LoopMode::default(),
             stop_after: false,
             stop_pending: false,
@@ -444,7 +452,7 @@ impl Engine {
             let mut reopen_runahead = false;
             // Paid after the flush lands. See the store.
             let mut resume = false;
-            while let Ok(cmd) = self.rx.try_recv() {
+            while let Some(cmd) = self.next_cmd() {
                 match cmd {
                     Cmd::TogglePause => {
                         // At the ended state the button means play again, through the nav path.
@@ -701,14 +709,15 @@ impl Engine {
             let capacity = self.producer.buffer().capacity();
             let room = latency::push_room(capacity, self.producer.slots(), self.device_rate);
             let stop = self.pending.len().min(self.pending_pos + room);
-            while self.pending_pos < stop {
-                match self.producer.push(self.pending[self.pending_pos]) {
-                    Ok(()) => self.pending_pos += 1,
-                    Err(_) => break,
-                }
+            // One chunk, not a push per sample: `room` never exceeds the free slots.
+            if let Ok(chunk) = self.producer.write_chunk_uninit(stop - self.pending_pos) {
+                self.pending_pos +=
+                    chunk.fill_from_iter(self.pending[self.pending_pos..stop].iter().copied());
             }
             if self.pending_pos < self.pending.len() {
-                std::thread::sleep(StdDuration::from_millis(3));
+                let live = source.as_ref().is_some_and(|src| src.tape.is_some());
+                let nap = self.ring_nap(live);
+                self.nap(nap);
                 continue;
             }
             self.pushed_playable += (self.pending.len() / 2) as u64;
@@ -760,7 +769,7 @@ impl Engine {
                 // Paused on a hung-up station. Without this arm the drained ring would read
                 // as a played-out queue.
                 None if self.hung_up.is_some() => {
-                    std::thread::sleep(StdDuration::from_millis(20));
+                    self.nap(IDLE_NAP);
                 }
 
                 None => {
@@ -779,11 +788,36 @@ impl Engine {
                             }
                         }
                         self.shared.ended.store(true, Ordering::Relaxed);
+                        self.nap(IDLE_NAP);
+                    } else {
+                        let nap = self.ring_nap(false);
+                        self.nap(nap);
                     }
-                    std::thread::sleep(StdDuration::from_millis(20));
                 }
             }
         }
+    }
+
+    /// The held wake-up first, then whatever is queued.
+    fn next_cmd(&mut self) -> Option<Cmd> {
+        self.woken.take().or_else(|| self.rx.try_recv().ok())
+    }
+
+    /// Sleep on the command channel, so a command ends the nap at once instead
+    /// of waiting it out.
+    fn nap(&mut self, for_: StdDuration) {
+        match self.rx.recv_timeout(for_) {
+            Ok(cmd) => self.woken = Some(cmd),
+            Err(RecvTimeoutError::Timeout) => {}
+            // Nobody left to command us; keep the cadence rather than spin.
+            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(for_),
+        }
+    }
+
+    /// How long the ring can be left alone: see [`ring_nap`].
+    fn ring_nap(&self, live: bool) -> StdDuration {
+        let ringed = self.producer.buffer().capacity() - self.producer.slots();
+        ring_nap(ringed, self.device_rate, latency::held(), live)
     }
 
     /// The session's first open, the only one that can arrive already paused (a
@@ -835,6 +869,12 @@ impl Engine {
 
         while p < self.order.len() {
             let i = self.order[p].idx;
+
+            // Nothing to open and nothing to say: no state, no refusal.
+            if matches!(self.queue[i], Locator::Placeholder) {
+                p += 1;
+                continue;
+            }
 
             // Titles bind to this pool entry for the source's lifetime.
             let shared = Arc::clone(&self.shared);
@@ -1665,13 +1705,16 @@ impl Engine {
         changed
     }
 
-    /// Shuffle the upcoming portion, or restore pool order.
+    /// Shuffle the upcoming portion, or restore pool order resuming after the
+    /// audible entry, with the tracks the shuffle skipped behind it.
     fn set_shuffle(&mut self, on: bool) -> bool {
+        let cur = self.order.get(self.reorder_anchor()).map(|e| e.idx);
+
         self.reorder_tail(|tail| {
             if on {
                 shuffle_slice(tail);
             } else {
-                tail.sort_by_key(|e| e.idx);
+                tail.sort_by_key(|e| (cur.is_some_and(|cur| e.idx < cur), e.idx));
             }
         })
     }
@@ -1813,6 +1856,20 @@ impl Engine {
             None => self.shared.ab_a.store(u64::MAX, Ordering::Release),
         }
     }
+}
+
+/// A nap off the ring's fill: half of what's buffered, so the callback can't
+/// drain it dry before the next pass, and a quarter while a latency hold is
+/// out, which keeps the shallow ring's cushion above a 40 ms device period.
+/// A station is capped at the marks refresh, since its tape and shift
+/// readout are published per pass. Paused, the ring doesn't drain, and the
+/// nap sits at the idle cap.
+fn ring_nap(ringed_samples: usize, device_rate: u32, held: bool, live: bool) -> StdDuration {
+    let buffered = ringed_samples as f64 / 2.0 / device_rate.max(1) as f64;
+    let share = if held { 4.0 } else { 2.0 };
+    let cap = if live { MARKS_REFRESH } else { IDLE_NAP };
+
+    StdDuration::from_secs_f64(buffered / share).clamp(MIN_NAP, cap)
 }
 
 /// Keep the newest reached segment and every future one; earlier ones can
@@ -2381,6 +2438,8 @@ impl Source {
                     String::new(),
                 )
             }
+
+            Locator::Placeholder => return Err("a placeholder has nothing to open".into()),
 
             Locator::Plugin(stream) => {
                 let opener =
@@ -3103,6 +3162,23 @@ mod tests {
         assert_eq!(e.pos, 1);
     }
 
+    #[test]
+    fn set_shuffle_off_resumes_after_the_audible_track() {
+        let mut e = test_engine(6);
+        set_audible(&e, 3);
+        e.pos = 1;
+        let shuffled = [0, 3, 5, 1, 2, 4];
+        e.order
+            .sort_by_key(|en| shuffled.iter().position(|&id| id == en.id));
+        e.set_shuffle(false);
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 3, 4, 5, 1, 2],
+            "pool order picks up after 3, the skipped tracks trail"
+        );
+        assert_eq!(e.order[e.pos + 1].idx, 4);
+    }
+
     /// Under Loop All on the last entry the upcoming portion wraps to the front.
     #[test]
     fn order_tail_wraps_to_the_front_under_loop_all() {
@@ -3487,6 +3563,35 @@ mod tests {
         assert_eq!(
             engine.shared.position_at(flip + 48_000, 48_000),
             Some((1, 3.0))
+        );
+    }
+
+    #[test]
+    fn the_nap_is_half_the_ring_and_a_quarter_under_a_hold() {
+        // 500 ms of stereo at 48 kHz, the real ring.
+        let full = 48_000;
+        assert_eq!(
+            ring_nap(full, 48_000, false, false),
+            StdDuration::from_millis(250)
+        );
+        assert_eq!(
+            ring_nap(full / 5, 48_000, false, false),
+            StdDuration::from_millis(50)
+        );
+        assert_eq!(
+            ring_nap(full / 5, 48_000, true, false),
+            StdDuration::from_millis(25)
+        );
+    }
+
+    #[test]
+    fn the_nap_is_capped_on_a_station_and_floored_on_a_dry_ring() {
+        assert_eq!(ring_nap(48_000, 48_000, false, true), MARKS_REFRESH);
+        assert_eq!(ring_nap(0, 48_000, false, false), MIN_NAP);
+        assert_eq!(
+            ring_nap(48_000, 0, false, false),
+            IDLE_NAP,
+            "a silly rate can't divide by zero"
         );
     }
 
@@ -3941,6 +4046,26 @@ mod tests {
         assert!(e.open_at(2).is_none());
         let reason = e.shared.take_refusal().expect("a dead end says why");
         assert!(reason.starts_with("also-gone.wav: "), "{reason}");
+    }
+
+    #[test]
+    fn a_placeholder_is_stepped_over_without_a_word() {
+        let fx = Fixtures::new("placeholder-skip");
+        let mut e = engine_over(vec![
+            local(fx.wav("a.wav", 1.0)),
+            Locator::Placeholder,
+            local(fx.wav("b.wav", 1.0)),
+            Locator::Placeholder,
+        ]);
+
+        assert!(e.open_at(1).is_some());
+        assert_eq!(e.pos, 2, "b.wav opened in its place");
+        assert_eq!(e.shared.take_refusal(), None);
+        assert_eq!(e.shared.stream_state(1), None, "no Opening or Dropped");
+
+        assert!(e.open_at(3).is_none(), "nothing after it");
+        assert_eq!(e.shared.take_refusal(), None, "an end with nothing to say");
+        assert_eq!(e.shared.stream_state(3), None);
     }
 
     #[test]

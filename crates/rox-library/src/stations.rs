@@ -289,6 +289,7 @@ fn row_for(station: &Station) -> TrackRow {
         album_artist_sort: String::new(),
         album_sort: String::new(),
         genre: station.genre.clone(),
+        comment: String::new(),
         year: 0,
         disc_no: 0,
         track_no: 0,

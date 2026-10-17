@@ -9,8 +9,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Ring depth while a hold is out. Above a 10-40 ms shared-mode period plus
-/// the decode loop's 3 ms sleep; below the ~150 ms where a slider stops
-/// feeling attached.
+/// the decode loop's nap, a quarter of what's buffered while a hold is out;
+/// below the ~150 ms where a slider stops feeling attached.
 pub const LOW_LATENCY_MS: usize = 120;
 
 static HOLDS: AtomicUsize = AtomicUsize::new(0);

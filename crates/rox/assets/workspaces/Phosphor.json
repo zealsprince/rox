@@ -113,6 +113,7 @@
                       "info": {
                         "panel": {
                           "cover": "none",
+                          "stripes": false,
                           "folders": "dim",
                           "songs": "dim",
                           "follow_playing": true,

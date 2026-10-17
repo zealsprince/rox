@@ -38,7 +38,7 @@ use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{
     self, Column, ColumnHost, GroupTrack, HeadingHost, SourceMark,
 };
-use crate::unknown_play;
+use crate::unknown_play::{self, Lookup, Picker};
 use rox_services::catalog::LocalCopy;
 use rox_services::history::HistoryEvent;
 
@@ -212,6 +212,25 @@ fn is_unknown(t: &TrackPlays) -> bool {
     unknown_play::is_unknown(&t.source)
 }
 
+/// At most QUEUE_CAP rows out of `len`, centred on `pos` where the ends
+/// leave room.
+fn queue_window(len: usize, pos: usize) -> std::ops::Range<usize> {
+    let lo = pos
+        .saturating_sub(QUEUE_CAP / 2)
+        .min(len.saturating_sub(QUEUE_CAP));
+    let hi = (lo + QUEUE_CAP).min(len);
+    lo..hi
+}
+
+/// The view's play ids for continuation. Unknown rows stay in: the player
+/// queues them as placeholders for a plugin search. A song heard twice keeps
+/// its first place: continuation resumes after the last id it has seen, so a
+/// later repeat would skip the rows between.
+fn follow_order(rows: &[i64]) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    rows.iter().copied().filter(|&id| seen.insert(id)).collect()
+}
+
 fn group_track(t: &TrackPlays) -> GroupTrack<'_> {
     GroupTrack {
         album: &t.album,
@@ -242,6 +261,9 @@ pub struct HistoryConfig {
     #[serde(default)]
     pub never_desc: bool,
     pub columns: Vec<String>,
+    /// Keyed on the visible row, so the banding runs unbroken through the
+    /// album headings.
+    pub stripes: bool,
     /// Whether the search box shows; the query only filters while it does.
     #[serde(default)]
     pub search: bool,
@@ -250,10 +272,6 @@ pub struct HistoryConfig {
     /// The panel's own query, kept while following the shared one.
     #[serde(default)]
     pub query: String,
-    /// The plugin an Unknown row's double click searches: the last one picked
-    /// from Play From.
-    #[serde(default)]
-    pub unknown_source: Option<String>,
 }
 
 // Hand-written so the columns default to the registry set, for a layout
@@ -267,10 +285,10 @@ impl Default for HistoryConfig {
             never_sort: NeverSort::default(),
             never_desc: false,
             columns: track_columns::default_columns(&columns()),
+            stripes: true,
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
-            unknown_source: None,
         }
     }
 }
@@ -309,6 +327,7 @@ pub struct HistoryPanel {
     finding: Option<SharedString>,
     /// Bumped per search, so a slow answer never plays over a newer click.
     finding_gen: u64,
+    picker: Picker,
     favourites: HashSet<i64>,
     /// Indices into `tracks`, cleared by the refresh that re-reads them.
     selected: HashSet<usize>,
@@ -403,6 +422,7 @@ impl HistoryPanel {
             paging: false,
             finding: None,
             finding_gen: 0,
+            picker: Picker::default(),
             favourites: HashSet::new(),
             selected: HashSet::new(),
             anchor: None,
@@ -788,8 +808,8 @@ impl HistoryPanel {
             .collect()
     }
 
-    /// The plugins an Unknown row can be searched on, with the double
-    /// click's pick checked.
+    /// The plugins an Unknown row can be searched on, with the default
+    /// checked.
     fn play_from_menu(
         &self,
         menu: PopupMenu,
@@ -800,8 +820,7 @@ impl HistoryPanel {
         unknown_play::play_from_menu(
             menu,
             cx.entity(),
-            |this: &Self| this.config.unknown_source.clone(),
-            move |this, source, cx| this.play_unknown(ti, Some(source), cx),
+            move |this, source, cx| this.play_unknown(ti, Some(source), None, cx),
             window,
             cx,
         )
@@ -862,27 +881,48 @@ impl HistoryPanel {
     }
 
     /// An Unknown row has nothing to open, so a plugin searches for the song.
-    /// A Play From pick becomes the double click's plugin too.
-    fn play_unknown(&mut self, ti: usize, picked: Option<String>, cx: &mut Context<Self>) {
+    /// With no plugin set, the picker opens when there's a `window` to open
+    /// it in.
+    fn play_unknown(
+        &mut self,
+        ti: usize,
+        picked: Option<String>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(t) = self.tracks.get(ti) else {
             return;
         };
         let (unknown_id, artist, title) = (t.track_id, t.artist.clone(), t.title.clone());
 
-        if picked.is_some() {
-            self.config.unknown_source = picked.clone();
-            panel::refresh_tab_panel(&self.tab_panel, cx);
-        }
+        // The window a double click on a playable row would queue.
+        let Some(spot) = self.spot(ti) else {
+            return;
+        };
 
-        let (source, label) =
-            match unknown_play::source_for(picked, self.config.unknown_source.as_deref()) {
-                Ok(pick) => pick,
-                Err(why) => {
-                    self.finding = Some(why);
-                    cx.notify();
-                    return;
-                }
-            };
+        let (source, label) = match (unknown_play::lookup(picked), window) {
+            (Lookup::Ready(source, label), _) => (source, label),
+
+            (Lookup::Ask, Some(window)) => {
+                let pick = move |this: &mut Self, source, cx: &mut Context<Self>| {
+                    this.play_unknown(ti, Some(source), None, cx);
+                };
+                Picker::ask(|this: &mut Self| &mut this.picker, pick, self, window, cx);
+                return;
+            }
+
+            (Lookup::Ask, None) => {
+                self.finding = Some(rox_i18n::t!("history-pick-plugin"));
+                cx.notify();
+                return;
+            }
+
+            (Lookup::Missing, _) => {
+                self.finding = Some(rox_i18n::t!("history-no-plugins"));
+                cx.notify();
+                return;
+            }
+        };
 
         self.finding_gen += 1;
         let generation = self.finding_gen;
@@ -897,8 +937,15 @@ impl HistoryPanel {
                     return;
                 }
 
-                this.finding =
-                    unknown_play::found(&this.state, unknown_id, found, label, title, cx);
+                this.finding = unknown_play::found(
+                    &this.state,
+                    unknown_id,
+                    spot,
+                    found,
+                    (source, label),
+                    title,
+                    cx,
+                );
                 cx.notify();
             })
             .ok();
@@ -908,26 +955,37 @@ impl HistoryPanel {
 
     /// Queues a window around the click, with the view as its timeline. A
     /// track deleted since its event drops out quietly.
-    fn play_from(&mut self, ti: usize, cx: &mut Context<Self>) {
+    fn play_from(&mut self, ti: usize, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.tracks.get(ti).is_some_and(is_unknown) {
-            self.play_unknown(ti, None, cx);
+            self.play_unknown(ti, None, window, cx);
             return;
         }
 
-        // The library's copy of a radio listen's song wins. The station would
-        // play whatever is on air now.
-        if let Some(local) = self.locals.get(ti).and_then(|local| local.as_ref()) {
-            let Ok(keys) = self.state.library.read(cx).keys_for(&[local.track_id]) else {
+        let Some(spot) = self.spot(ti) else {
+            return;
+        };
+
+        // A deleted clicked track bails rather than playing its neighbour.
+        let resolved = {
+            let library = self.state.library.read(cx);
+            let resolve = |ids: &[i64]| library.queue_keys_for(ids).unwrap_or_default();
+            let Some(key) = resolve(&spot.ids[spot.at..=spot.at]).pop() else {
                 return;
             };
-            self.state
-                .player
-                .update(cx, |player, cx| player.play_at(keys, 0, cx));
-            return;
-        }
+            let (before, after) = unknown_play::around(&spot.ids, spot.at, resolve);
+            (before, key, after)
+        };
+        let (before, key, after) = resolved;
 
-        // Window over the visible rows, not `self.tracks`, or query-hidden
-        // tracks join the queue.
+        let source = unknown_play::session_source();
+        unknown_play::play_between(&self.state, before, key, after, spot.view, source, cx);
+    }
+
+    /// The QUEUE_CAP window of visible rows around `ti`, and the whole view
+    /// for continuation to follow past it.
+    fn spot(&self, ti: usize) -> Option<unknown_play::Spot> {
+        // The visible rows, not `self.tracks`, or query-hidden tracks join
+        // the queue.
         let visible: Vec<usize> = self
             .rows
             .iter()
@@ -936,39 +994,24 @@ impl HistoryPanel {
                 _ => None,
             })
             .collect();
-        let Some(pos) = visible.iter().position(|&i| i == ti) else {
-            return;
-        };
-        let lo = pos
-            .saturating_sub(QUEUE_CAP / 2)
-            .min(visible.len().saturating_sub(QUEUE_CAP));
-        let hi = (lo + QUEUE_CAP).min(visible.len());
-        let ids: Vec<i64> = visible[lo..hi]
-            .iter()
-            .map(|&i| self.tracks[i].track_id)
-            .collect();
-        let click = pos - lo;
-        // keys_for drops deleted ids, so the start is how many ids ahead of
-        // the click resolved. A deleted clicked track bails rather than
-        // playing its neighbour.
-        let resolved = {
-            let library = self.state.library.read(cx);
-            let (Ok(keys), Ok(before), Ok(clicked)) = (
-                library.keys_for(&ids),
-                library.keys_for(&ids[..click]),
-                library.keys_for(&ids[click..=click]),
-            ) else {
-                return;
-            };
-            if keys.is_empty() || clicked.is_empty() {
-                return;
-            }
-            (keys, before.len())
-        };
-        let (keys, start) = resolved;
-        self.state
-            .player
-            .update(cx, |player, cx| player.play_at(keys, start, cx));
+        let pos = visible.iter().position(|&i| i == ti)?;
+        let visible: Vec<i64> = visible.into_iter().map(|i| self.play_id(i)).collect();
+
+        let window = queue_window(visible.len(), pos);
+        Some(unknown_play::Spot {
+            ids: visible[window.clone()].to_vec(),
+            at: pos - window.start,
+            view: Some(follow_order(&visible)),
+        })
+    }
+
+    /// The library's copy of a radio listen's song wins. The station would
+    /// play whatever is on air now.
+    fn play_id(&self, ti: usize) -> i64 {
+        match self.locals.get(ti).and_then(|local| local.as_ref()) {
+            Some(local) => local.track_id,
+            None => self.tracks[ti].track_id,
+        }
     }
 
     fn list_rows(
@@ -1044,6 +1087,9 @@ impl HistoryPanel {
             .items_center()
             .gap(tokens::SPACE_SM)
             .cursor_pointer()
+            .when(self.config.stripes && !ix.is_multiple_of(2), |d| {
+                d.bg(palette::alpha(palette::bg_elevated(), 0x80))
+            })
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
             .when(playing && !selected, |d| {
                 d.bg(palette::alpha(palette::highlight(), 0x12))
@@ -1056,7 +1102,7 @@ impl HistoryPanel {
                     // handler.
                     window.focus(&this.focus);
                     if event.click_count > 1 {
-                        this.play_from(ti, cx);
+                        this.play_from(ti, Some(window), cx);
                     } else {
                         this.select(ti, event.modifiers, cx);
                     }
@@ -1423,6 +1469,18 @@ impl PanelSettings for HistoryPanel {
                     ),
                 ))
             })
+            .child(panel::setting_row(
+                rox_i18n::t!("library-stripes"),
+                Some(rox_i18n::t!("library-stripes.description")),
+                panel::toggle(
+                    self.config.stripes,
+                    |this: &mut Self, on, cx| {
+                        this.config.stripes = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
             .into_any_element()
     }
 
@@ -1702,49 +1760,89 @@ impl HistoryPanel {
         // Track actions, then the panel menu, so a click over the list never
         // dead-ends at Play.
         let weak = cx.entity().downgrade();
-        root.child(content.context_menu(move |menu, window, cx| {
-            let Some(this) = weak.upgrade() else {
-                return menu;
-            };
-            let target = {
-                let panel = this.read(cx);
-                panel
-                    .menu_row
-                    .filter(|ti| *ti < panel.tracks.len())
-                    .map(|ti| (ti, is_unknown(&panel.tracks[ti]), panel.playable_ids()))
-            };
-            let Some((ti, unknown, ids)) = target else {
-                return this.update(cx, |this, cx| this.dropdown_menu(menu, window, cx));
-            };
+        let picker = self.picker.overlay(window);
+        root.children(picker)
+            .child(content.context_menu(move |menu, window, cx| {
+                let Some(this) = weak.upgrade() else {
+                    return menu;
+                };
+                let target = {
+                    let panel = this.read(cx);
+                    panel
+                        .menu_row
+                        .filter(|ti| *ti < panel.tracks.len())
+                        .map(|ti| (ti, is_unknown(&panel.tracks[ti]), panel.playable_ids()))
+                };
+                let Some((ti, unknown, ids)) = target else {
+                    return this.update(cx, |this, cx| this.dropdown_menu(menu, window, cx));
+                };
 
-            // An Unknown row has nothing for the track actions to act on.
-            if unknown {
-                return this.update(cx, |this, cx| {
-                    let menu = this.play_from_menu(menu, ti, window, cx);
+                // An Unknown row has nothing for the track actions to act on.
+                if unknown {
+                    return this.update(cx, |this, cx| {
+                        let menu = this.play_from_menu(menu, ti, window, cx);
+                        this.dropdown_menu(menu.separator(), window, cx)
+                    });
+                }
+
+                let state = this.read(cx).state.clone();
+                let panel = weak.clone();
+                // Play queues from the clicked track, the double click's move. The
+                // rest of the actions take the whole selection.
+                let menu = panel::track_actions(
+                    menu,
+                    state,
+                    ids,
+                    rox_i18n::t!("library-play"),
+                    window,
+                    cx,
+                    move |_, cx| {
+                        if let Some(this) = panel.upgrade() {
+                            this.update(cx, |this, cx| this.play_from(ti, None, cx));
+                        }
+                    },
+                );
+                this.update(cx, |this, cx| {
                     this.dropdown_menu(menu.separator(), window, cx)
-                });
-            }
+                })
+            }))
+    }
+}
 
-            let state = this.read(cx).state.clone();
-            let panel = weak.clone();
-            // Play queues from the clicked track, the double click's move. The
-            // rest of the actions take the whole selection.
-            let menu = panel::track_actions(
-                menu,
-                state,
-                ids,
-                rox_i18n::t!("library-play"),
-                window,
-                cx,
-                move |_, cx| {
-                    if let Some(this) = panel.upgrade() {
-                        this.update(cx, |this, cx| this.play_from(ti, cx));
-                    }
-                },
-            );
-            this.update(cx, |this, cx| {
-                this.dropdown_menu(menu.separator(), window, cx)
-            })
-        }))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_window_centres_on_the_click_and_holds_at_the_ends() {
+        assert!(queue_window(10, 4) == (0..10));
+        assert!(
+            queue_window(QUEUE_CAP * 3, QUEUE_CAP + 7)
+                == (QUEUE_CAP / 2 + 7..QUEUE_CAP * 3 / 2 + 7)
+        );
+        assert!(queue_window(QUEUE_CAP * 3, 3) == (0..QUEUE_CAP));
+        assert!(queue_window(QUEUE_CAP * 3, QUEUE_CAP * 3 - 1) == (QUEUE_CAP * 2..QUEUE_CAP * 3));
+    }
+
+    #[test]
+    fn follow_order_keeps_unknown_rows_and_drops_later_repeats() {
+        let (unknown, repeat) = (9, 1);
+        let rows = [1, unknown, 2, repeat, 3];
+        assert!(follow_order(&rows) == vec![1, unknown, 2, 3]);
+    }
+
+    #[test]
+    fn stripes_default_on_and_round_trip() {
+        let old: HistoryConfig = serde_json::from_str(r#"{"view":"most"}"#).unwrap();
+        assert!(old.stripes);
+
+        let config = HistoryConfig {
+            stripes: false,
+            ..old
+        };
+        let saved = serde_json::to_string(&config).unwrap();
+        let restored: HistoryConfig = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.stripes);
+        assert!(restored.view == HistoryView::Most);
     }
 }

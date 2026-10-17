@@ -2,11 +2,12 @@
 //! and grouping configuration, and how a panel's layout maps into the table
 //! widget's columns.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gpui::{SharedString, px};
 use gpui_component::table::{Column, ColumnSort};
 use rox_library::projection::SortKey;
+use rox_library::view::{CollapseState, GroupKind};
 use rox_panel_kit::config::default_true;
 use serde::{Deserialize, Serialize};
 
@@ -133,6 +134,14 @@ pub fn columns() -> &'static [ColumnDef] {
             right: false,
             default_on: false,
             sort: SortKey::Genre,
+        },
+        ColumnDef {
+            key: "comment",
+            label: rox_i18n::t_static("metadata-field-comment"),
+            default_width: 220.,
+            right: false,
+            default_on: false,
+            sort: SortKey::Comment,
         },
         ColumnDef {
             key: "year",
@@ -336,7 +345,7 @@ pub enum Density {
 /// Album keys the album artist and album together. Genre and year re-sort
 /// by that field first, since the canonical order doesn't keep their runs
 /// contiguous.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GroupBy {
     #[default]
@@ -348,6 +357,15 @@ pub enum GroupBy {
 }
 
 impl GroupBy {
+    pub fn kind(self) -> GroupKind {
+        match self {
+            GroupBy::Album => GroupKind::Album,
+            GroupBy::Artist => GroupKind::Artist,
+            GroupBy::Genre => GroupKind::Genre,
+            GroupBy::Year => GroupKind::Year,
+        }
+    }
+
     pub fn sort(self) -> Option<SortKey> {
         match self {
             GroupBy::Album | GroupBy::Artist => None,
@@ -431,6 +449,10 @@ pub struct LibraryConfig {
     /// flat.
     #[serde(default = "default_true")]
     pub group_search_results: bool,
+    /// Per grouping, so switching the grouping and back keeps what was
+    /// folded. Groups go by name: symbol ids renumber on every rebuild.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collapsed: BTreeMap<GroupBy, CollapseState>,
     /// Named apart from the old index-keyed `columns` field so pre-registry
     /// layouts drop their widths quietly instead of failing the config.
     #[serde(default)]
@@ -525,6 +547,7 @@ impl Default for LibraryConfig {
             headers: Headers::default(),
             group_by: GroupBy::default(),
             group_search_results: true,
+            collapsed: BTreeMap::new(),
             column_layout: Vec::new(),
             sort_key: None,
             sort_desc: false,
@@ -868,6 +891,26 @@ mod tests {
         let saved = serde_json::to_value(&off).unwrap();
         let restored: LibraryConfig = serde_json::from_value(saved).unwrap();
         assert!(!restored.group_search_results);
+    }
+
+    #[test]
+    fn collapsed_groups_save_per_grouping_and_stay_out_when_empty() {
+        let fresh = serde_json::to_value(LibraryConfig::default()).unwrap();
+        assert!(fresh.get("collapsed").is_none());
+
+        let saved: LibraryConfig = serde_json::from_str(
+            r#"{"collapsed": {"album": {"except": [["A", "One"]]}, "genre": {"all": true}}}"#,
+        )
+        .unwrap();
+        let album = &saved.collapsed[&super::GroupBy::Album];
+        assert!(!album.all);
+        let one = rox_library::view::GroupName::Album("A".into(), "One".into());
+        assert_eq!(album.except, vec![one]);
+        assert!(saved.collapsed[&super::GroupBy::Genre].all);
+
+        let again: LibraryConfig =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert!(again.collapsed == saved.collapsed);
     }
 
     #[test]

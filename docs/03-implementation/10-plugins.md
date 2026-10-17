@@ -333,6 +333,25 @@ plays. The top result is never taken blind, since a cover or a karaoke take woul
 as the user's song. The track found is picked into the library like a played search
 result, not saved.
 
+The player runs the same search for the Unknown rows a play brings with it. A playlist
+or a History run queues each one as a placeholder entry (`Locator::Placeholder`,
+`queue_keys_for` in `rox-services/src/catalog.rs`), and the engine steps over a
+placeholder with no refusal and no stream state. `follow` in
+`rox-services/src/unknown_resolver.rs` watches the player beside the pre-open. When a
+placeholder is the next entry after the one the engine opened, it searches as soon as
+that track starts, since a search and a pick take longer than an open. A hit still ahead
+of the decode cursor goes in after the placeholder and the placeholder comes out
+(`land_placeholder`, `rox-services/src/player.rs`). A miss, a hit that lands after the
+engine reached it, and a placeholder behind the cursor only come out. A Next onto one
+holds until its search lands, with the transport showing it as opening, and a second
+Next passes it. The plugin is the session's (`set_unknown_source`, set by the panel the
+play started in to the plugin its double click would search), else the Plugins page's
+default (`Settings::unknown_plugin`, which a Play From pick also sets), else the only one
+running. With several running and none picked, the placeholder comes out unsearched.
+A double click on an Unknown row in that state opens the Play From list at the pointer
+instead (`unknown_play::Picker`). The
+Unknown row is handed to the found track (`unknown::adopt`) once that track is audible.
+
 ### `source.sync`
 
 Pages through one collection for the library.
@@ -909,6 +928,7 @@ approval, browse, search, sync, pick, covers, the opener and the pre-open), with
 `sources.rs` (`live_ids`, hiding and departing rows), `lastfm.rs` (the scrobble gate),
 `plugin_favourites.rs` (Sync Favourites and the half heart),
 `plugin_criteria.rs` (parsing and holding results to search criteria),
+`unknown_resolver.rs` (filling queued Unknown rows),
 `lyrics.rs` (`PluginLyrics`, the lyrics gate),
 `openers.rs` (the opener slot) and `thumbs.rs` (covers through the plugin). Records and
 approvals are `PluginRecord`, `SyncedCollection` and `approved_plugins` in

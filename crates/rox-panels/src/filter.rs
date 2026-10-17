@@ -59,16 +59,18 @@ pub enum ColumnKind {
     Year,
     /// The folders on disk as one value, and each server as its own.
     Source,
+    Comment,
 }
 
 impl ColumnKind {
-    pub const ALL: [ColumnKind; 6] = [
+    pub const ALL: [ColumnKind; 7] = [
         ColumnKind::Artist,
         ColumnKind::AlbumArtist,
         ColumnKind::Album,
         ColumnKind::Genre,
         ColumnKind::Year,
         ColumnKind::Source,
+        ColumnKind::Comment,
     ];
 
     fn label(self) -> &'static str {
@@ -79,6 +81,7 @@ impl ColumnKind {
             ColumnKind::Genre => rox_i18n::t_static("filter-field-genre"),
             ColumnKind::Year => rox_i18n::t_static("filter-field-year"),
             ColumnKind::Source => rox_i18n::t_static("filter-field-source"),
+            ColumnKind::Comment => rox_i18n::t_static("filter-field-comment"),
         }
     }
 
@@ -90,6 +93,7 @@ impl ColumnKind {
             ColumnKind::Genre => FilterField::Genre,
             ColumnKind::Year => FilterField::Year,
             ColumnKind::Source => FilterField::Source,
+            ColumnKind::Comment => FilterField::Comment,
         }
     }
 }
@@ -1246,63 +1250,27 @@ fn column_values(
                 .collect::<Vec<_>>()
         }
         // Genre symbols are "; " lists: counts aggregate per symbol, then fan
-        // out onto each symbol's values. A folded library merges case
-        // variants here, showing the casing most rows use.
+        // out onto each symbol's values.
         ColumnKind::Genre => {
-            let fold = crate::settings::fold_case();
             let (column, table) = sym_source(projection, kind);
             let sym_counts = rows.count_with(table.strings.len(), |i| column[i] as usize);
-            let mut counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
-            for (sym, &count) in sym_counts.iter().enumerate() {
-                if count == 0 {
-                    continue;
-                }
-                // Aliases first, then dedup, so "Rock; Rock" or an alias pair
-                // still counts its tracks once.
-                let mut parts: Vec<String> = rox_library::genre::split(&table.strings[sym])
+            list_values(table, &sym_counts, picks, |s| {
+                rox_library::genre::split(s)
                     .map(rox_library::genre::resolve)
-                    .collect();
-                if fold {
-                    parts.sort_unstable_by_key(|p| p.to_lowercase());
-                    parts.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
-                } else {
-                    parts.sort_unstable();
-                    parts.dedup();
-                }
-                if parts.is_empty() {
-                    parts.push(String::new());
-                }
-                for part in parts {
-                    let key = if fold {
-                        part.to_lowercase()
-                    } else {
-                        part.clone()
-                    };
-                    *counts.entry(key).or_default().entry(part).or_default() += count;
-                }
-            }
-            let mut values: Vec<(String, u32)> = counts
-                .into_values()
-                .map(|casings| {
-                    let total = casings.values().sum();
-                    let display = casings
-                        .into_iter()
-                        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-                        .map(|(s, _)| s.to_string())
-                        .unwrap_or_default();
-                    (display, total)
-                })
-                .collect();
-            values.sort_unstable_by_key(|(value, _)| value.to_lowercase());
-            values
-                .into_iter()
-                .map(|(value, count)| Value {
-                    label: sym_label(&value),
-                    selected: picks.iter().any(|p| rox_library::value_eq(p, &value, fold)),
-                    value,
-                    count,
-                })
-                .collect()
+                    .collect()
+            })
+        }
+        // Lists like genre, without the aliases, which name genres. The column
+        // can be absent, so the symbol comes off the projection.
+        ColumnKind::Comment => {
+            let table = &projection.comments;
+            let sym_counts =
+                rows.count_with(table.strings.len(), |i| projection.comment_sym(i) as usize);
+            list_values(table, &sym_counts, picks, |s| {
+                rox_library::projection::comment_items(s)
+                    .map(str::to_string)
+                    .collect()
+            })
         }
         // Picked by the stored string, which for a server is a digest, so the
         // order and the labels come off the name.
@@ -1370,6 +1338,67 @@ fn column_values(
     (out, dropped)
 }
 
+/// Counts for a column whose symbols are lists, fanned out from per-symbol
+/// counts onto each symbol's items. A folded library merges case variants
+/// here, showing the casing most rows use.
+fn list_values(
+    table: &SymTable,
+    sym_counts: &[u32],
+    picks: &[String],
+    split: impl Fn(&str) -> Vec<String>,
+) -> Vec<Value> {
+    let fold = crate::settings::fold_case();
+    let mut counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+    for (sym, &count) in sym_counts.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        // Split first, then dedup, so "Rock; Rock" or an alias pair
+        // still counts its tracks once.
+        let mut parts = split(&table.strings[sym]);
+        if fold {
+            parts.sort_unstable_by_key(|p| p.to_lowercase());
+            parts.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+        } else {
+            parts.sort_unstable();
+            parts.dedup();
+        }
+        if parts.is_empty() {
+            parts.push(String::new());
+        }
+        for part in parts {
+            let key = if fold {
+                part.to_lowercase()
+            } else {
+                part.clone()
+            };
+            *counts.entry(key).or_default().entry(part).or_default() += count;
+        }
+    }
+    let mut values: Vec<(String, u32)> = counts
+        .into_values()
+        .map(|casings| {
+            let total = casings.values().sum();
+            let display = casings
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+                .map(|(s, _)| s.to_string())
+                .unwrap_or_default();
+            (display, total)
+        })
+        .collect();
+    values.sort_unstable_by_key(|(value, _)| value.to_lowercase());
+    values
+        .into_iter()
+        .map(|(value, count)| Value {
+            label: sym_label(&value),
+            selected: picks.iter().any(|p| rox_library::value_eq(p, &value, fold)),
+            value,
+            count,
+        })
+        .collect()
+}
+
 /// Picked values are never dropped: a pick the panel stopped listing is a
 /// filter nothing on screen could clear.
 fn cap_values(values: Vec<Value>, cap: usize) -> (Vec<Value>, usize) {
@@ -1397,6 +1426,7 @@ fn sym_source(projection: &Projection, kind: ColumnKind) -> (&[u32], &SymTable) 
         ColumnKind::Genre => (&projection.genre, &projection.genres),
         ColumnKind::Source => (&projection.source, &projection.sources),
         ColumnKind::Year => unreachable!("years don't intern"),
+        ColumnKind::Comment => unreachable!("the comment column can be absent"),
     }
 }
 
@@ -1454,6 +1484,7 @@ mod tests {
             album_artist: artist.into(),
             album: "Album".into(),
             genre: "Rock".into(),
+            comment: String::new(),
             year,
             disc_no: 1,
             track_no: 1,
@@ -1521,6 +1552,37 @@ mod tests {
         assert_eq!(read(&artists), vec![("A".into(), 1), ("B".into(), 1)]);
         let (years, _) = column_values(&p, ColumnKind::Year, &all, &[]);
         assert_eq!(read(&years), vec![("1999".into(), 1), ("2001".into(), 1)]);
+    }
+
+    #[test]
+    fn a_comment_list_counts_each_item_and_narrows_on_one() {
+        let commented = |path: &str, artist: &str, comment: &str| {
+            let mut row = track(path, artist, 2001);
+            row.comment = comment.into();
+            row
+        };
+        let p = projection(&[
+            commented("/m/1.flac", "A", "P_dnb, P_chill"),
+            commented("/m/2.flac", "B", "P_dnb"),
+            commented("/m/3.flac", "C", ""),
+        ]);
+        let all = RowSet::All(&p);
+        let (comments, _) = column_values(&p, ColumnKind::Comment, &all, &[]);
+        assert_eq!(
+            read(&comments),
+            vec![("".into(), 1), ("P_chill".into(), 1), ("P_dnb".into(), 2)]
+        );
+
+        let mut filter = FilterSet::default();
+        filter.toggle(FilterField::Comment, "P_dnb");
+        let columns = build_columns(&p, &[ColumnKind::Comment, ColumnKind::Artist], "", &filter);
+        assert!(
+            columns[0]
+                .0
+                .iter()
+                .any(|value| value.value == "P_dnb" && value.selected)
+        );
+        assert_eq!(read(&columns[1].0), vec![("A".into(), 1), ("B".into(), 1)]);
     }
 
     #[test]

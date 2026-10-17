@@ -529,8 +529,9 @@
                           "expanded": [
                             2
                           ],
-                          "headers": "expanded",
+                          "headers": "off",
                           "columns": [
+                            "cover",
                             "number",
                             "name",
                             "artist",
@@ -575,6 +576,7 @@
                           },
                           "view": "recent",
                           "headers": "off",
+                          "stripes": false,
                           "columns": [
                             "name",
                             "artist",
@@ -599,6 +601,7 @@
                             "font_scale": 0.9
                           },
                           "cover": "folders",
+                          "stripes": false,
                           "folders": "hide",
                           "songs": "dim",
                           "follow_playing": true,

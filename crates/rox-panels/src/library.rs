@@ -4,7 +4,8 @@
 //! duplicate filters independently. Double click plays on the shared player;
 //! a single click selects, and the selection publishes app-wide.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -13,7 +14,7 @@ use gpui::{
     AnyElement, AnyWindowHandle, App, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, KeyDownEvent, ModifiersChangedEvent, MouseButton, ScrollStrategy, ScrollWheelEvent,
     SharedString, Stateful, Subscription, WeakEntity, Window, WindowHandle, div, prelude::*, px,
-    rems,
+    rems, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -28,7 +29,7 @@ use rox_core::fmt::{fmt_ago, fmt_ms, fmt_num};
 use rox_core::{QUEUE_CAP, SHUFFLE_SEED};
 use rox_library::cue::{Origin, TrackKey};
 use rox_library::projection::{Projection, QUERY_FIELDS, QueryField};
-use rox_library::view::{self, Group, Grouping, Row, ViewSpec};
+use rox_library::view::{self, CollapseState, Group, Grouping, Row, View, ViewSpec};
 use rox_services::backdrop::WindowBackdrop;
 
 use crate::assets::icons;
@@ -54,6 +55,14 @@ use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
 const ART_ROUNDING_MAX: f32 = 24.;
 
 const PAGE_ROWS: isize = 25;
+
+/// The collapse chevron's hit width, before the row scale.
+const CHEVRON_W: f32 = 24.;
+
+/// How far the chevron's badge sits in from a header tile's top right corner,
+/// and the badge's diameter, before the row scale.
+const TILE_CHEVRON_INSET: f32 = 4.;
+const TILE_CHEVRON_BADGE: f32 = 20.;
 
 /// Long enough that typing a word runs one view pass, not one per letter.
 const VIEW_DEBOUNCE: Duration = Duration::from_millis(100);
@@ -90,21 +99,18 @@ struct ViewInputs {
     group_by: GroupBy,
     group_search_results: bool,
     head_rows: Option<u8>,
+    /// The current grouping's, by name.
+    collapse: CollapseState,
 }
 
-fn compute_rows(inputs: &ViewInputs) -> (Arc<Vec<Row>>, Vec<Group>) {
+fn compute_rows(inputs: &ViewInputs) -> View {
     let group_by = inputs.group_by;
-    let key = move |projection: &Projection, row: u32| -> u64 {
-        let i = row as usize;
-        match group_by {
-            GroupBy::Album => {
-                (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
-            }
-            GroupBy::Artist => projection.album_artist[i] as u64,
-            GroupBy::Genre => projection.genre[i] as u64,
-            GroupBy::Year => projection.year[i] as u64,
-        }
-    };
+    let kind = group_by.kind();
+    let key = move |projection: &Projection, row: u32| -> u64 { kind.key(projection, row) };
+    // Mapped per pass, against the build this pass reads, since the names are
+    // what survives a rebuild.
+    let collapse =
+        (!inputs.collapse.is_default()).then(|| inputs.collapse.keys(kind, &inputs.projection));
     let grouping = inputs
         .head_rows
         .filter(|_| inputs.query.is_empty() || inputs.group_search_results)
@@ -119,8 +125,9 @@ fn compute_rows(inputs: &ViewInputs) -> (Arc<Vec<Row>>, Vec<Group>) {
             },
             key: &key,
             discs: group_by == GroupBy::Album,
+            collapse: collapse.as_ref(),
         });
-    view::view_for(
+    view::view_with_order(
         &inputs.projection,
         inputs.order.clone(),
         &ViewSpec {
@@ -133,51 +140,90 @@ fn compute_rows(inputs: &ViewInputs) -> (Arc<Vec<Row>>, Vec<Group>) {
     )
 }
 
-/// Up to `cap` track rows around `ix` for a click to play through, at most
-/// half of them behind it, plus the clicked row's offset. Walks out from the
-/// click because listing every track row first is tens of megabytes on a big
-/// library.
-fn play_window(view: &[Row], ix: usize, cap: usize) -> Option<(Vec<usize>, usize)> {
-    if cap == 0 || !matches!(view.get(ix)?, Row::Track(_)) {
+/// Up to `cap` places in an order of `len` around `pos` for a click to play
+/// through, at most half of them behind it, plus the clicked place's offset.
+/// Over the order, not the rows, so a collapsed group plays through.
+fn play_window(len: usize, pos: usize, cap: usize) -> Option<(Range<usize>, usize)> {
+    if cap == 0 || pos >= len {
         return None;
     }
-    let track_rows =
-        |range: std::ops::Range<usize>| range.filter(|&i| matches!(view[i], Row::Track(_)));
-    let mut behind: Vec<usize> = track_rows(0..ix).rev().take(cap / 2).collect();
-    let ahead: Vec<usize> = track_rows(ix + 1..view.len())
-        .take(cap - behind.len() - 1)
-        .collect();
-    let short = cap - behind.len() - 1 - ahead.len();
-    if short > 0 {
-        let from = behind.last().copied().unwrap_or(ix);
-        behind.extend(track_rows(0..from).rev().take(short));
-    }
-    let start = behind.len();
-    behind.reverse();
-    behind.push(ix);
-    behind.extend(ahead);
-    Some((behind, start))
+
+    let lo = pos.saturating_sub(cap / 2).min(len.saturating_sub(cap));
+    let hi = (lo + cap).min(len);
+    Some((lo..hi, pos - lo))
 }
 
-/// The clicked track, then `count` track rows sampled uniformly from the rest
-/// of the view. A window would only ever mix the first few artists.
-fn shuffle_seed(view: &[Row], ix: usize, count: usize) -> Vec<usize> {
-    let head = matches!(view.get(ix), Some(Row::Track(_))).then_some(ix);
-    let rest = (0..view.len()).filter(|&i| Some(i) != head && matches!(view[i], Row::Track(_)));
-    let mut rows = Vec::with_capacity(count + 1);
-    rows.extend(head);
-    rows.extend(rox_playback::engine::reservoir(rest, count));
-    rows
+/// The clicked place, then `count` places sampled uniformly from the rest of
+/// the order. A window would only ever mix the first few artists.
+fn shuffle_seed(len: usize, pos: Option<usize>, count: usize) -> Vec<usize> {
+    let head = pos.filter(|&pos| pos < len);
+    let rest = (0..len).filter(|&i| Some(i) != head);
+    let mut places = Vec::with_capacity(count + 1);
+    places.extend(head);
+    places.extend(rox_playback::engine::reservoir(rest, count));
+    places
+}
+
+/// A track row's place in the view's order. Counted back to the nearest
+/// header, whose group says where its run starts, so it walks one group at
+/// most in the grouped views.
+fn order_pos(view: &[Row], groups: &[Group], ix: usize) -> Option<usize> {
+    if !matches!(view.get(ix)?, Row::Track(_)) {
+        return None;
+    }
+    if groups.is_empty() {
+        return Some(ix);
+    }
+
+    let mut tracks = 0;
+    for i in (0..ix).rev() {
+        match view[i] {
+            Row::Track(_) => tracks += 1,
+            Row::Head(g, _) => {
+                let group = groups.get(g as usize)?;
+                // A folded run's members aren't above us in the rows.
+                let base = if group.collapsed {
+                    group.members.end
+                } else {
+                    group.members.start
+                };
+                return Some(base + tracks);
+            }
+            Row::Disc(_) => {}
+        }
+    }
+    Some(tracks)
+}
+
+/// A row that keeps its identity across a view pass. A group key only means
+/// anything within one projection build.
+#[derive(Clone, Copy)]
+enum Mark {
+    Track(i64),
+    Group(u64),
+}
+
+/// What a collapse toggle carries over from the old view to the new one.
+struct Kept {
+    /// Collapsed groups' members included.
+    ids: HashSet<i64>,
+    cursor: Option<Mark>,
+    anchor: Option<Mark>,
+    /// The first row on screen and where it sat.
+    top: Option<(usize, Mark)>,
 }
 
 /// Swap a finished pass into the table unless a newer one was scheduled.
 /// True when the rows landed.
+///
+/// `keep` is for a collapse toggle, which moves rows but not tracks: the
+/// selection, the cursor and the first row on screen carry over by identity.
 fn install_view(
     table: &mut TableState<TrackTable>,
     generation: u64,
     projection_gen: u64,
-    view: Arc<Vec<Row>>,
-    groups: Vec<Group>,
+    view: View,
+    keep: bool,
     cx: &mut Context<TableState<TrackTable>>,
 ) -> bool {
     if table.delegate().view_gen != generation {
@@ -187,20 +233,44 @@ fn install_view(
     if projection_gen != table.delegate().state.library.read(cx).projection_gen() {
         return false;
     }
-    // Selection indices point into the old view. A refresh isn't an explicit
-    // pick, so the shared selection stays.
+
+    let kept = if keep {
+        let top = table.visible_range().rows().start;
+        table.delegate().kept(projection_gen, top, cx)
+    } else {
+        None
+    };
+
     let delegate = table.delegate_mut();
-    delegate.view = view;
-    delegate.groups = groups;
+    delegate.view = view.rows;
+    delegate.groups = view.groups;
+    delegate.order = view.order;
+    delegate.collapsible = view.collapsible;
     if delegate.view_projection != projection_gen {
         delegate.source_marks.clear();
+        delegate.cover_paths.clear();
     }
     delegate.view_projection = projection_gen;
-    delegate.selected.clear();
-    delegate.sel_gen += 1;
-    delegate.anchor = None;
-    delegate.cursor = None;
     delegate.locate_playing(cx);
+
+    // Without `keep`, the selection indices point into the old view. A
+    // refresh isn't an explicit pick, so the shared selection stays.
+    let scroll_to = match kept {
+        Some(kept) => delegate.restore(kept, cx),
+        None => {
+            delegate.selected.clear();
+            delegate.sel_gen += 1;
+            delegate.anchor = None;
+            delegate.cursor = None;
+            None
+        }
+    };
+    if let Some(row) = scroll_to {
+        table
+            .vertical_scroll_handle
+            .scroll_to_item_strict(row, ScrollStrategy::Top);
+    }
+
     table.clear_selection(cx);
     cx.notify();
     true
@@ -212,6 +282,14 @@ struct TrackTable {
     view: Arc<Vec<Row>>,
     /// What header rows index. Always swapped together with `view`.
     groups: Vec<Group>,
+    /// Every track `view` stands for, folded groups' members included. What
+    /// playback runs through. Swapped with `view`.
+    order: Arc<Vec<u32>>,
+    /// Whether this view honoured the collapse set. A search or a column sort
+    /// doesn't.
+    collapsible: bool,
+    /// Per grouping, by name. The panel's saved copy.
+    collapsed: BTreeMap<GroupBy, CollapseState>,
     /// From here to `compact_plays`, knobs copied from the panel so the view
     /// pass and the render can read them off the delegate.
     headers: Headers,
@@ -234,11 +312,13 @@ struct TrackTable {
     /// Never empty.
     head_lines: Vec<Vec<HeadPiece>>,
     compact_plays: bool,
-    /// Indices into `view`, track rows only. Cleared when the view swaps.
+    /// Indices into `view`: track rows, and a collapsed group's first header
+    /// line standing for its members. Cleared when the view swaps.
     selected: HashSet<usize>,
     /// Where the next shift-click extends from.
     anchor: Option<usize>,
-    /// The keyboard cursor. Follows clicks.
+    /// The keyboard cursor. Follows clicks. A track row or a header's first
+    /// line.
     cursor: Option<usize>,
     columns: Vec<Column>,
     /// User-renamed headers, kept so a language switch can tell them from
@@ -254,6 +334,8 @@ struct TrackTable {
     sort: Option<(SharedString, bool)>,
     playing_id: Option<i64>,
     playing_row: Option<usize>,
+    /// The collapsed group the playing track is folded into.
+    playing_hidden: Option<u32>,
     /// A track a skip or jump is still opening, spun beside its title.
     opening_id: Option<i64>,
     opening_row: Option<usize>,
@@ -266,6 +348,8 @@ struct TrackTable {
     /// it's empty, so the next look retries.
     similar_anchor: Option<(i64, String)>,
     /// Cached so the thumbnail lookup doesn't query the catalog every frame.
+    /// Cleared with the projection: a rescan can remap ids to paths, and an
+    /// unbounded memo would hold every id ever painted.
     cover_paths: HashMap<i64, Option<PathBuf>>,
     /// Keyed on the stored source string. Cleared when a new projection's view
     /// lands, since enabling or disabling a plugin rebuilds the projection.
@@ -327,13 +411,13 @@ impl TrackTable {
         let projection_gen = inputs.projection_gen;
         let panel = self.panel.clone();
         cx.spawn(async move |table, cx| {
-            let (view, groups) = cx
+            let view = cx
                 .background_executor()
                 .spawn(async move { compute_rows(&inputs) })
                 .await;
             let installed = table
                 .update(cx, |table, cx| {
-                    install_view(table, generation, projection_gen, view, groups, cx)
+                    install_view(table, generation, projection_gen, view, false, cx)
                 })
                 .unwrap_or(false);
             // A sort is a landing too. Without this the restored scroll and a
@@ -438,8 +522,7 @@ impl TrackTable {
             && self.selected.contains(&ix)
         {
             if self.drag_set.as_ref().map(|(generation, ..)| *generation) != Some(self.sel_gen) {
-                let mut rows: Vec<usize> = self.selected.iter().copied().collect();
-                rows.sort_unstable();
+                let rows = self.selected_rows();
                 let (set, ids) = self.resolve_drag_keys(&rows, &projection, cx);
                 self.drag_set = Some((self.sel_gen, set.into(), ids.into()));
             }
@@ -447,7 +530,8 @@ impl TrackTable {
                 .as_ref()
                 .map(|(_, set, ids)| (set.clone(), ids.clone()))?
         } else {
-            let (set, ids) = self.resolve_drag_keys(&[ix], &projection, cx);
+            let rows: Vec<u32> = self.track_at(ix).into_iter().collect();
+            let (set, ids) = self.resolve_drag_keys(&rows, &projection, cx);
             (set.into(), ids.into())
         };
         if keys.is_empty() {
@@ -462,14 +546,13 @@ impl TrackTable {
 
     fn resolve_drag_keys(
         &mut self,
-        rows: &[usize],
+        rows: &[u32],
         projection: &Projection,
         cx: &App,
     ) -> (Vec<TrackKey>, Vec<i64>) {
         let ids: Vec<i64> = rows
             .iter()
-            .filter_map(|&i| self.track_at(i))
-            .map(|row| projection.db_id[row as usize])
+            .map(|&row| projection.db_id[row as usize])
             .collect();
         let mut keys = Vec::with_capacity(ids.len());
         for &id in &ids {
@@ -495,15 +578,26 @@ impl TrackTable {
         (keys, ids)
     }
 
-    /// Bounces off the ends. None only when the view holds no tracks.
-    fn snap_to_track(&self, ix: usize, forward: bool) -> Option<usize> {
+    /// Where the cursor can sit: a track row, or a header block's first line
+    /// for the others in it. None on a disc divider.
+    fn stop_at(&self, ix: usize) -> Option<usize> {
+        match self.view.get(ix)? {
+            Row::Track(_) => Some(ix),
+            Row::Head(_, line) => Some(ix - *line as usize),
+            Row::Disc(_) => None,
+        }
+    }
+
+    /// Bounces off the ends. None only when the view holds no stops.
+    fn snap_to_stop(&self, ix: usize, forward: bool) -> Option<usize> {
         let len = self.view.len();
         if len == 0 {
             return None;
         }
         let ix = ix.min(len - 1);
-        let ahead = || (ix..len).find(|&i| self.track_at(i).is_some());
-        let behind = || (0..=ix).rev().find(|&i| self.track_at(i).is_some());
+        let stop = |i: usize| matches!(self.view[i], Row::Track(_) | Row::Head(_, 0));
+        let ahead = || (ix..len).find(|&i| stop(i));
+        let behind = || (0..=ix).rev().find(|&i| stop(i));
         if forward {
             ahead().or_else(behind)
         } else {
@@ -511,17 +605,201 @@ impl TrackTable {
         }
     }
 
-    /// None when `ix` isn't a header line. Any line of a block counts.
-    fn group_track_rows(&self, ix: usize) -> Option<Vec<usize>> {
-        let g = match self.view.get(ix) {
-            Some(&Row::Head(g, _)) => g,
-            _ => return None,
+    /// Any line of a block counts.
+    fn head_group(&self, ix: usize) -> Option<u32> {
+        match self.view.get(ix) {
+            Some(&Row::Head(g, _)) => Some(g),
+            _ => None,
+        }
+    }
+
+    fn is_collapsed_head(&self, ix: usize) -> bool {
+        self.head_group(ix)
+            .and_then(|g| self.groups.get(g as usize))
+            .is_some_and(|group| group.collapsed)
+    }
+
+    /// What `selected` may hold.
+    fn selectable(&self, ix: usize) -> bool {
+        match self.view.get(ix) {
+            Some(Row::Track(_)) => true,
+            Some(Row::Head(_, 0)) => self.is_collapsed_head(ix),
+            _ => false,
+        }
+    }
+
+    /// The tracks a row stands for: itself, or a collapsed group's members.
+    fn rows_at(&self, ix: usize) -> &[u32] {
+        match self.view.get(ix) {
+            Some(Row::Track(row)) => std::slice::from_ref(row),
+            Some(&Row::Head(g, _)) => match self.groups.get(g as usize) {
+                Some(group) if group.collapsed => self.group_members(g),
+                _ => &[],
+            },
+            _ => &[],
+        }
+    }
+
+    /// Off the order, so a collapsed group answers too.
+    fn group_members(&self, g: u32) -> &[u32] {
+        self.groups
+            .get(g as usize)
+            .and_then(|group| self.order.get(group.members.clone()))
+            .unwrap_or(&[])
+    }
+
+    /// The selection as tracks in view order.
+    fn selected_rows(&self) -> Vec<u32> {
+        let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
+        ixs.sort_unstable();
+        ixs.into_iter()
+            .flat_map(|ix| self.rows_at(ix).iter().copied())
+            .collect()
+    }
+
+    fn ids_of(&self, rows: &[u32], cx: &App) -> Vec<i64> {
+        let Some(projection) = self.projection(cx) else {
+            return Vec::new();
         };
+
+        rows.iter()
+            .filter_map(|&row| projection.db_id.get(row as usize).copied())
+            .collect()
+    }
+
+    fn order_pos(&self, ix: usize) -> Option<usize> {
+        order_pos(&self.view, &self.groups, ix)
+    }
+
+    /// The selection rows a header picks. A collapsed group is its first
+    /// header line; an open one is its track rows. None when `ix` isn't a
+    /// header line.
+    fn group_track_rows(&self, ix: usize) -> Option<Vec<usize>> {
+        let g = self.head_group(ix)?;
+        if self.is_collapsed_head(ix) {
+            return Some(self.stop_at(ix).into_iter().collect());
+        }
+
         let rows = (ix + 1..self.view.len())
             .take_while(|&i| !matches!(self.view.get(i), Some(&Row::Head(h, _)) if h != g))
             .filter(|&i| self.track_at(i).is_some())
             .collect();
         Some(rows)
+    }
+
+    fn head_index(&self, g: u32) -> Option<usize> {
+        self.view.iter().position(|row| *row == Row::Head(g, 0))
+    }
+
+    /// The collapsed group a track is folded into.
+    fn hidden_group(&self, id: i64, projection: &Projection) -> Option<u32> {
+        if !self.groups.iter().any(|group| group.collapsed) {
+            return None;
+        }
+
+        let pos = self
+            .order
+            .iter()
+            .position(|&row| projection.db_id[row as usize] == id)?;
+        let g = self
+            .groups
+            .partition_point(|group| group.members.end <= pos);
+        self.groups
+            .get(g)
+            .filter(|group| group.collapsed && group.members.contains(&pos))
+            .map(|_| g as u32)
+    }
+
+    fn mark_at(&self, ix: usize, projection: &Projection) -> Option<Mark> {
+        match *self.view.get(ix)? {
+            Row::Track(row) => Some(Mark::Track(projection.db_id[row as usize])),
+            Row::Head(g, _) => Some(Mark::Group(self.groups.get(g as usize)?.key)),
+            Row::Disc(_) => None,
+        }
+    }
+
+    /// A track folded away lands on its group's header.
+    fn index_of(&self, mark: Mark, projection: &Projection) -> Option<usize> {
+        match mark {
+            Mark::Group(key) => {
+                let g = self.groups.iter().position(|group| group.key == key)?;
+                self.head_index(g as u32)
+            }
+            Mark::Track(id) => self
+                .view
+                .iter()
+                .position(|&row| matches!(row, Row::Track(r) if projection.db_id[r as usize] == id))
+                .or_else(|| self.head_index(self.hidden_group(id, projection)?)),
+        }
+    }
+
+    /// Read off the outgoing view. None when it belongs to a stale build,
+    /// whose rows can't be resolved anymore.
+    fn kept(&self, projection_gen: u64, top: usize, cx: &App) -> Option<Kept> {
+        let projection = self.projection(cx)?;
+        // Group keys renumber with a rebuild; track ids don't.
+        let same_build = self.view_projection == projection_gen;
+        let mark = |ix: usize| {
+            self.mark_at(ix, projection)
+                .filter(|mark| same_build || matches!(mark, Mark::Track(_)))
+        };
+        let top =
+            (top..self.view.len().min(top + 2)).find_map(|ix| mark(ix).map(|mark| (ix, mark)));
+        Some(Kept {
+            ids: self
+                .selected_rows()
+                .into_iter()
+                .map(|row| projection.db_id[row as usize])
+                .collect(),
+            cursor: self.cursor.and_then(mark),
+            anchor: self.anchor.and_then(mark),
+            top,
+        })
+    }
+
+    /// Re-picks `kept` in the new view. A collapsed group stays picked only
+    /// if all of it was. Returns the row to scroll to when the first row on
+    /// screen moved.
+    fn restore(&mut self, kept: Kept, cx: &mut App) -> Option<usize> {
+        let projection = self.projection(cx)?.clone();
+        let mut selected = HashSet::new();
+        let mut covered = 0;
+        if !kept.ids.is_empty() {
+            let picked = |row: u32| kept.ids.contains(&projection.db_id[row as usize]);
+            for (ix, row) in self.view.iter().enumerate() {
+                match *row {
+                    Row::Track(row) if picked(row) => {
+                        selected.insert(ix);
+                        covered += 1;
+                    }
+                    Row::Head(g, 0) if self.is_collapsed_head(ix) => {
+                        let members = self.group_members(g);
+                        if !members.is_empty() && members.iter().all(|&row| picked(row)) {
+                            selected.insert(ix);
+                            covered += members.len();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        self.selected = selected;
+        self.sel_gen += 1;
+        self.cursor = kept
+            .cursor
+            .and_then(|mark| self.index_of(mark, &projection));
+        self.anchor = kept
+            .anchor
+            .and_then(|mark| self.index_of(mark, &projection))
+            .or(self.cursor);
+        // Half a group dropped out with the fold, so the shared pick shrank.
+        if covered != kept.ids.len() {
+            self.publish_selection(cx);
+        }
+
+        let (was, mark) = kept.top?;
+        self.index_of(mark, &projection).filter(|&now| now != was)
     }
 
     fn line_px(&self) -> gpui::Pixels {
@@ -729,30 +1007,17 @@ impl TrackTable {
     /// The first track of each of the run's first [`MOSAIC`] distinct tagged
     /// albums, matching the genre grid.
     fn mosaic_ids(&self, g: u32, projection: &Projection) -> Vec<i64> {
-        let Some(start) = self
-            .view
-            .iter()
-            .position(|row| matches!(row, Row::Head(h, 0) if *h == g))
-        else {
-            return Vec::new();
-        };
         let mut seen = HashSet::new();
         let mut ids = Vec::new();
-        for row in &self.view[start..] {
-            match *row {
-                Row::Head(h, _) if h != g => break,
-                Row::Track(r) => {
-                    if projection.resolve(r).album.is_empty() {
-                        continue;
-                    }
-                    if seen.insert(projection.album[r as usize]) {
-                        ids.push(projection.db_id[r as usize]);
-                        if ids.len() == MOSAIC {
-                            break;
-                        }
-                    }
+        for &r in self.group_members(g) {
+            if projection.resolve(r).album.is_empty() {
+                continue;
+            }
+            if seen.insert(projection.album[r as usize]) {
+                ids.push(projection.db_id[r as usize]);
+                if ids.len() == MOSAIC {
+                    break;
                 }
-                _ => {}
             }
         }
         ids
@@ -875,6 +1140,23 @@ impl TrackTable {
             .head_lines
             .get(line as usize)
             .map(|pieces| group_head::line_content(pieces, &head, &look, expanded));
+        // A collapsed group is picked through its header, so the header shows it.
+        let picked = self.selected.contains(&(row_ix - line as usize));
+        // The chevron rides the tile when there is one, since the right edge
+        // sits under the scrollbar. Without a tile it holds the left edge and
+        // every line gives up its width, so the block's lines stay aligned.
+        let chevron_w =
+            (self.collapsible && !has_tile).then(|| px(CHEVRON_W) * palette::row_scale());
+        let chevron: Option<AnyElement> = if !self.collapsible {
+            None
+        } else if has_tile {
+            Some(self.tile_chevron(g, row_ix, lift).into_any_element())
+        } else {
+            chevron_w.filter(|_| first).map(|w| {
+                self.chevron(g, row_ix, w, gap_above, line_px)
+                    .into_any_element()
+            })
+        };
         div()
             .id(("row", row_ix))
             .cursor_pointer()
@@ -897,8 +1179,7 @@ impl TrackTable {
                     )
                 }
             })
-            .when_some(tile, |d, tile| d.child(tile))
-            .when_some(strip, |d, strip| {
+            .when(picked, |d| {
                 d.child(
                     div()
                         .absolute()
@@ -906,9 +1187,134 @@ impl TrackTable {
                         .right_0()
                         .top(gap_above)
                         .h(line_px)
+                        .bg(palette::alpha(palette::accent(), 0x26)),
+                )
+            })
+            .when_some(tile, |d, tile| d.child(tile))
+            .when_some(strip, |d, strip| {
+                d.child(
+                    div()
+                        .absolute()
+                        .map(|d| match chevron_w {
+                            Some(w) => d.left(w).right_0(),
+                            None => d.left_0().right_0(),
+                        })
+                        .top(gap_above)
+                        .h(line_px)
                         .child(strip),
                 )
             })
+            .when_some(chevron, |d, chevron| d.child(chevron))
+    }
+
+    fn is_collapsed(&self, g: u32) -> bool {
+        self.groups
+            .get(g as usize)
+            .is_some_and(|group| group.collapsed)
+    }
+
+    /// The press that folds a group. On the press, and stopped there: the row
+    /// arms its click on the same press, and that click would select the group.
+    fn fold_press(
+        &self,
+        g: u32,
+    ) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+        let panel = self.panel.clone();
+        move |_, window, cx| {
+            cx.stop_propagation();
+            panel
+                .update(cx, |panel, cx| {
+                    window.focus(&panel.focus);
+                    panel.set_group_collapsed(g, None, cx);
+                })
+                .ok();
+        }
+    }
+
+    fn fold_icon(&self, g: u32) -> &'static str {
+        if self.is_collapsed(g) {
+            icons::CHEVRON_RIGHT
+        } else {
+            icons::CHEVRON_DOWN
+        }
+    }
+
+    /// The fold toggle at the left of a header's first line, for a block with
+    /// no tile.
+    fn chevron(
+        &self,
+        g: u32,
+        row_ix: usize,
+        width: gpui::Pixels,
+        top: gpui::Pixels,
+        height: gpui::Pixels,
+    ) -> Stateful<Div> {
+        div()
+            .id(("fold", row_ix))
+            .absolute()
+            .top(top)
+            .left_0()
+            .h(height)
+            .w(width)
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .group("library-fold")
+            .on_mouse_down(MouseButton::Left, self.fold_press(g))
+            .child(
+                svg()
+                    .path(self.fold_icon(g))
+                    .size(px(12.))
+                    .flex_none()
+                    .text_color(palette::text_muted())
+                    .group_hover("library-fold", |s| s.text_color(palette::text())),
+            )
+    }
+
+    /// The cover as the fold toggle. A press anywhere on the tile folds the
+    /// group, and the chevron in its top right corner only shows while the
+    /// tile is hovered, so the cover stays a picture the rest of the time.
+    /// Drawn by every line of the block the way the tile is: the last line's
+    /// copy is on top and takes the hover and the press, and its hover reads
+    /// off its own bounds, not the row's, so it holds across the whole block.
+    fn tile_chevron(&self, g: u32, row_ix: usize, lift: gpui::Pixels) -> Stateful<Div> {
+        let side = self.tile_side();
+        let margin = self.art_margin_px();
+        let inset = px(TILE_CHEVRON_INSET) * palette::row_scale();
+        let badge = (px(TILE_CHEVRON_BADGE) * palette::row_scale()).min(side);
+        div()
+            .id(("fold", row_ix))
+            .absolute()
+            .top(margin - lift)
+            .map(|d| match self.art_side {
+                ArtSide::Left => d.left(margin),
+                ArtSide::Right => d.right(margin),
+            })
+            .size(side)
+            .cursor_pointer()
+            .opacity(0.)
+            .hover(|d| d.opacity(1.))
+            .on_mouse_down(MouseButton::Left, self.fold_press(g))
+            .child(
+                div()
+                    .absolute()
+                    .top(inset)
+                    .right(inset)
+                    .size(badge)
+                    .rounded_full()
+                    .bg(palette::alpha(palette::bg_root_opaque(), 0xA6))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path(self.fold_icon(g))
+                            .size(px(12.))
+                            .flex_none()
+                            .text_color(palette::text_bright()),
+                    ),
+            )
     }
 
     /// Full-width like the header rows, so it stays put when wide column sets
@@ -942,6 +1348,7 @@ impl TrackTable {
             QueryField::Genre => "genre",
             QueryField::Codec => "codec",
             QueryField::Source => "source",
+            QueryField::Comment => "comment",
             QueryField::Year
             | QueryField::Folder
             | QueryField::Rating
@@ -993,6 +1400,7 @@ impl TrackTable {
                         "album_artist" => v.album_artist,
                         "album" => v.album,
                         "genre" => v.genre,
+                        "comment" => v.comment,
                         "source" => {
                             source = rox_library::cue::source_label(v.source);
                             source.as_str()
@@ -1012,6 +1420,10 @@ impl TrackTable {
     fn locate_playing(&mut self, cx: &App) {
         self.playing_row = self.row_of(self.playing_id, cx);
         self.opening_row = self.row_of(self.opening_id, cx);
+        self.playing_hidden = match (self.playing_row, self.playing_id, self.projection(cx)) {
+            (None, Some(id), Some(projection)) => self.hidden_group(id, projection),
+            _ => None,
+        };
     }
 
     fn row_of(&self, id: Option<i64>, cx: &App) -> Option<usize> {
@@ -1050,6 +1462,11 @@ impl TrackTable {
             group_by: self.group_by,
             group_search_results: self.group_search_results,
             head_rows: (self.headers != Headers::Off).then(|| self.head_rows()),
+            collapse: self
+                .collapsed
+                .get(&self.group_by)
+                .cloned()
+                .unwrap_or_default(),
         })
     }
 
@@ -1063,16 +1480,10 @@ impl TrackTable {
     }
 
     fn publish_selection(&self, cx: &mut App) {
-        let Some(projection) = self.projection(cx).cloned() else {
+        if self.projection(cx).is_none() {
             return;
-        };
-        let mut rows: Vec<usize> = self.selected.iter().copied().collect();
-        rows.sort_unstable();
-        let ids: Vec<i64> = rows
-            .iter()
-            .filter_map(|&ix| self.track_at(ix))
-            .map(|row| projection.db_id[row as usize])
-            .collect();
+        }
+        let ids = self.ids_of(&self.selected_rows(), cx);
         // The panel's id, which a scoped drawer and a selection-following view
         // match against.
         let source = self.panel.entity_id();
@@ -1307,7 +1718,7 @@ impl TableDelegate for TrackTable {
             self.selected = rows.iter().copied().collect();
             self.sel_gen += 1;
             self.anchor = rows.first().copied();
-            self.cursor = rows.first().copied();
+            self.cursor = self.stop_at(row_ix);
             self.publish_selection(cx);
             cx.notify();
         } else if !self.selected.contains(&row_ix) {
@@ -1317,19 +1728,10 @@ impl TableDelegate for TrackTable {
             self.publish_selection(cx);
             cx.notify();
         }
-        let mut rows: Vec<usize> = self.selected.iter().copied().collect();
-        rows.sort_unstable();
+        let rows = self.selected.len();
         // Resolved now, so the editor gets this set even if another panel
         // publishes over the shared selection first.
-        let ids: Vec<i64> = self
-            .projection(cx)
-            .map(|projection| {
-                rows.iter()
-                    .filter_map(|&ix| self.track_at(ix))
-                    .map(|row| projection.db_id[row as usize])
-                    .collect()
-            })
-            .unwrap_or_default();
+        let ids = self.ids_of(&self.selected_rows(), cx);
         let panel = self.panel.clone();
         let label = if album.is_some() {
             if self.group_by == GroupBy::Album {
@@ -1337,17 +1739,17 @@ impl TableDelegate for TrackTable {
             } else {
                 rox_i18n::t!("library-play-group").to_string()
             }
-        } else if rows.len() > 1 {
-            rox_i18n::t!("library-play-tracks", count = rows.len() as u64).to_string()
+        } else if ids.len() > 1 {
+            rox_i18n::t!("library-play-tracks", count = ids.len() as u64).to_string()
         } else {
             rox_i18n::t!("library-play").to_string()
         };
         // A single row plays through the view like a double click. A set or a
         // group queues exactly the highlighted rows.
-        let single_row = album.is_none() && rows.len() <= 1;
+        let single_row = album.is_none() && rows <= 1;
         let from_row = single_row.then_some(row_ix);
         let play_panel = panel.clone();
-        let play_rows = rows.clone();
+        let play_ids = ids.clone();
         let extras = panel::Extras {
             after_next: single_row.then(|| self.similar_item(row_ix, cx)).flatten(),
             ..panel::Extras::default()
@@ -1366,13 +1768,13 @@ impl TableDelegate for TrackTable {
                 };
                 panel.update(cx, |panel, cx| match from_row {
                     Some(ix) => panel.play_from(ix, cx),
-                    None => panel.play_rows(play_rows.clone(), cx),
+                    None => panel.play_ids(play_ids.clone(), cx),
                 });
             },
         );
         // Single track rows only: a header is already a whole album, and a set
         // has no one album or artist to filter by.
-        let menu = if album.is_none() && rows.len() == 1 {
+        let menu = if album.is_none() && rows == 1 {
             let (jump_album, jump_artist) = self
                 .projection(cx)
                 .and_then(|projection| {
@@ -1505,6 +1907,10 @@ impl TableDelegate for TrackTable {
             "genre" => cell
                 .text_color(palette::text_secondary())
                 .child(SharedString::from(v.genre.to_string())),
+            // One line, or a multi-line comment would spill out of the row.
+            "comment" => cell
+                .text_color(palette::text_secondary())
+                .child(SharedString::from(v.comment.replace(['\r', '\n'], " "))),
             "year" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.year)),
@@ -1675,6 +2081,13 @@ pub struct LibraryPanel {
     /// The playing row only exists once the rebuilt view lands, so the follow
     /// waits for it.
     follow_on_view: bool,
+    /// A follow or a jump that opened the playing track's group, waiting for
+    /// the pass that shows it.
+    scroll_on_view: bool,
+    jump_on_view: bool,
+    /// (any collapsed, all collapsed) while the view can fold. Copied off the
+    /// delegate for the same reason as `headers`.
+    folds: Option<(bool, bool)>,
     resume_playing: bool,
     resume_idle: ResumeIdle,
     glide_to: Option<usize>,
@@ -1808,6 +2221,9 @@ impl LibraryPanel {
             panel: cx.weak_entity(),
             view: Arc::new(Vec::new()),
             groups: Vec::new(),
+            order: Arc::new(Vec::new()),
+            collapsible: false,
+            collapsed: config.collapsed,
             headers: config.headers,
             group_by: config.group_by,
             group_search_results: config.group_search_results,
@@ -1836,6 +2252,7 @@ impl LibraryPanel {
             sort,
             playing_id: None,
             playing_row: None,
+            playing_hidden: None,
             opening_id: None,
             opening_row: None,
             favourites: state.library.read(cx).favourite_ids(),
@@ -1923,6 +2340,9 @@ impl LibraryPanel {
             smooth_follow: config.smooth_follow,
             followed_row: None,
             follow_on_view: false,
+            scroll_on_view: false,
+            jump_on_view: false,
+            folds: None,
             resume_playing: config.resume_playing,
             resume_idle: ResumeIdle::default(),
             glide_to: None,
@@ -2110,8 +2530,18 @@ impl LibraryPanel {
         .detach();
     }
 
-    /// Scroll only. The automatic follow never touches the selection.
+    /// Scroll only. The automatic follow never touches the selection. A
+    /// playing track folded into a collapsed group opens it first.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
+        if self.reveal_playing(cx) {
+            self.scroll_on_view = true;
+            return;
+        }
+
+        self.scroll_to_playing(cx);
+    }
+
+    fn scroll_to_playing(&mut self, cx: &mut Context<Self>) {
         self.followed_row = self.table.read(cx).delegate().playing_row;
         if self.smooth_follow {
             if let Some(row) = self.table.read(cx).delegate().playing_row {
@@ -2170,17 +2600,29 @@ impl LibraryPanel {
             "pageup" => self.move_cursor(-PAGE_ROWS, shift, cx),
             "pagedown" => self.move_cursor(PAGE_ROWS, shift, cx),
             "home" => {
-                if let Some(ix) = self.table.read(cx).delegate().snap_to_track(0, true) {
+                if let Some(ix) = self.table.read(cx).delegate().snap_to_stop(0, true) {
                     self.set_cursor(ix, shift, cx);
                 }
             }
             "end" => {
                 let target = {
                     let delegate = self.table.read(cx).delegate();
-                    delegate.snap_to_track(delegate.view.len().saturating_sub(1), false)
+                    delegate.snap_to_stop(delegate.view.len().saturating_sub(1), false)
                 };
                 if let Some(ix) = target {
                     self.set_cursor(ix, shift, cx);
+                }
+            }
+            // Only reach here on a header that can fold: everywhere else the
+            // workspace keeps them for seeking. See `key_context`.
+            "left" | "right" => {
+                let fold = keystroke.key.as_str() == "left";
+                let g = {
+                    let delegate = self.table.read(cx).delegate();
+                    delegate.cursor.and_then(|ix| delegate.head_group(ix))
+                };
+                if let Some(g) = g {
+                    self.set_group_collapsed(g, Some(fold), cx);
                 }
             }
             "enter" => self.play_selection(cx),
@@ -2258,7 +2700,7 @@ impl LibraryPanel {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             let all: HashSet<usize> = (0..delegate.view.len())
-                .filter(|&i| delegate.track_at(i).is_some())
+                .filter(|&i| delegate.selectable(i))
                 .collect();
             if all.is_empty() {
                 return;
@@ -2288,25 +2730,27 @@ impl LibraryPanel {
         });
     }
 
+    /// On a header the cursor picks its group, the way a click does.
     fn set_cursor(&mut self, ix: usize, extend: bool, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            if delegate.track_at(ix).is_none() {
+            let Some(ix) = delegate.stop_at(ix) else {
                 return;
-            }
+            };
             delegate.cursor = Some(ix);
             if extend {
                 let anchor = delegate.anchor.unwrap_or(ix);
                 let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-                let range = (lo..=hi)
-                    .filter(|&i| delegate.track_at(i).is_some())
-                    .collect();
+                let range = (lo..=hi).filter(|&i| delegate.selectable(i)).collect();
                 delegate.selected = range;
                 if delegate.anchor.is_none() {
                     delegate.anchor = Some(anchor);
                 }
             } else {
-                delegate.selected = HashSet::from([ix]);
+                delegate.selected = match delegate.group_track_rows(ix) {
+                    Some(rows) => rows.into_iter().collect(),
+                    None => HashSet::from([ix]),
+                };
                 delegate.anchor = Some(ix);
             }
             delegate.sel_gen += 1;
@@ -2314,6 +2758,8 @@ impl LibraryPanel {
             table.scroll_to_row(ix, cx);
             cx.notify();
         });
+        // The key context follows whether the cursor sits on a header.
+        cx.notify();
     }
 
     /// With no cursor yet, the first press starts at the edge it heads toward.
@@ -2329,32 +2775,128 @@ impl LibraryPanel {
                 None => len - 1,
                 Some(cursor) => (cursor as isize + delta).clamp(0, len as isize - 1) as usize,
             };
-            delegate.snap_to_track(raw, delta >= 0)
+            delegate.snap_to_stop(raw, delta >= 0)
         };
         if let Some(target) = target {
             self.set_cursor(target, extend, cx);
         }
     }
 
+    /// A set, or a collapsed group, queues what's picked. A lone track plays
+    /// through the view, and the cursor on a header plays its group.
     fn play_selection(&mut self, cx: &mut Context<Self>) {
-        let (mut rows, cursor) = {
+        enum Play {
+            Ids(Vec<i64>),
+            From(usize),
+        }
+
+        let play = {
             let delegate = self.table.read(cx).delegate();
-            let rows: Vec<usize> = delegate.selected.iter().copied().collect();
-            (rows, delegate.cursor)
+            let first = delegate.selected.iter().min().copied();
+            let folded = delegate
+                .selected
+                .iter()
+                .any(|&ix| delegate.is_collapsed_head(ix));
+            let cursor = delegate.cursor.or(first);
+            if delegate.selected.len() > 1 || folded {
+                Some(Play::Ids(delegate.ids_of(&delegate.selected_rows(), cx)))
+            } else if let Some(g) = cursor.and_then(|ix| delegate.head_group(ix)) {
+                Some(Play::Ids(delegate.ids_of(delegate.group_members(g), cx)))
+            } else {
+                cursor.map(Play::From)
+            }
         };
-        rows.sort_unstable();
-        if rows.len() > 1 {
-            self.play_rows(rows, cx);
-        } else if let Some(ix) = cursor.or_else(|| rows.first().copied()) {
-            self.play_from(ix, cx);
+        match play {
+            Some(Play::Ids(ids)) => self.play_ids(ids, cx),
+            Some(Play::From(ix)) => self.play_from(ix, cx),
+            None => {}
         }
     }
 
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
+        if self.reveal_playing(cx) {
+            self.jump_on_view = true;
+            return;
+        }
+
+        self.set_cursor_on_playing(cx);
+    }
+
+    fn set_cursor_on_playing(&mut self, cx: &mut Context<Self>) {
         let row = self.table.read(cx).delegate().playing_row;
         if let Some(row) = row {
             self.set_cursor(row, false, cx);
         }
+    }
+
+    /// Opens the collapsed group the playing track is folded into. True when
+    /// the pass that shows it is on its way.
+    fn reveal_playing(&mut self, cx: &mut Context<Self>) -> bool {
+        let hidden = self.table.read(cx).delegate().playing_hidden;
+        match hidden {
+            Some(g) => self.set_group_collapsed(g, Some(false), cx),
+            None => false,
+        }
+    }
+
+    /// None flips it. Presentation only: playback still runs through the whole
+    /// order. True when a pass was scheduled.
+    fn set_group_collapsed(
+        &mut self,
+        g: u32,
+        collapse: Option<bool>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self.table.update(cx, |table, cx| {
+            let delegate = table.delegate();
+            if !delegate.collapsible {
+                return false;
+            }
+            let Some(group) = delegate.groups.get(g as usize) else {
+                return false;
+            };
+            if collapse.is_some_and(|collapse| collapse == group.collapsed) {
+                return false;
+            }
+            let Some(projection) = delegate.projection(cx) else {
+                return false;
+            };
+
+            let name = delegate.group_by.kind().name(projection, group.first);
+            let group_by = delegate.group_by;
+            let collapsed = &mut table.delegate_mut().collapsed;
+            let state = collapsed.entry(group_by).or_default();
+            state.flip(name);
+            if state.is_default() {
+                collapsed.remove(&group_by);
+            }
+            true
+        });
+        if changed {
+            self.schedule_view(false, true, cx);
+            self.request_layout_save(cx);
+        }
+        changed
+    }
+
+    fn set_all_collapsed(&mut self, collapse: bool, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            let group_by = delegate.group_by;
+            if collapse {
+                delegate.collapsed.insert(
+                    group_by,
+                    CollapseState {
+                        all: true,
+                        except: Vec::new(),
+                    },
+                );
+            } else {
+                delegate.collapsed.remove(&group_by);
+            }
+        });
+        self.schedule_view(false, true, cx);
+        self.request_layout_save(cx);
     }
 
     fn toggle_follow_playing(&mut self, cx: &mut Context<Self>) {
@@ -2377,16 +2919,17 @@ impl LibraryPanel {
     /// is tens of milliseconds and the sort behind it can be near a second. The
     /// old rows stay up until the new ones land.
     fn refresh_view(&mut self, cx: &mut Context<Self>) {
-        self.schedule_view(false, cx);
+        self.schedule_view(false, false, cx);
     }
 
     /// For keystrokes. The generation check already makes stale passes
     /// harmless, and the wait keeps them from starting at all.
     fn refresh_view_debounced(&mut self, cx: &mut Context<Self>) {
-        self.schedule_view(true, cx);
+        self.schedule_view(true, false, cx);
     }
 
-    fn schedule_view(&mut self, debounce: bool, cx: &mut Context<Self>) {
+    /// `keep` carries the selection and scroll over, see [`install_view`].
+    fn schedule_view(&mut self, debounce: bool, keep: bool, cx: &mut Context<Self>) {
         let query = self.effective_query(cx);
         let filter = self.effective_filter(cx);
         let generation = self.table.update(cx, |table, _| {
@@ -2403,14 +2946,13 @@ impl LibraryPanel {
             // No projection yet: install the empty view now, not the old rows.
             let live = self.state.library.read(cx).projection_gen();
             self.table.update(cx, |table, cx| {
-                install_view(
-                    table,
-                    generation,
-                    live,
-                    Arc::new(Vec::new()),
-                    Vec::new(),
-                    cx,
-                );
+                let empty = View {
+                    rows: Arc::new(Vec::new()),
+                    groups: Vec::new(),
+                    order: Arc::new(Vec::new()),
+                    collapsible: false,
+                };
+                install_view(table, generation, live, empty, false, cx);
             });
             self.on_view_installed(cx);
             return;
@@ -2429,13 +2971,13 @@ impl LibraryPanel {
                     return;
                 }
             }
-            let (view, groups) = cx
+            let view = cx
                 .background_executor()
                 .spawn(async move { compute_rows(&inputs) })
                 .await;
             this.update(cx, |this, cx| {
                 let installed = this.table.update(cx, |table, cx| {
-                    install_view(table, generation, projection_gen, view, groups, cx)
+                    install_view(table, generation, projection_gen, view, keep, cx)
                 });
                 if installed {
                     this.on_view_installed(cx);
@@ -2447,22 +2989,53 @@ impl LibraryPanel {
     }
 
     fn on_view_installed(&mut self, cx: &mut Context<Self>) {
+        let (len, folds, playing_row, hidden) = {
+            let delegate = self.table.read(cx).delegate();
+            let folds = (delegate.collapsible && !delegate.groups.is_empty()).then(|| {
+                (
+                    delegate.groups.iter().any(|g| g.collapsed),
+                    delegate.groups.iter().all(|g| g.collapsed),
+                )
+            });
+            (
+                delegate.view.len(),
+                folds,
+                delegate.playing_row,
+                delegate.playing_hidden.is_some(),
+            )
+        };
+        if self.folds != folds {
+            self.folds = folds;
+            cx.notify();
+        }
+
         // A strict deferred scroll, so it runs on the paint that shows the rows,
         // even in a background tab. The empty initial load keeps it pending.
+        // Clamped, since the saved row counts a view that may have been longer.
         if let Some(row) = self.restore_scroll
-            && !self.table.read(cx).delegate().view.is_empty()
+            && len > 0
         {
             self.restore_scroll = None;
             self.table
                 .read(cx)
                 .vertical_scroll_handle
-                .scroll_to_item_strict(row, ScrollStrategy::Top);
+                .scroll_to_item_strict(row.min(len - 1), ScrollStrategy::Top);
         }
+
+        // Never revealing again from here: a group that won't open would
+        // bounce between passes.
+        if std::mem::take(&mut self.scroll_on_view) {
+            self.scroll_to_playing(cx);
+        }
+        if std::mem::take(&mut self.jump_on_view) {
+            self.set_cursor_on_playing(cx);
+        }
+
         // A refresh that leaves the row in place doesn't re-scroll, so a tag
         // save can't yank the list off whatever was being read.
         if std::mem::take(&mut self.follow_on_view)
             && self.follow_playing
-            && self.table.read(cx).delegate().playing_row != self.followed_row
+            && (playing_row != self.followed_row || hidden)
         {
             self.follow_playing(cx);
         }
@@ -2497,9 +3070,8 @@ impl LibraryPanel {
                         if modifiers.shift {
                             let anchor = delegate.anchor.unwrap_or(first);
                             let (lo, hi) = (anchor.min(first), anchor.max(last));
-                            let range: Vec<usize> = (lo..=hi)
-                                .filter(|&i| delegate.track_at(i).is_some())
-                                .collect();
+                            let range: Vec<usize> =
+                                (lo..=hi).filter(|&i| delegate.selectable(i)).collect();
                             if modifiers.secondary() {
                                 delegate.selected.extend(range);
                             } else {
@@ -2521,11 +3093,13 @@ impl LibraryPanel {
                             delegate.selected = rows.into_iter().collect();
                             delegate.anchor = Some(first);
                         }
-                        delegate.cursor = Some(first);
+                        // On the header, so Left and Right fold it.
+                        delegate.cursor = delegate.stop_at(ix);
                         delegate.sel_gen += 1;
                         table.delegate().publish_selection(cx);
                         cx.notify();
                     });
+                    cx.notify();
                     return;
                 }
                 let modifiers = window.modifiers();
@@ -2534,9 +3108,8 @@ impl LibraryPanel {
                     if modifiers.shift {
                         let anchor = delegate.anchor.unwrap_or(ix);
                         let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-                        let range: Vec<usize> = (lo..=hi)
-                            .filter(|&i| delegate.track_at(i).is_some())
-                            .collect();
+                        let range: Vec<usize> =
+                            (lo..=hi).filter(|&i| delegate.selectable(i)).collect();
                         // Ctrl+Shift stacks a second block on, plain shift replaces.
                         if modifiers.secondary() {
                             delegate.selected.extend(range);
@@ -2562,6 +3135,7 @@ impl LibraryPanel {
                     table.delegate().publish_selection(cx);
                     cx.notify();
                 });
+                cx.notify();
             }
             // A header plays its group whole. A disc divider's rows come back
             // empty.
@@ -2569,15 +3143,16 @@ impl LibraryPanel {
                 let ix = *ix;
                 let (is_track, album) = {
                     let delegate = self.table.read(cx).delegate();
-                    (
-                        delegate.track_at(ix).is_some(),
-                        delegate.group_track_rows(ix).unwrap_or_default(),
-                    )
+                    let album = delegate
+                        .head_group(ix)
+                        .map(|g| delegate.ids_of(delegate.group_members(g), cx))
+                        .unwrap_or_default();
+                    (delegate.track_at(ix).is_some(), album)
                 };
                 if is_track {
                     self.play_from(ix, cx);
                 } else if !album.is_empty() {
-                    self.play_rows(album, cx);
+                    self.play_ids(album, cx);
                 }
             }
             TableEvent::ColumnWidthsChanged(widths) => {
@@ -2615,6 +3190,7 @@ impl LibraryPanel {
 
     fn config(&self, cx: &App) -> LibraryConfig {
         let sort = self.table.read(cx).delegate().sort.clone();
+        let collapsed = self.table.read(cx).delegate().collapsed.clone();
         LibraryConfig {
             chrome: self.chrome.clone(),
             query: self.query.clone(),
@@ -2629,6 +3205,7 @@ impl LibraryPanel {
             headers: self.headers,
             group_by: self.group_by,
             group_search_results: self.group_search_results,
+            collapsed,
             column_layout: self.column_specs(cx),
             sort_key: sort.as_ref().map(|(key, _)| key.to_string()),
             sort_desc: sort.is_some_and(|(_, desc)| desc),
@@ -2935,41 +3512,34 @@ impl LibraryPanel {
             return;
         }
         let window = {
-            let view = self.table.read(cx).delegate().view.clone();
-            play_window(&view, ix, QUEUE_CAP)
+            let delegate = self.table.read(cx).delegate();
+            delegate.order_pos(ix).and_then(|pos| {
+                let (range, start) = play_window(delegate.order.len(), pos, QUEUE_CAP)?;
+                Some((delegate.ids_of(&delegate.order[range], cx), start))
+            })
         };
-        let Some((rows, start)) = window else { return };
-        self.play_rows_at(rows, start, cx);
+        let Some((ids, start)) = window else { return };
+        self.play_ids_at(ids, start, cx);
     }
 
     /// Context like a library run, so the queue keeps what was hand-picked
     /// (ADR 16).
-    fn play_rows(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
-        self.play_rows_at(rows, 0, cx);
+    fn play_ids(&mut self, ids: Vec<i64>, cx: &mut Context<Self>) {
+        self.play_ids_at(ids, 0, cx);
     }
 
-    fn play_rows_at(&mut self, rows: Vec<usize>, start: usize, cx: &mut Context<Self>) {
+    fn play_ids_at(&mut self, ids: Vec<i64>, start: usize, cx: &mut Context<Self>) {
         let (result, scope) = {
             let delegate = self.table.read(cx).delegate();
-            let view = delegate.view.clone();
             let Some(projection) = delegate.projection(cx) else {
                 return;
             };
-            let ids: Vec<i64> = rows
-                .into_iter()
-                .filter_map(|ix| match view.get(ix) {
-                    Some(&Row::Track(row)) => Some(projection.db_id[row as usize]),
-                    _ => None,
-                })
-                .collect();
-            // The whole view, not the queued window: continuation runs on into
-            // the rows below it (ADR 17).
-            let order: Vec<i64> = view
+            // The whole order, not the queued window: continuation runs on into
+            // the tracks below it, folded groups included (ADR 17).
+            let order: Vec<i64> = delegate
+                .order
                 .iter()
-                .filter_map(|row| match row {
-                    &Row::Track(row) => Some(projection.db_id[row as usize]),
-                    _ => None,
-                })
+                .map(|&row| projection.db_id[row as usize])
                 .collect();
             (
                 self.state.library.read(cx).keys_for(&ids),
@@ -3033,19 +3603,27 @@ impl LibraryPanel {
 
     /// The engine pins the head when shuffle engages, so the first row plays
     /// first. Rows past the cap drop.
-    fn play_shuffled(&mut self, mut rows: Vec<usize>, cx: &mut Context<Self>) {
-        rows.truncate(QUEUE_CAP);
+    fn play_shuffled(&mut self, mut ids: Vec<i64>, cx: &mut Context<Self>) {
+        ids.truncate(QUEUE_CAP);
         self.state
             .player
             .update(cx, |player, _| player.set_shuffle(true));
-        self.play_rows_at(rows, 0, cx);
+        self.play_ids_at(ids, 0, cx);
     }
 
     /// Continuation draws the rest of the view and then the library behind the
     /// seed (ADR 17), so the seed only has to be enough to start on.
     fn play_shuffled_from(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let rows = shuffle_seed(&self.table.read(cx).delegate().view, ix, SHUFFLE_SEED);
-        self.play_shuffled(rows, cx);
+        let ids = {
+            let delegate = self.table.read(cx).delegate();
+            let order = &delegate.order;
+            let rows: Vec<u32> = shuffle_seed(order.len(), delegate.order_pos(ix), SHUFFLE_SEED)
+                .into_iter()
+                .map(|pos| order[pos])
+                .collect();
+            delegate.ids_of(&rows, cx)
+        };
+        self.play_shuffled(ids, cx);
     }
 
     fn on_search_event(
@@ -4058,6 +4636,32 @@ impl Panel for LibraryPanel {
             ));
         }
 
+        if let Some((any, all)) = self.folds {
+            let weak = cx.entity().downgrade();
+            let weak_e = cx.entity().downgrade();
+            menu = menu
+                .item(
+                    PopupMenuItem::new(rox_i18n::t!("library-collapse-all"))
+                        .icon(Icon::default().path(icons::MINIMIZE))
+                        .disabled(all)
+                        .on_click(move |_, _, cx| {
+                            if let Some(this) = weak.upgrade() {
+                                this.update(cx, |this, cx| this.set_all_collapsed(true, cx));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(rox_i18n::t!("library-expand-all"))
+                        .icon(Icon::default().path(icons::MAXIMIZE))
+                        .disabled(!any)
+                        .on_click(move |_, _, cx| {
+                            if let Some(this) = weak_e.upgrade() {
+                                this.update(cx, |this, cx| this.set_all_collapsed(false, cx));
+                            }
+                        }),
+                );
+        }
+
         let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.query_source,
@@ -4107,6 +4711,25 @@ impl Render for LibraryPanel {
 }
 
 impl LibraryPanel {
+    /// PanelNav only while the cursor sits on a header that can fold, so
+    /// Left and Right seek everywhere else.
+    fn key_context(&self, cx: &App) -> Option<&'static str> {
+        let delegate = self.table.read(cx).delegate();
+        let on_head = delegate.collapsible
+            && delegate
+                .cursor
+                .and_then(|ix| delegate.head_group(ix))
+                .is_some();
+        if on_head {
+            return Some(panel::panel_nav_context(
+                &self.type_ahead,
+                self.type_ahead_at,
+            ));
+        }
+
+        panel::type_ahead_context(&self.type_ahead, self.type_ahead_at)
+    }
+
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         if self.resync_box {
             self.resync_box = false;
@@ -4184,10 +4807,7 @@ impl LibraryPanel {
             .track_focus(&self.focus)
             // Bindings win over key listeners, so a live phrase carries contexts
             // that scope out the workspace's space binding and Root's tab traversal.
-            .when_some(
-                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
-                |d, context| d.key_context(context),
-            )
+            .when_some(self.key_context(cx), |d, context| d.key_context(context))
             // A press anywhere ends the phrase. Capture phase, so rows that stop
             // the press can't hide it.
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
@@ -4342,6 +4962,7 @@ mod tests {
             album_artist: album_artist.into(),
             album: album.into(),
             genre: String::new(),
+            comment: String::new(),
             year: 2000,
             disc_no: 1,
             track_no,
@@ -4365,99 +4986,57 @@ mod tests {
         Arc::new(Projection::load_serial(&conn, false).unwrap())
     }
 
-    /// The answer [`play_window`] has to give without listing every track.
-    fn window_by_listing(view: &[Row], ix: usize, cap: usize) -> Option<(Vec<usize>, usize)> {
-        let tracks: Vec<usize> = (0..view.len())
-            .filter(|&i| matches!(view[i], Row::Track(_)))
-            .collect();
-        let clicked = tracks.iter().position(|&i| i == ix)?;
-        let mut lo = clicked.saturating_sub(cap / 2);
-        lo = lo.min(tracks.len().saturating_sub(cap));
-        let hi = (lo + cap).min(tracks.len());
-        Some((tracks[lo..hi].to_vec(), clicked - lo))
-    }
-
-    fn view_with_heads(tracks: usize, run: usize) -> Vec<Row> {
-        let mut view = Vec::new();
-        for i in 0..tracks {
-            if i % run == 0 {
-                view.push(Row::Head((i / run) as u32, 0));
-                view.push(Row::Head((i / run) as u32, 1));
-            }
-            view.push(Row::Track(i as u32));
-        }
-        view
-    }
-
     #[test]
-    fn the_play_window_matches_the_full_listing() {
-        for (tracks, run) in [(1, 1), (7, 3), (40, 5), (101, 7)] {
-            let view = view_with_heads(tracks, run);
+    fn the_play_window_centres_on_the_click_and_fills_the_budget() {
+        for len in [1, 7, 40, 101] {
             for cap in [1, 2, 3, 10, 40, 500] {
-                for (ix, _) in view
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, row)| matches!(row, Row::Track(_)))
-                {
-                    assert_eq!(
-                        play_window(&view, ix, cap),
-                        window_by_listing(&view, ix, cap),
-                        "tracks {tracks}, run {run}, cap {cap}, row {ix}"
-                    );
+                for pos in 0..len {
+                    let (range, start) = play_window(len, pos, cap).expect("in range");
+                    assert_eq!(range.start + start, pos, "len {len}, cap {cap}, pos {pos}");
+                    assert_eq!(range.len(), cap.min(len), "len {len}, cap {cap}, pos {pos}");
+                    assert!(range.end <= len);
+                    // At most half behind, unless the end of the order forces more.
+                    if range.end < len {
+                        assert!(start <= cap / 2, "len {len}, cap {cap}, pos {pos}");
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn the_shuffle_seed_samples_the_whole_view() {
-        let view = view_with_heads(400, 10);
-        let ix = (0..view.len())
-            .find(|&i| matches!(view[i], Row::Track(_)))
-            .expect("a track row");
+    fn the_play_window_needs_a_place() {
+        assert!(play_window(4, 4, 10).is_none());
+        assert!(play_window(4, 0, 0).is_none());
+    }
+
+    #[test]
+    fn the_shuffle_seed_samples_the_whole_order() {
+        let len = 400;
         let mut landed = std::collections::HashSet::new();
         for _ in 0..20 {
-            let rows = shuffle_seed(&view, ix, 30);
-            assert_eq!(rows[0], ix);
-            assert_eq!(rows.len(), 31);
-            let distinct: std::collections::HashSet<usize> = rows.iter().copied().collect();
-            assert_eq!(distinct.len(), rows.len(), "a row came back twice");
-            assert!(rows.iter().all(|&i| matches!(view[i], Row::Track(_))));
-            landed.extend(rows.iter().copied());
+            let places = shuffle_seed(len, Some(3), 30);
+            assert_eq!(places[0], 3);
+            assert_eq!(places.len(), 31);
+            let distinct: std::collections::HashSet<usize> = places.iter().copied().collect();
+            assert_eq!(distinct.len(), places.len(), "a place came back twice");
+            landed.extend(places.iter().copied());
         }
         assert!(
-            landed.iter().any(|&i| i > view.len() / 2),
-            "the draw never left the top of the view"
+            landed.iter().any(|&i| i > len / 2),
+            "the draw never left the top of the order"
         );
-        // A header row pins nothing; a small view comes back whole.
-        assert!(!shuffle_seed(&view, 0, 5).contains(&0));
-        let small = view_with_heads(4, 2);
-        assert_eq!(shuffle_seed(&small, 1, 100).len(), 4);
+        // Nothing to pin, or a place past the end, pins nothing.
+        assert_eq!(shuffle_seed(4, None, 100).len(), 4);
+        assert_eq!(shuffle_seed(4, Some(9), 100).len(), 4);
     }
 
-    #[test]
-    fn the_play_window_needs_a_track_row() {
-        let view = view_with_heads(4, 2);
-        assert!(play_window(&view, 0, 10).is_none());
-        assert!(play_window(&view, view.len(), 10).is_none());
-    }
-
-    #[test]
-    fn the_play_window_fills_the_budget() {
-        let view = view_with_heads(100, 4);
-        for ix in (0..view.len()).filter(|&i| matches!(view[i], Row::Track(_))) {
-            let (rows, start) = play_window(&view, ix, 20).expect("a track row");
-            assert_eq!(rows.len(), 20);
-            assert_eq!(rows[start], ix);
-        }
-    }
-
-    fn view_directly(inputs: &ViewInputs) -> (Arc<Vec<Row>>, Vec<Group>) {
+    fn view_directly(inputs: &ViewInputs) -> View {
         let key = |projection: &Projection, row: u32| -> u64 {
             let i = row as usize;
             (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
         };
-        view::view_for(
+        view::view_with_order(
             &inputs.projection,
             inputs.order.clone(),
             &ViewSpec {
@@ -4477,6 +5056,7 @@ mod tests {
                         },
                         key: &key,
                         discs: true,
+                        collapse: None,
                     }),
             },
         )
@@ -4494,6 +5074,7 @@ mod tests {
             group_by: GroupBy::Album,
             group_search_results: true,
             head_rows,
+            collapse: CollapseState::default(),
         }
     }
 
@@ -4506,7 +5087,7 @@ mod tests {
         ]);
         let mut grouped = inputs(&p, "a1", Some(1));
         grouped.group_search_results = true;
-        let (rows, groups) = compute_rows(&grouped);
+        let View { rows, groups, .. } = compute_rows(&grouped);
         assert_eq!(groups.len(), 1);
         assert_eq!(rows.len(), 2);
         assert!(matches!(rows[0], Row::Head(0, 0)));
@@ -4514,7 +5095,7 @@ mod tests {
 
         let mut flat = inputs(&p, "a1", Some(1));
         flat.group_search_results = false;
-        let (rows, groups) = compute_rows(&flat);
+        let View { rows, groups, .. } = compute_rows(&flat);
         assert!(groups.is_empty());
         assert_eq!(rows.len(), 1);
         assert!(matches!(rows[0], Row::Track(_)));
@@ -4528,7 +5109,7 @@ mod tests {
             track("/m/a1.flac", "A", "Taking You Higher", 1),
         ]);
         let grouped = inputs(&p, "Taking You Higher", Some(1));
-        let (rows, groups) = compute_rows(&grouped);
+        let View { rows, groups, .. } = compute_rows(&grouped);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].tracks, 2);
@@ -4541,6 +5122,80 @@ mod tests {
             })
             .collect();
         assert_eq!(track_nos, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_collapsed_album_still_plays_through_the_order() {
+        let p = projection(&[
+            track("/m/a1.flac", "A", "One", 1),
+            track("/m/a2.flac", "A", "One", 2),
+            track("/m/b1.flac", "B", "Two", 1),
+            track("/m/b2.flac", "B", "Two", 2),
+            track("/m/c1.flac", "C", "Three", 1),
+        ]);
+        let mut folded = inputs(&p, "", Some(1));
+        folded
+            .collapse
+            .flip(view::GroupName::Album("A".into(), "One".into()));
+        let view = compute_rows(&folded);
+
+        assert!(view.collapsible);
+        assert!(view.groups[0].collapsed);
+        assert_eq!(view.order.len(), 5, "the fold leaves the order whole");
+        assert!(matches!(view.rows[0], Row::Head(0, 0)));
+        assert!(matches!(view.rows[1], Row::Head(1, 0)));
+
+        // Every shown track maps back onto its own place in the order.
+        for (ix, row) in view.rows.iter().enumerate() {
+            let place = order_pos(&view.rows, &view.groups, ix);
+            match row {
+                Row::Track(r) => assert_eq!(place.map(|pos| view.order[pos]), Some(*r)),
+                _ => assert_eq!(place, None),
+            }
+        }
+
+        // A click below the fold queues the folded album too.
+        let b1 = view
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Track(r) if p.resolve(*r).title == "/m/b1.flac"))
+            .unwrap();
+        let pos = order_pos(&view.rows, &view.groups, b1).unwrap();
+        assert_eq!(pos, 2);
+        let (range, start) = play_window(view.order.len(), pos, 5).unwrap();
+        assert_eq!((range, start), (0..5, 2));
+    }
+
+    #[test]
+    fn a_search_opens_the_collapsed_groups() {
+        let p = projection(&[
+            track("/m/a1.flac", "A", "One", 1),
+            track("/m/a2.flac", "A", "One", 2),
+        ]);
+        let mut searched = inputs(&p, "a1", Some(1));
+        searched.collapse.all = true;
+        let view = compute_rows(&searched);
+        assert!(!view.collapsible);
+        assert!(view.groups.iter().all(|g| !g.collapsed));
+        assert_eq!(
+            view.rows
+                .iter()
+                .filter(|r| matches!(r, Row::Track(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_flat_view_is_its_own_order() {
+        let p = projection(&[
+            track("/m/a1.flac", "A", "One", 1),
+            track("/m/b1.flac", "B", "Two", 1),
+        ]);
+        let view = compute_rows(&inputs(&p, "", None));
+        for ix in 0..view.rows.len() {
+            assert_eq!(order_pos(&view.rows, &view.groups, ix), Some(ix));
+        }
     }
 
     /// Running on a plain thread also pins the inputs as `Send`.
@@ -4567,7 +5222,7 @@ mod tests {
             let off_thread = std::thread::spawn(move || compute_rows(&sent))
                 .join()
                 .expect("the pass");
-            assert_eq!(*off_thread.0, *direct.0, "rows for {query:?}");
+            assert_eq!(*off_thread.rows, *direct.rows, "rows for {query:?}");
             let shape = |groups: &[Group]| -> Vec<(u32, u32, u64)> {
                 groups
                     .iter()
@@ -4575,8 +5230,8 @@ mod tests {
                     .collect()
             };
             assert_eq!(
-                shape(&off_thread.1),
-                shape(&direct.1),
+                shape(&off_thread.groups),
+                shape(&direct.groups),
                 "groups for {query:?}"
             );
         }

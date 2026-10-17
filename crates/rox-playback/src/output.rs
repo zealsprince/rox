@@ -266,6 +266,10 @@ fn open_shared(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, St
         other => return Err(format!("unsupported device sample format {other}")),
     }?;
     stream.play().map_err(|e| format!("stream play: {e}"))?;
+    // cpal's worker is up once play returns. It promotes itself only behind a
+    // libdbus-backed feature, so ask RTKit for it by name.
+    #[cfg(target_os = "linux")]
+    crate::rt::promote_named("cpal_alsa_out");
 
     Ok(OpenOutput {
         stream: Box::new(stream),
@@ -334,7 +338,9 @@ pub(crate) fn fill<T>(
     // this side's own record, and tells the decode thread the ring is clear.
     let seq = shared.flush_seq.load(Ordering::Acquire);
     if seq != shared.flush_ack.load(Ordering::Relaxed) {
-        while ring.pop().is_ok() {}
+        if let Ok(stale) = ring.read_chunk(ring.slots()) {
+            stale.commit_all();
+        }
         shared.flush_ack.store(seq, Ordering::Release);
         data.fill(T::from_sample(0.0f32));
         return;
@@ -352,29 +358,42 @@ pub(crate) fn fill<T>(
     }
 
     let volume = f32::from_bits(shared.volume_bits.load(Ordering::Relaxed));
-    let mut frames_out: u64 = 0;
+    let silence = T::from_sample(0.0f32);
 
+    // Frames this call may play: the blip's remainder while auditioning, else the
+    // buffer. Whole frames only, so interleaving can't slip; a dry ring is an
+    // underrun, silence and not counted. One chunk off the ring rather than a
+    // pop per sample: a fence per callback, not two per frame.
     let mut frames = data.chunks_exact_mut(device_channels);
-    for frame in frames.by_ref() {
-        if auditioning && blip == 0 {
-            frame.fill(T::from_sample(0.0f32));
-            continue;
-        }
-        // Pop whole frames only so interleaving can't slip. Dry ring is an
-        // underrun: silence, not counted.
-        if ring.slots() < 2 {
-            frame.fill(T::from_sample(0.0f32));
-            continue;
-        }
-        let (l, r) = (ring.pop().unwrap(), ring.pop().unwrap());
+    let want = if auditioning {
+        frames
+            .len()
+            .min(usize::try_from(blip).unwrap_or(usize::MAX))
+    } else {
+        frames.len()
+    };
+    let take = want.min(ring.slots() / 2);
+    let Ok(chunk) = ring.read_chunk(take * 2) else {
+        // Sized off `slots`, so this can't fail; silence beats a panic here.
+        data.fill(silence);
+        return;
+    };
+    let (head, tail) = chunk.as_slices();
+    let mut samples = head.iter().chain(tail).copied();
 
-        // Lossy tap: drop, never wait. L and R go in together or not at all, or a
-        // single free slot would misalign the tap for good. Pre-volume, so the
-        // visualizers read the program, chain DSP included.
-        if tap.slots() >= 2 {
-            let _ = tap.push(l);
-            let _ = tap.push(r);
-        }
+    // Lossy tap: drop, never wait. Whole frames, or a single free slot would
+    // misalign the tap for good. Pre-volume, so the visualizers read the program,
+    // chain DSP included.
+    let tapped = take.min(tap.slots() / 2);
+    if let Ok(room) = tap.write_chunk_uninit(tapped * 2) {
+        room.fill_from_iter(samples.clone().take(tapped * 2));
+    }
+
+    let mut frames_out: u64 = 0;
+    for frame in frames.by_ref().take(take) {
+        let (Some(l), Some(r)) = (samples.next(), samples.next()) else {
+            break;
+        };
 
         // Unity short-circuits (ADR 19's bypass rule): chain off, volume 100%, and
         // equal rates deliver the decoder's output bit-identically.
@@ -389,15 +408,19 @@ pub(crate) fn fill<T>(
             _ => {
                 frame[0] = T::from_sample(l);
                 frame[1] = T::from_sample(r);
-                for s in frame.iter_mut().skip(2) {
-                    *s = T::from_sample(0.0f32);
-                }
+                frame[2..].fill(silence);
             }
         }
         frames_out += 1;
-        blip = blip.saturating_sub(1);
     }
-    frames.into_remainder().fill(T::from_sample(0.0f32));
+    chunk.commit_all();
+
+    // Underrun, or the blip's end: silence for what's left.
+    for frame in frames.by_ref() {
+        frame.fill(silence);
+    }
+    frames.into_remainder().fill(silence);
+    blip = blip.saturating_sub(frames_out);
 
     if frames_out > 0 {
         shared

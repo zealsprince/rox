@@ -2,13 +2,15 @@
 //! sorted, and walked into display rows with header blocks opening each
 //! group run. The panel only resolves its column keys and draws.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::projection::{FilterSet, Projection, SortKey};
+use crate::projection::{FilterSet, Projection, SortKey, SymTable};
 
 /// Big enough that the split doesn't dominate a per-row index-and-push: a
 /// library under a hundred thousand tracks stays on one thread.
@@ -30,6 +32,13 @@ pub enum Row {
 pub struct Group {
     pub first: u32,
     pub tracks: u32,
+    /// The grouping's key. Symbol ids renumber when the projection rebuilds, so
+    /// it only means anything within one build.
+    pub key: u64,
+    /// Only the header rows made it into the view.
+    pub collapsed: bool,
+    /// The run's span of [`View::order`], whether or not its rows are shown.
+    pub members: Range<usize>,
     pub total_ms: u64,
     /// Some while every track agrees.
     pub codec: Option<u32>,
@@ -54,6 +63,7 @@ impl Group {
 
 /// The caller maps its config onto this; only the key differs between
 /// album, artist, genre and year grouping.
+#[derive(Clone, Copy)]
 pub struct Grouping<'a> {
     pub head_rows: u8,
     /// The re-sort that makes runs contiguous. Callers grouping a searched
@@ -63,6 +73,198 @@ pub struct Grouping<'a> {
     pub key: &'a dyn Fn(&Projection, u32) -> u64,
     /// A divider row per numbered disc. Album grouping only.
     pub discs: bool,
+    /// Which runs show their header alone. Only the canonical order honours
+    /// it: a search or a column sort opens every group.
+    pub collapse: Option<&'a CollapseKeys>,
+}
+
+/// What a group keys on. The packed key and the saved name both come from
+/// here, so the two can't drift apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GroupKind {
+    /// The album artist and album together.
+    Album,
+    /// The album artist.
+    Artist,
+    Genre,
+    Year,
+}
+
+impl GroupKind {
+    pub fn key(self, projection: &Projection, row: u32) -> u64 {
+        let i = row as usize;
+        match self {
+            GroupKind::Album => {
+                (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
+            }
+            GroupKind::Artist => projection.album_artist[i] as u64,
+            GroupKind::Genre => projection.genre[i] as u64,
+            GroupKind::Year => projection.year[i] as u64,
+        }
+    }
+
+    /// The key spelled out, which survives a rebuild where the symbol ids
+    /// don't. The raw tags, not the header's artist fallback, so it maps
+    /// back onto the key exactly.
+    pub fn name(self, projection: &Projection, row: u32) -> GroupName {
+        let i = row as usize;
+        let sym = |table: &SymTable, sym: u32| table.strings[sym as usize].clone();
+        match self {
+            GroupKind::Album => GroupName::Album(
+                sym(&projection.album_artists, projection.album_artist[i]),
+                sym(&projection.albums, projection.album[i]),
+            ),
+            GroupKind::Artist => {
+                GroupName::Name(sym(&projection.album_artists, projection.album_artist[i]))
+            }
+            GroupKind::Genre => GroupName::Name(sym(&projection.genres, projection.genre[i])),
+            GroupKind::Year => GroupName::Name(projection.year[i].to_string()),
+        }
+    }
+}
+
+/// A group as saved: album artist and album for an album group, the one
+/// name otherwise. Serializes as `["artist", "album"]` or `"name"`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GroupName {
+    Album(String, String),
+    Name(String),
+}
+
+/// One grouping's saved collapse state. `all` sets what a group does by
+/// default, so collapsing everything stays one flag however big the library
+/// is, and groups added later follow it.
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollapseState {
+    pub all: bool,
+    /// Groups toggled away from `all`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub except: Vec<GroupName>,
+}
+
+impl CollapseState {
+    pub fn is_default(&self) -> bool {
+        !self.all && self.except.is_empty()
+    }
+
+    pub fn flip(&mut self, name: GroupName) {
+        match self.except.iter().position(|n| *n == name) {
+            Some(ix) => {
+                self.except.remove(ix);
+            }
+            None => self.except.push(name),
+        }
+    }
+
+    /// The saved names mapped onto this build's keys. A name the library no
+    /// longer holds maps to nothing and stays saved.
+    pub fn keys(&self, kind: GroupKind, projection: &Projection) -> CollapseKeys {
+        let fold = projection.fold;
+        let norm = |s: &str| {
+            if fold {
+                crate::fold::fold(s)
+            } else {
+                s.to_string()
+            }
+        };
+        let mut except = HashSet::new();
+        match kind {
+            GroupKind::Album => {
+                let pairs: Vec<(String, String)> = self
+                    .except
+                    .iter()
+                    .filter_map(|name| match name {
+                        GroupName::Album(artist, album) => Some((norm(artist), norm(album))),
+                        GroupName::Name(_) => None,
+                    })
+                    .collect();
+                let artists = symbols(
+                    &projection.album_artists,
+                    fold,
+                    pairs.iter().map(|(artist, _)| artist.as_str()),
+                );
+                let albums = symbols(
+                    &projection.albums,
+                    fold,
+                    pairs.iter().map(|(_, album)| album.as_str()),
+                );
+                for (artist, album) in &pairs {
+                    let (Some(artist_syms), Some(album_syms)) =
+                        (artists.get(artist.as_str()), albums.get(album.as_str()))
+                    else {
+                        continue;
+                    };
+                    for &a in artist_syms {
+                        except.extend(album_syms.iter().map(|&b| (a as u64) << 32 | b as u64));
+                    }
+                }
+            }
+            GroupKind::Artist | GroupKind::Genre => {
+                let names: Vec<String> = self
+                    .except
+                    .iter()
+                    .filter_map(|name| match name {
+                        GroupName::Name(name) => Some(norm(name)),
+                        GroupName::Album(..) => None,
+                    })
+                    .collect();
+                let table = match kind {
+                    GroupKind::Artist => &projection.album_artists,
+                    _ => &projection.genres,
+                };
+                let found = symbols(table, fold, names.iter().map(String::as_str));
+                except.extend(found.values().flatten().map(|&sym| sym as u64));
+            }
+            GroupKind::Year => {
+                except.extend(self.except.iter().filter_map(|name| match name {
+                    GroupName::Name(year) => year.parse::<u16>().ok().map(u64::from),
+                    GroupName::Album(..) => None,
+                }));
+            }
+        }
+        CollapseKeys {
+            all: self.all,
+            except,
+        }
+    }
+}
+
+/// Every symbol spelled like one of `names`, by name. Compared folded when
+/// the projection folds: the table's display string is then a weighted pick
+/// among the case variants, which the next rebuild can change.
+fn symbols<'n>(
+    table: &SymTable,
+    fold: bool,
+    names: impl Iterator<Item = &'n str>,
+) -> HashMap<&'n str, Vec<u32>> {
+    let names: HashSet<&str> = names.collect();
+    let mut found: HashMap<&str, Vec<u32>> = HashMap::new();
+    if names.is_empty() {
+        return found;
+    }
+
+    let column = if fold { &table.lower } else { &table.strings };
+    for (sym, s) in column.iter().enumerate() {
+        if let Some(&name) = names.get(s.as_str()) {
+            found.entry(name).or_default().push(sym as u32);
+        }
+    }
+    found
+}
+
+/// A [`CollapseState`] resolved against one projection build.
+#[derive(Debug, Default)]
+pub struct CollapseKeys {
+    pub all: bool,
+    pub except: HashSet<u64>,
+}
+
+impl CollapseKeys {
+    pub fn collapsed(&self, key: u64) -> bool {
+        self.all != self.except.contains(&key)
+    }
 }
 
 pub struct ViewSpec<'a> {
@@ -75,14 +277,32 @@ pub struct ViewSpec<'a> {
     pub grouping: Option<Grouping<'a>>,
 }
 
-/// The canonical order or search hits, filtered, then sorted. Without a
-/// column sort the grouping may pre-sort so its runs are contiguous; with
-/// one, headers follow whatever runs the sort leaves adjacent.
+/// One finished view pass.
+pub struct View {
+    pub rows: Arc<Vec<Row>>,
+    pub groups: Vec<Group>,
+    /// Every track the rows stand for, in row order, collapsed groups'
+    /// members included. Playback runs through this, not the rows.
+    pub order: Arc<Vec<u32>>,
+    /// Whether the grouping honoured its collapse set, which only the
+    /// canonical order does.
+    pub collapsible: bool,
+}
+
+/// [`view_with_order`] for a caller that only draws the rows.
 pub fn view_for(
     projection: &Projection,
     order: Arc<Vec<u32>>,
     spec: &ViewSpec,
 ) -> (Arc<Vec<Row>>, Vec<Group>) {
+    let view = view_with_order(projection, order, spec);
+    (view.rows, view.groups)
+}
+
+/// The canonical order or search hits, filtered, then sorted. Without a
+/// column sort the grouping may pre-sort so its runs are contiguous; with
+/// one, headers follow whatever runs the sort leaves adjacent.
+pub fn view_with_order(projection: &Projection, order: Arc<Vec<u32>>, spec: &ViewSpec) -> View {
     let base = if spec.query.is_empty() {
         order
     } else {
@@ -123,32 +343,30 @@ pub fn view_for(
                 (None, None) => std::cmp::Ordering::Equal,
             }
         });
-        return (
-            Arc::new(rows.into_iter().map(Row::Track).collect()),
-            Vec::new(),
-        );
+        return flat(Arc::new(rows));
     }
     match spec.sort {
         Some((key, desc)) => {
-            let sorted = projection.sort_view(&base, key, desc);
+            let sorted = Arc::new(projection.sort_view(&base, key, desc));
             match &spec.grouping {
-                // The sort is the order, so the pre-sort goes unused.
+                // The sort is the order, so the pre-sort goes unused. A key
+                // can recur in several runs here, so nothing collapses.
                 Some(grouping) => {
                     // Loners go bare outside search; a search still names a lone hit's group.
                     let solo_heads = !spec.query.is_empty();
-                    let (rows, groups) = group_rows(&sorted, projection, grouping, solo_heads);
-                    (Arc::new(rows), groups)
+                    let grouping = Grouping {
+                        collapse: None,
+                        ..*grouping
+                    };
+                    let (rows, groups) = group_rows(&sorted, projection, &grouping, solo_heads);
+                    View {
+                        rows: Arc::new(rows),
+                        groups,
+                        order: sorted,
+                        collapsible: false,
+                    }
                 }
-                _ => (
-                    Arc::new(
-                        sorted
-                            .into_par_iter()
-                            .with_min_len(PAR_CHUNK)
-                            .map(Row::Track)
-                            .collect(),
-                    ),
-                    Vec::new(),
-                ),
+                _ => flat(sorted),
             }
         }
         None => match &spec.grouping {
@@ -158,20 +376,39 @@ pub fn view_for(
                     Some(key) => Arc::new(projection.sort_view(&base, key, false)),
                     None => base,
                 };
-                let (rows, groups) = group_rows(&base, projection, grouping, true);
-                (Arc::new(rows), groups)
+                // A search lists hits, so a folded group would hide what was
+                // searched for.
+                let collapsible = spec.query.is_empty();
+                let grouping = Grouping {
+                    collapse: grouping.collapse.filter(|_| collapsible),
+                    ..*grouping
+                };
+                let (rows, groups) = group_rows(&base, projection, &grouping, true);
+                View {
+                    rows: Arc::new(rows),
+                    groups,
+                    order: base,
+                    collapsible,
+                }
             }
-            _ => (
-                Arc::new(
-                    base.par_iter()
-                        .with_min_len(PAR_CHUNK)
-                        .copied()
-                        .map(Row::Track)
-                        .collect(),
-                ),
-                Vec::new(),
-            ),
+            _ => flat(base),
         },
+    }
+}
+
+fn flat(order: Arc<Vec<u32>>) -> View {
+    View {
+        rows: Arc::new(
+            order
+                .par_iter()
+                .with_min_len(PAR_CHUNK)
+                .copied()
+                .map(Row::Track)
+                .collect(),
+        ),
+        groups: Vec::new(),
+        order,
+        collapsible: false,
     }
 }
 
@@ -180,7 +417,8 @@ pub fn view_for(
 /// a divider per disc, but only if its discs are in order; disc 0 stays
 /// undivided. Cheap enough to run per view swap, never per scroll.
 ///
-/// `solo_heads` says whether a run of one track still opens a block.
+/// `solo_heads` says whether a run of one track still opens a block. A
+/// collapsed run keeps its header block and stats and drops the rest.
 pub fn group_rows(
     order: &[u32],
     projection: &Projection,
@@ -197,6 +435,7 @@ pub fn group_rows(
         while j < order.len() && key(order[j]) == key(order[i]) {
             j += 1;
         }
+        let members = i..j;
         let run = &order[i..j];
         i = j;
 
@@ -206,9 +445,16 @@ pub fn group_rows(
         }
 
         let g = groups.len() as u32;
+        let run_key = key(run[0]);
+        let collapsed = grouping
+            .collapse
+            .is_some_and(|collapse| collapse.collapsed(run_key));
         groups.push(Group {
             first: run[0],
             tracks: 0,
+            key: run_key,
+            collapsed,
+            members,
             total_ms: 0,
             codec: Some(projection.codec[run[0] as usize]),
             min_kbps: 0,
@@ -221,7 +467,8 @@ pub fn group_rows(
             rows.push(Row::Head(g, line));
         }
         let disc = |row: u32| projection.disc_no[row as usize];
-        let multi_disc = grouping.discs
+        let multi_disc = !collapsed
+            && grouping.discs
             && run.iter().any(|&row| disc(row) != disc(run[0]))
             && run.windows(2).all(|pair| disc(pair[0]) <= disc(pair[1]));
         let mut last_disc = None;
@@ -251,7 +498,9 @@ pub fn group_rows(
                 };
                 group.max_kbps = group.max_kbps.max(kbps);
             }
-            rows.push(Row::Track(row));
+            if !collapsed {
+                rows.push(Row::Track(row));
+            }
         }
     }
     (rows, groups)
@@ -290,6 +539,7 @@ mod tests {
             album_artist: album_artist.into(),
             album: album.into(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no,
             track_no,
@@ -341,6 +591,7 @@ mod tests {
             pre_sort: None,
             key: &by_album,
             discs: true,
+            collapse: None,
         }
     }
 
@@ -558,6 +809,220 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, vec![p.db_id[2], p.db_id[0], p.db_id[1]]);
+    }
+
+    #[test]
+    fn a_collapsed_run_keeps_its_header_and_drops_its_rows() {
+        let p = projection(&[
+            track("/m/a1.flac", "A", "One", 1, 1, 1000, "flac", 900, 44100, 16),
+            track("/m/a2.flac", "A", "One", 2, 1, 2000, "flac", 700, 44100, 16),
+            track("/m/b1.flac", "B", "Two", 0, 1, 3000, "flac", 900, 44100, 16),
+        ]);
+        let order = p.sort_canonical();
+        let mut state = CollapseState::default();
+        state.flip(GroupName::Album("A".into(), "One".into()));
+        let keys = state.keys(GroupKind::Album, &p);
+        let spec = Grouping {
+            collapse: Some(&keys),
+            ..grouping(2)
+        };
+        let (rows, groups) = group_rows(&order, &p, &spec, true);
+
+        let b = order[2];
+        assert_eq!(
+            rows,
+            vec![
+                Row::Head(0, 0),
+                Row::Head(0, 1),
+                Row::Head(1, 0),
+                Row::Head(1, 1),
+                Row::Track(b),
+            ],
+            "the folded album keeps its block and loses its discs and tracks"
+        );
+
+        assert!(groups[0].collapsed);
+        assert_eq!(groups[0].members, 0..2);
+        assert_eq!(groups[0].tracks, 2);
+        assert_eq!(groups[0].total_ms, 3000);
+        assert_eq!((groups[0].min_kbps, groups[0].max_kbps), (700, 900));
+
+        assert!(!groups[1].collapsed);
+        assert_eq!(groups[1].members, 2..3);
+        assert_eq!(&order[groups[1].members.clone()], &[b]);
+    }
+
+    #[test]
+    fn collapse_all_folds_everything_but_the_exceptions() {
+        let p = projection(&[
+            track("/m/a.flac", "A", "One", 0, 1, 0, "flac", 900, 44100, 16),
+            track("/m/b.flac", "B", "Two", 0, 1, 0, "flac", 900, 44100, 16),
+        ]);
+        let order = p.sort_canonical();
+        let mut state = CollapseState {
+            all: true,
+            except: Vec::new(),
+        };
+        state.flip(GroupName::Album("B".into(), "Two".into()));
+        let keys = state.keys(GroupKind::Album, &p);
+        let spec = Grouping {
+            collapse: Some(&keys),
+            ..grouping(1)
+        };
+        let (rows, groups) = group_rows(&order, &p, &spec, true);
+
+        assert_eq!(
+            rows,
+            vec![Row::Head(0, 0), Row::Head(1, 0), Row::Track(order[1])]
+        );
+        assert!(groups[0].collapsed);
+        assert!(!groups[1].collapsed);
+
+        // Flipping the exception back folds it with the rest.
+        state.flip(GroupName::Album("B".into(), "Two".into()));
+        assert!(state.except.is_empty());
+        assert!(!state.is_default());
+    }
+
+    #[test]
+    fn saved_names_map_back_onto_this_builds_keys() {
+        let mut a = track("/m/a.flac", "A", "One", 0, 1, 0, "flac", 900, 44100, 16);
+        a.genre = "Jazz".into();
+        a.year = 1999;
+        let mut b = track("/m/b.flac", "B", "Two", 0, 1, 0, "flac", 900, 44100, 16);
+        b.genre = "Rock".into();
+        b.year = 2001;
+        let p = projection(&[a, b]);
+
+        for kind in [
+            GroupKind::Album,
+            GroupKind::Artist,
+            GroupKind::Genre,
+            GroupKind::Year,
+        ] {
+            for row in 0..p.len() as u32 {
+                let mut state = CollapseState::default();
+                state.flip(kind.name(&p, row));
+                let keys = state.keys(kind, &p);
+                assert_eq!(
+                    keys.except,
+                    HashSet::from([kind.key(&p, row)]),
+                    "{kind:?} row {row}"
+                );
+            }
+        }
+
+        // A name the library lost maps to nothing and doesn't trip the rest.
+        let state = CollapseState {
+            all: false,
+            except: vec![
+                GroupName::Album("A".into(), "Gone".into()),
+                GroupName::Album("A".into(), "One".into()),
+                GroupName::Name("Gone".into()),
+            ],
+        };
+        let one = (0..p.len() as u32)
+            .find(|&r| p.resolve(r).album == "One")
+            .unwrap();
+        assert_eq!(
+            state.keys(GroupKind::Album, &p).except,
+            HashSet::from([GroupKind::Album.key(&p, one)])
+        );
+        assert!(state.keys(GroupKind::Artist, &p).except.is_empty());
+        assert!(state.keys(GroupKind::Year, &p).except.is_empty());
+    }
+
+    #[test]
+    fn a_folding_projection_matches_names_case_blind() {
+        let air = track(
+            "/m/a.flac",
+            "Air",
+            "Moon Safari",
+            0,
+            1,
+            0,
+            "flac",
+            900,
+            44100,
+            16,
+        );
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[air]).unwrap();
+        let p = Projection::load_serial(&conn, true).unwrap();
+
+        let state = CollapseState {
+            all: false,
+            except: vec![GroupName::Album("AIR".into(), "moon safari".into())],
+        };
+        assert_eq!(
+            state.keys(GroupKind::Album, &p).except,
+            HashSet::from([GroupKind::Album.key(&p, 0)])
+        );
+    }
+
+    #[test]
+    fn group_names_save_as_plain_json() {
+        let state = CollapseState {
+            all: false,
+            except: vec![
+                GroupName::Album("A".into(), "One".into()),
+                GroupName::Name("Jazz".into()),
+            ],
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "all": false, "except": [["A", "One"], "Jazz"] })
+        );
+        let back: CollapseState = serde_json::from_value(json).unwrap();
+        assert_eq!(back, state);
+        let empty: CollapseState = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.is_default());
+    }
+
+    #[test]
+    fn only_the_canonical_order_collapses() {
+        let p = projection(&[
+            track("/m/a1.flac", "A", "One", 0, 1, 0, "flac", 900, 44100, 16),
+            track("/m/a2.flac", "A", "One", 0, 2, 0, "flac", 900, 44100, 16),
+            track("/m/b1.flac", "B", "Two", 0, 1, 0, "flac", 900, 44100, 16),
+        ]);
+        let order = Arc::new(p.sort_canonical());
+        let filter = FilterSet::default();
+        let keys = CollapseKeys {
+            all: true,
+            except: HashSet::new(),
+        };
+        let spec = |query: &'static str, sort: Option<(SortKey, bool)>| ViewSpec {
+            query,
+            filter: &filter,
+            similar: None,
+            sort,
+            grouping: Some(Grouping {
+                collapse: Some(&keys),
+                ..grouping(1)
+            }),
+        };
+
+        let view = view_with_order(&p, order.clone(), &spec("", None));
+        assert!(view.collapsible);
+        assert_eq!(view.rows.len(), 2, "two folded headers");
+        assert_eq!(view.order.len(), 3, "the order keeps every track");
+        assert!(view.groups.iter().all(|g| g.collapsed));
+
+        for (query, sort) in [("a", None), ("", Some((SortKey::Title, false)))] {
+            let view = view_with_order(&p, order.clone(), &spec(query, sort));
+            assert!(!view.collapsible, "{query:?} {sort:?}");
+            assert!(view.groups.iter().all(|g| !g.collapsed));
+            assert_eq!(
+                view.rows
+                    .iter()
+                    .filter(|r| matches!(r, Row::Track(_)))
+                    .count(),
+                view.order.len()
+            );
+        }
     }
 
     /// The station stays out through the browse mask; nothing here names

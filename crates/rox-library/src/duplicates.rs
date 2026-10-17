@@ -168,6 +168,7 @@ mod tests {
             album_artist: artist.into(),
             album: album.into(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 0,

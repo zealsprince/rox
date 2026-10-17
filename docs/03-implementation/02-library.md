@@ -103,6 +103,7 @@ pub struct Projection {
     pub genre: Vec<u32>,        // symbol into genres
     pub codec: Vec<u32>,
     pub folder: Vec<u32>,       // parent directory, interned like the rest
+    comment: Option<Vec<u32>>,  // symbol into comments, None when no row has one
     pub year: Vec<u16>,
     pub disc_no: Vec<u16>,
     pub track_no: Vec<u16>,
@@ -121,6 +122,7 @@ pub struct Projection {
     pub genres: SymTable,
     pub codecs: SymTable,
     pub folders: SymTable,
+    pub comments: SymTable,     // the empty string alone while `comment` is None
     // plus per-table rank arrays and the distinct artist/album lists, all
     // OnceLock: the projection is immutable once loaded, so memoizing is safe.
 }
@@ -135,6 +137,12 @@ pub struct Projection {
   finished `SymTable` is the symbol table plus a lowercase copy of every entry, built in
   parallel. Symbol tables run a
   hundredth the row count or less, which makes search and sort cheap.
+- **Comment**: the file's standard comment interns like genre even though it's free
+  text. Forty-byte comments as a per-row arena plus its folded copy would come to about
+  880 MB at 10M tracks, more than the rest of the projection. A library with no comments
+  pays nothing for the column: it's only allocated when at least one row has one. Search
+  reaches it through the `comment:` pin alone, and the filter facet splits it on commas
+  and semicolons so a "P_dnb, P_chill" comment counts as two items.
 - **ReplayGain**: the two gains are stored in the projection so the library's Gain
   column can draw and sort without a query per row, packed to hundredths of a dB in an
   `i16` since every real gain falls inside the +-40 dB the engine acts on. `i16::MIN` is
@@ -284,12 +292,14 @@ single-row upsert or remove costs about a tenth of a millisecond against a
 350 ms rebuild (see the benchmarks in
 [research 02](../0R-research/02-library-scale.md)).
 
-Playback resolution is the one projection-to-store hop: double-clicking a row queues
+Playback resolution is the projection-to-store hop: double-clicking a row queues
 it and up to 999 rows behind it in view order, mapping view rows to `db_id`s and
 `db_id`s to paths through `paths_for` on the library's UI-side connection. Ids that no
 longer resolve drop out of the queue. Single clicks publish the selected rows as
 `db_id`s to the app-wide selection entity, and panels showing the selection resolve
-those ids back through the same hop.
+those ids back through the same hop. Cover cells take it too: the thumbnail cache keys
+on the path, so a surface resolves each newly painted row once and keeps the answer in
+a memo that lives as long as its view and clears when a new projection lands.
 
 ## Reference
 

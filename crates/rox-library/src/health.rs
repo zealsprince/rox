@@ -215,6 +215,7 @@ mod tests {
             album_artist_sort: String::new(),
             album_sort: String::new(),
             genre: "Shoegaze".into(),
+            comment: String::new(),
             year: 1993,
             disc_no: 1,
             track_no: 1,

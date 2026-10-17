@@ -359,6 +359,19 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         up: crate::members::backfill_album_artist,
         rescan: false,
     },
+    // The file's standard comment, which the library column, the `comment:`
+    // pin and the filter facet read. Empty rather than nullable, like the sort
+    // names: no comment and an empty one mean the same thing. The mtime reset
+    // comes with it for the tempo rung's reason: it's filled from file tags,
+    // and without it the next scan skips unchanged files and it stays empty
+    // forever.
+    crate::migrate::Migration {
+        name: "comment",
+        up: |conn| {
+            conn.execute_batch("ALTER TABLE tracks ADD COLUMN comment TEXT NOT NULL DEFAULT '';")
+        },
+        rescan: true,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -551,13 +564,14 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
               duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added, size, mtime,
               rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source,
               bpm, bpm_source,
-              title_sort, artist_sort, album_artist_sort, album_sort)
+              title_sort, artist_sort, album_artist_sort, album_sort, comment)
              VALUES (?1, ?23, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0, ?25, ?26, ?27, ?28)
+                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0, ?25, ?26, ?27, ?28, ?29)
              ON CONFLICT (source, path, sub) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
                 album = excluded.album, genre = excluded.genre,
+                comment = excluded.comment,
                 title_sort = excluded.title_sort,
                 artist_sort = excluded.artist_sort,
                 album_artist_sort = excluded.album_artist_sort,
@@ -646,6 +660,7 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.artist_sort,
                 r.album_artist_sort,
                 r.album_sort,
+                r.comment,
             ])?;
             if !spans_in_play {
                 continue;
@@ -1644,8 +1659,8 @@ pub fn common_root(conn: &Connection) -> rusqlite::Result<Option<PathBuf>> {
 
 /// Apply one file's committed tag changes to its row, so the projection
 /// can reload the edit without a rescan. Only the columns the library
-/// projects move; comment, composer, and custom fields have no column
-/// and fall through. The stored mtime stays put: the write already
+/// projects move; composer and custom fields have no column and fall
+/// through. The stored mtime stays put: the write already
 /// bumped the file's, so the next rescan re-reads it and squares the
 /// row with the tag wholesale.
 pub fn apply_changes(
@@ -1665,6 +1680,13 @@ pub fn apply_changes(
     }
     for change in changes {
         let value = change.value.as_deref().unwrap_or("");
+        // The scanner trims a comment; a patch that didn't would disagree with
+        // the next rescan.
+        let value = if change.field == Field::Comment {
+            value.trim()
+        } else {
+            value
+        };
         // The rating uses the writer's 0-10 display number, not the
         // column's 0-100; a cleared or unparseable one becomes unrated.
         if change.field == Field::Rating {
@@ -1681,6 +1703,7 @@ pub fn apply_changes(
             Field::Album => ("album", false),
             Field::AlbumArtist => ("album_artist", false),
             Field::Genre => ("genre", false),
+            Field::Comment => ("comment", false),
             Field::TitleSort => ("title_sort", false),
             Field::ArtistSort => ("artist_sort", false),
             Field::AlbumArtistSort => ("album_artist_sort", false),
@@ -2259,7 +2282,8 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 ///
 /// The field order matches the SELECT in [`scan_range`]: the tags with the
 /// sort names beside them, then the codec and stream numbers, the rating and scan time, the two ReplayGain
-/// figures, the tempo and where it came from, and last the subsong number.
+/// figures, the tempo and where it came from, the subsong number, and last the
+/// comment.
 /// The path is selected so the projection can derive each track's folder, the
 /// source and sub so it can build a TrackKey. Spans aren't: they're sparse,
 /// and the projection fills them from [`cue_spans`].
@@ -2298,6 +2322,7 @@ pub struct ScanRow<'a> {
     /// at all, which is the reading nothing acts on.
     pub bpm_source: crate::tempo::Source,
     pub sub: u16,
+    pub comment: &'a str,
 }
 
 /// Stream the projection columns for one rowid range, in id order, one
@@ -2314,7 +2339,7 @@ pub fn scan_range(
                 title_sort, artist_sort, album_artist_sort, album_sort,
                 genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
-                rg_track_gain, rg_album_gain, bpm, bpm_source, sub
+                rg_track_gain, rg_album_gain, bpm, bpm_source, sub, comment
          FROM tracks WHERE id > ?1 AND id <= ?2 AND source <> 'unknown' ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -2347,6 +2372,7 @@ pub fn scan_range(
             bpm: row.get(24)?,
             bpm_source: crate::tempo::Source::from_code(row.get(25)?),
             sub: row.get::<_, i64>(26)? as u16,
+            comment: row.get_ref(27)?.as_str().unwrap_or(""),
         });
     }
     Ok(())
@@ -2472,6 +2498,7 @@ mod tests {
             album_artist: album_artist.into(),
             album: album.into(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 0,
@@ -2720,6 +2747,36 @@ mod tests {
             crate::tempo::Source::Tags,
             "an unset marker reads as the file's own"
         );
+        assert_eq!(mtime, 0, "the row is owed a re-read");
+    }
+
+    #[test]
+    fn comment_step_adds_the_column_and_asks_for_a_rescan() {
+        let conn = Connection::open_in_memory().unwrap();
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "comment")
+            .expect("the comment rung is part of the ladder");
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (path, sub, title, artist, album_artist, album, genre, year,
+                track_no, duration_ms, codec, bitrate, sample_rate, bit_depth, size, mtime)
+             VALUES ('/m/1.flac', 0, 'One', 'A', 'A', 'Album', '', 0, 1, 0, 'flac', 1006,
+                     44100, 16, 10, 500)",
+            [],
+        )
+        .unwrap();
+
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
+
+        let (comment, mtime): (String, i64) = conn
+            .query_row(
+                "SELECT comment, mtime FROM tracks WHERE path = '/m/1.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(comment, "");
         assert_eq!(mtime, 0, "the row is owed a re-read");
     }
 
@@ -4131,7 +4188,7 @@ mod tests {
                     value: None,
                 },
                 Change {
-                    field: Field::Comment,
+                    field: Field::Composer,
                     value: Some("no column".into()),
                 },
             ],
@@ -4152,6 +4209,50 @@ mod tests {
             ("Someone", "Album"),
             "untouched columns hold"
         );
+    }
+
+    #[test]
+    fn apply_changes_lands_a_comment_without_a_rescan() {
+        use crate::writer::{Change, Field};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut before = row("/m/a/1.mp3", "X", "Album", 100);
+        before.comment = "P_chill".into();
+        insert_batch(&mut conn, &[before]).unwrap();
+        let id = id_for_path(&conn, crate::cue::LOCAL, "/m/a/1.mp3")
+            .unwrap()
+            .unwrap();
+
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(p.resolve(0).comment, "P_chill", "the insert carries it");
+
+        apply_changes(
+            &conn,
+            id,
+            &[Change {
+                field: Field::Comment,
+                value: Some("  P_dnb, P_chill \n".into()),
+            }],
+        )
+        .unwrap();
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(
+            p.resolve(0).comment,
+            "P_dnb, P_chill",
+            "trimmed like a scan"
+        );
+
+        apply_changes(
+            &conn,
+            id,
+            &[Change {
+                field: Field::Comment,
+                value: None,
+            }],
+        )
+        .unwrap();
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(p.resolve(0).comment, "");
     }
 
     /// A cleared album artist falls back to the track artist, and the sort

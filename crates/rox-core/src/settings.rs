@@ -480,6 +480,9 @@ pub struct Settings {
     /// plugin's service, for plugins that declare favourites. Off by
     /// default, and it never pushes favourites that predate turning it on.
     pub plugin_favourites: bool,
+    /// The plugin that searches for songs the library only knows by name.
+    /// None asks each time.
+    pub unknown_plugin: Option<String>,
     /// Folders searched for programs ahead of PATH, joined the way PATH is
     /// on this OS. Plugins and Convert's ffmpeg both look here; parse with
     /// [`split_folders`].
@@ -1177,6 +1180,16 @@ pub fn set_plugin_favourites(on: bool, cx: &mut App) {
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
+}
+
+static UNKNOWN_PLUGIN: RwLock<Option<String>> = RwLock::new(None);
+
+pub fn unknown_plugin() -> Option<String> {
+    UNKNOWN_PLUGIN.read().unwrap().clone()
+}
+
+pub fn set_unknown_plugin(id: Option<String>) {
+    *UNKNOWN_PLUGIN.write().unwrap() = id;
 }
 
 /// [`Settings::program_folders`] as a list. Entries are trimmed and empty
@@ -3463,6 +3476,7 @@ impl Default for Settings {
             ai_enabled: false,
             plugins_enabled: false,
             plugin_favourites: false,
+            unknown_plugin: None,
             program_folders: String::new(),
             mcp_enabled: false,
             mcp_plugins: false,

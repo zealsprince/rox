@@ -419,6 +419,48 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Read off the global each render: a Play From pick in a panel sets it
+    /// too.
+    fn lookup_field(&self, cx: &mut Context<Self>) -> AnyElement {
+        let sources = host::searchable_sources();
+        let current = settings::unknown_plugin();
+        let label = current
+            .as_ref()
+            .and_then(|id| sources.iter().find(|(source, _)| source == id))
+            .map(|(_, label)| SharedString::from(label.clone()));
+        let asks = label.is_none();
+        let this = cx.entity().downgrade();
+
+        settings_ui::select_field(
+            "settings-plugins-lookup-field",
+            label.unwrap_or_else(|| rox_i18n::t!("settings-plugins-lookup-ask")),
+            asks,
+        )
+        .dropdown_menu(move |mut menu, _, _| {
+            let choices = std::iter::once((None, rox_i18n::t!("settings-plugins-lookup-ask")))
+                .chain(
+                    sources
+                        .iter()
+                        .map(|(id, label)| (Some(id.clone()), SharedString::from(label.clone()))),
+                );
+            for (id, label) in choices {
+                let this = this.clone();
+                let checked = current == id;
+                menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                    move |_, _, cx| {
+                        let id = id.clone();
+                        settings::set_unknown_plugin(id.clone());
+                        Settings::update(move |s| s.unknown_plugin = id);
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    },
+                ));
+            }
+
+            menu
+        })
+        .into_any_element()
+    }
+
     /// From render: re-read when the host moved, and give every text field a
     /// switched-on plugin's config shows an input to hold it.
     pub(super) fn sync_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -768,6 +810,11 @@ impl SettingsWindow {
                         "settings-plugins-favourites",
                         &["favourite", "favorite", "heart", "sync"],
                         panel::toggle(self.plugin_favourites, Self::set_plugin_favourites, cx),
+                    )
+                    .keyed(
+                        "settings-plugins-lookup",
+                        &["unknown", "search", "play from", "default", "lookup"],
+                        self.lookup_field(cx),
                     )
                     .custom(&keywords, || intro.into_any_element())
                     .custom(&keywords, || table.into_any_element())

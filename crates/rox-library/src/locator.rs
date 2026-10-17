@@ -2,7 +2,8 @@
 //! the headers its source needs and a container hint (a URL has no
 //! extension). Lives here so `rox-playback` and the store share one type.
 //! A plugin locator names a stream the plugin serves by source and key, with
-//! no URL: the plugin works out where the bytes live (ADR 29, ADR 30).
+//! no URL: the plugin works out where the bytes live (ADR 29, ADR 30). A
+//! placeholder holds a queue slot with nothing behind it yet.
 //!
 //! `path()` returns `Option` on purpose. Every path-only operation (tag
 //! writer, rename, convert, ReplayGain, fingerprinting) has to decide what a
@@ -16,6 +17,9 @@ pub enum Locator {
     Local(PathBuf),
     Remote(Remote),
     Plugin(PluginStream),
+    /// Nothing to open. The engine steps past it quietly, and whoever queued
+    /// it swaps in a playable entry before it comes round (ADR 16).
+    Placeholder,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -47,7 +51,7 @@ impl Locator {
         match self {
             Locator::Local(path) => Some(path.as_path()),
 
-            Locator::Remote(_) | Locator::Plugin(_) => None,
+            Locator::Remote(_) | Locator::Plugin(_) | Locator::Placeholder => None,
         }
     }
 
@@ -59,6 +63,8 @@ impl Locator {
             Locator::Remote(remote) => remote.live,
 
             Locator::Plugin(stream) => stream.live,
+
+            Locator::Placeholder => false,
         }
     }
 
@@ -74,6 +80,8 @@ impl Locator {
             Locator::Remote(remote) => remote_label(&remote.url),
 
             Locator::Plugin(stream) => stream.key.clone(),
+
+            Locator::Placeholder => String::new(),
         }
     }
 }

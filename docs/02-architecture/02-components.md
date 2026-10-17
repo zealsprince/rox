@@ -56,9 +56,11 @@ so source extensions extend the catalog instead of forcing a migration (see
 [ADR 29](decisions/29-adr-source-contract.md)). The projection stores the source column
 too, so a view can filter on it without going back to SQLite.
 
-Boundary: browsing never touches SQLite. The UI reads the shared in-memory projection
-and derives its views from it; paths stay in the store, so playing a row costs one
-id-to-path read back through the service. Consistency is by rebuild: a scan, an explicit
+Boundary: browsing never touches SQLite beyond the id-to-path hop. The UI reads the
+shared in-memory projection and derives its views from it; paths stay in the store, so
+playing a row costs one id-to-path read back through the service, and drawing a row's
+cover costs the same read once per newly painted row, since thumbnails key on the path.
+Each surface memoizes that answer for the life of its view. Consistency is by rebuild: a scan, an explicit
 reload, a removal, or a prune rebuilds the projection from SQLite and swaps it whole. The
 one exception is a filesystem watch event or a reindex, which patches the live projection
 with just the rows it touched (append plus tombstone) and leaves the next rebuild to
@@ -74,7 +76,7 @@ Contract to the UI:
 Contract to the metadata writer: after a successful tag write, the library applies the
 committed changes to its rows and reloads the projection, so a tag edit and the browse
 view converge without a full rescan. Fields the projection contains update at once;
-fields it doesn't (comment, composer) reflect on the next rescan.
+fields it doesn't, such as composer, reflect on the next rescan.
 
 ## Play history
 

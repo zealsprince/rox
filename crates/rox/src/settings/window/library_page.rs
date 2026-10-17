@@ -129,10 +129,10 @@ impl SettingsWindow {
             table = table.child(self.exclusion_row(pattern, cx));
         }
 
+        // Stretched, not centred, so Add stands as tall as the input.
         let add = div()
             .flex()
             .flex_row()
-            .items_center()
             .gap(tokens::SPACE_SM)
             .child(
                 div()
@@ -140,7 +140,8 @@ impl SettingsWindow {
                     .min_w_0()
                     .child(Input::new(&self.exclude_input)),
             )
-            .child(icon_button(
+            .child(small_button(
+                rox_i18n::t!("settings-common-add"),
                 icons::PLUS,
                 false,
                 cx.listener(|this, _, window, cx| this.add_exclusion(window, cx)),
@@ -329,8 +330,12 @@ impl SettingsWindow {
                 .items_center()
                 .pt(tokens::SPACE_XS)
                 .child(
-                    settings_ui::menu_button("add-source-foot", "", icons::PLUS)
-                        .dropdown_menu(move |menu, _, _| add_source_menu(menu, &this, scanning)),
+                    settings_ui::menu_button(
+                        "add-source-foot",
+                        rox_i18n::t!("settings-common-add"),
+                        icons::PLUS,
+                    )
+                    .dropdown_menu(move |menu, _, _| add_source_menu(menu, &this, scanning)),
                 ),
         );
         let note: Option<SharedString> = busy.or_else(|| {

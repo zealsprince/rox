@@ -6,7 +6,9 @@ license.workspace = true
 
 [dependencies]
 rox-library = { path = "../rox-library" }
-cpal = "0.18"
+# `realtime` promotes cpal's own worker thread on Windows (MMCSS). On Linux the
+# feature is a no-op without libdbus, so src/rt.rs promotes that thread itself.
+cpal = { version = "0.18", features = ["realtime"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Decode per ADR 2: every symphonia codec and container is pure Rust.
@@ -57,6 +59,11 @@ base64 = "0.22"
 # reaches it directly because cpal can't open `hw:` or turn ALSA resampling off.
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11"
+# RTKit over the system bus for real-time writer threads (src/rt.rs). The
+# same pure Rust D-Bus the MPRIS side uses, so no libdbus enters the build.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# gettid and RLIMIT_RTTIME, which RTKit insists on.
+libc = "0.2"
 
 # sysctl for the machine's memory, which the live buffer ceiling is a share
 # of. Already in the dependency graph. See src/memory.rs.
@@ -66,6 +73,8 @@ libc = "0.2"
 # ADR 19's exclusive backend on Windows: cpal has no WASAPI exclusive. Same
 # version cpal 0.18 depends on, so the bindings compile once.
 [target.'cfg(target_os = "windows")'.dependencies]
+# MMCSS "Pro Audio" for the exclusive writer (src/rt.rs); cpal uses the same crate.
+audio_thread_priority = { version = "0.35", default-features = false }
 windows = { version = "0.61.3", features = [
     "Win32_Devices_FunctionDiscovery",
     "Win32_Foundation",

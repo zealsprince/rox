@@ -33,6 +33,7 @@ use rox_services::backdrop::WindowBackdrop;
 use rox_services::catalog::{Library, LibraryEvent, LocalCopy};
 use rox_services::history::HistoryEvent;
 use rox_services::thumbs::Thumb;
+use rox_services::{plugins, unknown_resolver};
 
 const TOP_NAMES: usize = 10;
 const TOP_GENRES: usize = 9;
@@ -538,6 +539,9 @@ impl StatsWindow {
             .update(cx, |player, cx| player.play(keys, cx));
     }
 
+    /// The whole list plays, the click at the start. Scope stays the
+    /// library's: the list fits the queue, and Recent repeats a song heard
+    /// twice, which a view would trip over.
     fn play_track(&mut self, list: TrackList, ix: usize, cx: &mut Context<Self>) {
         let (rows, files) = match list {
             TrackList::Top => (&self.data.top_tracks, &self.data.top_files),
@@ -545,45 +549,51 @@ impl StatsWindow {
         };
 
         // A stale click can point past the end after a refresh.
-        let Some(rows) = rows.get(ix..) else {
-            return;
-        };
-
-        // keys_for drops an Unknown row, so the rows after it would play in
-        // its place.
-        if rows.first().is_some_and(is_unknown) {
+        if ix >= rows.len() {
             return;
         }
+
         // Never queue the station for a radio row: it would play what's on air
         // now, not the song. The library's copy wins where it has one.
-        let local = files.get(ix).and_then(|local| local.as_ref());
-        if let Some(local) = local {
-            let Ok(keys) = self.state.library.read(cx).keys_for(&[local.track_id]) else {
-                return;
-            };
-            if keys.is_empty() {
-                return;
-            }
-            self.state
-                .player
-                .update(cx, |player, cx| player.play(keys, cx));
-            return;
-        }
-
         let ids: Vec<i64> = rows
             .iter()
-            .take(QUEUE_CAP)
-            .map(|row| row.track_id)
+            .enumerate()
+            .map(|(i, row)| {
+                let local = files.get(i).and_then(|local| local.as_ref());
+                local.map_or(row.track_id, |local| local.track_id)
+            })
             .collect();
-        let Ok(keys) = self.state.library.read(cx).keys_for(&ids) else {
-            return;
+
+        // Each side resolves on its own: a deleted row drops out, so the
+        // start is how many before the click resolved. An Unknown row stays
+        // in as a placeholder the player searches a plugin for, the way
+        // History queues one.
+        let resolved = {
+            let library = self.state.library.read(cx);
+            let resolve = |ids: &[i64]| library.queue_keys_for(ids).unwrap_or_default();
+            let Some(key) = resolve(&ids[ix..=ix]).pop() else {
+                return;
+            };
+            let mut keys = resolve(&ids[..ix]);
+            let start = keys.len();
+            keys.push(key);
+            keys.extend(resolve(&ids[ix + 1..]));
+            (keys, start)
         };
-        if keys.is_empty() {
-            return;
-        }
-        self.state
-            .player
-            .update(cx, |player, cx| player.play(keys, cx));
+        let (keys, start) = resolved;
+
+        // The plugin this session searches on, as History's unknown_play
+        // picks it.
+        let source = unknown_resolver::source_for(
+            None,
+            rox_core::settings::unknown_plugin().as_deref(),
+            &plugins::searchable_sources(),
+        );
+        self.state.player.update(cx, |player, cx| {
+            player.play_at(keys, start, cx);
+            // After the play: starting a session clears the pick.
+            player.set_unknown_source(source);
+        });
     }
 
     fn cover(&self, path: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {

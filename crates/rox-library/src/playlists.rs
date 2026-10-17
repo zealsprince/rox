@@ -830,6 +830,7 @@ mod tests {
             album_artist: artist.into(),
             album: album.into(),
             genre: String::new(),
+            comment: String::new(),
             year: 0,
             disc_no: 0,
             track_no: 0,
@@ -1511,7 +1512,13 @@ mod tests {
         store::run_ladder_before(&conn, "plugin-membership").unwrap();
         assert!(!has_column(&conn, "playlist_tracks", "source"));
 
-        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First")]).unwrap();
+        // Not insert_batch, which writes columns later rungs add.
+        store::upsert_source_rows(
+            &mut conn,
+            crate::cue::LOCAL,
+            &[track("/m/1.mp3", "One", "A", "First")],
+        )
+        .unwrap();
         let rows = [crate::members::row_for(&streamed("k1"), 100)];
         store::upsert_source_rows(&mut conn, "plugin:demo", &rows).unwrap();
         let local = store::id_for_path(&conn, crate::cue::LOCAL, "/m/1.mp3")

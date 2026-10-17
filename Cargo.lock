@@ -577,6 +577,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107"
 
 [[package]]
+name = "audio_thread_priority"
+version = "0.35.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b1b4a0adbf971420cca66a75361a1190f34a6762d66361e5cde03dda35d1ed3"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "log",
+ "mach2 0.4.3",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "audioadapter"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1647,13 +1660,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f77b11176c37874be37e8d691c946e31b2b8c357abce9526f6a99eb469e1028"
 dependencies = [
  "alsa",
+ "alsa-sys",
+ "audio_thread_priority",
  "block2",
  "coreaudio-rs",
  "dasp_sample",
  "jni",
  "js-sys",
  "libc",
- "mach2",
+ "mach2 0.6.0",
  "ndk",
  "ndk-context",
  "num-derive",
@@ -5060,6 +5075,15 @@ checksum = "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4"
 
 [[package]]
 name = "mach2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
@@ -7046,7 +7070,7 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -7104,7 +7128,7 @@ dependencies = [
 
 [[package]]
 name = "rox-acoustic"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -7121,7 +7145,7 @@ dependencies = [
 
 [[package]]
 name = "rox-cli"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -7131,7 +7155,7 @@ dependencies = [
 
 [[package]]
 name = "rox-core"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "async-task",
  "base64 0.22.1",
@@ -7153,7 +7177,7 @@ dependencies = [
 
 [[package]]
 name = "rox-design"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -7167,7 +7191,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7182,7 +7206,7 @@ dependencies = [
 
 [[package]]
 name = "rox-i18n"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "fixed_decimal",
  "fluent-bundle",
@@ -7206,7 +7230,7 @@ dependencies = [
 
 [[package]]
 name = "rox-ipc"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "async-channel 2.5.0",
  "dirs 5.0.1",
@@ -7218,7 +7242,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "async-channel 2.5.0",
  "base64 0.22.1",
@@ -7242,7 +7266,7 @@ dependencies = [
 
 [[package]]
 name = "rox-mcp"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "dirs 5.0.1",
  "rox-ipc",
@@ -7251,7 +7275,7 @@ dependencies = [
 
 [[package]]
 name = "rox-milkdrop"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "crossbeam-channel",
  "glutin",
@@ -7267,14 +7291,14 @@ dependencies = [
 
 [[package]]
 name = "rox-milkdrop-sys"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "rox-net"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "dotenvy",
  "md5",
@@ -7286,7 +7310,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panel-api"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7311,7 +7335,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panel-kit"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -7322,7 +7346,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panels"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "dirs 5.0.1",
  "gpui",
@@ -7349,9 +7373,10 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "alsa",
+ "audio_thread_priority",
  "base64 0.22.1",
  "cpal",
  "ebur128",
@@ -7369,11 +7394,12 @@ dependencies = [
  "symphonia",
  "ureq",
  "windows 0.61.3",
+ "zbus 5.17.0",
 ]
 
 [[package]]
 name = "rox-plugins"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -7388,7 +7414,7 @@ dependencies = [
 
 [[package]]
 name = "rox-romanize"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "lindera",
  "log",
@@ -7401,7 +7427,7 @@ dependencies = [
 
 [[package]]
 name = "rox-services"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "async-channel 2.5.0",
  "chrono",
@@ -7425,7 +7451,7 @@ dependencies = [
 
 [[package]]
 name = "rox-viz"
-version = "1.30.13"
+version = "1.31.0"
 dependencies = [
  "libm",
  "schemars",
@@ -8934,7 +8960,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.4.1",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

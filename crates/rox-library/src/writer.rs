@@ -557,13 +557,13 @@ fn embedded_pictures(
     })
 }
 
-/// The mime is sniffed off the magic bytes when the tag's is missing or unknown.
+/// The mime comes off the magic bytes, the tag's only when those say nothing.
+/// Missing or unknown on both answers empty.
 fn pic_tuple(picture: &Picture) -> (PictureType, Vec<u8>, String) {
-    let mime = match picture.mime_type() {
-        Some(MimeType::Unknown(_)) | None => {
-            art::sniff(picture.data()).unwrap_or_default().to_string()
-        }
-        Some(mime) => mime.as_str().to_string(),
+    let mime = match (art::sniff(picture.data()), picture.mime_type()) {
+        (Some(sniffed), _) => sniffed.to_string(),
+        (None, Some(MimeType::Unknown(_)) | None) => String::new(),
+        (None, Some(mime)) => mime.as_str().to_string(),
     };
     (picture.pic_type(), picture.data().to_vec(), mime)
 }
@@ -3092,5 +3092,52 @@ mod tests {
         assert_eq!(pics.len(), 1, "the untyped cover must not orphan");
         assert_eq!(pics[0].1, new);
         assert_eq!(crate::art::cover_art(&path).unwrap().0, new);
+    }
+
+    /// An MP3 whose plain front APIC declares image/jpeg over PNG bytes.
+    fn mislabelled_png_mp3(dir: &Path) -> (PathBuf, Vec<u8>) {
+        let mut image = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        image.extend(b"IEND\xAEB\x60\x82");
+        let mut body = vec![0x00];
+        body.extend(b"image/jpeg\0");
+        body.push(3); // front cover
+        body.push(0); // empty description
+        body.extend(&image);
+        let mut frame = b"APIC".to_vec();
+        frame.extend(synch(body.len() as u32));
+        frame.extend([0x00, 0x00]);
+        frame.extend(&body);
+        let mut tag = b"ID3\x04\x00\x00".to_vec();
+        tag.extend(synch(frame.len() as u32));
+        tag.extend(&frame);
+
+        let path = dir.join("track.mp3");
+        let mut bytes = tag;
+        bytes.extend(mpeg_audio());
+        fs::write(&path, bytes).unwrap();
+        (path, image)
+    }
+
+    #[test]
+    fn cover_art_trusts_the_bytes_over_the_declared_mime() {
+        let dir = scratch("mislabelled-cover-art");
+        let (path, image) = mislabelled_png_mp3(&dir);
+
+        let (bytes, mime) = crate::art::cover_art_of(&path, crate::art::ArtKind::Front)
+            .expect("the cover resolves");
+        assert_eq!(bytes, image);
+        assert_eq!(mime, "image/png");
+    }
+
+    #[test]
+    fn read_pictures_trusts_the_bytes_over_the_declared_mime() {
+        let dir = scratch("mislabelled-read-pictures");
+        let (path, image) = mislabelled_png_mp3(&dir);
+
+        let pics = read_pictures(&path).unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].0, PicKind::Front);
+        assert_eq!(pics[0].1, image);
+        assert_eq!(pics[0].2, "image/png");
     }
 }

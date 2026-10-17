@@ -69,6 +69,9 @@ the decode cursor.
   scattered through the tail with it.
 - The genre tagger's preview plays the way Play Now does, spliced in after the playing
   track at an offset, so a tagging pass leaves the queue alone.
+- An Unknown row ([ADR 11](11-adr-play-history.md)) queues as a placeholder entry, which
+  the engine steps over. The player fills it before it comes round with an insert after
+  it and a remove of it, so the pool stays append-only like it does for any other edit.
 
 Shuffle is in the engine, which owns `order`. The engine reshuffles only the upcoming
 portion, `order[pos + 1..]`, leaving history and the playing entry in place and composing

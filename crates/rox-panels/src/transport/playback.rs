@@ -64,6 +64,8 @@ pub enum PlaybackItem {
     Rating,
     /// A flexible gap; the strip holds as many as the layout needs.
     Spacer,
+    /// A spacer with a hairline across its gap.
+    Divider,
 }
 
 /// Stock order: where a menu toggle slots a re-shown button back in.
@@ -168,6 +170,12 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: PlaybackItem::Spacer,
+        repeats: true,
+    },
+    panel::ArrangeSpec {
+        key: "head-piece-divider",
+        icon: Some(icons::MINUS),
+        value: PlaybackItem::Divider,
         repeats: true,
     },
 ];
@@ -1518,6 +1526,11 @@ impl TransportPanel {
                         .into_any_element()
                 }
                 PlaybackItem::Spacer => div().flex_1().into_any_element(),
+                PlaybackItem::Divider => div()
+                    .flex_1()
+                    .h(px(1.))
+                    .bg(palette::border())
+                    .into_any_element(),
             });
         }
 
@@ -1682,6 +1695,30 @@ mod tests {
         assert!(config.items == vec![PlaybackItem::Shuffle, PlaybackItem::Play]);
 
         let saved = serde_json::to_value(&config).unwrap();
+        let back: TransportConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.items == config.items);
+    }
+
+    /// Dividers repeat like spacers, so dedup keeps both of them.
+    #[test]
+    fn dividers_repeat_and_round_trip() {
+        let config: TransportConfig =
+            serde_json::from_str(r#"{"items": ["prev", "divider", "play", "divider", "next"]}"#)
+                .unwrap();
+        assert!(
+            config.items
+                == vec![
+                    PlaybackItem::Prev,
+                    PlaybackItem::Divider,
+                    PlaybackItem::Play,
+                    PlaybackItem::Divider,
+                    PlaybackItem::Next,
+                ]
+        );
+
+        let saved = serde_json::to_value(&config).unwrap();
+        assert!(saved["items"][1] == "divider");
+
         let back: TransportConfig = serde_json::from_value(saved).unwrap();
         assert!(back.items == config.items);
     }

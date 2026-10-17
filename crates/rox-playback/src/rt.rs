@@ -9,7 +9,9 @@
 //! HAL owns the IO thread in both modes.
 
 /// Promote the calling thread. `period_frames` at `rate` is the slice the
-/// scheduler is told the thread works in.
+/// scheduler is told the thread works in. RTKit takes no slice, so only
+/// Windows reads them.
+#[cfg_attr(target_os = "linux", allow(unused_variables))]
 pub fn promote_current(period_frames: u32, rate: u32) {
     #[cfg(target_os = "linux")]
     report(linux::promote_current());

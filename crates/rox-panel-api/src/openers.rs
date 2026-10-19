@@ -11,6 +11,8 @@ use std::sync::{Arc, OnceLock};
 
 use gpui::{AnyWeakEntity, App, Div, Entity, EntityId, SharedString, WeakEntity, Window, div};
 use gpui_component::menu::PopupMenu;
+use rox_core::settings::PanelPreset;
+use rox_core::settings::panel_presets::PresetEntry;
 use rox_dock::{PanelView, TabPanel};
 use rox_library::cue::TrackKey;
 use rox_library::lyrics::Subject;
@@ -22,6 +24,16 @@ use rox_services::plugins::Target;
 use crate::panel::AppState;
 use crate::panel::shader::edit::ShaderEditTarget;
 use crate::preset_browser::PresetHost;
+
+/// What the apply calls with the rebuilt panel once it's in the slot.
+pub type Rebuilt = Box<dyn FnOnce(Arc<dyn PanelView>, &mut App)>;
+
+/// Why a preset is being applied, which decides whether the step is remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresetApply {
+    Pick,
+    Undo,
+}
 
 pub struct Openers {
     pub tags_editor: fn(AppState, Vec<i64>, &mut App),
@@ -60,6 +72,17 @@ pub struct Openers {
     pub lyrics_preview: fn(&Subject, Option<&str>, &mut App),
     pub add_panel_submenu:
         fn(PopupMenu, Option<WeakEntity<TabPanel>>, &mut Window, &mut App) -> PopupMenu,
+    /// Every preset this panel kind can take, in picker order: built-in, global,
+    /// this workspace, then other saved workspaces. Other-workspace entries
+    /// arrive already detached from their bundle's pool.
+    pub preset_sources: fn(&str) -> Vec<PresetEntry>,
+    /// Rebuild `panel` from `preset` in its own tab slot, then hand the new
+    /// panel to `Rebuilt` so the settings window that asked can follow it.
+    /// A pick remembers what the panel was, so that window can offer one
+    /// step back; an undo remembers nothing. A panel with no tab group
+    /// (popped out, or a composite's slot) logs and does nothing.
+    pub apply_panel_preset:
+        fn(Arc<dyn PanelView>, PanelPreset, PresetApply, AppState, Rebuilt, &mut App),
     /// The "Group Settings" row that reaches a hosted panel's composite.
     pub host_settings_item: fn(PopupMenu, EntityId, &App) -> PopupMenu,
     /// Confirm and close a pinned panel. No-ops in a popout window, which has no
@@ -287,5 +310,26 @@ pub fn go_to_source(
 ) {
     if let Some(openers) = openers("Go to") {
         (openers.go_to_source)(state, source, target, window, cx);
+    }
+}
+
+/// Empty before the app installs its table.
+pub fn preset_sources(kind: &str) -> Vec<PresetEntry> {
+    match openers("the preset sources") {
+        Some(openers) => (openers.preset_sources)(kind),
+        None => Vec::new(),
+    }
+}
+
+pub fn apply_panel_preset(
+    panel: Arc<dyn PanelView>,
+    preset: PanelPreset,
+    kind: PresetApply,
+    state: AppState,
+    rebuilt: Rebuilt,
+    cx: &mut App,
+) {
+    if let Some(openers) = openers("the preset apply") {
+        (openers.apply_panel_preset)(panel, preset, kind, state, rebuilt, cx);
     }
 }

@@ -833,13 +833,14 @@ impl MenuPanel {
 
     fn preset_panel_row(
         &self,
-        preset: rox_core::settings::PanelPreset,
+        entry: rox_core::settings::panel_presets::PresetEntry,
         target: PanelTarget,
         cx: &mut Context<Self>,
     ) -> Div {
-        let icon_path = crate::panel_presets::icon_for(&preset);
-        let label = SharedString::from(preset.name.clone());
-        let name = preset.name;
+        let icon_path = crate::panel_presets::icon_for(&entry.preset);
+        let label = SharedString::from(entry.preset.name.clone());
+        let scope = crate::panel_presets::save_scope(&entry.scope);
+        let name = entry.preset.name;
         row()
             .on_mouse_down(
                 MouseButton::Left,
@@ -849,7 +850,9 @@ impl MenuPanel {
                         return;
                     };
                     let name = name.clone();
-                    ws.update(cx, |ws, cx| ws.run_panel_preset(name, target, window, cx));
+                    ws.update(cx, |ws, cx| {
+                        ws.run_panel_preset(scope, name, target, window, cx)
+                    });
                 }),
             )
             .child(icon(icon_path))

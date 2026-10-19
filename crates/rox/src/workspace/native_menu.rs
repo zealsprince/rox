@@ -294,21 +294,23 @@ fn plugin_items(target: PanelTarget) -> Vec<gpui::MenuItem> {
 
 #[cfg(target_os = "macos")]
 fn preset_items(target: PanelTarget) -> Vec<gpui::MenuItem> {
-    let kind = match target {
-        PanelTarget::Open => "panel-preset",
-        PanelTarget::NewWindow => "panel-preset-window",
-    };
     let presets = crate::panel_presets::saved();
     if presets.is_empty() {
         return vec![placeholder(rox_i18n::t!("menu-no-presets"))];
     }
     presets
         .into_iter()
-        .map(|preset| {
+        .map(|entry| {
+            let kind = match (crate::panel_presets::save_scope(&entry.scope), target) {
+                (SaveScope::Workspace, PanelTarget::Open) => "panel-preset",
+                (SaveScope::Workspace, PanelTarget::NewWindow) => "panel-preset-window",
+                (SaveScope::Global, PanelTarget::Open) => "panel-preset-global",
+                (SaveScope::Global, PanelTarget::NewWindow) => "panel-preset-global-window",
+            };
             gpui::MenuItem::action(
-                preset.name.clone(),
+                entry.preset.name.clone(),
                 MenuCommand {
-                    command: format!("{kind}:{}", preset.name),
+                    command: format!("{kind}:{}", entry.preset.name),
                 },
             )
         })

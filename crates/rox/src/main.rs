@@ -34,6 +34,7 @@ mod panel_settings;
 mod panels;
 mod pass_prompt;
 mod playlist_create;
+mod preset_sources;
 mod quick_play;
 mod replaygain_job;
 mod romanize_job;
@@ -228,6 +229,8 @@ fn install_openers() {
         lyrics_saved: lyrics::saved,
         lyrics_preview: lyrics::preview,
         add_panel_submenu: workspace::add_panel_submenu,
+        preset_sources: preset_sources::for_kind,
+        apply_panel_preset: workspace::apply_panel_preset,
         host_settings_item: composite::host_settings_item,
         confirm_close_locked,
         task_started: tasks_window::repaint_while_running,

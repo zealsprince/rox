@@ -186,6 +186,18 @@ preset-back-add-panel = 添加面板
 preset-back-then = 然后
 preset-back-presets = 预设
 preset-back-tail = 加回来，任意面板菜单里都行。预设只属于这个工作区，别的工作区没有。
+preset-back-tail-global = 加回来，任意面板菜单里都行。全局预设在每个工作区都会出现。
+preset-group-builtin = 内置
+preset-group-global = 全局
+preset-group-workspace = 本工作区
+preset-group-other = 来自 { $workspace }
+preset-none-for-kind = 这个面板还没有预设
+preset-undo = 撤销预设
+preset-save-scope = 保存到
+    .description = 全局预设在每个工作区都会出现，着色器也随预设一起保存
+preset-scope-workspace = 本工作区
+preset-scope-global = 全局
+preset-save-replaces-global = 替换已经叫 { $name } 的全局预设
 
 ## Keyboard hints
 hint-press = 按
@@ -1430,6 +1442,8 @@ settings-workspace-card-website-placeholder = 它在哪儿能找到
 settings-workspace-composition-closed = 工作区窗口已关闭
 settings-workspace-composition-hint = 窗口里的面板在分隔和标签组里的排布；箭头把某一行在同级中重排，锁把面板钉在原地，齿轮打开它的设置
 settings-workspace-empty = 还没有工作区
+settings-workspace-global-presets-empty = 还没有全局预设
+settings-workspace-global-presets-hint = 以全局方式保存的面板预设。每个工作区都会列出它们，着色器也存在预设里
 settings-workspace-hint = 一个工作区就是一整套外观：布局、调色板、外观设置。应用一个会把这三样全换掉
 settings-workspace-layout-name-placeholder = 布局名称
 settings-workspace-layouts-empty = 还没有布局
@@ -1442,6 +1456,7 @@ settings-workspace-panel-presets-hint-before = 一个预设一个配置好的面
 settings-workspace-role-mini = 迷你
 settings-workspace-role-primary = 主
 settings-workspace-section-composition = 构成
+settings-workspace-section-global-presets = 全局预设
 settings-workspace-section-layouts = 布局
 settings-workspace-section-panel-presets = 面板预设
 settings-workspace-section-workspaces = 工作区
@@ -2733,6 +2748,9 @@ lyrics-unsung-dim = 未唱部分变暗
 lyrics-wipe-lyrics = 清除歌词
 lyrics-wrap-lines = 长行换行
     .description = 面板装不下的行换到下一行接着排，而不是裁掉
+lyrics-preset-karaoke = 卡拉 OK
+lyrics-preset-teleprompter = 提词器
+lyrics-preset-quiet = 安静
 
 ## Analysis passes
 pass-acoustic-body = { $model } 会算出每一首听起来是什么样，媒体库就能找到和正在播放的相像的音乐。全部在这台机器上跑，已经描述过的会跳过。{ $lands }

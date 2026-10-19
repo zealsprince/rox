@@ -8,6 +8,7 @@ use gpui::{App, Context, WeakEntity, Window};
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
+use rox_core::settings::panel_presets::{PresetEntry, PresetScope, SaveScope};
 use rox_core::settings::{PanelPreset, Settings};
 use rox_design::assets::icons;
 use rox_dock::{DockArea, PanelInfo, PanelRegistry, PanelState, PanelView};
@@ -18,8 +19,17 @@ use crate::panel_catalog::{self as catalog, PanelPlacement};
 pub(crate) const GROUP_LABEL: &str = "menu-panels-presets";
 pub(crate) const GROUP_ICON: &str = icons::COPY;
 
-pub(crate) fn saved() -> Vec<PanelPreset> {
-    rox_core::settings::panel_presets::all(&Settings::load())
+/// Global first, then this workspace's: every flat preset menu lists both.
+pub(crate) fn saved() -> Vec<PresetEntry> {
+    rox_core::settings::panel_presets::listed(&Settings::load())
+}
+
+/// The writable tier a listed entry resolves back through.
+pub(crate) fn save_scope(scope: &PresetScope) -> SaveScope {
+    match scope {
+        PresetScope::Global => SaveScope::Global,
+        _ => SaveScope::Workspace,
+    }
 }
 
 pub(crate) fn icon_for(preset: &PanelPreset) -> &'static str {
@@ -75,12 +85,13 @@ pub(crate) fn build(
 
 /// A preset deleted while its menu stood open picks as a no-op.
 pub(crate) fn build_named(
+    scope: SaveScope,
     name: &str,
     dock: WeakEntity<DockArea>,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Arc<dyn PanelView>> {
-    let preset = rox_core::settings::panel_presets::resolve(&Settings::load(), name)?;
+    let preset = rox_core::settings::panel_presets::resolve_in(&Settings::load(), scope, name)?;
     build(&preset, dock, window, cx)
 }
 
@@ -104,7 +115,7 @@ pub(crate) fn pick_submenu(
         window,
         cx,
         move |mut menu, _, _| {
-            for preset in &presets {
+            for PresetEntry { scope, preset } in &presets {
                 let disabled = no_composites && is_arrangement(preset);
                 let item = PopupMenuItem::new(preset.name.clone())
                     .icon(Icon::default().path(icon_for(preset)));
@@ -112,11 +123,11 @@ pub(crate) fn pick_submenu(
                     menu = menu.item(item.disabled(true));
                     continue;
                 }
-                let name = preset.name.clone();
+                let (scope, name) = (save_scope(scope), preset.name.clone());
                 let dock = dock.clone();
                 let on_pick = on_pick.clone();
                 menu = menu.item(item.on_click(move |_, window, cx| {
-                    if let Some(panel) = build_named(&name, dock.clone(), window, cx) {
+                    if let Some(panel) = build_named(scope, &name, dock.clone(), window, cx) {
                         on_pick(panel, window, cx);
                     }
                 }));

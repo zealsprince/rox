@@ -197,6 +197,18 @@ preset-back-add-panel = Add Panel
 preset-back-then = then
 preset-back-presets = Presets
 preset-back-tail = in any panel menu. Presets belong to this workspace only; another workspace won't have them.
+preset-back-tail-global = in any panel menu. Global presets show up in every workspace.
+preset-group-builtin = Built In
+preset-group-global = Global
+preset-group-workspace = This Workspace
+preset-group-other = From { $workspace }
+preset-none-for-kind = No presets for this panel yet
+preset-undo = Undo Preset
+preset-save-scope = Save To
+    .description = Global presets show up in every workspace and carry their shaders with them
+preset-scope-workspace = This Workspace
+preset-scope-global = Global
+preset-save-replaces-global = Replaces the global preset already called { $name }
 
 ## Keyboard hints
 
@@ -1508,6 +1520,8 @@ settings-workspace-card-website-placeholder = Where it lives
 settings-workspace-composition-closed = The workspace window is closed
 settings-workspace-composition-hint = The window's panels as they're arranged in splits and tab groups; the arrows reorder a row among its siblings, the lock pins a panel in place, and the gear opens its settings
 settings-workspace-empty = No workspaces yet
+settings-workspace-global-presets-empty = No global presets yet
+settings-workspace-global-presets-hint = Panel presets saved as Global. Every workspace lists them, and their shaders travel inside them
 settings-workspace-hint = A workspace is a whole look: layouts, palette, appearance. Applying one replaces all three
 settings-workspace-layout-name-placeholder = Layout name
 settings-workspace-layouts-empty = No layouts yet
@@ -1520,6 +1534,7 @@ settings-workspace-panel-presets-hint-before = One configured panel each, saved 
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Primary
 settings-workspace-section-composition = Composition
+settings-workspace-section-global-presets = Global Presets
 settings-workspace-section-layouts = Layouts
 settings-workspace-section-panel-presets = Panel Presets
 settings-workspace-section-workspaces = Workspaces
@@ -2880,6 +2895,9 @@ lyrics-unsung-dim = Unsung Dim
 lyrics-wipe-lyrics = Wipe Lyrics
 lyrics-wrap-lines = Wrap Long Lines
     .description = Let a line too wide for the panel run onto another row instead of being cut off
+lyrics-preset-karaoke = Karaoke
+lyrics-preset-teleprompter = Teleprompter
+lyrics-preset-quiet = Quiet
 
 ## Analysis passes
 

@@ -186,6 +186,18 @@ preset-back-add-panel = Añadir panel
 preset-back-then = y luego
 preset-back-presets = Preajustes
 preset-back-tail = en cualquier menú de panel. Los preajustes son solo de este espacio de trabajo; otro no los tendrá.
+preset-back-tail-global = en cualquier menú de panel. Los preajustes globales aparecen en todos los espacios de trabajo.
+preset-group-builtin = Incluidos
+preset-group-global = Globales
+preset-group-workspace = Este espacio de trabajo
+preset-group-other = De { $workspace }
+preset-none-for-kind = Todavía no hay preajustes para este panel
+preset-undo = Deshacer el preajuste
+preset-save-scope = Guardar en
+    .description = Los preajustes globales aparecen en todos los espacios de trabajo y llevan sus shaders consigo
+preset-scope-workspace = Este espacio de trabajo
+preset-scope-global = Global
+preset-save-replaces-global = Reemplaza el preajuste global que ya se llama { $name }
 
 ## Keyboard hints
 hint-press = Pulsa
@@ -1472,6 +1484,8 @@ settings-workspace-card-website-placeholder = Dónde vive
 settings-workspace-composition-closed = La ventana del espacio de trabajo está cerrada
 settings-workspace-composition-hint = Los paneles de la ventana tal como están en divisiones y grupos de pestañas; las flechas reordenan una fila entre sus hermanas, el candado fija un panel en su sitio, y el engranaje abre sus ajustes
 settings-workspace-empty = Todavía no hay espacios de trabajo
+settings-workspace-global-presets-empty = Todavía no hay preajustes globales
+settings-workspace-global-presets-hint = Preajustes de panel guardados como globales. Todos los espacios de trabajo los muestran, y sus shaders viajan dentro de ellos
 settings-workspace-hint = Un espacio de trabajo es un aspecto entero: disposiciones, paleta, apariencia. Aplicar uno reemplaza los tres
 settings-workspace-layout-name-placeholder = Nombre de la disposición
 settings-workspace-layouts-empty = Todavía no hay disposiciones
@@ -1484,6 +1498,7 @@ settings-workspace-panel-presets-hint-before = Un panel configurado cada uno, gu
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Principal
 settings-workspace-section-composition = Composición
+settings-workspace-section-global-presets = Preajustes globales
 settings-workspace-section-layouts = Disposiciones
 settings-workspace-section-panel-presets = Preajustes de panel
 settings-workspace-section-workspaces = Espacios de trabajo
@@ -2909,6 +2924,9 @@ lyrics-unsung-dim = Atenuación de lo no cantado
 lyrics-wipe-lyrics = Borrar la letra
 lyrics-wrap-lines = Ajustar las líneas largas
     .description = Deja que una línea demasiado ancha para el panel pase a otra fila en vez de cortarse
+lyrics-preset-karaoke = Karaoke
+lyrics-preset-teleprompter = Teleprompter
+lyrics-preset-quiet = Discreto
 
 ## Analysis passes
 pass-acoustic-body = { $model } averigua a qué suena cada una, para que la biblioteca pueda encontrar música parecida a lo que está sonando. Todo corre en esta máquina, y se omite lo que ya esté descrito. { $lands }

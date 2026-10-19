@@ -395,7 +395,9 @@ impl TabPanel {
         cx.notify();
     }
 
-    fn insert_panel_at(
+    /// rox addition: public so applying a preset can rebuild a panel in its
+    /// own tab slot.
+    pub fn insert_panel_at(
         &mut self,
         panel: Arc<dyn PanelView>,
         ix: usize,

@@ -188,6 +188,18 @@ preset-back-add-panel = Ajouter un panneau
 preset-back-then = puis
 preset-back-presets = Préréglages
 preset-back-tail = dans n'importe quel menu de panneau. Les préréglages ne valent que pour cet espace de travail ; un autre espace ne les aura pas.
+preset-back-tail-global = dans n'importe quel menu de panneau. Les préréglages globaux apparaissent dans tous les espaces de travail.
+preset-group-builtin = Intégrés
+preset-group-global = Globaux
+preset-group-workspace = Cet espace de travail
+preset-group-other = De { $workspace }
+preset-none-for-kind = Aucun préréglage pour ce panneau pour l'instant
+preset-undo = Annuler le préréglage
+preset-save-scope = Enregistrer dans
+    .description = Les préréglages globaux apparaissent dans tous les espaces de travail et emportent leurs shaders avec eux
+preset-scope-workspace = Cet espace de travail
+preset-scope-global = Global
+preset-save-replaces-global = Remplace le préréglage global qui s'appelle déjà { $name }
 
 ## Keyboard hints
 hint-press = Appuie sur
@@ -1484,6 +1496,8 @@ settings-workspace-card-website-placeholder = Où le trouver
 settings-workspace-composition-closed = La fenêtre de l'espace de travail est fermée
 settings-workspace-composition-hint = Les panneaux de la fenêtre tels qu'ils sont agencés dans les séparations et les groupes d'onglets ; les flèches réordonnent une ligne parmi ses voisines, le cadenas fixe un panneau en place, et l'engrenage ouvre ses réglages
 settings-workspace-empty = Aucun espace de travail pour l'instant
+settings-workspace-global-presets-empty = Aucun préréglage global pour l'instant
+settings-workspace-global-presets-hint = Les préréglages de panneau enregistrés en global. Tous les espaces de travail les listent, et leurs shaders voyagent avec eux
 settings-workspace-hint = Un espace de travail est un habillage entier : dispositions, palette, apparence. En appliquer un remplace les trois
 settings-workspace-layout-name-placeholder = Nom de la disposition
 settings-workspace-layouts-empty = Aucune disposition pour l'instant
@@ -1496,6 +1510,7 @@ settings-workspace-panel-presets-hint-before = Un panneau configuré chacun, enr
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Principale
 settings-workspace-section-composition = Composition
+settings-workspace-section-global-presets = Préréglages globaux
 settings-workspace-section-layouts = Dispositions
 settings-workspace-section-panel-presets = Préréglages de panneau
 settings-workspace-section-workspaces = Espaces de travail
@@ -2905,6 +2920,9 @@ lyrics-unsung-dim = Atténuation du non chanté
 lyrics-wipe-lyrics = Effacer les paroles
 lyrics-wrap-lines = Renvoyer les lignes longues
     .description = Laisser une ligne trop large pour le panneau passer sur une autre rangée au lieu d'être coupée
+lyrics-preset-karaoke = Karaoké
+lyrics-preset-teleprompter = Téléprompteur
+lyrics-preset-quiet = Discret
 
 ## Analysis passes
 pass-acoustic-body = { $model } détermine à quoi ressemble chacune, pour que la bibliothèque puisse trouver de la musique proche de ce qui joue. Tout tourne sur cette machine, et tout ce qui est déjà décrit est ignoré. { $lands }

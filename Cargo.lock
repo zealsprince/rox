@@ -7070,7 +7070,7 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -7128,7 +7128,7 @@ dependencies = [
 
 [[package]]
 name = "rox-acoustic"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -7145,7 +7145,7 @@ dependencies = [
 
 [[package]]
 name = "rox-cli"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -7155,7 +7155,7 @@ dependencies = [
 
 [[package]]
 name = "rox-core"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "async-task",
  "base64 0.22.1",
@@ -7177,7 +7177,7 @@ dependencies = [
 
 [[package]]
 name = "rox-design"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -7191,7 +7191,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7206,7 +7206,7 @@ dependencies = [
 
 [[package]]
 name = "rox-i18n"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "fixed_decimal",
  "fluent-bundle",
@@ -7230,7 +7230,7 @@ dependencies = [
 
 [[package]]
 name = "rox-ipc"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "async-channel 2.5.0",
  "dirs 5.0.1",
@@ -7242,7 +7242,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "async-channel 2.5.0",
  "base64 0.22.1",
@@ -7266,7 +7266,7 @@ dependencies = [
 
 [[package]]
 name = "rox-mcp"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "dirs 5.0.1",
  "rox-ipc",
@@ -7275,7 +7275,7 @@ dependencies = [
 
 [[package]]
 name = "rox-milkdrop"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "crossbeam-channel",
  "glutin",
@@ -7291,14 +7291,14 @@ dependencies = [
 
 [[package]]
 name = "rox-milkdrop-sys"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "rox-net"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "dotenvy",
  "md5",
@@ -7310,7 +7310,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panel-api"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7335,7 +7335,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panel-kit"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -7346,7 +7346,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panels"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "dirs 5.0.1",
  "gpui",
@@ -7373,7 +7373,7 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "alsa",
  "audio_thread_priority",
@@ -7399,7 +7399,7 @@ dependencies = [
 
 [[package]]
 name = "rox-plugins"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -7414,7 +7414,7 @@ dependencies = [
 
 [[package]]
 name = "rox-romanize"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "lindera",
  "log",
@@ -7427,7 +7427,7 @@ dependencies = [
 
 [[package]]
 name = "rox-services"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "async-channel 2.5.0",
  "chrono",
@@ -7451,7 +7451,7 @@ dependencies = [
 
 [[package]]
 name = "rox-viz"
-version = "1.31.0"
+version = "1.32.0"
 dependencies = [
  "libm",
  "schemars",

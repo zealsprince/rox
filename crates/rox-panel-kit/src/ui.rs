@@ -1158,7 +1158,18 @@ impl RenderOnce for MenuButton {
                     .flex_none()
                     .text_color(palette::text()),
             )
-            .when(!label.is_empty(), |d| d.child(label))
+            // The label takes the slack, so a stretched button keeps its chevron at
+            // the far end and a long name clips instead of growing the button.
+            .when(!label.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .truncate()
+                        .child(label),
+                )
+            })
             .child(
                 svg()
                     .path(icons::CHEVRON_DOWN)

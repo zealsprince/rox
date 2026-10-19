@@ -47,12 +47,15 @@ use crate::panels::slide::SlidePanel;
 use crate::panels::window_controls::{ControlItem, WindowControlsConfig, WindowControlsPanel};
 use crate::pass_prompt;
 use crate::quick_play::QuickPlay;
+use rox_core::settings::panel_presets::SaveScope;
 use rox_core::settings::{
     self, GainModeSetting, LastTrack, LayoutEdit, LayoutPlacement, LayoutSize, NamedLayout,
-    PostShaderConfig, QueueState, QueuedTrack, Settings, ShuffleMode, WindowOrigin, WindowState,
+    PanelPreset, PostShaderConfig, QueueState, QueuedTrack, Settings, ShuffleMode, WindowOrigin,
+    WindowState,
 };
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_api::openers::{PresetApply, Rebuilt};
 use rox_panel_api::panel::{self, AppState, TabHosts};
 use rox_panel_api::query::shared_query::SharedQuery;
 use rox_panel_api::track_ui::track_drag::PlayDrag;
@@ -1215,6 +1218,98 @@ pub(crate) fn add_panel_submenu(
         )
         .icon(Icon::default().path(icons::PLUS)),
     )
+}
+
+/// A pick in a panel settings window's Presets row: rebuild `old` from
+/// `preset` in its own tab slot and hand the new panel back through
+/// `rebuilt`. The swap runs in the workspace window hosting the group,
+/// found by its shared tab hosts.
+pub(crate) fn apply_panel_preset(
+    old: Arc<dyn PanelView>,
+    preset: PanelPreset,
+    kind: PresetApply,
+    state: AppState,
+    rebuilt: Rebuilt,
+    cx: &mut App,
+) {
+    let old_id = old.view().entity_id();
+    let slot = state
+        .tab_hosts
+        .read(cx)
+        .groups()
+        .into_iter()
+        .find_map(|tabs| {
+            let ix = tabs
+                .read(cx)
+                .panels()
+                .iter()
+                .position(|hosted| hosted.view().entity_id() == old_id)?;
+            Some((tabs, ix))
+        });
+    let Some((tabs, ix)) = slot else {
+        log::debug!(
+            "panel presets: {} has no tab group to apply into",
+            preset.name
+        );
+        return;
+    };
+
+    let hosts = state.tab_hosts.entity_id();
+    let host = cx
+        .default_global::<WorkspaceWindows>()
+        .open
+        .iter()
+        .find(|w| w.state.tab_hosts.entity_id() == hosts)
+        .map(|w| (w.handle, w.workspace.clone()));
+    let Some((handle, workspace)) = host else {
+        log::debug!("panel presets: no workspace hosts {}", preset.name);
+        return;
+    };
+
+    // Deferred: the pick arrives inside the settings window's own update.
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let Some(workspace) = typed_workspace(&workspace) else {
+                return;
+            };
+            let dock = workspace.read(cx).dock.downgrade();
+            let Some(new) = panel_presets::build(&preset, dock, window, cx) else {
+                return;
+            };
+
+            // Dumped before the swap, since removal tears the old panel down.
+            let previous = (kind == PresetApply::Pick)
+                .then(|| serde_json::to_value(old.dump(cx)).ok())
+                .flatten()
+                .map(|panel| PanelPreset {
+                    name: old.panel_name(cx).to_string(),
+                    panel,
+                });
+
+            // Insert before remove: a group emptied even for a moment takes
+            // itself out of its stack.
+            tabs.update(cx, |tabs, cx| {
+                tabs.insert_panel_at(new.clone(), ix, window, cx);
+                let old = tabs
+                    .panels()
+                    .iter()
+                    .find(|hosted| hosted.view().entity_id() == old_id)
+                    .cloned();
+                if let Some(old) = old {
+                    tabs.remove_panel(old, window, cx);
+                }
+            });
+
+            let applied = (kind == PresetApply::Pick).then(|| preset.clone());
+            rox_panel_api::panel_settings::note_preset_apply(
+                new.view().entity_id(),
+                previous,
+                applied,
+                cx,
+            );
+            rebuilt(new, cx);
+        });
+    });
 }
 
 /// One Add Panel row: build the def's panel against the workspace's state
@@ -2623,12 +2718,20 @@ fn run_menu_command(command: &str, cx: &mut App) {
         "layout-apply" => with_front_workspace(cx, move |ws, _, cx| {
             ws.run_layout(name, LayoutTarget::Apply, cx)
         }),
-        "panel-preset" => with_front_workspace(cx, move |ws, window, cx| {
-            ws.run_panel_preset(name, PanelTarget::Open, window, cx)
-        }),
-        "panel-preset-window" => with_front_workspace(cx, move |ws, window, cx| {
-            ws.run_panel_preset(name, PanelTarget::NewWindow, window, cx)
-        }),
+        "panel-preset"
+        | "panel-preset-window"
+        | "panel-preset-global"
+        | "panel-preset-global-window" => {
+            let (scope, target) = match kind {
+                "panel-preset" => (SaveScope::Workspace, PanelTarget::Open),
+                "panel-preset-window" => (SaveScope::Workspace, PanelTarget::NewWindow),
+                "panel-preset-global" => (SaveScope::Global, PanelTarget::Open),
+                _ => (SaveScope::Global, PanelTarget::NewWindow),
+            };
+            with_front_workspace(cx, move |ws, window, cx| {
+                ws.run_panel_preset(scope, name, target, window, cx)
+            })
+        }
         // "<plugin>/<entry>": a plugin id has no slash, an entry name may.
         "plugin-panel" | "plugin-panel-window" => {
             let target = match kind {
@@ -4735,12 +4838,14 @@ impl Workspace {
     /// while the menu stood open does nothing.
     pub(crate) fn run_panel_preset(
         &mut self,
+        scope: SaveScope,
         name: String,
         target: PanelTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(preset) = rox_core::settings::panel_presets::resolve(&Settings::load(), &name)
+        let Some(preset) =
+            rox_core::settings::panel_presets::resolve_in(&Settings::load(), scope, &name)
         else {
             return;
         };

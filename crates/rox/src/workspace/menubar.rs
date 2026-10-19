@@ -7,6 +7,7 @@ use super::*;
 use gpui::{Corner, MouseDownEvent, Stateful, anchored, point};
 use gpui_component::scroll::Scrollbar;
 use rox_core::settings::MenubarButtons;
+use rox_core::settings::panel_presets::PresetEntry;
 
 /// The entry the cursor is on, plus the row within it for a bare catalog
 /// section, which draws a run of rows.
@@ -16,7 +17,7 @@ pub(crate) enum NavRun {
     Action(MenuAction),
     Layout(String, LayoutTarget),
     Workspace(String, WorkspaceTarget),
-    Preset(String, PanelTarget),
+    Preset(SaveScope, String, PanelTarget),
     /// A plugin id and the declared panel's name.
     PluginPanel(String, String, PanelTarget),
     PanelWindow(&'static PanelDef),
@@ -427,7 +428,9 @@ impl Workspace {
             NavRun::Action(action) => self.run(action, window, cx),
             NavRun::Layout(name, target) => self.run_layout(name, target, cx),
             NavRun::Workspace(name, target) => self.run_workspace(name, target, cx),
-            NavRun::Preset(name, target) => self.run_panel_preset(name, target, window, cx),
+            NavRun::Preset(scope, name, target) => {
+                self.run_panel_preset(scope, name, target, window, cx)
+            }
             NavRun::PluginPanel(plugin, name, target) => {
                 self.run_plugin_panel(&plugin, &name, target, window, cx)
             }
@@ -548,7 +551,7 @@ pub(crate) fn submenu_rows(menu: usize, entry: usize) -> Vec<NavRow> {
         }
         MenuEntry::PresetsSubmenu { target, .. } => panel_presets::saved()
             .into_iter()
-            .map(|preset| NavRow::Run(NavRun::Preset(preset.name, *target)))
+            .map(|entry| NavRow::Run(preset_run(entry, *target)))
             .collect(),
         MenuEntry::PluginsSubmenu { target, .. } => plugin_panels()
             .into_iter()
@@ -580,6 +583,14 @@ pub(crate) fn submenu_rows(menu: usize, entry: usize) -> Vec<NavRow> {
     }
 }
 
+fn preset_run(entry: PresetEntry, target: PanelTarget) -> NavRun {
+    NavRun::Preset(
+        panel_presets::save_scope(&entry.scope),
+        entry.preset.name,
+        target,
+    )
+}
+
 /// The panel-window picker's plugin group, after the catalog's: presets
 /// are 0 and the catalog's sections count from 1.
 pub(crate) fn plugins_group() -> usize {
@@ -604,7 +615,7 @@ pub(crate) fn subgroup_rows(group: usize) -> Vec<NavRow> {
     if group == 0 {
         return presets
             .into_iter()
-            .map(|preset| NavRow::Run(NavRun::Preset(preset.name, PanelTarget::NewWindow)))
+            .map(|entry| NavRow::Run(preset_run(entry, PanelTarget::NewWindow)))
             .collect();
     }
     catalog::sections()
@@ -1915,18 +1926,13 @@ impl Workspace {
         .child(rox_i18n::t!(def.label))
     }
 
-    fn preset_item(
-        &self,
-        preset: rox_core::settings::PanelPreset,
-        target: PanelTarget,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let icon = panel_presets::icon_for(&preset);
-        let label = SharedString::from(preset.name.clone());
-        let name = preset.name;
+    fn preset_item(&self, entry: PresetEntry, target: PanelTarget, cx: &mut Context<Self>) -> Div {
+        let icon = panel_presets::icon_for(&entry.preset);
+        let label = SharedString::from(entry.preset.name.clone());
+        let (scope, name) = (panel_presets::save_scope(&entry.scope), entry.preset.name);
         menu_row(cx.listener(move |this, _, window, cx| {
             this.close_menus(cx);
-            this.run_panel_preset(name.clone(), target, window, cx);
+            this.run_panel_preset(scope, name.clone(), target, window, cx);
         }))
         .child(
             svg()

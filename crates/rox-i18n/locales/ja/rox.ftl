@@ -187,6 +187,18 @@ preset-back-add-panel = パネルを追加
 preset-back-then = そのあと
 preset-back-presets = プリセット
 preset-back-tail = をどのパネルメニューからでも。プリセットはこのワークスペース専用で、他のワークスペースにはありません。
+preset-back-tail-global = をどのパネルメニューからでも。グローバルプリセットはすべてのワークスペースに表示されます。
+preset-group-builtin = 組み込み
+preset-group-global = グローバル
+preset-group-workspace = このワークスペース
+preset-group-other = { $workspace } から
+preset-none-for-kind = このパネルのプリセットはまだありません
+preset-undo = プリセットを元に戻す
+preset-save-scope = 保存先
+    .description = グローバルプリセットはすべてのワークスペースに表示され、シェーダーも一緒に持ち運びます
+preset-scope-workspace = このワークスペース
+preset-scope-global = グローバル
+preset-save-replaces-global = 既に { $name } という名前のグローバルプリセットを置き換えます
 
 ## Keyboard hints
 hint-press = 押す
@@ -1430,6 +1442,8 @@ settings-workspace-card-website-placeholder = 置いてある場所
 settings-workspace-composition-closed = ワークスペースのウィンドウは閉じられています
 settings-workspace-composition-hint = ウィンドウのパネルが分割とタブグループの中でどう並んでいるか。矢印は同じ階層での並べ替え、鍵はパネルの固定、歯車は設定を開きます
 settings-workspace-empty = ワークスペースがまだありません
+settings-workspace-global-presets-empty = グローバルプリセットはまだありません
+settings-workspace-global-presets-hint = グローバルとして保存したパネルプリセットです。すべてのワークスペースに表示され、シェーダーも中に含まれます
 settings-workspace-hint = ワークスペースは見た目のすべてです。レイアウト、パレット、外観。適用するとこの 3 つが入れ替わります
 settings-workspace-layout-name-placeholder = レイアウト名
 settings-workspace-layouts-empty = レイアウトがまだありません
@@ -1442,6 +1456,7 @@ settings-workspace-panel-presets-hint-before = 設定済みのパネル 1 つず
 settings-workspace-role-mini = ミニ
 settings-workspace-role-primary = プライマリ
 settings-workspace-section-composition = 構成
+settings-workspace-section-global-presets = グローバルプリセット
 settings-workspace-section-layouts = レイアウト
 settings-workspace-section-panel-presets = パネルプリセット
 settings-workspace-section-workspaces = ワークスペース
@@ -2734,6 +2749,9 @@ lyrics-unsung-dim = 未歌部分の暗さ
 lyrics-wipe-lyrics = 歌詞を消す
 lyrics-wrap-lines = 長い行を折り返す
     .description = パネルに入りきらない行を切り捨てず、次の行に送る
+lyrics-preset-karaoke = カラオケ
+lyrics-preset-teleprompter = プロンプター
+lyrics-preset-quiet = 控えめ
 
 ## Analysis passes
 pass-acoustic-body = { $model } が各曲の響きを割り出し、再生中の曲に似た音楽をライブラリから探せるようにします。処理はすべてこのマシンで走り、既に記述済みのものは飛ばします。{ $lands }

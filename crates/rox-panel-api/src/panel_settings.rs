@@ -20,6 +20,7 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{Icon, Root, Sizable as _};
 
+use crate::openers::{PresetApply, Rebuilt};
 use crate::panel::{self, AppState, PanelSettings, ScrubState, shader};
 use rox_core::settings;
 use rox_design::assets::icons;
@@ -29,8 +30,9 @@ use rox_services::backdrop::WindowBackdrop;
 // The frame sliders' ceilings are shared with the app settings window, so
 // both frames scrub the same range.
 use crate::signal_ui::{self, routes::RouteEditState};
-use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
-use rox_dock::TabPanel;
+use rox_core::settings::panel_presets::{PresetEntry, PresetScope, SaveScope};
+use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, PanelPreset, ROUNDING_MAX};
+use rox_dock::{PanelView, TabPanel};
 use rox_panel_kit::ui::{
     self as settings_ui, SECTION_GAP, Seg, SidesScrub, grid_columns, kbd_line, section, sidebar,
     small_button,
@@ -74,6 +76,54 @@ pub fn bindings() -> Vec<KeyBinding> {
 struct OpenPanelSettings(HashMap<EntityId, WindowHandle<Root>>);
 
 impl Global for OpenPanelSettings {}
+
+/// Per rebuilt panel, by its id: what it replaced, so its settings window
+/// offers one step back, and the preset that built it, so the picker can
+/// name it while the panel still matches. Undo takes the step; no redo.
+#[derive(Default)]
+struct PresetMarks {
+    undo: HashMap<EntityId, PanelPreset>,
+    applied: HashMap<EntityId, PanelPreset>,
+}
+
+impl Global for PresetMarks {}
+
+impl PresetMarks {
+    fn note(&mut self, id: EntityId, previous: Option<PanelPreset>, applied: Option<PanelPreset>) {
+        match previous {
+            Some(previous) => self.undo.insert(id, previous),
+            None => self.undo.remove(&id),
+        };
+        match applied {
+            Some(applied) => self.applied.insert(id, applied),
+            None => self.applied.remove(&id),
+        };
+    }
+
+    fn take_undo(&mut self, id: EntityId) -> Option<PanelPreset> {
+        self.undo.remove(&id)
+    }
+
+    fn has_undo(&self, id: EntityId) -> bool {
+        self.undo.contains_key(&id)
+    }
+
+    fn applied(&self, id: EntityId) -> Option<&PanelPreset> {
+        self.applied.get(&id)
+    }
+}
+
+/// Record a rebuild: what `rebuilt` replaced, for Undo Preset, and the preset
+/// it was built from, for the picker's label. None clears either.
+pub fn note_preset_apply(
+    rebuilt: EntityId,
+    previous: Option<PanelPreset>,
+    applied: Option<PanelPreset>,
+    cx: &mut App,
+) {
+    cx.default_global::<PresetMarks>()
+        .note(rebuilt, previous, applied);
+}
 
 /// The Panel Settings menu entry. A panel hosted in a composite gets its
 /// host's settings row right after, so the container is reachable.
@@ -851,7 +901,7 @@ fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         "rox - save {} as preset",
         panel::display_name(panel.read(cx).panel_name())
     ));
-    let bounds = Bounds::centered(None, size(px(420.), px(230.)), cx);
+    let bounds = Bounds::centered(None, size(px(420.), px(300.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| SavePresetWindow::new(panel, state, window, cx))
@@ -867,9 +917,11 @@ struct SavePresetWindow<P: PanelSettings> {
     input: Entity<InputState>,
     /// What an empty field saves under.
     fallback: SharedString,
-    /// Read once at open, so the replaces note is a lookup rather than a file
-    /// read per paint.
-    taken: Vec<String>,
+    scope: SaveScope,
+    /// Both tiers' names, read once at open, so the replaces note is a lookup
+    /// rather than a file read per paint.
+    taken_workspace: Vec<String>,
+    taken_global: Vec<String>,
     state: AppState,
     backdrop: WindowBackdrop,
     _input_events: Subscription,
@@ -904,19 +956,26 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         window.focus(&input.read(cx).focus_handle(cx));
-        let taken = settings::panel_presets::all(&settings::Settings::load())
-            .into_iter()
-            .map(|preset| preset.name)
-            .collect();
+        let saved = settings::Settings::load();
+        let names = |presets: Vec<PanelPreset>| presets.into_iter().map(|p| p.name).collect();
         SavePresetWindow {
             panel: panel.downgrade(),
             input,
             fallback: fallback.into(),
-            taken,
+            scope: SaveScope::Workspace,
+            taken_workspace: names(settings::panel_presets::all(&saved)),
+            taken_global: names(settings::panel_presets::global(&saved)),
             state,
             backdrop: WindowBackdrop::default(),
             _input_events,
             _backdrop_changed,
+        }
+    }
+
+    fn taken(&self) -> &[String] {
+        match self.scope {
+            SaveScope::Workspace => &self.taken_workspace,
+            SaveScope::Global => &self.taken_global,
         }
     }
 
@@ -935,7 +994,7 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         if let Some(panel) = self.panel.upgrade() {
             let dump = panel.read(cx).dump(cx);
             match serde_json::to_value(&dump) {
-                Ok(value) => settings::panel_presets::save(name, value),
+                Ok(value) => settings::panel_presets::save_to(self.scope, name, value),
                 Err(e) => log::warn!("panel presets: {name} would not serialize: {e}"),
             }
         }
@@ -944,10 +1003,14 @@ impl<P: PanelSettings> SavePresetWindow<P> {
 
     fn footer(&self, replaces: bool, name: &str, cx: &mut Context<Self>) -> Div {
         let hint = if replaces {
+            let note = match self.scope {
+                SaveScope::Workspace => "preset-save-replaces",
+                SaveScope::Global => "preset-save-replaces-global",
+            };
             div()
                 .text_xs()
                 .text_color(palette::tone_warn())
-                .child(rox_i18n::t!("preset-save-replaces", name = name))
+                .child(rox_i18n::t!(note, name = name))
                 .into_any_element()
         } else {
             kbd_line([
@@ -999,7 +1062,27 @@ impl<P: PanelSettings> SavePresetWindow<P> {
 impl<P: PanelSettings> Render for SavePresetWindow<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.name(cx);
-        let replaces = self.taken.iter().any(|taken| taken == &name);
+        let replaces = self.taken().iter().any(|taken| taken == &name);
+        let tail = match self.scope {
+            SaveScope::Workspace => "preset-back-tail",
+            SaveScope::Global => "preset-back-tail-global",
+        };
+        let scope = panel::setting_row(
+            rox_i18n::t!("preset-save-scope"),
+            Some(rox_i18n::t!("preset-save-scope.description")),
+            panel::choices_shared(
+                &[
+                    (rox_i18n::t!("preset-scope-workspace"), SaveScope::Workspace),
+                    (rox_i18n::t!("preset-scope-global"), SaveScope::Global),
+                ],
+                self.scope,
+                |this: &mut Self, scope, cx| {
+                    this.scope = scope;
+                    cx.notify();
+                },
+                cx,
+            ),
+        );
         div()
             .size_full()
             .flex()
@@ -1018,6 +1101,9 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
                     // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
                     .child(section(
                         rox_i18n::t!("preset-save-name"),
                         None,
@@ -1036,10 +1122,11 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
                                         Seg::Key(rox_i18n::t!("preset-back-add-panel")),
                                         Seg::Text(rox_i18n::t!("preset-back-then")),
                                         Seg::Key(rox_i18n::t!("preset-back-presets")),
-                                        Seg::Text(rox_i18n::t!("preset-back-tail")),
+                                        Seg::Text(rox_i18n::t!(tail)),
                                     ])),
                             ),
-                    )),
+                    ))
+                    .child(scope),
             )
             .child(self.footer(replaces, &name, cx))
     }
@@ -2706,6 +2793,283 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     }
 }
 
+/// Whether any of these tab groups holds the panel. A popped-out panel or a
+/// composite's slot has no tab slot for a preset to rebuild into.
+fn hosted_in(groups: &[Vec<EntityId>], id: EntityId) -> bool {
+    groups.iter().any(|group| group.contains(&id))
+}
+
+/// The picker's runs for one panel kind: built-in, global and this workspace
+/// first, then one per other workspace in the order the sources name them.
+/// Another kind's entries drop out, and so do empty runs.
+fn preset_groups(entries: Vec<PresetEntry>, kind: &str) -> Vec<(PresetScope, Vec<PanelPreset>)> {
+    let mut groups: Vec<(PresetScope, Vec<PanelPreset>)> = [
+        PresetScope::Builtin,
+        PresetScope::Global,
+        PresetScope::Workspace,
+    ]
+    .into_iter()
+    .map(|scope| (scope, Vec::new()))
+    .collect();
+
+    for entry in entries {
+        if entry.preset.panel_name() != Some(kind) {
+            continue;
+        }
+        match groups.iter_mut().find(|(scope, _)| *scope == entry.scope) {
+            Some((_, presets)) => presets.push(entry.preset),
+            None => groups.push((entry.scope, vec![entry.preset])),
+        }
+    }
+
+    groups.retain(|(_, presets)| !presets.is_empty());
+    groups
+}
+
+/// Built-in names are i18n keys; every other tier's name is the user's own
+/// text. The name is resolved here, so the applied mark reads as a label.
+fn preset_item<P: PanelSettings>(
+    mut preset: PanelPreset,
+    scope: &PresetScope,
+    panel: WeakEntity<P>,
+    state: AppState,
+    me: WeakEntity<PanelSettingsWindow<P>>,
+) -> PopupMenuItem {
+    if *scope == PresetScope::Builtin {
+        preset.name = rox_i18n::t!(&preset.name).to_string();
+    }
+    let label: SharedString = preset.name.clone().into();
+    PopupMenuItem::new(label).on_click(move |_, window, cx| {
+        let Some(panel) = panel.upgrade() else {
+            return;
+        };
+        crate::openers::apply_panel_preset(
+            Arc::new(panel),
+            preset.clone(),
+            PresetApply::Pick,
+            state.clone(),
+            follow_rebuild(me.clone(), window),
+            cx,
+        );
+    })
+}
+
+/// The apply's callback: point this settings window at the rebuilt panel
+/// instead of closing and reopening it, which flashed.
+fn follow_rebuild<P: PanelSettings>(
+    me: WeakEntity<PanelSettingsWindow<P>>,
+    window: &Window,
+) -> Rebuilt {
+    let handle = window.window_handle();
+    Box::new(move |rebuilt, cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let _ = me.update(cx, |this, cx| this.retarget(rebuilt, window, cx));
+        });
+    })
+}
+
+impl<P: PanelSettings> PanelSettingsWindow<P> {
+    /// The head of the nav: the preset picker, Save As Preset, and Undo
+    /// Preset. None when the panel has no tab group.
+    fn presets_head(&self, panel: &Entity<P>, me: WeakEntity<Self>, cx: &App) -> Option<Div> {
+        let groups: Vec<Vec<EntityId>> = self
+            .state
+            .tab_hosts
+            .read(cx)
+            .groups()
+            .iter()
+            .map(|tabs| {
+                tabs.read(cx)
+                    .panels()
+                    .iter()
+                    .map(|hosted| hosted.view().entity_id())
+                    .collect()
+            })
+            .collect();
+        if !hosted_in(&groups, panel.entity_id()) {
+            return None;
+        }
+
+        let id = panel.entity_id();
+        let marks = cx.try_global::<PresetMarks>();
+        // Named only while the panel still is that preset: an edit since drops
+        // the label back to the plain word.
+        let applied = marks
+            .and_then(|marks| marks.applied(id))
+            .filter(|applied| {
+                serde_json::to_value(panel.read(cx).dump(cx)).ok().as_ref() == Some(&applied.panel)
+            })
+            .map(|applied| SharedString::from(applied.name.clone()));
+        let can_undo = marks.is_some_and(|marks| marks.has_undo(id));
+
+        // Sources are read when the menu opens, so a preset saved from another
+        // window shows up without this one repainting.
+        let (picking, state, me_pick) = (self.panel.clone(), self.state.clone(), me.clone());
+        let picker = settings_ui::menu_button(
+            "panel-presets",
+            applied.unwrap_or_else(|| rox_i18n::t!("menu-panels-presets")),
+            icons::COPY,
+        )
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .dropdown_menu(move |mut menu, window, cx| {
+            let Some(panel) = picking.upgrade() else {
+                return menu;
+            };
+            let kind = panel.read(cx).panel_name();
+            let groups = preset_groups(crate::openers::preset_sources(kind), kind);
+            if groups.is_empty() {
+                return menu
+                    .item(PopupMenuItem::new(rox_i18n::t!("preset-none-for-kind")).disabled(true));
+            }
+
+            for (scope, presets) in groups {
+                let heading = match &scope {
+                    PresetScope::Builtin => rox_i18n::t!("preset-group-builtin"),
+                    PresetScope::Global => rox_i18n::t!("preset-group-global"),
+                    PresetScope::Workspace => rox_i18n::t!("preset-group-workspace"),
+                    PresetScope::Other(workspace) => {
+                        let (picking, state, me) =
+                            (picking.clone(), state.clone(), me_pick.clone());
+                        menu = menu.submenu_with_icon(
+                            Some(Icon::default().path(icons::LAYERS)),
+                            rox_i18n::t!("preset-group-other", workspace = workspace.clone()),
+                            window,
+                            cx,
+                            move |mut sub, _, _| {
+                                for preset in &presets {
+                                    sub = sub.item(preset_item(
+                                        preset.clone(),
+                                        &scope,
+                                        picking.clone(),
+                                        state.clone(),
+                                        me.clone(),
+                                    ));
+                                }
+                                sub
+                            },
+                        );
+                        continue;
+                    }
+                };
+                menu = menu.item(PopupMenuItem::label(heading));
+                for preset in presets {
+                    menu = menu.item(preset_item(
+                        preset,
+                        &scope,
+                        picking.clone(),
+                        state.clone(),
+                        me_pick.clone(),
+                    ));
+                }
+            }
+            menu
+        });
+
+        let saving = self.panel.clone();
+        let save = settings_ui::icon_button(icons::DOWNLOAD, false, move |_, _, cx| {
+            if let Some(panel) = saving.upgrade() {
+                open_save_preset(panel, cx);
+            }
+        })
+        .keyed("preset-save");
+
+        // Always drawn, so the row never shifts; inert until there's a step back.
+        let (undoing, state, me_undo) = (self.panel.clone(), self.state.clone(), me);
+        let undo = settings_ui::icon_button(icons::SEEK_BACK, !can_undo, move |_, window, cx| {
+            let Some(panel) = undoing.upgrade() else {
+                return;
+            };
+            let Some(previous) = cx
+                .default_global::<PresetMarks>()
+                .take_undo(panel.entity_id())
+            else {
+                return;
+            };
+            crate::openers::apply_panel_preset(
+                Arc::new(panel),
+                previous,
+                PresetApply::Undo,
+                state.clone(),
+                follow_rebuild(me_undo.clone(), window),
+                cx,
+            );
+        })
+        .keyed("preset-undo");
+
+        // Held to the sidebar's width, so a long preset name clips in the
+        // picker instead of pushing the icons out past the edge.
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .pb(tokens::SPACE_SM)
+                .border_b_1()
+                .border_color(palette::border())
+                .child(picker)
+                .child(save)
+                .child(undo),
+        )
+    }
+
+    /// Follow a preset rebuild: the old entity is gone, so every handle and
+    /// seeded control moves to the new one, and the open-windows table keeps
+    /// finding this window under the new id.
+    fn retarget(
+        &mut self,
+        rebuilt: Arc<dyn PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(panel) = rebuilt.view().downcast::<P>() else {
+            return;
+        };
+
+        let was = self.panel.entity_id();
+        let open = cx.default_global::<OpenPanelSettings>();
+        if let Some(handle) = open.0.remove(&was) {
+            open.0.insert(panel.entity_id(), handle);
+        }
+
+        self._panel_changed = Some(cx.observe(&panel, |_, _, cx| cx.notify()));
+        self.panel = panel.downgrade();
+
+        // Re-seed what the constructor seeds, off the rebuilt panel's chrome.
+        let chrome = panel.read(cx).chrome().clone();
+        let seed = |value: Option<f32>| value.map(|n| format!("{n:.0}")).unwrap_or_default();
+        for (input, value) in [
+            (&self.min_width_input, chrome.min_width),
+            (&self.min_height_input, chrome.min_height),
+            (&self.max_width_input, chrome.max_width),
+            (&self.max_height_input, chrome.max_height),
+        ] {
+            input.update(cx, |state, cx| state.set_value(seed(value), window, cx));
+        }
+        let app_frame = settings::app_frame();
+        self.margin_split = split_knob(chrome.theme.margin.unwrap_or(app_frame.margin));
+        self.padding_split = split_knob(chrome.theme.padding.unwrap_or(app_frame.padding));
+        self.border_split = split_knob(chrome.theme.border_sides(app_frame.border));
+
+        let theme = panel.read(cx).theme();
+        let resolve = palette::resolved();
+        for (role, picker) in ROLES.iter().zip(&self.pickers) {
+            let color = theme
+                .color(role.name)
+                .unwrap_or_else(|| (role.get)(&resolve));
+            picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
+        self.swatch_resolve = Some(resolve);
+
+        cx.notify();
+    }
+}
+
 impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
@@ -2725,6 +3089,11 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {
+            let me = cx.entity().downgrade();
+            let presets = self
+                .panel
+                .upgrade()
+                .and_then(|panel| self.presets_head(&panel, me, cx));
             let (nav, body): (Div, AnyElement) = match self.panel.upgrade() {
                 None => (
                     sidebar(),
@@ -2800,7 +3169,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                         );
                     }
                     // The nav scrolls, so a long page list doesn't hide its tail in a short window.
-                    let nav = sidebar().child(settings_ui::nav_scroll(
+                    let nav = sidebar().children(presets).child(settings_ui::nav_scroll(
                         "panel-settings-nav",
                         &self.nav_scroll,
                         move |col| col.children(rows),
@@ -2946,5 +3315,79 @@ mod tests {
             rox_i18n::t!("shader-group-examples")
         );
         assert_eq!(shader_groups(false).len(), 2);
+    }
+
+    #[test]
+    fn preset_marks_undo_once_and_name_until_cleared() {
+        let mut marks = PresetMarks::default();
+        let id = EntityId::from(7u64);
+        let preset = |name: &str| PanelPreset {
+            name: name.into(),
+            panel: serde_json::json!({ "panel_name": "lyrics" }),
+        };
+        assert!(!marks.has_undo(id));
+
+        marks.note(id, Some(preset("before")), Some(preset("Karaoke")));
+        assert!(marks.has_undo(id));
+        assert_eq!(marks.applied(id).map(|p| p.name.as_str()), Some("Karaoke"));
+        assert_eq!(
+            marks.take_undo(id).map(|p| p.name),
+            Some("before".to_string())
+        );
+
+        assert!(!marks.has_undo(id), "taking the step clears it");
+        assert!(marks.take_undo(id).is_none());
+
+        // An undo rebuild notes nothing, which also clears the name.
+        marks.note(id, None, None);
+        assert!(marks.applied(id).is_none());
+    }
+
+    #[test]
+    fn presets_row_hides_without_a_tab_group() {
+        let (ours, other) = (EntityId::from(7), EntityId::from(9));
+        assert!(hosted_in(&[vec![other], vec![other, ours]], ours));
+        assert!(!hosted_in(&[vec![other]], ours), "popped out or in a slot");
+        assert!(!hosted_in(&[], ours));
+    }
+
+    #[test]
+    fn preset_groups_run_in_picker_order_for_one_kind() {
+        let entry = |scope: PresetScope, name: &str, kind: &str| PresetEntry {
+            scope,
+            preset: PanelPreset {
+                name: name.into(),
+                panel: serde_json::json!({ "panel_name": kind }),
+            },
+        };
+        let groups = preset_groups(
+            vec![
+                entry(PresetScope::Other("Night".into()), "Dim", "lyrics"),
+                entry(PresetScope::Workspace, "Mine", "lyrics"),
+                entry(PresetScope::Global, "Scope", "spectrum"),
+                entry(PresetScope::Builtin, "lyrics-preset-quiet", "lyrics"),
+                entry(PresetScope::Other("Day".into()), "Bright", "lyrics"),
+                entry(PresetScope::Other("Night".into()), "Dimmer", "lyrics"),
+            ],
+            "lyrics",
+        );
+        let order: Vec<_> = groups
+            .iter()
+            .map(|(scope, presets)| {
+                let names: Vec<_> = presets.iter().map(|p| p.name.as_str()).collect();
+                (scope.clone(), names)
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (PresetScope::Builtin, vec!["lyrics-preset-quiet"]),
+                (PresetScope::Workspace, vec!["Mine"]),
+                (PresetScope::Other("Night".into()), vec!["Dim", "Dimmer"]),
+                (PresetScope::Other("Day".into()), vec!["Bright"]),
+            ],
+            "the global run held only another kind, so it drops out"
+        );
+        assert!(preset_groups(Vec::new(), "lyrics").is_empty());
     }
 }

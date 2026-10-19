@@ -222,6 +222,50 @@ impl Default for LyricsConfig {
     }
 }
 
+/// The presets every Lyrics panel can take, keyed by their i18n name. Chrome
+/// stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, LyricsConfig)> {
+    vec![
+        (
+            "lyrics-preset-karaoke",
+            LyricsConfig {
+                word_by_word: true,
+                word_style: WordStyle::Build,
+                hide_upcoming: true,
+                fade_lines: true,
+                bold: true,
+                font_size: 24.0,
+                dim: 0.35,
+                dim_edge: DimEdge::Both,
+                ..LyricsConfig::default()
+            },
+        ),
+        (
+            "lyrics-preset-teleprompter",
+            LyricsConfig {
+                word_by_word: true,
+                word_style: WordStyle::Fill,
+                dim: 0.5,
+                dim_edge: DimEdge::Top,
+                line_spacing: 2.4,
+                ..LyricsConfig::default()
+            },
+        ),
+        (
+            "lyrics-preset-quiet",
+            LyricsConfig {
+                word_by_word: false,
+                dim: 0.0,
+                rest_mark: RestMark::None,
+                search_button: false,
+                font_size: 15.0,
+                line_spacing: 1.5,
+                ..LyricsConfig::default()
+            },
+        ),
+    ]
+}
+
 /// The lyrics target and what it was built from. Building one resolves the
 /// catalog, so it's held until the track or the announced song moves.
 struct TargetCache {
@@ -2063,4 +2107,30 @@ fn loading() -> Div {
         .p(tokens::SPACE_MD)
         .text_color(palette::text_faint())
         .child(Spinner::new().with_size(gpui_component::Size::Small))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        for (key, config) in builtin_presets() {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: LyricsConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.word_by_word, config.word_by_word, "{key}");
+            assert!(back.word_style == config.word_style, "{key}");
+            assert_eq!(back.hide_upcoming, config.hide_upcoming, "{key}");
+            assert_eq!(back.fade_lines, config.fade_lines, "{key}");
+            assert_eq!(back.bold, config.bold, "{key}");
+            assert_eq!(back.font_size, config.font_size, "{key}");
+            assert_eq!(back.line_spacing, config.line_spacing, "{key}");
+            assert_eq!(back.dim, config.dim, "{key}");
+            assert!(back.dim_edge == config.dim_edge, "{key}");
+            assert!(back.rest_mark == config.rest_mark, "{key}");
+            assert_eq!(back.search_button, config.search_button, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
+    }
 }

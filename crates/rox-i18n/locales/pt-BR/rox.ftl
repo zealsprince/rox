@@ -188,6 +188,18 @@ preset-back-add-panel = Adicionar painel
 preset-back-then = depois
 preset-back-presets = Predefinições
 preset-back-tail = em qualquer menu de painel. As predefinições pertencem só a este espaço de trabalho; outro não vai tê-las.
+preset-back-tail-global = em qualquer menu de painel. Predefinições globais aparecem em todos os espaços de trabalho.
+preset-group-builtin = Incluídas
+preset-group-global = Globais
+preset-group-workspace = Este espaço de trabalho
+preset-group-other = De { $workspace }
+preset-none-for-kind = Nenhuma predefinição para este painel ainda
+preset-undo = Desfazer a predefinição
+preset-save-scope = Salvar em
+    .description = Predefinições globais aparecem em todos os espaços de trabalho e levam seus shaders junto
+preset-scope-workspace = Este espaço de trabalho
+preset-scope-global = Global
+preset-save-replaces-global = Substitui a predefinição global que já se chama { $name }
 
 ## Keyboard hints
 hint-press = Pressione
@@ -1449,6 +1461,8 @@ settings-workspace-card-website-placeholder = Onde ele fica
 settings-workspace-composition-closed = A janela do espaço de trabalho está fechada
 settings-workspace-composition-hint = Os painéis da janela como estão nas divisões e nos grupos de abas; as setas reordenam uma linha entre as irmãs, o cadeado fixa um painel no lugar, e a engrenagem abre as configurações dele
 settings-workspace-empty = Nenhum espaço de trabalho ainda
+settings-workspace-global-presets-empty = Nenhuma predefinição global ainda
+settings-workspace-global-presets-hint = Predefinições de painel salvas como globais. Todos os espaços de trabalho as listam, e os shaders vão dentro delas
 settings-workspace-hint = Um espaço de trabalho é um visual inteiro: layouts, paleta, aparência. Aplicar um substitui os três
 settings-workspace-layout-name-placeholder = Nome do layout
 settings-workspace-layouts-empty = Nenhum layout ainda
@@ -1461,6 +1475,7 @@ settings-workspace-panel-presets-hint-before = Um painel configurado em cada uma
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Principal
 settings-workspace-section-composition = Composição
+settings-workspace-section-global-presets = Predefinições globais
 settings-workspace-section-layouts = Layouts
 settings-workspace-section-panel-presets = Predefinições de painel
 settings-workspace-section-workspaces = Espaços de trabalho
@@ -2843,6 +2858,9 @@ lyrics-unsung-dim = Escurecer o não cantado
 lyrics-wipe-lyrics = Apagar a letra
 lyrics-wrap-lines = Quebrar linhas longas
     .description = Deixar uma linha larga demais para o painel seguir em outra fila em vez de ser cortada
+lyrics-preset-karaoke = Karaokê
+lyrics-preset-teleprompter = Teleprompter
+lyrics-preset-quiet = Discreta
 
 ## Analysis passes
 pass-acoustic-body = { $model } descobre como cada uma soa, para que a biblioteca consiga achar música parecida com o que está tocando. Tudo roda nesta máquina, e o que já foi descrito é pulado. { $lands }

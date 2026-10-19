@@ -4,6 +4,8 @@
 
 use super::*;
 
+use rox_core::settings::panel_presets::SaveScope;
+
 /// Built when a row's details open and dropped when they close.
 pub(crate) struct CardEditor {
     name: String,
@@ -98,6 +100,7 @@ impl SettingsWindow {
             .section(self.workspaces_section(q, live, cx))
             .section(self.presets_section(q, live, cx))
             .section(self.panel_presets_section(q, cx))
+            .section(self.global_presets_section(q, cx))
             // Built only once the query keeps it, since it walks the live dock.
             .section(Section::new(
                 q,
@@ -515,7 +518,7 @@ impl SettingsWindow {
     }
 
     fn panel_presets_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
-        let presets = crate::panel_presets::saved();
+        let presets = rox_core::settings::panel_presets::all(&Settings::load());
 
         Section::new(
             q,
@@ -548,13 +551,49 @@ impl SettingsWindow {
                                     .child(rox_i18n::t!("settings-workspace-panel-presets-empty")),
                             );
                         } else {
-                            list = list.child(
-                                div().flex().flex_col().children(
-                                    presets
-                                        .into_iter()
-                                        .map(|preset| self.panel_preset_row(preset, cx)),
-                                ),
-                            );
+                            list = list.child(div().flex().flex_col().children(
+                                presets.into_iter().map(|preset| {
+                                    self.panel_preset_row(preset, SaveScope::Workspace, cx)
+                                }),
+                            ));
+                        }
+                        list.into_any_element()
+                    },
+                )
+            },
+        )
+    }
+
+    /// The presets every workspace lists, kept in `presets.json`.
+    fn global_presets_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let presets = rox_core::settings::panel_presets::global(&Settings::load());
+
+        Section::new(
+            q,
+            icons::GLOBE,
+            rox_i18n::t!("settings-workspace-section-global-presets"),
+            None,
+            |rows| {
+                rows.custom(
+                    &["panel", "preset", "global", "shared", "everywhere"],
+                    || {
+                        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(rox_i18n::t!("settings-workspace-global-presets-hint")),
+                        );
+                        if presets.is_empty() {
+                            list =
+                                list.child(div().text_color(palette::text_muted()).child(
+                                    rox_i18n::t!("settings-workspace-global-presets-empty"),
+                                ));
+                        } else {
+                            list = list.child(div().flex().flex_col().children(
+                                presets.into_iter().map(|preset| {
+                                    self.panel_preset_row(preset, SaveScope::Global, cx)
+                                }),
+                            ));
                         }
                         list.into_any_element()
                     },
@@ -566,6 +605,7 @@ impl SettingsWindow {
     fn panel_preset_row(
         &self,
         preset: rox_core::settings::PanelPreset,
+        scope: SaveScope,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let kind = preset
@@ -576,8 +616,12 @@ impl SettingsWindow {
             });
         let icon = crate::panel_presets::icon_for(&preset);
         let name = preset.name;
+        let id_prefix = match scope {
+            SaveScope::Workspace => "panel-preset-row",
+            SaveScope::Global => "global-preset-row",
+        };
         div()
-            .id(ElementId::Name(format!("panel-preset-row:{name}").into()))
+            .id(ElementId::Name(format!("{id_prefix}:{name}").into()))
             .flex()
             .flex_row()
             .items_center()
@@ -604,7 +648,7 @@ impl SettingsWindow {
             )
             .child(icon_button(icons::TRASH, false, {
                 cx.listener(move |_, _, _, cx| {
-                    rox_core::settings::panel_presets::remove(&name);
+                    rox_core::settings::panel_presets::remove_from(scope, &name);
                     cx.notify();
                 })
             }))

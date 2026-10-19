@@ -189,6 +189,18 @@ preset-back-add-panel = Додати панель
 preset-back-then = потім
 preset-back-presets = Пресети
 preset-back-tail = у меню будь-якої панелі. Пресети належать лише цьому робочому простору; в іншому їх не буде.
+preset-back-tail-global = у меню будь-якої панелі. Глобальні пресети видно в усіх робочих просторах.
+preset-group-builtin = Вбудовані
+preset-group-global = Глобальні
+preset-group-workspace = Цей робочий простір
+preset-group-other = З { $workspace }
+preset-none-for-kind = Для цієї панелі ще немає пресетів
+preset-undo = Скасувати пресет
+preset-save-scope = Зберегти в
+    .description = Глобальні пресети видно в усіх робочих просторах, і вони несуть свої шейдери з собою
+preset-scope-workspace = Цей робочий простір
+preset-scope-global = Глобально
+preset-save-replaces-global = Замінює глобальний пресет, який уже зветься { $name }
 
 ## Keyboard hints
 hint-press = Натисніть
@@ -1458,6 +1470,8 @@ settings-workspace-card-website-placeholder = Де це живе
 settings-workspace-composition-closed = Вікно робочого простору закрито
 settings-workspace-composition-hint = Панелі вікна так, як вони розставлені в поділах і групах вкладок; стрілки міняють порядок рядка серед сусідів, замок фіксує панель на місці, а шестірня відкриває її налаштування
 settings-workspace-empty = Ще немає робочих просторів
+settings-workspace-global-presets-empty = Ще немає глобальних пресетів
+settings-workspace-global-presets-hint = Пресети панелей, збережені як глобальні. Їх бачить кожен робочий простір, а шейдери зберігаються всередині них
 settings-workspace-hint = Робочий простір - це цілий вигляд: розкладки, палітра, оформлення. Застосування замінює всі три
 settings-workspace-layout-name-placeholder = Назва розкладки
 settings-workspace-layouts-empty = Ще немає розкладок
@@ -1470,6 +1484,7 @@ settings-workspace-panel-presets-hint-before = По одній налаштов�
 settings-workspace-role-mini = Міні
 settings-workspace-role-primary = Основна
 settings-workspace-section-composition = Композиція
+settings-workspace-section-global-presets = Глобальні пресети
 settings-workspace-section-layouts = Розкладки
 settings-workspace-section-panel-presets = Пресети панелей
 settings-workspace-section-workspaces = Робочі простори
@@ -2842,6 +2857,9 @@ lyrics-unsung-dim = Затемнення неспіваного
 lyrics-wipe-lyrics = Стерти текст
 lyrics-wrap-lines = Переносити довгі рядки
     .description = Хай заширокий для панелі рядок переходить на наступний, а не обрізається
+lyrics-preset-karaoke = Караоке
+lyrics-preset-teleprompter = Телесуфлер
+lyrics-preset-quiet = Тихий
 
 ## Analysis passes
 pass-acoustic-body = { $model } з'ясовує, як звучить кожен із них, щоб медіатека могла знаходити музику, схожу на ту, що грає. Усе працює на цій машині, а вже описане пропускається. { $lands }

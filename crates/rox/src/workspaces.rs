@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, SharedString};
 
+use rox_core::settings::panel_presets::{self, PresetEntry, PresetScope};
 use rox_core::settings::{self, NamedShader, Settings, WORKSPACE_VERSION, WorkspaceBundle};
 use rox_design::assets;
 use rox_design::palette::{self, Palette};
@@ -183,6 +184,33 @@ fn saved_authors_in(dir: &Path) -> BTreeMap<String, String> {
             let bundle = read_file(entry.path.as_ref()?)?;
             let author = bundle.meta.author.trim();
             (!author.is_empty()).then(|| (entry.name, author.to_string()))
+        })
+        .collect()
+}
+
+/// The `kind` presets saved in every other workspace, read-only and detached
+/// from their own bundle's pool so they run in this one. One parse per saved
+/// file, at menu open.
+pub fn presets_elsewhere(kind: &str) -> Vec<PresetEntry> {
+    let live = Settings::load().look.bundle.name;
+    presets_elsewhere_in(&settings::workspaces_dir(), &live, kind)
+}
+
+fn presets_elsewhere_in(dir: &Path, live: &str, kind: &str) -> Vec<PresetEntry> {
+    saved_in(dir)
+        .into_iter()
+        .filter(|entry| entry.name != live)
+        .filter_map(|entry| Some((read_file(entry.path.as_ref()?)?, entry.name)))
+        .flat_map(|(bundle, name)| {
+            bundle
+                .panel_presets
+                .iter()
+                .filter(|preset| preset.panel_name() == Some(kind))
+                .map(|preset| PresetEntry {
+                    scope: PresetScope::Other(name.clone()),
+                    preset: panel_presets::detach(preset, &bundle.shaders),
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -1360,6 +1388,51 @@ mod tests {
         let authors = saved_authors_in(&dir);
         assert_eq!(authors.get("Nightfall").map(String::as_str), Some("Nova"));
         assert!(!authors.contains_key("Plain"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn presets_elsewhere_skips_the_live_workspace_and_inlines_pool_names() {
+        let dir = scratch("elsewhere");
+        let lyrics = |name: &str, shader: serde_json::Value| settings::PanelPreset {
+            name: name.into(),
+            panel: serde_json::json!({
+                "panel_name": "lyrics",
+                "children": [],
+                "info": { "panel": { "shader": shader } },
+            }),
+        };
+
+        let mut live = named_bundle("Daylight");
+        live.panel_presets
+            .push(lyrics("Mine", serde_json::json!({ "enabled": true })));
+        store_in(&dir, &live);
+
+        let mut other = named_bundle("Nightfall");
+        other.shaders.push(NamedShader {
+            name: "Grain".into(),
+            source: "grain text".into(),
+            ..Default::default()
+        });
+        other.panel_presets.push(lyrics(
+            "Glow",
+            serde_json::json!({ "enabled": true, "name": "Grain" }),
+        ));
+        other.panel_presets.push(settings::PanelPreset {
+            name: "Scope".into(),
+            panel: serde_json::json!({ "panel_name": "spectrum" }),
+        });
+        store_in(&dir, &other);
+
+        let entries = presets_elsewhere_in(&dir, "Daylight", "lyrics");
+        assert_eq!(entries.len(), 1, "the live bundle and other kinds stay out");
+        assert_eq!(entries[0].scope, PresetScope::Other("Nightfall".into()));
+        assert_eq!(entries[0].preset.name, "Glow");
+
+        let shader = &entries[0].preset.panel["info"]["panel"]["shader"];
+        assert_eq!(shader["source"], "grain text");
+        assert!(shader.get("name").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

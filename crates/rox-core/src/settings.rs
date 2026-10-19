@@ -1,9 +1,9 @@
 //! Persisted app settings in the data directory. `settings.json` holds the
 //! preferences and library setup, small enough to hand-edit. `workspace.json`
-//! holds the live look, `windows.json`, `session.json`, and `accounts.json` a
-//! shard each, and `workspaces/` the saved workspaces, one exported bundle per
-//! file. Writers go through [`Settings::update`], which reloads first so one
-//! writer's save never reverts another's fields.
+//! holds the live look, `windows.json`, `session.json`, `accounts.json`, and
+//! `presets.json` a shard each, and `workspaces/` the saved workspaces, one
+//! exported bundle per file. Writers go through [`Settings::update`], which
+//! reloads first so one writer's save never reverts another's fields.
 //!
 //! `layouts` holds the named dock presets, `panel_presets` the named single
 //! panels. The settings window lives up in rox, with the widgets.
@@ -171,6 +171,10 @@ pub fn accounts_path() -> PathBuf {
     data_dir().join("accounts.json")
 }
 
+pub fn presets_path() -> PathBuf {
+    data_dir().join("presets.json")
+}
+
 pub fn workspaces_dir() -> PathBuf {
     data_dir().join("workspaces")
 }
@@ -327,6 +331,7 @@ struct Shards {
     windows: Option<String>,
     session: Option<String>,
     accounts: Option<String>,
+    presets: Option<String>,
 }
 
 /// Read one shard file, or its fields out of a pre-split `settings.json`. A
@@ -390,6 +395,9 @@ pub struct Settings {
     /// Persisted to [`accounts_path`].
     #[serde(skip)]
     pub accounts: AccountsState,
+    /// Persisted to [`presets_path`].
+    #[serde(skip)]
+    pub presets: PresetsState,
     /// Read out of a pre-split file, so force a rewrite. A no-op edit would
     /// serialize to the same bytes and leave the stale keys, credentials
     /// included, on disk forever.
@@ -2552,7 +2560,7 @@ pub struct NamedLayout {
 
 /// A single configured panel saved under a name. Raw JSON keeps rox-core off
 /// the dock crate.
-#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PanelPreset {
     pub name: String,
     /// The dock's `PanelState` as JSON.
@@ -2940,9 +2948,23 @@ impl LookState {
     }
 }
 
+/// `presets.json`: panel presets that follow the user across workspaces.
+/// Shaders are inlined at save, so nothing in here names a pool: the pool is
+/// per workspace, and a name would resolve to nothing, or to another shader,
+/// after a switch.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PresetsState {
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
+    pub panel_presets: Vec<PanelPreset>,
+}
+
 /// The Shader panel's dock name, spelled here because the dump walks work on
 /// raw JSON below the crate that defines it.
-const SHADER_PANEL: &str = "shader";
+pub(crate) const SHADER_PANEL: &str = "shader";
 
 /// Take the shader file bookmarks out of a dock dump.
 fn scrub_dump_paths(value: &mut serde_json::Value) {
@@ -3442,6 +3464,7 @@ impl Default for Settings {
             windows: WindowsState::default(),
             session: SessionState::default(),
             accounts: AccountsState::default(),
+            presets: PresetsState::default(),
             library_roots: Vec::new(),
             library_root: None,
             library_exclude: Vec::new(),
@@ -3534,6 +3557,11 @@ impl Settings {
         settings.windows = load_shard(&windows_path(), "windows", &value, from_legacy);
         settings.session = load_shard(&session_path(), "session", &value, from_legacy);
         settings.accounts = load_shard(&accounts_path(), "accounts", &value, from_legacy);
+        // Never from the legacy map: its `panel_presets` are the workspace's,
+        // and reading them here would copy them into the global tier.
+        settings.presets = load_shard(&presets_path(), "presets", &value, |_| {
+            PresetsState::default()
+        });
         // Hand-edited values feed the engine, render math, and window bounds
         // directly, so everything below gets clamped.
         settings.session.volume = if settings.session.volume.is_finite() {
@@ -3587,9 +3615,21 @@ impl Settings {
     /// A missing shard means the settings file still holds the pre-split
     /// shape.
     fn shard_missing() -> bool {
-        [look_path(), windows_path(), session_path(), accounts_path()]
-            .iter()
-            .any(|path| !path.exists())
+        Self::shard_missing_in(&data_dir())
+    }
+
+    /// The split's own four files, named as their `*_path` functions name
+    /// them. `presets.json` stays off the list, or an install split before
+    /// it existed would migrate all over again.
+    fn shard_missing_in(dir: &Path) -> bool {
+        [
+            "workspace.json",
+            "windows.json",
+            "session.json",
+            "accounts.json",
+        ]
+        .iter()
+        .any(|file| !dir.join(file).exists())
     }
 
     /// Back up the single-file format and write out its workspaces. Once per
@@ -3646,6 +3686,7 @@ impl Settings {
             windows: serde_json::to_string(&self.windows).ok(),
             session: serde_json::to_string(&self.session).ok(),
             accounts: serde_json::to_string(&self.accounts).ok(),
+            presets: serde_json::to_string(&self.presets).ok(),
         }
     }
 
@@ -3693,6 +3734,14 @@ impl Settings {
             &after.accounts,
             forced,
             &self.accounts,
+        );
+        write_shard(
+            presets_path(),
+            "presets",
+            &before.presets,
+            &after.presets,
+            forced,
+            &self.presets,
         );
     }
 
@@ -4914,6 +4963,48 @@ mod tests {
         assert_eq!(mini.origin, Some(WindowOrigin { x: 40.0, y: 50.0 }));
         assert!(mini.pinned);
         assert_eq!(back.placements["Full"].origin, None);
+    }
+
+    #[test]
+    fn presets_shard_roundtrips() {
+        let presets = PresetsState {
+            panel_presets: vec![PanelPreset {
+                name: "Big Cover".into(),
+                panel: serde_json::json!({ "panel_name": "cover art" }),
+            }],
+        };
+        let json = serde_json::to_string(&presets).unwrap();
+        let back: PresetsState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.panel_presets.len(), 1);
+        assert_eq!(back.panel_presets[0].name, "Big Cover");
+        assert_eq!(back.panel_presets[0].panel_name(), Some("cover art"));
+
+        assert_eq!(
+            serde_json::to_string(&PresetsState::default()).unwrap(),
+            "{}"
+        );
+        let junk: PresetsState = serde_json::from_str(
+            r#"{"panel_presets": [{"name": 3}, {"name": "Ok", "panel": {}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(junk.panel_presets.len(), 1);
+        assert_eq!(junk.panel_presets[0].name, "Ok");
+    }
+
+    #[test]
+    fn a_missing_presets_file_is_not_a_migration_sentinel() {
+        let dir = std::env::temp_dir().join(format!("rox-presets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in ["workspace.json", "windows.json", "session.json"] {
+            std::fs::write(dir.join(file), "{}").unwrap();
+        }
+        assert!(Settings::shard_missing_in(&dir));
+
+        std::fs::write(dir.join("accounts.json"), "{}").unwrap();
+        assert!(!dir.join("presets.json").exists());
+        assert!(!Settings::shard_missing_in(&dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The settings file is the one people are pointed at, so it must carry no

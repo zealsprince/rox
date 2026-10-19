@@ -187,6 +187,18 @@ preset-back-add-panel = Panel hinzufügen
 preset-back-then = dann
 preset-back-presets = Vorlagen
 preset-back-tail = in jedem Panel-Menü. Vorlagen gelten nur für diese Arbeitsfläche, eine andere hat sie nicht.
+preset-back-tail-global = in jedem Panel-Menü. Globale Vorlagen erscheinen in jeder Arbeitsfläche.
+preset-group-builtin = Mitgeliefert
+preset-group-global = Global
+preset-group-workspace = Diese Arbeitsfläche
+preset-group-other = Aus { $workspace }
+preset-none-for-kind = Noch keine Vorlagen für dieses Panel
+preset-undo = Vorlage rückgängig machen
+preset-save-scope = Speichern in
+    .description = Globale Vorlagen erscheinen in jeder Arbeitsfläche und nehmen ihre Shader mit
+preset-scope-workspace = Diese Arbeitsfläche
+preset-scope-global = Global
+preset-save-replaces-global = Ersetzt die globale Vorlage, die bereits { $name } heißt
 
 ## Keyboard hints
 hint-press = Drücke
@@ -1443,6 +1455,8 @@ settings-workspace-card-website-placeholder = Wo es zu finden ist
 settings-workspace-composition-closed = Das Arbeitsflächenfenster ist geschlossen
 settings-workspace-composition-hint = Die Panels des Fensters, wie sie in Teilern und Reitergruppen angeordnet sind; die Pfeile ordnen eine Zeile unter ihren Geschwistern um, das Schloss heftet ein Panel fest, und das Zahnrad öffnet seine Einstellungen
 settings-workspace-empty = Noch keine Arbeitsflächen
+settings-workspace-global-presets-empty = Noch keine globalen Vorlagen
+settings-workspace-global-presets-hint = Als global gespeicherte Panel-Vorlagen. Jede Arbeitsfläche listet sie, und ihre Shader stecken in ihnen selbst
 settings-workspace-hint = Eine Arbeitsfläche ist ein ganzes Erscheinungsbild: Layouts, Palette, Aussehen. Eine anzuwenden ersetzt alle drei
 settings-workspace-layout-name-placeholder = Layoutname
 settings-workspace-layouts-empty = Noch keine Layouts
@@ -1455,6 +1469,7 @@ settings-workspace-panel-presets-hint-before = Je ein eingerichtetes Panel, aus 
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Primär
 settings-workspace-section-composition = Aufbau
+settings-workspace-section-global-presets = Globale Vorlagen
 settings-workspace-section-layouts = Layouts
 settings-workspace-section-panel-presets = Panel-Vorlagen
 settings-workspace-section-workspaces = Arbeitsflächen
@@ -2825,6 +2840,9 @@ lyrics-unsung-dim = Ungesungenes abdunkeln
 lyrics-wipe-lyrics = Songtext löschen
 lyrics-wrap-lines = Lange Zeilen umbrechen
     .description = Eine für das Panel zu breite Zeile in die nächste Reihe laufen lassen, statt sie abzuschneiden
+lyrics-preset-karaoke = Karaoke
+lyrics-preset-teleprompter = Teleprompter
+lyrics-preset-quiet = Ruhig
 
 ## Analysis passes
 pass-acoustic-body = { $model } ermittelt, wie jeder Titel klingt, damit die Bibliothek Musik finden kann, die dem Laufenden ähnelt. Alles läuft auf diesem Rechner, und schon Beschriebenes wird übersprungen. { $lands }

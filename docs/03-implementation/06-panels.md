@@ -122,7 +122,8 @@ Settings split by scope. The app settings window edits the app-wide state, which
 itself split across files by what each one is for
 ([ADR 20](../02-architecture/decisions/20-adr-settings-split.md)): preferences and
 library folders in `settings.json`, the look in `workspace.json`, window shapes in
-`windows.json`, playback state in `session.json`, connections in `accounts.json`.
+`windows.json`, playback state in `session.json`, connections in `accounts.json`, and
+global panel presets in `presets.json`.
 
 A per-panel customize window edits that one panel's config: `panel_settings::open`
 (`crates/rox/src/panel_settings.rs`) opens an OS window keyed to the panel's entity id,
@@ -130,6 +131,11 @@ reusing the existing one if already open, sized around 640x480. It shows the pan
 pages (from `PanelSettings::pages`) then a shared Appearance page editing the chrome's
 palette and frame override. Edits apply live to the
 panel and are written into its next layout dump.
+
+The sidebar opens with the Presets row (see [Panel presets](#panel-presets)) and a
+search box. A query runs against every page's setting labels, descriptions, and keywords
+at once and lists the pages with hits under their own headings. Picking a page clears
+the search, the way the app settings window's does.
 
 ## Pop-out and entity sharing
 
@@ -200,11 +206,47 @@ composite's children. Presets show as a Presets group in every Add Panel menu, i
 Panels menu, and in the Window menu's New Window from Panel, which opens one through
 `pop_out_view`.
 
-They're stored in the bundle rather than the user's settings because a panel can name a
-shader out of the pool beside them (`shader::Pick::Named`), and that name only resolves
-while this workspace's pool is the live one. Everything that reads what a look would
-paint (`unapproved_shaders`, `wears_shaders`, `without_shaders`) walks the presets' dumps
-alongside the layouts'.
+A panel kind's presets come from four tiers, listed in this order:
+
+| Tier | Stored in | Writable |
+| --- | --- | --- |
+| Built-in | Code: each panel module's `builtin_presets()`, named by i18n key | No |
+| Global | `presets.json` in the data directory (`PresetsState`) | Yes |
+| Workspace | The live `WorkspaceBundle::panel_presets` | Yes |
+| Other workspaces | Each saved bundle under `workspaces/` except the live one | No |
+
+`rox_core::settings::panel_presets` stores the two writable tiers and tags each listed
+entry with its `PresetScope`. The built-ins and the other workspaces are gathered up in
+`crate::preset_sources`, because the built-ins are configs typed by the panel crates and
+only the app crate reads the other bundles. Flat menus list global before workspace.
+
+The workspace tier lives in the bundle because a panel can name a shader out of the pool
+beside it (`shader::Pick::Named`), and that name only resolves while this workspace's
+pool is the live one. Everything that reads what a look would paint
+(`unapproved_shaders`, `wears_shaders`, `without_shaders`) walks those presets' dumps
+alongside the layouts'. A global preset follows the user across workspaces, so a save to
+that tier detaches the dump against the live pool first: each named shader becomes its
+inline source, and nothing in `presets.json` names a pool. A preset read from another
+workspace is detached against that bundle's pool the same way. An inline source arriving
+this way goes through the shader approval gate like any other.
+
+Every panel's customize window carries the Presets row: a picker grouped by tier, Save As
+Preset, which asks for the workspace or the global tier, and Reset Changes. A pick goes
+through the `apply_panel_preset` opener, which builds the new panel and swaps it into the
+old one's slot. In a tab group the new panel is inserted before the old one is removed,
+since a group emptied even for a moment takes itself out of its stack. A Group, Drawer,
+Overlay, or Slide holds its children in slots instead, and swaps them through
+`composite::Hosting::replace_child`. A popped-out panel sits in neither, so its window
+shows no Presets row. The rebuild is a new entity, so the customize window follows it to
+the new id.
+
+`PresetMarks` keeps, per panel id, the preset that built it, and the picker names the
+panel after it while the panel's dump still equals the preset's. The comparison is
+against the new panel's own dump of the fresh state rather than the preset's JSON,
+because a panel folds and normalizes what it loads. Reset Changes rebuilds from the dump
+the customize window took when it opened, along with the name that dump carried, so it
+undoes every pick and edit since then. It's inert while the panel still matches that
+dump.
 
 The live look nests the same struct a saved file holds, so saving a workspace is a clone
 and applying one is an assignment. Saved workspaces are one JSON file each under
@@ -222,4 +264,9 @@ wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore)
 `PopoutHost`), `crates/rox/src/panel_settings.rs` (the customize windows),
 `crates/rox-core/src/settings.rs` (`NamedLayout`, `WorkspaceBundle`),
 `crates/rox-design/src/palette.rs` (`PanelTheme`), and `crates/rox/src/workspaces.rs`
-(apply). Each panel's config is defined beside it under `crates/rox-panels/src/`.
+(apply, `presets_elsewhere`). Each panel's config is defined beside it under
+`crates/rox-panels/src/`, with its `builtin_presets()`. Panel presets span
+`crates/rox-core/src/settings/panel_presets.rs` (the writable tiers, `PresetScope`),
+`crates/rox/src/preset_sources.rs` (the tiers gathered per kind),
+`crates/rox-panel-api/src/panel_settings.rs` (the Presets row, `PresetMarks`), and
+`crates/rox/src/composite.rs` (`Hosting`, `replace_hosted`).

@@ -17,6 +17,17 @@ the data directory, each holding one kind of thing.
 - `workspaces/` holds the user's saved workspaces, one JSON file per bundle, named after
   the workspace. Shipped bundles stay compiled into the app from `assets/workspaces/`.
 
+**Amended 2026-10-19:** a sixth piece, `presets.json`, holds the global panel presets:
+the ones a user saves for every workspace instead of the live one. They can't sit in the
+look, since applying a workspace replaces the bundle's presets wholesale, and they don't
+belong in `settings.json`, the small hand-editable file. A global preset's shaders are
+inlined when it's saved, so the file never names a pool that only resolves in one
+workspace. Its list reads leniently like the other preset collections below. It has no
+migration: the pre-split file's `panel_presets` belong to the workspace, and reading them
+here would copy them into the global tier. It also stays off the list of shards whose
+absence means an unsplit install, or every install split before it existed would migrate
+again.
+
 The single file had grown to where the preferences were a tenth of it, and everything in
 it belonged to a different owner. Two saved workspaces, the live dock dump, and the
 preset pool made up most of the bytes, so the file someone might open to check a library

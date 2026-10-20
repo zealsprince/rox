@@ -20,6 +20,7 @@ letter-rail-compact = コンパクトな文字インデックス
 letter-rail-side = インデックスの位置
     .description = 壁のどちらの端にインデックスを配置するか
 toast-copied = クリップボードにコピーしました
+matcher-section-matches = 候補
 
 ## Panel source and search rows
 source-track = トラック
@@ -193,7 +194,7 @@ preset-group-global = グローバル
 preset-group-workspace = このワークスペース
 preset-group-other = { $workspace } から
 preset-none-for-kind = このパネルのプリセットはまだありません
-preset-undo = プリセットを元に戻す
+preset-reset = 変更をリセット
 preset-save-scope = 保存先
     .description = グローバルプリセットはすべてのワークスペースに表示され、シェーダーも一緒に持ち運びます
 preset-scope-workspace = このワークスペース
@@ -682,6 +683,11 @@ library-circular-portraits = 円形の写真
     .description = アーティストでグループ化したとき、角の丸みの設定ではなくウォール全体を円に切り抜く
 library-genre-face = ジャンルの表示
     .description = ジャンルでグループ化したとき、タイルに何を出すか。カバー、ジャンルの色をかけたカバー、または図形を敷いたカラーカード
+library-preset-compact = コンパクト
+library-preset-showcase = ショーケース
+library-preset-dj = DJ
+library-preset-tagging = タグ編集
+library-preset-audiophile = オーディオファイル
 
 ## Stations panel
 
@@ -759,6 +765,11 @@ grid-tile-size = タイルサイズ
 grid-gap = 間隔
     .description = カバーどうしの隙間。0 で隙間なく敷き詰める
 grid-art-rounding-description = 各カバーの角を丸める。100% で円になる
+grid-preset-spotlight = スポットライト
+grid-preset-compact = コンパクト
+grid-preset-browse = ブラウズ
+grid-preset-shelf = 棚
+grid-preset-new-arrivals = 新着
 
 ## Settings: sidebar pages
 settings-page-appearance = 外観
@@ -2668,6 +2679,10 @@ cover-stretch = 引き伸ばし
     .description = アートワークの縦横比を無視してパネルを埋める
 cover-stretch-to-fill = 引き伸ばして埋める
 cover-title = カバーアート
+cover-preset-turntable = ターンテーブル
+cover-preset-cd-player = CDプレーヤー
+cover-preset-disc-scan = ディスク画像
+cover-preset-preview = プレビュー
 
 ## Lyrics
 lyrics-always-centered = 常に中央に
@@ -2936,6 +2951,11 @@ particles-turbulence-scale = 乱流のスケール
 particles-turbulence-strength = 強さ
     .description = 場がパーティクルをどれくらい強く押しやるか。0 でオフ
 particles-width = 幅
+particles-preset-fountain = 噴水
+particles-preset-snowfall = 雪
+particles-preset-embers = 残り火
+particles-preset-starburst = スターバースト
+particles-preset-swarm = 群れ
 
 ## Spectrum panel
 spectrum-axis-labels = 軸のラベル
@@ -2992,6 +3012,10 @@ spectrum-symmetry = 対称
     .description = スペクトラムを中心で折り返す。順方向は低域を両端に、逆方向は中央で合わせる
 spectrum-symmetry-forward = 順方向
 spectrum-symmetry-reverse = 逆方向
+spectrum-preset-retro = レトロ
+spectrum-preset-smooth = なめらか
+spectrum-preset-ambient = アンビエント
+spectrum-preset-analyzer = アナライザー
 
 ## Waveform panel
 waveform-bar-gap = バーの間隔
@@ -3030,11 +3054,17 @@ waveform-live-expression-error = { $reason } のため、帯は既定の図形�
 waveform-section-live = ライブ
 waveform-streaming = ストリーミング
 waveform-unavailable = この曲の波形は利用できません
+waveform-preset-progress = 進行
+waveform-preset-solid = 塗りつぶし
+waveform-preset-outline = 輪郭
+waveform-preset-stereo = ステレオ
+waveform-preset-blocks = ブロック
 
 ## VU panel
 vu-ballistics = 弾道特性
     .description = VU は音量をゆっくり積分する。ピークは素早く上がり、ゆるやかに戻る
 vu-ballistics-peak = ピーク
+vu-ballistics-vu = VU
 vu-cap-gravity = ピークの落下
     .description = メーターが下がったあと、ピークの印がどれくらい速く落ちるか
 vu-channels = チャンネル
@@ -3060,6 +3090,10 @@ vu-style = スタイル
     .description = ひと続きの柱、または LED 風のセグメント
 vu-style-continuous = 連続
 vu-style-segments = セグメント
+vu-preset-analog = アナログ
+vu-preset-led-ladder = LEDラダー
+vu-preset-peak-hold = ピークホールド
+vu-preset-mono-strip = モノストリップ
 
 ## Spectrogram panel
 spectrogram-ceiling = 天井
@@ -3095,6 +3129,10 @@ spectrogram-low-bound = 下限
 spectrogram-section-picture = 表示
 spectrogram-speed = 速さ
     .description = 画面がどれくらいの速さでスクロールするか。1 秒あたりの列数
+spectrogram-preset-lab = ラボ
+spectrogram-preset-waterfall = ウォーターフォール
+spectrogram-preset-ambient = アンビエント
+spectrogram-preset-low-end = 低域
 
 ## Oscilloscope panel
 
@@ -3127,6 +3165,10 @@ oscilloscope-trigger-off = オフ
 oscilloscope-trigger-rising = 立ち上がり
 oscilloscope-window = ウィンドウ
     .description = パネル全体でトレースが表す時間の長さ
+oscilloscope-preset-phosphor = ブラウン管
+oscilloscope-preset-sweep = 掃引
+oscilloscope-preset-zoom = ズーム
+oscilloscope-preset-stereo = ステレオ
 
 ## Shader panel
 shader-panel-compile-error = このシェーダーはコンパイルできませんでした:
@@ -3209,6 +3251,11 @@ genre-grid-tile-face = タイルの表示
 genre-grid-unmerge = { $count ->
    *[other] { $count } 件のまとめを解除
 }
+genre-grid-preset-spotlight = スポットライト
+genre-grid-preset-compact = コンパクト
+genre-grid-preset-browse = ブラウズ
+genre-grid-preset-shelf = 棚
+genre-grid-preset-cards = カード
 
 ## Artist grid panel
 artist-grid-clear-picked = 選んだアーティストをクリア
@@ -3233,6 +3280,11 @@ artist-grid-tally = { $albums ->
    *[other] { $albums } アルバム、{ $tracks } 曲
 }
 artist-grid-track-artist = トラックアーティスト
+artist-grid-preset-spotlight = スポットライト
+artist-grid-preset-compact = コンパクト
+artist-grid-preset-browse = ブラウズ
+artist-grid-preset-shelf = 棚
+artist-grid-preset-portraits = ポートレート
 
 ## Wall panels
 wall-dim-always = 常に
@@ -3331,6 +3383,11 @@ metadata-value-none = なし
 metadata-source = ソース
     .description = 再生中か選択中のものを追うか、ライブラリ全体を読むか
 metadata-stripes-description = 表の一行おきに色を付ける
+metadata-preset-tagging = タグ編集
+metadata-preset-technical = 技術情報
+metadata-preset-listening = 再生履歴
+metadata-preset-minimal = ミニマル
+metadata-preset-overview = 概要
 
 ## History panel
 history-column-last-played = 最終再生
@@ -3359,6 +3416,9 @@ history-no-plugins = この曲を検索できるプラグインが動いてい�
 history-pick-plugin = この行のメニューの再生元からプラグインを選ぶ
 history-view-row = 表示
     .description = 再生記録のどの切り口をパネルに出すか
+history-preset-timeline = タイムライン
+history-preset-charts = ランキング
+history-preset-discover = 発見
 
 ## Folder tree panel
 folder-tree-clear-scope = フォルダーの絞り込みをクリア
@@ -3384,12 +3444,14 @@ folder-tree-scope-to-folder = このフォルダーに絞る
 folder-tree-smooth-description = 飛ばずに曲までなめらかに移動する
 folder-tree-stripes-description = 一行おきに行を色づけし、深いツリーを追いやすくする
 folder-tree-title = ツリー
+folder-tree-preset-covers = ジャケット
+folder-tree-preset-search = 検索
+folder-tree-preset-now-playing = 再生中
 
 ## Art panel
 art-always = 何も再生していなくてもカバーを引っ込めたままにする。カーソルを乗せたカバーだけがはっきり見える
 art-convert = 変換...
 art-covers-section = カバー
-matcher-section-matches = 候補
 art-desaturate = 再生中のアルバム以外のカバーをグレースケールにする。カーソルを乗せたカバーは色が戻る
 art-dim-while-playing = 再生中のアルバム以外のカバーを暗くする。カーソルを乗せたカバーは戻る
 art-disc-style = ディスクの見せ方
@@ -3426,6 +3488,10 @@ art-smooth-description = 飛ばずにアルバムまでなめらかに移動す�
 art-title = アルバムカルーセル
 art-vertical-layout = 縦レイアウト
     .description = 棚を横一列ではなく、上下にスクロールする縦一列にする
+art-preset-gallery = ギャラリー
+art-preset-spotlight = スポットライト
+art-preset-browse = ブラウズ
+art-preset-jukebox = ジュークボックス
 
 ## Playlists panel
 playlists-art-description = The expanded headings' cover tile
@@ -3454,6 +3520,10 @@ playlists-remove = { $count ->
 playlists-rename = 名前を変更...
 playlists-reverse-tooltip = 順序を反転
 playlists-title = プレイリスト
+playlists-preset-albums = アルバム
+playlists-preset-classic = クラシック
+playlists-preset-covers = ジャケット
+playlists-preset-minimal = ミニマル
 
 ## Queue panel
 queue-clear = キューをクリア
@@ -3464,6 +3534,8 @@ queue-remove = { $count ->
    *[other] { $count } 曲をキューから削除
 }
 queue-title = キュー
+queue-preset-albums = アルバム
+queue-preset-detailed = 詳細
 queue-widget-always-modal = 常にモーダルで開く
     .description = 既に開いているキューパネルへ移動せず、毎回モーダルでキューを開く
 queue-widget-clear-queue = キューをクリア
@@ -3529,6 +3601,10 @@ biography-top-tracks = 人気曲
 biography-top-tracks-count = 曲数
     .description = 人気曲をいくつ並べるか
 biography-top-tracks-heading = 人気曲
+biography-preset-reader = 読む
+biography-preset-poster = ポスター
+biography-preset-discover = 発見
+biography-preset-compact = コンパクト
 
 ## Status panel
 status-count-albums = { $count ->
@@ -3658,6 +3734,9 @@ playback-stop-after-tip = この曲で停止
 playback-stop-tip = 停止して曲を解放
 playback-volume-tip-muted = ミュート解除、{ $percent }%。右クリックでスライダー
 playback-volume-tip-unmuted = ミュート、{ $percent }%。右クリックでスライダー
+playback-preset-minimal = ミニマル
+playback-preset-practice = 練習
+playback-preset-discovery = 発見
 
 ## Track info panel
 track-info-color-output-chip = 出力チップに色を付ける
@@ -3686,6 +3765,10 @@ track-info-row-size = { $number } 行目のサイズ
 track-info-speed = 速さ
     .description = 文字が流れる速さ
 track-info-text-size = 文字サイズ
+track-info-preset-ticker = ティッカー
+track-info-preset-stacked = 2段
+track-info-preset-technical = テクニカル
+track-info-preset-rotating = 切り替え
 
 ## Playback failures
 
@@ -3724,6 +3807,9 @@ seek-lead-in-sweep = 先頭のスイープ
 seek-section-live = ライブ
 seek-thickness = 太さ
     .description = トラックの線の高さ
+seek-preset-hairline = 細線
+seek-preset-stacked = 2段
+seek-preset-pill = ピル
 
 ## Volume panel
 volume-pieces = 構成要素
@@ -3738,6 +3824,8 @@ volume-tip-mute = ミュート
 volume-tip-mute-level = ミュート、{ $level }
 volume-tip-unmute = ミュート解除
 volume-tip-unmute-level = ミュート解除、{ $level }
+volume-preset-fader = フェーダー
+volume-preset-icon-only = アイコンのみ
 
 ## Shared panel content
 content-filter = フィルター
@@ -4021,6 +4109,10 @@ milkdrop-unfavorite = お気に入りから外す
 milkdrop-reveal-folder = フォルダーを表示
 milkdrop-show-controls = コントロールを表示
     .description = ポインターがパネル上にある間、ビジュアルの上に前へ、次へ、ランダム、お気に入りの星を出す
+milkdrop-preset-ambient = アンビエント
+milkdrop-preset-party = パーティー
+milkdrop-preset-browse = ブラウズ
+milkdrop-preset-low-power = 省電力
 
 ## Source browser
 

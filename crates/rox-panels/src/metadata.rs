@@ -95,6 +95,104 @@ impl Default for MetadataConfig {
     }
 }
 
+/// The built-in presets, keyed by their name's i18n key.
+pub fn builtin_presets() -> Vec<(&'static str, MetadataConfig)> {
+    let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect();
+
+    vec![
+        (
+            // Empty fields stay as n/a so the gaps to fill show.
+            "metadata-preset-tagging",
+            MetadataConfig {
+                source: MetadataSource::Selected,
+                display: MetadataDisplay::Table,
+                valign: VAlign::Top,
+                cover: false,
+                hide_empty: false,
+                row_borders: true,
+                fields: keys(&[
+                    "title_sort",
+                    "artist_sort",
+                    "album",
+                    "album_sort",
+                    "album_artist",
+                    "album_artist_sort",
+                    "disc",
+                    "track",
+                    "genre",
+                    "year",
+                    "bpm",
+                    "cover",
+                    "lyrics",
+                    "missing",
+                    "file",
+                ]),
+                ..MetadataConfig::default()
+            },
+        ),
+        (
+            "metadata-preset-technical",
+            MetadataConfig {
+                display: MetadataDisplay::Table,
+                valign: VAlign::Top,
+                cover: false,
+                fields: keys(&[
+                    "duration",
+                    "codec",
+                    "bitrate",
+                    "sample_rate",
+                    "bit_depth",
+                    "gain_track",
+                    "gain_album",
+                    "size",
+                    "file",
+                    "folder",
+                    "copies",
+                ]),
+                ..MetadataConfig::default()
+            },
+        ),
+        (
+            "metadata-preset-listening",
+            MetadataConfig {
+                cover_opacity: 45.,
+                fields: keys(&[
+                    "plays",
+                    "rating",
+                    "rank",
+                    "recent_plays",
+                    "last_played",
+                    "first_played",
+                    "lastfm_listeners",
+                    "lastfm_plays",
+                    "lastfm_user_plays",
+                    "lastfm_loved",
+                    "lastfm_tags",
+                ]),
+                ..MetadataConfig::default()
+            },
+        ),
+        (
+            "metadata-preset-minimal",
+            MetadataConfig {
+                align: Align::Center,
+                cover_opacity: 60.,
+                fields: keys(&["album", "year"]),
+                ..MetadataConfig::default()
+            },
+        ),
+        (
+            "metadata-preset-overview",
+            MetadataConfig {
+                source: MetadataSource::Library,
+                align: Align::Center,
+                cover: false,
+                ..MetadataConfig::default()
+            },
+        ),
+    ]
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MetadataDisplay {
@@ -3072,9 +3170,10 @@ impl MetadataPanel {
 #[cfg(test)]
 mod tests {
     use super::{
-        Fill, MetadataConfig, MetadataSource, diff_baseline, edit_fields, fields, sort_fill,
-        sort_targets,
+        Fill, MetadataConfig, MetadataSource, builtin_presets, diff_baseline, edit_fields, fields,
+        sort_fill, sort_targets,
     };
+    use crate::panel;
     use rox_library::writer::Field;
     use rox_romanize::Reading;
 
@@ -3226,5 +3325,37 @@ mod tests {
             "{entry} should name {label}"
         );
         assert!(entry.as_ref() != label.as_ref());
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: MetadataConfig = panel::config_from_info(&info);
+
+            assert!(back.source == config.source, "{key}");
+            assert!(back.align == config.align, "{key}");
+            assert!(back.valign == config.valign, "{key}");
+            assert_eq!(back.cover, config.cover, "{key}");
+            assert_eq!(back.cover_opacity, config.cover_opacity, "{key}");
+            assert_eq!(back.hide_empty, config.hide_empty, "{key}");
+            assert!(back.display == config.display, "{key}");
+            assert_eq!(back.stripes, config.stripes, "{key}");
+            assert_eq!(back.row_borders, config.row_borders, "{key}");
+            assert_eq!(back.fields, config.fields, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+
+            // A misspelt key would just never draw.
+            for field in &config.fields {
+                assert!(
+                    fields().iter().any(|col| col.key == field),
+                    "{key}: {field}"
+                );
+            }
+        }
     }
 }

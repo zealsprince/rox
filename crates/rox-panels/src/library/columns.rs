@@ -394,8 +394,14 @@ pub use crate::track_ui::track_columns::{
     fold_head_text, fold_margin,
 };
 
+/// What a library with no row height or header text size gets: the look the
+/// shipped workspaces use, denser than the stock sizes the text scales
+/// against.
+pub const ROW_HEIGHT_DEFAULT: f32 = 26.;
+pub const HEAD_TEXT_DEFAULT: f32 = 14.;
+
 fn default_head_text() -> f32 {
-    HEAD_TEXT_STOCK
+    HEAD_TEXT_DEFAULT
 }
 
 /// Compact and Comfortable map to the 30 and 40 px the old table sizes drew.
@@ -403,7 +409,8 @@ fn default_head_text() -> f32 {
 pub fn fold_row_heights(config: &LibraryConfig) -> (f32, f32) {
     let stock = match config.density {
         Some(Density::Comfortable) => 40.,
-        _ => ROW_HEIGHT_STOCK,
+        Some(Density::Compact) => ROW_HEIGHT_STOCK,
+        None => ROW_HEIGHT_DEFAULT,
     };
     let row = fold_row_height(config.row_height, stock, ROW_HEIGHT_MAX);
     let head = fold_row_height(config.head_height, row, HEAD_HEIGHT_MAX);
@@ -542,7 +549,7 @@ impl Default for LibraryConfig {
             row_height: None,
             head_height: None,
             row_spacing: 0.,
-            head_text: HEAD_TEXT_STOCK,
+            head_text: HEAD_TEXT_DEFAULT,
             density: None,
             headers: Headers::default(),
             group_by: GroupBy::default(),
@@ -575,6 +582,104 @@ impl Default for LibraryConfig {
             sort_on_click: false,
         }
     }
+}
+
+/// Registry widths for a preset's columns. A typo'd key trips the assert in
+/// the round-trip test and drops out of a release build.
+fn preset_layout(keys: &[&str]) -> Vec<ColumnSpec> {
+    keys.iter()
+        .filter_map(|key| {
+            let def = column_def(key);
+            debug_assert!(def.is_some(), "unknown library column {key}");
+            def
+        })
+        .map(|def| ColumnSpec {
+            key: def.key.to_string(),
+            width: def.default_width,
+            label: None,
+        })
+        .collect()
+}
+
+/// The presets every Library panel can take, keyed by their i18n name. Chrome
+/// stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, LibraryConfig)> {
+    vec![
+        (
+            "library-preset-compact",
+            LibraryConfig {
+                headers: Headers::Compact,
+                row_borders: false,
+                column_layout: preset_layout(&["track", "title", "artist", "album", "duration"]),
+                ..LibraryConfig::default()
+            },
+        ),
+        (
+            "library-preset-showcase",
+            LibraryConfig {
+                art_rounding: 8.,
+                art_margin: 4.,
+                header_gap_above: 12.,
+                header_flush: true,
+                stripes: false,
+                column_layout: preset_layout(&["track", "title", "duration", "rating"]),
+                ..LibraryConfig::default()
+            },
+        ),
+        (
+            // The BPM column only draws once tempo analysis has filled it in.
+            "library-preset-dj",
+            LibraryConfig {
+                headers: Headers::Off,
+                column_layout: preset_layout(&[
+                    "title", "artist", "bpm", "genre", "duration", "rating", "plays",
+                ]),
+                sort_key: Some("bpm".to_string()),
+                follow_playing: true,
+                smooth_follow: true,
+                ..LibraryConfig::default()
+            },
+        ),
+        (
+            "library-preset-tagging",
+            LibraryConfig {
+                headers: Headers::Off,
+                column_layout: preset_layout(&[
+                    "title",
+                    "title_sort",
+                    "artist",
+                    "artist_sort",
+                    "album_artist",
+                    "album_artist_sort",
+                    "album",
+                    "album_sort",
+                    "year",
+                    "genre",
+                    "comment",
+                ]),
+                ..LibraryConfig::default()
+            },
+        ),
+        (
+            "library-preset-audiophile",
+            LibraryConfig {
+                headers: Headers::Compact,
+                column_layout: preset_layout(&[
+                    "track",
+                    "title",
+                    "artist",
+                    "codec",
+                    "sample_rate",
+                    "bit_depth",
+                    "bitrate",
+                    "gain",
+                    "source",
+                    "duration",
+                ]),
+                ..LibraryConfig::default()
+            },
+        ),
+    ]
 }
 
 /// A layout saved before composition folds its year and details toggles
@@ -957,8 +1062,12 @@ mod tests {
         let config: LibraryConfig = serde_json::from_str(r#"{"density": "comfortable"}"#).unwrap();
         assert!(super::fold_row_heights(&config) == (40., 40.));
 
-        let config: LibraryConfig = serde_json::from_str("{}").unwrap();
+        let config: LibraryConfig = serde_json::from_str(r#"{"density": "compact"}"#).unwrap();
         assert!(super::fold_row_heights(&config) == (30., 30.));
+
+        let config: LibraryConfig = serde_json::from_str("{}").unwrap();
+        assert!(super::fold_row_heights(&config) == (26., 26.));
+        assert_eq!(config.head_text, 14.);
     }
 
     /// Clamped to the band the readout's input allows, not the strip's own
@@ -1064,5 +1173,45 @@ mod tests {
         let mut sorted = letters.clone();
         sorted.sort();
         assert!(sorted == letters, "the rail's letters have to climb");
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = super::builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: LibraryConfig = crate::panel::config_from_info(&info);
+
+            let layout_keys = |layout: &[ColumnSpec]| -> Vec<String> {
+                layout.iter().map(|spec| spec.key.clone()).collect()
+            };
+            assert!(!config.column_layout.is_empty(), "{key}");
+            assert_eq!(
+                layout_keys(&back.column_layout),
+                layout_keys(&config.column_layout),
+                "{key}"
+            );
+
+            assert_eq!(back.row_height, config.row_height, "{key}");
+            assert_eq!(back.head_height, config.head_height, "{key}");
+            assert_eq!(back.head_text, config.head_text, "{key}");
+            assert!(back.headers == config.headers, "{key}");
+            assert!(back.group_by == config.group_by, "{key}");
+            assert_eq!(back.sort_key, config.sort_key, "{key}");
+            assert_eq!(back.follow_playing, config.follow_playing, "{key}");
+            assert_eq!(back.smooth_follow, config.smooth_follow, "{key}");
+            assert_eq!(back.art_rounding, config.art_rounding, "{key}");
+            assert_eq!(back.art_margin, config.art_margin, "{key}");
+            assert_eq!(back.header_gap_above, config.header_gap_above, "{key}");
+            assert_eq!(back.header_flush, config.header_flush, "{key}");
+            assert_eq!(back.stripes, config.stripes, "{key}");
+            assert_eq!(back.row_borders, config.row_borders, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

@@ -167,6 +167,51 @@ impl Default for SeekConfig {
     }
 }
 
+/// The presets every Seek panel can take, keyed by their i18n name. Chrome
+/// stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, SeekConfig)> {
+    vec![
+        (
+            "seek-preset-hairline",
+            SeekConfig {
+                thickness: 2.0,
+                playhead: false,
+                bookmarks: false,
+                items: vec![SeekItem::Strip],
+                ..SeekConfig::default()
+            },
+        ),
+        (
+            "seek-preset-stacked",
+            SeekConfig {
+                thickness: 4.0,
+                rounding: 2.0,
+                playhead_full: false,
+                playhead_width: 3.0,
+                items: vec![
+                    SeekItem::Strip,
+                    SeekItem::Break,
+                    SeekItem::Elapsed,
+                    SeekItem::Spacer,
+                    SeekItem::Ending,
+                ],
+                ..SeekConfig::default()
+            },
+        ),
+        (
+            // Rounding at half the thickness closes the ends into a pill.
+            "seek-preset-pill",
+            SeekConfig {
+                thickness: 12.0,
+                rounding: 6.0,
+                playhead: false,
+                show_total: true,
+                ..SeekConfig::default()
+            },
+        ),
+    ]
+}
+
 /// Newer layouts write the ordered list. Older ones had a `timings`
 /// toggle for both clocks.
 #[derive(Deserialize)]
@@ -2383,5 +2428,27 @@ mod tests {
         let rows = editor_rows(&items);
         assert!(rows == vec![vec![SeekItem::Strip], vec![]]);
         assert!(rows.join(&SeekItem::Break) == items);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = super::builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: SeekConfig = crate::panel::config_from_info(&info);
+
+            assert_eq!(back.thickness, config.thickness, "{key}");
+            assert_eq!(back.rounding, config.rounding, "{key}");
+            assert_eq!(back.playhead, config.playhead, "{key}");
+            assert_eq!(back.playhead_full, config.playhead_full, "{key}");
+            assert_eq!(back.playhead_width, config.playhead_width, "{key}");
+            assert_eq!(back.show_total, config.show_total, "{key}");
+            assert_eq!(back.bookmarks, config.bookmarks, "{key}");
+            assert!(back.items == config.items, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

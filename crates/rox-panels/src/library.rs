@@ -71,8 +71,8 @@ const VIEW_DEBOUNCE: Duration = Duration::from_millis(100);
 
 mod columns;
 
-pub use columns::LibraryConfig;
 use columns::*;
+pub use columns::{LibraryConfig, builtin_presets};
 
 /// A depth or rate the group disagrees on goes over as 0, which `quality`
 /// drops.

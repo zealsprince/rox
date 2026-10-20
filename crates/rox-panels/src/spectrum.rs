@@ -372,6 +372,73 @@ impl Default for SpectrumConfig {
     }
 }
 
+/// The presets every Spectrum panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, SpectrumConfig)> {
+    vec![
+        (
+            "spectrum-preset-retro",
+            SpectrumConfig {
+                style: SpectrumStyle::Blocks,
+                bar_width: 5.0,
+                bar_gap: 1.0,
+                block_height: 2.0,
+                block_gap: 1.0,
+                gradient: Gradient::Theme,
+                gradient_curve: 1.0,
+                fft_size: 4096,
+                cap_gravity: 0.15,
+                ..SpectrumConfig::default()
+            },
+        ),
+        (
+            "spectrum-preset-smooth",
+            SpectrumConfig {
+                style: SpectrumStyle::Line,
+                // The line takes a point per band, so thin gapless bands draw a finer curve.
+                bar_width: 2.0,
+                bar_gap: 0.0,
+                fft_size: 16384,
+                gradient: Gradient::Cover,
+                caps: false,
+                ..SpectrumConfig::default()
+            },
+        ),
+        (
+            "spectrum-preset-ambient",
+            SpectrumConfig {
+                symmetry: Symmetry::Reverse,
+                bar_width: 6.0,
+                bar_gap: 4.0,
+                freq_hi: 12_000.0,
+                gradient: Gradient::Cover,
+                gradient_curve: 2.5,
+                caps: false,
+                freeze: false,
+                ..SpectrumConfig::default()
+            },
+        ),
+        (
+            "spectrum-preset-analyzer",
+            SpectrumConfig {
+                bar_width: 1.0,
+                bar_gap: 1.0,
+                freq_lo: 20.0,
+                freq_hi: 20_000.0,
+                // A long window resolves the bass, a short one keeps the highs quick.
+                fft_size: 16384,
+                split: true,
+                split_hz: 500.0,
+                fft_size_hi: 4096,
+                gradient: Gradient::Theme,
+                cap_gravity: 0.02,
+                labels: Labels::Freq,
+                ..SpectrumConfig::default()
+            },
+        ),
+    ]
+}
+
 impl SpectrumConfig {
     fn range(&self) -> (f32, f32) {
         let lo = self.freq_lo.clamp(SLIDER_MIN_HZ, SLIDER_MAX_HZ);
@@ -1868,5 +1935,40 @@ mod tests {
             labels,
             vec!["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
         );
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: SpectrumConfig = panel::config_from_info(&info);
+
+            assert!(back.style == config.style, "{key}");
+            assert!(back.orientation == config.orientation, "{key}");
+            assert!(back.symmetry == config.symmetry, "{key}");
+            assert_eq!(back.freq_lo, config.freq_lo, "{key}");
+            assert_eq!(back.freq_hi, config.freq_hi, "{key}");
+            assert_eq!(back.bar_width, config.bar_width, "{key}");
+            assert_eq!(back.bar_gap, config.bar_gap, "{key}");
+            assert_eq!(back.block_height, config.block_height, "{key}");
+            assert_eq!(back.block_gap, config.block_gap, "{key}");
+            assert_eq!(back.fft_size, config.fft_size, "{key}");
+            assert_eq!(back.split, config.split, "{key}");
+            assert_eq!(back.split_hz, config.split_hz, "{key}");
+            assert_eq!(back.fft_size_hi, config.fft_size_hi, "{key}");
+            assert!(back.gradient == config.gradient, "{key}");
+            assert_eq!(back.gradient_curve, config.gradient_curve, "{key}");
+            assert_eq!(back.caps, config.caps, "{key}");
+            assert_eq!(back.freeze, config.freeze, "{key}");
+            assert_eq!(back.cap_gravity, config.cap_gravity, "{key}");
+            assert_eq!(back.labels, config.labels, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

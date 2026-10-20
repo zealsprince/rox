@@ -409,6 +409,150 @@ impl Default for ParticlesConfig {
     }
 }
 
+/// The presets every Particles panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader. No
+/// routes either, since the signal pool they'd read from is the user's own.
+pub fn builtin_presets() -> Vec<(&'static str, ParticlesConfig)> {
+    vec![
+        (
+            "particles-preset-fountain",
+            ParticlesConfig {
+                emitters: vec![Emitter {
+                    x: 0.5,
+                    y: 0.95,
+                    direction: 0.0,
+                    cone: 30.0,
+                    speed: 420.0,
+                    rate: 90.0,
+                    size: 3.0,
+                    life: 2.5,
+                    ..Emitter::default()
+                }],
+                scene: Scene {
+                    gravity: 500.0,
+                    gravity_angle: 180.0,
+                    drag: 0.1,
+                    ..Scene::default()
+                },
+                forces: Forces {
+                    turbulence: 40.0,
+                    ..Forces::default()
+                },
+                ..ParticlesConfig::default()
+            },
+        ),
+        (
+            "particles-preset-snowfall",
+            ParticlesConfig {
+                emitters: vec![Emitter {
+                    shape: Shape::Line,
+                    x: 0.5,
+                    y: 0.0,
+                    width: 1.2,
+                    direction: 180.0,
+                    cone: 20.0,
+                    speed: 40.0,
+                    rate: 40.0,
+                    size: 3.0,
+                    life: 6.0,
+                    ..Emitter::default()
+                }],
+                scene: Scene {
+                    gravity: 30.0,
+                    gravity_angle: 180.0,
+                    drag: 0.6,
+                    ..Scene::default()
+                },
+                forces: Forces {
+                    turbulence: 80.0,
+                    turbulence_scale: 300.0,
+                    turbulence_speed: 0.4,
+                },
+                ..ParticlesConfig::default()
+            },
+        ),
+        (
+            "particles-preset-embers",
+            ParticlesConfig {
+                emitters: vec![Emitter {
+                    shape: Shape::Line,
+                    x: 0.5,
+                    y: 1.0,
+                    width: 0.8,
+                    direction: 0.0,
+                    cone: 40.0,
+                    speed: 80.0,
+                    rate: 50.0,
+                    size: 3.0,
+                    life: 4.0,
+                    ..Emitter::default()
+                }],
+                scene: Scene {
+                    drag: 0.3,
+                    glow: true,
+                    ..Scene::default()
+                },
+                forces: Forces {
+                    turbulence: 160.0,
+                    turbulence_scale: 140.0,
+                    turbulence_speed: 1.4,
+                },
+                ..ParticlesConfig::default()
+            },
+        ),
+        (
+            "particles-preset-starburst",
+            ParticlesConfig {
+                emitters: vec![Emitter {
+                    shape: Shape::Ring,
+                    width: 0.15,
+                    aim: Aim::Outward,
+                    cone: 10.0,
+                    speed: 260.0,
+                    rate: 200.0,
+                    size: 2.5,
+                    life: 1.2,
+                    ..Emitter::default()
+                }],
+                scene: Scene {
+                    drag: 1.2,
+                    glow: true,
+                    ..Scene::default()
+                },
+                forces: Forces {
+                    turbulence: 0.0,
+                    ..Forces::default()
+                },
+                ..ParticlesConfig::default()
+            },
+        ),
+        (
+            "particles-preset-swarm",
+            ParticlesConfig {
+                emitters: vec![Emitter {
+                    cone: 360.0,
+                    speed: 30.0,
+                    rate: 300.0,
+                    size: 2.0,
+                    life: 6.0,
+                    ..Emitter::default()
+                }],
+                scene: Scene {
+                    drag: 2.0,
+                    round: false,
+                    ..Scene::default()
+                },
+                forces: Forces {
+                    turbulence: 600.0,
+                    turbulence_scale: 60.0,
+                    turbulence_speed: 2.0,
+                },
+                ..ParticlesConfig::default()
+            },
+        ),
+    ]
+}
+
 /// Zeroes and hand-edited duplicates get fresh ids, so a stale binding
 /// goes quiet instead of firing at the wrong emitter.
 fn assign_emitter_ids(emitters: &mut [Emitter]) {
@@ -1977,5 +2121,58 @@ impl ParticlesPanel {
                 );
         }
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<_> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "preset keys repeat");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: ParticlesConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.emitters.len(), config.emitters.len(), "{key}");
+            for (b, c) in back.emitters.iter().zip(&config.emitters) {
+                assert!(b.shape == c.shape, "{key}");
+                assert!(b.aim == c.aim, "{key}");
+                assert!(b.mode == c.mode, "{key}");
+                assert_eq!((b.x, b.y), (c.x, c.y), "{key}");
+                assert_eq!(b.width, c.width, "{key}");
+                assert_eq!(b.direction, c.direction, "{key}");
+                assert_eq!(b.cone, c.cone, "{key}");
+                assert_eq!(b.speed, c.speed, "{key}");
+                assert_eq!(b.rate, c.rate, "{key}");
+                assert_eq!(b.size, c.size, "{key}");
+                assert_eq!(b.life, c.life, "{key}");
+            }
+            assert!(back.routes.is_empty(), "{key}");
+            assert_eq!(back.scene.gravity, config.scene.gravity, "{key}");
+            assert_eq!(
+                back.scene.gravity_angle, config.scene.gravity_angle,
+                "{key}"
+            );
+            assert_eq!(back.scene.drag, config.scene.drag, "{key}");
+            assert_eq!(back.scene.round, config.scene.round, "{key}");
+            assert_eq!(back.scene.glow, config.scene.glow, "{key}");
+            assert_eq!(back.forces.turbulence, config.forces.turbulence, "{key}");
+            assert_eq!(
+                back.forces.turbulence_scale, config.forces.turbulence_scale,
+                "{key}"
+            );
+            assert_eq!(
+                back.forces.turbulence_speed, config.forces.turbulence_speed,
+                "{key}"
+            );
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

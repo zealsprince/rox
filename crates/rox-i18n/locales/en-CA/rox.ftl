@@ -23,6 +23,7 @@ letter-rail-compact = Compact Rail
 letter-rail-side = Rail Position
     .description = Which edge of the wall the rail hangs on
 toast-copied = Copied to clipboard
+matcher-section-matches = Matches
 
 ## Panel source and search rows
 
@@ -203,7 +204,7 @@ preset-group-global = Global
 preset-group-workspace = This Workspace
 preset-group-other = From { $workspace }
 preset-none-for-kind = No presets for this panel yet
-preset-undo = Undo Preset
+preset-reset = Reset Changes
 preset-save-scope = Save To
     .description = Global presets show up in every workspace and carry their shaders with them
 preset-scope-workspace = This Workspace
@@ -718,6 +719,11 @@ library-circular-portraits = Circular Portraits
     .description = Grouped by artist, round the tiles to the wall's full circle instead of the rounding knob
 library-genre-face = Genre Face
     .description = Grouped by genre, what the tile shows: the covers, the covers washed in the genre's color, or a color card under its geometry
+library-preset-compact = Compact
+library-preset-showcase = Showcase
+library-preset-dj = DJ
+library-preset-tagging = Tagging
+library-preset-audiophile = Audiophile
 
 ## Stations panel
 
@@ -796,6 +802,11 @@ grid-tile-size = Tile Size
 grid-gap = Gap
     .description = Space between the covers; zero packs them edge to edge
 grid-art-rounding-description = Round each cover's corners; 100% is a circle
+grid-preset-spotlight = Spotlight
+grid-preset-compact = Compact
+grid-preset-browse = Browse
+grid-preset-shelf = Shelf
+grid-preset-new-arrivals = New Arrivals
 
 ## Settings: sidebar pages
 
@@ -2812,6 +2823,10 @@ cover-stretch = Stretch
     .description = Fill the panel, ignoring the artwork aspect ratio
 cover-stretch-to-fill = Stretch to Fill
 cover-title = Cover Art
+cover-preset-turntable = Turntable
+cover-preset-cd-player = CD Player
+cover-preset-disc-scan = Disc Scan
+cover-preset-preview = Preview
 
 ## Lyrics
 
@@ -3098,6 +3113,11 @@ particles-turbulence-scale = Turbulence Scale
 particles-turbulence-strength = Strength
     .description = How hard the field pushes particles around; zero is off
 particles-width = Width
+particles-preset-fountain = Fountain
+particles-preset-snowfall = Snowfall
+particles-preset-embers = Embers
+particles-preset-starburst = Starburst
+particles-preset-swarm = Swarm
 
 ## Spectrum panel
 
@@ -3155,6 +3175,10 @@ spectrum-symmetry = Symmetry
     .description = Fold the spectrum around the center; forward puts lows at the edges, reverse meets them in the middle
 spectrum-symmetry-forward = Forward
 spectrum-symmetry-reverse = Reverse
+spectrum-preset-retro = Retro
+spectrum-preset-smooth = Smooth
+spectrum-preset-ambient = Ambient
+spectrum-preset-analyzer = Analyzer
 
 ## Waveform panel
 
@@ -3194,12 +3218,18 @@ waveform-live-expression-error = { $reason }, so the strip is drawing the defaul
 waveform-section-live = Live
 waveform-streaming = STREAMING
 waveform-unavailable = Waveform unavailable for this track
+waveform-preset-progress = Progress
+waveform-preset-solid = Solid
+waveform-preset-outline = Outline
+waveform-preset-stereo = Stereo
+waveform-preset-blocks = Blocks
 
 ## VU panel
 
 vu-ballistics = Ballistics
     .description = VU integrates the loudness slowly; Peak snaps up and eases down
 vu-ballistics-peak = Peak
+vu-ballistics-vu = VU
 vu-cap-gravity = Cap Gravity
     .description = How hard the peak marks fall once the meter drops away
 vu-channels = Channels
@@ -3225,6 +3255,10 @@ vu-style = Style
     .description = A solid column, or LED-style segments
 vu-style-continuous = Continuous
 vu-style-segments = Segments
+vu-preset-analog = Analog
+vu-preset-led-ladder = LED Ladder
+vu-preset-peak-hold = Peak Hold
+vu-preset-mono-strip = Mono Strip
 
 ## Spectrogram panel
 
@@ -3261,6 +3295,10 @@ spectrogram-low-bound = Low Bound
 spectrogram-section-picture = Picture
 spectrogram-speed = Speed
     .description = How fast the picture scrolls, in columns a second
+spectrogram-preset-lab = Lab
+spectrogram-preset-waterfall = Waterfall
+spectrogram-preset-ambient = Ambient
+spectrogram-preset-low-end = Low End
 
 ## Oscilloscope panel
 
@@ -3293,6 +3331,10 @@ oscilloscope-trigger-off = Off
 oscilloscope-trigger-rising = Rising
 oscilloscope-window = Window
     .description = How much time the trace spans across the panel
+oscilloscope-preset-phosphor = Phosphor
+oscilloscope-preset-sweep = Sweep
+oscilloscope-preset-zoom = Zoom
+oscilloscope-preset-stereo = Stereo
 
 ## Shader panel
 
@@ -3382,6 +3424,11 @@ genre-grid-unmerge = { $count ->
     [one] Unmerge { $count } value
    *[other] Unmerge { $count } values
 }
+genre-grid-preset-spotlight = Spotlight
+genre-grid-preset-compact = Compact
+genre-grid-preset-browse = Browse
+genre-grid-preset-shelf = Shelf
+genre-grid-preset-cards = Cards
 
 ## Artist grid panel
 
@@ -3408,6 +3455,11 @@ artist-grid-tally = { $albums ->
    *[other] { $albums } albums, { $tracks } track(s)
 }
 artist-grid-track-artist = Track Artist
+artist-grid-preset-spotlight = Spotlight
+artist-grid-preset-compact = Compact
+artist-grid-preset-browse = Browse
+artist-grid-preset-shelf = Shelf
+artist-grid-preset-portraits = Portraits
 
 ## Wall panels
 
@@ -3508,6 +3560,11 @@ metadata-value-none = n/a
 metadata-source = Source
     .description = Follow what's playing or selected, or read the library as a whole
 metadata-stripes-description = Tint every other row of the table
+metadata-preset-tagging = Tagging
+metadata-preset-technical = Technical
+metadata-preset-listening = Listening
+metadata-preset-minimal = Minimal
+metadata-preset-overview = Overview
 
 ## History panel
 
@@ -3537,6 +3594,9 @@ history-no-plugins = No running plugin can search for this song
 history-pick-plugin = Pick a plugin under Play From in this row's menu
 history-view-row = View
     .description = Which cut of the listen record the panel shows
+history-preset-timeline = Timeline
+history-preset-charts = Charts
+history-preset-discover = Discover
 
 ## Folder tree panel
 
@@ -3564,13 +3624,15 @@ folder-tree-scope-to-folder = Scope Filter to Folder
 folder-tree-smooth-description = Glide to the track instead of jumping
 folder-tree-stripes-description = Tint every other row so a deep tree scans
 folder-tree-title = Tree
+folder-tree-preset-covers = Covers
+folder-tree-preset-search = Search
+folder-tree-preset-now-playing = Now Playing
 
 ## Art panel
 
 art-always = Keep the covers pushed back even when nothing plays; only a hovered cover shows in full
 art-convert = Convert...
 art-covers-section = Covers
-matcher-section-matches = Matches
 art-desaturate = Drain every cover but the playing album's to grayscale; hovering brings a cover's color back
 art-dim-while-playing = Fade every cover but the playing album's; hovering lights a cover back up
 art-disc-style = Disc Style
@@ -3607,6 +3669,10 @@ art-smooth-description = Glide to the album instead of jumping
 art-title = Album Carousel
 art-vertical-layout = Vertical Layout
     .description = Stack the shelf as a column that scrolls up and down instead of a row
+art-preset-gallery = Gallery
+art-preset-spotlight = Spotlight
+art-preset-browse = Browse
+art-preset-jukebox = Jukebox
 
 ## Playlists panel
 
@@ -3637,6 +3703,10 @@ playlists-remove = { $count ->
 playlists-rename = Rename...
 playlists-reverse-tooltip = Reverse Order
 playlists-title = Playlists
+playlists-preset-albums = Albums
+playlists-preset-classic = Classic
+playlists-preset-covers = Covers
+playlists-preset-minimal = Minimal
 
 ## Queue panel
 
@@ -3649,6 +3719,8 @@ queue-remove = { $count ->
    *[other] Remove { $count } from Queue
 }
 queue-title = Queue
+queue-preset-albums = Albums
+queue-preset-detailed = Detailed
 queue-widget-always-modal = Always Open as a Modal
     .description = Open the queue in a modal every time, instead of jumping to a queue panel that is already open
 queue-widget-clear-queue = Clear Queue
@@ -3715,6 +3787,10 @@ biography-top-tracks = Top Tracks
 biography-top-tracks-count = Track Count
     .description = How many of the top tracks to list
 biography-top-tracks-heading = Top tracks
+biography-preset-reader = Reader
+biography-preset-poster = Poster
+biography-preset-discover = Discover
+biography-preset-compact = Compact
 
 ## Status panel
 
@@ -3860,6 +3936,9 @@ playback-stop-after-tip = Stop after this track
 playback-stop-tip = Stop and unload the track
 playback-volume-tip-muted = Unmute, { $percent }%. Right-click for the slider
 playback-volume-tip-unmuted = Mute, { $percent }%. Right-click for the slider
+playback-preset-minimal = Minimal
+playback-preset-practice = Practice
+playback-preset-discovery = Discovery
 
 ## Track info panel
 
@@ -3889,6 +3968,10 @@ track-info-row-size = Row { $number } Size
 track-info-speed = Speed
     .description = How fast the line crawls
 track-info-text-size = Text Size
+track-info-preset-ticker = Ticker
+track-info-preset-stacked = Stacked
+track-info-preset-technical = Technical
+track-info-preset-rotating = Rotating
 
 ## Playback failures
 
@@ -3933,6 +4016,9 @@ seek-lead-in-sweep = Lead-in Sweep
 seek-section-live = Live
 seek-thickness = Thickness
     .description = The track line's height
+seek-preset-hairline = Hairline
+seek-preset-stacked = Stacked
+seek-preset-pill = Pill
 
 ## Volume panel
 
@@ -3948,6 +4034,8 @@ volume-tip-mute = Mute
 volume-tip-mute-level = Mute, { $level }
 volume-tip-unmute = Unmute
 volume-tip-unmute-level = Unmute, { $level }
+volume-preset-fader = Fader
+volume-preset-icon-only = Icon Only
 
 ## Shared panel content
 
@@ -4263,6 +4351,10 @@ milkdrop-unfavorite = Unfavorite Preset
 milkdrop-reveal-folder = Reveal Folder
 milkdrop-show-controls = Show Controls
     .description = Previous, Next, Random and the favorite star over the visual while the pointer is on the panel
+milkdrop-preset-ambient = Ambient
+milkdrop-preset-party = Party
+milkdrop-preset-browse = Browse
+milkdrop-preset-low-power = Low Power
 
 ## Source browser
 

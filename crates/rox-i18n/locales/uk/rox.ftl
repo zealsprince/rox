@@ -19,6 +19,7 @@ letter-rail-compact = Компактна смуга
 letter-rail-side = Положення смуги
     .description = На якому боці стіни розташована смуга
 toast-copied = Скопійовано в буфер обміну
+matcher-section-matches = Збіги
 
 ## Panel source and search rows
 source-track = Трек
@@ -195,7 +196,7 @@ preset-group-global = Глобальні
 preset-group-workspace = Цей робочий простір
 preset-group-other = З { $workspace }
 preset-none-for-kind = Для цієї панелі ще немає пресетів
-preset-undo = Скасувати пресет
+preset-reset = Скинути зміни
 preset-save-scope = Зберегти в
     .description = Глобальні пресети видно в усіх робочих просторах, і вони несуть свої шейдери з собою
 preset-scope-workspace = Цей робочий простір
@@ -704,6 +705,11 @@ library-circular-portraits = Круглі портрети
     .description = При групуванні за виконавцем заокруглювати плитки до повного кола стіни, а не за регулятором заокруглення
 library-genre-face = Обличчя жанру
     .description = При групуванні за жанром - що показує плитка: обкладинки, обкладинки, залиті кольором жанру, або кольорову картку під його геометрією
+library-preset-compact = Компактний
+library-preset-showcase = Вітрина
+library-preset-dj = DJ
+library-preset-tagging = Теги
+library-preset-audiophile = Аудіофіл
 
 ## Stations panel
 
@@ -781,6 +787,11 @@ grid-tile-size = Розмір плитки
 grid-gap = Проміжок
     .description = Місце між обкладинками; нуль пакує їх впритул
 grid-art-rounding-description = Заокруглити кути кожної обкладинки; 100% - це коло
+grid-preset-spotlight = Прожектор
+grid-preset-compact = Компактно
+grid-preset-browse = Огляд
+grid-preset-shelf = Полиця
+grid-preset-new-arrivals = Новинки
 
 ## Settings: sidebar pages
 settings-page-appearance = Оформлення
@@ -2773,6 +2784,10 @@ cover-stretch = Розтягнути
     .description = Заповнити панель, не зважаючи на співвідношення сторін зображення
 cover-stretch-to-fill = Розтягнути на всю
 cover-title = Обкладинка
+cover-preset-turntable = Програвач
+cover-preset-cd-player = CD-плеєр
+cover-preset-disc-scan = Скан диска
+cover-preset-preview = Попередній перегляд
 
 ## Lyrics
 lyrics-always-centered = Завжди по центру
@@ -3049,6 +3064,11 @@ particles-turbulence-scale = Масштаб турбулентності
 particles-turbulence-strength = Сила
     .description = Наскільки сильно поле штовхає частинки; нуль вимикає
 particles-width = Ширина
+particles-preset-fountain = Фонтан
+particles-preset-snowfall = Снігопад
+particles-preset-embers = Жарини
+particles-preset-starburst = Спалах
+particles-preset-swarm = Рій
 
 ## Spectrum panel
 spectrum-axis-labels = Підписи осі
@@ -3105,6 +3125,10 @@ spectrum-symmetry = Симетрія
     .description = Скласти спектр навколо центру; вперед ставить низи по краях, назад зводить їх посередині
 spectrum-symmetry-forward = Вперед
 spectrum-symmetry-reverse = Назад
+spectrum-preset-retro = Ретро
+spectrum-preset-smooth = Плавний
+spectrum-preset-ambient = Ембієнт
+spectrum-preset-analyzer = Аналізатор
 
 ## Waveform panel
 waveform-bar-gap = Проміжок між смугами
@@ -3143,11 +3167,17 @@ waveform-live-expression-error = { $reason }, тому смуга малює ф�
 waveform-section-live = Ефір
 waveform-streaming = ПОТІК
 waveform-unavailable = Для цього треку форма хвилі недоступна
+waveform-preset-progress = Прогрес
+waveform-preset-solid = Суцільний
+waveform-preset-outline = Контур
+waveform-preset-stereo = Стерео
+waveform-preset-blocks = Блоки
 
 ## VU panel
 vu-ballistics = Балістика
     .description = VU інтегрує гучність повільно; Пік підскакує вгору й плавно спадає
 vu-ballistics-peak = Пік
+vu-ballistics-vu = VU
 vu-cap-gravity = Тяжіння позначок
     .description = Наскільки різко падають позначки піків, коли індикатор опускається
 vu-channels = Канали
@@ -3173,6 +3203,10 @@ vu-style = Стиль
     .description = Суцільний стовпчик або сегменти в стилі LED
 vu-style-continuous = Суцільний
 vu-style-segments = Сегменти
+vu-preset-analog = Аналоговий
+vu-preset-led-ladder = LED-шкала
+vu-preset-peak-hold = Утримання піків
+vu-preset-mono-strip = Моно-смуга
 
 ## Spectrogram panel
 spectrogram-ceiling = Стеля
@@ -3208,6 +3242,10 @@ spectrogram-low-bound = Нижня межа
 spectrogram-section-picture = Зображення
 spectrogram-speed = Швидкість
     .description = Наскільки швидко прокручується зображення, у стовпцях за секунду
+spectrogram-preset-lab = Лабораторія
+spectrogram-preset-waterfall = Водоспад
+spectrogram-preset-ambient = Ембієнт
+spectrogram-preset-low-end = Низи
 
 ## Oscilloscope panel
 oscilloscope-channels = Канали
@@ -3239,6 +3277,10 @@ oscilloscope-trigger-off = Вимк.
 oscilloscope-trigger-rising = Висхідний
 oscilloscope-window = Вікно
     .description = Скільки часу охоплює крива по ширині панелі
+oscilloscope-preset-phosphor = Люмінофор
+oscilloscope-preset-sweep = Розгортка
+oscilloscope-preset-zoom = Наближення
+oscilloscope-preset-stereo = Стерео
 
 ## Shader panel
 shader-panel-compile-error = Цей шейдер не скомпілювався:
@@ -3345,6 +3387,11 @@ genre-grid-unmerge = { $count ->
     [many] Роз'єднати { $count } значень
    *[other] Роз'єднати { $count } значення
 }
+genre-grid-preset-spotlight = Прожектор
+genre-grid-preset-compact = Компактно
+genre-grid-preset-browse = Огляд
+genre-grid-preset-shelf = Полиця
+genre-grid-preset-cards = Картки
 
 ## Artist grid panel
 artist-grid-clear-picked = Очистити вибраних виконавців
@@ -3372,6 +3419,11 @@ artist-grid-tally = { $albums ->
    *[other] { $albums } альбому, треків: { $tracks }
 }
 artist-grid-track-artist = Виконавець треку
+artist-grid-preset-spotlight = Прожектор
+artist-grid-preset-compact = Компактно
+artist-grid-preset-browse = Огляд
+artist-grid-preset-shelf = Полиця
+artist-grid-preset-portraits = Портрети
 
 ## Wall panels
 wall-dim-always = Завжди
@@ -3470,6 +3522,11 @@ metadata-value-none = н/д
 metadata-source = Джерело
     .description = Стежити за тим, що грає чи вибрано, або читати медіатеку загалом
 metadata-stripes-description = Тонувати кожен другий рядок таблиці
+metadata-preset-tagging = Теги
+metadata-preset-technical = Технічні
+metadata-preset-listening = Прослуховування
+metadata-preset-minimal = Мінімум
+metadata-preset-overview = Зведення
 
 ## History panel
 history-column-last-played = Востаннє грав
@@ -3498,6 +3555,9 @@ history-no-plugins = Жоден запущений плагін не може з
 history-pick-plugin = Виберіть плагін у пункті Відтворити з у меню цього рядка
 history-view-row = Вигляд
     .description = Який зріз запису прослуханого показує панель
+history-preset-timeline = Хроніка
+history-preset-charts = Чарти
+history-preset-discover = Відкриття
 
 ## Folder tree panel
 folder-tree-clear-scope = Очистити обсяг теки
@@ -3526,12 +3586,14 @@ folder-tree-scope-to-folder = Звузити фільтр до теки
 folder-tree-smooth-description = Плавно ковзати до треку замість стрибка
 folder-tree-stripes-description = Тонувати кожен другий рядок, щоб глибоке дерево читалося
 folder-tree-title = Дерево
+folder-tree-preset-covers = Обкладинки
+folder-tree-preset-search = Пошук
+folder-tree-preset-now-playing = Зараз грає
 
 ## Art panel
 art-always = Тримати обкладинки притлумленими, навіть коли нічого не грає; на повну показується лише обкладинка під курсором
 art-convert = Конвертувати...
 art-covers-section = Обкладинки
-matcher-section-matches = Збіги
 art-desaturate = Злити колір з кожної обкладинки, крім альбому, що грає; наведення повертає обкладинці колір
 art-dim-while-playing = Пригасити кожну обкладинку, крім альбому, що грає; наведення повертає обкладинці світло
 art-disc-style = Стиль диска
@@ -3568,6 +3630,10 @@ art-smooth-description = Плавно ковзати до альбому зам�
 art-title = Карусель альбомів
 art-vertical-layout = Вертикальна розкладка
     .description = Скласти полицю стовпцем, що гортається вгору й вниз, замість ряду
+art-preset-gallery = Галерея
+art-preset-spotlight = Прожектор
+art-preset-browse = Огляд
+art-preset-jukebox = Музичний автомат
 
 ## Playlists panel
 playlists-art-description = The expanded headings' cover tile
@@ -3599,6 +3665,10 @@ playlists-remove = { $count ->
 playlists-rename = Перейменувати...
 playlists-reverse-tooltip = Обернути порядок
 playlists-title = Списки відтворення
+playlists-preset-albums = Альбоми
+playlists-preset-classic = Класика
+playlists-preset-covers = Обкладинки
+playlists-preset-minimal = Мінімум
 
 ## Queue panel
 queue-clear = Очистити чергу
@@ -3612,6 +3682,8 @@ queue-remove = { $count ->
    *[other] Прибрати { $count } трека з черги
 }
 queue-title = Черга
+queue-preset-albums = Альбоми
+queue-preset-detailed = Докладно
 queue-widget-always-modal = Завжди відкривати модально
     .description = Відкривати чергу в модальному вікні щоразу, замість переходу до вже відкритої панелі черги
 queue-widget-clear-queue = Очистити чергу
@@ -3687,6 +3759,10 @@ biography-top-tracks = Популярні треки
 biography-top-tracks-count = Кількість треків
     .description = Скільки популярних треків показувати
 biography-top-tracks-heading = Популярні треки
+biography-preset-reader = Читання
+biography-preset-poster = Постер
+biography-preset-discover = Відкриття
+biography-preset-compact = Компактно
 
 ## Status panel
 status-count-albums = { $count ->
@@ -3828,6 +3904,9 @@ playback-stop-after-tip = Зупинитися після цього треку
 playback-stop-tip = Зупинити й вивантажити трек
 playback-volume-tip-muted = Увімкнути звук, { $percent }%. Права кнопка дає повзунок
 playback-volume-tip-unmuted = Вимкнути звук, { $percent }%. Права кнопка дає повзунок
+playback-preset-minimal = Мінімум
+playback-preset-practice = Практика
+playback-preset-discovery = Відкриття
 
 ## Track info panel
 track-info-color-output-chip = Кольорова позначка виходу
@@ -3856,6 +3935,10 @@ track-info-row-size = Розмір рядка { $number }
 track-info-speed = Швидкість
     .description = Як швидко повзе рядок
 track-info-text-size = Розмір тексту
+track-info-preset-ticker = Тікер
+track-info-preset-stacked = У два ряди
+track-info-preset-technical = Технічний
+track-info-preset-rotating = Чергування
 
 ## Playback failures
 
@@ -3894,6 +3977,9 @@ seek-lead-in-sweep = Біжучий градієнт
 seek-section-live = Ефір
 seek-thickness = Товщина
     .description = Висота лінії треку
+seek-preset-hairline = Тонка лінія
+seek-preset-stacked = У два ряди
+seek-preset-pill = Капсула
 
 ## Volume panel
 volume-pieces = Частини
@@ -3908,6 +3994,8 @@ volume-tip-mute = Вимкнути звук
 volume-tip-mute-level = Вимкнути звук, { $level }
 volume-tip-unmute = Увімкнути звук
 volume-tip-unmute-level = Увімкнути звук, { $level }
+volume-preset-fader = Фейдер
+volume-preset-icon-only = Лише значок
 
 ## Shared panel content
 content-filter = Фільтр
@@ -4228,6 +4316,10 @@ milkdrop-unfavorite = Прибрати з обраного
 milkdrop-reveal-folder = Показати теку
 milkdrop-show-controls = Показувати керування
     .description = Назад, Далі, Випадковий і зірка обраного поверх візуалізації, поки вказівник на панелі
+milkdrop-preset-ambient = Ембієнт
+milkdrop-preset-party = Вечірка
+milkdrop-preset-browse = Огляд
+milkdrop-preset-low-power = Економія
 
 ## Source browser
 

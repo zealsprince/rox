@@ -78,35 +78,22 @@ struct OpenPanelSettings(HashMap<EntityId, WindowHandle<Root>>);
 
 impl Global for OpenPanelSettings {}
 
-/// Per rebuilt panel, by its id: what it replaced, so its settings window
-/// offers one step back, and the preset that built it, so the picker can
-/// name it while the panel still matches. Undo takes the step; no redo.
+/// Per rebuilt panel, by its id: the preset that built it, so the picker can
+/// name it while the panel still matches. A rebuild makes a new entity, so
+/// the name follows the panel to its new id.
 #[derive(Default)]
 struct PresetMarks {
-    undo: HashMap<EntityId, PanelPreset>,
     applied: HashMap<EntityId, PanelPreset>,
 }
 
 impl Global for PresetMarks {}
 
 impl PresetMarks {
-    fn note(&mut self, id: EntityId, previous: Option<PanelPreset>, applied: Option<PanelPreset>) {
-        match previous {
-            Some(previous) => self.undo.insert(id, previous),
-            None => self.undo.remove(&id),
-        };
-        match applied {
-            Some(applied) => self.applied.insert(id, applied),
-            None => self.applied.remove(&id),
-        };
-    }
-
-    fn take_undo(&mut self, id: EntityId) -> Option<PanelPreset> {
-        self.undo.remove(&id)
-    }
-
-    fn has_undo(&self, id: EntityId) -> bool {
-        self.undo.contains_key(&id)
+    fn note(&mut self, from: EntityId, to: EntityId, named: Option<PanelPreset>) {
+        self.applied.remove(&from);
+        if let Some(named) = named {
+            self.applied.insert(to, named);
+        }
     }
 
     fn applied(&self, id: EntityId) -> Option<&PanelPreset> {
@@ -114,16 +101,16 @@ impl PresetMarks {
     }
 }
 
-/// Record a rebuild: what `rebuilt` replaced, for Undo Preset, and the preset
-/// it was built from, for the picker's label. None clears either.
+/// Record a rebuild of `from` into `rebuilt`, named after `named` for the
+/// picker's label, or unnamed.
 pub fn note_preset_apply(
+    from: EntityId,
     rebuilt: EntityId,
-    previous: Option<PanelPreset>,
-    applied: Option<PanelPreset>,
+    named: Option<PanelPreset>,
     cx: &mut App,
 ) {
     cx.default_global::<PresetMarks>()
-        .note(rebuilt, previous, applied);
+        .note(from, rebuilt, named);
 }
 
 /// The Panel Settings menu entry. A panel hosted in a composite gets its
@@ -1205,6 +1192,10 @@ struct PanelSettingsWindow<P: PanelSettings> {
     _panel_changed: Option<Subscription>,
     /// Its own wake on a new bake, since this window pumps its own frames.
     _backdrop_changed: Subscription,
+    /// The panel as it was when this window opened, and the preset it
+    /// matched then. Reset puts both back, whatever changed since.
+    opened: Option<PanelPreset>,
+    opened_named: Option<PanelPreset>,
 }
 
 impl<P: PanelSettings> PanelSettingsWindow<P> {
@@ -1222,6 +1213,17 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .upgrade()
             .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+
+        let opened = panel.upgrade().and_then(|panel| {
+            let dump = serde_json::to_value(panel.read(cx).dump(cx)).ok()?;
+            Some(PanelPreset {
+                name: panel.read(cx).panel_name().to_string(),
+                panel: dump,
+            })
+        });
+        let opened_named = cx
+            .try_global::<PresetMarks>()
+            .and_then(|marks| marks.applied(panel.entity_id()).cloned());
         // The OS close button runs no teardown of ours, so save the frame from the
         // should-close hook. Shared across panels: the last closed window wins.
         window.on_window_should_close(cx, move |window, _| {
@@ -1342,6 +1344,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             _picker_changes,
             _panel_changed,
             _backdrop_changed,
+            opened,
+            opened_named,
         }
     }
 
@@ -2886,8 +2890,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     }
 }
 
-/// Whether any of these tab groups holds the panel. A popped-out panel or a
-/// composite's slot has no tab slot for a preset to rebuild into.
+/// Whether any of these tab groups holds the panel. A composite's child
+/// isn't in one either; the openers answer for those.
 fn hosted_in(groups: &[Vec<EntityId>], id: EntityId) -> bool {
     groups.iter().any(|group| group.contains(&id))
 }
@@ -2938,8 +2942,7 @@ fn preset_item<P: PanelSettings>(
         };
         crate::openers::apply_panel_preset(
             Arc::new(panel),
-            preset.clone(),
-            PresetApply::Pick,
+            PresetApply::pick(preset.clone()),
             state.clone(),
             follow_rebuild(me.clone(), window),
             cx,
@@ -3096,7 +3099,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     }
 
     /// The head of the nav: the preset picker, Save As Preset, and Undo
-    /// Preset. None when the panel has no tab group.
+    /// Preset. None when nothing holds the panel, like a popped-out one,
+    /// since a preset has no slot to rebuild into.
     fn presets_head(&self, panel: &Entity<P>, me: WeakEntity<Self>, cx: &App) -> Option<Div> {
         let groups: Vec<Vec<EntityId>> = self
             .state
@@ -3112,21 +3116,23 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     .collect()
             })
             .collect();
-        if !hosted_in(&groups, panel.entity_id()) {
+        let id = panel.entity_id();
+        if !hosted_in(&groups, id) && !crate::openers::hosted_by_composite(id, cx) {
             return None;
         }
 
-        let id = panel.entity_id();
-        let marks = cx.try_global::<PresetMarks>();
+        let dump = serde_json::to_value(panel.read(cx).dump(cx)).ok();
         // Named only while the panel still is that preset: an edit since drops
         // the label back to the plain word.
-        let applied = marks
+        let applied = cx
+            .try_global::<PresetMarks>()
             .and_then(|marks| marks.applied(id))
-            .filter(|applied| {
-                serde_json::to_value(panel.read(cx).dump(cx)).ok().as_ref() == Some(&applied.panel)
-            })
+            .filter(|applied| dump.as_ref() == Some(&applied.panel))
             .map(|applied| SharedString::from(applied.name.clone()));
-        let can_undo = marks.is_some_and(|marks| marks.has_undo(id));
+        let changed = self
+            .opened
+            .as_ref()
+            .is_some_and(|opened| dump.as_ref() != Some(&opened.panel));
 
         // Sources are read when the menu opens, so a preset saved from another
         // window shows up without this one repainting.
@@ -3199,28 +3205,23 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         })
         .keyed("preset-save");
 
-        // Always drawn, so the row never shifts; inert until there's a step back.
-        let (undoing, state, me_undo) = (self.panel.clone(), self.state.clone(), me);
-        let undo = settings_ui::icon_button(icons::SEEK_BACK, !can_undo, move |_, window, cx| {
-            let Some(panel) = undoing.upgrade() else {
-                return;
-            };
-            let Some(previous) = cx
-                .default_global::<PresetMarks>()
-                .take_undo(panel.entity_id())
-            else {
+        // Always drawn, so the row never shifts; inert while the panel still
+        // is what it was at open.
+        let (resetting, state, me_reset) = (self.panel.clone(), self.state.clone(), me);
+        let (opened, opened_named) = (self.opened.clone(), self.opened_named.clone());
+        let undo = settings_ui::icon_button(icons::SEEK_BACK, !changed, move |_, window, cx| {
+            let (Some(panel), Some(opened)) = (resetting.upgrade(), opened.clone()) else {
                 return;
             };
             crate::openers::apply_panel_preset(
                 Arc::new(panel),
-                previous,
-                PresetApply::Undo,
+                PresetApply::reset(opened, opened_named.clone()),
                 state.clone(),
-                follow_rebuild(me_undo.clone(), window),
+                follow_rebuild(me_reset.clone(), window),
                 cx,
             );
         })
-        .keyed("preset-undo");
+        .keyed("preset-reset");
 
         // The menu wraps the button in its own element, so the shrink rules go
         // on a box around it. Without that the wrapper sizes to the name and a
@@ -3515,29 +3516,26 @@ mod tests {
     }
 
     #[test]
-    fn preset_marks_undo_once_and_name_until_cleared() {
+    fn preset_marks_follow_the_panel_across_rebuilds() {
         let mut marks = PresetMarks::default();
-        let id = EntityId::from(7u64);
+        let (a, b, c) = (
+            EntityId::from(1u64),
+            EntityId::from(2u64),
+            EntityId::from(3u64),
+        );
         let preset = |name: &str| PanelPreset {
             name: name.into(),
             panel: serde_json::json!({ "panel_name": "lyrics" }),
         };
-        assert!(!marks.has_undo(id));
 
-        marks.note(id, Some(preset("before")), Some(preset("Karaoke")));
-        assert!(marks.has_undo(id));
-        assert_eq!(marks.applied(id).map(|p| p.name.as_str()), Some("Karaoke"));
-        assert_eq!(
-            marks.take_undo(id).map(|p| p.name),
-            Some("before".to_string())
-        );
+        marks.note(a, b, Some(preset("Karaoke")));
+        assert!(marks.applied(a).is_none(), "the name moved on");
+        assert_eq!(marks.applied(b).map(|p| p.name.as_str()), Some("Karaoke"));
 
-        assert!(!marks.has_undo(id), "taking the step clears it");
-        assert!(marks.take_undo(id).is_none());
-
-        // An undo rebuild notes nothing, which also clears the name.
-        marks.note(id, None, None);
-        assert!(marks.applied(id).is_none());
+        // A reset to an unnamed state leaves the rebuilt panel unnamed.
+        marks.note(b, c, None);
+        assert!(marks.applied(b).is_none());
+        assert!(marks.applied(c).is_none());
     }
 
     #[test]

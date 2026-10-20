@@ -176,6 +176,81 @@ impl Default for GenreGridConfig {
     }
 }
 
+/// The presets every Genre Grid panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, GenreGridConfig)> {
+    vec![
+        (
+            "genre-grid-preset-spotlight",
+            GenreGridConfig {
+                face: TileFace::Mosaic,
+                tile: TILE_MAX,
+                gap: 0.,
+                rounding: 0.,
+                labels: false,
+                counts: false,
+                follow_playing: true,
+                resume_playing: true,
+                smooth_follow: true,
+                dim_playing: true,
+                desaturate_playing: true,
+                dim: 75.,
+                ..GenreGridConfig::default()
+            },
+        ),
+        (
+            "genre-grid-preset-compact",
+            GenreGridConfig {
+                tile: TILE_MIN,
+                gap: 2.,
+                rounding: 6.,
+                labels: false,
+                counts: false,
+                letters: true,
+                letters_compact: true,
+                ..GenreGridConfig::default()
+            },
+        ),
+        (
+            "genre-grid-preset-browse",
+            GenreGridConfig {
+                search: true,
+                letters: true,
+                tile: 128.,
+                gap: 12.,
+                labels: true,
+                counts: true,
+                label_align: TitleAlign::Center,
+                ..GenreGridConfig::default()
+            },
+        ),
+        (
+            "genre-grid-preset-shelf",
+            GenreGridConfig {
+                vertical: false,
+                tile: 128.,
+                labels: true,
+                counts: false,
+                label_align: TitleAlign::Center,
+                ..GenreGridConfig::default()
+            },
+        ),
+        // The color card sets the name on the tile itself, so the caption goes.
+        (
+            "genre-grid-preset-cards",
+            GenreGridConfig {
+                face: TileFace::Color,
+                tile: 128.,
+                gap: 12.,
+                rounding: 20.,
+                labels: false,
+                counts: false,
+                ..GenreGridConfig::default()
+            },
+        ),
+    ]
+}
+
 struct Cell {
     /// The caption and the filter pick both. Empty is the untagged bucket.
     name: String,
@@ -2610,5 +2685,42 @@ impl GenreGridPanel {
                         .child(error),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: HashSet<&str> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len(), "preset keys must be unique");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: GenreGridConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.vertical, config.vertical, "{key}");
+            assert_eq!(back.search, config.search, "{key}");
+            assert_eq!(back.letters, config.letters, "{key}");
+            assert_eq!(back.letters_compact, config.letters_compact, "{key}");
+            assert_eq!(back.tile, config.tile, "{key}");
+            assert_eq!(back.follow_playing, config.follow_playing, "{key}");
+            assert_eq!(back.resume_playing, config.resume_playing, "{key}");
+            assert_eq!(back.smooth_follow, config.smooth_follow, "{key}");
+            assert_eq!(back.dim_playing, config.dim_playing, "{key}");
+            assert_eq!(back.desaturate_playing, config.desaturate_playing, "{key}");
+            assert_eq!(back.dim, config.dim, "{key}");
+            assert_eq!(back.rounding, config.rounding, "{key}");
+            assert_eq!(back.gap, config.gap, "{key}");
+            assert_eq!(back.labels, config.labels, "{key}");
+            assert_eq!(back.counts, config.counts, "{key}");
+            assert_eq!(back.pick_filters, config.pick_filters, "{key}");
+            assert!(back.label_align == config.label_align, "{key}");
+            assert!(back.face == config.face, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

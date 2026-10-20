@@ -19,6 +19,7 @@ letter-rail-compact = 紧凑索引
 letter-rail-side = 索引位置
     .description = 索引悬挂在墙的哪一侧
 toast-copied = 已复制到剪贴板
+matcher-section-matches = 匹配
 
 ## Panel source and search rows
 source-track = 曲目
@@ -192,7 +193,7 @@ preset-group-global = 全局
 preset-group-workspace = 本工作区
 preset-group-other = 来自 { $workspace }
 preset-none-for-kind = 这个面板还没有预设
-preset-undo = 撤销预设
+preset-reset = 重置更改
 preset-save-scope = 保存到
     .description = 全局预设在每个工作区都会出现，着色器也随预设一起保存
 preset-scope-workspace = 本工作区
@@ -682,6 +683,11 @@ library-circular-portraits = 圆形肖像
     .description = 按艺术家分组时，把图块磨成整圆，而不是用圆角旋钮
 library-genre-face = 流派图面
     .description = 按流派分组时图块显示什么：封面、按流派颜色染过的封面，或几何图形下的纯色卡片
+library-preset-compact = 紧凑
+library-preset-showcase = 展示
+library-preset-dj = DJ
+library-preset-tagging = 标签编辑
+library-preset-audiophile = 发烧友
 
 ## Stations panel
 
@@ -759,6 +765,11 @@ grid-tile-size = 图块大小
 grid-gap = 间距
     .description = 封面之间的空隙；为零就边挨边排满
 grid-art-rounding-description = 把每张封面的角磨圆；100% 是圆形
+grid-preset-spotlight = 聚光灯
+grid-preset-compact = 紧凑
+grid-preset-browse = 浏览
+grid-preset-shelf = 唱片架
+grid-preset-new-arrivals = 新入库
 
 ## Settings: sidebar pages
 settings-page-appearance = 外观
@@ -2667,6 +2678,10 @@ cover-stretch = 拉伸
     .description = 填满面板，不管图片的宽高比
 cover-stretch-to-fill = 拉伸填满
 cover-title = 封面
+cover-preset-turntable = 唱机
+cover-preset-cd-player = CD 播放器
+cover-preset-disc-scan = 碟片扫描
+cover-preset-preview = 预览
 
 ## Lyrics
 lyrics-always-centered = 始终居中
@@ -2935,6 +2950,11 @@ particles-turbulence-scale = 湍流尺度
 particles-turbulence-strength = 强度
     .description = 场把粒子推得多用力；为零就是关掉
 particles-width = 宽度
+particles-preset-fountain = 喷泉
+particles-preset-snowfall = 落雪
+particles-preset-embers = 余烬
+particles-preset-starburst = 星爆
+particles-preset-swarm = 蜂群
 
 ## Spectrum panel
 spectrum-axis-labels = 坐标标签
@@ -2991,6 +3011,10 @@ spectrum-symmetry = 对称
     .description = 把频谱绕中心对折；正向把低频放在两侧，反向让它们在中间会合
 spectrum-symmetry-forward = 正向
 spectrum-symmetry-reverse = 反向
+spectrum-preset-retro = 复古
+spectrum-preset-smooth = 平滑
+spectrum-preset-ambient = 氛围
+spectrum-preset-analyzer = 分析仪
 
 ## Waveform panel
 waveform-bar-gap = 柱间距
@@ -3029,11 +3053,17 @@ waveform-live-expression-error = { $reason }，所以带子画的是默认形状
 waveform-section-live = 直播
 waveform-streaming = 流媒体
 waveform-unavailable = 这首曲目没有波形
+waveform-preset-progress = 进度
+waveform-preset-solid = 实心
+waveform-preset-outline = 描边
+waveform-preset-stereo = 立体声
+waveform-preset-blocks = 方块
 
 ## VU panel
 vu-ballistics = 表针特性
     .description = VU 慢慢积分响度；峰值猛冲上去、缓缓落下
 vu-ballistics-peak = 峰值
+vu-ballistics-vu = VU
 vu-cap-gravity = 峰帽重力
     .description = 表针落下后峰值标记掉得多快
 vu-channels = 声道
@@ -3059,6 +3089,10 @@ vu-style = 样式
     .description = 一整条实心柱，或者 LED 式分段
 vu-style-continuous = 连续
 vu-style-segments = 分段
+vu-preset-analog = 模拟
+vu-preset-led-ladder = LED 灯柱
+vu-preset-peak-hold = 峰值保持
+vu-preset-mono-strip = 单声道条
 
 ## Spectrogram panel
 spectrogram-ceiling = 上限
@@ -3094,6 +3128,10 @@ spectrogram-low-bound = 低端
 spectrogram-section-picture = 图像
 spectrogram-speed = 速度
     .description = 画面滚动的快慢，以每秒多少列计
+spectrogram-preset-lab = 实验室
+spectrogram-preset-waterfall = 瀑布
+spectrogram-preset-ambient = 氛围
+spectrogram-preset-low-end = 低频
 
 ## Oscilloscope panel
 
@@ -3126,6 +3164,10 @@ oscilloscope-trigger-off = 关
 oscilloscope-trigger-rising = 上升
 oscilloscope-window = 窗口
     .description = 轨迹在面板上跨越的时长
+oscilloscope-preset-phosphor = 荧光
+oscilloscope-preset-sweep = 扫描
+oscilloscope-preset-zoom = 放大
+oscilloscope-preset-stereo = 立体声
 
 ## Shader panel
 shader-panel-compile-error = 这个着色器没编译过：
@@ -3208,6 +3250,11 @@ genre-grid-tile-face = 图块外观
 genre-grid-unmerge = { $count ->
    *[other] 取消合并 { $count } 个值
 }
+genre-grid-preset-spotlight = 聚光灯
+genre-grid-preset-compact = 紧凑
+genre-grid-preset-browse = 浏览
+genre-grid-preset-shelf = 唱片架
+genre-grid-preset-cards = 卡片
 
 ## Artist grid panel
 artist-grid-clear-picked = 清除已选艺术家
@@ -3232,6 +3279,11 @@ artist-grid-tally = { $albums ->
    *[other] { $albums } 张专辑，{ $tracks } 首曲目
 }
 artist-grid-track-artist = 曲目艺术家
+artist-grid-preset-spotlight = 聚光灯
+artist-grid-preset-compact = 紧凑
+artist-grid-preset-browse = 浏览
+artist-grid-preset-shelf = 唱片架
+artist-grid-preset-portraits = 肖像
 
 ## Wall panels
 wall-dim-always = 始终
@@ -3330,6 +3382,11 @@ metadata-value-none = 无
 metadata-source = 来源
     .description = 跟随正在播放或选中的，或者读整个媒体库
 metadata-stripes-description = 给表格隔行上色
+metadata-preset-tagging = 标签整理
+metadata-preset-technical = 技术参数
+metadata-preset-listening = 收听记录
+metadata-preset-minimal = 极简
+metadata-preset-overview = 概览
 
 ## History panel
 history-column-last-played = 上次播放
@@ -3358,6 +3415,9 @@ history-no-plugins = 没有正在运行的插件能搜索这首歌
 history-pick-plugin = 在这一行菜单的播放来源中选择一个插件
 history-view-row = 视图
     .description = 面板显示收听记录的哪一面
+history-preset-timeline = 时间线
+history-preset-charts = 排行
+history-preset-discover = 发现
 
 ## Folder tree panel
 folder-tree-clear-scope = 清除文件夹范围
@@ -3383,12 +3443,14 @@ folder-tree-scope-to-folder = 把筛选限定到文件夹
 folder-tree-smooth-description = 滑到那首曲目，而不是直接跳
 folder-tree-stripes-description = 隔行上色，层级深的树更好扫
 folder-tree-title = 树
+folder-tree-preset-covers = 封面
+folder-tree-preset-search = 搜索
+folder-tree-preset-now-playing = 正在播放
 
 ## Art panel
 art-always = 什么都没播时也让封面退到后面；只有悬停的那张完整显示
 art-convert = 转换…
 art-covers-section = 封面
-matcher-section-matches = 匹配
 art-desaturate = 让除正在播放的专辑外每张封面都变灰；悬停能让某张恢复颜色
 art-dim-while-playing = 让除正在播放的专辑外每张封面都淡下去；悬停能把某张重新点亮
 art-disc-style = 碟片样式
@@ -3425,6 +3487,10 @@ art-smooth-description = 滑到那张专辑，而不是直接跳
 art-title = 专辑转盘
 art-vertical-layout = 纵向布局
     .description = 把架子叠成一列上下滚动，而不是排成一行
+art-preset-gallery = 画廊
+art-preset-spotlight = 聚光灯
+art-preset-browse = 浏览
+art-preset-jukebox = 点唱机
 
 ## Playlists panel
 playlists-art-description = The expanded headings' cover tile
@@ -3453,6 +3519,10 @@ playlists-remove = { $count ->
 playlists-rename = 重命名…
 playlists-reverse-tooltip = 反转顺序
 playlists-title = 播放列表
+playlists-preset-albums = 专辑
+playlists-preset-classic = 经典
+playlists-preset-covers = 封面
+playlists-preset-minimal = 极简
 
 ## Queue panel
 queue-clear = 清空队列
@@ -3463,6 +3533,8 @@ queue-remove = { $count ->
    *[other] 从队列移除 { $count } 首
 }
 queue-title = 队列
+queue-preset-albums = 专辑
+queue-preset-detailed = 详细
 queue-widget-always-modal = 总是以浮层打开
     .description = 每次都在浮层里打开队列，而不是跳到已经开着的队列面板
 queue-widget-clear-queue = 清空队列
@@ -3528,6 +3600,10 @@ biography-top-tracks = 热门曲目
 biography-top-tracks-count = 曲目数量
     .description = 列出多少首热门曲目
 biography-top-tracks-heading = 热门曲目
+biography-preset-reader = 阅读
+biography-preset-poster = 海报
+biography-preset-discover = 发现
+biography-preset-compact = 紧凑
 
 ## Status panel
 status-count-albums = { $count ->
@@ -3657,6 +3733,9 @@ playback-stop-after-tip = 播完这首就停
 playback-stop-tip = 停止并卸载曲目
 playback-volume-tip-muted = 取消静音，{ $percent }%。右键出滑块
 playback-volume-tip-unmuted = 静音，{ $percent }%。右键出滑块
+playback-preset-minimal = 极简
+playback-preset-practice = 练习
+playback-preset-discovery = 发现
 
 ## Track info panel
 track-info-color-output-chip = 给输出标签上色
@@ -3685,6 +3764,10 @@ track-info-row-size = 第 { $number } 行大小
 track-info-speed = 速度
     .description = 这行文字滚动得多快
 track-info-text-size = 文字大小
+track-info-preset-ticker = 滚动字幕
+track-info-preset-stacked = 堆叠
+track-info-preset-technical = 技术
+track-info-preset-rotating = 轮播
 
 ## Playback failures
 
@@ -3723,6 +3806,9 @@ seek-lead-in-sweep = 前段流光
 seek-section-live = 直播
 seek-thickness = 粗细
     .description = 曲目进度线的高度
+seek-preset-hairline = 细线
+seek-preset-stacked = 堆叠
+seek-preset-pill = 胶囊
 
 ## Volume panel
 volume-pieces = 组件
@@ -3737,6 +3823,8 @@ volume-tip-mute = 静音
 volume-tip-mute-level = 静音，{ $level }
 volume-tip-unmute = 取消静音
 volume-tip-unmute-level = 取消静音，{ $level }
+volume-preset-fader = 推子
+volume-preset-icon-only = 仅图标
 
 ## Shared panel content
 content-filter = 筛选
@@ -4020,6 +4108,10 @@ milkdrop-unfavorite = 取消收藏
 milkdrop-reveal-folder = 显示文件夹
 milkdrop-show-controls = 显示控件
     .description = 指针在面板上时，在视觉效果上显示上一个、下一个、随机和收藏星标
+milkdrop-preset-ambient = 氛围
+milkdrop-preset-party = 派对
+milkdrop-preset-browse = 浏览
+milkdrop-preset-low-power = 省电
 
 ## Source browser
 

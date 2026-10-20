@@ -2,14 +2,16 @@
 //! The dock's own splits can't go inside a tab, so the group hosts its children
 //! through [`crate::composite`] and drags its own dividers.
 
+use std::sync::Arc;
+
 use gpui::{
-    App, Axis, Context, Div, EventEmitter, FocusHandle, Focusable, SharedString, WeakEntity,
-    Window, canvas, div, prelude::*, px, relative,
+    App, Axis, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, SharedString,
+    WeakEntity, Window, canvas, div, prelude::*, px, relative,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable as _};
-use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_dock::{Panel, PanelEvent, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::composite::{self, DividerState, Slot};
@@ -479,6 +481,22 @@ impl PanelSettings for GroupPanel {
         self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
+    }
+}
+
+impl composite::Hosting for GroupPanel {
+    fn replace_child(
+        &mut self,
+        old: EntityId,
+        new: Arc<dyn PanelView>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(ix) = composite::slot_of(&self.slots, old) else {
+            return false;
+        };
+
+        self.set_slot(ix, Some(new), cx);
+        true
     }
 }
 

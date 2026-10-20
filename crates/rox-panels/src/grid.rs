@@ -225,6 +225,82 @@ impl Default for GridConfig {
     }
 }
 
+/// The presets every Album Grid panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, GridConfig)> {
+    vec![
+        (
+            "grid-preset-spotlight",
+            GridConfig {
+                tile: TILE_MAX,
+                gap: 0.,
+                rounding: 0.,
+                labels: false,
+                follow_playing: true,
+                resume_playing: true,
+                smooth_follow: true,
+                dim_playing: true,
+                desaturate_playing: true,
+                dim: 75.,
+                ..GridConfig::default()
+            },
+        ),
+        (
+            "grid-preset-compact",
+            GridConfig {
+                tile: TILE_MIN,
+                gap: 2.,
+                rounding: 6.,
+                labels: false,
+                letters: true,
+                letters_compact: true,
+                ..GridConfig::default()
+            },
+        ),
+        (
+            "grid-preset-browse",
+            GridConfig {
+                search: true,
+                letters: true,
+                tile: 160.,
+                gap: 12.,
+                rounding: 4.,
+                labels: true,
+                label_align: TitleAlign::Center,
+                label_year: true,
+                label_genre: true,
+                label_tracks: true,
+                label_duration: true,
+                ..GridConfig::default()
+            },
+        ),
+        (
+            "grid-preset-shelf",
+            GridConfig {
+                vertical: false,
+                tile: 128.,
+                gap: 8.,
+                rounding: 4.,
+                labels: true,
+                label_align: TitleAlign::Center,
+                ..GridConfig::default()
+            },
+        ),
+        (
+            "grid-preset-new-arrivals",
+            GridConfig {
+                sort: GridSort::Added,
+                tile: 160.,
+                gap: 12.,
+                rounding: 4.,
+                labels: true,
+                label_added: true,
+                ..GridConfig::default()
+            },
+        ),
+    ]
+}
+
 impl GridConfig {
     pub fn caption_height(&self) -> f32 {
         if !self.labels {
@@ -2819,5 +2895,41 @@ mod tests {
 
         // All 7 fields enabled: 24 + 7 * 16 = 136
         assert_eq!(config.caption_height(), 136.);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: HashSet<&str> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len(), "preset keys must be unique");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: GridConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.vertical, config.vertical, "{key}");
+            assert_eq!(back.search, config.search, "{key}");
+            assert_eq!(back.letters, config.letters, "{key}");
+            assert_eq!(back.letters_compact, config.letters_compact, "{key}");
+            assert_eq!(back.tile, config.tile, "{key}");
+            assert_eq!(back.follow_playing, config.follow_playing, "{key}");
+            assert_eq!(back.resume_playing, config.resume_playing, "{key}");
+            assert_eq!(back.smooth_follow, config.smooth_follow, "{key}");
+            assert_eq!(back.dim_playing, config.dim_playing, "{key}");
+            assert_eq!(back.desaturate_playing, config.desaturate_playing, "{key}");
+            assert_eq!(back.dim, config.dim, "{key}");
+            assert_eq!(back.rounding, config.rounding, "{key}");
+            assert_eq!(back.gap, config.gap, "{key}");
+            assert_eq!(back.labels, config.labels, "{key}");
+            assert_eq!(back.label_artist, config.label_artist, "{key}");
+            assert_eq!(back.label_genre, config.label_genre, "{key}");
+            assert_eq!(back.label_year, config.label_year, "{key}");
+            assert_eq!(back.label_added, config.label_added, "{key}");
+            assert_eq!(back.label_duration, config.label_duration, "{key}");
+            assert_eq!(back.label_tracks, config.label_tracks, "{key}");
+            assert!(back.sort == config.sort, "{key}");
+            assert!(back.label_align == config.label_align, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

@@ -138,6 +138,33 @@ impl Default for QueueConfig {
     }
 }
 
+/// The presets every Queue panel can take, keyed by their i18n name. Chrome
+/// stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, QueueConfig)> {
+    vec![
+        (
+            // The headings carry the artist and album, so the rows drop them.
+            "queue-preset-albums",
+            QueueConfig {
+                headers: Headers::Expanded,
+                columns: ["number", "name", "duration"].map(String::from).into(),
+                ..QueueConfig::default()
+            },
+        ),
+        (
+            "queue-preset-detailed",
+            QueueConfig {
+                columns: [
+                    "cover", "number", "name", "artist", "album", "duration", "rating",
+                ]
+                .map(String::from)
+                .into(),
+                ..QueueConfig::default()
+            },
+        ),
+    ]
+}
+
 enum QRow {
     Album(u32),
     AlbumMeta(u32),
@@ -1781,4 +1808,31 @@ fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        let known: Vec<&str> = columns().iter().map(|c| c.key).collect();
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: QueueConfig = panel::config_from_info(&info);
+
+            for column in &config.columns {
+                assert!(known.contains(&column.as_str()), "{key}: {column}");
+            }
+            assert_eq!(back.columns, config.columns, "{key}");
+            assert!(back.headers == config.headers, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
+    }
 }

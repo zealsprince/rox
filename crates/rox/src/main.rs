@@ -232,6 +232,7 @@ fn install_openers() {
         preset_sources: preset_sources::for_kind,
         apply_panel_preset: workspace::apply_panel_preset,
         host_settings_item: composite::host_settings_item,
+        hosted_by_composite: composite::hosts,
         confirm_close_locked,
         task_started: tasks_window::repaint_while_running,
         go_to_source: workspace::go_to_source,

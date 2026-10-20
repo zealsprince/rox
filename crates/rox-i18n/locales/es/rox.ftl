@@ -18,6 +18,7 @@ letter-rail-compact = Barra compacta
 letter-rail-side = Posición de la barra
     .description = En qué borde de la pared cuelga la barra
 toast-copied = Copiado al portapapeles
+matcher-section-matches = Coincidencias
 
 ## Panel source and search rows
 source-track = Pista
@@ -192,7 +193,7 @@ preset-group-global = Globales
 preset-group-workspace = Este espacio de trabajo
 preset-group-other = De { $workspace }
 preset-none-for-kind = Todavía no hay preajustes para este panel
-preset-undo = Deshacer el preajuste
+preset-reset = Restablecer cambios
 preset-save-scope = Guardar en
     .description = Los preajustes globales aparecen en todos los espacios de trabajo y llevan sus shaders consigo
 preset-scope-workspace = Este espacio de trabajo
@@ -701,6 +702,11 @@ library-circular-portraits = Retratos circulares
     .description = Agrupado por artista, redondea los mosaicos hasta el círculo completo del muro en vez de usar el mando de redondeo
 library-genre-face = Cara del género
     .description = Agrupado por género, qué muestra el mosaico: las carátulas, las carátulas bañadas en el color del género, o una tarjeta de color bajo su geometría
+library-preset-compact = Compacto
+library-preset-showcase = Escaparate
+library-preset-dj = DJ
+library-preset-tagging = Etiquetado
+library-preset-audiophile = Audiófilo
 
 ## Stations panel
 
@@ -778,6 +784,11 @@ grid-tile-size = Tamaño del mosaico
 grid-gap = Separación
     .description = Espacio entre las carátulas; cero las junta borde con borde
 grid-art-rounding-description = Redondea las esquinas de cada carátula; al 100% es un círculo
+grid-preset-spotlight = Foco
+grid-preset-compact = Compacto
+grid-preset-browse = Explorar
+grid-preset-shelf = Estante
+grid-preset-new-arrivals = Novedades
 
 ## Settings: sidebar pages
 settings-page-appearance = Apariencia
@@ -2842,6 +2853,10 @@ cover-stretch = Estirar
     .description = Llena el panel, ignorando la proporción de la ilustración
 cover-stretch-to-fill = Estirar hasta llenar
 cover-title = Carátula
+cover-preset-turntable = Tocadiscos
+cover-preset-cd-player = Reproductor de CD
+cover-preset-disc-scan = Disco escaneado
+cover-preset-preview = Vista previa
 
 ## Lyrics
 lyrics-always-centered = Siempre centrado
@@ -3119,6 +3134,11 @@ particles-turbulence-scale = Escala de la turbulencia
 particles-turbulence-strength = Fuerza
     .description = Con cuánta fuerza empuja el campo a las partículas; cero es apagado
 particles-width = Ancho
+particles-preset-fountain = Fuente
+particles-preset-snowfall = Nevada
+particles-preset-embers = Brasas
+particles-preset-starburst = Estallido
+particles-preset-swarm = Enjambre
 
 ## Spectrum panel
 spectrum-axis-labels = Etiquetas de eje
@@ -3175,6 +3195,10 @@ spectrum-symmetry = Simetría
     .description = Pliega el espectro sobre el centro; hacia delante pone los graves en los bordes, al revés los junta en el medio
 spectrum-symmetry-forward = Hacia delante
 spectrum-symmetry-reverse = Al revés
+spectrum-preset-retro = Retro
+spectrum-preset-smooth = Suave
+spectrum-preset-ambient = Ambiente
+spectrum-preset-analyzer = Analizador
 
 ## Waveform panel
 waveform-bar-gap = Separación entre barras
@@ -3213,11 +3237,17 @@ waveform-live-expression-error = { $reason }, así que la franja dibuja la forma
 waveform-section-live = En vivo
 waveform-streaming = EN STREAMING
 waveform-unavailable = No hay forma de onda para esta pista
+waveform-preset-progress = Progreso
+waveform-preset-solid = Sólido
+waveform-preset-outline = Contorno
+waveform-preset-stereo = Estéreo
+waveform-preset-blocks = Bloques
 
 ## VU panel
 vu-ballistics = Balística
     .description = VU integra la sonoridad despacio; Pico salta arriba y baja suave
 vu-ballistics-peak = Pico
+vu-ballistics-vu = VU
 vu-cap-gravity = Gravedad de los picos
     .description = Con cuánta fuerza caen las marcas de pico una vez que el medidor baja
 vu-channels = Canales
@@ -3243,6 +3273,10 @@ vu-style = Estilo
     .description = Una columna continua, o segmentos estilo LED
 vu-style-continuous = Continuo
 vu-style-segments = Segmentos
+vu-preset-analog = Analógico
+vu-preset-led-ladder = Escalera LED
+vu-preset-peak-hold = Retener picos
+vu-preset-mono-strip = Barra mono
 
 ## Spectrogram panel
 spectrogram-ceiling = Techo
@@ -3278,6 +3312,10 @@ spectrogram-low-bound = Límite inferior
 spectrogram-section-picture = Imagen
 spectrogram-speed = Velocidad
     .description = Con qué rapidez se desplaza la imagen, en columnas por segundo
+spectrogram-preset-lab = Laboratorio
+spectrogram-preset-waterfall = Cascada
+spectrogram-preset-ambient = Ambiente
+spectrogram-preset-low-end = Graves
 
 ## Oscilloscope panel
 
@@ -3310,6 +3348,10 @@ oscilloscope-trigger-off = Desactivado
 oscilloscope-trigger-rising = Ascendente
 oscilloscope-window = Ventana
     .description = Cuánto tiempo abarca la traza a lo largo del panel
+oscilloscope-preset-phosphor = Fósforo
+oscilloscope-preset-sweep = Barrido
+oscilloscope-preset-zoom = Zoom
+oscilloscope-preset-stereo = Estéreo
 
 ## Shader panel
 shader-panel-compile-error = Este shader no compiló:
@@ -3400,6 +3442,11 @@ genre-grid-unmerge = { $count ->
     [one] Deshacer la fusión de { $count } valor
    *[other] Deshacer la fusión de { $count } valores
 }
+genre-grid-preset-spotlight = Foco
+genre-grid-preset-compact = Compacto
+genre-grid-preset-browse = Explorar
+genre-grid-preset-shelf = Estante
+genre-grid-preset-cards = Tarjetas
 
 ## Artist grid panel
 artist-grid-clear-picked = Borrar los artistas elegidos
@@ -3425,6 +3472,11 @@ artist-grid-tally = { $albums ->
    *[other] { $albums } álbumes, { $tracks } pista(s)
 }
 artist-grid-track-artist = Artista de la pista
+artist-grid-preset-spotlight = Foco
+artist-grid-preset-compact = Compacto
+artist-grid-preset-browse = Explorar
+artist-grid-preset-shelf = Estante
+artist-grid-preset-portraits = Retratos
 
 ## Wall panels
 wall-dim-always = Siempre
@@ -3523,6 +3575,11 @@ metadata-value-none = n/d
 metadata-source = Origen
     .description = Sigue lo que suena o lo seleccionado, o lee la biblioteca en conjunto
 metadata-stripes-description = Tiñe una fila de la tabla sí y otra no
+metadata-preset-tagging = Etiquetado
+metadata-preset-technical = Técnico
+metadata-preset-listening = Escuchas
+metadata-preset-minimal = Mínimo
+metadata-preset-overview = Resumen
 
 ## History panel
 history-column-last-played = Última reproducción
@@ -3551,6 +3608,9 @@ history-no-plugins = Ningún plugin en ejecución puede buscar esta canción
 history-pick-plugin = Elige un plugin en Reproducir desde, en el menú de esta fila
 history-view-row = Vista
     .description = Qué corte del registro de escuchas muestra el panel
+history-preset-timeline = Cronología
+history-preset-charts = Éxitos
+history-preset-discover = Descubrir
 
 ## Folder tree panel
 folder-tree-clear-scope = Borrar el alcance de carpeta
@@ -3577,12 +3637,14 @@ folder-tree-scope-to-folder = Acotar el filtro a la carpeta
 folder-tree-smooth-description = Deslízate hasta la pista en vez de saltar
 folder-tree-stripes-description = Tiñe una fila sí y otra no para que un árbol profundo se lea de un vistazo
 folder-tree-title = Árbol
+folder-tree-preset-covers = Portadas
+folder-tree-preset-search = Búsqueda
+folder-tree-preset-now-playing = Sonando
 
 ## Art panel
 art-always = Mantén las carátulas atrás incluso cuando no suena nada; solo la carátula bajo el cursor se ve entera
 art-convert = Convertir...
 art-covers-section = Carátulas
-matcher-section-matches = Coincidencias
 art-desaturate = Pasa a escala de grises todas las carátulas salvo la del álbum que suena; al pasar el cursor vuelve el color de una carátula
 art-dim-while-playing = Apaga todas las carátulas salvo la del álbum que suena; al pasar el cursor una carátula vuelve a encenderse
 art-disc-style = Estilo de disco
@@ -3619,6 +3681,10 @@ art-smooth-description = Deslízate hasta el álbum en vez de saltar
 art-title = Carrusel de álbumes
 art-vertical-layout = Disposición vertical
     .description = Apila el estante como una columna que se desplaza arriba y abajo en vez de una fila
+art-preset-gallery = Galería
+art-preset-spotlight = Foco
+art-preset-browse = Explorar
+art-preset-jukebox = Rocola
 
 ## Playlists panel
 playlists-art-description = The expanded headings' cover tile
@@ -3648,6 +3714,10 @@ playlists-remove = { $count ->
 playlists-rename = Renombrar...
 playlists-reverse-tooltip = Invertir el orden
 playlists-title = Listas de reproducción
+playlists-preset-albums = Álbumes
+playlists-preset-classic = Clásico
+playlists-preset-covers = Portadas
+playlists-preset-minimal = Mínimo
 
 ## Queue panel
 queue-clear = Vaciar la cola
@@ -3659,6 +3729,8 @@ queue-remove = { $count ->
    *[other] Quitar { $count } de la cola
 }
 queue-title = Cola
+queue-preset-albums = Álbumes
+queue-preset-detailed = Detallado
 queue-widget-always-modal = Abrir siempre como ventana modal
     .description = Abre la cola en una ventana modal siempre, en vez de saltar a un panel de cola que ya esté abierto
 queue-widget-clear-queue = Vaciar la cola
@@ -3730,6 +3802,10 @@ biography-top-tracks = Pistas más escuchadas
 biography-top-tracks-count = Número de pistas
     .description = Cuántas de las pistas más escuchadas listar
 biography-top-tracks-heading = Pistas más escuchadas
+biography-preset-reader = Lectura
+biography-preset-poster = Póster
+biography-preset-discover = Descubrir
+biography-preset-compact = Compacto
 
 ## Status panel
 status-count-albums = { $count ->
@@ -3866,6 +3942,9 @@ playback-stop-after-tip = Parar después de esta pista
 playback-stop-tip = Detener y descargar la pista
 playback-volume-tip-muted = Quitar el silencio, { $percent }%. Clic derecho para el deslizador
 playback-volume-tip-unmuted = Silenciar, { $percent }%. Clic derecho para el deslizador
+playback-preset-minimal = Mínimo
+playback-preset-practice = Práctica
+playback-preset-discovery = Descubrir
 
 ## Track info panel
 track-info-color-output-chip = Colorear la ficha de salida
@@ -3894,6 +3973,10 @@ track-info-row-size = Tamaño de la fila { $number }
 track-info-speed = Velocidad
     .description = A qué velocidad recorre la línea
 track-info-text-size = Tamaño del texto
+track-info-preset-ticker = Cinta
+track-info-preset-stacked = Apilado
+track-info-preset-technical = Técnico
+track-info-preset-rotating = Rotativo
 
 ## Playback failures
 
@@ -3932,6 +4015,9 @@ seek-lead-in-sweep = Barrido de la entrada
 seek-section-live = En vivo
 seek-thickness = Grosor
     .description = La altura de la línea de la pista
+seek-preset-hairline = Línea fina
+seek-preset-stacked = Apilado
+seek-preset-pill = Píldora
 
 ## Volume panel
 volume-pieces = Piezas
@@ -3946,6 +4032,8 @@ volume-tip-mute = Silenciar
 volume-tip-mute-level = Silenciar, { $level }
 volume-tip-unmute = Quitar el silencio
 volume-tip-unmute-level = Quitar el silencio, { $level }
+volume-preset-fader = Fader
+volume-preset-icon-only = Solo icono
 
 ## Shared panel content
 content-filter = Filtro
@@ -4248,6 +4336,10 @@ milkdrop-unfavorite = Quitar de favoritos
 milkdrop-reveal-folder = Mostrar carpeta
 milkdrop-show-controls = Mostrar controles
     .description = Anterior, Siguiente, Aleatorio y la estrella de favorito sobre la visualización mientras el puntero está en el panel
+milkdrop-preset-ambient = Ambiente
+milkdrop-preset-party = Fiesta
+milkdrop-preset-browse = Explorar
+milkdrop-preset-low-power = Bajo consumo
 
 ## Source browser
 

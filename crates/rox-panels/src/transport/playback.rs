@@ -218,6 +218,52 @@ impl Default for TransportConfig {
     }
 }
 
+/// The presets every Playback panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, TransportConfig)> {
+    use PlaybackItem::*;
+
+    vec![
+        (
+            "playback-preset-minimal",
+            TransportConfig {
+                align: Align::Center,
+                play_highlight: PlayHighlight::None,
+                items: vec![Prev, Play, Next],
+                ..TransportConfig::default()
+            },
+        ),
+        (
+            "playback-preset-practice",
+            TransportConfig {
+                play_highlight: PlayHighlight::Square,
+                items: vec![
+                    SeekBack,
+                    Play,
+                    SeekForward,
+                    Divider,
+                    AbRepeat,
+                    Repeat,
+                    StopAfter,
+                ],
+                ..TransportConfig::default()
+            },
+        ),
+        (
+            // Similar falls back to a plain random draw until the library is
+            // analyzed, so this is safe to ship on a fresh install.
+            "playback-preset-discovery",
+            TransportConfig {
+                random_mode: RandomMode::Similar,
+                items: vec![
+                    Prev, Play, Next, Spacer, Random, Continue, Favourite, Rating,
+                ],
+                ..TransportConfig::default()
+            },
+        ),
+    ]
+}
+
 /// Newer layouts write the ordered list. Older ones had per-button
 /// toggles, folded back in the order the strip used to render; the one
 /// `seek` toggle was both nudges.
@@ -1721,5 +1767,23 @@ mod tests {
 
         let back: TransportConfig = serde_json::from_value(saved).unwrap();
         assert!(back.items == config.items);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = super::builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: TransportConfig = crate::panel::config_from_info(&info);
+
+            assert!(back.align == config.align, "{key}");
+            assert!(back.play_highlight == config.play_highlight, "{key}");
+            assert!(back.random_mode == config.random_mode, "{key}");
+            assert!(back.items == config.items, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

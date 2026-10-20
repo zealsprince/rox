@@ -180,6 +180,55 @@ impl Default for OscilloscopeConfig {
     }
 }
 
+/// The scope's built-in presets as (i18n key, config) pairs. Each one is a
+/// way of reading the signal, set through several knobs together.
+pub fn builtin_presets() -> Vec<(&'static str, OscilloscopeConfig)> {
+    vec![
+        (
+            "oscilloscope-preset-phosphor",
+            OscilloscopeConfig {
+                window_ms: 10.0,
+                line_width: 1.0,
+                persistence: 0.85,
+                gradient: Gradient::Theme,
+                ..OscilloscopeConfig::default()
+            },
+        ),
+        (
+            "oscilloscope-preset-sweep",
+            OscilloscopeConfig {
+                window_ms: 100.0,
+                gain: 1.5,
+                trigger: Trigger::Off,
+                line_width: 1.0,
+                fill: true,
+                grid: false,
+                ..OscilloscopeConfig::default()
+            },
+        ),
+        (
+            "oscilloscope-preset-zoom",
+            OscilloscopeConfig {
+                window_ms: 4.0,
+                gain: 2.0,
+                trigger_level: 0.05,
+                line_width: 2.5,
+                ..OscilloscopeConfig::default()
+            },
+        ),
+        (
+            "oscilloscope-preset-stereo",
+            OscilloscopeConfig {
+                window_ms: 30.0,
+                channels: ScopeChannels::Split,
+                fill: true,
+                gradient: Gradient::Cover,
+                ..OscilloscopeConfig::default()
+            },
+        ),
+    ]
+}
+
 impl OscilloscopeConfig {
     /// Clamped to the typed ceiling, not the strip's top, so a value typed
     /// past the top survives a reload.
@@ -1221,5 +1270,30 @@ mod tests {
     #[test]
     fn persistence_off_keeps_no_trail() {
         assert_eq!(OscilloscopeConfig::default().trails(), 0);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len(), "preset keys are unique");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: OscilloscopeConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.window_ms, config.window_ms, "{key}");
+            assert_eq!(back.gain, config.gain, "{key}");
+            assert!(back.trigger == config.trigger, "{key}");
+            assert_eq!(back.trigger_level, config.trigger_level, "{key}");
+            assert!(back.channels == config.channels, "{key}");
+            assert_eq!(back.line_width, config.line_width, "{key}");
+            assert_eq!(back.fill, config.fill, "{key}");
+            assert_eq!(back.grid, config.grid, "{key}");
+            assert!(back.gradient == config.gradient, "{key}");
+            assert_eq!(back.persistence, config.persistence, "{key}");
+            assert_eq!(back.freeze, config.freeze, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

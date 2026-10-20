@@ -1434,7 +1434,8 @@ fn sym_label(value: &str) -> SharedString {
     if value.is_empty() {
         rox_i18n::t!("filter-unknown")
     } else {
-        SharedString::from(value.to_string())
+        // A hard break gets past `truncate` and paints over the rows below.
+        SharedString::from(value.replace(['\r', '\n'], " "))
     }
 }
 

@@ -143,6 +143,66 @@ impl Default for BiographyConfig {
     }
 }
 
+/// The built-in presets, keyed by their name's i18n key.
+pub fn builtin_presets() -> Vec<(&'static str, BiographyConfig)> {
+    vec![
+        (
+            // The wiki text always draws, so this is just the prose.
+            "biography-preset-reader",
+            BiographyConfig {
+                portrait: false,
+                cycle: false,
+                profile: false,
+                stats: false,
+                tags: false,
+                top_tracks: false,
+                similar: false,
+                ..BiographyConfig::default()
+            },
+        ),
+        (
+            "biography-preset-poster",
+            BiographyConfig {
+                header_aspect: false,
+                header_blur: false,
+                header_height: 360.,
+                cycle_secs: 20,
+                background: true,
+                background_opacity: 60.,
+                stats: false,
+                top_tracks: false,
+                ..BiographyConfig::default()
+            },
+        ),
+        (
+            "biography-preset-discover",
+            BiographyConfig {
+                header_aspect: false,
+                header_height: 120.,
+                cycle: false,
+                profile: false,
+                stats: false,
+                top_tracks_count: 10,
+                ..BiographyConfig::default()
+            },
+        ),
+        (
+            "biography-preset-compact",
+            BiographyConfig {
+                header_aspect: false,
+                header_height: 80.,
+                header_fanart: false,
+                cycle: false,
+                flag: false,
+                stats: false,
+                top_tracks_count: 3,
+                similar: false,
+                ..BiographyConfig::default()
+            },
+        ),
+    ]
+}
+
 /// A top track the library doesn't hold, by the names a plugin search sends.
 #[derive(Clone)]
 struct Unheld {
@@ -2463,5 +2523,35 @@ mod tests {
         assert!(years_active(&profile).is_none());
         profile.ended = Some(2020);
         assert!(years_active(&profile).is_some());
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: BiographyConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.portrait, config.portrait, "{key}");
+            assert_eq!(back.header_aspect, config.header_aspect, "{key}");
+            assert_eq!(back.header_blur, config.header_blur, "{key}");
+            assert_eq!(back.header_height, config.header_height, "{key}");
+            assert_eq!(back.header_fanart, config.header_fanart, "{key}");
+            assert_eq!(back.cycle, config.cycle, "{key}");
+            assert_eq!(back.cycle_secs, config.cycle_secs, "{key}");
+            assert_eq!(back.background, config.background, "{key}");
+            assert_eq!(back.background_opacity, config.background_opacity, "{key}");
+            assert_eq!(back.profile, config.profile, "{key}");
+            assert_eq!(back.flag, config.flag, "{key}");
+            assert_eq!(back.stats, config.stats, "{key}");
+            assert_eq!(back.tags, config.tags, "{key}");
+            assert_eq!(back.top_tracks, config.top_tracks, "{key}");
+            assert_eq!(back.top_tracks_count, config.top_tracks_count, "{key}");
+            assert_eq!(back.similar, config.similar, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

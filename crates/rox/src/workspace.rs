@@ -1220,20 +1220,23 @@ pub(crate) fn add_panel_submenu(
     )
 }
 
-/// A pick in a panel settings window's Presets row: rebuild `old` from
-/// `preset` in its own tab slot and hand the new panel back through
-/// `rebuilt`. The swap runs in the workspace window hosting the group,
-/// found by its shared tab hosts.
+/// A pick or reset in a panel settings window's Presets row: rebuild `old`
+/// from the apply's state in its own slot and hand the new panel back
+/// through `rebuilt`. The swap runs in the workspace window hosting the
+/// slot, found by its shared tab hosts.
 pub(crate) fn apply_panel_preset(
     old: Arc<dyn PanelView>,
-    preset: PanelPreset,
-    kind: PresetApply,
+    apply: PresetApply,
     state: AppState,
     rebuilt: Rebuilt,
     cx: &mut App,
 ) {
+    let PresetApply {
+        state: preset,
+        named,
+    } = apply;
     let old_id = old.view().entity_id();
-    let slot = state
+    let tab_slot = state
         .tab_hosts
         .read(cx)
         .groups()
@@ -1246,13 +1249,14 @@ pub(crate) fn apply_panel_preset(
                 .position(|hosted| hosted.view().entity_id() == old_id)?;
             Some((tabs, ix))
         });
-    let Some((tabs, ix)) = slot else {
+    if tab_slot.is_none() && !composite::hosts(old_id, cx) {
         log::debug!(
-            "panel presets: {} has no tab group to apply into",
+            "panel presets: nothing holds {} to apply {} into",
+            old.panel_name(cx),
             preset.name
         );
         return;
-    };
+    }
 
     let hosts = state.tab_hosts.entity_id();
     let host = cx
@@ -1277,34 +1281,46 @@ pub(crate) fn apply_panel_preset(
                 return;
             };
 
-            // Dumped before the swap, since removal tears the old panel down.
-            let previous = (kind == PresetApply::Pick)
-                .then(|| serde_json::to_value(old.dump(cx)).ok())
-                .flatten()
-                .map(|panel| PanelPreset {
-                    name: old.panel_name(cx).to_string(),
-                    panel,
-                });
+            let swapped = match &tab_slot {
+                // Insert before remove: a group emptied even for a moment takes
+                // itself out of its stack.
+                Some((tabs, ix)) => tabs.update(cx, |tabs, cx| {
+                    tabs.insert_panel_at(new.clone(), *ix, window, cx);
+                    let old = tabs
+                        .panels()
+                        .iter()
+                        .find(|hosted| hosted.view().entity_id() == old_id)
+                        .cloned();
+                    match old {
+                        Some(old) => {
+                            tabs.remove_panel(old, window, cx);
+                            true
+                        }
+                        None => false,
+                    }
+                }),
+                None => composite::replace_hosted(old_id, new.clone(), cx),
+            };
+            if !swapped {
+                log::debug!(
+                    "panel presets: {} left its slot before {} applied",
+                    old_id,
+                    preset.name
+                );
+                return;
+            }
 
-            // Insert before remove: a group emptied even for a moment takes
-            // itself out of its stack.
-            tabs.update(cx, |tabs, cx| {
-                tabs.insert_panel_at(new.clone(), ix, window, cx);
-                let old = tabs
-                    .panels()
-                    .iter()
-                    .find(|hosted| hosted.view().entity_id() == old_id)
-                    .cloned();
-                if let Some(old) = old {
-                    tabs.remove_panel(old, window, cx);
-                }
+            // Named after the panel's own dump of the fresh state, not the
+            // preset's JSON: a panel folds and normalizes what it loads, so the
+            // two differ even when nothing was touched.
+            let named = named.map(|preset| PanelPreset {
+                panel: serde_json::to_value(new.dump(cx)).unwrap_or(preset.panel),
+                ..preset
             });
-
-            let applied = (kind == PresetApply::Pick).then(|| preset.clone());
             rox_panel_api::panel_settings::note_preset_apply(
+                old_id,
                 new.view().entity_id(),
-                previous,
-                applied,
+                named,
                 cx,
             );
             rebuilt(new, cx);

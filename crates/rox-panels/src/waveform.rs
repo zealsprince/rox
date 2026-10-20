@@ -199,6 +199,65 @@ impl Default for WaveformConfig {
     }
 }
 
+/// The waveform's built-in presets as (i18n key, config) pairs. Each one is
+/// a look you'd recognize, set through several knobs together.
+pub fn builtin_presets() -> Vec<(&'static str, WaveformConfig)> {
+    vec![
+        (
+            "waveform-preset-progress",
+            WaveformConfig {
+                bar_width: 2.0,
+                bar_gap: 1.0,
+                split_bars: true,
+                shade_played: false,
+                ..WaveformConfig::default()
+            },
+        ),
+        (
+            "waveform-preset-solid",
+            WaveformConfig {
+                bar_width: 1.0,
+                bar_gap: 0.0,
+                loudness: true,
+                gradient: Gradient::Theme,
+                ..WaveformConfig::default()
+            },
+        ),
+        (
+            "waveform-preset-outline",
+            WaveformConfig {
+                bar_width: 2.0,
+                bar_gap: 0.0,
+                outline: true,
+                loudness: true,
+                shade_played: false,
+                ..WaveformConfig::default()
+            },
+        ),
+        (
+            "waveform-preset-stereo",
+            WaveformConfig {
+                bar_width: 2.0,
+                bar_gap: 1.0,
+                split_channels: true,
+                loudness: true,
+                gradient: Gradient::Cover,
+                ..WaveformConfig::default()
+            },
+        ),
+        (
+            "waveform-preset-blocks",
+            WaveformConfig {
+                bar_width: 8.0,
+                bar_gap: 4.0,
+                gradient: Gradient::Theme,
+                shade_played: false,
+                ..WaveformConfig::default()
+            },
+        ),
+    ]
+}
+
 impl WaveformConfig {
     /// Clamped so a hand-edited file can't collapse the step to nothing.
     fn bars(&self) -> (f32, f32) {
@@ -3118,6 +3177,33 @@ mod tests {
             );
             // The unnotified windows happen with a file up as much as a station.
             assert!(wants_frames(mode, false, false, true));
+        }
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len(), "preset keys are unique");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: WaveformConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.bar_width, config.bar_width, "{key}");
+            assert_eq!(back.bar_gap, config.bar_gap, "{key}");
+            assert_eq!(back.outline, config.outline, "{key}");
+            assert_eq!(back.loudness, config.loudness, "{key}");
+            assert_eq!(back.shade_played, config.shade_played, "{key}");
+            assert_eq!(back.split_bars, config.split_bars, "{key}");
+            assert_eq!(back.played_bars, config.played_bars, "{key}");
+            assert_eq!(back.unplayed_bars, config.unplayed_bars, "{key}");
+            assert!(back.gradient == config.gradient, "{key}");
+            assert_eq!(back.split_channels, config.split_channels, "{key}");
+            assert_eq!(back.scrobble_marker, config.scrobble_marker, "{key}");
+            assert_eq!(back.bookmarks, config.bookmarks, "{key}");
+            assert_eq!(back.live, config.live, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
         }
     }
 }

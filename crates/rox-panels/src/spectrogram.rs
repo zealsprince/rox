@@ -27,7 +27,7 @@ use rox_panel_kit::axis::{fmt_axis_hz, fmt_hz};
 use serde::{Deserialize, Serialize};
 
 use rox_viz::AudioFeed;
-use rox_viz::analysis::{MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder};
+use rox_viz::analysis::hz_ladder;
 
 use crate::assets::icons;
 use crate::design::palette;
@@ -185,13 +185,68 @@ impl Default for SpectrogramConfig {
     }
 }
 
+/// The presets every Spectrogram panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, SpectrogramConfig)> {
+    vec![
+        (
+            "spectrogram-preset-lab",
+            SpectrogramConfig {
+                fft_size: 8192,
+                log_scale: false,
+                floor_db: -110.0,
+                ceil_db: -10.0,
+                colormap: Colormap::Grayscale,
+                ..SpectrogramConfig::default()
+            },
+        ),
+        (
+            "spectrogram-preset-waterfall",
+            SpectrogramConfig {
+                // Columns drop in from the top, so frequency runs across like a radio waterfall.
+                direction: Orientation::Top,
+                fft_size: 2048,
+                speed: 60.0,
+                history: 1024,
+                colormap: Colormap::Viridis,
+                ..SpectrogramConfig::default()
+            },
+        ),
+        (
+            "spectrogram-preset-ambient",
+            SpectrogramConfig {
+                speed: 10.0,
+                history: 2048,
+                floor_db: -80.0,
+                ceil_db: -30.0,
+                colormap: Colormap::Cover,
+                grid: false,
+                labels: false,
+                ..SpectrogramConfig::default()
+            },
+        ),
+        (
+            "spectrogram-preset-low-end",
+            SpectrogramConfig {
+                lo_hz: 20.0,
+                hi_hz: 2_000.0,
+                // The bass needs the longest window to pull neighbouring notes apart.
+                fft_size: 8192,
+                speed: 30.0,
+                colormap: Colormap::Ice,
+                ..SpectrogramConfig::default()
+            },
+        ),
+    ]
+}
+
 impl SpectrogramConfig {
     /// Clamp before rounding: `next_power_of_two` overflow-panics near the top
-    /// of `usize`, and the feed answers nothing for a size out of range.
+    /// of `usize`, and the feed answers nothing for a size out of range. The
+    /// bounds are the choices' own, so a hand-edited size still shows as picked.
     fn fft(&self) -> usize {
-        self.fft_size
-            .clamp(MIN_FFT_SIZE, MAX_FFT_SIZE)
-            .next_power_of_two()
+        let (lo, hi) = (FFT_CHOICES[0].1, FFT_CHOICES[FFT_CHOICES.len() - 1].1);
+        self.fft_size.clamp(lo, hi).next_power_of_two()
     }
 
     fn range(&self) -> (f32, f32) {
@@ -1570,8 +1625,12 @@ mod tests {
             let fft = config.fft();
             assert!(fft.is_power_of_two(), "{size} gave {fft}");
             assert!(
-                (MIN_FFT_SIZE..=MAX_FFT_SIZE).contains(&fft),
+                (rox_viz::analysis::MIN_FFT_SIZE..=rox_viz::analysis::MAX_FFT_SIZE).contains(&fft),
                 "{size} gave {fft}"
+            );
+            assert!(
+                FFT_CHOICES.iter().any(|(_, choice)| *choice == fft),
+                "{size} gave {fft}, which no choice shows"
             );
         }
         for &(_, size) in FFT_CHOICES {
@@ -1591,6 +1650,34 @@ mod tests {
                 ..SpectrogramConfig::default()
             };
             assert!((HISTORY_MIN..=HISTORY_MAX).contains(&config.history()));
+        }
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: SpectrogramConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.fft_size, config.fft_size, "{key}");
+            assert_eq!(back.lo_hz, config.lo_hz, "{key}");
+            assert_eq!(back.hi_hz, config.hi_hz, "{key}");
+            assert_eq!(back.log_scale, config.log_scale, "{key}");
+            assert_eq!(back.floor_db, config.floor_db, "{key}");
+            assert_eq!(back.ceil_db, config.ceil_db, "{key}");
+            assert_eq!(back.speed, config.speed, "{key}");
+            assert_eq!(back.history, config.history, "{key}");
+            assert!(back.colormap == config.colormap, "{key}");
+            assert!(back.direction == config.direction, "{key}");
+            assert_eq!(back.grid, config.grid, "{key}");
+            assert_eq!(back.labels, config.labels, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
         }
     }
 }

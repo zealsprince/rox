@@ -351,10 +351,19 @@ pub fn refresh_tab_panel(tab_panel: &Option<WeakEntity<TabPanel>>, cx: &mut App)
 }
 
 pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelInfo) -> C {
-    match info {
-        PanelInfo::Panel(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
-        _ => C::default(),
-    }
+    let PanelInfo::Panel(value) = info else {
+        return C::default();
+    };
+
+    // The default is still the right answer, but a silent one hides a
+    // preset or layout that stopped matching its config.
+    serde_json::from_value(value.clone()).unwrap_or_else(|e| {
+        log::warn!(
+            "panel config: {} did not decode, using defaults: {e}",
+            std::any::type_name::<C>()
+        );
+        C::default()
+    })
 }
 
 /// The Dock Back entry: moves a popped-out panel into the newest live tab
@@ -1565,6 +1574,23 @@ fn arm_window_move(root: Div) -> Div {
         })
         .capture_any_mouse_up(|_, _, _| ANCHOR_ARM.set(None))
         .on_mouse_up_out(MouseButton::Left, |_, _, _| ANCHOR_ARM.set(None))
+}
+
+/// Tallest band a window-chrome panel (menu, window controls, theme toggle)
+/// centres its buttons in. Above it they stay pinned to the top, so a
+/// taller neighbour in the same dock row can't drag them down the middle.
+/// Clears every built-in preset's chrome row, so those look the same.
+const CHROME_BAR_MAX: Pixels = px(48.);
+
+/// A chrome panel's body: `bar` holds the buttons and their alignment, and
+/// sits in the top [`CHROME_BAR_MAX`] of a root-coloured panel.
+pub fn chrome_bar(bar: Div) -> Div {
+    div()
+        .size_full()
+        .bg(palette::bg_root())
+        .flex()
+        .flex_col()
+        .child(bar.w_full().h_full().max_h(CHROME_BAR_MAX))
 }
 
 /// Build a panel body under its palette override and keep the override

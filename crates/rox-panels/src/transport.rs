@@ -9,10 +9,12 @@ pub(crate) mod seek;
 mod track_info;
 mod volume;
 
-pub use playback::{TransportConfig, TransportPanel};
-pub use seek::{SeekConfig, SeekStripPanel};
-pub use track_info::{InfoPiece, TrackInfoConfig, TrackInfoPanel};
-pub use volume::{VolumeConfig, VolumePanel};
+pub use playback::{TransportConfig, TransportPanel, builtin_presets as playback_presets};
+pub use seek::{SeekConfig, SeekStripPanel, builtin_presets as seek_presets};
+pub use track_info::{
+    InfoPiece, TrackInfoConfig, TrackInfoPanel, builtin_presets as track_info_presets,
+};
+pub use volume::{VolumeConfig, VolumePanel, builtin_presets as volume_presets};
 
 use rox_panel_kit::config::default_true;
 

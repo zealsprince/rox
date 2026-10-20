@@ -764,6 +764,22 @@ impl PanelSettings for DrawerPanel {
     }
 }
 
+impl composite::Hosting for DrawerPanel {
+    fn replace_child(
+        &mut self,
+        old: EntityId,
+        new: Arc<dyn PanelView>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(ix) = composite::slot_of(&self.slots, old) else {
+            return false;
+        };
+
+        self.set_slot(ix, Some(new), cx);
+        true
+    }
+}
+
 impl EventEmitter<PanelEvent> for DrawerPanel {}
 
 impl Focusable for DrawerPanel {

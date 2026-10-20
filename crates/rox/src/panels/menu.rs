@@ -1022,62 +1022,64 @@ impl MenuPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        div()
-            .size_full()
-            .bg(palette::bg_root())
-            .flex()
-            .items_center()
-            .map(|d| justify(d, self.config.align))
-            .px(tokens::SPACE_MD)
-            .child(
-                div()
-                    .relative()
-                    .size(px(24.))
-                    .rounded(tokens::RADIUS)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(palette::bg_control_hover()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.open_menu(event.position, window, cx);
-                        }),
-                    )
-                    .child(self.button_capture(cx))
-                    .child(
-                        svg()
-                            .path(icons::MENU)
-                            .size(px(14.))
-                            .text_color(palette::text_muted()),
-                    ),
-            )
-            // Only the root defers; the flyouts are plain absolute children,
-            // since nesting a defer panics.
-            .when_some(self.open_at, |d, position| {
-                d.child(
-                    deferred(
-                        anchored().child(
-                            div()
-                                .w(window.bounds().size.width)
-                                .h(window.bounds().size.height)
-                                .occlude()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _: &MouseDownEvent, _, cx| this.close(cx)),
-                                )
-                                .child(
-                                    anchored()
-                                        .position(position)
-                                        .snap_to_window_with_margin(px(8.))
-                                        .child(self.root_menu(cx)),
-                                ),
+        panel::chrome_bar(
+            div()
+                .flex()
+                .items_center()
+                .map(|d| justify(d, self.config.align))
+                .px(tokens::SPACE_MD)
+                .child(
+                    div()
+                        .relative()
+                        .size(px(24.))
+                        .rounded(tokens::RADIUS)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(palette::bg_control_hover()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                this.open_menu(event.position, window, cx);
+                            }),
+                        )
+                        .child(self.button_capture(cx))
+                        .child(
+                            svg()
+                                .path(icons::MENU)
+                                .size(px(14.))
+                                .text_color(palette::text_muted()),
                         ),
-                    )
-                    .with_priority(1),
                 )
-            })
+                // Only the root defers; the flyouts are plain absolute children,
+                // since nesting a defer panics.
+                .when_some(self.open_at, |d, position| {
+                    d.child(
+                        deferred(
+                            anchored().child(
+                                div()
+                                    .w(window.bounds().size.width)
+                                    .h(window.bounds().size.height)
+                                    .occlude()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                            this.close(cx)
+                                        }),
+                                    )
+                                    .child(
+                                        anchored()
+                                            .position(position)
+                                            .snap_to_window_with_margin(px(8.))
+                                            .child(self.root_menu(cx)),
+                                    ),
+                            ),
+                        )
+                        .with_priority(1),
+                    )
+                }),
+        )
     }
 }
 

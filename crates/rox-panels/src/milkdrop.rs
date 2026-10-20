@@ -219,6 +219,61 @@ impl Default for MilkdropConfig {
     }
 }
 
+/// The presets every Milkdrop panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader. None
+/// picks a preset or a rotation folder, since those may not exist here.
+pub fn builtin_presets() -> Vec<(&'static str, MilkdropConfig)> {
+    vec![
+        (
+            "milkdrop-preset-ambient",
+            MilkdropConfig {
+                duration_secs: 90.0,
+                beat_sensitivity: 0.5,
+                hard_cuts: false,
+                show_preset_name: false,
+                show_controls: false,
+                fade: true,
+                fade_secs: 2.5,
+                tint_strength: 0.6,
+                ..MilkdropConfig::default()
+            },
+        ),
+        (
+            "milkdrop-preset-party",
+            MilkdropConfig {
+                duration_secs: 10.0,
+                beat_sensitivity: 2.0,
+                hard_cuts: true,
+                show_controls: false,
+                color: MilkdropColor::Preset,
+                tint_strength: 0.0,
+                ..MilkdropConfig::default()
+            },
+        ),
+        (
+            "milkdrop-preset-browse",
+            MilkdropConfig {
+                duration_secs: 15.0,
+                hard_cuts: false,
+                show_preset_name: true,
+                name_always: true,
+                show_controls: true,
+                ..MilkdropConfig::default()
+            },
+        ),
+        (
+            "milkdrop-preset-low-power",
+            MilkdropConfig {
+                fps: 30,
+                scale: 0.5,
+                duration_secs: 60.0,
+                hard_cuts: false,
+                ..MilkdropConfig::default()
+            },
+        ),
+    ]
+}
+
 /// The rotation picker's one value. The config keeps two fields so a pick
 /// survives a round trip through the other.
 #[derive(Clone, Debug, PartialEq)]
@@ -2327,6 +2382,37 @@ impl MilkdropPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<_> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "preset keys repeat");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: MilkdropConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.duration_secs, config.duration_secs, "{key}");
+            assert_eq!(back.beat_sensitivity, config.beat_sensitivity, "{key}");
+            assert_eq!(back.hard_cuts, config.hard_cuts, "{key}");
+            assert_eq!(back.fps, config.fps, "{key}");
+            assert_eq!(back.scale, config.scale, "{key}");
+            assert_eq!(back.show_preset_name, config.show_preset_name, "{key}");
+            assert_eq!(back.name_always, config.name_always, "{key}");
+            assert_eq!(back.show_controls, config.show_controls, "{key}");
+            assert_eq!(back.fade, config.fade, "{key}");
+            assert_eq!(back.fade_secs, config.fade_secs, "{key}");
+            assert_eq!(back.tint_strength, config.tint_strength, "{key}");
+            assert_eq!(back.color, config.color, "{key}");
+            assert!(back.preset.is_none(), "{key}");
+            assert!(back.rotation_folder.is_none(), "{key}");
+            assert!(!back.locked, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
+    }
 
     fn tuned() -> MilkdropConfig {
         MilkdropConfig {

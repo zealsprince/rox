@@ -250,6 +250,72 @@ impl Default for ArtConfig {
     }
 }
 
+/// The built-in presets, keyed by their name's i18n key.
+pub fn builtin_presets() -> Vec<(&'static str, ArtConfig)> {
+    vec![
+        (
+            "art-preset-gallery",
+            ArtConfig {
+                perspective: false,
+                spacing: 105.,
+                stride: 90.,
+                visible: 3,
+                recede: 100.,
+                rounding: 6.,
+                reflection: false,
+                shadow: true,
+                ..ArtConfig::default()
+            },
+        ),
+        (
+            "art-preset-spotlight",
+            ArtConfig {
+                fill: true,
+                visible: 1,
+                spacing: 90.,
+                recede: 0.,
+                reflection: false,
+                glow: true,
+                follow_playing: true,
+                resume_playing: true,
+                smooth_follow: true,
+                ..ArtConfig::default()
+            },
+        ),
+        (
+            "art-preset-browse",
+            ArtConfig {
+                search: true,
+                letters: true,
+                tilt: 75.,
+                spacing: 40.,
+                stride: 8.,
+                visible: 12,
+                recede: 10.,
+                reflection: false,
+                label: LabelPos::Top,
+                ..ArtConfig::default()
+            },
+        ),
+        (
+            "art-preset-jukebox",
+            ArtConfig {
+                disc_style: DiscStyle::Vinyl,
+                perspective: false,
+                spacing: 75.,
+                stride: 45.,
+                reflection: false,
+                shadow: true,
+                dim_playing: true,
+                desaturate_playing: true,
+                follow_playing: true,
+                smooth_follow: true,
+                ..ArtConfig::default()
+            },
+        ),
+    ]
+}
+
 /// One album's run in the current view. `art` resolves on first paint; the
 /// inner None is a track the store no longer knows.
 struct Cell {
@@ -2964,5 +3030,44 @@ impl ArtPanel {
                         .child(error),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: ArtConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.search, config.search, "{key}");
+            assert_eq!(back.fill, config.fill, "{key}");
+            assert_eq!(back.follow_playing, config.follow_playing, "{key}");
+            assert_eq!(back.resume_playing, config.resume_playing, "{key}");
+            assert_eq!(back.smooth_follow, config.smooth_follow, "{key}");
+            assert_eq!(back.dim_playing, config.dim_playing, "{key}");
+            assert_eq!(back.desaturate_playing, config.desaturate_playing, "{key}");
+            assert_eq!(back.rounding, config.rounding, "{key}");
+            assert_eq!(back.reflection, config.reflection, "{key}");
+            assert_eq!(back.shadow, config.shadow, "{key}");
+            assert_eq!(back.glow, config.glow, "{key}");
+            assert!(back.disc_style == config.disc_style, "{key}");
+            assert_eq!(back.perspective, config.perspective, "{key}");
+            assert_eq!(back.tilt, config.tilt, "{key}");
+            assert_eq!(back.spacing, config.spacing, "{key}");
+            assert_eq!(back.stride, config.stride, "{key}");
+            assert_eq!(back.visible, config.visible, "{key}");
+            assert_eq!(back.recede, config.recede, "{key}");
+            assert_eq!(back.letters, config.letters, "{key}");
+            assert!(back.label == config.label, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

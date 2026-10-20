@@ -116,6 +116,53 @@ impl Default for CoverConfig {
     }
 }
 
+/// The built-in presets, keyed by their name's i18n key.
+pub fn builtin_presets() -> Vec<(&'static str, CoverConfig)> {
+    vec![
+        (
+            "cover-preset-turntable",
+            CoverConfig {
+                align: Align::Center,
+                disc_style: DiscStyle::Vinyl,
+                spin: true,
+                spin_rpm: 33.,
+                spin_ramp: 3.,
+                ..CoverConfig::default()
+            },
+        ),
+        (
+            "cover-preset-cd-player",
+            CoverConfig {
+                align: Align::Center,
+                disc_style: DiscStyle::Cd,
+                spin: true,
+                spin_rpm: 45.,
+                spin_ramp: 0.5,
+                ..CoverConfig::default()
+            },
+        ),
+        (
+            // Spinning the disc slot with no style crops the scan round.
+            "cover-preset-disc-scan",
+            CoverConfig {
+                align: Align::Center,
+                art: ArtPick::Disc,
+                spin: true,
+                spin_rpm: 20.,
+                ..CoverConfig::default()
+            },
+        ),
+        (
+            "cover-preset-preview",
+            CoverConfig {
+                source: TrackSource::Selected,
+                align: Align::Center,
+                ..CoverConfig::default()
+            },
+        ),
+    ]
+}
+
 #[derive(Clone)]
 enum Slide {
     Blank,
@@ -1088,5 +1135,34 @@ impl CoverArtPanel {
             .bg(palette::bg_root())
             .relative()
             .child(inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: CoverConfig = panel::config_from_info(&info);
+
+            assert!(back.source == config.source, "{key}");
+            assert!(back.art == config.art, "{key}");
+            assert!(back.align == config.align, "{key}");
+            assert_eq!(back.stretch, config.stretch, "{key}");
+            assert_eq!(back.spin, config.spin, "{key}");
+            assert_eq!(back.spin_rpm, config.spin_rpm, "{key}");
+            assert_eq!(back.spin_ramp, config.spin_ramp, "{key}");
+            assert!(back.disc_style == config.disc_style, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

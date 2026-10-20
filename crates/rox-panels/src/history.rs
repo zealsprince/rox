@@ -293,6 +293,50 @@ impl Default for HistoryConfig {
     }
 }
 
+/// The presets every History panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, HistoryConfig)> {
+    vec![
+        (
+            "history-preset-timeline",
+            HistoryConfig {
+                view: HistoryView::Recent,
+                headers: Headers::Expanded,
+                columns: ["name", "duration", "lastplayed", "rating"]
+                    .map(String::from)
+                    .into(),
+                stripes: false,
+                ..HistoryConfig::default()
+            },
+        ),
+        (
+            "history-preset-charts",
+            HistoryConfig {
+                view: HistoryView::Most,
+                columns: ["cover", "name", "artist", "album", "plays", "rating"]
+                    .map(String::from)
+                    .into(),
+                ..HistoryConfig::default()
+            },
+        ),
+        (
+            // Newest additions first, so a fresh import surfaces at the top.
+            "history-preset-discover",
+            HistoryConfig {
+                view: HistoryView::Never,
+                never_sort: NeverSort::Added,
+                never_desc: true,
+                columns: [
+                    "cover", "name", "artist", "album", "year", "genre", "duration",
+                ]
+                .map(String::from)
+                .into(),
+                ..HistoryConfig::default()
+            },
+        ),
+    ]
+}
+
 pub struct HistoryPanel {
     state: AppState,
     config: HistoryConfig,
@@ -1860,5 +1904,31 @@ mod tests {
         let restored: HistoryConfig = serde_json::from_str(&saved).unwrap();
         assert!(!restored.stripes);
         assert!(restored.view == HistoryView::Most);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        let known: Vec<&str> = columns().iter().map(|c| c.key).collect();
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: HistoryConfig = panel::config_from_info(&info);
+
+            for column in &config.columns {
+                assert!(known.contains(&column.as_str()), "{key}: {column}");
+            }
+            assert_eq!(back.columns, config.columns, "{key}");
+            assert!(back.view == config.view, "{key}");
+            assert!(back.headers == config.headers, "{key}");
+            assert!(back.never_sort == config.never_sort, "{key}");
+            assert_eq!(back.never_desc, config.never_desc, "{key}");
+            assert_eq!(back.stripes, config.stripes, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

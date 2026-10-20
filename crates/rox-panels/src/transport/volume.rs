@@ -94,6 +94,32 @@ impl Default for VolumeConfig {
     }
 }
 
+/// The presets every Volume panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, VolumeConfig)> {
+    vec![
+        (
+            "volume-preset-fader",
+            VolumeConfig {
+                stretch: true,
+                percent_db: true,
+                items: vec![VolumeItem::Slider, VolumeItem::Percent],
+                ..VolumeConfig::default()
+            },
+        ),
+        (
+            // Scrolling over the speaker still moves the level, so the icon
+            // alone is a working control.
+            "volume-preset-icon-only",
+            VolumeConfig {
+                align: Align::Center,
+                items: vec![VolumeItem::Icon],
+                ..VolumeConfig::default()
+            },
+        ),
+    ]
+}
+
 /// An older layout's piece field: a bool, or the side picker. `true`
 /// means the piece's stock side.
 #[derive(Deserialize)]
@@ -558,5 +584,23 @@ mod tests {
         let saved = serde_json::to_value(&config).unwrap();
         let back: VolumeConfig = serde_json::from_value(saved).unwrap();
         assert!(back.items == config.items);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = super::builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: VolumeConfig = crate::panel::config_from_info(&info);
+
+            assert!(back.align == config.align, "{key}");
+            assert_eq!(back.stretch, config.stretch, "{key}");
+            assert_eq!(back.percent_db, config.percent_db, "{key}");
+            assert!(back.items == config.items, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

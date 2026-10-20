@@ -86,14 +86,14 @@ impl ThemeTogglePanel {
                 ),
         );
 
-        div()
-            .size_full()
-            .bg(palette::bg_root())
-            .flex()
-            .items_center()
-            .map(|d| justify(d, self.config.align))
-            .px(tokens::SPACE_MD)
-            .child(button)
+        panel::chrome_bar(
+            div()
+                .flex()
+                .items_center()
+                .map(|d| justify(d, self.config.align))
+                .px(tokens::SPACE_MD)
+                .child(button),
+        )
     }
 }
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent,
+    App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta, ScrollWheelEvent, SharedString, WeakEntity,
     Window, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative,
 };
@@ -230,6 +230,7 @@ impl SlidePanel {
             return;
         }
         self.slides[ix] = panel;
+        self.introduced = false;
         cx.notify();
     }
 
@@ -604,6 +605,26 @@ impl PanelSettings for SlidePanel {
         self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
+    }
+}
+
+impl composite::Hosting for SlidePanel {
+    fn replace_child(
+        &mut self,
+        old: EntityId,
+        new: Arc<dyn PanelView>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(ix) = self
+            .slides
+            .iter()
+            .position(|slide| slide.view().entity_id() == old)
+        else {
+            return false;
+        };
+
+        self.replace(ix, new, cx);
+        true
     }
 }
 

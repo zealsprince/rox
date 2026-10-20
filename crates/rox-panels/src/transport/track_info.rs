@@ -246,6 +246,53 @@ impl Default for TrackInfoConfig {
     }
 }
 
+/// The presets every Track Info panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, TrackInfoConfig)> {
+    use InfoPiece::*;
+
+    vec![
+        (
+            "track-info-preset-ticker",
+            TrackInfoConfig {
+                marquee: MarqueeMode::Loop,
+                marquee_speed: 40.0,
+                items: vec![Artist, Title, Album],
+                ..TrackInfoConfig::default()
+            },
+        ),
+        (
+            "track-info-preset-stacked",
+            TrackInfoConfig {
+                marquee: MarqueeMode::Scroll,
+                items: vec![Art, Title, Break, Artist, Album],
+                ..TrackInfoConfig::default()
+            },
+        ),
+        (
+            "track-info-preset-technical",
+            TrackInfoConfig {
+                items: vec![
+                    TrackNo, Title, Duration, Spacer, Quality, Break, Artist, Album, Year, Genre,
+                    Spacer, Output,
+                ],
+                ..TrackInfoConfig::default()
+            },
+        ),
+        (
+            "track-info-preset-rotating",
+            TrackInfoConfig {
+                align: Align::Center,
+                swap: true,
+                swap_secs: 5.0,
+                marquee: MarqueeMode::Scroll,
+                items: vec![Title, Break, Artist, Break, Album, Year],
+                ..TrackInfoConfig::default()
+            },
+        ),
+    ]
+}
+
 /// Newer layouts write the ordered list. Older ones had a `show_output`
 /// toggle for the chip.
 #[derive(Deserialize)]
@@ -2098,5 +2145,26 @@ mod tests {
         marquee.offset = 100.0;
         marquee.advance(100.0, 30.0, true);
         assert_eq!(marquee.motion(), Motion::Still);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = super::builtin_presets();
+        let keys: std::collections::HashSet<_> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len());
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: TrackInfoConfig = crate::panel::config_from_info(&info);
+
+            assert!(back.align == config.align, "{key}");
+            assert!(back.marquee == config.marquee, "{key}");
+            assert_eq!(back.marquee_speed, config.marquee_speed, "{key}");
+            assert_eq!(back.swap, config.swap, "{key}");
+            assert_eq!(back.swap_secs, config.swap_secs, "{key}");
+            assert!(back.items == config.items, "{key}");
+            assert_eq!(back.scales, config.scales, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

@@ -2,16 +2,17 @@
 //! revealed by a corner button or Tab with a short fade. The main stays visible
 //! under a scrim. Hosted through [`crate::composite`].
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
     MouseDownEvent, Pixels, SharedString, WeakEntity, Window, div, prelude::*,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable as _};
-use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_dock::{Panel, PanelEvent, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::composite::{self, Slot};
@@ -325,6 +326,22 @@ impl PanelSettings for OverlayPanel {
                 ),
             )
         })]
+    }
+}
+
+impl composite::Hosting for OverlayPanel {
+    fn replace_child(
+        &mut self,
+        old: EntityId,
+        new: Arc<dyn PanelView>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(ix) = composite::slot_of(&self.slots, old) else {
+            return false;
+        };
+
+        self.set_slot(ix, Some(new), cx);
+        true
     }
 }
 

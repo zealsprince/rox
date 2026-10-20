@@ -28,11 +28,27 @@ use crate::preset_browser::PresetHost;
 /// What the apply calls with the rebuilt panel once it's in the slot.
 pub type Rebuilt = Box<dyn FnOnce(Arc<dyn PanelView>, &mut App)>;
 
-/// Why a preset is being applied, which decides whether the step is remembered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PresetApply {
-    Pick,
-    Undo,
+/// What a rebuild applies: the state to build the panel from, and the
+/// preset the picker names the result after, if it still matches one.
+#[derive(Clone, Debug)]
+pub struct PresetApply {
+    pub state: PanelPreset,
+    pub named: Option<PanelPreset>,
+}
+
+impl PresetApply {
+    /// A picked preset: the panel takes it and is named after it.
+    pub fn pick(preset: PanelPreset) -> Self {
+        Self {
+            named: Some(preset.clone()),
+            state: preset,
+        }
+    }
+
+    /// Back to a dumped state, named as it was then.
+    pub fn reset(state: PanelPreset, named: Option<PanelPreset>) -> Self {
+        Self { state, named }
+    }
 }
 
 pub struct Openers {
@@ -76,15 +92,16 @@ pub struct Openers {
     /// this workspace, then other saved workspaces. Other-workspace entries
     /// arrive already detached from their bundle's pool.
     pub preset_sources: fn(&str) -> Vec<PresetEntry>,
-    /// Rebuild `panel` from `preset` in its own tab slot, then hand the new
-    /// panel to `Rebuilt` so the settings window that asked can follow it.
-    /// A pick remembers what the panel was, so that window can offer one
-    /// step back; an undo remembers nothing. A panel with no tab group
-    /// (popped out, or a composite's slot) logs and does nothing.
-    pub apply_panel_preset:
-        fn(Arc<dyn PanelView>, PanelPreset, PresetApply, AppState, Rebuilt, &mut App),
+    /// Rebuild `panel` from the apply's state in its own tab slot, then hand
+    /// the new panel to `Rebuilt` so the settings window that asked can
+    /// follow it. A panel in a composite's slot rebuilds in that slot. One
+    /// held by neither (popped out) logs and does nothing.
+    pub apply_panel_preset: fn(Arc<dyn PanelView>, PresetApply, AppState, Rebuilt, &mut App),
     /// The "Group Settings" row that reaches a hosted panel's composite.
     pub host_settings_item: fn(PopupMenu, EntityId, &App) -> PopupMenu,
+    /// Whether a composite holds this panel, so its settings window offers
+    /// presets even though no tab group lists it.
+    pub hosted_by_composite: fn(EntityId, &App) -> bool,
     /// Confirm and close a pinned panel. No-ops in a popout window, which has no
     /// workspace to float the dialog over.
     pub confirm_close_locked: fn(Arc<dyn PanelView>, WeakEntity<TabPanel>, &mut Window, &mut App),
@@ -284,6 +301,14 @@ pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMe
     }
 }
 
+/// False before the app installs its table.
+pub fn hosted_by_composite(child: EntityId, cx: &App) -> bool {
+    match openers("the composite host check") {
+        Some(openers) => (openers.hosted_by_composite)(child, cx),
+        None => false,
+    }
+}
+
 pub fn confirm_close_locked(
     panel: Arc<dyn PanelView>,
     tabs: WeakEntity<TabPanel>,
@@ -323,13 +348,12 @@ pub fn preset_sources(kind: &str) -> Vec<PresetEntry> {
 
 pub fn apply_panel_preset(
     panel: Arc<dyn PanelView>,
-    preset: PanelPreset,
-    kind: PresetApply,
+    apply: PresetApply,
     state: AppState,
     rebuilt: Rebuilt,
     cx: &mut App,
 ) {
     if let Some(openers) = openers("the preset apply") {
-        (openers.apply_panel_preset)(panel, preset, kind, state, rebuilt, cx);
+        (openers.apply_panel_preset)(panel, apply, state, rebuilt, cx);
     }
 }

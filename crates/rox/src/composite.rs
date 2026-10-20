@@ -103,15 +103,39 @@ struct Hosts(HashMap<EntityId, Host>);
 
 impl Global for Hosts {}
 
+/// Swap one child for another in its slot. False once the child is gone.
+type Replace = Rc<dyn Fn(EntityId, Arc<dyn PanelView>, &mut App) -> bool>;
+
 struct Host {
     id: EntityId,
     label: SharedString,
     /// Weak, so an entry left behind by a removed child no-ops.
     open: Rc<dyn Fn(&mut App)>,
+    replace: Replace,
+}
+
+/// A host that can swap a child in place. Picking a preset from a hosted
+/// panel's settings rebuilds it here, the way a tabbed panel rebuilds in
+/// its tab slot.
+pub trait Hosting: PanelSettings {
+    fn replace_child(
+        &mut self,
+        old: EntityId,
+        new: Arc<dyn PanelView>,
+        cx: &mut Context<Self>,
+    ) -> bool;
+}
+
+/// The slot holding the child with this id, if any.
+pub fn slot_of(slots: &[Slot], id: EntityId) -> Option<usize> {
+    slots.iter().position(|slot| {
+        slot.as_ref()
+            .is_some_and(|child| child.view().entity_id() == id)
+    })
 }
 
 /// Settles to a couple of map lookups once the slots stop changing.
-pub fn report_hosted<'a, P: PanelSettings>(
+pub fn report_hosted<'a, P: Hosting>(
     children: impl IntoIterator<Item = &'a Arc<dyn PanelView>>,
     label: &str,
     cx: &mut Context<P>,
@@ -138,6 +162,12 @@ pub fn report_hosted<'a, P: PanelSettings>(
             rox_panel_api::panel_settings::open(host, cx);
         }
     });
+    let weak = cx.entity().downgrade();
+    let replace: Replace = Rc::new(move |old, new, cx| {
+        weak.upgrade()
+            .is_some_and(|host| host.update(cx, |host, cx| host.replace_child(old, new, cx)))
+    });
+
     let label = SharedString::from(label.to_string());
     let hosts = cx.default_global::<Hosts>();
     for id in ids {
@@ -147,9 +177,28 @@ pub fn report_hosted<'a, P: PanelSettings>(
                 id: me,
                 label: label.clone(),
                 open: open.clone(),
+                replace: replace.clone(),
             },
         );
     }
+}
+
+/// Whether a composite holds this panel, so its settings window can offer
+/// presets the way a tabbed panel's does.
+pub fn hosts(child: EntityId, cx: &App) -> bool {
+    cx.try_global::<Hosts>()
+        .is_some_and(|hosts| hosts.0.contains_key(&child))
+}
+
+/// Swap a hosted child for `new` in its host's slot. False when nothing
+/// holds `child` any more.
+pub fn replace_hosted(child: EntityId, new: Arc<dyn PanelView>, cx: &mut App) -> bool {
+    let replace = cx
+        .try_global::<Hosts>()
+        .and_then(|hosts| hosts.0.get(&child))
+        .map(|host| host.replace.clone());
+
+    replace.is_some_and(|replace| replace(child, new, cx))
 }
 
 pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMenu {

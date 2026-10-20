@@ -433,15 +433,15 @@ impl WindowControlsPanel {
             })
             .collect();
 
-        div()
-            .size_full()
-            .bg(palette::bg_root())
-            .flex()
-            .items_center()
-            .map(|d| justify(d, self.config.align))
-            .px(tokens::SPACE_MD)
-            .gap(gap)
-            .children(children)
+        panel::chrome_bar(
+            div()
+                .flex()
+                .items_center()
+                .map(|d| justify(d, self.config.align))
+                .px(tokens::SPACE_MD)
+                .gap(gap)
+                .children(children),
+        )
     }
 }
 

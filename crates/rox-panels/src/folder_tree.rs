@@ -135,6 +135,40 @@ impl Default for FolderTreeConfig {
     }
 }
 
+/// The presets every folder tree can take, keyed by their i18n name. Chrome
+/// stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, FolderTreeConfig)> {
+    vec![
+        (
+            "folder-tree-preset-covers",
+            FolderTreeConfig {
+                cover: CoverArt::Both,
+                stripes: false,
+                ..FolderTreeConfig::default()
+            },
+        ),
+        (
+            "folder-tree-preset-search",
+            FolderTreeConfig {
+                search: true,
+                folders: FilterEffect::Hide,
+                songs: FilterEffect::Hide,
+                ..FolderTreeConfig::default()
+            },
+        ),
+        (
+            "folder-tree-preset-now-playing",
+            FolderTreeConfig {
+                cover: CoverArt::Folders,
+                follow_playing: true,
+                resume_playing: true,
+                smooth_follow: true,
+                ..FolderTreeConfig::default()
+            },
+        ),
+    ]
+}
+
 /// A directory, a CUE image, or a playable logical track.
 #[derive(Clone)]
 enum RowKind {
@@ -2650,5 +2684,29 @@ mod tests {
         let saved = serde_json::to_string(&config).unwrap();
         let restored: FolderTreeConfig = serde_json::from_str(&saved).unwrap();
         assert!(!restored.stripes);
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: FolderTreeConfig = panel::config_from_info(&info);
+
+            assert!(back.cover == config.cover, "{key}");
+            assert_eq!(back.stripes, config.stripes, "{key}");
+            assert!(back.folders == config.folders, "{key}");
+            assert!(back.songs == config.songs, "{key}");
+            assert_eq!(back.search, config.search, "{key}");
+            assert_eq!(back.follow_playing, config.follow_playing, "{key}");
+            assert_eq!(back.resume_playing, config.resume_playing, "{key}");
+            assert_eq!(back.smooth_follow, config.smooth_follow, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

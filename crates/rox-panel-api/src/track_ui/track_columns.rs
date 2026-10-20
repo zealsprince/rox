@@ -144,9 +144,11 @@ pub fn cell(
         // track reads as absence rather than a zero.
         "plays" if compact_plays => div()
             .flex_none()
+            .w(palette::scaled_px(COMPACT_PLAYS_WIDTH))
             .flex()
             .flex_row()
             .items_center()
+            .justify_end()
             .gap(px(1.))
             .when(c.plays > 0, |d| {
                 d.child(div().text_xs().text_color(palette::text_muted()).child(
@@ -237,6 +239,8 @@ pub fn cover_cell(cover: &Option<Thumb>, row_height: f32) -> Div {
 /// defaults. A content-sized cell would vary per row ("8m ago" against
 /// "21m ago") and drag every flexing column after it.
 pub const PLAYS_WIDTH: f32 = 56.;
+/// The "12|" tick: room for three digits and the bar.
+pub const COMPACT_PLAYS_WIDTH: f32 = 32.;
 pub const YEAR_WIDTH: f32 = 56.;
 pub const DURATION_WIDTH: f32 = 64.;
 pub const LAST_PLAYED_WIDTH: f32 = 84.;

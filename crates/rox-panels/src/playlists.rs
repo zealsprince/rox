@@ -251,6 +251,55 @@ impl Default for PlaylistsConfig {
     }
 }
 
+/// The presets every Playlists panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, PlaylistsConfig)> {
+    vec![
+        (
+            "playlists-preset-albums",
+            PlaylistsConfig {
+                headers: Headers::Expanded,
+                columns: ["number", "name", "duration", "rating"]
+                    .map(String::from)
+                    .into(),
+                art_rounding: 6.,
+                header_gap_above: 8.,
+                ..PlaylistsConfig::default()
+            },
+        ),
+        (
+            "playlists-preset-classic",
+            PlaylistsConfig {
+                columns: ["number", "name", "artist", "album", "duration", "plays"]
+                    .map(String::from)
+                    .into(),
+                compact_plays: true,
+                row_borders: false,
+                ..PlaylistsConfig::default()
+            },
+        ),
+        (
+            "playlists-preset-covers",
+            PlaylistsConfig {
+                columns: ["cover", "name", "artist", "album", "duration"]
+                    .map(String::from)
+                    .into(),
+                stripes: false,
+                ..PlaylistsConfig::default()
+            },
+        ),
+        (
+            "playlists-preset-minimal",
+            PlaylistsConfig {
+                columns: ["name", "artist"].map(String::from).into(),
+                stripes: false,
+                row_borders: false,
+                ..PlaylistsConfig::default()
+            },
+        ),
+    ]
+}
+
 /// An empty list means never edited and reads as the stock arrangement.
 /// Saved lists come back deduped against the registry.
 fn fold_head_lines(config: &PlaylistsConfig) -> (Vec<HeadPiece>, Vec<HeadPiece>, Vec<HeadPiece>) {
@@ -3080,5 +3129,33 @@ mod tests {
         let back: PlaylistsConfig = serde_json::from_value(saved).unwrap();
         assert!(back.header_compact == config.header_compact);
         assert!(fold_head_lines(&back) == fold_head_lines(&config));
+    }
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = super::builtin_presets();
+        let mut keys: Vec<&str> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "duplicate preset key");
+
+        let known: Vec<&str> = super::columns().iter().map(|c| c.key).collect();
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: PlaylistsConfig = crate::panel::config_from_info(&info);
+
+            for column in &config.columns {
+                assert!(known.contains(&column.as_str()), "{key}: {column}");
+            }
+            assert_eq!(back.columns, config.columns, "{key}");
+            assert!(back.headers == config.headers, "{key}");
+            assert_eq!(back.row_height, config.row_height, "{key}");
+            assert_eq!(back.art_rounding, config.art_rounding, "{key}");
+            assert_eq!(back.header_gap_above, config.header_gap_above, "{key}");
+            assert_eq!(back.compact_plays, config.compact_plays, "{key}");
+            assert_eq!(back.stripes, config.stripes, "{key}");
+            assert_eq!(back.row_borders, config.row_borders, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

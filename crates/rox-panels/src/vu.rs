@@ -119,8 +119,7 @@ fn channel_choices() -> [(SharedString, Channels); 2] {
 
 fn ballistics_choices() -> [(SharedString, Ballistics); 2] {
     [
-        // Untranslated: no locale key exists for this label.
-        ("VU".into(), Ballistics::Vu),
+        (rox_i18n::t!("vu-ballistics-vu"), Ballistics::Vu),
         (rox_i18n::t!("vu-ballistics-peak"), Ballistics::Peak),
     ]
 }
@@ -168,6 +167,62 @@ impl Default for VuConfig {
             scale: false,
         }
     }
+}
+
+/// The presets every VU panel can take, keyed by their i18n name. Chrome
+/// stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, VuConfig)> {
+    vec![
+        (
+            "vu-preset-analog",
+            VuConfig {
+                ballistics: Ballistics::Vu,
+                style: MeterStyle::Continuous,
+                gradient: Gradient::Theme,
+                caps: false,
+                scale: true,
+                ..VuConfig::default()
+            },
+        ),
+        (
+            "vu-preset-led-ladder",
+            VuConfig {
+                ballistics: Ballistics::Peak,
+                style: MeterStyle::Segments,
+                gradient: Gradient::Custom,
+                seg_height: 3.0,
+                seg_gap: 1.0,
+                caps: true,
+                ..VuConfig::default()
+            },
+        ),
+        (
+            "vu-preset-peak-hold",
+            VuConfig {
+                ballistics: Ballistics::Peak,
+                gradient: Gradient::Theme,
+                gradient_curve: 2.5,
+                caps: true,
+                // Slow enough that the marks linger a beat after a transient.
+                cap_gravity: 0.02,
+                scale: true,
+                ..VuConfig::default()
+            },
+        ),
+        (
+            "vu-preset-mono-strip",
+            VuConfig {
+                channels: Channels::Mono,
+                orientation: Orientation::Left,
+                style: MeterStyle::Segments,
+                gradient: Gradient::Theme,
+                seg_height: 6.0,
+                seg_gap: 2.0,
+                caps: false,
+                ..VuConfig::default()
+            },
+        ),
+    ]
 }
 
 impl VuConfig {
@@ -971,5 +1026,37 @@ impl Render for VuPanel {
         let chrome = self.config.chrome.clone();
         let focus = self.focus.clone();
         panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let mut keys: Vec<_> = presets.iter().map(|(key, _)| *key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), presets.len(), "preset keys repeat");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: VuConfig = panel::config_from_info(&info);
+
+            assert!(back.channels == config.channels, "{key}");
+            assert!(back.style == config.style, "{key}");
+            assert!(back.orientation == config.orientation, "{key}");
+            assert!(back.ballistics == config.ballistics, "{key}");
+            assert!(back.gradient == config.gradient, "{key}");
+            assert_eq!(back.gradient_curve, config.gradient_curve, "{key}");
+            assert_eq!(back.seg_height, config.seg_height, "{key}");
+            assert_eq!(back.seg_gap, config.seg_gap, "{key}");
+            assert_eq!(back.caps, config.caps, "{key}");
+            assert_eq!(back.cap_gravity, config.cap_gravity, "{key}");
+            assert_eq!(back.scale, config.scale, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

@@ -209,6 +209,79 @@ impl Default for ArtistGridConfig {
     }
 }
 
+/// The presets every Artist Grid panel can take, keyed by their i18n name.
+/// Chrome stays default: a built-in carries no title, theme or shader.
+pub fn builtin_presets() -> Vec<(&'static str, ArtistGridConfig)> {
+    vec![
+        (
+            "artist-grid-preset-spotlight",
+            ArtistGridConfig {
+                tile: TILE_MAX,
+                gap: 0.,
+                rounding: 0.,
+                labels: false,
+                counts: false,
+                follow_playing: true,
+                resume_playing: true,
+                smooth_follow: true,
+                dim_playing: true,
+                desaturate_playing: true,
+                dim: 75.,
+                ..ArtistGridConfig::default()
+            },
+        ),
+        (
+            "artist-grid-preset-compact",
+            ArtistGridConfig {
+                tile: TILE_MIN,
+                gap: 2.,
+                labels: false,
+                counts: false,
+                letters: true,
+                letters_compact: true,
+                ..ArtistGridConfig::default()
+            },
+        ),
+        (
+            "artist-grid-preset-browse",
+            ArtistGridConfig {
+                search: true,
+                letters: true,
+                tile: 128.,
+                gap: 12.,
+                labels: true,
+                counts: true,
+                label_align: TitleAlign::Center,
+                ..ArtistGridConfig::default()
+            },
+        ),
+        (
+            "artist-grid-preset-shelf",
+            ArtistGridConfig {
+                vertical: false,
+                tile: 128.,
+                labels: true,
+                counts: false,
+                label_align: TitleAlign::Center,
+                ..ArtistGridConfig::default()
+            },
+        ),
+        // Portraits reach for the network, so only this preset turns them on.
+        (
+            "artist-grid-preset-portraits",
+            ArtistGridConfig {
+                portraits: true,
+                tile: 192.,
+                gap: 16.,
+                labels: true,
+                counts: false,
+                label_align: TitleAlign::Center,
+                ..ArtistGridConfig::default()
+            },
+        ),
+    ]
+}
+
 /// One artist's run in the current view. `art` resolves on first paint; the
 /// inner None is an artist with nothing to show.
 struct Cell {
@@ -2559,5 +2632,43 @@ impl ArtistGridPanel {
                         .child(error),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_round_trip_through_the_dump() {
+        let presets = builtin_presets();
+        let keys: HashSet<&str> = presets.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), presets.len(), "preset keys must be unique");
+
+        for (key, config) in presets {
+            let info = rox_dock::PanelInfo::panel(serde_json::to_value(&config).unwrap());
+            let back: ArtistGridConfig = panel::config_from_info(&info);
+
+            assert_eq!(back.vertical, config.vertical, "{key}");
+            assert_eq!(back.search, config.search, "{key}");
+            assert_eq!(back.letters, config.letters, "{key}");
+            assert_eq!(back.letters_compact, config.letters_compact, "{key}");
+            assert_eq!(back.tile, config.tile, "{key}");
+            assert_eq!(back.follow_playing, config.follow_playing, "{key}");
+            assert_eq!(back.resume_playing, config.resume_playing, "{key}");
+            assert_eq!(back.smooth_follow, config.smooth_follow, "{key}");
+            assert_eq!(back.dim_playing, config.dim_playing, "{key}");
+            assert_eq!(back.desaturate_playing, config.desaturate_playing, "{key}");
+            assert_eq!(back.dim, config.dim, "{key}");
+            assert_eq!(back.rounding, config.rounding, "{key}");
+            assert_eq!(back.gap, config.gap, "{key}");
+            assert_eq!(back.labels, config.labels, "{key}");
+            assert_eq!(back.counts, config.counts, "{key}");
+            assert_eq!(back.portraits, config.portraits, "{key}");
+            assert_eq!(back.pick_filters, config.pick_filters, "{key}");
+            assert!(back.label_align == config.label_align, "{key}");
+            assert!(back.group == config.group, "{key}");
+            assert!(back.chrome.title.is_none(), "{key}");
+        }
     }
 }

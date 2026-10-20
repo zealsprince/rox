@@ -24,7 +24,8 @@ use crate::continuation;
 use crate::design::{palette, tokens};
 use crate::marks::{MarkCache, Marks};
 use crate::panel::{
-    self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, justify,
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    align_rows, justify,
 };
 use crate::panel_settings;
 use crate::player::{AbState, fmt_time, observe_view};
@@ -1025,28 +1026,27 @@ impl PanelSettings for TransportPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(align_row(
+    ) -> PageBody {
+        let has_play = self.config.items.contains(&PlaybackItem::Play);
+        PageBody::new().section(Section::bare(q, |rows| {
+            align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_block(
-                rox_i18n::t!("playback-buttons"),
-                Some(rox_i18n::t!("playback-buttons.description")),
-                None,
+            )
+            .block(
+                "playback-buttons",
+                &["order", "reorder", "hide", "show"],
                 panel::arrange_editor(
                     "playback-items",
                     ITEMS,
@@ -1057,11 +1057,11 @@ impl PanelSettings for TransportPanel {
                     },
                     cx,
                 ),
-            ))
-            .when(self.config.items.contains(&PlaybackItem::Play), |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("playback-play-highlight"),
-                    Some(rox_i18n::t!("playback-play-highlight.description")),
+            )
+            .when(has_play, |rows| {
+                rows.keyed(
+                    "playback-play-highlight",
+                    &["accent", "circle", "square", "fill"],
                     panel::choices_shared(
                         &[
                             (
@@ -1081,9 +1081,9 @@ impl PanelSettings for TransportPanel {
                         },
                         cx,
                     ),
-                ))
+                )
             })
-            .into_any_element()
+        }))
     }
 }
 

@@ -37,7 +37,9 @@ use crate::artists::{self, Artist, SizedImage};
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, ScrubState};
+use crate::panel::{
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, Rows, ScrubState, Section,
+};
 use crate::panel_settings;
 use crate::providers;
 use crate::query::shared_query::{self, SharedQuery};
@@ -872,28 +874,36 @@ impl PanelSettings for BiographyPanel {
         &[("Content", icons::USER)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> PageBody {
         let height_input = self.height_input(window, cx);
-        let flag =
-            |label: &str, on: bool, set: fn(&mut BiographyConfig, bool), cx: &mut Context<Self>| {
-                panel::setting_row(
-                    rox_i18n::t!(label),
-                    Some(rox_i18n::t!(&format!("{label}.description"))),
-                    panel::toggle(
-                        on,
-                        move |this: &mut Self, on, cx| {
-                            set(&mut this.config, on);
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                )
-            };
+        // A plain `fn` item, not a closure: a closure here can't express the
+        // `for<'a> Fn(Rows<'a>, ..) -> Rows<'a>` shape the chain below needs.
+        fn flag<'a>(
+            rows: Rows<'a>,
+            label: &'static str,
+            on: bool,
+            set: fn(&mut BiographyConfig, bool),
+            cx: &mut Context<BiographyPanel>,
+        ) -> Rows<'a> {
+            rows.keyed(
+                label,
+                &[],
+                panel::toggle(
+                    on,
+                    move |this: &mut BiographyPanel, on, cx| {
+                        set(&mut this.config, on);
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
+        }
         let intervals: Vec<(SharedString, u64)> = CYCLE_INTERVALS
             .iter()
             .map(|secs| {
@@ -907,21 +917,27 @@ impl PanelSettings for BiographyPanel {
             .iter()
             .map(|n| (SharedString::from(n.to_string()), *n))
             .collect();
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(source::source_row(
+        let header_aspect = self.config.header_aspect;
+        let header_fill = self.config.header_fill;
+        let cycle = self.config.cycle;
+        let background = self.config.background;
+        let profile = self.config.profile;
+        let top_tracks = self.config.top_tracks;
+
+        PageBody::new().section(Section::bare(q, |rows| {
+            let rows = source::source_rows(
+                rows,
                 self.config.source,
                 |this: &mut Self, source, cx| {
                     this.config.source = source;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("biography-name-source"),
-                Some(rox_i18n::t!("biography-name-source.description")),
+            );
+
+            let rows = rows.keyed(
+                "biography-name-source",
+                &["artist", "album artist"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("head-piece-artist"), NameSource::Artist),
@@ -939,86 +955,97 @@ impl PanelSettings for BiographyPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(flag(
+            );
+
+            let rows = flag(
+                rows,
                 "biography-header-image",
                 self.config.portrait,
                 |c, on| c.portrait = on,
                 cx,
-            ))
-            .child(flag(
+            );
+            let rows = flag(
+                rows,
                 "biography-keep-aspect",
                 self.config.header_aspect,
                 |c, on| c.header_aspect = on,
                 cx,
-            ))
-            .when(self.config.header_aspect, |d| {
-                d.child(flag(
+            );
+
+            let rows = rows.when(header_aspect, |rows| {
+                flag(
+                    rows,
                     "biography-fill-width",
                     self.config.header_fill,
                     |c, on| c.header_fill = on,
                     cx,
-                ))
-            })
-            .when(!self.config.header_aspect, |d| {
-                d.child(flag(
+                )
+            });
+
+            let rows = rows.when(!header_aspect, |rows| {
+                flag(
+                    rows,
                     "biography-header-blur",
                     self.config.header_blur,
                     |c, on| c.header_blur = on,
                     cx,
-                ))
-            })
+                )
+            });
+
             // With the proportions kept and the fill on there's no cap, so the
             // row would set nothing.
-            .when(
-                !(self.config.header_aspect && self.config.header_fill),
-                |d| {
-                    d.child(panel::setting_row(
-                        rox_i18n::t!("biography-header-height"),
-                        Some(rox_i18n::t!("biography-header-height.description")),
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_XS)
-                            .child(div().w(px(72.)).child(Input::new(&height_input).small()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette::text_muted())
-                                    .child("px"),
-                            ),
-                    ))
-                },
-            )
-            .child(flag(
+            let rows = rows.when(!(header_aspect && header_fill), |rows| {
+                rows.keyed(
+                    "biography-header-height",
+                    &["size", "px"],
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_XS)
+                        .child(div().w(px(72.)).child(Input::new(&height_input).small()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child("px"),
+                        ),
+                )
+            });
+
+            let rows = flag(
+                rows,
                 "biography-header-overlay",
                 self.config.header_overlay,
                 |c, on| c.header_overlay = on,
                 cx,
-            ))
-            .child(flag(
+            );
+            let rows = flag(
+                rows,
                 "biography-header-banner",
                 self.config.header_banner,
                 |c, on| c.header_banner = on,
                 cx,
-            ))
-            .child(flag(
+            );
+            let rows = flag(
+                rows,
                 "biography-header-fanart",
                 self.config.header_fanart,
                 |c, on| c.header_fanart = on,
                 cx,
-            ))
-            .child(flag(
+            );
+            let rows = flag(
+                rows,
                 "biography-cycle",
                 self.config.cycle,
                 |c, on| c.cycle = on,
                 cx,
-            ))
-            .when(self.config.cycle, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("biography-cycle-interval"),
-                    Some(rox_i18n::t!("biography-cycle-interval.description")),
+            );
+
+            let rows = rows.when(cycle, |rows| {
+                rows.keyed(
+                    "biography-cycle-interval",
+                    &["seconds", "timer"],
                     panel::choices_shared(
                         &intervals,
                         self.config.cycle_secs,
@@ -1028,18 +1055,21 @@ impl PanelSettings for BiographyPanel {
                         },
                         cx,
                     ),
-                ))
-            })
-            .child(flag(
+                )
+            });
+
+            let rows = flag(
+                rows,
                 "biography-background",
                 self.config.background,
                 |c, on| c.background = on,
                 cx,
-            ))
-            .when(self.config.background, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("biography-background-opacity"),
-                    Some(rox_i18n::t!("biography-background-opacity.description")),
+            );
+
+            let rows = rows.when(background, |rows| {
+                rows.keyed(
+                    "biography-background-opacity",
+                    &["fade", "dim"],
                     settings_ui::scalar(
                         &self.opacity_scrub,
                         &self.value_edit,
@@ -1051,44 +1081,53 @@ impl PanelSettings for BiographyPanel {
                         },
                         cx,
                     ),
-                ))
-            })
-            .child(flag(
+                )
+            });
+
+            let rows = flag(
+                rows,
                 "biography-profile",
                 self.config.profile,
                 |c, on| c.profile = on,
                 cx,
-            ))
-            .when(self.config.profile, |d| {
-                d.child(flag(
+            );
+
+            let rows = rows.when(profile, |rows| {
+                flag(
+                    rows,
                     "biography-flag",
                     self.config.flag,
                     |c, on| c.flag = on,
                     cx,
-                ))
-            })
-            .child(flag(
+                )
+            });
+
+            let rows = flag(
+                rows,
                 "biography-stats",
                 self.config.stats,
                 |c, on| c.stats = on,
                 cx,
-            ))
-            .child(flag(
+            );
+            let rows = flag(
+                rows,
                 "biography-tags",
                 self.config.tags,
                 |c, on| c.tags = on,
                 cx,
-            ))
-            .child(flag(
+            );
+            let rows = flag(
+                rows,
                 "biography-top-tracks",
                 self.config.top_tracks,
                 |c, on| c.top_tracks = on,
                 cx,
-            ))
-            .when(self.config.top_tracks, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("biography-top-tracks-count"),
-                    Some(rox_i18n::t!("biography-top-tracks-count.description")),
+            );
+
+            let rows = rows.when(top_tracks, |rows| {
+                rows.keyed(
+                    "biography-top-tracks-count",
+                    &["count", "how many"],
                     panel::choices_shared(
                         &counts,
                         self.config.top_tracks_count,
@@ -1098,15 +1137,17 @@ impl PanelSettings for BiographyPanel {
                         },
                         cx,
                     ),
-                ))
-            })
-            .child(flag(
+                )
+            });
+
+            flag(
+                rows,
                 "biography-similar-artists",
                 self.config.similar,
                 |c, on| c.similar = on,
                 cx,
-            ))
-            .into_any_element()
+            )
+        }))
     }
 }
 

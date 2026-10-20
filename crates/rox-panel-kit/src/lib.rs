@@ -1351,8 +1351,11 @@ pub fn type_ahead_fade<P: 'static>(cx: &mut Context<P>) {
     .detach();
 }
 
+/// The follow, resume and smooth rows, for the caller's own `Section` under
+/// `tracking-title`.
 #[allow(clippy::too_many_arguments)]
-pub fn tracking_section<P: 'static>(
+pub fn tracking_rows<'a, P: 'static>(
+    rows: ui::Rows<'a>,
     follow: bool,
     follow_desc: SharedString,
     on_follow: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
@@ -1363,29 +1366,24 @@ pub fn tracking_section<P: 'static>(
     smooth_desc: SharedString,
     on_smooth: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
-) -> AnyElement {
-    let mut body = div()
-        .flex()
-        .flex_col()
-        .gap(tokens::SPACE_MD)
-        .child(setting_row(
-            rox_i18n::t!("tracking-follow"),
-            Some(follow_desc),
-            toggle(follow, on_follow, cx),
-        ))
-        .child(setting_row(
-            rox_i18n::t!("tracking-resume"),
-            Some(resume_desc),
-            toggle(resume, on_resume, cx),
-        ));
-    if follow || resume {
-        body = body.child(setting_row(
+) -> ui::Rows<'a> {
+    rows.row(
+        rox_i18n::t!("tracking-follow"),
+        Some(follow_desc),
+        toggle(follow, on_follow, cx),
+    )
+    .row(
+        rox_i18n::t!("tracking-resume"),
+        Some(resume_desc),
+        toggle(resume, on_resume, cx),
+    )
+    .when(follow || resume, |rows| {
+        rows.row(
             rox_i18n::t!("tracking-smooth"),
             Some(smooth_desc),
             toggle(smooth, on_smooth, cx),
-        ));
-    }
-    ui::section(rox_i18n::t!("tracking-title"), None, body).into_any_element()
+        )
+    })
 }
 /// A dropdown for lists too long for [`choices`].
 // `use<..>` keeps the element off the `cx` borrow so callers can use `cx`
@@ -1638,24 +1636,33 @@ pub fn items(d: Div, align: Align) -> Div {
     }
 }
 
-pub fn align_row<P: 'static>(
+pub fn align_rows<'a, P: 'static>(
+    rows: ui::Rows<'a>,
+    current: Align,
+    on_pick: impl Fn(&mut P, Align, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> ui::Rows<'a> {
+    rows.keyed(
+        "align-row",
+        &["left", "center", "right", "justify"],
+        align_choices(current, on_pick, cx),
+    )
+}
+
+fn align_choices<P: 'static>(
     current: Align,
     on_pick: impl Fn(&mut P, Align, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    setting_row(
-        rox_i18n::t!("align-row"),
-        Some(rox_i18n::t!("align-row.description")),
-        icon_choices(
-            &[
-                (icons::ALIGN_LEFT, Align::Left),
-                (icons::ALIGN_CENTER, Align::Center),
-                (icons::ALIGN_RIGHT, Align::Right),
-            ],
-            current,
-            on_pick,
-            cx,
-        ),
+    icon_choices(
+        &[
+            (icons::ALIGN_LEFT, Align::Left),
+            (icons::ALIGN_CENTER, Align::Center),
+            (icons::ALIGN_RIGHT, Align::Right),
+        ],
+        current,
+        on_pick,
+        cx,
     )
 }
 
@@ -1676,24 +1683,33 @@ pub fn justify_v(d: Div, align: VAlign) -> Div {
     }
 }
 
-pub fn valign_row<P: 'static>(
+pub fn valign_rows<'a, P: 'static>(
+    rows: ui::Rows<'a>,
+    current: VAlign,
+    on_pick: impl Fn(&mut P, VAlign, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> ui::Rows<'a> {
+    rows.keyed(
+        "valign-row",
+        &["top", "middle", "bottom", "vertical"],
+        valign_choices(current, on_pick, cx),
+    )
+}
+
+fn valign_choices<P: 'static>(
     current: VAlign,
     on_pick: impl Fn(&mut P, VAlign, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    setting_row(
-        rox_i18n::t!("valign-row"),
-        Some(rox_i18n::t!("valign-row.description")),
-        choices_shared(
-            &[
-                (rox_i18n::t!("valign-top"), VAlign::Top),
-                (rox_i18n::t!("valign-middle"), VAlign::Middle),
-                (rox_i18n::t!("valign-bottom"), VAlign::Bottom),
-            ],
-            current,
-            on_pick,
-            cx,
-        ),
+    choices_shared(
+        &[
+            (rox_i18n::t!("valign-top"), VAlign::Top),
+            (rox_i18n::t!("valign-middle"), VAlign::Middle),
+            (rox_i18n::t!("valign-bottom"), VAlign::Bottom),
+        ],
+        current,
+        on_pick,
+        cx,
     )
 }
 

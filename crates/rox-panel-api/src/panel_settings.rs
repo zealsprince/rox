@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, EntityId, Focusable as _, Global, Hsla,
-    KeyBinding, PathPromptOptions, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
-    WindowHandle, actions, div, prelude::*, px, size,
+    KeyBinding, MouseButton, PathPromptOptions, ScrollHandle, SharedString, Subscription,
+    WeakEntity, Window, WindowHandle, actions, div, prelude::*, px, size, svg,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -22,6 +22,7 @@ use gpui_component::{Icon, Root, Sizable as _};
 
 use crate::openers::{PresetApply, Rebuilt};
 use crate::panel::{self, AppState, PanelSettings, ScrubState, shader};
+use crate::query::search::{SearchBox, SearchEvent};
 use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, PanelTheme, ROLES, Side, Sides};
@@ -34,8 +35,8 @@ use rox_core::settings::panel_presets::{PresetEntry, PresetScope, SaveScope};
 use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, PanelPreset, ROUNDING_MAX};
 use rox_dock::{PanelView, TabPanel};
 use rox_panel_kit::ui::{
-    self as settings_ui, SECTION_GAP, Seg, SidesScrub, grid_columns, kbd_line, section, sidebar,
-    small_button,
+    self as settings_ui, PageBody, Query, SECTION_GAP, Section, Seg, SidesScrub, grid_columns,
+    kbd_line, section, sidebar, small_button,
 };
 use rox_viz::signal::Route;
 
@@ -1196,6 +1197,8 @@ struct PanelSettingsWindow<P: PanelSettings> {
     swatch_resolve: Option<Palette>,
     scroll: ScrollHandle,
     nav_scroll: ScrollHandle,
+    search: Entity<SearchBox>,
+    _search_changes: Subscription,
     state: AppState,
     backdrop: WindowBackdrop,
     _picker_changes: Vec<Subscription>,
@@ -1283,6 +1286,24 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let _min_height_events = watch(&min_height_input, Self::apply_min_height, window, cx);
         let _max_width_events = watch(&max_width_input, Self::apply_max_width, window, cx);
         let _max_height_events = watch(&max_height_input, Self::apply_max_height, window, cx);
+        let search = cx.new(|cx| {
+            SearchBox::new(rox_i18n::t!("query-search"), "", window, cx)
+                .small()
+                .icon()
+        });
+        let _search_changes = cx.subscribe_in(
+            &search,
+            window,
+            |_: &mut Self, _, event, window, cx| match event {
+                SearchEvent::Changed => cx.notify(),
+                SearchEvent::Dismissed => {
+                    window.blur();
+                    cx.notify();
+                }
+                SearchEvent::Submitted | SearchEvent::FocusChanged => {}
+            },
+        );
+
         // The frame rows open split where the sides already differ, set or inherited.
         let app_frame = settings::app_frame();
         PanelSettingsWindow {
@@ -1314,6 +1335,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             swatch_resolve: None,
             scroll: ScrollHandle::new(),
             nav_scroll: ScrollHandle::new(),
+            search,
+            _search_changes,
             state,
             backdrop: WindowBackdrop::default(),
             _picker_changes,
@@ -1869,100 +1892,101 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     #[allow(clippy::too_many_arguments)]
     fn behavior_page(
         &mut self,
+        q: &Query,
         locked: bool,
         anchor: bool,
         hide_controls: bool,
         composite: bool,
         limits: SizeLimits,
-        extra: Option<AnyElement>,
+        extra: Vec<Section>,
         cx: &mut Context<Self>,
-    ) -> Div {
-        let placement = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-locked"),
-                Some(rox_i18n::t!("panel-locked.description")),
-                panel::toggle(locked, Self::set_panel_locked, cx),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-drag-anchor"),
-                Some(rox_i18n::t!("panel-drag-anchor.description")),
-                panel::toggle(anchor, Self::set_panel_anchor, cx),
-            ))
-            .when(composite, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("panel-slot-controls"),
-                    Some(rox_i18n::t!("panel-slot-controls.description")),
-                    panel::toggle(!hide_controls, Self::set_panel_controls, cx),
-                ))
-            });
-        // Only the axis the panel resizes along takes effect, but a panel can sit
-        // in a row or a column, so both are offered.
-        let size = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-min-width"),
-                Some(rox_i18n::t!("panel-min-width.description")),
-                self.size_limit_row(
-                    &self.min_width_input,
-                    limits.min_width.is_some(),
-                    Self::reset_min_width,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-max-width"),
-                Some(rox_i18n::t!("panel-max-width.description")),
-                self.size_limit_row(
-                    &self.max_width_input,
-                    limits.max_width.is_some(),
-                    Self::reset_max_width,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-min-height"),
-                Some(rox_i18n::t!("panel-min-height.description")),
-                self.size_limit_row(
-                    &self.min_height_input,
-                    limits.min_height.is_some(),
-                    Self::reset_min_height,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-max-height"),
-                Some(rox_i18n::t!("panel-max-height.description")),
-                self.size_limit_row(
-                    &self.max_height_input,
-                    limits.max_height.is_some(),
-                    Self::reset_max_height,
-                    cx,
-                ),
-            ));
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
+    ) -> PageBody {
+        let page = PageBody::new()
+            .section(Section::new(
+                q,
+                icons::MOVE,
                 rox_i18n::t!("panel-section-placement"),
                 None,
-                placement,
+                |rows| {
+                    rows.keyed(
+                        "panel-locked",
+                        &["lock", "pin", "fixed", "drag", "dock"],
+                        panel::toggle(locked, Self::set_panel_locked, cx),
+                    )
+                    .keyed(
+                        "panel-drag-anchor",
+                        &["drag", "move", "window", "decorations", "titlebar"],
+                        panel::toggle(anchor, Self::set_panel_anchor, cx),
+                    )
+                    .when(composite, |rows| {
+                        rows.keyed(
+                            "panel-slot-controls",
+                            &["slot", "corner", "buttons", "swap", "remove"],
+                            panel::toggle(!hide_controls, Self::set_panel_controls, cx),
+                        )
+                    })
+                },
             ))
-            .child(section(rox_i18n::t!("panel-section-size"), None, size))
-            .children(extra)
+            // Only the axis the panel resizes along takes effect, but a panel can
+            // sit in a row or a column, so both are offered.
+            .section(Section::new(
+                q,
+                icons::MAXIMIZE,
+                rox_i18n::t!("panel-section-size"),
+                None,
+                |rows| {
+                    rows.keyed(
+                        "panel-min-width",
+                        &["size", "limit", "narrow", "floor"],
+                        self.size_limit_row(
+                            &self.min_width_input,
+                            limits.min_width.is_some(),
+                            Self::reset_min_width,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "panel-max-width",
+                        &["size", "limit", "wide", "cap"],
+                        self.size_limit_row(
+                            &self.max_width_input,
+                            limits.max_width.is_some(),
+                            Self::reset_max_width,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "panel-min-height",
+                        &["size", "limit", "short", "floor"],
+                        self.size_limit_row(
+                            &self.min_height_input,
+                            limits.min_height.is_some(),
+                            Self::reset_min_height,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "panel-max-height",
+                        &["size", "limit", "tall", "cap"],
+                        self.size_limit_row(
+                            &self.max_height_input,
+                            limits.max_height.is_some(),
+                            Self::reset_max_height,
+                            cx,
+                        ),
+                    )
+                },
+            ));
+
+        extra.into_iter().fold(page, PageBody::section)
     }
 
     /// No countdown confirm here, unlike the app-wide screen shader. That one
     /// guards against a shader burying the control that would undo it; a panel
     /// shader leaves this window, the menus and every other panel alone.
-    fn shader_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn shader_page(&mut self, q: &Query, window: &mut Window, cx: &mut Context<Self>) -> PageBody {
         let Some(panel) = self.panel.upgrade() else {
-            return div();
+            return PageBody::new();
         };
         // Fold a hot edit picked up while this window was closed back in before
         // anything reads the config, so the page and a layout dump both hold the
@@ -2042,51 +2066,16 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             fallback: &fallback,
         }
         .render(window, cx);
-        let mut source = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-surface-shader"),
-                Some(rox_i18n::t!("panel-surface-shader.description")),
-                panel::toggle(
-                    enabled,
-                    |this: &mut Self, on, cx| {
-                        this.edit_shader(move |shader| shader.enabled = on, cx)
-                    },
-                    cx,
-                ),
-            ))
-            .child(picked);
         // The filter only decides what can be picked, so a config from a bundle or
         // an older build can still be running a scene. Say so.
-        if enabled && !running.trim().is_empty() && !shader::overlay(&running) {
-            source = source.child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(rox_i18n::t!("panel-shader-is-scene")),
-            );
-        }
-        if let Some(error) = error {
-            source = source.child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(error),
-            );
-        }
-        source = source.child(panel::setting_row(
-            rox_i18n::t!("panel-run-when-idle"),
-            Some(rox_i18n::t!("panel-run-when-idle.description")),
-            panel::toggle(
-                shader.run_when_idle,
-                |this: &mut Self, on, cx| {
-                    this.edit_shader(move |shader| shader.run_when_idle = on, cx)
-                },
-                cx,
-            ),
-        ));
+        let scene = enabled && !running.trim().is_empty() && !shader::overlay(&running);
+        let note = |text: SharedString| {
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(text)
+                .into_any_element()
+        };
 
         // The write goes back through `edit_shader`, so the panel's config stays
         // the only copy.
@@ -2121,20 +2110,95 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
         .render(cx);
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .children(
-                pending.map(|body| section(rox_i18n::t!("panel-awaiting-approval"), None, body)),
-            )
-            .child(section(rox_i18n::t!("panel-section-shader"), None, source))
-            .child(section(
-                rox_i18n::t!("panel-section-signals"),
-                Some(add.into_any_element()),
-                editor.list(cx),
-            ))
-            .child(section(rox_i18n::t!("panel-section-slots"), None, slots))
+        let mut page = PageBody::new();
+        if let Some(body) = pending {
+            page = page.section(Section::new(
+                q,
+                icons::ALERT,
+                rox_i18n::t!("panel-awaiting-approval"),
+                None,
+                |rows| {
+                    rows.custom(
+                        &["shader", "approve", "approval", "pending", "wgsl"],
+                        || body.into_any_element(),
+                    )
+                },
+            ));
+        }
+
+        page.section(Section::new(
+            q,
+            icons::BLEND,
+            rox_i18n::t!("panel-section-shader"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "panel-surface-shader",
+                    &["shader", "wgsl", "effect", "overlay", "surface"],
+                    panel::toggle(
+                        enabled,
+                        |this: &mut Self, on, cx| {
+                            this.edit_shader(move |shader| shader.enabled = on, cx)
+                        },
+                        cx,
+                    ),
+                )
+                .custom(
+                    &[
+                        "shader",
+                        "wgsl",
+                        "file",
+                        "reload",
+                        "source",
+                        "example",
+                        "preset",
+                        "workspace",
+                    ],
+                    || picked.into_any_element(),
+                )
+                .when(scene, |rows| {
+                    rows.custom(&["shader", "scene", "covers", "overlay"], || {
+                        note(rox_i18n::t!("panel-shader-is-scene"))
+                    })
+                })
+                .when_some(error, |rows, error| {
+                    rows.custom(&["shader", "error", "compile"], || note(error.into()))
+                })
+                .keyed(
+                    "panel-run-when-idle",
+                    &["shader", "idle", "pause", "freeze", "silent"],
+                    panel::toggle(
+                        shader.run_when_idle,
+                        |this: &mut Self, on, cx| {
+                            this.edit_shader(move |shader| shader.run_when_idle = on, cx)
+                        },
+                        cx,
+                    ),
+                )
+            },
+        ))
+        .section(Section::new(
+            q,
+            icons::ACTIVITY,
+            rox_i18n::t!("panel-section-signals"),
+            Some(add.into_any_element()),
+            |rows| {
+                rows.custom(&["shader", "signal", "route", "bind", "modulation"], || {
+                    editor.list(cx).into_any_element()
+                })
+            },
+        ))
+        .section(Section::new(
+            q,
+            icons::GAUGE,
+            rox_i18n::t!("panel-section-slots"),
+            None,
+            |rows| {
+                rows.custom(&["shader", "slot", "knob", "manual"], || {
+                    slots.into_any_element()
+                })
+            },
+        ))
     }
 
     /// Write a hot-reloaded source back into the config, so the layout dump
@@ -2466,193 +2530,225 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
 
     /// The opacity fork, the frame knobs, the panel's own appearance section,
     /// and the override grid, with inherit as the resting state.
+    #[allow(clippy::too_many_arguments)]
     fn appearance_page(
         &mut self,
+        q: &Query,
         theme: &PanelTheme,
-        extra: Option<AnyElement>,
+        extra: Vec<Section>,
         own_font: bool,
         has_slider: bool,
         columns: usize,
         cx: &mut Context<Self>,
-    ) -> Div {
-        let opacity = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-own-opacity"),
-                Some(rox_i18n::t!("panel-own-opacity.description")),
-                panel::toggle(
-                    theme.surface_opacity.is_some(),
-                    Self::set_opacity_override,
-                    cx,
-                ),
-            ))
-            .when_some(theme.surface_opacity, |d, value| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("panel-surface-opacity"),
-                    None,
-                    settings_ui::slider_edit(
-                        &self.opacity_scrub,
-                        &self.value_edit,
-                        value,
-                        Self::set_opacity,
+    ) -> PageBody {
+        let opacity = Section::new(
+            q,
+            icons::EYE,
+            rox_i18n::t!("panel-section-opacity"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "panel-own-opacity",
+                    &["transparency", "translucent", "backdrop", "override"],
+                    panel::toggle(
+                        theme.surface_opacity.is_some(),
+                        Self::set_opacity_override,
                         cx,
                     ),
-                ))
-            });
+                )
+                .when_some(theme.surface_opacity, |rows, value| {
+                    rows.keyed(
+                        "panel-surface-opacity",
+                        &["transparency", "translucent", "backdrop"],
+                        settings_ui::slider_edit(
+                            &self.opacity_scrub,
+                            &self.value_edit,
+                            value,
+                            Self::set_opacity,
+                            cx,
+                        ),
+                    )
+                })
+            },
+        );
 
         let app = settings::app_frame();
-        let frame = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-margin"),
-                Some(rox_i18n::t!("panel-margin.description")),
-                self.frame_sides(
-                    &self.margin_scrub,
-                    theme.margin.unwrap_or(app.margin),
-                    theme.margin.is_some(),
-                    self.margin_split,
-                    MARGIN_MAX,
-                    Self::split_margin,
-                    Self::set_margin,
-                    Self::reset_margin,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-padding"),
-                Some(rox_i18n::t!("panel-padding.description")),
-                self.frame_sides(
-                    &self.padding_scrub,
-                    theme.padding.unwrap_or(app.padding),
-                    theme.padding.is_some(),
-                    self.padding_split,
-                    PADDING_MAX,
-                    Self::split_padding,
-                    Self::set_padding,
-                    Self::reset_padding,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-rounding"),
-                Some(rox_i18n::t!("panel-rounding.description")),
-                self.frame_slider(
-                    &self.rounding_scrub,
-                    theme.rounding,
-                    app.rounding,
-                    ROUNDING_MAX,
-                    Self::set_rounding,
-                    Self::reset_rounding,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("panel-border"),
-                Some(rox_i18n::t!("panel-border.description")),
-                self.frame_sides(
-                    &self.border_scrub,
-                    theme.border_sides(app.border),
-                    theme.border.is_some() || theme.legacy_border_edges.is_some(),
-                    self.border_split,
-                    BORDER_MAX,
-                    Self::split_border,
-                    Self::set_border,
-                    Self::reset_border,
-                    cx,
-                ),
-            ));
-
-        let overridden = |name: &str| theme.colors.contains_key(name);
-        let weak = cx.entity().downgrade();
-        let grid = settings_ui::role_grid(columns, |j| {
-            let role = &ROLES[j];
-            // The picker pads 4px around its swatch; the counter-margin keeps the cell
-            // at the grid's 20px footprint.
-            let control = ColorPicker::new(&self.pickers[j])
-                .small()
-                .m(px(-4.))
-                .into_any_element();
-            // Linked cells fill the button with the accent, so a reference reads apart
-            // from a literal fork at a glance.
-            let linked = theme.reference(role.name);
-            let pick = weak.clone();
-            let link = Button::new(("role-link", j))
-                .icon(Icon::default().path(icons::LINK))
-                .xsmall()
-                .map(|b| {
-                    if linked.is_some() {
-                        b.primary()
-                    } else {
-                        b.ghost()
-                    }
-                })
-                .dropdown_menu(move |mut menu, _, _| {
-                    menu = menu.scrollable(true).max_h(px(320.));
-                    let mut group = "";
-                    for target in ROLES {
-                        if target.name == ROLES[j].name {
-                            continue;
-                        }
-                        if target.group != group {
-                            group = target.group;
-                            menu = menu.item(PopupMenuItem::label(group));
-                        }
-                        let pick = pick.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(target.label)
-                                .checked(linked == Some(target.name))
-                                .on_click(move |_, window, cx| {
-                                    if let Some(this) = pick.upgrade() {
-                                        this.update(cx, |this, cx| {
-                                            this.set_role_reference(j, target.name, window, cx)
-                                        });
-                                    }
-                                }),
-                        );
-                    }
-                    menu
-                })
-                .into_any_element();
-            let reset = overridden(role.name).then(|| {
-                settings_ui::icon_button(
-                    icons::REFRESH_CW,
-                    false,
-                    cx.listener(move |this, _, window, cx| this.reset_role(j, window, cx)),
-                )
-                .into_any_element()
-            });
-            let trailing = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(2.))
-                .child(link)
-                .when_some(reset, |d, reset| d.child(reset))
-                .into_any_element();
-            settings_ui::color_cell(control, role.label, overridden(role.name), Some(trailing))
-                .into_any_element()
-        });
-        let body = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_XS)
-            .child(div().text_xs().text_color(palette::text_muted()).child(
-                "Overrides recolor just this panel and hold still under song \
-                 theming; a link follows another app color instead, moving \
-                 with the theme. Reset a swatch or clear its hex field to \
-                 follow the app palette again",
-            ))
-            .child(grid);
         let frame_controls = small_button(
             rox_i18n::t!("panel-reset"),
             icons::REFRESH_CW,
             false,
             cx.listener(|this, _, _, cx| this.reset_frame(cx)),
         );
+        let frame = Section::new(
+            q,
+            icons::SQUARE_DASHED,
+            rox_i18n::t!("panel-section-frame"),
+            Some(frame_controls.into_any_element()),
+            |rows| {
+                rows.keyed(
+                    "panel-margin",
+                    &["spacing", "gap", "outside", "sides"],
+                    self.frame_sides(
+                        &self.margin_scrub,
+                        theme.margin.unwrap_or(app.margin),
+                        theme.margin.is_some(),
+                        self.margin_split,
+                        MARGIN_MAX,
+                        Self::split_margin,
+                        Self::set_margin,
+                        Self::reset_margin,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "panel-padding",
+                    &["spacing", "inset", "inside", "sides"],
+                    self.frame_sides(
+                        &self.padding_scrub,
+                        theme.padding.unwrap_or(app.padding),
+                        theme.padding.is_some(),
+                        self.padding_split,
+                        PADDING_MAX,
+                        Self::split_padding,
+                        Self::set_padding,
+                        Self::reset_padding,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "panel-rounding",
+                    &["corner radius", "rounded"],
+                    self.frame_slider(
+                        &self.rounding_scrub,
+                        theme.rounding,
+                        app.rounding,
+                        ROUNDING_MAX,
+                        Self::set_rounding,
+                        Self::reset_rounding,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "panel-border",
+                    &["outline", "stroke", "edge", "sides"],
+                    self.frame_sides(
+                        &self.border_scrub,
+                        theme.border_sides(app.border),
+                        theme.border.is_some() || theme.legacy_border_edges.is_some(),
+                        self.border_split,
+                        BORDER_MAX,
+                        Self::split_border,
+                        Self::set_border,
+                        Self::reset_border,
+                        cx,
+                    ),
+                )
+            },
+        );
+
+        let font = (!own_font).then(|| {
+            // The section Reset drops both font overrides; the size row has its own too.
+            let reset = small_button(
+                rox_i18n::t!("panel-reset"),
+                icons::REFRESH_CW,
+                theme.font.is_none() && theme.font_scale.is_none(),
+                cx.listener(|this, _, _, cx| {
+                    this.update_theme(
+                        |theme| {
+                            theme.font = None;
+                            theme.font_scale = None;
+                        },
+                        cx,
+                    )
+                }),
+            );
+            Section::new(
+                q,
+                icons::ALIGN_LEFT,
+                rox_i18n::t!("panel-section-font"),
+                Some(reset.into_any_element()),
+                |rows| {
+                    rows.keyed(
+                        "panel-font",
+                        &["typeface", "family", "text"],
+                        panel::font_picker(
+                            "panel-font",
+                            theme.font.clone(),
+                            |this: &mut Self, font, cx| {
+                                this.update_theme(|theme| theme.font = font, cx)
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "panel-font-size",
+                        &["text size", "scale", "zoom"],
+                        self.font_scale_row(theme.font_scale, cx),
+                    )
+                },
+            )
+        });
+
+        let slider = has_slider.then(|| {
+            let reset = small_button(
+                rox_i18n::t!("panel-reset"),
+                icons::REFRESH_CW,
+                theme.slider_rounding.is_none() && theme.slider_knob.is_none(),
+                cx.listener(|this, _, _, cx| {
+                    this.update_theme(
+                        |theme| {
+                            theme.slider_rounding = None;
+                            theme.slider_knob = None;
+                        },
+                        cx,
+                    )
+                }),
+            );
+            Section::new(
+                q,
+                icons::SLIDERS,
+                rox_i18n::t!("panel-section-slider"),
+                Some(reset.into_any_element()),
+                |rows| {
+                    rows.keyed(
+                        "panel-slider-rounding",
+                        &["corner radius", "rounded", "volume", "square"],
+                        self.frame_slider(
+                            &self.slider_rounding_scrub,
+                            theme.slider_rounding,
+                            tokens::app_slider_look().rounding,
+                            tokens::SLIDER_ROUNDING_MAX,
+                            Self::set_slider_rounding,
+                            Self::reset_slider_rounding,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "panel-slider-knob",
+                        &["handle", "thumb", "volume", "drag"],
+                        self.slider_knob_row(theme.slider_knob, cx),
+                    )
+                },
+            )
+        });
+
+        let colors = self.colors_section(q, theme, columns, cx);
+
+        let mut page = PageBody::new().section(opacity).section(frame);
+        for section in [font, slider].into_iter().flatten().chain(extra) {
+            page = page.section(section);
+        }
+        page.section(colors)
+    }
+
+    /// The override grid. Built only when kept: it's a picker per role.
+    fn colors_section(
+        &self,
+        q: &Query,
+        theme: &PanelTheme,
+        columns: usize,
+        cx: &mut Context<Self>,
+    ) -> Section {
         let song_on = palette::art_theming();
         let color_controls = div()
             .flex()
@@ -2678,118 +2774,115 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
             ));
 
-        let font_section = (!own_font).then(|| {
-            // The section Reset drops both font overrides; the size row has its own too.
-            let reset = small_button(
-                rox_i18n::t!("panel-reset"),
-                icons::REFRESH_CW,
-                theme.font.is_none() && theme.font_scale.is_none(),
-                cx.listener(|this, _, _, cx| {
-                    this.update_theme(
-                        |theme| {
-                            theme.font = None;
-                            theme.font_scale = None;
-                        },
-                        cx,
-                    )
-                }),
-            );
-            let body = div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
-                    rox_i18n::t!("panel-font"),
-                    Some(rox_i18n::t!("panel-font.description")),
-                    panel::font_picker(
-                        "panel-font",
-                        theme.font.clone(),
-                        |this: &mut Self, font, cx| {
-                            this.update_theme(|theme| theme.font = font, cx)
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("panel-font-size"),
-                    Some(rox_i18n::t!("panel-font-size.description")),
-                    self.font_scale_row(theme.font_scale, cx),
-                ));
-            section(
-                rox_i18n::t!("panel-section-font"),
-                Some(reset.into_any_element()),
-                body,
-            )
-            .into_any_element()
-        });
-
-        let slider_section = has_slider.then(|| {
-            let reset = small_button(
-                rox_i18n::t!("panel-reset"),
-                icons::REFRESH_CW,
-                theme.slider_rounding.is_none() && theme.slider_knob.is_none(),
-                cx.listener(|this, _, _, cx| {
-                    this.update_theme(
-                        |theme| {
-                            theme.slider_rounding = None;
-                            theme.slider_knob = None;
-                        },
-                        cx,
-                    )
-                }),
-            );
-            let body = div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
-                    rox_i18n::t!("panel-slider-rounding"),
-                    Some(rox_i18n::t!("panel-slider-rounding.description")),
-                    self.frame_slider(
-                        &self.slider_rounding_scrub,
-                        theme.slider_rounding,
-                        tokens::app_slider_look().rounding,
-                        tokens::SLIDER_ROUNDING_MAX,
-                        Self::set_slider_rounding,
-                        Self::reset_slider_rounding,
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("panel-slider-knob"),
-                    Some(rox_i18n::t!("panel-slider-knob.description")),
-                    self.slider_knob_row(theme.slider_knob, cx),
-                ));
-            section(
-                rox_i18n::t!("panel-section-slider"),
-                Some(reset.into_any_element()),
-                body,
-            )
-            .into_any_element()
-        });
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
-                rox_i18n::t!("panel-section-opacity"),
-                None,
-                opacity,
-            ))
-            .child(section(
-                rox_i18n::t!("panel-section-frame"),
-                Some(frame_controls.into_any_element()),
-                frame,
-            ))
-            .children(font_section)
-            .children(slider_section)
-            .children(extra)
-            .child(section(
-                rox_i18n::t!("panel-section-colors"),
-                Some(color_controls.into_any_element()),
-                body,
-            ))
+        Section::new(
+            q,
+            icons::PALETTE,
+            rox_i18n::t!("panel-section-colors"),
+            Some(color_controls.into_any_element()),
+            |rows| {
+                rows.custom(
+                    &[
+                        "palette", "accent", "swatch", "role", "override", "link", "inverse",
+                    ],
+                    || {
+                        let overridden = |name: &str| theme.colors.contains_key(name);
+                        let weak = cx.entity().downgrade();
+                        let grid = settings_ui::role_grid(columns, |j| {
+                            let role = &ROLES[j];
+                            // The picker pads 4px around its swatch; the counter-margin keeps
+                            // the cell at the grid's 20px footprint.
+                            let control = ColorPicker::new(&self.pickers[j])
+                                .small()
+                                .m(px(-4.))
+                                .into_any_element();
+                            // Linked cells fill the button with the accent, so a reference
+                            // reads apart from a literal fork at a glance.
+                            let linked = theme.reference(role.name);
+                            let pick = weak.clone();
+                            let link = Button::new(("role-link", j))
+                                .icon(Icon::default().path(icons::LINK))
+                                .xsmall()
+                                .map(|b| {
+                                    if linked.is_some() {
+                                        b.primary()
+                                    } else {
+                                        b.ghost()
+                                    }
+                                })
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    menu = menu.scrollable(true).max_h(px(320.));
+                                    let mut group = "";
+                                    for target in ROLES {
+                                        if target.name == ROLES[j].name {
+                                            continue;
+                                        }
+                                        if target.group != group {
+                                            group = target.group;
+                                            menu = menu.item(PopupMenuItem::label(group));
+                                        }
+                                        let pick = pick.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(target.label)
+                                                .checked(linked == Some(target.name))
+                                                .on_click(move |_, window, cx| {
+                                                    if let Some(this) = pick.upgrade() {
+                                                        this.update(cx, |this, cx| {
+                                                            this.set_role_reference(
+                                                                j,
+                                                                target.name,
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        });
+                                                    }
+                                                }),
+                                        );
+                                    }
+                                    menu
+                                })
+                                .into_any_element();
+                            let reset = overridden(role.name).then(|| {
+                                settings_ui::icon_button(
+                                    icons::REFRESH_CW,
+                                    false,
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.reset_role(j, window, cx)
+                                    }),
+                                )
+                                .into_any_element()
+                            });
+                            let trailing = div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(2.))
+                                .child(link)
+                                .when_some(reset, |d, reset| d.child(reset))
+                                .into_any_element();
+                            settings_ui::color_cell(
+                                control,
+                                role.label,
+                                overridden(role.name),
+                                Some(trailing),
+                            )
+                            .into_any_element()
+                        });
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(div().text_xs().text_color(palette::text_muted()).child(
+                                "Overrides recolor just this panel and hold still under song \
+                                 theming; a link follows another app color instead, moving \
+                                 with the theme. Reset a swatch or clear its hex field to \
+                                 follow the app palette again",
+                            ))
+                            .child(grid)
+                            .into_any_element()
+                    },
+                )
+            },
+        )
     }
 }
 
@@ -2869,6 +2962,139 @@ fn follow_rebuild<P: PanelSettings>(
 }
 
 impl<P: PanelSettings> PanelSettingsWindow<P> {
+    /// A search ends on a page pick, the way the app settings window's does.
+    fn open_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = page;
+        if !self.search.read(cx).query().is_empty() {
+            self.search
+                .update(cx, |search, cx| search.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    /// 0 is Appearance, 1 Behavior, 2 Shader, and the panel's own pages follow.
+    fn build_page(
+        &mut self,
+        panel: &Entity<P>,
+        page: usize,
+        q: &Query,
+        columns: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PageBody {
+        match page {
+            0 => {
+                let theme = panel.read(cx).theme();
+                self.sync_swatches(&theme, window, cx);
+                let own_font = panel.read(cx).has_own_font();
+                let has_slider = panel.read(cx).has_slider();
+                let extra = panel.update(cx, |panel, cx| panel.appearance_section(q, window, cx));
+                self.appearance_page(q, &theme, extra, own_font, has_slider, columns, cx)
+            }
+
+            1 => {
+                // Read through chrome(), since PanelSettings::locked and the dock's
+                // Panel::locked share the name.
+                let composite = panel.read(cx).composite();
+                let (locked, anchor, hide_controls, limits) = {
+                    let chrome = panel.read(cx).chrome();
+                    (
+                        chrome.locked,
+                        chrome.anchor,
+                        chrome.hide_controls,
+                        SizeLimits {
+                            min_width: chrome.min_width,
+                            min_height: chrome.min_height,
+                            max_width: chrome.max_width,
+                            max_height: chrome.max_height,
+                        },
+                    )
+                };
+                let extra = panel.update(cx, |panel, cx| panel.behavior_section(q, window, cx));
+                self.behavior_page(
+                    q,
+                    locked,
+                    anchor,
+                    hide_controls,
+                    composite,
+                    limits,
+                    extra,
+                    cx,
+                )
+            }
+
+            2 => self.shader_page(q, window, cx),
+
+            _ => {
+                let pages = panel.read(cx).pages();
+                let Some(&(name, _)) = pages.get(page - 3) else {
+                    return PageBody::new();
+                };
+                panel.update(cx, |panel, cx| panel.page_body(name, q, window, cx))
+            }
+        }
+    }
+
+    /// Every page with hits under its own label, which opens the page.
+    fn search_results(
+        text: &str,
+        entries: &[(usize, SharedString, &'static str)],
+        pages: Vec<PageBody>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if pages.iter().all(|body| body.hits() == 0) {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!("settings-search-no-matches", text = text))
+                .into_any_element();
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .children(
+                entries
+                    .iter()
+                    .zip(pages)
+                    .filter(|(_, body)| body.hits() > 0)
+                    .map(|((page, label, icon), body)| {
+                        let page = *page;
+                        let rule = || div().flex_1().h(px(1.)).bg(palette::border());
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_SM)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(tokens::SPACE_SM)
+                                    .cursor_pointer()
+                                    .text_color(palette::text_muted())
+                                    .hover(|d| d.text_color(palette::text()))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.open_page(page, window, cx);
+                                        }),
+                                    )
+                                    .child(rule())
+                                    .child(svg().path(*icon).size(px(14.)).flex_none())
+                                    .child(label.clone())
+                                    .child(rule()),
+                            )
+                            .child(body.element())
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// The head of the nav: the preset picker, Save As Preset, and Undo
     /// Preset. None when the panel has no tab group.
     fn presets_head(&self, panel: &Entity<P>, me: WeakEntity<Self>, cx: &App) -> Option<Div> {
@@ -2910,9 +3136,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             applied.unwrap_or_else(|| rox_i18n::t!("menu-panels-presets")),
             icons::COPY,
         )
-        .flex_1()
-        .min_w_0()
-        .overflow_hidden()
+        .w_full()
         .dropdown_menu(move |mut menu, window, cx| {
             let Some(panel) = picking.upgrade() else {
                 return menu;
@@ -2998,8 +3222,11 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         })
         .keyed("preset-undo");
 
-        // Held to the sidebar's width, so a long preset name clips in the
-        // picker instead of pushing the icons out past the edge.
+        // The menu wraps the button in its own element, so the shrink rules go
+        // on a box around it. Without that the wrapper sizes to the name and a
+        // long one pushes the icons out past the sidebar's edge.
+        let picker = div().flex_1().min_w_0().overflow_hidden().child(picker);
+
         Some(
             div()
                 .flex_none()
@@ -3009,9 +3236,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_XS)
-                .pb(tokens::SPACE_SM)
-                .border_b_1()
-                .border_color(palette::border())
                 .child(picker)
                 .child(save)
                 .child(undo),
@@ -3088,139 +3312,112 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
         // untinted base palette.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
+        let text = self.search.read(cx).query().trim().to_string();
+        let q = Query::parse(&text);
+
         panel::window_body(player, || {
             let me = cx.entity().downgrade();
             let presets = self
                 .panel
                 .upgrade()
                 .and_then(|panel| self.presets_head(&panel, me, cx));
-            let (nav, body): (Div, AnyElement) = match self.panel.upgrade() {
-                None => (
-                    sidebar(),
-                    div()
-                        .text_color(palette::text_muted())
-                        .child(rox_i18n::t!("panel-was-closed"))
-                        .into_any_element(),
-                ),
-                Some(panel) => {
-                    let pages = panel.read(cx).pages();
-                    // Appearance, Behavior and Shader lead the nav on every
-                    // panel, the app settings window's order.
-                    let surface_shader = panel.read(cx).surface_shader();
-                    let mut picked = self.page.min(pages.len() + 2);
-                    // A panel that opted out of the shared Shader page keeps the numbering, so
-                    // its own pages stay at 3, and slot 2 falls back to Appearance.
-                    if !surface_shader && picked == 2 {
-                        picked = 0;
+            let search = self.search.update(cx, |search, cx| search.element(cx));
+            let search = div()
+                .pb(tokens::SPACE_SM)
+                .border_b_1()
+                .border_color(palette::border())
+                // Only while the box holds focus, so an outside click never blurs
+                // another input mid-edit.
+                .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                    if this.search.read(cx).is_focused(window, cx) {
+                        window.blur();
                     }
-                    let mut rows: Vec<AnyElement> = vec![
-                        settings_ui::nav_item(
-                            rox_i18n::t!("panel-page-appearance"),
-                            icons::PALETTE,
-                            picked == 0,
-                            move |this: &mut Self, _window, cx| {
-                                this.page = 0;
-                                cx.notify();
-                            },
-                            cx,
-                        )
-                        .into_any_element(),
-                        settings_ui::nav_item(
-                            rox_i18n::t!("panel-page-behavior"),
-                            icons::SLIDERS,
-                            picked == 1,
-                            move |this: &mut Self, _window, cx| {
-                                this.page = 1;
-                                cx.notify();
-                            },
-                            cx,
-                        )
-                        .into_any_element(),
-                    ];
-                    if surface_shader {
-                        rows.push(
-                            settings_ui::nav_item(
-                                rox_i18n::t!("panel-page-shader"),
-                                icons::BLEND,
-                                picked == 2,
-                                move |this: &mut Self, _window, cx| {
-                                    this.page = 2;
-                                    cx.notify();
-                                },
-                                cx,
-                            )
+                }))
+                .child(search);
+            let (nav, body): (Div, AnyElement) =
+                match self.panel.upgrade() {
+                    None => (
+                        sidebar(),
+                        div()
+                            .text_color(palette::text_muted())
+                            .child(rox_i18n::t!("panel-was-closed"))
                             .into_any_element(),
-                        );
-                    }
-                    for (i, &(label, icon)) in pages.iter().enumerate() {
-                        let page = i + 3;
-                        rows.push(
-                            settings_ui::nav_item(
-                                panel::page_label(label),
-                                icon,
-                                picked == page,
-                                move |this: &mut Self, _window, cx| {
-                                    this.page = page;
-                                    cx.notify();
-                                },
-                                cx,
-                            )
-                            .into_any_element(),
-                        );
-                    }
-                    // The nav scrolls, so a long page list doesn't hide its tail in a short window.
-                    let nav = sidebar().children(presets).child(settings_ui::nav_scroll(
-                        "panel-settings-nav",
-                        &self.nav_scroll,
-                        move |col| col.children(rows),
-                    ));
-                    let body = match picked {
-                        0 => {
-                            let theme = panel.read(cx).theme();
-                            self.sync_swatches(&theme, window, cx);
-                            let own_font = panel.read(cx).has_own_font();
-                            let has_slider = panel.read(cx).has_slider();
-                            let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
-                            self.appearance_page(&theme, extra, own_font, has_slider, columns, cx)
-                                .into_any_element()
+                    ),
+                    Some(panel) => {
+                        let pages = panel.read(cx).pages();
+                        // Appearance, Behavior and Shader lead the nav on every
+                        // panel, the app settings window's order.
+                        let surface_shader = panel.read(cx).surface_shader();
+                        let mut picked = self.page.min(pages.len() + 2);
+                        // A panel that opted out of the shared Shader page keeps the numbering, so
+                        // its own pages stay at 3, and slot 2 falls back to Appearance.
+                        if !surface_shader && picked == 2 {
+                            picked = 0;
                         }
-                        1 => {
-                            // Read through chrome(), since PanelSettings::locked and the dock's
-                            // Panel::locked share the name.
-                            let composite = panel.read(cx).composite();
-                            let (locked, anchor, hide_controls, limits) = {
-                                let chrome = panel.read(cx).chrome();
-                                (
-                                    chrome.locked,
-                                    chrome.anchor,
-                                    chrome.hide_controls,
-                                    SizeLimits {
-                                        min_width: chrome.min_width,
-                                        min_height: chrome.min_height,
-                                        max_width: chrome.max_width,
-                                        max_height: chrome.max_height,
+
+                        let mut entries: Vec<(usize, SharedString, &'static str)> = vec![
+                            (0, rox_i18n::t!("panel-page-appearance"), icons::PALETTE),
+                            (1, rox_i18n::t!("panel-page-behavior"), icons::SLIDERS),
+                        ];
+                        if surface_shader {
+                            entries.push((2, rox_i18n::t!("panel-page-shader"), icons::BLEND));
+                        }
+                        entries.extend(
+                            pages
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &(label, icon))| (i + 3, panel::page_label(label), icon)),
+                        );
+
+                        // Search builds every page, so the nav can dim the ones with no hits.
+                        let results: Option<Vec<PageBody>> = q.active().then(|| {
+                            entries
+                                .iter()
+                                .map(|&(page, ..)| {
+                                    self.build_page(&panel, page, &q, columns, window, cx)
+                                })
+                                .collect()
+                        });
+
+                        let rows: Vec<AnyElement> = entries
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (page, label, icon))| {
+                                let page = *page;
+                                let empty = results
+                                    .as_ref()
+                                    .is_some_and(|results| results[index].hits() == 0);
+                                settings_ui::nav_item(
+                                    label.clone(),
+                                    icon,
+                                    picked == page,
+                                    move |this: &mut Self, window, cx| {
+                                        this.open_page(page, window, cx);
                                     },
+                                    cx,
                                 )
-                            };
-                            let extra = panel.update(cx, |panel, cx| panel.behavior(window, cx));
-                            self.behavior_page(
-                                locked,
-                                anchor,
-                                hide_controls,
-                                composite,
-                                limits,
-                                extra,
-                                cx,
-                            )
-                            .into_any_element()
-                        }
-                        2 => self.shader_page(window, cx).into_any_element(),
-                        _ => panel
-                            .update(cx, |panel, cx| panel.page(pages[picked - 3].0, window, cx)),
-                    };
-                    (nav, body)
-                }
-            };
+                                .when(empty, |d| d.opacity(0.4))
+                                .into_any_element()
+                            })
+                            .collect();
+                        // The nav scrolls, so a long page list doesn't hide its tail in a short window.
+                        let nav = sidebar().children(presets).child(search).child(
+                            settings_ui::nav_scroll(
+                                "panel-settings-nav",
+                                &self.nav_scroll,
+                                move |col| col.children(rows),
+                            ),
+                        );
+
+                        let body = match results {
+                            Some(results) => Self::search_results(&text, &entries, results, cx),
+                            None => self
+                                .build_page(&panel, picked, &q, columns, window, cx)
+                                .element(),
+                        };
+                        (nav, body)
+                    }
+                };
 
             div()
                 .size_full()

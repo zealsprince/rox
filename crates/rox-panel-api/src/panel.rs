@@ -50,17 +50,18 @@ pub mod shader;
 pub use shader::PanelShader;
 
 // Panels reach the rox-panel-kit widget layer through crate::panel.
+pub use rox_panel_kit::ui::{PageBody, Query, Rows, Section};
 pub use rox_panel_kit::{
     Align, FlickState, ModeSpec, PANEL_NAV_CONTEXT, PatternNote, ResumeIdle, SLIDER_STEP,
     ScrubState, SliderWidth, TYPE_AHEAD_CYCLE_CONTEXT, Tip, Tone, TrackedImage, VAlign, ValueEdit,
-    align_row, banner, banner_flow, check_row, choices, choices_gated, choices_icons,
+    align_rows, banner, banner_flow, check_row, choices, choices_gated, choices_icons,
     choices_shared, display_name, flick_on_paint_axis, follow_panel, font_picker, glide_snap_axis,
     glide_step, glide_step_axis, glide_target, glide_target_at, glide_target_axis, icon_choices,
     icon_control, icon_control_sized, icon_toggles, items, justify, justify_v, language_picker,
     letter_initial, letter_rail, mode_list, paint_slider, panel_nav_context, pattern_input, picker,
     scrub_on_paint, setting_block, setting_row, setting_row_dyn, title_text, toggle, toggle_face,
-    toggle_locked, tracking_section, type_ahead_context, type_ahead_fade, type_ahead_grow,
-    type_ahead_hit, type_ahead_live, type_ahead_overlay, type_ahead_scan, valign_row,
+    toggle_locked, tracking_rows, type_ahead_context, type_ahead_fade, type_ahead_grow,
+    type_ahead_hit, type_ahead_live, type_ahead_overlay, type_ahead_scan, valign_rows,
     value_slider_edit, value_slider_edit_over, value_slider_edit_sized, window_body,
     workspace_body,
 };
@@ -1388,7 +1389,7 @@ pub trait PanelSettings: Panel {
     fn state(&self) -> AppState;
 
     /// The panel's own pages as (name, sidebar icon), below the shared ones.
-    /// The name is an identifier [`page`](Self::page) dispatches on; the
+    /// The name is an identifier [`page_body`](Self::page_body) dispatches on; the
     /// sidebar shows [`page_label`] of it.
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
         &[]
@@ -1400,15 +1401,17 @@ pub trait PanelSettings: Panel {
         true
     }
 
-    /// One of the panel's own pages. Changes apply live; the layout dump persists them.
-    fn page(
+    /// One of the panel's own pages, filtered by `q`. Changes apply live; the
+    /// layout dump persists them.
+    fn page_body(
         &mut self,
         page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let _ = (page, window, cx);
-        div().into_any_element()
+    ) -> PageBody {
+        let _ = (page, q, window, cx);
+        PageBody::new()
     }
 
     /// The shared knobs read and write through here rather than a method per field.
@@ -1491,17 +1494,28 @@ pub trait PanelSettings: Panel {
         cx.notify();
     }
 
-    /// The panel's own rows for the shared Appearance page, between the frame
+    /// The panel's sections on the shared Appearance page, between the frame
     /// and the colors: looks stored on its config rather than its theme.
-    fn appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let _ = (window, cx);
-        None
+    fn appearance_section(
+        &mut self,
+        q: &Query,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let _ = (q, window, cx);
+        Vec::new()
     }
 
-    /// The panel's own rows for the shared Behavior page, under the placement and size rows.
-    fn behavior(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let _ = (window, cx);
-        None
+    /// The panel's sections on the shared Behavior page, under the placement
+    /// and size rows.
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let _ = (q, window, cx);
+        Vec::new()
     }
 }
 

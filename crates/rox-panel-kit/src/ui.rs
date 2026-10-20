@@ -431,7 +431,7 @@ impl PageBody {
 }
 
 pub struct Section {
-    body: Option<Stateful<Div>>,
+    body: Option<AnyElement>,
     hits: usize,
 }
 
@@ -446,21 +446,36 @@ impl Section {
     ) -> Self {
         let label = label.into();
         let all = !q.active() || q.hits(&[label.as_ref()]);
-        let rows = build(Rows {
-            q,
-            all,
-            body: div().flex().flex_col().gap(tokens::SPACE_MD),
-            hits: 0,
-        });
+        let rows = build(Rows::new(q, all));
         if rows.hits == 0 {
-            return Self {
-                body: None,
-                hits: 0,
-            };
+            return Self::empty();
         }
+
         Self {
-            body: Some(section_with_icon(Some(icon), label, trailing, rows.body)),
+            body: Some(
+                section_with_icon(Some(icon), label, trailing, rows.body).into_any_element(),
+            ),
             hits: rows.hits,
+        }
+    }
+
+    /// A section with no heading, for a panel page that's one flat run.
+    pub fn bare(q: &Query, build: impl FnOnce(Rows) -> Rows) -> Self {
+        let rows = build(Rows::new(q, !q.active()));
+        if rows.hits == 0 {
+            return Self::empty();
+        }
+
+        Self {
+            body: Some(rows.body.into_any_element()),
+            hits: rows.hits,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            body: None,
+            hits: 0,
         }
     }
 }
@@ -474,7 +489,16 @@ pub struct Rows<'a> {
     hits: usize,
 }
 
-impl Rows<'_> {
+impl<'a> Rows<'a> {
+    fn new(q: &'a Query, all: bool) -> Self {
+        Self {
+            q,
+            all,
+            body: div().flex().flex_col().gap(tokens::SPACE_MD),
+            hits: 0,
+        }
+    }
+
     pub fn row(
         mut self,
         label: impl Into<SharedString>,
@@ -500,17 +524,42 @@ impl Rows<'_> {
         keywords: &[&str],
         control: impl IntoElement,
     ) -> Self {
-        let label = rox_i18n::t!(key);
-        let description = rox_i18n::try_translate(&format!("{key}.description"));
-        let local = rox_i18n::try_translate(&format!("{key}.keywords"));
-        let mut terms: Vec<&str> = keywords.to_vec();
-        if let Some(local) = local.as_deref() {
-            terms.extend(local.split_whitespace());
-        }
-        if self.keep(&terms, &label, description.as_ref().map(|d| d.as_ref())) {
+        if let Some((label, description)) = self.keep_key(key, keywords) {
             self.body = self
                 .body
                 .child(crate::setting_row_dyn(label, description, control));
+            self.hits += 1;
+        }
+        self
+    }
+
+    /// `setting_block` (label over a wide control) with the same matching
+    /// as [`Rows::keyed`].
+    pub fn block(
+        mut self,
+        key: &'static str,
+        keywords: &[&str],
+        control: impl IntoElement,
+    ) -> Self {
+        if let Some((label, description)) = self.keep_key(key, keywords) {
+            self.body = self
+                .body
+                .child(crate::setting_block(label, description, None, control));
+            self.hits += 1;
+        }
+        self
+    }
+
+    /// Any prebuilt row whose label is runtime text. Matches `label` plus
+    /// `keywords`; `build` only runs when kept.
+    pub fn labelled(
+        mut self,
+        label: &str,
+        keywords: &[&str],
+        build: impl FnOnce() -> AnyElement,
+    ) -> Self {
+        if self.keep(keywords, label, None) {
+            self.body = self.body.child(build());
             self.hits += 1;
         }
         self
@@ -552,6 +601,25 @@ impl Rows<'_> {
             Some(value) => then(self, value),
             None => self,
         }
+    }
+
+    /// The label and description a kept keyed row draws, None when the
+    /// query drops it.
+    fn keep_key(
+        &self,
+        key: &'static str,
+        keywords: &[&str],
+    ) -> Option<(SharedString, Option<SharedString>)> {
+        let label = rox_i18n::t!(key);
+        let description = rox_i18n::try_translate(&format!("{key}.description"));
+        let local = rox_i18n::try_translate(&format!("{key}.keywords"));
+        let mut terms: Vec<&str> = keywords.to_vec();
+        if let Some(local) = local.as_deref() {
+            terms.extend(local.split_whitespace());
+        }
+
+        self.keep(&terms, &label, description.as_ref().map(|d| d.as_ref()))
+            .then_some((label, description))
     }
 
     fn keep(&self, keywords: &[&str], label: &str, description: Option<&str>) -> bool {
@@ -1869,7 +1937,9 @@ mod tests {
 
 #[cfg(test)]
 mod search_tests {
-    use super::Query;
+    use gpui::{IntoElement as _, div};
+
+    use super::{Query, Section};
 
     #[test]
     fn accents_do_not_have_to_be_typed() {
@@ -1888,5 +1958,32 @@ mod search_tests {
     #[test]
     fn an_empty_query_is_not_a_filter() {
         assert!(!Query::parse("   ").active());
+    }
+
+    #[test]
+    fn a_row_with_no_terms_only_shows_without_a_search() {
+        let idle = Section::bare(&Query::parse(""), |rows| {
+            rows.custom(&[], || div().into_any_element())
+        });
+        assert_eq!(idle.hits, 1);
+
+        let searching = Section::bare(&Query::parse("gapless"), |rows| {
+            rows.custom(&[], || unreachable!("a dropped row never builds"))
+        });
+        assert_eq!(searching.hits, 0);
+        assert!(searching.body.is_none());
+    }
+
+    #[test]
+    fn a_labelled_row_matches_its_label_and_keywords() {
+        let count = |text: &str| {
+            Section::bare(&Query::parse(text), |rows| {
+                rows.labelled("Columns", &["fields"], || div().into_any_element())
+            })
+            .hits
+        };
+        assert_eq!(count("colu"), 1);
+        assert_eq!(count("field"), 1);
+        assert_eq!(count("stripes"), 0);
     }
 }

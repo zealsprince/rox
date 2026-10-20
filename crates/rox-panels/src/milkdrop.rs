@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
+    App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
     PathPromptOptions, SharedString, Subscription, UserShaderChain, UserShaderId, UserShaderPass,
     UserTextureId, WeakEntity, Window, canvas, deferred, div, prelude::*, px,
 };
@@ -41,10 +41,10 @@ use crate::design::{palette, tokens};
 // from this crate's own `shader`.
 use crate::panel::shader as surface;
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit, setting_row, toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section, ValueEdit,
+    toggle,
 };
 use crate::panel_settings;
-use crate::settings::ui::{SECTION_GAP, section};
 
 /// The floor keeps a sliver of a panel from asking for a 4x1 framebuffer;
 /// the ceiling keeps a maximised 5K panel from a 30 MB-per-frame readback.
@@ -1314,21 +1314,27 @@ impl PanelSettings for MilkdropPanel {
         &[("Presets", icons::FOLDER), ("Tuning", icons::SLIDERS)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         match page {
-            "Tuning" => self.tuning_page(window, cx).into_any_element(),
-            _ => self.presets_page(window, cx).into_any_element(),
+            "Tuning" => self.tuning_page_body(q, window, cx),
+            _ => self.presets_page_body(q, window, cx),
         }
     }
 }
 
 impl MilkdropPanel {
-    fn presets_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn presets_page_body(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PageBody {
         // Opening the page picks up a pack dropped in since the last look. See
         // [`RootsStamp`].
         self.rescan_if_stale();
@@ -1496,44 +1502,6 @@ impl MilkdropPanel {
             cx,
         );
 
-        let body = div().flex().flex_col().gap(tokens::SPACE_SM);
-        let body = if total == 0 {
-            body.child(self.empty_presets())
-        } else {
-            // A block: the name runs long and the buttons need the width.
-            body.child(panel::setting_block(
-                rox_i18n::t!("milkdrop-current"),
-                Some(showing),
-                None,
-                now_showing,
-            ))
-            .child(setting_row(
-                rox_i18n::t!("milkdrop-locked"),
-                Some(rox_i18n::t!("milkdrop-locked.description")),
-                toggle(
-                    locked,
-                    |this: &mut Self, on, cx| this.set_locked(on, cx),
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("milkdrop-duration"),
-                Some(rox_i18n::t!("milkdrop-duration.description")),
-                duration,
-            ))
-            .child(setting_row(
-                rox_i18n::t!("milkdrop-rotation"),
-                Some(rox_i18n::t!("milkdrop-rotation.description")),
-                rotation,
-            ))
-            .children(no_favorites.map(|line| {
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(line)
-            }))
-        };
-
         let rescan = crate::settings::ui::small_button(
             rox_i18n::t!("milkdrop-rescan"),
             icons::REFRESH_CW,
@@ -1542,16 +1510,80 @@ impl MilkdropPanel {
         )
         .into_any_element();
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(rox_i18n::t!("milkdrop-roots"), None, roots_body))
-            .child(section(rox_i18n::t!("milkdrop-folder"), None, home))
-            .child(section(
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::FOLDER_PLUS,
+                rox_i18n::t!("milkdrop-roots"),
+                None,
+                |rows| {
+                    rows.custom(&["folder", "path", "library"], || {
+                        roots_body.into_any_element()
+                    })
+                },
+            ))
+            .section(Section::new(
+                q,
+                icons::FOLDER,
+                rox_i18n::t!("milkdrop-folder"),
+                None,
+                |rows| {
+                    rows.custom(&["folder", "default", "location"], || {
+                        home.into_any_element()
+                    })
+                },
+            ))
+            .section(Section::new(
+                q,
+                icons::GALLERY,
                 rox_i18n::t!("milkdrop-presets"),
                 Some(rescan),
-                body,
+                |rows| {
+                    if total == 0 {
+                        return rows.custom(&["empty", "none"], || {
+                            self.empty_presets().into_any_element()
+                        });
+                    }
+
+                    // A block: the name runs long and the buttons need the width.
+                    rows.labelled(
+                        &rox_i18n::t!("milkdrop-current"),
+                        &["preset", "now playing", "current"],
+                        || {
+                            panel::setting_block(
+                                rox_i18n::t!("milkdrop-current"),
+                                Some(showing),
+                                None,
+                                now_showing,
+                            )
+                            .into_any_element()
+                        },
+                    )
+                    .keyed(
+                        "milkdrop-locked",
+                        &["pin", "fixed"],
+                        toggle(
+                            locked,
+                            |this: &mut Self, on, cx| this.set_locked(on, cx),
+                            cx,
+                        ),
+                    )
+                    .keyed("milkdrop-duration", &["seconds", "timer"], duration)
+                    .keyed(
+                        "milkdrop-rotation",
+                        &["random", "shuffle", "cycle"],
+                        rotation,
+                    )
+                    .when_some(no_favorites, |rows, line| {
+                        rows.custom(&["favorites", "starred"], || {
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(line)
+                                .into_any_element()
+                        })
+                    })
+                },
             ))
     }
 
@@ -1594,7 +1626,12 @@ impl MilkdropPanel {
             )
     }
 
-    fn tuning_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn tuning_page_body(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PageBody {
         let config = self.config.clone();
 
         // The Appearance page's backdrop rate strip, so the two visuals tune
@@ -1715,21 +1752,20 @@ impl MilkdropPanel {
             cx,
         );
 
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
+        PageBody::new().section(Section::new(
+            q,
+            icons::SLIDERS,
             rox_i18n::t!("milkdrop-tuning"),
             None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-beat-sensitivity"),
-                    Some(rox_i18n::t!("milkdrop-beat-sensitivity.description")),
+            |rows| {
+                rows.keyed(
+                    "milkdrop-beat-sensitivity",
+                    &["beat", "reactivity"],
                     sensitivity,
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-hard-cuts"),
-                    Some(rox_i18n::t!("milkdrop-hard-cuts.description")),
+                )
+                .keyed(
+                    "milkdrop-hard-cuts",
+                    &["instant", "snap"],
                     toggle(
                         config.hard_cuts,
                         |this: &mut Self, on, cx| {
@@ -1739,52 +1775,26 @@ impl MilkdropPanel {
                         },
                         cx,
                     ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-fps"),
-                    Some(rox_i18n::t!("milkdrop-fps.description")),
-                    fps,
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-scale"),
-                    Some(rox_i18n::t!("milkdrop-scale.description")),
-                    scale,
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-color"),
-                    Some(rox_i18n::t!("milkdrop-color.description")),
-                    color,
-                ))
+                )
+                .keyed("milkdrop-fps", &["frame rate", "speed"], fps)
+                .keyed("milkdrop-scale", &["zoom", "size"], scale)
+                .keyed("milkdrop-color", &["palette", "tint", "hue"], color)
                 // Palette and Cover replace the preset's hues, so the tint slider only
                 // shows where it does something.
                 .when(
                     matches!(config.color, MilkdropColor::Preset | MilkdropColor::Theme),
-                    |page| {
-                        page.child(setting_row(
-                            rox_i18n::t!("milkdrop-tint"),
-                            Some(rox_i18n::t!("milkdrop-tint.description")),
-                            tint,
-                        ))
-                    },
+                    |rows| rows.keyed("milkdrop-tint", &["strength", "blend"], tint),
                 )
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-idle"),
-                    Some(rox_i18n::t!("milkdrop-idle.description")),
-                    idle,
-                ))
+                .keyed("milkdrop-idle", &["hold", "fade"], idle)
                 // Each shows only where it does something: the duration with a fade,
                 // focus on a held frame. Dimmed in place, either would still move.
-                .when(config.fade, |page| {
-                    page.child(setting_row(
-                        rox_i18n::t!("milkdrop-fade-duration"),
-                        None,
-                        fade,
-                    ))
+                .when(config.fade, |rows| {
+                    rows.keyed("milkdrop-fade-duration", &["seconds", "transition"], fade)
                 })
-                .when(!config.fade, |page| {
-                    page.child(setting_row(
-                        rox_i18n::t!("milkdrop-run-focused"),
-                        Some(rox_i18n::t!("milkdrop-run-focused.description")),
+                .when(!config.fade, |rows| {
+                    rows.keyed(
+                        "milkdrop-run-focused",
+                        &["focus", "background"],
                         toggle(
                             config.run_focused,
                             |this: &mut Self, on, cx| {
@@ -1793,11 +1803,11 @@ impl MilkdropPanel {
                             },
                             cx,
                         ),
-                    ))
+                    )
                 })
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-show-name"),
-                    Some(rox_i18n::t!("milkdrop-show-name.description")),
+                .keyed(
+                    "milkdrop-show-name",
+                    &["title", "banner"],
                     toggle(
                         config.show_preset_name,
                         |this: &mut Self, on, cx| {
@@ -1809,11 +1819,11 @@ impl MilkdropPanel {
                         },
                         cx,
                     ),
-                ))
-                .when(config.show_preset_name, |page| {
-                    page.child(setting_row(
-                        rox_i18n::t!("milkdrop-name-always"),
-                        Some(rox_i18n::t!("milkdrop-name-always.description")),
+                )
+                .when(config.show_preset_name, |rows| {
+                    rows.keyed(
+                        "milkdrop-name-always",
+                        &["persist", "sticky"],
                         toggle(
                             config.name_always,
                             |this: &mut Self, on, cx| {
@@ -1829,11 +1839,11 @@ impl MilkdropPanel {
                             },
                             cx,
                         ),
-                    ))
+                    )
                 })
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-show-controls"),
-                    Some(rox_i18n::t!("milkdrop-show-controls.description")),
+                .keyed(
+                    "milkdrop-show-controls",
+                    &["buttons", "overlay"],
                     toggle(
                         config.show_controls,
                         |this: &mut Self, on, cx| {
@@ -1842,10 +1852,10 @@ impl MilkdropPanel {
                         },
                         cx,
                     ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-flip-horizontal"),
-                    Some(rox_i18n::t!("milkdrop-flip-horizontal.description")),
+                )
+                .keyed(
+                    "milkdrop-flip-horizontal",
+                    &["mirror", "x"],
                     toggle(
                         config.flip_horizontal,
                         |this: &mut Self, on, cx| {
@@ -1854,10 +1864,10 @@ impl MilkdropPanel {
                         },
                         cx,
                     ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("milkdrop-flip-vertical"),
-                    Some(rox_i18n::t!("milkdrop-flip-vertical.description")),
+                )
+                .keyed(
+                    "milkdrop-flip-vertical",
+                    &["mirror", "y"],
                     toggle(
                         config.flip_vertical,
                         |this: &mut Self, on, cx| {
@@ -1866,7 +1876,8 @@ impl MilkdropPanel {
                         },
                         cx,
                     ),
-                )),
+                )
+            },
         ))
     }
 }

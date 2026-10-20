@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Path,
-    Pixels, Point, Rgba, SharedString, Subscription, WeakEntity, Window, canvas, div, fill, point,
-    prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Path, Pixels, Point,
+    Rgba, SharedString, Subscription, WeakEntity, Window, canvas, div, fill, point, prelude::*, px,
+    size,
 };
 use gpui_component::Sizable as _;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -24,13 +24,14 @@ use rox_viz::AudioFeed;
 use rox_viz::analysis::MAX_FFT_SIZE;
 
 use crate::assets::icons;
-use crate::design::{palette, tokens};
+use crate::design::palette;
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, choices_shared, setting_row, toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    choices_shared, toggle,
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
-use crate::spectrum::{CURVE_DEFAULT, Gradient, curve_row, gradient_choices, ramp_color};
+use crate::spectrum::{CURVE_DEFAULT, Gradient, curve_rows, gradient_choices, ramp_color};
 
 const WINDOW_MS_MIN: f32 = 1.0;
 const WINDOW_MS_MAX: f32 = 100.0;
@@ -777,12 +778,13 @@ impl PanelSettings for OscilloscopePanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -810,208 +812,214 @@ impl PanelSettings for OscilloscopePanel {
         let level = self.config.trigger_level();
         let line_w = self.config.line_w();
         let persistence = self.config.persistence();
-        let signal = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-window"),
-                Some(rox_i18n::t!("oscilloscope-window.description")),
-                settings_ui::scalar(
-                    &self.window_scrub,
-                    &self.value_edit,
-                    window_ms,
-                    settings_ui::span(WINDOW_MS_MIN, WINDOW_MS_MAX, " ms"),
-                    Self::set_window_ms,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-gain"),
-                Some(rox_i18n::t!("oscilloscope-gain.description")),
-                panel::value_slider_edit(
-                    &self.gain_scrub,
-                    &self.value_edit,
-                    (gain / GAIN_MIN).ln() / (GAIN_MAX / GAIN_MIN).ln(),
-                    format!("{gain:.2}x"),
-                    format!("{gain:.2}"),
-                    |v| (v.max(GAIN_MIN) / GAIN_MIN).ln() / (GAIN_MAX / GAIN_MIN).ln(),
-                    Self::set_gain,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-trigger"),
-                Some(rox_i18n::t!("oscilloscope-trigger.description")),
-                choices_shared(
-                    &trigger_choices(),
-                    self.config.trigger,
-                    |this: &mut Self, trigger, cx| {
-                        this.config.trigger = trigger;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.trigger != Trigger::Off, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("oscilloscope-trigger-level"),
-                    Some(rox_i18n::t!("oscilloscope-trigger-level.description")),
-                    settings_ui::scalar(
-                        &self.level_scrub,
-                        &self.value_edit,
-                        level,
-                        settings_ui::span(-1.0, 1.0, "").decimals(2).hard(),
-                        Self::set_trigger_level,
-                        cx,
-                    ),
-                ))
-            })
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-channels"),
-                Some(rox_i18n::t!("oscilloscope-channels.description")),
-                choices_shared(
-                    &channel_choices(),
-                    self.config.channels,
-                    |this: &mut Self, channels, cx| {
-                        this.config.channels = channels;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        let trace = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-line-width"),
-                Some(rox_i18n::t!("oscilloscope-line-width.description")),
-                settings_ui::scalar(
-                    &self.line_w_scrub,
-                    &self.value_edit,
-                    line_w,
-                    settings_ui::span(LINE_W_MIN, LINE_W_MAX, " px").decimals(1),
-                    Self::set_line_width,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-fill"),
-                Some(rox_i18n::t!("oscilloscope-fill.description")),
-                toggle(
-                    self.config.fill,
-                    |this: &mut Self, on, cx| {
-                        this.config.fill = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-persistence"),
-                Some(rox_i18n::t!("oscilloscope-persistence.description")),
-                settings_ui::scalar(
-                    &self.persist_scrub,
-                    &self.value_edit,
-                    persistence,
-                    settings_ui::span(0.0, PERSIST_MAX, "").decimals(2).hard(),
-                    Self::set_persistence,
-                    cx,
-                ),
-            ));
-        let color = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-gradient-mode"),
-                Some(rox_i18n::t!("oscilloscope-gradient-mode.description")),
-                choices_shared(
-                    &gradient_choices(),
-                    self.config.gradient,
-                    |this: &mut Self, gradient, cx| {
-                        this.config.gradient = gradient;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when_some(
-                (self.config.gradient == Gradient::Custom)
-                    .then(|| self.ramp_pickers.clone())
-                    .flatten(),
-                |d, [lo, hi]| {
-                    d.child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-base-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
-                        ColorPicker::new(&lo).small(),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-tip-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
-                        ColorPicker::new(&hi).small(),
-                    ))
-                },
-            )
-            .when(self.config.gradient != Gradient::Off, |d| {
-                d.child(curve_row(
-                    &self.curve_scrub,
-                    &self.value_edit,
-                    self.config.gradient_curve,
-                    |this: &mut Self, curve, cx| {
-                        this.config.gradient_curve = curve;
-                        cx.notify();
-                    },
-                    cx,
-                ))
-            });
-        div()
-            .flex()
-            .flex_col()
-            .gap(settings_ui::SECTION_GAP)
-            .child(settings_ui::section(
+
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::ACTIVITY,
                 rox_i18n::t!("viz-section-signal"),
                 None,
-                signal,
+                |rows| {
+                    rows.keyed(
+                        "oscilloscope-window",
+                        &[],
+                        settings_ui::scalar(
+                            &self.window_scrub,
+                            &self.value_edit,
+                            window_ms,
+                            settings_ui::span(WINDOW_MS_MIN, WINDOW_MS_MAX, " ms"),
+                            Self::set_window_ms,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "oscilloscope-gain",
+                        &[],
+                        panel::value_slider_edit(
+                            &self.gain_scrub,
+                            &self.value_edit,
+                            (gain / GAIN_MIN).ln() / (GAIN_MAX / GAIN_MIN).ln(),
+                            format!("{gain:.2}x"),
+                            format!("{gain:.2}"),
+                            |v| (v.max(GAIN_MIN) / GAIN_MIN).ln() / (GAIN_MAX / GAIN_MIN).ln(),
+                            Self::set_gain,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "oscilloscope-trigger",
+                        &[],
+                        choices_shared(
+                            &trigger_choices(),
+                            self.config.trigger,
+                            |this: &mut Self, trigger, cx| {
+                                this.config.trigger = trigger;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when(self.config.trigger != Trigger::Off, |rows| {
+                        rows.keyed(
+                            "oscilloscope-trigger-level",
+                            &[],
+                            settings_ui::scalar(
+                                &self.level_scrub,
+                                &self.value_edit,
+                                level,
+                                settings_ui::span(-1.0, 1.0, "").decimals(2).hard(),
+                                Self::set_trigger_level,
+                                cx,
+                            ),
+                        )
+                    })
+                    .keyed(
+                        "oscilloscope-channels",
+                        &[],
+                        choices_shared(
+                            &channel_choices(),
+                            self.config.channels,
+                            |this: &mut Self, channels, cx| {
+                                this.config.channels = channels;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::AUDIO_WAVEFORM,
                 rox_i18n::t!("oscilloscope-section-trace"),
                 None,
-                trace,
+                |rows| {
+                    rows.keyed(
+                        "oscilloscope-line-width",
+                        &[],
+                        settings_ui::scalar(
+                            &self.line_w_scrub,
+                            &self.value_edit,
+                            line_w,
+                            settings_ui::span(LINE_W_MIN, LINE_W_MAX, " px").decimals(1),
+                            Self::set_line_width,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "oscilloscope-fill",
+                        &[],
+                        toggle(
+                            self.config.fill,
+                            |this: &mut Self, on, cx| {
+                                this.config.fill = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "oscilloscope-persistence",
+                        &[],
+                        settings_ui::scalar(
+                            &self.persist_scrub,
+                            &self.value_edit,
+                            persistence,
+                            settings_ui::span(0.0, PERSIST_MAX, "").decimals(2).hard(),
+                            Self::set_persistence,
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::PALETTE,
                 rox_i18n::t!("viz-section-color"),
                 None,
-                color,
+                |rows| {
+                    rows.keyed(
+                        "oscilloscope-gradient-mode",
+                        &[],
+                        choices_shared(
+                            &gradient_choices(),
+                            self.config.gradient,
+                            |this: &mut Self, gradient, cx| {
+                                this.config.gradient = gradient;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when_some(
+                        (self.config.gradient == Gradient::Custom)
+                            .then(|| self.ramp_pickers.clone())
+                            .flatten(),
+                        |rows, [lo, hi]| {
+                            rows.keyed(
+                                "spectrum-gradient-base-color",
+                                &[],
+                                ColorPicker::new(&lo).small(),
+                            )
+                            .keyed(
+                                "spectrum-gradient-tip-color",
+                                &[],
+                                ColorPicker::new(&hi).small(),
+                            )
+                        },
+                    )
+                    .when(self.config.gradient != Gradient::Off, |rows| {
+                        curve_rows(
+                            rows,
+                            &self.curve_scrub,
+                            &self.value_edit,
+                            self.config.gradient_curve,
+                            |this: &mut Self, curve, cx| {
+                                this.config.gradient_curve = curve;
+                                cx.notify();
+                            },
+                            cx,
+                        )
+                    })
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::LAYOUT_GRID,
                 rox_i18n::t!("viz-section-scale"),
                 None,
-                setting_row(
-                    rox_i18n::t!("oscilloscope-grid"),
-                    Some(rox_i18n::t!("oscilloscope-grid.description")),
-                    toggle(
-                        self.config.grid,
-                        |this: &mut Self, on, cx| {
-                            this.config.grid = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ),
+                |rows| {
+                    rows.keyed(
+                        "oscilloscope-grid",
+                        &[],
+                        toggle(
+                            self.config.grid,
+                            |this: &mut Self, on, cx| {
+                                this.config.grid = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .into_any_element()
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("viz-section-playback"),
-                None,
-                setting_row(
-                    rox_i18n::t!("oscilloscope-hold-on-pause"),
-                    Some(rox_i18n::t!("oscilloscope-hold-on-pause.description")),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::PAUSE,
+            rox_i18n::t!("viz-section-playback"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "oscilloscope-hold-on-pause",
+                    &[],
                     toggle(
                         self.config.freeze,
                         |this: &mut Self, on, cx| {
@@ -1020,10 +1028,9 @@ impl PanelSettings for OscilloscopePanel {
                         },
                         cx,
                     ),
-                ),
-            )
-            .into_any_element(),
-        )
+                )
+            },
+        )]
     }
 }
 

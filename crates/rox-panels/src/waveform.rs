@@ -51,7 +51,8 @@ use crate::bookmark_ui;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, choices_shared, setting_row, toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    choices_shared, toggle,
 };
 use crate::panel_settings;
 use crate::peaks;
@@ -1895,12 +1896,13 @@ impl PanelSettings for WaveformPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         // Built on first need.
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
@@ -1958,243 +1960,241 @@ impl PanelSettings for WaveformPanel {
         let split = self.config.split_bars;
         let (bar_w, gap) = self.config.bars();
         let live_secs = self.config.live_secs();
-        let strip = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("waveform-bar-width"),
-                Some(rox_i18n::t!("waveform-bar-width.description")),
-                settings_ui::scalar(
-                    &self.bar_w_scrub,
-                    &self.value_edit,
-                    bar_w,
-                    settings_ui::span(BAR_W_MIN, BAR_W_MAX, " px"),
-                    Self::set_bar_width,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-bar-gap"),
-                Some(rox_i18n::t!("waveform-bar-gap.description")),
-                settings_ui::scalar(
-                    &self.gap_scrub,
-                    &self.value_edit,
-                    gap,
-                    settings_ui::span(0., BAR_GAP_MAX, " px"),
-                    Self::set_bar_gap,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-outline"),
-                Some(rox_i18n::t!("waveform-outline.description")),
-                toggle(
-                    self.config.outline,
-                    |this: &mut Self, on, cx| {
-                        this.config.outline = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-loudness"),
-                Some(rox_i18n::t!("waveform-loudness.description")),
-                toggle(
-                    self.config.loudness,
-                    |this: &mut Self, on, cx| {
-                        this.config.loudness = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-shade-played"),
-                Some(rox_i18n::t!("waveform-shade-played.description")),
-                toggle(
-                    self.config.shade_played,
-                    |this: &mut Self, on, cx| {
-                        this.config.shade_played = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-split-bars"),
-                Some(rox_i18n::t!("waveform-split-bars.description")),
-                toggle(
-                    split,
-                    |this: &mut Self, on, cx| {
-                        this.config.split_bars = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when_some(
-                split.then(|| self.side_pickers.clone()).flatten(),
-                |d, [played, unplayed]| {
-                    d.child(setting_row(
-                        rox_i18n::t!("waveform-played-bars"),
-                        Some(rox_i18n::t!("waveform-played-bars.description")),
-                        self.side_control(0, &played, cx),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("waveform-unplayed-bars"),
-                        Some(rox_i18n::t!("waveform-unplayed-bars.description")),
-                        self.side_control(1, &unplayed, cx),
-                    ))
-                },
-            )
-            // The split colors replace the source, so its rows step aside.
-            .when(!split, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("waveform-gradient-mode"),
-                    Some(rox_i18n::t!("waveform-gradient-mode.description")),
-                    choices_shared(
-                        &gradient_choices(),
-                        self.config.gradient,
-                        |this: &mut Self, gradient, cx| {
-                            this.config.gradient = gradient;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .when_some(
-                    (self.config.gradient == Gradient::Custom)
-                        .then(|| self.ramp_pickers.clone())
-                        .flatten(),
-                    |d, [lo, hi]| {
-                        d.child(setting_row(
-                            rox_i18n::t!("spectrum-gradient-base-color"),
-                            Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
-                            ColorPicker::new(&lo).small(),
-                        ))
-                        .child(setting_row(
-                            rox_i18n::t!("spectrum-gradient-tip-color"),
-                            Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
-                            ColorPicker::new(&hi).small(),
-                        ))
-                    },
-                )
-            })
-            .child(setting_row(
-                rox_i18n::t!("waveform-split-channels"),
-                Some(rox_i18n::t!("waveform-split-channels.description")),
-                toggle(
-                    self.config.split_channels,
-                    |this: &mut Self, on, cx| {
-                        this.config.split_channels = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-scrobble-marker"),
-                Some(rox_i18n::t!("waveform-scrobble-marker.description")),
-                toggle(
-                    self.config.scrobble_marker,
-                    |this: &mut Self, on, cx| {
-                        this.config.scrobble_marker = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("waveform-bookmarks"),
-                Some(rox_i18n::t!("waveform-bookmarks.description")),
-                toggle(
-                    self.config.bookmarks,
-                    |this: &mut Self, on, cx| {
-                        this.config.bookmarks = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
         // Shown whatever is playing, so the heading and rows have to explain
         // themselves to somebody who never played a station.
         let mode = self.config.live;
         let motion_error = self.motion().error.clone();
         let motion_input = self.motion_input(window, cx);
-        let live = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("waveform-live-mode"),
-                Some(rox_i18n::t!("waveform-live-mode.description")),
-                choices_shared(
-                    &live_mode_choices(),
-                    mode,
-                    |this: &mut Self, mode, cx| {
-                        this.config.live = mode;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(mode == LiveMode::Trace, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("waveform-live-window"),
-                    Some(rox_i18n::t!("waveform-live-window.description")),
+
+        PageBody::new()
+            .section(Section::bare(q, |rows| {
+                rows.keyed(
+                    "waveform-bar-width",
+                    &[],
                     settings_ui::scalar(
-                        &self.live_scrub,
+                        &self.bar_w_scrub,
                         &self.value_edit,
-                        live_secs,
-                        settings_ui::span(LIVE_SECS_MIN, LIVE_SECS_MAX, "s").hard(),
-                        Self::set_live_secs,
+                        bar_w,
+                        settings_ui::span(BAR_W_MIN, BAR_W_MAX, " px"),
+                        Self::set_bar_width,
                         cx,
                     ),
-                ))
-            })
-            .when(mode == LiveMode::Motion, |d| {
-                // The complaint goes under the field: the default shape keeps drawing
-                // while the expression is half-typed.
-                let field = div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_XS)
-                    .child(Input::new(&motion_input).small())
-                    .when_some(motion_error, |d, error| {
-                        let line = rox_i18n::t!("waveform-live-expression-error", reason = error);
-
-                        d.child(div().text_xs().text_color(palette::tone_bad()).child(line))
-                    });
-
-                d.child(panel::setting_block(
-                    rox_i18n::t!("waveform-live-expression"),
-                    Some(rox_i18n::t!("waveform-live-expression.description")),
-                    Some(
-                        settings_ui::small_button(
-                            rox_i18n::t!("panel-reset"),
-                            icons::REFRESH_CW,
-                            self.config.live_motion() == LIVE_MOTION_DEFAULT,
-                            cx.listener(|this, _, window, cx| this.reset_live_motion(window, cx)),
-                        )
-                        .into_any_element(),
+                )
+                .keyed(
+                    "waveform-bar-gap",
+                    &[],
+                    settings_ui::scalar(
+                        &self.gap_scrub,
+                        &self.value_edit,
+                        gap,
+                        settings_ui::span(0., BAR_GAP_MAX, " px"),
+                        Self::set_bar_gap,
+                        cx,
                     ),
-                    field,
-                ))
-            });
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(settings_ui::SECTION_GAP)
-            .child(strip)
-            .child(settings_ui::section(
+                )
+                .keyed(
+                    "waveform-outline",
+                    &[],
+                    toggle(
+                        self.config.outline,
+                        |this: &mut Self, on, cx| {
+                            this.config.outline = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "waveform-loudness",
+                    &[],
+                    toggle(
+                        self.config.loudness,
+                        |this: &mut Self, on, cx| {
+                            this.config.loudness = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "waveform-shade-played",
+                    &[],
+                    toggle(
+                        self.config.shade_played,
+                        |this: &mut Self, on, cx| {
+                            this.config.shade_played = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "waveform-split-bars",
+                    &[],
+                    toggle(
+                        split,
+                        |this: &mut Self, on, cx| {
+                            this.config.split_bars = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when_some(
+                    split.then(|| self.side_pickers.clone()).flatten(),
+                    |rows, [played, unplayed]| {
+                        rows.keyed(
+                            "waveform-played-bars",
+                            &[],
+                            self.side_control(0, &played, cx),
+                        )
+                        .keyed(
+                            "waveform-unplayed-bars",
+                            &[],
+                            self.side_control(1, &unplayed, cx),
+                        )
+                    },
+                )
+                // The split colors replace the source, so its rows step aside.
+                .when(!split, |rows| {
+                    rows.keyed(
+                        "waveform-gradient-mode",
+                        &[],
+                        choices_shared(
+                            &gradient_choices(),
+                            self.config.gradient,
+                            |this: &mut Self, gradient, cx| {
+                                this.config.gradient = gradient;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when_some(
+                        (self.config.gradient == Gradient::Custom)
+                            .then(|| self.ramp_pickers.clone())
+                            .flatten(),
+                        |rows, [lo, hi]| {
+                            rows.keyed(
+                                "spectrum-gradient-base-color",
+                                &[],
+                                ColorPicker::new(&lo).small(),
+                            )
+                            .keyed(
+                                "spectrum-gradient-tip-color",
+                                &[],
+                                ColorPicker::new(&hi).small(),
+                            )
+                        },
+                    )
+                })
+                .keyed(
+                    "waveform-split-channels",
+                    &[],
+                    toggle(
+                        self.config.split_channels,
+                        |this: &mut Self, on, cx| {
+                            this.config.split_channels = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "waveform-scrobble-marker",
+                    &[],
+                    toggle(
+                        self.config.scrobble_marker,
+                        |this: &mut Self, on, cx| {
+                            this.config.scrobble_marker = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "waveform-bookmarks",
+                    &[],
+                    toggle(
+                        self.config.bookmarks,
+                        |this: &mut Self, on, cx| {
+                            this.config.bookmarks = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            }))
+            .section(Section::new(
+                q,
+                icons::AUDIO_WAVEFORM,
                 rox_i18n::t!("waveform-section-live"),
                 None,
-                live,
+                |rows| {
+                    rows.keyed(
+                        "waveform-live-mode",
+                        &[],
+                        choices_shared(
+                            &live_mode_choices(),
+                            mode,
+                            |this: &mut Self, mode, cx| {
+                                this.config.live = mode;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when(mode == LiveMode::Trace, |rows| {
+                        rows.keyed(
+                            "waveform-live-window",
+                            &[],
+                            settings_ui::scalar(
+                                &self.live_scrub,
+                                &self.value_edit,
+                                live_secs,
+                                settings_ui::span(LIVE_SECS_MIN, LIVE_SECS_MAX, "s").hard(),
+                                Self::set_live_secs,
+                                cx,
+                            ),
+                        )
+                    })
+                    .when(mode == LiveMode::Motion, |rows| {
+                        // The complaint goes under the field: the default shape keeps
+                        // drawing while the expression is half-typed.
+                        let field = div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(Input::new(&motion_input).small())
+                            .when_some(motion_error, |d, error| {
+                                let line =
+                                    rox_i18n::t!("waveform-live-expression-error", reason = error);
+
+                                d.child(div().text_xs().text_color(palette::tone_bad()).child(line))
+                            });
+
+                        rows.labelled(&rox_i18n::t!("waveform-live-expression"), &[], || {
+                            panel::setting_block(
+                                rox_i18n::t!("waveform-live-expression"),
+                                Some(rox_i18n::t!("waveform-live-expression.description")),
+                                Some(
+                                    settings_ui::small_button(
+                                        rox_i18n::t!("panel-reset"),
+                                        icons::REFRESH_CW,
+                                        self.config.live_motion() == LIVE_MOTION_DEFAULT,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.reset_live_motion(window, cx)
+                                        }),
+                                    )
+                                    .into_any_element(),
+                                ),
+                                field,
+                            )
+                            .into_any_element()
+                        })
+                    })
+                },
             ))
-            .into_any_element()
     }
 }
 

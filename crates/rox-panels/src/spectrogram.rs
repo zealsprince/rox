@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Corners, Div, EventEmitter, FocusHandle, Focusable, Hsla,
-    Pixels, RenderImage, Rgba, SharedString, Subscription, TextRun, WeakEntity, Window, canvas,
-    div, fill, point, prelude::*, px, size,
+    App, Bounds, Context, Corners, Div, EventEmitter, FocusHandle, Focusable, Hsla, Pixels,
+    RenderImage, Rgba, SharedString, Subscription, TextRun, WeakEntity, Window, canvas, div, fill,
+    point, prelude::*, px, size,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use image::{Frame, RgbaImage};
@@ -30,10 +30,10 @@ use rox_viz::AudioFeed;
 use rox_viz::analysis::{MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder};
 
 use crate::assets::icons;
-use crate::design::{palette, tokens};
+use crate::design::palette;
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, choices, choices_shared, setting_row,
-    toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section, choices,
+    choices_shared, toggle,
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
@@ -956,190 +956,193 @@ impl PanelSettings for SpectrogramPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         let (floor, ceil) = self.config.db_window();
         let speed = self.config.speed();
         let history = self.config.history() as f32;
-        let analysis = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-fft-size"),
-                Some(rox_i18n::t!("spectrogram-fft-size.description")),
-                choices(
-                    FFT_CHOICES,
-                    self.config.fft(),
-                    |this: &mut Self, size, cx| {
-                        this.config.fft_size = size;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-low-bound"),
-                Some(rox_i18n::t!("spectrogram-low-bound.description")),
-                self.freq_slider(&self.lo_scrub, self.config.lo_hz, Self::set_lo_hz, cx),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-high-bound"),
-                Some(rox_i18n::t!("spectrogram-high-bound.description")),
-                self.freq_slider(&self.hi_scrub, self.config.hi_hz, Self::set_hi_hz, cx),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-log-scale"),
-                Some(rox_i18n::t!("spectrogram-log-scale.description")),
-                toggle(
-                    self.config.log_scale,
-                    |this: &mut Self, on, cx| {
-                        this.config.log_scale = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-floor"),
-                Some(rox_i18n::t!("spectrogram-floor.description")),
-                settings_ui::scalar(
-                    &self.floor_scrub,
-                    &self.value_edit,
-                    floor,
-                    settings_ui::span(FLOOR_MIN, FLOOR_MAX, " dB").hard(),
-                    Self::set_floor_db,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-ceiling"),
-                Some(rox_i18n::t!("spectrogram-ceiling.description")),
-                settings_ui::scalar(
-                    &self.ceil_scrub,
-                    &self.value_edit,
-                    ceil,
-                    settings_ui::span(CEIL_MIN, CEIL_MAX, " dB").hard(),
-                    Self::set_ceil_db,
-                    cx,
-                ),
-            ));
-        let picture = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-speed"),
-                Some(rox_i18n::t!("spectrogram-speed.description")),
-                settings_ui::scalar(
-                    &self.speed_scrub,
-                    &self.value_edit,
-                    speed,
-                    settings_ui::span(SPEED_MIN, SPEED_MAX, " col/s").hard(),
-                    Self::set_speed,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-history"),
-                Some(rox_i18n::t!("spectrogram-history.description")),
-                settings_ui::scalar(
-                    &self.history_scrub,
-                    &self.value_edit,
-                    history,
-                    settings_ui::span(HISTORY_MIN as f32, HISTORY_MAX as f32, " col").hard(),
-                    Self::set_history,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-colormap"),
-                Some(rox_i18n::t!("spectrogram-colormap.description")),
-                choices_shared(
-                    &colormap_choices(),
-                    self.config.colormap,
-                    |this: &mut Self, colormap, cx| {
-                        this.config.colormap = colormap;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-direction"),
-                Some(rox_i18n::t!("spectrogram-direction.description")),
-                choices_shared(
-                    &orientation_choices(),
-                    self.config.direction,
-                    |this: &mut Self, direction, cx| {
-                        this.config.direction = direction;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        let scale = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-grid"),
-                Some(rox_i18n::t!("spectrogram-grid.description")),
-                toggle(
-                    self.config.grid,
-                    |this: &mut Self, on, cx| {
-                        this.config.grid = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-labels"),
-                Some(rox_i18n::t!("spectrogram-labels.description")),
-                toggle(
-                    self.config.labels,
-                    |this: &mut Self, on, cx| {
-                        this.config.labels = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        div()
-            .flex()
-            .flex_col()
-            .gap(settings_ui::SECTION_GAP)
-            .child(settings_ui::section(
+
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::ACTIVITY,
                 rox_i18n::t!("viz-section-analysis"),
                 None,
-                analysis,
+                |rows| {
+                    rows.keyed(
+                        "spectrogram-fft-size",
+                        &[],
+                        choices(
+                            FFT_CHOICES,
+                            self.config.fft(),
+                            |this: &mut Self, size, cx| {
+                                this.config.fft_size = size;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-low-bound",
+                        &[],
+                        self.freq_slider(&self.lo_scrub, self.config.lo_hz, Self::set_lo_hz, cx),
+                    )
+                    .keyed(
+                        "spectrogram-high-bound",
+                        &[],
+                        self.freq_slider(&self.hi_scrub, self.config.hi_hz, Self::set_hi_hz, cx),
+                    )
+                    .keyed(
+                        "spectrogram-log-scale",
+                        &[],
+                        toggle(
+                            self.config.log_scale,
+                            |this: &mut Self, on, cx| {
+                                this.config.log_scale = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-floor",
+                        &[],
+                        settings_ui::scalar(
+                            &self.floor_scrub,
+                            &self.value_edit,
+                            floor,
+                            settings_ui::span(FLOOR_MIN, FLOOR_MAX, " dB").hard(),
+                            Self::set_floor_db,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-ceiling",
+                        &[],
+                        settings_ui::scalar(
+                            &self.ceil_scrub,
+                            &self.value_edit,
+                            ceil,
+                            settings_ui::span(CEIL_MIN, CEIL_MAX, " dB").hard(),
+                            Self::set_ceil_db,
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::IMAGE,
                 rox_i18n::t!("spectrogram-section-picture"),
                 None,
-                picture,
+                |rows| {
+                    rows.keyed(
+                        "spectrogram-speed",
+                        &[],
+                        settings_ui::scalar(
+                            &self.speed_scrub,
+                            &self.value_edit,
+                            speed,
+                            settings_ui::span(SPEED_MIN, SPEED_MAX, " col/s").hard(),
+                            Self::set_speed,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-history",
+                        &[],
+                        settings_ui::scalar(
+                            &self.history_scrub,
+                            &self.value_edit,
+                            history,
+                            settings_ui::span(HISTORY_MIN as f32, HISTORY_MAX as f32, " col")
+                                .hard(),
+                            Self::set_history,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-colormap",
+                        &[],
+                        choices_shared(
+                            &colormap_choices(),
+                            self.config.colormap,
+                            |this: &mut Self, colormap, cx| {
+                                this.config.colormap = colormap;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-direction",
+                        &[],
+                        choices_shared(
+                            &orientation_choices(),
+                            self.config.direction,
+                            |this: &mut Self, direction, cx| {
+                                this.config.direction = direction;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::LAYOUT_GRID,
                 rox_i18n::t!("viz-section-scale"),
                 None,
-                scale,
+                |rows| {
+                    rows.keyed(
+                        "spectrogram-grid",
+                        &[],
+                        toggle(
+                            self.config.grid,
+                            |this: &mut Self, on, cx| {
+                                this.config.grid = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrogram-labels",
+                        &[],
+                        toggle(
+                            self.config.labels,
+                            |this: &mut Self, on, cx| {
+                                this.config.labels = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .into_any_element()
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("viz-section-playback"),
-                None,
-                setting_row(
-                    rox_i18n::t!("spectrogram-hold-on-pause"),
-                    Some(rox_i18n::t!("spectrogram-hold-on-pause.description")),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::PAUSE,
+            rox_i18n::t!("viz-section-playback"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "spectrogram-hold-on-pause",
+                    &[],
                     toggle(
                         self.config.freeze,
                         |this: &mut Self, on, cx| {
@@ -1148,10 +1151,9 @@ impl PanelSettings for SpectrogramPanel {
                         },
                         cx,
                     ),
-                ),
-            )
-            .into_any_element(),
-        )
+                )
+            },
+        )]
     }
 }
 

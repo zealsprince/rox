@@ -33,7 +33,10 @@ use crate::catalog::LibraryEvent;
 use crate::continuation;
 use crate::design::{palette, tokens};
 use crate::group_head::{self, ArtSide, HeadPiece, Headers};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, ResumeIdle, ScrubState};
+use crate::panel::{
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ResumeIdle, Rows, ScrubState,
+    Section,
+};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
@@ -1982,293 +1985,271 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
-    fn rows_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn rows_rows<'a>(&mut self, rows: Rows<'a>, cx: &mut Context<Self>) -> Rows<'a> {
         let (row_height, row_spacing) = (self.row_height, self.row_spacing);
-        settings_ui::section(
-            rox_i18n::t!("library-section-rows"),
-            None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-row-height"),
-                    Some(rox_i18n::t!("library-row-height.description")),
-                    settings_ui::scalar(
-                        &self.row_scrub,
-                        &self.value_edit,
-                        row_height,
-                        settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.row_height = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-row-spacing"),
-                    Some(rox_i18n::t!("library-row-spacing.description")),
-                    settings_ui::scalar(
-                        &self.row_spacing_scrub,
-                        &self.value_edit,
-                        row_spacing,
-                        settings_ui::span(0., ROW_SPACING_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.row_spacing = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-stripes"),
-                    Some(rox_i18n::t!("library-stripes.description")),
-                    panel::toggle(
-                        self.stripes,
-                        |this: &mut Self, on, cx| {
-                            this.stripes = on;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-row-borders"),
-                    Some(rox_i18n::t!("library-row-borders.description")),
-                    panel::toggle(
-                        self.row_borders,
-                        |this: &mut Self, on, cx| {
-                            this.row_borders = on;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-compact-plays"),
-                    Some(rox_i18n::t!("library-compact-plays.description")),
-                    panel::toggle(
-                        self.compact_plays,
-                        |this: &mut Self, on, cx| {
-                            this.compact_plays = on;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                )),
+        rows.keyed(
+            "library-row-height",
+            &[],
+            settings_ui::scalar(
+                &self.row_scrub,
+                &self.value_edit,
+                row_height,
+                settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.row_height = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
         )
-        .into_any_element()
+        .keyed(
+            "library-row-spacing",
+            &[],
+            settings_ui::scalar(
+                &self.row_spacing_scrub,
+                &self.value_edit,
+                row_spacing,
+                settings_ui::span(0., ROW_SPACING_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.row_spacing = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-stripes",
+            &[],
+            panel::toggle(
+                self.stripes,
+                |this: &mut Self, on, cx| {
+                    this.stripes = on;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-row-borders",
+            &[],
+            panel::toggle(
+                self.row_borders,
+                |this: &mut Self, on, cx| {
+                    this.row_borders = on;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-compact-plays",
+            &[],
+            panel::toggle(
+                self.compact_plays,
+                |this: &mut Self, on, cx| {
+                    this.compact_plays = on;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
     }
 
     /// One well per line rather than the library's add-a-line rows: the
     /// tree's heading is [`Row::Album`] and [`Row::AlbumMeta`] and nothing else.
-    fn headings_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn headings_rows<'a>(&mut self, rows: Rows<'a>, cx: &mut Context<Self>) -> Rows<'a> {
         let expanded = self.config.headers == Headers::Expanded;
         let (head_height, head_text) = (self.head_height, self.head_text);
         let (gap_above, gap_below) = (self.header_gap_above, self.header_gap_below);
-        settings_ui::section(
-            rox_i18n::t!("library-headers"),
-            None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-line-height"),
-                    Some(rox_i18n::t!("playlists-line-height-description")),
-                    settings_ui::scalar(
-                        &self.head_scrub,
-                        &self.value_edit,
-                        head_height,
-                        settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.head_height = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-text-size"),
-                    Some(rox_i18n::t!("library-text-size.description")),
-                    settings_ui::scalar(
-                        &self.head_text_scrub,
-                        &self.value_edit,
-                        head_text,
-                        settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.head_text = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-flush-background"),
-                    Some(rox_i18n::t!("library-flush-background.description")),
-                    panel::toggle(
-                        self.header_flush,
-                        |this: &mut Self, on, cx| {
-                            this.header_flush = on;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-gap-above"),
-                    Some(rox_i18n::t!("library-gap-above.description")),
-                    settings_ui::scalar(
-                        &self.header_gap_above_scrub,
-                        &self.value_edit,
-                        gap_above,
-                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.header_gap_above = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-gap-below"),
-                    Some(rox_i18n::t!("library-gap-below.description")),
-                    settings_ui::scalar(
-                        &self.header_gap_below_scrub,
-                        &self.value_edit,
-                        gap_below,
-                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.header_gap_below = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                // Only the wells the active mode paints.
-                .when(!expanded, |d| {
-                    d.child(panel::setting_block(
-                        rox_i18n::t!("library-header-row"),
-                        Some(rox_i18n::t!("library-header-row.description")),
-                        None,
-                        panel::arrange_editor(
-                            "playlists-head-compact",
-                            group_head::PIECES,
-                            &self.header_compact,
-                            |this: &mut Self, items, cx| {
-                                this.header_compact = items;
-                                this.restyle(cx);
-                            },
-                            cx,
-                        ),
-                    ))
-                })
-                .when(expanded, |d| {
-                    d.child(panel::setting_block(
-                        rox_i18n::t!("playlists-name-line"),
-                        Some(rox_i18n::t!("playlists-name-line-description")),
-                        None,
-                        panel::arrange_editor(
-                            "playlists-head-name",
-                            group_head::PIECES,
-                            &self.header_name_line,
-                            |this: &mut Self, items, cx| {
-                                this.header_name_line = items;
-                                this.restyle(cx);
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_block(
-                        rox_i18n::t!("playlists-meta-line"),
-                        Some(rox_i18n::t!("playlists-meta-line-description")),
-                        None,
-                        panel::arrange_editor(
-                            "playlists-head-meta",
-                            group_head::PIECES,
-                            &self.header_meta_line,
-                            |this: &mut Self, items, cx| {
-                                this.header_meta_line = items;
-                                this.restyle(cx);
-                            },
-                            cx,
-                        ),
-                    ))
-                }),
+        rows.row(
+            rox_i18n::t!("library-line-height"),
+            Some(rox_i18n::t!("playlists-line-height-description")),
+            settings_ui::scalar(
+                &self.head_scrub,
+                &self.value_edit,
+                head_height,
+                settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.head_height = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
         )
-        .into_any_element()
+        .keyed(
+            "library-text-size",
+            &[],
+            settings_ui::scalar(
+                &self.head_text_scrub,
+                &self.value_edit,
+                head_text,
+                settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.head_text = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-flush-background",
+            &[],
+            panel::toggle(
+                self.header_flush,
+                |this: &mut Self, on, cx| {
+                    this.header_flush = on;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-gap-above",
+            &[],
+            settings_ui::scalar(
+                &self.header_gap_above_scrub,
+                &self.value_edit,
+                gap_above,
+                settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.header_gap_above = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-gap-below",
+            &[],
+            settings_ui::scalar(
+                &self.header_gap_below_scrub,
+                &self.value_edit,
+                gap_below,
+                settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.header_gap_below = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        // Only the wells the active mode paints.
+        .when(!expanded, |rows| {
+            rows.block(
+                "library-header-row",
+                &[],
+                panel::arrange_editor(
+                    "playlists-head-compact",
+                    group_head::PIECES,
+                    &self.header_compact,
+                    |this: &mut Self, items, cx| {
+                        this.header_compact = items;
+                        this.restyle(cx);
+                    },
+                    cx,
+                ),
+            )
+        })
+        .when(expanded, |rows| {
+            rows.labelled(&rox_i18n::t!("playlists-name-line"), &[], || {
+                panel::setting_block(
+                    rox_i18n::t!("playlists-name-line"),
+                    Some(rox_i18n::t!("playlists-name-line-description")),
+                    None,
+                    panel::arrange_editor(
+                        "playlists-head-name",
+                        group_head::PIECES,
+                        &self.header_name_line,
+                        |this: &mut Self, items, cx| {
+                            this.header_name_line = items;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                )
+                .into_any_element()
+            })
+            .labelled(&rox_i18n::t!("playlists-meta-line"), &[], || {
+                panel::setting_block(
+                    rox_i18n::t!("playlists-meta-line"),
+                    Some(rox_i18n::t!("playlists-meta-line-description")),
+                    None,
+                    panel::arrange_editor(
+                        "playlists-head-meta",
+                        group_head::PIECES,
+                        &self.header_meta_line,
+                        |this: &mut Self, items, cx| {
+                            this.header_meta_line = items;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                )
+                .into_any_element()
+            })
+        })
     }
 
-    fn art_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn art_rows<'a>(&mut self, rows: Rows<'a>, cx: &mut Context<Self>) -> Rows<'a> {
         let (rounding, margin) = (self.art_rounding, self.art_margin);
-        settings_ui::section(
+        rows.row(
             rox_i18n::t!("head-piece-art"),
-            None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
-                    rox_i18n::t!("head-piece-art"),
-                    Some(rox_i18n::t!("playlists-art-description")),
-                    panel::toggle(
-                        self.header_art,
-                        |this: &mut Self, on, cx| {
-                            this.header_art = on;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-art-rounding"),
-                    Some(rox_i18n::t!("library-art-rounding.description")),
-                    settings_ui::scalar(
-                        &self.art_scrub,
-                        &self.value_edit,
-                        rounding,
-                        settings_ui::span(0., ART_ROUNDING_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.art_rounding = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-art-position"),
-                    Some(rox_i18n::t!("library-art-position.description")),
-                    panel::choices_shared(
-                        &[
-                            (rox_i18n::t!("side-left"), ArtSide::Left),
-                            (rox_i18n::t!("side-right"), ArtSide::Right),
-                        ],
-                        self.art_side,
-                        |this: &mut Self, side, cx| {
-                            this.art_side = side;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-art-margin"),
-                    Some(rox_i18n::t!("library-art-margin.description")),
-                    settings_ui::scalar(
-                        &self.art_margin_scrub,
-                        &self.value_edit,
-                        margin,
-                        settings_ui::span(0., ART_MARGIN_MAX, " px"),
-                        |this: &mut Self, value, cx| {
-                            this.art_margin = value;
-                            this.restyle(cx);
-                        },
-                        cx,
-                    ),
-                )),
+            Some(rox_i18n::t!("playlists-art-description")),
+            panel::toggle(
+                self.header_art,
+                |this: &mut Self, on, cx| {
+                    this.header_art = on;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
         )
-        .into_any_element()
+        .keyed(
+            "library-art-rounding",
+            &[],
+            settings_ui::scalar(
+                &self.art_scrub,
+                &self.value_edit,
+                rounding,
+                settings_ui::span(0., ART_ROUNDING_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.art_rounding = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-art-position",
+            &[],
+            panel::choices_shared(
+                &[
+                    (rox_i18n::t!("side-left"), ArtSide::Left),
+                    (rox_i18n::t!("side-right"), ArtSide::Right),
+                ],
+                self.art_side,
+                |this: &mut Self, side, cx| {
+                    this.art_side = side;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
+        .keyed(
+            "library-art-margin",
+            &[],
+            settings_ui::scalar(
+                &self.art_margin_scrub,
+                &self.value_edit,
+                margin,
+                settings_ui::span(0., ART_MARGIN_MAX, " px"),
+                |this: &mut Self, value, cx| {
+                    this.art_margin = value;
+                    this.restyle(cx);
+                },
+                cx,
+            ),
+        )
     }
 
     fn new_playlist_item(&self, menu: PopupMenu) -> PopupMenu {
@@ -2391,23 +2372,28 @@ impl PanelSettings for PlaylistsPanel {
         &[("View", icons::ROWS_3)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_block(
-                rox_i18n::t!("library-columns"),
-                Some(rox_i18n::t!("playlists-columns")),
-                None,
-                track_columns::checklist(&columns(), self, cx),
-            ))
-            .child(panel::setting_row(
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            rows.labelled(
+                &rox_i18n::t!("library-columns"),
+                &["columns", "fields"],
+                || {
+                    panel::setting_block(
+                        rox_i18n::t!("library-columns"),
+                        Some(rox_i18n::t!("playlists-columns")),
+                        None,
+                        track_columns::checklist(&columns(), self, cx),
+                    )
+                    .into_any_element()
+                },
+            )
+            .row(
                 rox_i18n::t!("panel-headings"),
                 Some(rox_i18n::t!("playlists-headings")),
                 panel::choices_shared(
@@ -2420,28 +2406,41 @@ impl PanelSettings for PlaylistsPanel {
                     |this: &mut Self, headers, cx| this.set_headers(headers, cx),
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
-    fn behavior(
+    fn behavior_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(crate::query::shared_query::search_section(
+    ) -> Vec<Section> {
+        let search = Section::new(
+            q,
+            icons::SEARCH,
+            rox_i18n::t!("query-search"),
+            None,
+            |rows| {
+                crate::query::shared_query::search_rows(
+                    rows,
                     self.config.search,
                     |this: &mut Self, on, cx| this.set_search(on, cx),
                     self.config.query_source,
                     |this: &mut Self, source, cx| this.pick_query_source(source, cx),
                     cx,
-                ))
-                .child(panel::tracking_section(
+                )
+            },
+        );
+
+        let tracking = Section::new(
+            q,
+            icons::LOCATE,
+            rox_i18n::t!("tracking-title"),
+            None,
+            |rows| {
+                panel::tracking_rows(
+                    rows,
                     self.follow_playing,
                     rox_i18n::t!("library-follow-description"),
                     |this: &mut Self, on, cx| {
@@ -2465,32 +2464,48 @@ impl PanelSettings for PlaylistsPanel {
                         this.restyle(cx);
                     },
                     cx,
-                ))
-                .into_any_element(),
-        )
+                )
+            },
+        );
+
+        vec![search, tracking]
     }
 
     /// On the config because they shape the content, not the frame.
-    fn appearance(
+    fn appearance_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
+    ) -> Vec<Section> {
         let headings = self.config.headers != Headers::Off;
-        let rows = self.rows_section(cx);
+
+        let rows = Section::new(
+            q,
+            icons::ROWS_3,
+            rox_i18n::t!("library-section-rows"),
+            None,
+            |rows| self.rows_rows(rows, cx),
+        );
+
         // The heading look only matters while headings show.
-        let heading_rows = headings.then(|| self.headings_section(cx));
-        let art = self.art_section(cx);
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(rows)
-                .children(heading_rows)
-                .child(art)
-                .into_any_element(),
-        )
+        let headers = Section::new(
+            q,
+            icons::PANEL_TOP,
+            rox_i18n::t!("library-headers"),
+            None,
+            |rows| rows.when(headings, |rows| self.headings_rows(rows, cx)),
+        );
+
+        let art = Section::new(
+            q,
+            icons::IMAGE,
+            rox_i18n::t!("head-piece-art"),
+            None,
+            |rows| self.art_rows(rows, cx),
+        );
+
+        vec![rows, headers, art]
     }
 }
 

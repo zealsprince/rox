@@ -43,8 +43,8 @@ use crate::design::{palette, tokens};
 use crate::grid::{LetterSide, TitleAlign};
 use crate::group_head::{MOSAIC, TileFace};
 use crate::panel::{
-    self, AppState, FlickState, PanelChrome, PanelSettings, ResumeIdle, ScrubState, setting_row,
-    toggle,
+    self, AppState, FlickState, PageBody, PanelChrome, PanelSettings, Query, ResumeIdle,
+    ScrubState, Section, toggle,
 };
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
@@ -1556,19 +1556,17 @@ impl PanelSettings for GenreGridPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("grid-vertical-layout"),
-                Some(rox_i18n::t!("grid-vertical-layout.description")),
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            rows.keyed(
+                "grid-vertical-layout",
+                &[],
                 toggle(
                     self.config.vertical,
                     |this: &mut Self, on, cx| {
@@ -1576,38 +1574,50 @@ impl PanelSettings for GenreGridPanel {
                     },
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(settings_ui::section(
-                    rox_i18n::t!("wall-section-picking"),
-                    None,
-                    setting_row(
-                        rox_i18n::t!("genre-grid-pick-filters"),
-                        Some(rox_i18n::t!("genre-grid-pick-filters.description")),
-                        toggle(
-                            self.config.pick_filters,
-                            |this: &mut Self, on, cx| {
-                                this.config.pick_filters = on;
-                                if on {
-                                    this.publish_picks(cx);
-                                } else {
-                                    this.drop_genre_filter(cx);
-                                }
-                                this.rebuild(cx);
-                            },
-                            cx,
-                        ),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let picking = Section::new(
+            q,
+            icons::FUNNEL,
+            rox_i18n::t!("wall-section-picking"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "genre-grid-pick-filters",
+                    &[],
+                    toggle(
+                        self.config.pick_filters,
+                        |this: &mut Self, on, cx| {
+                            this.config.pick_filters = on;
+                            if on {
+                                this.publish_picks(cx);
+                            } else {
+                                this.drop_genre_filter(cx);
+                            }
+                            this.rebuild(cx);
+                        },
+                        cx,
                     ),
-                ))
-                .child(crate::query::shared_query::search_section(
+                )
+            },
+        );
+
+        let search = Section::new(
+            q,
+            icons::SEARCH,
+            rox_i18n::t!("query-search"),
+            None,
+            |rows| {
+                crate::query::shared_query::search_rows(
+                    rows,
                     self.config.search,
                     |this: &mut Self, on, cx| {
                         this.config.search = on;
@@ -1617,8 +1627,18 @@ impl PanelSettings for GenreGridPanel {
                     self.config.query_source,
                     |this: &mut Self, source, cx| this.pick_query_source(source, cx),
                     cx,
-                ))
-                .child(panel::tracking_section(
+                )
+            },
+        );
+
+        let tracking = Section::new(
+            q,
+            icons::LOCATE,
+            rox_i18n::t!("tracking-title"),
+            None,
+            |rows| {
+                panel::tracking_rows(
+                    rows,
                     self.config.follow_playing,
                     rox_i18n::t!("genre-grid-follow-description"),
                     |this: &mut Self, on, cx| {
@@ -1641,250 +1661,255 @@ impl PanelSettings for GenreGridPanel {
                         cx.notify();
                     },
                     cx,
-                ))
-                .child(settings_ui::section(
-                    rox_i18n::t!("grid-section-dimming"),
-                    None,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        .child(setting_row(
-                            rox_i18n::t!("genre-grid-dim-while-playing"),
-                            Some(rox_i18n::t!("genre-grid-dim-while-playing.description")),
+                )
+            },
+        );
+
+        let dimming = Section::new(
+            q,
+            icons::CONTRAST,
+            rox_i18n::t!("grid-section-dimming"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "genre-grid-dim-while-playing",
+                    &[],
+                    toggle(
+                        self.config.dim_playing,
+                        |this: &mut Self, on, cx| {
+                            this.config.dim_playing = on;
+                            this.dim_fading = true;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(self.config.dim_playing, |rows| {
+                    rows.keyed(
+                        "wall-dim-amount",
+                        &[],
+                        settings_ui::scalar(
+                            &self.dim_scrub,
+                            &self.value_edit,
+                            self.config.dim,
+                            settings_ui::span(0., TILE_DIM_MAX, "%").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.dim = value;
+                                this.dim_fading = true;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                })
+                .keyed(
+                    "genre-grid-desaturate",
+                    &[],
+                    toggle(
+                        self.config.desaturate_playing,
+                        |this: &mut Self, on, cx| {
+                            this.config.desaturate_playing = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(
+                    self.config.dim_playing || self.config.desaturate_playing,
+                    |rows| {
+                        rows.keyed(
+                            "wall-dim-always",
+                            &[],
                             toggle(
-                                self.config.dim_playing,
+                                self.config.dim_always,
                                 |this: &mut Self, on, cx| {
-                                    this.config.dim_playing = on;
+                                    this.config.dim_always = on;
                                     this.dim_fading = true;
                                     cx.notify();
                                 },
                                 cx,
                             ),
-                        ))
-                        .when(self.config.dim_playing, |d| {
-                            d.child(setting_row(
-                                rox_i18n::t!("wall-dim-amount"),
-                                Some(rox_i18n::t!("wall-dim-amount.description")),
-                                settings_ui::scalar(
-                                    &self.dim_scrub,
-                                    &self.value_edit,
-                                    self.config.dim,
-                                    settings_ui::span(0., TILE_DIM_MAX, "%").hard(),
-                                    |this: &mut Self, value, cx| {
-                                        this.config.dim = value;
-                                        this.dim_fading = true;
-                                        cx.notify();
-                                    },
-                                    cx,
-                                ),
-                            ))
-                        })
-                        .child(setting_row(
-                            rox_i18n::t!("genre-grid-desaturate"),
-                            Some(rox_i18n::t!("genre-grid-desaturate.description")),
-                            toggle(
-                                self.config.desaturate_playing,
-                                |this: &mut Self, on, cx| {
-                                    this.config.desaturate_playing = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .when(
-                            self.config.dim_playing || self.config.desaturate_playing,
-                            |d| {
-                                d.child(setting_row(
-                                    rox_i18n::t!("wall-dim-always"),
-                                    Some(rox_i18n::t!("wall-dim-always.description")),
-                                    toggle(
-                                        self.config.dim_always,
-                                        |this: &mut Self, on, cx| {
-                                            this.config.dim_always = on;
-                                            this.dim_fading = true;
-                                            cx.notify();
-                                        },
-                                        cx,
-                                    ),
-                                ))
-                            },
-                        ),
-                ))
-                .into_any_element(),
-        )
+                        )
+                    },
+                )
+            },
+        );
+
+        vec![picking, search, tracking, dimming]
     }
 
-    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn appearance_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         let rounding = self.config.rounding;
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("grid-section-tiles"),
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(setting_row(
-                        rox_i18n::t!("genre-grid-tile-face"),
-                        Some(rox_i18n::t!("genre-grid-tile-face.description")),
-                        panel::choices_shared(
+        vec![Section::new(
+            q,
+            icons::LAYOUT_GRID,
+            rox_i18n::t!("grid-section-tiles"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "genre-grid-tile-face",
+                    &[],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("genre-face-mosaic"), TileFace::Mosaic),
+                            (rox_i18n::t!("genre-face-tinted"), TileFace::Tinted),
+                            (rox_i18n::t!("genre-face-gradient"), TileFace::Gradient),
+                            (rox_i18n::t!("genre-face-color"), TileFace::Color),
+                        ],
+                        self.config.face,
+                        |this: &mut Self, face, cx| {
+                            this.config.face = face;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "genre-grid-show-names",
+                    &[],
+                    toggle(
+                        self.config.labels,
+                        |this: &mut Self, on, cx| {
+                            this.config.labels = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(self.config.labels, |rows| {
+                    rows.keyed(
+                        "wall-name-alignment",
+                        &[],
+                        panel::icon_choices(
                             &[
-                                (rox_i18n::t!("genre-face-mosaic"), TileFace::Mosaic),
-                                (rox_i18n::t!("genre-face-tinted"), TileFace::Tinted),
-                                (rox_i18n::t!("genre-face-gradient"), TileFace::Gradient),
-                                (rox_i18n::t!("genre-face-color"), TileFace::Color),
+                                (icons::ALIGN_LEFT, TitleAlign::Left),
+                                (icons::ALIGN_CENTER, TitleAlign::Center),
+                                (icons::ALIGN_RIGHT, TitleAlign::Right),
                             ],
-                            self.config.face,
-                            |this: &mut Self, face, cx| {
-                                this.config.face = face;
+                            self.config.label_align,
+                            |this: &mut Self, align, cx| {
+                                this.config.label_align = align;
                                 cx.notify();
                             },
                             cx,
                         ),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("genre-grid-show-names"),
-                        Some(rox_i18n::t!("genre-grid-show-names.description")),
+                    )
+                })
+                .keyed(
+                    "wall-show-counts",
+                    &[],
+                    toggle(
+                        self.config.counts,
+                        |this: &mut Self, on, cx| {
+                            this.config.counts = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "grid-letter-rail",
+                    &[],
+                    toggle(
+                        self.config.letters,
+                        |this: &mut Self, on, cx| {
+                            this.config.letters = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(self.config.letters, |rows| {
+                    let side_icons: &'static [(&'static str, LetterSide)] =
+                        if self.axis() == Axis::Horizontal {
+                            &[
+                                (icons::PANEL_TOP, LetterSide::Start),
+                                (icons::PANEL_BOTTOM, LetterSide::End),
+                            ]
+                        } else {
+                            &[
+                                (icons::PANEL_LEFT, LetterSide::Start),
+                                (icons::PANEL_RIGHT, LetterSide::End),
+                            ]
+                        };
+                    rows.keyed(
+                        "letter-rail-compact",
+                        &[],
                         toggle(
-                            self.config.labels,
+                            self.config.letters_compact,
                             |this: &mut Self, on, cx| {
-                                this.config.labels = on;
+                                this.config.letters_compact = on;
                                 cx.notify();
                             },
                             cx,
                         ),
-                    ))
-                    .when(self.config.labels, |d| {
-                        d.child(setting_row(
-                            rox_i18n::t!("wall-name-alignment"),
-                            Some(rox_i18n::t!("wall-name-alignment.description")),
-                            panel::icon_choices(
-                                &[
-                                    (icons::ALIGN_LEFT, TitleAlign::Left),
-                                    (icons::ALIGN_CENTER, TitleAlign::Center),
-                                    (icons::ALIGN_RIGHT, TitleAlign::Right),
-                                ],
-                                self.config.label_align,
-                                |this: &mut Self, align, cx| {
-                                    this.config.label_align = align;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                    })
-                    .child(setting_row(
-                        rox_i18n::t!("wall-show-counts"),
-                        Some(rox_i18n::t!("wall-show-counts.description")),
-                        toggle(
-                            self.config.counts,
-                            |this: &mut Self, on, cx| {
-                                this.config.counts = on;
+                    )
+                    .keyed(
+                        "letter-rail-side",
+                        &[],
+                        panel::icon_choices(
+                            side_icons,
+                            self.config.letters_side,
+                            |this: &mut Self, side, cx| {
+                                this.config.letters_side = side;
                                 cx.notify();
                             },
                             cx,
                         ),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("grid-letter-rail"),
-                        Some(rox_i18n::t!("grid-letter-rail.description")),
-                        toggle(
-                            self.config.letters,
-                            |this: &mut Self, on, cx| {
-                                this.config.letters = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .when(self.config.letters, |d| {
-                        let side_icons: &'static [(&'static str, LetterSide)] =
-                            if self.axis() == Axis::Horizontal {
-                                &[
-                                    (icons::PANEL_TOP, LetterSide::Start),
-                                    (icons::PANEL_BOTTOM, LetterSide::End),
-                                ]
-                            } else {
-                                &[
-                                    (icons::PANEL_LEFT, LetterSide::Start),
-                                    (icons::PANEL_RIGHT, LetterSide::End),
-                                ]
-                            };
-                        d.child(setting_row(
-                            rox_i18n::t!("letter-rail-compact"),
-                            Some(rox_i18n::t!("letter-rail-compact.description")),
-                            toggle(
-                                self.config.letters_compact,
-                                |this: &mut Self, on, cx| {
-                                    this.config.letters_compact = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(setting_row(
-                            rox_i18n::t!("letter-rail-side"),
-                            Some(rox_i18n::t!("letter-rail-side.description")),
-                            panel::icon_choices(
-                                side_icons,
-                                self.config.letters_side,
-                                |this: &mut Self, side, cx| {
-                                    this.config.letters_side = side;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                    })
-                    .child(setting_row(
-                        rox_i18n::t!("wall-tile-size"),
-                        Some(rox_i18n::t!("wall-tile-size.description")),
-                        settings_ui::scalar(
-                            &self.tile_scrub,
-                            &self.value_edit,
-                            self.config.tile,
-                            settings_ui::span(TILE_MIN, TILE_MAX, " px"),
-                            |this: &mut Self, value, cx| {
-                                this.config.tile = value;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("wall-gap"),
-                        Some(rox_i18n::t!("wall-gap.description")),
-                        settings_ui::scalar(
-                            &self.gap_scrub,
-                            &self.value_edit,
-                            self.config.gap,
-                            settings_ui::span(0., TILE_GAP_MAX, " px"),
-                            |this: &mut Self, value, cx| {
-                                this.config.gap = value;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("wall-rounding"),
-                        Some(rox_i18n::t!("wall-rounding.description")),
-                        settings_ui::scalar(
-                            &self.rounding_scrub,
-                            &self.value_edit,
-                            rounding,
-                            settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
-                            |this: &mut Self, value, cx| {
-                                this.config.rounding = value;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    )),
-            )
-            .into_any_element(),
-        )
+                    )
+                })
+                .keyed(
+                    "wall-tile-size",
+                    &[],
+                    settings_ui::scalar(
+                        &self.tile_scrub,
+                        &self.value_edit,
+                        self.config.tile,
+                        settings_ui::span(TILE_MIN, TILE_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.config.tile = value;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "wall-gap",
+                    &[],
+                    settings_ui::scalar(
+                        &self.gap_scrub,
+                        &self.value_edit,
+                        self.config.gap,
+                        settings_ui::span(0., TILE_GAP_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.config.gap = value;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "wall-rounding",
+                    &[],
+                    settings_ui::scalar(
+                        &self.rounding_scrub,
+                        &self.value_edit,
+                        rounding,
+                        settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
+                        |this: &mut Self, value, cx| {
+                            this.config.rounding = value;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        )]
     }
 }
 

@@ -25,7 +25,8 @@ use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::discs::{DISC_STYLES, DiscShape, bake_disc};
 use crate::panel::{
-    self, Align, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit, align_row, justify,
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    ValueEdit, align_rows, justify,
 };
 use crate::panel_settings;
 use crate::selection::SelectionEvent;
@@ -585,45 +586,49 @@ impl PanelSettings for CoverArtPanel {
         &[("Content", icons::IMAGE)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(source::source_row(
+    ) -> PageBody {
+        let spin = self.config.spin;
+        PageBody::new().section(Section::bare(q, |rows| {
+            let rows = source::source_rows(
+                rows,
                 self.config.source,
                 |this: &mut Self, source, cx| {
                     this.config.source = source;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("cover-artwork"),
-                Some(rox_i18n::t!("cover-artwork.description")),
+            );
+
+            let rows = rows.keyed(
+                "cover-artwork",
+                &["front", "disc", "back", "artist", "art"],
                 panel::choices_shared(
                     &Self::art_picks(),
                     self.config.art,
                     |this: &mut Self, art, cx| this.set_art(art, cx),
                     cx,
                 ),
-            ))
-            .child(align_row(
+            );
+
+            let rows = align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("cover-stretch"),
-                Some(rox_i18n::t!("cover-stretch.description")),
+            );
+
+            let rows = rows.keyed(
+                "cover-stretch",
+                &["fit", "fill", "aspect", "ratio"],
                 panel::toggle(
                     self.config.stretch,
                     |this: &mut Self, on, cx| {
@@ -632,40 +637,41 @@ impl PanelSettings for CoverArtPanel {
                     },
                     cx,
                 ),
-            ))
-            .child({
-                // DISC_STYLES holds i18n keys; choices_shared wants the text.
-                let styles: Vec<_> = DISC_STYLES
-                    .iter()
-                    .map(|(key, style)| (rox_i18n::t!(*key), *style))
-                    .collect();
-                panel::setting_row(
-                    rox_i18n::t!("cover-disc-style"),
-                    Some(rox_i18n::t!("cover-disc-style.description")),
-                    panel::choices_shared(
-                        &styles,
-                        self.config.disc_style,
-                        |this: &mut Self, style, cx| this.set_disc_style(style, cx),
-                        cx,
-                    ),
-                )
-            })
-            .child(panel::setting_row(
-                rox_i18n::t!("cover-spin"),
-                Some(rox_i18n::t!("cover-spin.description")),
+            );
+
+            // DISC_STYLES holds i18n keys; choices_shared wants the text.
+            let styles: Vec<_> = DISC_STYLES
+                .iter()
+                .map(|(key, style)| (rox_i18n::t!(*key), *style))
+                .collect();
+            let rows = rows.keyed(
+                "cover-disc-style",
+                &["cd", "vinyl", "label"],
+                panel::choices_shared(
+                    &styles,
+                    self.config.disc_style,
+                    |this: &mut Self, style, cx| this.set_disc_style(style, cx),
+                    cx,
+                ),
+            );
+
+            let rows = rows.keyed(
+                "cover-spin",
+                &["rotate", "turntable"],
                 panel::toggle(
                     self.config.spin,
                     |this: &mut Self, on, cx| this.set_spin(on, cx),
                     cx,
                 ),
-            ))
-            .when(self.config.spin, |page| {
+            );
+
+            rows.when(spin, |rows| {
                 let rpm = ((self.config.spin_rpm - SPIN_RPM_MIN) / (SPIN_RPM_MAX - SPIN_RPM_MIN))
                     .clamp(0., 1.);
                 let ramp = (self.config.spin_ramp / SPIN_RAMP_MAX).clamp(0., 1.);
-                page.child(panel::setting_row(
-                    rox_i18n::t!("cover-spin-speed"),
-                    Some(rox_i18n::t!("cover-spin-speed.description")),
+                rows.keyed(
+                    "cover-spin-speed",
+                    &["rpm", "speed"],
                     panel::value_slider_edit(
                         &self.rpm_scrub,
                         &self.value_edit,
@@ -683,10 +689,10 @@ impl PanelSettings for CoverArtPanel {
                         },
                         cx,
                     ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("cover-spin-ramp"),
-                    Some(rox_i18n::t!("cover-spin-ramp.description")),
+                )
+                .keyed(
+                    "cover-spin-ramp",
+                    &["ramp", "acceleration"],
                     panel::value_slider_edit(
                         &self.ramp_scrub,
                         &self.value_edit,
@@ -704,9 +710,9 @@ impl PanelSettings for CoverArtPanel {
                         },
                         cx,
                     ),
-                ))
+                )
             })
-            .into_any_element()
+        }))
     }
 }
 

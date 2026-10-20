@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    App, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
     MouseDownEvent, Pixels, SharedString, WeakEntity, Window, div, prelude::*,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -18,10 +18,10 @@ use crate::composite::{self, Slot};
 use crate::workspace::Workspace;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
+use rox_panel_kit::ScrubState;
 use rox_panel_kit::ui as settings_ui;
-use rox_panel_kit::{ScrubState, setting_row};
 
 const OVERLAY_INSET: Pixels = tokens::SPACE_MD;
 const DEFAULT_DIM: f32 = 150.0 / 255.0;
@@ -304,27 +304,27 @@ impl PanelSettings for OverlayPanel {
         cx.notify();
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         let dim = self.config.dim.clamp(0.0, 1.0);
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(setting_row(
-                    rox_i18n::t!("overlay-dim"),
-                    Some(rox_i18n::t!("overlay-dim.description")),
-                    settings_ui::scalar(
-                        &self.dim_scrub,
-                        &self.value_edit,
-                        dim * 100.0,
-                        settings_ui::span(0., 100., "%").hard(),
-                        |this: &mut Self, percent, cx| this.set_dim(percent / 100.0, cx),
-                        cx,
-                    ),
-                ))
-                .into_any_element(),
-        )
+        vec![Section::bare(q, |rows| {
+            rows.keyed(
+                "overlay-dim",
+                &["darken", "percent", "scrim"],
+                settings_ui::scalar(
+                    &self.dim_scrub,
+                    &self.value_edit,
+                    dim * 100.0,
+                    settings_ui::span(0., 100., "%").hard(),
+                    |this: &mut Self, percent, cx| this.set_dim(percent / 100.0, cx),
+                    cx,
+                ),
+            )
+        })]
     }
 }
 

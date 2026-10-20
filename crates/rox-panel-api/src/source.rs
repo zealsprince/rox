@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::panel::{self, AppState};
 use rox_design::assets::icons;
 use rox_library::cue::TrackKey;
+use rox_panel_kit::ui::Rows;
 
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -110,22 +111,31 @@ fn source_items<P: 'static>(
     menu
 }
 
-pub fn source_row<P: 'static>(
+pub fn source_rows<'a, P: 'static>(
+    rows: Rows<'a>,
+    current: TrackSource,
+    on_pick: impl Fn(&mut P, TrackSource, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Rows<'a> {
+    rows.keyed(
+        "source-track",
+        &["playing", "selected", "selection", "follow"],
+        source_choices(current, on_pick, cx),
+    )
+}
+
+fn source_choices<P: 'static>(
     current: TrackSource,
     on_pick: impl Fn(&mut P, TrackSource, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    panel::setting_row(
-        rox_i18n::t!("source-track"),
-        Some(rox_i18n::t!("source-track.description")),
-        panel::choices_shared(
-            &[
-                (rox_i18n::t!("source-playing"), TrackSource::Playing),
-                (rox_i18n::t!("source-selected"), TrackSource::Selected),
-            ],
-            current,
-            on_pick,
-            cx,
-        ),
+    panel::choices_shared(
+        &[
+            (rox_i18n::t!("source-playing"), TrackSource::Playing),
+            (rox_i18n::t!("source-selected"), TrackSource::Selected),
+        ],
+        current,
+        on_pick,
+        cx,
     )
 }

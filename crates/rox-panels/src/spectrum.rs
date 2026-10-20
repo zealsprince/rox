@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, BorderStyle, Bounds, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, Path, Rgba, SharedString, Subscription, WeakEntity, Window, canvas, div, fill,
-    linear_color_stop, linear_gradient, point, prelude::*, px, relative, size,
+    App, BorderStyle, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Path,
+    Rgba, SharedString, Subscription, WeakEntity, Window, canvas, div, fill, linear_color_stop,
+    linear_gradient, point, prelude::*, px, relative, size,
 };
 use gpui_component::Sizable as _;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -25,8 +25,8 @@ use rox_viz::analysis::{MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder, log_bands};
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, choices, choices_shared, setting_row,
-    toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, Rows, ScrubState, Section,
+    choices, choices_shared, toggle,
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
@@ -279,16 +279,17 @@ pub fn gradient_choices() -> [(SharedString, Gradient); 4] {
 }
 
 /// Shared with the VU meter and oscilloscope panels.
-pub fn curve_row<P: 'static>(
+pub fn curve_rows<'a, P: 'static>(
+    rows: Rows<'a>,
     scrub: &ScrubState,
     edit: &panel::ValueEdit,
     curve: f32,
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
-) -> Div {
-    setting_row(
-        rox_i18n::t!("spectrum-gradient-curve"),
-        Some(rox_i18n::t!("spectrum-gradient-curve.description")),
+) -> Rows<'a> {
+    rows.keyed(
+        "spectrum-gradient-curve",
+        &["gradient", "curve", "bend"],
         settings_ui::scalar(
             scrub,
             edit,
@@ -1209,12 +1210,13 @@ impl PanelSettings for SpectrumPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -1243,324 +1245,344 @@ impl PanelSettings for SpectrumPanel {
         let block_gap = self.config.block_gap();
         let outline_w = self.config.outline_w();
         let gravity = self.config.gravity();
-        let bands = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("spectrum-style"),
-                Some(rox_i18n::t!("spectrum-style.description")),
-                choices_shared(
-                    &style_choices(),
-                    self.config.style,
-                    |this: &mut Self, style, cx| {
-                        this.config.style = style;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-orientation"),
-                Some(rox_i18n::t!("spectrum-orientation.description")),
-                choices_shared(
-                    &orientation_choices(),
-                    self.config.orientation,
-                    |this: &mut Self, orientation, cx| {
-                        this.config.orientation = orientation;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-symmetry"),
-                Some(rox_i18n::t!("spectrum-symmetry.description")),
-                choices_shared(
-                    &symmetry_choices(),
-                    self.config.symmetry,
-                    |this: &mut Self, symmetry, cx| {
-                        this.config.symmetry = symmetry;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-bar-width"),
-                Some(rox_i18n::t!("spectrum-bar-width.description")),
-                settings_ui::scalar(
-                    &self.bar_w_scrub,
-                    &self.value_edit,
-                    bar_w,
-                    settings_ui::span(BAR_W_MIN, BAR_W_MAX, " px"),
-                    Self::set_bar_width,
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-bar-gap"),
-                Some(rox_i18n::t!("spectrum-bar-gap.description")),
-                settings_ui::scalar(
-                    &self.bar_gap_scrub,
-                    &self.value_edit,
-                    bar_gap,
-                    settings_ui::span(BAR_GAP_MIN, BAR_GAP_MAX, " px"),
-                    Self::set_bar_gap,
-                    cx,
-                ),
-            ))
-            .when(self.config.style == SpectrumStyle::Blocks, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("spectrum-block-height"),
-                    Some(rox_i18n::t!("spectrum-block-height.description")),
-                    settings_ui::scalar(
-                        &self.block_h_scrub,
-                        &self.value_edit,
-                        block_h,
-                        settings_ui::span(BLOCK_H_MIN, BLOCK_H_MAX, " px"),
-                        Self::set_block_height,
-                        cx,
-                    ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("spectrum-block-gap"),
-                    Some(rox_i18n::t!("spectrum-block-gap.description")),
-                    settings_ui::scalar(
-                        &self.block_gap_scrub,
-                        &self.value_edit,
-                        block_gap,
-                        settings_ui::span(BLOCK_GAP_MIN, BLOCK_GAP_MAX, " px"),
-                        Self::set_block_gap,
-                        cx,
-                    ),
-                ))
-            })
-            .when(self.config.style == SpectrumStyle::Bars, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("spectrum-outline-bars"),
-                    Some(rox_i18n::t!("spectrum-outline-bars.description")),
-                    toggle(
-                        self.config.outline,
-                        |this: &mut Self, on, cx| {
-                            this.config.outline = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .when(self.config.outline, |d| {
-                    d.child(setting_row(
-                        rox_i18n::t!("spectrum-outline-width"),
-                        Some(rox_i18n::t!("spectrum-outline-width.description")),
-                        settings_ui::scalar(
-                            &self.outline_w_scrub,
-                            &self.value_edit,
-                            outline_w,
-                            settings_ui::span(OUTLINE_W_MIN, OUTLINE_W_MAX, " px"),
-                            Self::set_outline_width,
-                            cx,
-                        ),
-                    ))
-                })
-            });
-        let analysis = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("signal-low-bound"),
-                Some(rox_i18n::t!("spectrum-low-bound-description")),
-                self.freq_slider(&self.lo_scrub, self.config.freq_lo, Self::set_freq_lo, cx),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("signal-high-bound"),
-                Some(rox_i18n::t!("spectrum-high-bound-description")),
-                self.freq_slider(&self.hi_scrub, self.config.freq_hi, Self::set_freq_hi, cx),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-fft-size"),
-                Some(rox_i18n::t!("spectrum-fft-size.description")),
-                choices(
-                    FFT_CHOICES,
-                    self.config.fft_lo(),
-                    |this: &mut Self, size, cx| {
-                        this.config.fft_size = size;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-split-zones"),
-                Some(rox_i18n::t!("spectrum-split-zones.description")),
-                toggle(
-                    self.config.split,
-                    |this: &mut Self, on, cx| {
-                        this.config.split = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.split, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("spectrum-split-at"),
-                    Some(rox_i18n::t!("spectrum-split-at.description")),
-                    self.freq_slider(
-                        &self.split_scrub,
-                        self.config.split_hz,
-                        Self::set_split_hz,
-                        cx,
-                    ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("spectrum-high-fft-size"),
-                    Some(rox_i18n::t!("spectrum-high-fft-size.description")),
-                    choices(
-                        FFT_CHOICES,
-                        self.config.fft_hi(),
-                        |this: &mut Self, size, cx| {
-                            this.config.fft_size_hi = size;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-            });
-        let color = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("spectrum-gradient-mode"),
-                Some(rox_i18n::t!("spectrum-gradient-mode.description")),
-                choices_shared(
-                    &gradient_choices(),
-                    self.config.gradient,
-                    |this: &mut Self, gradient, cx| {
-                        this.config.gradient = gradient;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when_some(
-                (self.config.gradient == Gradient::Custom)
-                    .then(|| self.ramp_pickers.clone())
-                    .flatten(),
-                |d, [lo, hi]| {
-                    d.child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-base-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
-                        ColorPicker::new(&lo).small(),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-tip-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
-                        ColorPicker::new(&hi).small(),
-                    ))
-                },
-            )
-            // The line fills its area in one two-stop sweep, so it has no
-            // per-level color to bend.
-            .when(
-                self.config.gradient != Gradient::Off && self.config.style != SpectrumStyle::Line,
-                |d| {
-                    d.child(curve_row(
-                        &self.curve_scrub,
-                        &self.value_edit,
-                        self.config.gradient_curve,
-                        |this: &mut Self, curve, cx| {
-                            this.config.gradient_curve = curve;
-                            cx.notify();
-                        },
-                        cx,
-                    ))
-                },
-            );
-        let peaks = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("spectrum-peak-caps"),
-                Some(rox_i18n::t!("spectrum-peak-caps.description")),
-                toggle(
-                    self.config.caps,
-                    |this: &mut Self, on, cx| {
-                        this.config.caps = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-cap-gravity"),
-                Some(rox_i18n::t!("spectrum-cap-gravity.description")),
-                panel::value_slider_edit(
-                    &self.gravity_scrub,
-                    &self.value_edit,
-                    (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
-                    format!("{gravity:.2}"),
-                    format!("{gravity:.2}"),
-                    |v| (v / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
-                    Self::set_gravity,
-                    cx,
-                ),
-            ));
-        div()
-            .flex()
-            .flex_col()
-            .gap(settings_ui::SECTION_GAP)
-            .child(settings_ui::section(
+        let style = self.config.style;
+        let split = self.config.split;
+        let outline = self.config.outline;
+        let gradient = self.config.gradient;
+        let ramp_pickers = self.ramp_pickers.clone();
+
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::ACTIVITY,
                 rox_i18n::t!("viz-section-analysis"),
                 None,
-                analysis,
+                |rows| {
+                    rows.row(
+                        rox_i18n::t!("signal-low-bound"),
+                        Some(rox_i18n::t!("spectrum-low-bound-description")),
+                        self.freq_slider(
+                            &self.lo_scrub,
+                            self.config.freq_lo,
+                            Self::set_freq_lo,
+                            cx,
+                        ),
+                    )
+                    .row(
+                        rox_i18n::t!("signal-high-bound"),
+                        Some(rox_i18n::t!("spectrum-high-bound-description")),
+                        self.freq_slider(
+                            &self.hi_scrub,
+                            self.config.freq_hi,
+                            Self::set_freq_hi,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-fft-size",
+                        &["resolution", "window"],
+                        choices(
+                            FFT_CHOICES,
+                            self.config.fft_lo(),
+                            |this: &mut Self, size, cx| {
+                                this.config.fft_size = size;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-split-zones",
+                        &["dual", "fft"],
+                        toggle(
+                            self.config.split,
+                            |this: &mut Self, on, cx| {
+                                this.config.split = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when(split, |rows| {
+                        rows.keyed(
+                            "spectrum-split-at",
+                            &["crossover", "frequency"],
+                            self.freq_slider(
+                                &self.split_scrub,
+                                self.config.split_hz,
+                                Self::set_split_hz,
+                                cx,
+                            ),
+                        )
+                        .keyed(
+                            "spectrum-high-fft-size",
+                            &["resolution", "window"],
+                            choices(
+                                FFT_CHOICES,
+                                self.config.fft_hi(),
+                                |this: &mut Self, size, cx| {
+                                    this.config.fft_size_hi = size;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        )
+                    })
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::AUDIO_LINES,
                 rox_i18n::t!("spectrum-section-bands"),
                 None,
-                bands,
+                |rows| {
+                    rows.keyed(
+                        "spectrum-style",
+                        &["bars", "blocks", "line"],
+                        choices_shared(
+                            &style_choices(),
+                            self.config.style,
+                            |this: &mut Self, style, cx| {
+                                this.config.style = style;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-orientation",
+                        &["up", "down", "left", "right"],
+                        choices_shared(
+                            &orientation_choices(),
+                            self.config.orientation,
+                            |this: &mut Self, orientation, cx| {
+                                this.config.orientation = orientation;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-symmetry",
+                        &["mirror", "center"],
+                        choices_shared(
+                            &symmetry_choices(),
+                            self.config.symmetry,
+                            |this: &mut Self, symmetry, cx| {
+                                this.config.symmetry = symmetry;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-bar-width",
+                        &["thickness"],
+                        settings_ui::scalar(
+                            &self.bar_w_scrub,
+                            &self.value_edit,
+                            bar_w,
+                            settings_ui::span(BAR_W_MIN, BAR_W_MAX, " px"),
+                            Self::set_bar_width,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-bar-gap",
+                        &["spacing"],
+                        settings_ui::scalar(
+                            &self.bar_gap_scrub,
+                            &self.value_edit,
+                            bar_gap,
+                            settings_ui::span(BAR_GAP_MIN, BAR_GAP_MAX, " px"),
+                            Self::set_bar_gap,
+                            cx,
+                        ),
+                    )
+                    .when(style == SpectrumStyle::Blocks, |rows| {
+                        rows.keyed(
+                            "spectrum-block-height",
+                            &["size"],
+                            settings_ui::scalar(
+                                &self.block_h_scrub,
+                                &self.value_edit,
+                                block_h,
+                                settings_ui::span(BLOCK_H_MIN, BLOCK_H_MAX, " px"),
+                                Self::set_block_height,
+                                cx,
+                            ),
+                        )
+                        .keyed(
+                            "spectrum-block-gap",
+                            &["spacing"],
+                            settings_ui::scalar(
+                                &self.block_gap_scrub,
+                                &self.value_edit,
+                                block_gap,
+                                settings_ui::span(BLOCK_GAP_MIN, BLOCK_GAP_MAX, " px"),
+                                Self::set_block_gap,
+                                cx,
+                            ),
+                        )
+                    })
+                    .when(style == SpectrumStyle::Bars, |rows| {
+                        rows.keyed(
+                            "spectrum-outline-bars",
+                            &["stroke", "border"],
+                            toggle(
+                                self.config.outline,
+                                |this: &mut Self, on, cx| {
+                                    this.config.outline = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        )
+                        .when(outline, |rows| {
+                            rows.keyed(
+                                "spectrum-outline-width",
+                                &["stroke", "thickness"],
+                                settings_ui::scalar(
+                                    &self.outline_w_scrub,
+                                    &self.value_edit,
+                                    outline_w,
+                                    settings_ui::span(OUTLINE_W_MIN, OUTLINE_W_MAX, " px"),
+                                    Self::set_outline_width,
+                                    cx,
+                                ),
+                            )
+                        })
+                    })
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::PALETTE,
                 rox_i18n::t!("viz-section-color"),
                 None,
-                color,
+                |rows| {
+                    rows.keyed(
+                        "spectrum-gradient-mode",
+                        &["ramp", "color"],
+                        choices_shared(
+                            &gradient_choices(),
+                            self.config.gradient,
+                            |this: &mut Self, gradient, cx| {
+                                this.config.gradient = gradient;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when_some(
+                        (gradient == Gradient::Custom)
+                            .then_some(ramp_pickers)
+                            .flatten(),
+                        |rows, [lo, hi]| {
+                            rows.keyed(
+                                "spectrum-gradient-base-color",
+                                &["low", "color"],
+                                ColorPicker::new(&lo).small(),
+                            )
+                            .keyed(
+                                "spectrum-gradient-tip-color",
+                                &["high", "color"],
+                                ColorPicker::new(&hi).small(),
+                            )
+                        },
+                    )
+                    // The line fills its area in one two-stop sweep, so it has no
+                    // per-level color to bend.
+                    .when(
+                        gradient != Gradient::Off && style != SpectrumStyle::Line,
+                        |rows| {
+                            curve_rows(
+                                rows,
+                                &self.curve_scrub,
+                                &self.value_edit,
+                                self.config.gradient_curve,
+                                |this: &mut Self, curve, cx| {
+                                    this.config.gradient_curve = curve;
+                                    cx.notify();
+                                },
+                                cx,
+                            )
+                        },
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::GAUGE,
                 rox_i18n::t!("viz-section-peaks"),
                 None,
-                peaks,
+                |rows| {
+                    rows.keyed(
+                        "spectrum-peak-caps",
+                        &["hold", "marker"],
+                        toggle(
+                            self.config.caps,
+                            |this: &mut Self, on, cx| {
+                                this.config.caps = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "spectrum-cap-gravity",
+                        &["fall", "speed"],
+                        panel::value_slider_edit(
+                            &self.gravity_scrub,
+                            &self.value_edit,
+                            (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
+                            format!("{gravity:.2}"),
+                            format!("{gravity:.2}"),
+                            |v| (v / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
+                            Self::set_gravity,
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::HASH,
                 rox_i18n::t!("viz-section-scale"),
                 None,
-                setting_row(
-                    rox_i18n::t!("spectrum-axis-labels"),
-                    Some(rox_i18n::t!("spectrum-axis-labels.description")),
-                    choices_shared(
-                        &label_choices(),
-                        self.config.labels,
-                        |this: &mut Self, labels, cx| {
-                            this.config.labels = labels;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ),
+                |rows| {
+                    rows.keyed(
+                        "spectrum-axis-labels",
+                        &["hz", "frequency", "numbers"],
+                        choices_shared(
+                            &label_choices(),
+                            self.config.labels,
+                            |this: &mut Self, labels, cx| {
+                                this.config.labels = labels;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .into_any_element()
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("viz-section-playback"),
-                None,
-                setting_row(
-                    rox_i18n::t!("spectrum-hold-on-pause"),
-                    Some(rox_i18n::t!("spectrum-hold-on-pause.description")),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::PLAY,
+            rox_i18n::t!("viz-section-playback"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "spectrum-hold-on-pause",
+                    &["freeze", "pause"],
                     toggle(
                         self.config.freeze,
                         |this: &mut Self, on, cx| {
@@ -1569,10 +1591,9 @@ impl PanelSettings for SpectrumPanel {
                         },
                         cx,
                     ),
-                ),
-            )
-            .into_any_element(),
-        )
+                )
+            },
+        )]
     }
 }
 

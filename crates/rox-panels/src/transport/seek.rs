@@ -33,7 +33,9 @@ use crate::assets::icons;
 use crate::bookmark_ui;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit};
+use crate::panel::{
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section, ValueEdit,
+};
 use crate::panel_settings;
 use crate::player::{Player, PlayerView, fmt_time, fmt_time_padded, song_clock};
 use crate::settings::ui as settings_ui;
@@ -541,227 +543,233 @@ impl PanelSettings for SeekStripPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let layout = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_block(
-                rox_i18n::t!("transport-pieces"),
-                Some(rox_i18n::t!("transport-pieces.description")),
-                None,
-                panel::arrange_rows_editor(
-                    "seek-items",
-                    ITEMS,
-                    &editor_rows(&self.config.items),
-                    None,
-                    |this: &mut Self, rows, cx| {
-                        this.config.items = rows.join(&SeekItem::Break);
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-thickness"),
-                Some(rox_i18n::t!("seek-thickness.description")),
-                settings_ui::scalar(
-                    &self.thickness_scrub,
-                    &self.value_edit,
-                    self.config.thickness,
-                    settings_ui::span(1., 16., " px"),
-                    |this: &mut Self, thickness, cx| {
-                        this.config.thickness = thickness;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-rounding"),
-                Some(rox_i18n::t!("seek-rounding.description")),
-                settings_ui::scalar(
-                    &self.rounding_scrub,
-                    &self.value_edit,
-                    self.config.rounding,
-                    settings_ui::span(0., 8., " px"),
-                    |this: &mut Self, rounding, cx| {
-                        this.config.rounding = rounding;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-playhead"),
-                Some(rox_i18n::t!("seek-playhead.description")),
-                // Off keeps the full-or-line pick, so turning it back on
-                // brings the old head back.
-                panel::choices_shared(
-                    &[
-                        (rox_i18n::t!("seek-playhead-full"), Some(true)),
-                        (rox_i18n::t!("seek-playhead-line"), Some(false)),
-                        (rox_i18n::t!("seek-playhead-off"), None),
-                    ],
-                    self.config.playhead.then_some(self.config.playhead_full),
-                    |this: &mut Self, pick, cx| {
-                        this.config.playhead = pick.is_some();
-                        if let Some(full) = pick {
-                            this.config.playhead_full = full;
-                        }
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.playhead, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("seek-playhead-width"),
-                    Some(rox_i18n::t!("seek-playhead-width.description")),
-                    settings_ui::scalar(
-                        &self.playhead_scrub,
-                        &self.value_edit,
-                        self.config.playhead_width,
-                        settings_ui::span(1., 8., " px"),
-                        |this: &mut Self, width, cx| {
-                            this.config.playhead_width = width;
+    ) -> PageBody {
+        let playhead = self.config.playhead;
+        let playhead_full = self.config.playhead_full;
+        let ending = self.config.items.contains(&SeekItem::Ending);
+        let dashed = self.config.live_lead_in == LeadIn::Dashed;
+        let hidden = self.config.live_lead_in == LeadIn::Hidden;
+
+        PageBody::new()
+            .section(Section::bare(q, |rows| {
+                let rows = rows.block(
+                    "transport-pieces",
+                    &["pieces", "order", "layout"],
+                    panel::arrange_rows_editor(
+                        "seek-items",
+                        ITEMS,
+                        &editor_rows(&self.config.items),
+                        None,
+                        |this: &mut Self, rows, cx| {
+                            this.config.items = rows.join(&SeekItem::Break);
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-            })
-            .when(self.config.playhead && self.config.playhead_full, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("seek-playhead-max-height"),
-                    Some(rox_i18n::t!("seek-playhead-max-height.description")),
+                );
+
+                let rows = rows.keyed(
+                    "seek-thickness",
+                    &["height", "thick"],
                     settings_ui::scalar(
-                        &self.playhead_max_scrub,
+                        &self.thickness_scrub,
                         &self.value_edit,
-                        self.config.playhead_max,
-                        settings_ui::span(0., 100., " px"),
-                        |this: &mut Self, max, cx| {
-                            this.config.playhead_max = max;
+                        self.config.thickness,
+                        settings_ui::span(1., 16., " px"),
+                        |this: &mut Self, thickness, cx| {
+                            this.config.thickness = thickness;
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-            })
-            .when(self.config.items.contains(&SeekItem::Ending), |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("seek-ending"),
-                    Some(rox_i18n::t!("seek-ending.description")),
+                );
+
+                let rows = rows.keyed(
+                    "seek-rounding",
+                    &["corner", "radius", "pill"],
+                    settings_ui::scalar(
+                        &self.rounding_scrub,
+                        &self.value_edit,
+                        self.config.rounding,
+                        settings_ui::span(0., 8., " px"),
+                        |this: &mut Self, rounding, cx| {
+                            this.config.rounding = rounding;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                );
+
+                let rows = rows.keyed(
+                    "seek-playhead",
+                    &["cursor", "position", "marker"],
+                    // Off keeps the full-or-line pick, so turning it back on
+                    // brings the old head back.
                     panel::choices_shared(
                         &[
-                            (rox_i18n::t!("seek-ending-remaining"), false),
-                            (rox_i18n::t!("seek-ending-total"), true),
+                            (rox_i18n::t!("seek-playhead-full"), Some(true)),
+                            (rox_i18n::t!("seek-playhead-line"), Some(false)),
+                            (rox_i18n::t!("seek-playhead-off"), None),
                         ],
-                        self.config.show_total,
-                        |this: &mut Self, show_total, cx| {
-                            this.config.show_total = show_total;
+                        self.config.playhead.then_some(self.config.playhead_full),
+                        |this: &mut Self, pick, cx| {
+                            this.config.playhead = pick.is_some();
+                            if let Some(full) = pick {
+                                this.config.playhead_full = full;
+                            }
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-            })
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-scrobble-marker"),
-                Some(rox_i18n::t!("seek-scrobble-marker.description")),
-                panel::toggle(
-                    self.config.scrobble_marker,
-                    |this: &mut Self, on, cx| {
-                        this.config.scrobble_marker = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-bookmarks"),
-                Some(rox_i18n::t!("seek-bookmarks.description")),
-                panel::toggle(
-                    self.config.bookmarks,
-                    |this: &mut Self, on, cx| {
-                        this.config.bookmarks = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
+                );
 
-        // The station rows draw nothing off a stream, so they get their own
-        // section.
-        let live = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("seek-lead-in"),
-                Some(rox_i18n::t!("seek-lead-in.description")),
-                panel::choices_shared(
-                    &[
-                        (rox_i18n::t!("seek-lead-in-dashed"), LeadIn::Dashed),
-                        (rox_i18n::t!("seek-lead-in-faint"), LeadIn::Faint),
-                        (rox_i18n::t!("seek-lead-in-hidden"), LeadIn::Hidden),
-                    ],
-                    self.config.live_lead_in,
-                    |this: &mut Self, lead_in, cx| {
-                        this.config.live_lead_in = lead_in;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.live_lead_in == LeadIn::Dashed, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("seek-dash-length"),
-                    Some(rox_i18n::t!("seek-dash-length.description")),
-                    settings_ui::scalar(
-                        &self.dash_scrub,
-                        &self.value_edit,
-                        self.config.live_dash_len,
-                        settings_ui::span(DASH_LEN_MIN, DASH_LEN_MAX, " px").hard(),
-                        |this: &mut Self, len, cx| {
-                            this.config.live_dash_len = len;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-            })
-            .when(self.config.live_lead_in != LeadIn::Hidden, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("seek-lead-in-sweep"),
-                    Some(rox_i18n::t!("seek-lead-in-sweep.description")),
+                let rows = rows.when(playhead, |rows| {
+                    rows.keyed(
+                        "seek-playhead-width",
+                        &["width"],
+                        settings_ui::scalar(
+                            &self.playhead_scrub,
+                            &self.value_edit,
+                            self.config.playhead_width,
+                            settings_ui::span(1., 8., " px"),
+                            |this: &mut Self, width, cx| {
+                                this.config.playhead_width = width;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                });
+
+                let rows = rows.when(playhead && playhead_full, |rows| {
+                    rows.keyed(
+                        "seek-playhead-max-height",
+                        &["height", "cap"],
+                        settings_ui::scalar(
+                            &self.playhead_max_scrub,
+                            &self.value_edit,
+                            self.config.playhead_max,
+                            settings_ui::span(0., 100., " px"),
+                            |this: &mut Self, max, cx| {
+                                this.config.playhead_max = max;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                });
+
+                let rows = rows.when(ending, |rows| {
+                    rows.keyed(
+                        "seek-ending",
+                        &["remaining", "total", "countdown"],
+                        panel::choices_shared(
+                            &[
+                                (rox_i18n::t!("seek-ending-remaining"), false),
+                                (rox_i18n::t!("seek-ending-total"), true),
+                            ],
+                            self.config.show_total,
+                            |this: &mut Self, show_total, cx| {
+                                this.config.show_total = show_total;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                });
+
+                let rows = rows.keyed(
+                    "seek-scrobble-marker",
+                    &["scrobble", "last.fm"],
                     panel::toggle(
-                        self.config.live_sweep,
+                        self.config.scrobble_marker,
                         |this: &mut Self, on, cx| {
-                            this.config.live_sweep = on;
+                            this.config.scrobble_marker = on;
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-            });
+                );
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(settings_ui::SECTION_GAP)
-            .child(layout)
-            .child(settings_ui::section(
+                rows.keyed(
+                    "seek-bookmarks",
+                    &["chevrons", "jump"],
+                    panel::toggle(
+                        self.config.bookmarks,
+                        |this: &mut Self, on, cx| {
+                            this.config.bookmarks = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            }))
+            // The station rows draw nothing off a stream, so they get their own
+            // section.
+            .section(Section::new(
+                q,
+                icons::RADIO_TOWER,
                 rox_i18n::t!("seek-section-live"),
                 None,
-                live,
+                |rows| {
+                    let rows = rows.keyed(
+                        "seek-lead-in",
+                        &["buffer", "station", "dashed", "faint", "hidden"],
+                        panel::choices_shared(
+                            &[
+                                (rox_i18n::t!("seek-lead-in-dashed"), LeadIn::Dashed),
+                                (rox_i18n::t!("seek-lead-in-faint"), LeadIn::Faint),
+                                (rox_i18n::t!("seek-lead-in-hidden"), LeadIn::Hidden),
+                            ],
+                            self.config.live_lead_in,
+                            |this: &mut Self, lead_in, cx| {
+                                this.config.live_lead_in = lead_in;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    );
+
+                    let rows = rows.when(dashed, |rows| {
+                        rows.keyed(
+                            "seek-dash-length",
+                            &["dash", "gap"],
+                            settings_ui::scalar(
+                                &self.dash_scrub,
+                                &self.value_edit,
+                                self.config.live_dash_len,
+                                settings_ui::span(DASH_LEN_MIN, DASH_LEN_MAX, " px").hard(),
+                                |this: &mut Self, len, cx| {
+                                    this.config.live_dash_len = len;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        )
+                    });
+
+                    rows.when(!hidden, |rows| {
+                        rows.keyed(
+                            "seek-lead-in-sweep",
+                            &["gradient", "loading"],
+                            panel::toggle(
+                                self.config.live_sweep,
+                                |this: &mut Self, on, cx| {
+                                    this.config.live_sweep = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        )
+                    })
+                },
             ))
-            .into_any_element()
     }
 }
 

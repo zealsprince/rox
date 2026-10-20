@@ -13,7 +13,7 @@ use rox_playback::output::{Mode, Negotiated};
 use serde::{Deserialize, Serialize};
 
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, Tone};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section, Tone};
 use crate::panel_settings;
 use crate::player::{OutputStatus, Player};
 
@@ -244,55 +244,51 @@ impl PanelSettings for OutputPanel {
         cx.notify();
     }
 
-    fn behavior(
+    fn behavior_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
-                    rox_i18n::t!("output-detail-label"),
-                    Some(rox_i18n::t!("output-detail-label.description")),
-                    panel::choices_shared(
-                        &Self::detail_picks(),
-                        self.config.detail,
-                        |this: &mut Self, detail, cx| {
-                            this.config.detail = detail;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("output-device-name"),
-                    Some(rox_i18n::t!("output-device-name.description")),
-                    panel::toggle(
-                        self.config.device,
-                        |this: &mut Self, on, cx| {
-                            this.config.device = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("output-file-rate"),
-                    Some(rox_i18n::t!("output-file-rate.description")),
-                    panel::toggle(
-                        self.config.source_rate,
-                        |this: &mut Self, on, cx| {
-                            this.config.source_rate = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .into_any_element(),
-        )
+    ) -> Vec<Section> {
+        vec![Section::bare(q, |rows| {
+            rows.keyed(
+                "output-detail-label",
+                &["badge", "compact", "expanded"],
+                panel::choices_shared(
+                    &Self::detail_picks(),
+                    self.config.detail,
+                    |this: &mut Self, detail, cx| {
+                        this.config.detail = detail;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
+            .keyed(
+                "output-device-name",
+                &["headline", "device"],
+                panel::toggle(
+                    self.config.device,
+                    |this: &mut Self, on, cx| {
+                        this.config.device = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
+            .keyed(
+                "output-file-rate",
+                &["rate", "resample", "conversion"],
+                panel::toggle(
+                    self.config.source_rate,
+                    |this: &mut Self, on, cx| {
+                        this.config.source_rate = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
+        })]
     }
 }
 

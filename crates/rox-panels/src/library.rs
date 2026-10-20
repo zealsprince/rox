@@ -39,7 +39,9 @@ use crate::design::{palette, tokens};
 use crate::group_head::{
     self, ArtSide, HeadPiece, Headers, MOSAIC, TileFace, effective_head_lines,
 };
-use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState, Tone};
+use crate::panel::{
+    self, AppState, PageBody, PanelChrome, Query, ResumeIdle, ScrubState, Section, Tone,
+};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
@@ -3862,15 +3864,12 @@ impl LibraryPanel {
     }
 
     /// The look knobs stay on Appearance and the column checklist on View.
-    fn layout_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn layout_section(&mut self, q: &Query, cx: &mut Context<Self>) -> Section {
         let header_mode = self.headers;
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("library-headers"),
-                Some(rox_i18n::t!("library-headers.description")),
+        Section::bare(q, |rows| {
+            let rows = rows.keyed(
+                "library-headers",
+                &["off", "compact", "expanded"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("headers-off"), Headers::Off),
@@ -3881,11 +3880,12 @@ impl LibraryPanel {
                     |this: &mut Self, headers, cx| this.set_headers(headers, cx),
                     cx,
                 ),
-            ))
-            .when(header_mode != Headers::Off, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("library-group-by"),
-                    Some(rox_i18n::t!("library-group-by.description")),
+            );
+
+            let rows = rows.when(header_mode != Headers::Off, |rows| {
+                rows.keyed(
+                    "library-group-by",
+                    &["album", "artist", "genre", "year"],
                     panel::choices_shared(
                         &[
                             (rox_i18n::t!("head-piece-album"), GroupBy::Album),
@@ -3897,13 +3897,13 @@ impl LibraryPanel {
                         |this: &mut Self, group_by, cx| this.set_group_by(group_by, cx),
                         cx,
                     ),
-                ))
-            })
-            .when(header_mode == Headers::Compact, |d| {
-                d.child(panel::setting_block(
-                    rox_i18n::t!("library-header-row"),
-                    Some(rox_i18n::t!("library-header-row.description")),
-                    None,
+                )
+            });
+
+            let rows = rows.when(header_mode == Headers::Compact, |rows| {
+                rows.block(
+                    "library-header-row",
+                    &["pieces", "order"],
                     panel::arrange_editor(
                         "library-head-compact",
                         group_head::PIECES,
@@ -3911,14 +3911,14 @@ impl LibraryPanel {
                         |this: &mut Self, items, cx| this.set_head_compact(items, cx),
                         cx,
                     ),
-                ))
-            })
-            .when(header_mode == Headers::Expanded, |d| {
+                )
+            });
+
+            rows.when(header_mode == Headers::Expanded, |rows| {
                 let open = self.header_lines_shown.clamp(1, HEAD_LINE_SLOTS);
-                d.child(panel::setting_block(
-                    rox_i18n::t!("library-header-lines"),
-                    Some(rox_i18n::t!("library-header-lines.description")),
-                    None,
+                rows.block(
+                    "library-header-lines",
+                    &["pieces", "order"],
                     panel::arrange_rows_editor(
                         "library-head-lines",
                         group_head::PIECES,
@@ -3927,9 +3927,9 @@ impl LibraryPanel {
                         |this: &mut Self, rows, cx| this.set_head_lines(rows, cx),
                         cx,
                     ),
-                ))
+                )
             })
-            .into_any_element()
+        })
     }
 
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -3977,17 +3977,20 @@ impl panel::PanelSettings for LibraryPanel {
         &[("Layout", icons::ALIGN_LEFT), ("View", icons::ROWS_3)]
     }
 
-    fn behavior(
+    fn behavior_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(crate::query::shared_query::search_section(
+    ) -> Vec<Section> {
+        let search = Section::new(
+            q,
+            icons::SEARCH,
+            rox_i18n::t!("query-search"),
+            None,
+            |rows| {
+                crate::query::shared_query::search_rows(
+                    rows,
                     self.show_search,
                     |this: &mut Self, on, cx| {
                         this.show_search = on;
@@ -4000,19 +4003,32 @@ impl panel::PanelSettings for LibraryPanel {
                     self.query_source,
                     |this: &mut Self, source, cx| this.pick_query_source(source, cx),
                     cx,
-                ))
-                .when(self.headers != Headers::Off, |d| {
-                    d.child(panel::setting_row(
-                        rox_i18n::t!("library-group-search-results"),
-                        Some(rox_i18n::t!("library-group-search-results.description")),
-                        panel::toggle(
-                            self.group_search_results,
-                            |this: &mut Self, on, cx| this.set_group_search_results(on, cx),
-                            cx,
-                        ),
-                    ))
-                })
-                .child(panel::tracking_section(
+                )
+            },
+        );
+
+        let group_results = Section::bare(q, |rows| {
+            rows.when(self.headers != Headers::Off, |rows| {
+                rows.keyed(
+                    "library-group-search-results",
+                    &["search", "headers", "grouping"],
+                    panel::toggle(
+                        self.group_search_results,
+                        |this: &mut Self, on, cx| this.set_group_search_results(on, cx),
+                        cx,
+                    ),
+                )
+            })
+        });
+
+        let tracking = Section::new(
+            q,
+            icons::LOCATE,
+            rox_i18n::t!("tracking-title"),
+            None,
+            |rows| {
+                panel::tracking_rows(
+                    rows,
                     self.follow_playing,
                     rox_i18n::t!("library-follow-description"),
                     |this: &mut Self, on, cx| {
@@ -4035,50 +4051,63 @@ impl panel::PanelSettings for LibraryPanel {
                         cx.notify();
                     },
                     cx,
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("library-sort-on-click"),
-                    Some(rox_i18n::t!("library-sort-on-click.description")),
-                    panel::toggle(
-                        self.sort_on_click,
-                        |this: &mut Self, on, cx| this.set_sort_on_click(on, cx),
-                        cx,
-                    ),
-                ))
-                .into_any_element(),
-        )
+                )
+            },
+        );
+
+        let sort = Section::bare(q, |rows| {
+            rows.keyed(
+                "library-sort-on-click",
+                &["sort", "column", "header", "click"],
+                panel::toggle(
+                    self.sort_on_click,
+                    |this: &mut Self, on, cx| this.set_sort_on_click(on, cx),
+                    cx,
+                ),
+            )
+        });
+
+        vec![search, group_results, tracking, sort]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> PageBody {
         if page == "Layout" {
-            return self.layout_page(cx);
+            return PageBody::new().section(self.layout_section(q, cx));
         }
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_block(
-                rox_i18n::t!("library-columns"),
-                Some(rox_i18n::t!("library-columns.description")),
-                Some(
-                    settings_ui::small_button(
-                        rox_i18n::t!("panel-reset"),
-                        icons::REFRESH_CW,
-                        false,
-                        cx.listener(|this, _, _, cx| this.reset_columns(cx)),
+        PageBody::new().section(Section::bare(q, |rows| {
+            // `block` has no slot for a trailing element, and this one carries
+            // the reset button beside the heading, so it builds the block by hand.
+            let rows = rows.labelled(
+                &rox_i18n::t!("library-columns"),
+                &["fields", "table"],
+                || {
+                    panel::setting_block(
+                        rox_i18n::t!("library-columns"),
+                        Some(rox_i18n::t!("library-columns.description")),
+                        Some(
+                            settings_ui::small_button(
+                                rox_i18n::t!("panel-reset"),
+                                icons::REFRESH_CW,
+                                false,
+                                cx.listener(|this, _, _, cx| this.reset_columns(cx)),
+                            )
+                            .into_any_element(),
+                        ),
+                        self.column_checklist(cx),
                     )
-                    .into_any_element(),
-                ),
-                self.column_checklist(cx),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("library-column-headers"),
-                Some(rox_i18n::t!("library-column-headers.description")),
+                    .into_any_element()
+                },
+            );
+
+            let rows = rows.keyed(
+                "library-column-headers",
+                &["header", "titles"],
                 panel::toggle(
                     self.column_headers,
                     |this: &mut Self, on, cx| {
@@ -4087,270 +4116,259 @@ impl panel::PanelSettings for LibraryPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("library-compact-plays"),
-                Some(rox_i18n::t!("library-compact-plays.description")),
+            );
+
+            rows.keyed(
+                "library-compact-plays",
+                &["plays", "count"],
                 panel::toggle(
                     self.compact_plays,
                     |this: &mut Self, on, cx| this.set_compact_plays(on, cx),
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
     /// Stored on the config because these shape the content, not the panel
     /// frame.
-    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let rounding = self.art_rounding;
-        let row_height = self.row_height;
-        let row_spacing = self.row_spacing;
-        let head_height = self.head_height;
-        let head_text = self.head_text;
-        let gap_above = self.header_gap_above;
-        let gap_below = self.header_gap_below;
-        let art_margin = self.art_margin;
-        let header_mode = self.headers;
-        let headers = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("library-line-height"),
-                Some(rox_i18n::t!("library-line-height.description")),
-                settings_ui::scalar(
-                    &self.head_scrub,
-                    &self.value_edit,
-                    head_height,
-                    settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
-                    Self::set_head_height,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("library-text-size"),
-                Some(rox_i18n::t!("library-text-size.description")),
-                settings_ui::scalar(
-                    &self.head_text_scrub,
-                    &self.value_edit,
-                    head_text,
-                    settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
-                    Self::set_head_text,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("library-flush-background"),
-                Some(rox_i18n::t!("library-flush-background.description")),
-                panel::toggle(
-                    self.header_flush,
-                    |this: &mut Self, on, cx| {
-                        this.header_flush = on;
-                        this.table
-                            .update(cx, |table, _| table.delegate_mut().header_flush = on);
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("library-gap-above"),
-                Some(rox_i18n::t!("library-gap-above.description")),
-                settings_ui::scalar(
-                    &self.header_gap_above_scrub,
-                    &self.value_edit,
-                    gap_above,
-                    settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                    Self::set_header_gap_above,
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("library-gap-below"),
-                Some(rox_i18n::t!("library-gap-below.description")),
-                settings_ui::scalar(
-                    &self.header_gap_below_scrub,
-                    &self.value_edit,
-                    gap_below,
-                    settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                    Self::set_header_gap_below,
-                    cx,
-                ),
-            ));
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(settings_ui::section(
-                    rox_i18n::t!("library-section-rows"),
-                    None,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-row-height"),
-                            Some(rox_i18n::t!("library-row-height.description")),
-                            settings_ui::scalar(
-                                &self.row_scrub,
-                                &self.value_edit,
-                                row_height,
-                                settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
-                                Self::set_row_height,
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-row-spacing"),
-                            Some(rox_i18n::t!("library-row-spacing.description")),
-                            settings_ui::scalar(
-                                &self.row_spacing_scrub,
-                                &self.value_edit,
-                                row_spacing,
-                                settings_ui::span(0., ROW_SPACING_MAX, " px"),
-                                Self::set_row_spacing,
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-stripes"),
-                            Some(rox_i18n::t!("library-stripes.description")),
-                            panel::toggle(
-                                self.stripes,
-                                |this: &mut Self, on, cx| {
-                                    this.stripes = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-row-borders"),
-                            Some(rox_i18n::t!("library-row-borders.description")),
-                            panel::toggle(
-                                self.row_borders,
-                                |this: &mut Self, on, cx| {
-                                    this.row_borders = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        )),
-                ))
-                .when(header_mode != Headers::Off, |d| {
-                    d.child(settings_ui::section(
-                        rox_i18n::t!("library-headers"),
-                        None,
-                        headers,
-                    ))
+    fn appearance_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let rows = Section::new(
+            q,
+            icons::ROWS_3,
+            rox_i18n::t!("library-section-rows"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "library-row-height",
+                    &["size", "tall", "dense"],
+                    settings_ui::scalar(
+                        &self.row_scrub,
+                        &self.value_edit,
+                        self.row_height,
+                        settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
+                        Self::set_row_height,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-row-spacing",
+                    &["gap", "padding"],
+                    settings_ui::scalar(
+                        &self.row_spacing_scrub,
+                        &self.value_edit,
+                        self.row_spacing,
+                        settings_ui::span(0., ROW_SPACING_MAX, " px"),
+                        Self::set_row_spacing,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-stripes",
+                    &["zebra", "alternate", "background"],
+                    panel::toggle(
+                        self.stripes,
+                        |this: &mut Self, on, cx| {
+                            this.stripes = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-row-borders",
+                    &["lines", "divider", "separator"],
+                    panel::toggle(
+                        self.row_borders,
+                        |this: &mut Self, on, cx| {
+                            this.row_borders = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        );
+
+        let headers = Section::new(
+            q,
+            icons::PANEL_TOP,
+            rox_i18n::t!("library-headers"),
+            None,
+            |rows| {
+                rows.when(self.headers != Headers::Off, |rows| {
+                    rows.keyed(
+                        "library-line-height",
+                        &["header", "size", "tall"],
+                        settings_ui::scalar(
+                            &self.head_scrub,
+                            &self.value_edit,
+                            self.head_height,
+                            settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
+                            Self::set_head_height,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "library-text-size",
+                        &["header", "font", "size"],
+                        settings_ui::scalar(
+                            &self.head_text_scrub,
+                            &self.value_edit,
+                            self.head_text,
+                            settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
+                            Self::set_head_text,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "library-flush-background",
+                        &["header", "fill", "background"],
+                        panel::toggle(
+                            self.header_flush,
+                            |this: &mut Self, on, cx| {
+                                this.header_flush = on;
+                                this.table
+                                    .update(cx, |table, _| table.delegate_mut().header_flush = on);
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "library-gap-above",
+                        &["header", "spacing", "margin"],
+                        settings_ui::scalar(
+                            &self.header_gap_above_scrub,
+                            &self.value_edit,
+                            self.header_gap_above,
+                            settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                            Self::set_header_gap_above,
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "library-gap-below",
+                        &["header", "spacing", "margin"],
+                        settings_ui::scalar(
+                            &self.header_gap_below_scrub,
+                            &self.value_edit,
+                            self.header_gap_below,
+                            settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                            Self::set_header_gap_below,
+                            cx,
+                        ),
+                    )
                 })
-                // Always shown, so switching the grouping never moves an art knob.
-                .child(settings_ui::section(
+            },
+        );
+
+        // Always shown, so switching the grouping never moves an art knob.
+        let art = Section::new(
+            q,
+            icons::IMAGE,
+            rox_i18n::t!("head-piece-art"),
+            None,
+            |rows| {
+                rows.row(
                     rox_i18n::t!("head-piece-art"),
-                    None,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        .child(panel::setting_row(
-                            rox_i18n::t!("head-piece-art"),
-                            Some(rox_i18n::t!("library-art-description")),
-                            panel::toggle(
-                                self.header_art,
-                                |this: &mut Self, on, cx| {
-                                    this.header_art = on;
-                                    this.table.update(cx, |table, _| {
-                                        table.delegate_mut().header_art = on
-                                    });
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-art-rounding"),
-                            Some(rox_i18n::t!("library-art-rounding.description")),
-                            settings_ui::scalar(
-                                &self.art_scrub,
-                                &self.value_edit,
-                                rounding,
-                                settings_ui::span(0., ART_ROUNDING_MAX, " px"),
-                                |this: &mut Self, value, cx| {
-                                    this.art_rounding = value;
-                                    this.table.update(cx, |table, _| {
-                                        table.delegate_mut().art_rounding = value
-                                    });
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-art-position"),
-                            Some(rox_i18n::t!("library-art-position.description")),
-                            panel::choices_shared(
-                                &[
-                                    (rox_i18n::t!("side-left"), ArtSide::Left),
-                                    (rox_i18n::t!("side-right"), ArtSide::Right),
-                                ],
-                                self.art_side,
-                                |this: &mut Self, side, cx| this.set_art_side(side, cx),
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-art-margin"),
-                            Some(rox_i18n::t!("library-art-margin.description")),
-                            settings_ui::scalar(
-                                &self.art_margin_scrub,
-                                &self.value_edit,
-                                art_margin,
-                                settings_ui::span(0., ART_MARGIN_MAX, " px"),
-                                Self::set_art_margin,
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-circular-portraits"),
-                            Some(rox_i18n::t!("library-circular-portraits.description")),
-                            panel::toggle(
-                                self.portrait_circle,
-                                |this: &mut Self, on, cx| {
-                                    this.portrait_circle = on;
-                                    this.table.update(cx, |table, _| {
-                                        table.delegate_mut().portrait_circle = on
-                                    });
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("library-genre-face"),
-                            Some(rox_i18n::t!("library-genre-face.description")),
-                            panel::choices_shared(
-                                &[
-                                    (rox_i18n::t!("genre-face-mosaic"), TileFace::Mosaic),
-                                    (rox_i18n::t!("genre-face-tinted"), TileFace::Tinted),
-                                    (rox_i18n::t!("genre-face-gradient"), TileFace::Gradient),
-                                    (rox_i18n::t!("genre-face-color"), TileFace::Color),
-                                ],
-                                self.genre_face,
-                                |this: &mut Self, face, cx| {
-                                    this.genre_face = face;
-                                    this.table.update(cx, |table, _| {
-                                        table.delegate_mut().genre_face = face
-                                    });
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        )),
-                ))
-                .into_any_element(),
-        )
+                    Some(rox_i18n::t!("library-art-description")),
+                    panel::toggle(
+                        self.header_art,
+                        |this: &mut Self, on, cx| {
+                            this.header_art = on;
+                            this.table
+                                .update(cx, |table, _| table.delegate_mut().header_art = on);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-art-rounding",
+                    &["corner", "radius", "cover"],
+                    settings_ui::scalar(
+                        &self.art_scrub,
+                        &self.value_edit,
+                        self.art_rounding,
+                        settings_ui::span(0., ART_ROUNDING_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.art_rounding = value;
+                            this.table
+                                .update(cx, |table, _| table.delegate_mut().art_rounding = value);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-art-position",
+                    &["side", "left", "right", "cover"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("side-left"), ArtSide::Left),
+                            (rox_i18n::t!("side-right"), ArtSide::Right),
+                        ],
+                        self.art_side,
+                        |this: &mut Self, side, cx| this.set_art_side(side, cx),
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-art-margin",
+                    &["spacing", "padding", "cover"],
+                    settings_ui::scalar(
+                        &self.art_margin_scrub,
+                        &self.value_edit,
+                        self.art_margin,
+                        settings_ui::span(0., ART_MARGIN_MAX, " px"),
+                        Self::set_art_margin,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-circular-portraits",
+                    &["artist", "round", "circle", "photo"],
+                    panel::toggle(
+                        self.portrait_circle,
+                        |this: &mut Self, on, cx| {
+                            this.portrait_circle = on;
+                            this.table
+                                .update(cx, |table, _| table.delegate_mut().portrait_circle = on);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-genre-face",
+                    &["genre", "tile", "mosaic", "gradient", "color"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("genre-face-mosaic"), TileFace::Mosaic),
+                            (rox_i18n::t!("genre-face-tinted"), TileFace::Tinted),
+                            (rox_i18n::t!("genre-face-gradient"), TileFace::Gradient),
+                            (rox_i18n::t!("genre-face-color"), TileFace::Color),
+                        ],
+                        self.genre_face,
+                        |this: &mut Self, face, cx| {
+                            this.genre_face = face;
+                            this.table
+                                .update(cx, |table, _| table.delegate_mut().genre_face = face);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        );
+
+        vec![rows, headers, art]
     }
 }
 

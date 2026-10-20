@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, ResumeIdle};
+use crate::panel::{
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ResumeIdle, Section,
+};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
@@ -1711,19 +1713,17 @@ impl PanelSettings for FolderTreePanel {
         &[("Content", icons::FOLDER)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("folder-tree-cover-art"),
-                Some(rox_i18n::t!("folder-tree-cover-art.description")),
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            rows.keyed(
+                "folder-tree-cover-art",
+                &["cover", "folders", "songs", "both"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("shader-pick-none"), CoverArt::None),
@@ -1735,8 +1735,9 @@ impl PanelSettings for FolderTreePanel {
                     |this: &mut Self, cover, cx| this.set_cover(cover, cx),
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
+            )
+            // Its description is the folder-tree variant, not `library-stripes.description`.
+            .row(
                 rox_i18n::t!("library-stripes"),
                 Some(rox_i18n::t!("folder-tree-stripes-description")),
                 panel::toggle(
@@ -1747,21 +1748,24 @@ impl PanelSettings for FolderTreePanel {
                     },
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
-    fn behavior(
+    fn behavior_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::settings::ui::SECTION_GAP)
-                .child(panel::tracking_section(
+    ) -> Vec<Section> {
+        let tracking = Section::new(
+            q,
+            icons::LOCATE,
+            rox_i18n::t!("tracking-title"),
+            None,
+            |rows| {
+                panel::tracking_rows(
+                    rows,
                     self.config.follow_playing,
                     rox_i18n::t!("folder-tree-follow-description"),
                     |this: &mut Self, on, cx| {
@@ -1784,50 +1788,63 @@ impl PanelSettings for FolderTreePanel {
                         cx.notify();
                     },
                     cx,
-                ))
-                .child(crate::query::shared_query::search_section(
+                )
+            },
+        );
+
+        let search = Section::new(
+            q,
+            icons::SEARCH,
+            rox_i18n::t!("query-search"),
+            None,
+            |rows| {
+                crate::query::shared_query::search_rows(
+                    rows,
                     self.config.search,
                     |this: &mut Self, on, cx| this.set_search(on, cx),
                     self.config.query_source,
                     |this: &mut Self, source, cx| this.pick_query_source(source, cx),
                     cx,
-                ))
-                .child(crate::settings::ui::section(
-                    rox_i18n::t!("content-filter"),
-                    None,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        .child(panel::setting_row(
-                            rox_i18n::t!("folder-tree-nonmatch-folders"),
-                            Some(rox_i18n::t!("folder-tree-nonmatch-folders.description")),
-                            panel::choices_shared(
-                                &[
-                                    (rox_i18n::t!("choice-dim"), FilterEffect::Dim),
-                                    (rox_i18n::t!("choice-hide"), FilterEffect::Hide),
-                                ],
-                                self.config.folders,
-                                |this: &mut Self, effect, cx| this.set_folders(effect, cx),
-                                cx,
-                            ),
-                        ))
-                        .child(panel::setting_row(
-                            rox_i18n::t!("folder-tree-nonmatch-songs"),
-                            Some(rox_i18n::t!("folder-tree-nonmatch-songs.description")),
-                            panel::choices_shared(
-                                &[
-                                    (rox_i18n::t!("choice-dim"), FilterEffect::Dim),
-                                    (rox_i18n::t!("choice-hide"), FilterEffect::Hide),
-                                ],
-                                self.config.songs,
-                                |this: &mut Self, effect, cx| this.set_songs(effect, cx),
-                                cx,
-                            ),
-                        )),
-                ))
-                .into_any_element(),
-        )
+                )
+            },
+        );
+
+        let filter = Section::new(
+            q,
+            icons::FUNNEL,
+            rox_i18n::t!("content-filter"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "folder-tree-nonmatch-folders",
+                    &["filter", "dim", "hide", "match"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("choice-dim"), FilterEffect::Dim),
+                            (rox_i18n::t!("choice-hide"), FilterEffect::Hide),
+                        ],
+                        self.config.folders,
+                        |this: &mut Self, effect, cx| this.set_folders(effect, cx),
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "folder-tree-nonmatch-songs",
+                    &["filter", "dim", "hide", "match", "tracks"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("choice-dim"), FilterEffect::Dim),
+                            (rox_i18n::t!("choice-hide"), FilterEffect::Hide),
+                        ],
+                        self.config.songs,
+                        |this: &mut Self, effect, cx| this.set_songs(effect, cx),
+                        cx,
+                    ),
+                )
+            },
+        );
+
+        vec![tracking, search, filter]
     }
 }
 

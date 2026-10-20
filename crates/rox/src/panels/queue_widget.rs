@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
-    WeakEntity, Window, div, prelude::*, px, svg,
+    App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, WeakEntity,
+    Window, div, prelude::*, px, svg,
 };
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -16,10 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
-use rox_panel_kit::ui as settings_ui;
-use rox_panel_kit::{setting_row, toggle};
+use rox_panel_kit::toggle;
 use rox_panels::queue::QueuePanel;
 
 const TOOLTIP_ROWS: usize = 12;
@@ -206,41 +205,47 @@ impl PanelSettings for QueueWidgetPanel {
         cx.notify();
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut rows = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("queue-widget-open-on-click"),
-                Some(rox_i18n::t!("queue-widget-open-on-click.description")),
-                toggle(
-                    self.config.open_on_click,
-                    |this: &mut Self, on, cx| {
-                        this.config.open_on_click = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        if self.config.open_on_click {
-            rows = rows.child(setting_row(
-                rox_i18n::t!("queue-widget-always-modal"),
-                Some(rox_i18n::t!("queue-widget-always-modal.description")),
-                toggle(
-                    self.config.always_modal,
-                    |this: &mut Self, on, cx| {
-                        this.config.always_modal = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        }
-        Some(
-            settings_ui::section(rox_i18n::t!("queue-widget-section-click"), None, rows)
-                .into_any_element(),
-        )
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let modal_row = self.config.open_on_click;
+        vec![Section::new(
+            q,
+            icons::LIST_MUSIC,
+            rox_i18n::t!("queue-widget-section-click"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "queue-widget-open-on-click",
+                    &["click", "open", "jump", "window"],
+                    toggle(
+                        self.config.open_on_click,
+                        |this: &mut Self, on, cx| {
+                            this.config.open_on_click = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(modal_row, |rows| {
+                    rows.keyed(
+                        "queue-widget-always-modal",
+                        &["modal", "window"],
+                        toggle(
+                            self.config.always_modal,
+                            |this: &mut Self, on, cx| {
+                                this.config.always_modal = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                })
+            },
+        )]
     }
 }
 

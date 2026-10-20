@@ -18,9 +18,9 @@ use crate::integrations::placement;
 use crate::workspace::Workspace;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel::{self, AppState, PageBody, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
-use rox_panel_kit::{Align, align_row, justify};
+use rox_panel_kit::{Align, align_rows, justify};
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -468,73 +468,73 @@ impl PanelSettings for WindowControlsPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("window-controls-style"),
-                Some(rox_i18n::t!("window-controls-style.description")),
-                panel::choices_shared(
-                    &[
-                        (
-                            rox_i18n::t!("window-controls-style-icons"),
-                            ChromeStyle::Icons,
-                        ),
-                        (
-                            rox_i18n::t!("window-controls-traffic-lights"),
-                            ChromeStyle::Traffic,
-                        ),
-                    ],
-                    self.config.style,
-                    |this: &mut Self, style, cx| this.set_style(style, cx),
-                    cx,
-                ),
-            ))
-            .child(panel::setting_block(
-                rox_i18n::t!("window-controls-pieces"),
-                Some(rox_i18n::t!("window-controls-pieces.description")),
-                None,
-                panel::arrange_editor(
-                    "window-controls-items",
-                    ITEMS,
-                    &self.config.items,
-                    |this: &mut Self, items, cx| {
-                        this.config.items = items;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.items.contains(&ControlItem::Pin), |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("window-controls-pin-mini-only"),
-                    Some(rox_i18n::t!("window-controls-pin-mini-only.description")),
-                    panel::toggle(
-                        self.config.pin_mini_only,
-                        |this: &mut Self, on, cx| {
-                            this.config.pin_mini_only = on;
+    ) -> PageBody {
+        let pin_row = self.config.items.contains(&ControlItem::Pin);
+        PageBody::new().section(Section::bare(q, |rows| {
+            let rows = rows
+                .keyed(
+                    "window-controls-style",
+                    &["icons", "traffic", "lights", "macos"],
+                    panel::choices_shared(
+                        &[
+                            (
+                                rox_i18n::t!("window-controls-style-icons"),
+                                ChromeStyle::Icons,
+                            ),
+                            (
+                                rox_i18n::t!("window-controls-traffic-lights"),
+                                ChromeStyle::Traffic,
+                            ),
+                        ],
+                        self.config.style,
+                        |this: &mut Self, style, cx| this.set_style(style, cx),
+                        cx,
+                    ),
+                )
+                .block(
+                    "window-controls-pieces",
+                    &["order", "reorder", "hide", "show", "mini"],
+                    panel::arrange_editor(
+                        "window-controls-items",
+                        ITEMS,
+                        &self.config.items,
+                        |this: &mut Self, items, cx| {
+                            this.config.items = items;
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-            })
-            .child(align_row(
+                )
+                .when(pin_row, |rows| {
+                    rows.keyed(
+                        "window-controls-pin-mini-only",
+                        &["pin", "mini", "wayland", "kwin"],
+                        panel::toggle(
+                            self.config.pin_mini_only,
+                            |this: &mut Self, on, cx| {
+                                this.config.pin_mini_only = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                });
+            align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .into_any_element()
+            )
+        }))
     }
 }
 

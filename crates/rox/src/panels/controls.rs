@@ -23,13 +23,13 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::buttons::{self, StateSpec};
 use rox_panel_api::marks::{MarkCache, Marks};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel::{self, AppState, PageBody, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
 use rox_panel_api::position_bound;
 use rox_panel_api::source::TrackSource;
-use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
+use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{
-    Align, PickRow, Tip, icon_picker, justify, picker, search_picker, setting_block, setting_row,
+    Align, PickRow, Tip, icon_picker, justify, picker, search_picker, setting_row,
 };
 use rox_services::catalog::LibraryEvent;
 
@@ -586,7 +586,7 @@ impl ControlsPanel {
 }
 
 impl ControlsPanel {
-    fn buttons_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn buttons_page(&mut self, q: &Query, window: &mut Window, cx: &mut Context<Self>) -> PageBody {
         self.sync_tips(window, cx);
 
         let add = settings_ui::small_button(
@@ -609,32 +609,35 @@ impl ControlsPanel {
             list = list.child(self.button_block(index, cx));
         }
 
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
+        PageBody::new().section(Section::new(
+            q,
+            icons::GAMEPAD,
             rox_i18n::t!("button-editor-section-buttons"),
             Some(add.into_any_element()),
-            list,
+            |rows| {
+                rows.custom(&["button", "command", "custom", "case", "state"], || {
+                    list.into_any_element()
+                })
+            },
         ))
     }
 
     /// The Layout page: alignment, then the well. Taking a button off the strip
     /// is a drag to the tray; deleting lives on the Content page.
-    fn layout_page(&mut self, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::align_row(
+    fn layout_page(&mut self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            panel::align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(setting_block(
-                rox_i18n::t!("button-editor-section-layout"),
-                Some(rox_i18n::t!("button-editor-section-layout.description")),
-                None,
+            )
+            .block(
+                "button-editor-section-layout",
+                &["order", "reorder", "hide", "show", "tray"],
                 panel::arrange_editor(
                     "controls-items",
                     well_registry(&self.config.buttons),
@@ -645,7 +648,8 @@ impl ControlsPanel {
                     },
                     cx,
                 ),
-            ))
+            )
+        }))
     }
 
     /// Keyed by button id and case, not position, so a reorder doesn't hand one
@@ -1076,16 +1080,17 @@ impl PanelSettings for ControlsPanel {
         ]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         match page {
-            "Layout" => self.layout_page(cx).into_any_element(),
+            "Layout" => self.layout_page(q, cx),
 
-            _ => self.buttons_page(window, cx).into_any_element(),
+            _ => self.buttons_page(q, window, cx),
         }
     }
 }

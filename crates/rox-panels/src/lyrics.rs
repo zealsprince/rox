@@ -45,7 +45,8 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, items, justify,
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    align_rows, items, justify,
 };
 use crate::panel_settings;
 use crate::providers;
@@ -795,35 +796,36 @@ impl PanelSettings for LyricsPanel {
         &[("Content", icons::FILE_TEXT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(source::source_row(
+    ) -> PageBody {
+        let rest_on = self.config.intro_rest || self.config.gap_rest;
+        PageBody::new().section(Section::bare(q, |rows| {
+            let rows = source::source_rows(
+                rows,
                 self.config.source,
                 |this: &mut Self, source, cx| {
                     this.config.source = source;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(align_row(
+            );
+            let rows = align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-follow-playback"),
-                Some(rox_i18n::t!("lyrics-follow-playback.description")),
+            );
+            rows.keyed(
+                "lyrics-follow-playback",
+                &["track", "sync", "playback"],
                 panel::toggle(
                     self.config.follow,
                     |this: &mut Self, on, cx| {
@@ -832,10 +834,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-always-centered"),
-                Some(rox_i18n::t!("lyrics-always-centered.description")),
+            )
+            .keyed(
+                "lyrics-always-centered",
+                &["scroll", "pad", "middle"],
                 panel::toggle(
                     self.config.pre_scroll,
                     |this: &mut Self, on, cx| {
@@ -844,10 +846,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-fade-lines-in"),
-                Some(rox_i18n::t!("lyrics-fade-lines-in.description")),
+            )
+            .keyed(
+                "lyrics-fade-lines-in",
+                &["fade", "opacity"],
                 panel::toggle(
                     self.config.fade_lines,
                     |this: &mut Self, on, cx| {
@@ -856,10 +858,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-build-word-by-word"),
-                Some(rox_i18n::t!("lyrics-build-word-by-word.description")),
+            )
+            .keyed(
+                "lyrics-build-word-by-word",
+                &["karaoke", "read head"],
                 panel::toggle(
                     self.config.word_by_word,
                     |this: &mut Self, on, cx| {
@@ -868,10 +870,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-read-head-style"),
-                Some(rox_i18n::t!("lyrics-read-head-style.description")),
+            )
+            .keyed(
+                "lyrics-read-head-style",
+                &["fill", "build", "karaoke"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("lyrics-head-fill"), WordStyle::Fill),
@@ -884,10 +886,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-unsung-dim"),
-                Some(rox_i18n::t!("lyrics-unsung-dim.description")),
+            )
+            .keyed(
+                "lyrics-unsung-dim",
+                &["dim", "brightness"],
                 settings_ui::scalar(
                     &self.word_dim_scrub,
                     &self.value_edit,
@@ -899,10 +901,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-hide-upcoming"),
-                Some(rox_i18n::t!("lyrics-hide-upcoming.description")),
+            )
+            .keyed(
+                "lyrics-hide-upcoming",
+                &["reveal", "spoiler"],
                 panel::toggle(
                     self.config.hide_upcoming,
                     |this: &mut Self, on, cx| {
@@ -911,10 +913,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-wrap-lines"),
-                Some(rox_i18n::t!("lyrics-wrap-lines.description")),
+            )
+            .keyed(
+                "lyrics-wrap-lines",
+                &["wrap", "line breaks"],
                 panel::toggle(
                     self.config.wrap_lines,
                     |this: &mut Self, on, cx| {
@@ -923,10 +925,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-lead-in-rest"),
-                Some(rox_i18n::t!("lyrics-lead-in-rest.description")),
+            )
+            .keyed(
+                "lyrics-lead-in-rest",
+                &["intro", "rest", "pause"],
                 panel::toggle(
                     self.config.intro_rest,
                     |this: &mut Self, on, cx| {
@@ -935,10 +937,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-rest-in-gaps"),
-                Some(rox_i18n::t!("lyrics-rest-in-gaps.description")),
+            )
+            .keyed(
+                "lyrics-rest-in-gaps",
+                &["instrumental", "gap", "pause"],
                 panel::toggle(
                     self.config.gap_rest,
                     |this: &mut Self, on, cx| {
@@ -947,11 +949,11 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .when(self.config.intro_rest || self.config.gap_rest, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("lyrics-gap-threshold"),
-                    Some(rox_i18n::t!("lyrics-gap-threshold.description")),
+            )
+            .when(rest_on, |rows| {
+                rows.keyed(
+                    "lyrics-gap-threshold",
+                    &["seconds", "duration"],
                     settings_ui::scalar(
                         &self.gap_scrub,
                         &self.value_edit,
@@ -963,11 +965,11 @@ impl PanelSettings for LyricsPanel {
                         },
                         cx,
                     ),
-                ))
+                )
             })
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-line-falloff"),
-                Some(rox_i18n::t!("lyrics-line-falloff.description")),
+            .keyed(
+                "lyrics-line-falloff",
+                &["dim", "fade"],
                 settings_ui::scalar(
                     &self.dim_scrub,
                     &self.value_edit,
@@ -979,10 +981,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-falloff-edge"),
-                Some(rox_i18n::t!("lyrics-falloff-edge.description")),
+            )
+            .keyed(
+                "lyrics-falloff-edge",
+                &["top", "bottom", "both"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("lyrics-edge-top"), DimEdge::Top),
@@ -996,10 +998,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-search-button"),
-                Some(rox_i18n::t!("lyrics-search-button.description")),
+            )
+            .keyed(
+                "lyrics-search-button",
+                &["lookup", "online"],
                 panel::toggle(
                     self.config.search_button,
                     |this: &mut Self, on, cx| {
@@ -1008,10 +1010,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-auto-search"),
-                Some(rox_i18n::t!("lyrics-auto-search.description")),
+            )
+            .keyed(
+                "lyrics-auto-search",
+                &["automatic", "lookup"],
                 panel::toggle(
                     self.config.auto_search,
                     |this: &mut Self, on, cx| {
@@ -1020,10 +1022,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-show-song-name"),
-                Some(rox_i18n::t!("lyrics-show-song-name.description")),
+            )
+            .keyed(
+                "lyrics-show-song-name",
+                &["title", "artist", "name"],
                 panel::toggle(
                     self.config.show_name,
                     |this: &mut Self, on, cx| {
@@ -1032,10 +1034,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-title-unsynced"),
-                Some(rox_i18n::t!("lyrics-title-unsynced.description")),
+            )
+            .keyed(
+                "lyrics-title-unsynced",
+                &["title", "plain"],
                 panel::toggle(
                     self.config.show_title,
                     |this: &mut Self, on, cx| {
@@ -1044,10 +1046,10 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("lyrics-rest-marker"),
-                Some(rox_i18n::t!("lyrics-rest-marker.description")),
+            )
+            .keyed(
+                "lyrics-rest-marker",
+                &["note", "dots", "none"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("lyrics-mark-note"), RestMark::Note),
@@ -1061,8 +1063,8 @@ impl PanelSettings for LyricsPanel {
                     },
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
     // The Appearance section below has its own font picker.
@@ -1070,7 +1072,12 @@ impl PanelSettings for LyricsPanel {
         true
     }
 
-    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn appearance_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         let reset = settings_ui::small_button(
             rox_i18n::t!("panel-reset"),
             icons::REFRESH_CW,
@@ -1084,72 +1091,69 @@ impl PanelSettings for LyricsPanel {
                 cx.notify();
             }),
         );
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("lyrics-title"),
-                Some(reset.into_any_element()),
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        rox_i18n::t!("panel-font"),
-                        Some(rox_i18n::t!("lyrics-font.description")),
-                        panel::font_picker(
-                            "lyrics-font",
-                            self.config.font.clone(),
-                            |this: &mut Self, font, cx| {
-                                this.config.font = font;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        rox_i18n::t!("lyrics-bold"),
-                        None,
-                        panel::toggle(
-                            self.config.bold,
-                            |this: &mut Self, on, cx| {
-                                this.config.bold = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        rox_i18n::t!("lyrics-text-size"),
-                        Some(rox_i18n::t!("lyrics-text-size.description")),
-                        settings_ui::scalar(
-                            &self.size_scrub,
-                            &self.value_edit,
-                            self.config.font_size,
-                            settings_ui::span(FONT_MIN, FONT_MAX, "px"),
-                            |this: &mut Self, value, cx| {
-                                this.config.font_size = value;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        rox_i18n::t!("lyrics-line-spacing"),
-                        Some(rox_i18n::t!("lyrics-line-spacing.description")),
-                        settings_ui::scalar(
-                            &self.spacing_scrub,
-                            &self.value_edit,
-                            self.config.line_spacing,
-                            settings_ui::span(SPACING_MIN, SPACING_MAX, "x").decimals(1),
-                            |this: &mut Self, value, cx| {
-                                this.config.line_spacing = value;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    )),
-            )
-            .into_any_element(),
-        )
+        vec![Section::new(
+            q,
+            icons::A_LARGE_SMALL,
+            rox_i18n::t!("lyrics-title"),
+            Some(reset.into_any_element()),
+            |rows| {
+                rows.keyed(
+                    "panel-font",
+                    &["typeface", "family"],
+                    panel::font_picker(
+                        "lyrics-font",
+                        self.config.font.clone(),
+                        |this: &mut Self, font, cx| {
+                            this.config.font = font;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "lyrics-bold",
+                    &["weight", "thick"],
+                    panel::toggle(
+                        self.config.bold,
+                        |this: &mut Self, on, cx| {
+                            this.config.bold = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "lyrics-text-size",
+                    &["font size", "scale"],
+                    settings_ui::scalar(
+                        &self.size_scrub,
+                        &self.value_edit,
+                        self.config.font_size,
+                        settings_ui::span(FONT_MIN, FONT_MAX, "px"),
+                        |this: &mut Self, value, cx| {
+                            this.config.font_size = value;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "lyrics-line-spacing",
+                    &["leading", "gap"],
+                    settings_ui::scalar(
+                        &self.spacing_scrub,
+                        &self.value_edit,
+                        self.config.line_spacing,
+                        settings_ui::span(SPACING_MIN, SPACING_MAX, "x").decimals(1),
+                        |this: &mut Self, value, cx| {
+                            this.config.line_spacing = value;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        )]
     }
 }
 

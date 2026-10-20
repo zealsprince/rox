@@ -4,8 +4,8 @@
 //! the OS wasn't showing.
 
 use gpui::{
-    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels,
-    WeakEntity, Window, div, prelude::*, px, svg,
+    App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, WeakEntity,
+    Window, div, prelude::*, px, svg,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, Align, AppState, PanelChrome, PanelSettings, align_row, justify};
+use crate::panel::{
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, Section, align_rows,
+    justify,
+};
 use crate::panel_settings;
 use crate::settings::{self, Settings, Theme};
 
@@ -117,25 +120,24 @@ impl PanelSettings for ThemeTogglePanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(align_row(
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .into_any_element()
+            )
+        }))
     }
 }
 

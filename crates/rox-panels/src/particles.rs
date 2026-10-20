@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, BorderStyle, Bounds, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Rgba, SharedString,
-    Subscription, WeakEntity, Window, canvas, div, point, prelude::*, px, size,
+    App, BorderStyle, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Rgba, SharedString, Subscription,
+    WeakEntity, Window, canvas, div, point, prelude::*, px, size,
 };
 use gpui_component::Sizable as _;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -23,7 +23,8 @@ use rox_viz::signal::{Route, SignalHub};
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit, setting_row, toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section, ValueEdit,
+    setting_row, toggle,
 };
 use crate::panel_settings;
 use crate::settings::ui::{self as settings_ui, SECTION_GAP, section};
@@ -1076,32 +1077,44 @@ impl PanelSettings for ParticlesPanel {
         ]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         // Synced here because any page can host a route's rows: a route made
         // from a Forces row needs its scrubs on the next render.
         signal_ui::sync(self);
         match page {
-            "Forces" => self.forces_page(cx).into_any_element(),
-            "Scene" => self.scene_page(cx).into_any_element(),
-            _ => self.emitters_page(window, cx).into_any_element(),
+            "Forces" => self.forces_page(q, cx),
+            "Scene" => self.scene_page(q, cx),
+            // The emitter list is a dynamic, reorderable editor rather than
+            // fixed settings, so it stays one opaque block under its page label.
+            _ => PageBody::new().section(Section::bare(q, |rows| {
+                rows.custom(&[], || self.emitters_page(window, cx).into_any_element())
+            })),
         }
     }
 
     /// Hold on Pause lives on the shared Behavior page with every other
     /// panel's behavior switches.
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            section(
-                rox_i18n::t!("viz-section-playback"),
-                None,
-                setting_row(
-                    rox_i18n::t!("particles-hold-on-pause"),
-                    Some(rox_i18n::t!("particles-hold-on-pause.description")),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::PAUSE,
+            rox_i18n::t!("viz-section-playback"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "particles-hold-on-pause",
+                    &[],
                     toggle(
                         self.config.scene.freeze,
                         |this: &mut Self, on, cx| {
@@ -1110,10 +1123,9 @@ impl PanelSettings for ParticlesPanel {
                         },
                         cx,
                     ),
-                ),
-            )
-            .into_any_element(),
-        )
+                )
+            },
+        )]
     }
 }
 
@@ -1573,7 +1585,7 @@ impl ParticlesPanel {
             ))
     }
 
-    fn forces_page(&mut self, cx: &mut Context<Self>) -> Div {
+    fn forces_page(&mut self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let turbulence = self.config.forces.turbulence();
         let scale = self.config.forces.scale();
         let speed = self.config.forces.speed();
@@ -1617,41 +1629,50 @@ impl ParticlesPanel {
             },
             cx,
         );
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
+        PageBody::new().section(Section::new(
+            q,
+            icons::WAVES,
             rox_i18n::t!("particles-turbulence"),
             None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(signal_ui::bindable_row(
-                    self,
-                    rox_i18n::t!("particles-turbulence-strength"),
-                    Some(rox_i18n::t!("particles-turbulence-strength.description")),
-                    "turbulence".to_string(),
-                    strength_slider,
-                    cx,
-                ))
-                .child(signal_ui::bindable_row(
-                    self,
-                    rox_i18n::t!("particles-scale"),
-                    Some(rox_i18n::t!("particles-scale.description")),
-                    "scale".to_string(),
-                    scale_slider,
-                    cx,
-                ))
-                .child(signal_ui::bindable_row(
-                    self,
-                    rox_i18n::t!("particles-drift"),
-                    Some(rox_i18n::t!("particles-drift.description")),
-                    "drift".to_string(),
-                    drift_slider,
-                    cx,
-                )),
+            |rows| {
+                rows.labelled(&rox_i18n::t!("particles-turbulence-strength"), &[], || {
+                    signal_ui::bindable_row(
+                        self,
+                        rox_i18n::t!("particles-turbulence-strength"),
+                        Some(rox_i18n::t!("particles-turbulence-strength.description")),
+                        "turbulence".to_string(),
+                        strength_slider,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .labelled(&rox_i18n::t!("particles-scale"), &[], || {
+                    signal_ui::bindable_row(
+                        self,
+                        rox_i18n::t!("particles-scale"),
+                        Some(rox_i18n::t!("particles-scale.description")),
+                        "scale".to_string(),
+                        scale_slider,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .labelled(&rox_i18n::t!("particles-drift"), &[], || {
+                    signal_ui::bindable_row(
+                        self,
+                        rox_i18n::t!("particles-drift"),
+                        Some(rox_i18n::t!("particles-drift.description")),
+                        "drift".to_string(),
+                        drift_slider,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+            },
         ))
     }
 
-    fn scene_page(&mut self, cx: &mut Context<Self>) -> Div {
+    fn scene_page(&mut self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let gravity = self.config.scene.gravity();
         let angle = self.config.scene.gravity_angle.rem_euclid(360.0);
         let drag = self.config.scene.drag();
@@ -1694,53 +1715,55 @@ impl ParticlesPanel {
             },
             cx,
         );
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::ARROW_DOWN,
                 rox_i18n::t!("particles-gravity"),
                 None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(signal_ui::bindable_row(
-                        self,
-                        rox_i18n::t!("particles-gravity-strength"),
-                        Some(rox_i18n::t!("particles-gravity-strength.description")),
-                        "gravity".to_string(),
-                        gravity_slider,
-                        cx,
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("particles-direction"),
-                        Some(rox_i18n::t!("particles-direction.description")),
-                        angle_slider,
-                    )),
+                |rows| {
+                    rows.labelled(&rox_i18n::t!("particles-gravity-strength"), &[], || {
+                        signal_ui::bindable_row(
+                            self,
+                            rox_i18n::t!("particles-gravity-strength"),
+                            Some(rox_i18n::t!("particles-gravity-strength.description")),
+                            "gravity".to_string(),
+                            gravity_slider,
+                            cx,
+                        )
+                        .into_any_element()
+                    })
+                    .keyed("particles-direction", &[], angle_slider)
+                },
             ))
-            .child(section(
+            .section(Section::new(
+                q,
+                icons::GAUGE,
                 rox_i18n::t!("particles-section-medium"),
                 None,
-                signal_ui::bindable_row(
-                    self,
-                    rox_i18n::t!("particles-drag"),
-                    Some(rox_i18n::t!("particles-drag.description")),
-                    "drag".to_string(),
-                    drag_slider,
-                    cx,
-                ),
+                |rows| {
+                    rows.labelled(&rox_i18n::t!("particles-drag"), &[], || {
+                        signal_ui::bindable_row(
+                            self,
+                            rox_i18n::t!("particles-drag"),
+                            Some(rox_i18n::t!("particles-drag.description")),
+                            "drag".to_string(),
+                            drag_slider,
+                            cx,
+                        )
+                        .into_any_element()
+                    })
+                },
             ))
-            .child(section(
+            .section(Section::new(
+                q,
+                icons::SPARKLES,
                 rox_i18n::t!("particles-section-particles"),
                 None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(setting_row(
-                        rox_i18n::t!("particles-round-particles"),
-                        Some(rox_i18n::t!("particles-round-particles.description")),
+                |rows| {
+                    rows.keyed(
+                        "particles-round-particles",
+                        &[],
                         toggle(
                             self.config.scene.round,
                             |this: &mut Self, on, cx| {
@@ -1749,10 +1772,10 @@ impl ParticlesPanel {
                             },
                             cx,
                         ),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("particles-glow"),
-                        Some(rox_i18n::t!("particles-glow.description")),
+                    )
+                    .keyed(
+                        "particles-glow",
+                        &[],
                         toggle(
                             self.config.scene.glow,
                             |this: &mut Self, on, cx| {
@@ -1761,7 +1784,8 @@ impl ParticlesPanel {
                             },
                             cx,
                         ),
-                    )),
+                    )
+                },
             ))
     }
 }

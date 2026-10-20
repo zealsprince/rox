@@ -20,9 +20,9 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Image,
-    ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent, ObjectFit, SharedString, Stateful,
-    Subscription, WeakEntity, Window, div, img, prelude::*, px, svg,
+    App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat,
+    KeyDownEvent, MouseButton, MouseDownEvent, ObjectFit, SharedString, Stateful, Subscription,
+    WeakEntity, Window, div, img, prelude::*, px, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -44,8 +44,8 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, Align, AppState, PanelChrome, PanelSettings, ScrubState, VAlign, align_row, justify,
-    justify_v, valign_row,
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    VAlign, align_rows, justify, justify_v, valign_rows,
 };
 use crate::panel_settings;
 use crate::player::fmt_time;
@@ -1512,19 +1512,19 @@ impl PanelSettings for MetadataPanel {
         &[("Content", icons::FILE_TEXT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("metadata-source"),
-                Some(rox_i18n::t!("metadata-source.description")),
+    ) -> PageBody {
+        let sheet = self.config.display == MetadataDisplay::Sheet;
+        let cover = self.config.cover;
+        PageBody::new().section(Section::bare(q, |rows| {
+            let rows = rows.keyed(
+                "metadata-source",
+                &["playing", "selected", "library"],
                 panel::choices_shared(
                     &[
                         (rox_i18n::t!("source-playing"), MetadataSource::Playing),
@@ -1538,18 +1538,21 @@ impl PanelSettings for MetadataPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(valign_row(
+            );
+
+            let rows = valign_rows(
+                rows,
                 self.config.valign,
                 |this: &mut Self, valign, cx| {
                     this.config.valign = valign;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_row(
-                rox_i18n::t!("metadata-display"),
-                Some(rox_i18n::t!("metadata-display.description")),
+            );
+
+            let rows = rows.keyed(
+                "metadata-display",
+                &["sheet", "table"],
                 panel::choices_shared(
                     &[
                         (
@@ -1568,22 +1571,25 @@ impl PanelSettings for MetadataPanel {
                     },
                     cx,
                 ),
-            ))
+            );
+
             // The table always runs full width, so the horizontal knob only shows for
             // the sheet.
-            .when(self.config.display == MetadataDisplay::Sheet, |d| {
-                d.child(align_row(
+            let rows = rows.when(sheet, |rows| {
+                align_rows(
+                    rows,
                     self.config.align,
                     |this: &mut Self, align, cx| {
                         this.config.align = align;
                         cx.notify();
                     },
                     cx,
-                ))
-            })
-            .child(panel::setting_row(
-                rox_i18n::t!("metadata-cover-background"),
-                Some(rox_i18n::t!("metadata-cover-background.description")),
+                )
+            });
+
+            let rows = rows.keyed(
+                "metadata-cover-background",
+                &["cover", "art", "background"],
                 panel::toggle(
                     self.config.cover,
                     |this: &mut Self, on, cx| {
@@ -1592,11 +1598,12 @@ impl PanelSettings for MetadataPanel {
                     },
                     cx,
                 ),
-            ))
-            .when(self.config.cover, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("metadata-cover-opacity"),
-                    Some(rox_i18n::t!("metadata-cover-opacity.description")),
+            );
+
+            let rows = rows.when(cover, |rows| {
+                rows.keyed(
+                    "metadata-cover-opacity",
+                    &["opacity", "fade"],
                     settings_ui::scalar(
                         &self.cover_scrub,
                         &self.value_edit,
@@ -1608,11 +1615,12 @@ impl PanelSettings for MetadataPanel {
                         },
                         cx,
                     ),
-                ))
-            })
-            .child(panel::setting_row(
-                rox_i18n::t!("metadata-hide-empty"),
-                Some(rox_i18n::t!("metadata-hide-empty.description")),
+                )
+            });
+
+            let rows = rows.keyed(
+                "metadata-hide-empty",
+                &["empty", "blank", "n/a"],
                 panel::toggle(
                     self.config.hide_empty,
                     |this: &mut Self, on, cx| {
@@ -1621,56 +1629,54 @@ impl PanelSettings for MetadataPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(panel::setting_block(
-                rox_i18n::t!("metadata-fields"),
-                Some(rox_i18n::t!("metadata-fields.description")),
-                None,
-                self.field_list(cx),
-            ))
-            .into_any_element()
+            );
+
+            rows.block("metadata-fields", &["fields", "tags"], self.field_list(cx))
+        }))
     }
 
     /// The sheet has no rows, so this only shows with the table.
-    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn appearance_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         if self.config.display != MetadataDisplay::Table {
-            return None;
+            return Vec::new();
         }
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("library-section-rows"),
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        rox_i18n::t!("library-stripes"),
-                        Some(rox_i18n::t!("metadata-stripes-description")),
-                        panel::toggle(
-                            self.config.stripes,
-                            |this: &mut Self, on, cx| {
-                                this.config.stripes = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        rox_i18n::t!("library-row-borders"),
-                        Some(rox_i18n::t!("metadata-row-borders-description")),
-                        panel::toggle(
-                            self.config.row_borders,
-                            |this: &mut Self, on, cx| {
-                                this.config.row_borders = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    )),
-            )
-            .into_any_element(),
-        )
+        vec![Section::new(
+            q,
+            icons::ROWS_3,
+            rox_i18n::t!("library-section-rows"),
+            None,
+            |rows| {
+                rows.row(
+                    rox_i18n::t!("library-stripes"),
+                    Some(rox_i18n::t!("metadata-stripes-description")),
+                    panel::toggle(
+                        self.config.stripes,
+                        |this: &mut Self, on, cx| {
+                            this.config.stripes = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .row(
+                    rox_i18n::t!("library-row-borders"),
+                    Some(rox_i18n::t!("metadata-row-borders-description")),
+                    panel::toggle(
+                        self.config.row_borders,
+                        |this: &mut Self, on, cx| {
+                            this.config.row_borders = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        )]
     }
 }
 

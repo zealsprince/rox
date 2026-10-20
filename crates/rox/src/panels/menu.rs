@@ -4,9 +4,9 @@
 //! read the same.
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    MouseButton, MouseDownEvent, Pixels, Point, SharedString, WeakEntity, Window, anchored, canvas,
-    deferred, div, point, prelude::*, px, svg,
+    App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    MouseDownEvent, Pixels, Point, SharedString, WeakEntity, Window, anchored, canvas, deferred,
+    div, point, prelude::*, px, svg,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -25,9 +25,9 @@ use crate::workspace::{
 use rox_core::settings::{self, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel::{self, AppState, PageBody, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
-use rox_panel_kit::{Align, align_row, justify};
+use rox_panel_kit::{Align, align_rows, justify};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct MenuConfig {
@@ -1154,25 +1154,24 @@ impl PanelSettings for MenuPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(align_row(
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .into_any_element()
+            )
+        }))
     }
 }
 

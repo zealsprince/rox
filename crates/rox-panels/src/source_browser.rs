@@ -40,7 +40,10 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, FlickState, PanelChrome, PanelSettings, Then, Tone, WithIds};
+use crate::panel::{
+    self, AppState, FlickState, PageBody, PanelChrome, PanelSettings, Query, Section, Then, Tone,
+    WithIds,
+};
 use crate::panel_settings;
 use crate::player::fmt_time;
 use crate::playing_bars::{self, PlayingBars};
@@ -4240,19 +4243,17 @@ impl PanelSettings for SourceBrowserPanel {
         &[("Content", icons::LAYOUT_DASHBOARD)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("source-browser-show-home"),
-                Some(rox_i18n::t!("source-browser-show-home.description")),
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            rows.keyed(
+                "source-browser-show-home",
+                &["home", "roots"],
                 panel::toggle(
                     self.config.home,
                     |this: &mut Self, on, cx| {
@@ -4266,8 +4267,8 @@ impl PanelSettings for SourceBrowserPanel {
                     },
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 }
 

@@ -5,8 +5,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
-    WeakEntity, Window, div, prelude::*, px, svg,
+    App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, WeakEntity,
+    Window, div, prelude::*, px, svg,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
@@ -16,9 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, setting_row, toggle};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section, toggle};
 use crate::panel_settings;
-use crate::settings::ui as settings_ui;
 use rox_services::history::HistoryEvent;
 
 const DAY: i64 = 86400;
@@ -418,81 +417,86 @@ impl PanelSettings for StatsWidgetPanel {
         cx.notify();
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(settings_ui::section(
-                    rox_i18n::t!("stats-readout-section"),
-                    None,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_MD)
-                        .child(setting_row(
-                            rox_i18n::t!("stats-count-menu"),
-                            Some(rox_i18n::t!("stats-count-menu.description")),
-                            panel::choices_shared(
-                                &[
-                                    (rox_i18n::t!("stats-range-day-short"), ListenRange::Day),
-                                    (rox_i18n::t!("stats-range-week-short"), ListenRange::Week),
-                                    (rox_i18n::t!("stats-range-month-short"), ListenRange::Month),
-                                    (rox_i18n::t!("stats-range-year-short"), ListenRange::Year),
-                                    (rox_i18n::t!("stats-range-all-short"), ListenRange::All),
-                                ],
-                                self.config.range,
-                                |this: &mut Self, range, cx| {
-                                    this.config.range = range;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(setting_row(
-                            rox_i18n::t!("stats-show-number"),
-                            Some(rox_i18n::t!("stats-show-number.description")),
-                            toggle(
-                                self.config.show_count,
-                                |this: &mut Self, on, cx| {
-                                    this.config.show_count = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                        .child(setting_row(
-                            rox_i18n::t!("stats-show-change"),
-                            Some(rox_i18n::t!("stats-show-change.description")),
-                            toggle(
-                                self.config.show_change,
-                                |this: &mut Self, on, cx| {
-                                    this.config.show_change = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        )),
-                ))
-                .child(settings_ui::section(
-                    rox_i18n::t!("stats-click-section"),
-                    None,
-                    setting_row(
-                        rox_i18n::t!("stats-open-on-click"),
-                        Some(rox_i18n::t!("stats-open-on-click.description")),
-                        toggle(
-                            self.config.open_on_click,
-                            |this: &mut Self, on, cx| {
-                                this.config.open_on_click = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let readout = Section::new(
+            q,
+            icons::CHART_PIE,
+            rox_i18n::t!("stats-readout-section"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "stats-count-menu",
+                    &["range", "window", "day", "week", "month", "year", "all"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("stats-range-day-short"), ListenRange::Day),
+                            (rox_i18n::t!("stats-range-week-short"), ListenRange::Week),
+                            (rox_i18n::t!("stats-range-month-short"), ListenRange::Month),
+                            (rox_i18n::t!("stats-range-year-short"), ListenRange::Year),
+                            (rox_i18n::t!("stats-range-all-short"), ListenRange::All),
+                        ],
+                        self.config.range,
+                        |this: &mut Self, range, cx| {
+                            this.config.range = range;
+                            cx.notify();
+                        },
+                        cx,
                     ),
-                ))
-                .into_any_element(),
-        )
+                )
+                .keyed(
+                    "stats-show-number",
+                    &["count", "number"],
+                    toggle(
+                        self.config.show_count,
+                        |this: &mut Self, on, cx| {
+                            this.config.show_count = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "stats-show-change",
+                    &["change", "trend", "compare", "up", "down"],
+                    toggle(
+                        self.config.show_change,
+                        |this: &mut Self, on, cx| {
+                            this.config.show_change = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        );
+
+        let click = Section::new(
+            q,
+            icons::APP_WINDOW,
+            rox_i18n::t!("stats-click-section"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "stats-open-on-click",
+                    &["click", "open", "window"],
+                    toggle(
+                        self.config.open_on_click,
+                        |this: &mut Self, on, cx| {
+                            this.config.open_on_click = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        );
+
+        vec![readout, click]
     }
 }
 

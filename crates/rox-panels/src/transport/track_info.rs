@@ -27,7 +27,8 @@ use crate::design::{palette, tokens};
 use crate::group_head;
 use crate::marks::{MarkCache, Marks};
 use crate::panel::{
-    self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, justify,
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    align_rows, justify,
 };
 use crate::panel_settings;
 use crate::player::{fmt_time, observe_view};
@@ -996,19 +997,20 @@ impl PanelSettings for TrackInfoPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let rows = editor_rows(&self.config.items);
+    ) -> PageBody {
+        let item_rows = editor_rows(&self.config.items);
         self.scale_scrubs
-            .resize_with(rows.len(), ScrubState::default);
+            .resize_with(item_rows.len(), ScrubState::default);
         let editor = panel::arrange_rows_editor(
             "track-info-items",
             ITEMS,
-            &rows,
+            &item_rows,
             None,
             |this: &mut Self, rows, cx| {
                 this.config.items = rows.join(&InfoPiece::Break);
@@ -1016,10 +1018,23 @@ impl PanelSettings for TrackInfoPanel {
             },
             cx,
         );
-        // A single-row line just calls it the text size.
-        let sizes: Vec<AnyElement> = (0..rows.len())
-            .map(|ix| {
-                let label = if rows.len() == 1 {
+
+        PageBody::new().section(Section::bare(q, |rows| {
+            let rows = align_rows(
+                rows,
+                self.config.align,
+                |this: &mut Self, align, cx| {
+                    this.config.align = align;
+                    cx.notify();
+                },
+                cx,
+            );
+
+            let mut rows = rows.block("transport-pieces", &["pieces", "order", "layout"], editor);
+
+            // A single-row line just calls it the text size.
+            for ix in 0..item_rows.len() {
+                let label = if item_rows.len() == 1 {
                     rox_i18n::t!("track-info-text-size").to_string()
                 } else {
                     rox_i18n::t!("track-info-row-size", number = (ix + 1) as u64).to_string()
@@ -1028,7 +1043,8 @@ impl PanelSettings for TrackInfoPanel {
                     ROW_SCALE_MIN,
                     settings_ui::ceiling(ROW_SCALE_MIN, ROW_SCALE_MAX),
                 );
-                panel::setting_row_dyn(
+                rows = rows.row_dyn(
+                    &[],
                     label,
                     None,
                     settings_ui::scalar(
@@ -1045,33 +1061,18 @@ impl PanelSettings for TrackInfoPanel {
                         },
                         cx,
                     ),
-                )
-                .into_any_element()
-            })
-            .collect();
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(align_row(
-                self.config.align,
-                |this: &mut Self, align, cx| {
-                    this.config.align = align;
-                    cx.notify();
-                },
-                cx,
-            ))
-            .child(panel::setting_block(
-                rox_i18n::t!("transport-pieces"),
-                Some(rox_i18n::t!("transport-pieces.description")),
-                None,
-                editor,
-            ))
-            .children(sizes)
-            .into_any_element()
+                );
+            }
+            rows
+        }))
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         let speed = self.config.marquee_speed.clamp(
             MARQUEE_SPEED_MIN,
             settings_ui::ceiling(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX),
@@ -1084,104 +1085,107 @@ impl PanelSettings for TrackInfoPanel {
             SWAP_SECS_MIN,
             settings_ui::ceiling(SWAP_SECS_MIN, SWAP_SECS_MAX),
         );
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .when(self.config.items.contains(&InfoPiece::Output), |d| {
-                    d.child(panel::setting_row(
-                        rox_i18n::t!("track-info-color-output-chip"),
-                        Some(rox_i18n::t!("track-info-color-output-chip.description")),
-                        panel::toggle(
-                            self.config.output_tint,
-                            |this: &mut Self, on, cx| {
-                                this.config.output_tint = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                })
-                .child(panel::setting_row(
-                    rox_i18n::t!("track-info-marquee"),
-                    Some(rox_i18n::t!("track-info-marquee.description")),
-                    panel::choices_shared(
-                        &[
-                            (rox_i18n::t!("panel-size-off"), MarqueeMode::Off),
-                            (
-                                rox_i18n::t!("track-info-overflow-scroll"),
-                                MarqueeMode::Scroll,
-                            ),
-                            (rox_i18n::t!("track-info-overflow-loop"), MarqueeMode::Loop),
-                        ],
-                        self.config.marquee,
-                        |this: &mut Self, mode, cx| {
-                            this.config.marquee = mode;
-                            this.reset_marquees();
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .when(self.config.marquee != MarqueeMode::Off, |d| {
-                    d.child(panel::setting_row(
-                        rox_i18n::t!("track-info-speed"),
-                        Some(rox_i18n::t!("track-info-speed.description")),
-                        settings_ui::scalar(
-                            &self.speed_scrub,
-                            &self.value_edit,
-                            speed,
-                            settings_ui::span(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX, " px/s"),
-                            Self::set_marquee_speed,
-                            cx,
-                        ),
-                    ))
-                })
-                .when(self.config.marquee == MarqueeMode::Scroll, |d| {
-                    d.child(panel::setting_row(
-                        rox_i18n::t!("track-info-delay"),
-                        Some(rox_i18n::t!("track-info-delay.description")),
-                        settings_ui::scalar(
-                            &self.delay_scrub,
-                            &self.value_edit,
-                            delay,
-                            settings_ui::span(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX, " s")
-                                .decimals(1),
-                            Self::set_marquee_delay,
-                            cx,
-                        ),
-                    ))
-                })
-                .child(panel::setting_row(
-                    rox_i18n::t!("track-info-cycle-rows"),
-                    Some(rox_i18n::t!("track-info-cycle-rows.description")),
+        let output = self.config.items.contains(&InfoPiece::Output);
+        let marquee = self.config.marquee;
+        let swap = self.config.swap;
+
+        vec![Section::bare(q, |rows| {
+            let rows = rows.when(output, |rows| {
+                rows.keyed(
+                    "track-info-color-output-chip",
+                    &["color", "warning", "resample", "fallback"],
                     panel::toggle(
-                        self.config.swap,
-                        |this: &mut Self, swap, cx| {
-                            this.config.swap = swap;
-                            this.reset_marquees();
+                        self.config.output_tint,
+                        |this: &mut Self, on, cx| {
+                            this.config.output_tint = on;
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-                .when(self.config.swap, |d| {
-                    d.child(panel::setting_row(
-                        rox_i18n::t!("track-info-cycle-every"),
-                        Some(rox_i18n::t!("track-info-cycle-every.description")),
-                        settings_ui::scalar(
-                            &self.swap_scrub,
-                            &self.value_edit,
-                            dwell,
-                            settings_ui::span(SWAP_SECS_MIN, SWAP_SECS_MAX, " s"),
-                            Self::set_swap_secs,
-                            cx,
+                )
+            });
+
+            let rows = rows.keyed(
+                "track-info-marquee",
+                &["crawl", "scroll", "loop", "overflow"],
+                panel::choices_shared(
+                    &[
+                        (rox_i18n::t!("panel-size-off"), MarqueeMode::Off),
+                        (
+                            rox_i18n::t!("track-info-overflow-scroll"),
+                            MarqueeMode::Scroll,
                         ),
-                    ))
-                })
-                .into_any_element(),
-        )
+                        (rox_i18n::t!("track-info-overflow-loop"), MarqueeMode::Loop),
+                    ],
+                    self.config.marquee,
+                    |this: &mut Self, mode, cx| {
+                        this.config.marquee = mode;
+                        this.reset_marquees();
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            );
+
+            let rows = rows.when(marquee != MarqueeMode::Off, |rows| {
+                rows.keyed(
+                    "track-info-speed",
+                    &["crawl", "pace"],
+                    settings_ui::scalar(
+                        &self.speed_scrub,
+                        &self.value_edit,
+                        speed,
+                        settings_ui::span(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX, " px/s"),
+                        Self::set_marquee_speed,
+                        cx,
+                    ),
+                )
+            });
+
+            let rows = rows.when(marquee == MarqueeMode::Scroll, |rows| {
+                rows.keyed(
+                    "track-info-delay",
+                    &["rest", "pause", "wait"],
+                    settings_ui::scalar(
+                        &self.delay_scrub,
+                        &self.value_edit,
+                        delay,
+                        settings_ui::span(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX, " s").decimals(1),
+                        Self::set_marquee_delay,
+                        cx,
+                    ),
+                )
+            });
+
+            let rows = rows.keyed(
+                "track-info-cycle-rows",
+                &["cycle", "fade", "swap"],
+                panel::toggle(
+                    self.config.swap,
+                    |this: &mut Self, swap, cx| {
+                        this.config.swap = swap;
+                        this.reset_marquees();
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            );
+
+            rows.when(swap, |rows| {
+                rows.keyed(
+                    "track-info-cycle-every",
+                    &["duration", "dwell"],
+                    settings_ui::scalar(
+                        &self.swap_scrub,
+                        &self.value_edit,
+                        dwell,
+                        settings_ui::span(SWAP_SECS_MIN, SWAP_SECS_MAX, " s"),
+                        Self::set_swap_secs,
+                        cx,
+                    ),
+                )
+            })
+        })]
     }
 }
 

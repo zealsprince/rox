@@ -6,8 +6,8 @@
 //! searching panel the follow-and-mirror behavior.
 
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EntityId, EventEmitter, SharedString, Window, div,
-    prelude::*, px, svg,
+    App, Context, Div, Entity, EntityId, EventEmitter, SharedString, Window, div, prelude::*, px,
+    svg,
 };
 use gpui_component::Side;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -18,6 +18,7 @@ use crate::panel;
 use crate::query::search::SearchBox;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_kit::ui::Rows;
 use rox_services::selection::Selection;
 
 pub enum SharedQueryEvent {
@@ -308,53 +309,55 @@ pub fn search_flyout<P: 'static>(
     ))
 }
 
-/// The shared "search" section for a searching panel's Behavior page, so
-/// every searching panel reads the same.
-pub fn search_section<P: 'static>(
+/// The shared search rows for a searching panel's Behavior page, so every
+/// searching panel reads the same. The caller wraps them in its own
+/// `Section` under `query-search`.
+pub fn search_rows<'a, P: 'static>(
+    rows: Rows<'a>,
     show: bool,
     on_show: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
     source: QuerySource,
     on_source: impl Fn(&mut P, QuerySource, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
-) -> AnyElement {
-    rox_panel_kit::ui::section(
-        rox_i18n::t!("query-search"),
-        None,
-        div()
-            .flex()
-            .flex_col()
-            .gap(rox_design::tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("query-search-box"),
-                Some(rox_i18n::t!("query-search-box.description")),
-                panel::toggle(show, on_show, cx),
-            ))
-            .child(source_row(source, on_source, cx)),
-    )
-    .into_any_element()
+) -> Rows<'a> {
+    let rows = rows.keyed(
+        "query-search-box",
+        &["search", "filter", "query"],
+        panel::toggle(show, on_show, cx),
+    );
+    source_rows(rows, source, on_source, cx)
 }
 
-pub fn source_row<P: 'static>(
+pub fn source_rows<'a, P: 'static>(
+    rows: Rows<'a>,
+    current: QuerySource,
+    on_pick: impl Fn(&mut P, QuerySource, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Rows<'a> {
+    rows.keyed(
+        "query-source",
+        &["search", "filter", "query", "shared", "own", "selection"],
+        source_choices(current, on_pick, cx),
+    )
+}
+
+fn source_choices<P: 'static>(
     current: QuerySource,
     on_pick: impl Fn(&mut P, QuerySource, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    panel::setting_row(
-        rox_i18n::t!("query-source"),
-        Some(rox_i18n::t!("query-source.description")),
-        panel::choices_shared(
-            &[
-                (rox_i18n::t!("query-source-shared"), QuerySource::Global),
-                (rox_i18n::t!("query-source-own"), QuerySource::Local),
-                (
-                    rox_i18n::t!("query-source-selection"),
-                    QuerySource::Selection,
-                ),
-            ],
-            current,
-            on_pick,
-            cx,
-        ),
+    panel::choices_shared(
+        &[
+            (rox_i18n::t!("query-source-shared"), QuerySource::Global),
+            (rox_i18n::t!("query-source-own"), QuerySource::Local),
+            (
+                rox_i18n::t!("query-source-selection"),
+                QuerySource::Selection,
+            ),
+        ],
+        current,
+        on_pick,
+        cx,
     )
 }
 

@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, Align, AppState, PanelChrome, PanelSettings, ScrubState, align_row, justify,
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    align_rows, justify,
 };
 use crate::panel_settings;
 use crate::player::observe_view;
@@ -288,28 +289,28 @@ impl PanelSettings for VolumePanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(align_row(
+    ) -> PageBody {
+        let stretch = self.config.items.contains(&VolumeItem::Slider);
+        let readout = self.config.items.contains(&VolumeItem::Percent);
+        PageBody::new().section(Section::bare(q, |rows| {
+            align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_block(
-                rox_i18n::t!("volume-pieces"),
-                Some(rox_i18n::t!("volume-pieces.description")),
-                None,
+            )
+            .block(
+                "volume-pieces",
+                &["order", "reorder", "hide", "show"],
                 panel::arrange_editor(
                     "volume-items",
                     ITEMS,
@@ -320,11 +321,11 @@ impl PanelSettings for VolumePanel {
                     },
                     cx,
                 ),
-            ))
-            .when(self.config.items.contains(&VolumeItem::Slider), |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("volume-stretch"),
-                    Some(rox_i18n::t!("volume-stretch.description")),
+            )
+            .when(stretch, |rows| {
+                rows.keyed(
+                    "volume-stretch",
+                    &["fill", "width", "slider"],
                     panel::toggle(
                         self.config.stretch,
                         |this: &mut Self, stretch, cx| {
@@ -333,12 +334,12 @@ impl PanelSettings for VolumePanel {
                         },
                         cx,
                     ),
-                ))
+                )
             })
-            .when(self.config.items.contains(&VolumeItem::Percent), |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("volume-readout"),
-                    Some(rox_i18n::t!("volume-readout.description")),
+            .when(readout, |rows| {
+                rows.keyed(
+                    "volume-readout",
+                    &["percent", "decibels", "level"],
                     panel::choices_shared(
                         &[
                             (rox_i18n::t!("volume-readout-percent"), false),
@@ -351,9 +352,9 @@ impl PanelSettings for VolumePanel {
                         },
                         cx,
                     ),
-                ))
+                )
             })
-            .into_any_element()
+        }))
     }
 }
 

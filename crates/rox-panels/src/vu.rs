@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    Rgba, SharedString, Subscription, TextRun, WeakEntity, Window, canvas, div, fill,
-    linear_color_stop, linear_gradient, point, prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Hsla, Rgba,
+    SharedString, Subscription, TextRun, WeakEntity, Window, canvas, div, fill, linear_color_stop,
+    linear_gradient, point, prelude::*, px, size,
 };
 use gpui_component::Sizable as _;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -21,14 +21,15 @@ use serde::{Deserialize, Serialize};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
-use crate::design::{palette, tokens};
+use crate::design::palette;
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, choices_shared, setting_row, toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section,
+    choices_shared, toggle,
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
 use crate::spectrum::{
-    CURVE_DEFAULT, Gradient, Orientation, curve_row, gradient_choices, orientation_choices,
+    CURVE_DEFAULT, Gradient, Orientation, curve_rows, gradient_choices, orientation_choices,
     ramp_color,
 };
 
@@ -605,12 +606,13 @@ impl PanelSettings for VuPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -636,210 +638,216 @@ impl PanelSettings for VuPanel {
         let seg_h = self.config.seg_h();
         let seg_gap = self.config.seg_gap();
         let gravity = self.config.gravity();
-        let meter = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("vu-channels"),
-                Some(rox_i18n::t!("vu-channels.description")),
-                choices_shared(
-                    &channel_choices(),
-                    self.config.channels,
-                    |this: &mut Self, channels, cx| {
-                        this.config.channels = channels;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("vu-style"),
-                Some(rox_i18n::t!("vu-style.description")),
-                choices_shared(
-                    &style_choices(),
-                    self.config.style,
-                    |this: &mut Self, style, cx| {
-                        this.config.style = style;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("vu-orientation"),
-                Some(rox_i18n::t!("vu-orientation.description")),
-                choices_shared(
-                    &orientation_choices(),
-                    self.config.orientation,
-                    |this: &mut Self, orientation, cx| {
-                        this.config.orientation = orientation;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("vu-ballistics"),
-                Some(rox_i18n::t!("vu-ballistics.description")),
-                choices_shared(
-                    &ballistics_choices(),
-                    self.config.ballistics,
-                    |this: &mut Self, ballistics, cx| {
-                        this.config.ballistics = ballistics;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.style == MeterStyle::Segments, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("vu-segment-height"),
-                    Some(rox_i18n::t!("vu-segment-height.description")),
-                    settings_ui::scalar(
-                        &self.seg_h_scrub,
-                        &self.value_edit,
-                        seg_h,
-                        settings_ui::span(SEG_H_MIN, SEG_H_MAX, " px"),
-                        Self::set_seg_height,
-                        cx,
-                    ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("vu-segment-gap"),
-                    Some(rox_i18n::t!("vu-segment-gap.description")),
-                    settings_ui::scalar(
-                        &self.seg_gap_scrub,
-                        &self.value_edit,
-                        seg_gap,
-                        settings_ui::span(SEG_GAP_MIN, SEG_GAP_MAX, " px"),
-                        Self::set_seg_gap,
-                        cx,
-                    ),
-                ))
-            });
-        let color = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("vu-gradient-mode"),
-                Some(rox_i18n::t!("vu-gradient-mode.description")),
-                choices_shared(
-                    &gradient_choices(),
-                    self.config.gradient,
-                    |this: &mut Self, gradient, cx| {
-                        this.config.gradient = gradient;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when_some(
-                (self.config.gradient == Gradient::Custom)
-                    .then(|| self.ramp_pickers.clone())
-                    .flatten(),
-                |d, [lo, hi]| {
-                    d.child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-base-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
-                        ColorPicker::new(&lo).small(),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("spectrum-gradient-tip-color"),
-                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
-                        ColorPicker::new(&hi).small(),
-                    ))
-                },
-            )
-            .when(self.config.gradient != Gradient::Off, |d| {
-                d.child(curve_row(
-                    &self.curve_scrub,
-                    &self.value_edit,
-                    self.config.gradient_curve,
-                    |this: &mut Self, curve, cx| {
-                        this.config.gradient_curve = curve;
-                        cx.notify();
-                    },
-                    cx,
-                ))
-            });
-        let peaks = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("vu-peak-caps"),
-                Some(rox_i18n::t!("vu-peak-caps.description")),
-                toggle(
-                    self.config.caps,
-                    |this: &mut Self, on, cx| {
-                        this.config.caps = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("vu-cap-gravity"),
-                Some(rox_i18n::t!("vu-cap-gravity.description")),
-                panel::value_slider_edit(
-                    &self.gravity_scrub,
-                    &self.value_edit,
-                    (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
-                    format!("{gravity:.2}"),
-                    format!("{gravity:.2}"),
-                    |v| (v / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
-                    Self::set_gravity,
-                    cx,
-                ),
-            ));
-        div()
-            .flex()
-            .flex_col()
-            .gap(settings_ui::SECTION_GAP)
-            .child(settings_ui::section(
+
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::GAUGE,
                 rox_i18n::t!("vu-section-meter"),
                 None,
-                meter,
+                |rows| {
+                    rows.keyed(
+                        "vu-channels",
+                        &[],
+                        choices_shared(
+                            &channel_choices(),
+                            self.config.channels,
+                            |this: &mut Self, channels, cx| {
+                                this.config.channels = channels;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "vu-style",
+                        &[],
+                        choices_shared(
+                            &style_choices(),
+                            self.config.style,
+                            |this: &mut Self, style, cx| {
+                                this.config.style = style;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "vu-orientation",
+                        &[],
+                        choices_shared(
+                            &orientation_choices(),
+                            self.config.orientation,
+                            |this: &mut Self, orientation, cx| {
+                                this.config.orientation = orientation;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "vu-ballistics",
+                        &[],
+                        choices_shared(
+                            &ballistics_choices(),
+                            self.config.ballistics,
+                            |this: &mut Self, ballistics, cx| {
+                                this.config.ballistics = ballistics;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when(self.config.style == MeterStyle::Segments, |rows| {
+                        rows.keyed(
+                            "vu-segment-height",
+                            &[],
+                            settings_ui::scalar(
+                                &self.seg_h_scrub,
+                                &self.value_edit,
+                                seg_h,
+                                settings_ui::span(SEG_H_MIN, SEG_H_MAX, " px"),
+                                Self::set_seg_height,
+                                cx,
+                            ),
+                        )
+                        .keyed(
+                            "vu-segment-gap",
+                            &[],
+                            settings_ui::scalar(
+                                &self.seg_gap_scrub,
+                                &self.value_edit,
+                                seg_gap,
+                                settings_ui::span(SEG_GAP_MIN, SEG_GAP_MAX, " px"),
+                                Self::set_seg_gap,
+                                cx,
+                            ),
+                        )
+                    })
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::PALETTE,
                 rox_i18n::t!("viz-section-color"),
                 None,
-                color,
+                |rows| {
+                    rows.keyed(
+                        "vu-gradient-mode",
+                        &[],
+                        choices_shared(
+                            &gradient_choices(),
+                            self.config.gradient,
+                            |this: &mut Self, gradient, cx| {
+                                this.config.gradient = gradient;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when_some(
+                        (self.config.gradient == Gradient::Custom)
+                            .then(|| self.ramp_pickers.clone())
+                            .flatten(),
+                        |rows, [lo, hi]| {
+                            rows.keyed(
+                                "spectrum-gradient-base-color",
+                                &[],
+                                ColorPicker::new(&lo).small(),
+                            )
+                            .keyed(
+                                "spectrum-gradient-tip-color",
+                                &[],
+                                ColorPicker::new(&hi).small(),
+                            )
+                        },
+                    )
+                    .when(self.config.gradient != Gradient::Off, |rows| {
+                        curve_rows(
+                            rows,
+                            &self.curve_scrub,
+                            &self.value_edit,
+                            self.config.gradient_curve,
+                            |this: &mut Self, curve, cx| {
+                                this.config.gradient_curve = curve;
+                                cx.notify();
+                            },
+                            cx,
+                        )
+                    })
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::FLAG,
                 rox_i18n::t!("viz-section-peaks"),
                 None,
-                peaks,
+                |rows| {
+                    rows.keyed(
+                        "vu-peak-caps",
+                        &[],
+                        toggle(
+                            self.config.caps,
+                            |this: &mut Self, on, cx| {
+                                this.config.caps = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        "vu-cap-gravity",
+                        &[],
+                        panel::value_slider_edit(
+                            &self.gravity_scrub,
+                            &self.value_edit,
+                            (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
+                            format!("{gravity:.2}"),
+                            format!("{gravity:.2}"),
+                            |v| (v / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
+                            Self::set_gravity,
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .child(settings_ui::section(
+            .section(Section::new(
+                q,
+                icons::HASH,
                 rox_i18n::t!("viz-section-scale"),
                 None,
-                setting_row(
-                    rox_i18n::t!("vu-db-scale"),
-                    Some(rox_i18n::t!("vu-db-scale.description")),
-                    toggle(
-                        self.config.scale,
-                        |this: &mut Self, on, cx| {
-                            this.config.scale = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ),
+                |rows| {
+                    rows.keyed(
+                        "vu-db-scale",
+                        &[],
+                        toggle(
+                            self.config.scale,
+                            |this: &mut Self, on, cx| {
+                                this.config.scale = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                },
             ))
-            .into_any_element()
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        Some(
-            settings_ui::section(
-                rox_i18n::t!("viz-section-playback"),
-                None,
-                setting_row(
-                    rox_i18n::t!("vu-hold-on-pause"),
-                    Some(rox_i18n::t!("vu-hold-on-pause.description")),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::PAUSE,
+            rox_i18n::t!("viz-section-playback"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "vu-hold-on-pause",
+                    &[],
                     toggle(
                         self.config.freeze,
                         |this: &mut Self, on, cx| {
@@ -848,10 +856,9 @@ impl PanelSettings for VuPanel {
                         },
                         cx,
                     ),
-                ),
-            )
-            .into_any_element(),
-        )
+                )
+            },
+        )]
     }
 }
 

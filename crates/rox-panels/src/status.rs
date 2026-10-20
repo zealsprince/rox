@@ -17,7 +17,10 @@ use crate::assets::icons;
 use crate::catalog::{Library, LibraryEvent};
 use crate::design::{palette, tokens};
 use crate::group_head;
-use crate::panel::{self, Align, AppState, PanelChrome, PanelSettings, align_row, justify};
+use crate::panel::{
+    self, Align, AppState, PageBody, PanelChrome, PanelSettings, Query, Section, align_rows,
+    justify,
+};
 use crate::panel_settings;
 use crate::selection::{Selection, SelectionEvent};
 use crate::transport::transport_panel;
@@ -532,28 +535,26 @@ impl PanelSettings for StatusPanel {
         &[("Layout", icons::ALIGN_LEFT)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(align_row(
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            align_rows(
+                rows,
                 self.config.align,
                 |this: &mut Self, align, cx| {
                     this.config.align = align;
                     cx.notify();
                 },
                 cx,
-            ))
-            .child(panel::setting_block(
-                rox_i18n::t!("status-readouts"),
-                Some(rox_i18n::t!("status-readouts.description")),
-                None,
+            )
+            .block(
+                "status-readouts",
+                &["order", "reorder", "hide", "show"],
                 panel::arrange_editor(
                     "status-items",
                     ITEMS,
@@ -564,8 +565,8 @@ impl PanelSettings for StatusPanel {
                     },
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 }
 

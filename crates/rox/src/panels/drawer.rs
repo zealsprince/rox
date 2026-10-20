@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    Along, AnyElement, App, Axis, Bounds, Context, Div, Entity, EntityId, EventEmitter,
-    FocusHandle, Focusable, MouseButton, MouseMoveEvent, Pixels, SharedString, Subscription,
-    WeakEntity, Window, canvas, div, point, prelude::*, px, size,
+    Along, App, Axis, Bounds, Context, Div, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    MouseButton, MouseMoveEvent, Pixels, SharedString, Subscription, WeakEntity, Window, canvas,
+    div, point, prelude::*, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu};
@@ -26,10 +26,10 @@ use crate::workspace::Workspace;
 use rox_design::assets::icons;
 use rox_design::palette::Sides;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::ui as settings_ui;
-use rox_panel_kit::{ScrubState, choices_shared, setting_row};
+use rox_panel_kit::{ScrubState, choices_shared};
 use rox_services::selection::SelectionEvent;
 
 const HANDLE: Pixels = px(18.);
@@ -660,106 +660,107 @@ impl PanelSettings for DrawerPanel {
         cx.notify();
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         let reveal = self.config.reveal.clamp(MIN_REVEAL, 1.0);
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(setting_row(
-                    rox_i18n::t!("drawer-edge"),
-                    Some(rox_i18n::t!("drawer-edge.description")),
-                    choices_shared(
-                        &[
-                            (rox_i18n::t!("drawer-edge-top"), DrawerEdge::Top),
-                            (rox_i18n::t!("drawer-edge-bottom"), DrawerEdge::Bottom),
-                            (rox_i18n::t!("side-left"), DrawerEdge::Left),
-                            (rox_i18n::t!("side-right"), DrawerEdge::Right),
-                        ],
-                        self.config.edge,
-                        |this: &mut Self, edge, cx| {
-                            this.config.edge = edge;
+        let with_handle = self.config.open_on == DrawerTrigger::Selection;
+        vec![Section::bare(q, |rows| {
+            rows.keyed(
+                "drawer-edge",
+                &["top", "bottom", "left", "right", "side"],
+                choices_shared(
+                    &[
+                        (rox_i18n::t!("drawer-edge-top"), DrawerEdge::Top),
+                        (rox_i18n::t!("drawer-edge-bottom"), DrawerEdge::Bottom),
+                        (rox_i18n::t!("side-left"), DrawerEdge::Left),
+                        (rox_i18n::t!("side-right"), DrawerEdge::Right),
+                    ],
+                    self.config.edge,
+                    |this: &mut Self, edge, cx| {
+                        this.config.edge = edge;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
+            .keyed(
+                "drawer-open-on",
+                &["hover", "selection", "trigger"],
+                choices_shared(
+                    &[
+                        (rox_i18n::t!("drawer-trigger-hover"), DrawerTrigger::Hover),
+                        (
+                            rox_i18n::t!("drawer-trigger-selection"),
+                            DrawerTrigger::Selection,
+                        ),
+                    ],
+                    self.config.open_on,
+                    |this: &mut Self, trigger, cx| {
+                        this.config.open_on = trigger;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
+            .when(with_handle, |rows| {
+                rows.keyed(
+                    "drawer-handle",
+                    &["grip", "show", "hide"],
+                    panel::toggle(
+                        !self.config.hide_handle,
+                        |this: &mut Self, shown, cx| {
+                            this.config.hide_handle = !shown;
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("drawer-open-on"),
-                    Some(rox_i18n::t!("drawer-open-on.description")),
+                )
+                .keyed(
+                    "drawer-answers",
+                    &["main", "elsewhere", "pick", "scope"],
                     choices_shared(
                         &[
-                            (rox_i18n::t!("drawer-trigger-hover"), DrawerTrigger::Hover),
-                            (
-                                rox_i18n::t!("drawer-trigger-selection"),
-                                DrawerTrigger::Selection,
-                            ),
+                            (rox_i18n::t!("drawer-scope-main"), DrawerScope::Main),
+                            (rox_i18n::t!("drawer-scope-elsewhere"), DrawerScope::Any),
                         ],
-                        self.config.open_on,
-                        |this: &mut Self, trigger, cx| {
-                            this.config.open_on = trigger;
+                        self.config.scope,
+                        |this: &mut Self, scope, cx| {
+                            this.config.scope = scope;
                             cx.notify();
                         },
                         cx,
                     ),
-                ))
-                .when(self.config.open_on == DrawerTrigger::Selection, |d| {
-                    d.child(setting_row(
-                        rox_i18n::t!("drawer-handle"),
-                        Some(rox_i18n::t!("drawer-handle.description")),
-                        panel::toggle(
-                            !self.config.hide_handle,
-                            |this: &mut Self, shown, cx| {
-                                this.config.hide_handle = !shown;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(setting_row(
-                        rox_i18n::t!("drawer-answers"),
-                        Some(rox_i18n::t!("drawer-answers.description")),
-                        choices_shared(
-                            &[
-                                (rox_i18n::t!("drawer-scope-main"), DrawerScope::Main),
-                                (rox_i18n::t!("drawer-scope-elsewhere"), DrawerScope::Any),
-                            ],
-                            self.config.scope,
-                            |this: &mut Self, scope, cx| {
-                                this.config.scope = scope;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                })
-                .child(setting_row(
-                    rox_i18n::t!("drawer-reveal"),
-                    Some(rox_i18n::t!("drawer-reveal.description")),
-                    settings_ui::scalar(
-                        &self.reveal_scrub,
-                        &self.value_edit,
-                        reveal * 100.0,
-                        settings_ui::span(MIN_REVEAL * 100., 100., "%").hard(),
-                        |this: &mut Self, percent, cx| this.set_reveal(percent / 100.0, cx),
-                        cx,
-                    ),
-                ))
-                .child(setting_row(
-                    rox_i18n::t!("drawer-dim"),
-                    Some(rox_i18n::t!("drawer-dim.description")),
-                    settings_ui::scalar(
-                        &self.dim_scrub,
-                        &self.value_edit,
-                        self.config.dim.clamp(0.0, 1.0) * 100.0,
-                        settings_ui::span(0., 100., "%").hard(),
-                        |this: &mut Self, percent, cx| this.set_dim(percent / 100.0, cx),
-                        cx,
-                    ),
-                ))
-                .into_any_element(),
-        )
+                )
+            })
+            .keyed(
+                "drawer-reveal",
+                &["cover", "percent", "size"],
+                settings_ui::scalar(
+                    &self.reveal_scrub,
+                    &self.value_edit,
+                    reveal * 100.0,
+                    settings_ui::span(MIN_REVEAL * 100., 100., "%").hard(),
+                    |this: &mut Self, percent, cx| this.set_reveal(percent / 100.0, cx),
+                    cx,
+                ),
+            )
+            .keyed(
+                "drawer-dim",
+                &["darken", "percent"],
+                settings_ui::scalar(
+                    &self.dim_scrub,
+                    &self.value_edit,
+                    self.config.dim.clamp(0.0, 1.0) * 100.0,
+                    settings_ui::span(0., 100., "%").hard(),
+                    |this: &mut Self, percent, cx| this.set_dim(percent / 100.0, cx),
+                    cx,
+                ),
+            )
+        })]
     }
 }
 

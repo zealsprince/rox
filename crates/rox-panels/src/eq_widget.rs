@@ -6,9 +6,8 @@
 //! [`crate::player::observe_eq`].
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, Path, Pixels,
-    Point, SharedString, Subscription, WeakEntity, Window, canvas, div, fill, point, prelude::*,
-    px, svg,
+    App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, Path, Pixels, Point,
+    SharedString, Subscription, WeakEntity, Window, canvas, div, fill, point, prelude::*, px, svg,
 };
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -19,10 +18,9 @@ use rox_playback::eq::{BANDS, FREQ_MAX, FREQ_MIN, GAIN_MAX_DB};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, setting_row, toggle};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section, toggle};
 use crate::panel_settings;
 use crate::player;
-use crate::settings::ui as settings_ui;
 
 /// Under this a band is neither audible nor visible in a 16 px sparkline.
 const ACTIVE_DB: f32 = 0.05;
@@ -391,61 +389,70 @@ impl PanelSettings for EqWidgetPanel {
         cx.notify();
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut rows = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("eq-click-section"),
-                Some(rox_i18n::t!("eq-click-section.description")),
-                panel::choices_shared(
-                    &[
-                        (rox_i18n::t!("eq-click-open"), EqClick::Open),
-                        (rox_i18n::t!("eq-click-toggle"), EqClick::Toggle),
-                        (rox_i18n::t!("eq-click-nothing"), EqClick::Nothing),
-                    ],
-                    self.config.click,
-                    |this: &mut Self, click, cx| {
-                        this.config.click = click;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("eq-readout-section"),
-                Some(rox_i18n::t!("eq-readout-section.description")),
-                panel::choices_shared(
-                    &[
-                        (rox_i18n::t!("eq-readout-icon"), EqReadout::Icon),
-                        (rox_i18n::t!("eq-readout-curve"), EqReadout::Curve),
-                        (rox_i18n::t!("choice-both"), EqReadout::Both),
-                    ],
-                    self.config.readout,
-                    |this: &mut Self, readout, cx| {
-                        this.config.readout = readout;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
         // Nothing to pin a badge to once the icon is gone.
-        if self.config.readout != EqReadout::Curve {
-            rows = rows.child(setting_row(
-                rox_i18n::t!("eq-band-badge"),
-                Some(rox_i18n::t!("eq-band-badge.description")),
-                toggle(
-                    self.config.badge,
-                    |this: &mut Self, on, cx| {
-                        this.config.badge = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        }
-        Some(settings_ui::section(rox_i18n::t!("eq-widget-section"), None, rows).into_any_element())
+        let badge_row = self.config.readout != EqReadout::Curve;
+        vec![Section::new(
+            q,
+            icons::AUDIO_LINES,
+            rox_i18n::t!("eq-widget-section"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "eq-click-section",
+                    &["open", "toggle", "curve"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("eq-click-open"), EqClick::Open),
+                            (rox_i18n::t!("eq-click-toggle"), EqClick::Toggle),
+                            (rox_i18n::t!("eq-click-nothing"), EqClick::Nothing),
+                        ],
+                        self.config.click,
+                        |this: &mut Self, click, cx| {
+                            this.config.click = click;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "eq-readout-section",
+                    &["icon", "sparkline", "curve", "both"],
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("eq-readout-icon"), EqReadout::Icon),
+                            (rox_i18n::t!("eq-readout-curve"), EqReadout::Curve),
+                            (rox_i18n::t!("choice-both"), EqReadout::Both),
+                        ],
+                        self.config.readout,
+                        |this: &mut Self, readout, cx| {
+                            this.config.readout = readout;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(badge_row, |rows| {
+                    rows.keyed(
+                        "eq-band-badge",
+                        &["count", "bands", "badge"],
+                        toggle(
+                            self.config.badge,
+                            |this: &mut Self, on, cx| {
+                                this.config.badge = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                })
+            },
+        )]
     }
 }
 

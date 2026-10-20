@@ -9,8 +9,8 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
-    Task, WeakEntity, Window, div, prelude::*, px, svg,
+    App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Task,
+    WeakEntity, Window, div, prelude::*, px, svg,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
@@ -21,9 +21,8 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, setting_row, toggle};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section, toggle};
 use crate::panel_settings;
-use crate::settings::ui as settings_ui;
 
 /// How long the widget waits before re-walking. A reload raises
 /// `LibraryEvent::Updated` twice and a scan once per batch, so one edit
@@ -269,12 +268,16 @@ impl HealthWidgetPanel {
 }
 
 fn check_label(check: Check) -> SharedString {
+    rox_i18n::t!(check_key(check))
+}
+
+fn check_key(check: Check) -> &'static str {
     match check {
-        Check::Title => rox_i18n::t!("health-tile-title"),
-        Check::Artist => rox_i18n::t!("health-tile-artist"),
-        Check::Album => rox_i18n::t!("health-tile-album"),
-        Check::Genre => rox_i18n::t!("health-tile-genre"),
-        Check::Year => rox_i18n::t!("health-tile-year"),
+        Check::Title => "health-tile-title",
+        Check::Artist => "health-tile-artist",
+        Check::Album => "health-tile-album",
+        Check::Genre => "health-tile-genre",
+        Check::Year => "health-tile-year",
     }
 }
 
@@ -346,73 +349,81 @@ impl PanelSettings for HealthWidgetPanel {
         cx.notify();
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut checks = div().flex().flex_col().gap(tokens::SPACE_MD).child(
-            div()
-                .text_xs()
-                .text_color(palette::text_muted())
-                .child(rox_i18n::t!("health-checks-menu.description")),
+    fn behavior_section(
+        &mut self,
+        q: &Query,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Section> {
+        let checks = Section::new(
+            q,
+            icons::LIST_CHECKS,
+            rox_i18n::t!("health-checks-menu"),
+            None,
+            |mut rows| {
+                for check in Check::ALL {
+                    rows = rows.keyed(
+                        check_key(check),
+                        &[],
+                        toggle(
+                            self.config.checks.on(check),
+                            move |this: &mut Self, on, cx| {
+                                if this.config.checks.on(check) != on {
+                                    this.config.checks.flip(check);
+                                }
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    );
+                }
+                rows
+            },
         );
-        for check in Check::ALL {
-            checks = checks.child(setting_row(
-                check_label(check),
-                None,
-                toggle(
-                    self.config.checks.on(check),
-                    move |this: &mut Self, on, cx| {
-                        if this.config.checks.on(check) != on {
-                            this.config.checks.flip(check);
-                        }
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        }
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(settings_ui::SECTION_GAP)
-                .child(settings_ui::section(
-                    rox_i18n::t!("health-checks-menu"),
-                    None,
-                    checks,
-                ))
-                .child(settings_ui::section(
-                    rox_i18n::t!("health-readout-section"),
-                    None,
-                    setting_row(
-                        rox_i18n::t!("health-show-percent"),
-                        Some(rox_i18n::t!("health-show-percent.description")),
-                        toggle(
-                            self.config.show_percent,
-                            |this: &mut Self, on, cx| {
-                                this.config.show_percent = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
+
+        let readout = Section::new(
+            q,
+            icons::GAUGE,
+            rox_i18n::t!("health-readout-section"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "health-show-percent",
+                    &["coverage", "percentage"],
+                    toggle(
+                        self.config.show_percent,
+                        |this: &mut Self, on, cx| {
+                            this.config.show_percent = on;
+                            cx.notify();
+                        },
+                        cx,
                     ),
-                ))
-                .child(settings_ui::section(
-                    rox_i18n::t!("health-click-section"),
-                    None,
-                    setting_row(
-                        rox_i18n::t!("health-open-on-click"),
-                        Some(rox_i18n::t!("health-open-on-click.description")),
-                        toggle(
-                            self.config.open_on_click,
-                            |this: &mut Self, on, cx| {
-                                this.config.open_on_click = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
+                )
+            },
+        );
+
+        let click = Section::new(
+            q,
+            icons::APP_WINDOW,
+            rox_i18n::t!("health-click-section"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "health-open-on-click",
+                    &["click", "open", "window"],
+                    toggle(
+                        self.config.open_on_click,
+                        |this: &mut Self, on, cx| {
+                            this.config.open_on_click = on;
+                            cx.notify();
+                        },
+                        cx,
                     ),
-                ))
-                .into_any_element(),
-        )
+                )
+            },
+        );
+
+        vec![checks, readout, click]
     }
 }
 

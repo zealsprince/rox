@@ -25,7 +25,7 @@ use crate::assets::icons;
 use crate::bookmark_ui;
 use crate::catalog::{LibraryEvent, SortNames};
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings};
+use crate::panel::{self, AppState, PageBody, PanelChrome, PanelSettings, Query, Section};
 use crate::panel_settings;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost};
@@ -730,23 +730,29 @@ impl PanelSettings for BookmarksPanel {
         &[("View", icons::ROWS_3)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_block(
-                rox_i18n::t!("library-columns"),
-                Some(rox_i18n::t!("panel-columns-description")),
-                None,
-                track_columns::checklist(&columns(), self, cx),
-            ))
-            .into_any_element()
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            // Its description is a shared key, not `library-columns.description`.
+            rows.labelled(
+                &rox_i18n::t!("library-columns"),
+                &["columns", "fields"],
+                || {
+                    panel::setting_block(
+                        rox_i18n::t!("library-columns"),
+                        Some(rox_i18n::t!("panel-columns-description")),
+                        None,
+                        track_columns::checklist(&columns(), self, cx),
+                    )
+                    .into_any_element()
+                },
+            )
+        }))
     }
 }
 

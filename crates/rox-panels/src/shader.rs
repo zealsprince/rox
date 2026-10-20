@@ -16,9 +16,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    AnyElement, App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable,
-    PathPromptOptions, SharedString, Subscription, UserShaderId, WeakEntity, Window, canvas, div,
-    prelude::*, px,
+    App, Context, Div, EntityId, EventEmitter, FocusHandle, Focusable, PathPromptOptions,
+    SharedString, Subscription, UserShaderId, WeakEntity, Window, canvas, div, prelude::*, px,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -31,10 +30,11 @@ use crate::design::{palette, tokens};
 // Aliased: this file is `panels::shader` and that one `panel::shader`.
 use crate::panel::shader::{self as surface, SlotTargets, SourceWatch};
 use crate::panel::{
-    self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit, setting_row, toggle,
+    self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section, ValueEdit,
+    toggle,
 };
 use crate::panel_settings;
-use crate::settings::ui::{self as settings_ui, SECTION_GAP, section};
+use crate::settings::ui as settings_ui;
 use crate::signal_ui::{self, routes::RouteEditState};
 
 /// Defined beside the approval gate, which has to know them: what ships
@@ -588,21 +588,22 @@ impl PanelSettings for ShaderPanel {
         &[("Source", icons::BLEND), ("Bindings", icons::SLIDERS)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         page: &'static str,
+        q: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> PageBody {
         match page {
-            "Bindings" => self.bindings_page(cx).into_any_element(),
-            _ => self.source_page(window, cx).into_any_element(),
+            "Bindings" => self.bindings_page(q, cx),
+            _ => self.source_page(q, window, cx),
         }
     }
 }
 
 impl ShaderPanel {
-    fn source_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn source_page(&mut self, q: &Query, window: &mut Window, cx: &mut Context<Self>) -> PageBody {
         let path = self.config.path.clone();
         let named = self.config.name.clone();
         // What runs, so a bundle's pool shader gets read before it runs.
@@ -647,71 +648,102 @@ impl ShaderPanel {
         }
         .render(window, cx);
 
-        let mut shader = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                rox_i18n::t!("shader-panel-run-shader"),
-                Some(rox_i18n::t!("shader-panel-run-shader.description")),
-                // Just the switch; an unread source still has the approval block above.
-                toggle(
-                    enabled,
-                    |this: &mut Self, on, cx| {
-                        this.config.enabled = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(picked);
-        if let Some(error) = error {
-            // A callout, since the switch above reads as on while nothing runs.
-            shader = shader.child(match surface::unsupported(&error) {
-                true => panel::banner(
-                    panel::Tone::Bad,
-                    surface::NO_PIPELINE_TITLE,
-                    vec![surface::NO_PIPELINE_NOTE.into()],
-                ),
-                false => panel::banner(
-                    panel::Tone::Bad,
-                    rox_i18n::t!("shader-panel-compile-title"),
-                    error
-                        .lines()
-                        .take(ERROR_LINES)
-                        .map(|line| SharedString::from(line.to_string()))
-                        .collect(),
-                ),
-            });
-        }
-        shader = shader.child(setting_row(
-            rox_i18n::t!("panel-run-when-idle"),
-            Some(
-                "Keep drawing while the audio is silent. Off, the shader parks where it \
-                 stands and the panel costs nothing"
-                    .into(),
+        // A callout, since the switch below reads as on while nothing runs.
+        let error_banner = error.map(|error| match surface::unsupported(&error) {
+            true => panel::banner(
+                panel::Tone::Bad,
+                surface::NO_PIPELINE_TITLE,
+                vec![surface::NO_PIPELINE_NOTE.into()],
             ),
-            toggle(
-                run_when_idle,
-                |this: &mut Self, on, cx| {
-                    this.config.run_when_idle = on;
-                    cx.notify();
-                },
-                cx,
+            false => panel::banner(
+                panel::Tone::Bad,
+                rox_i18n::t!("shader-panel-compile-title"),
+                error
+                    .lines()
+                    .take(ERROR_LINES)
+                    .map(|line| SharedString::from(line.to_string()))
+                    .collect(),
             ),
-        ));
+        });
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .children(
-                pending.map(|body| section(rox_i18n::t!("panel-awaiting-approval"), None, body)),
-            )
-            .child(section(rox_i18n::t!("panel-section-shader"), None, shader))
+        let mut page = PageBody::new();
+        if let Some(body) = pending {
+            page = page.section(Section::new(
+                q,
+                icons::ALERT,
+                rox_i18n::t!("panel-awaiting-approval"),
+                None,
+                |rows| {
+                    rows.custom(
+                        &["shader", "approve", "approval", "pending", "wgsl"],
+                        || body.into_any_element(),
+                    )
+                },
+            ));
+        }
+
+        page.section(Section::new(
+            q,
+            icons::BLEND,
+            rox_i18n::t!("panel-section-shader"),
+            None,
+            |rows| {
+                rows.keyed(
+                    "shader-panel-run-shader",
+                    &["shader", "wgsl", "effect", "run"],
+                    // Just the switch; an unread source still has the approval block above.
+                    toggle(
+                        enabled,
+                        |this: &mut Self, on, cx| {
+                            this.config.enabled = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .custom(
+                    &[
+                        "shader",
+                        "wgsl",
+                        "file",
+                        "reload",
+                        "source",
+                        "example",
+                        "preset",
+                        "workspace",
+                    ],
+                    || picked.into_any_element(),
+                )
+                .when_some(error_banner, |rows, banner| {
+                    rows.custom(&["shader", "error", "compile"], || {
+                        banner.into_any_element()
+                    })
+                })
+                // The description drifts from `panel-run-when-idle.description`
+                // (predates that shared key), so this matches by keyword rather
+                // than claiming the key's own text.
+                .row_dyn(
+                    &["shader", "idle", "pause", "freeze", "silent"],
+                    rox_i18n::t!("panel-run-when-idle"),
+                    Some(
+                        "Keep drawing while the audio is silent. Off, the shader parks where it \
+                         stands and the panel costs nothing"
+                            .into(),
+                    ),
+                    toggle(
+                        run_when_idle,
+                        |this: &mut Self, on, cx| {
+                            this.config.run_when_idle = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            },
+        ))
     }
 
-    fn bindings_page(&mut self, cx: &mut Context<Self>) -> Div {
+    fn bindings_page(&mut self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         // Off what runs, so a pool shader's slot names show.
         let running = self.running();
         let labels = surface::slot_labels(&running);
@@ -749,16 +781,29 @@ impl ShaderPanel {
         }
         .render(cx);
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::ACTIVITY,
                 rox_i18n::t!("shader-panel-section-routes"),
                 Some(add.into_any_element()),
-                editor.list(cx),
+                |rows| {
+                    rows.custom(&["shader", "signal", "route", "bind", "modulation"], || {
+                        editor.list(cx).into_any_element()
+                    })
+                },
             ))
-            .child(section(rox_i18n::t!("panel-section-slots"), None, slots))
+            .section(Section::new(
+                q,
+                icons::GAUGE,
+                rox_i18n::t!("panel-section-slots"),
+                None,
+                |rows| {
+                    rows.custom(&["shader", "slot", "knob", "manual"], || {
+                        slots.into_any_element()
+                    })
+                },
+            ))
     }
 }
 

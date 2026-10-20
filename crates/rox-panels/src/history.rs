@@ -28,7 +28,7 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::group_head::Headers;
-use crate::panel::{self, AppState, PanelChrome, PanelSettings};
+use crate::panel::{self, AppState, PageBody, PanelChrome, PanelSettings, Query, Section};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
@@ -1403,58 +1403,64 @@ impl PanelSettings for HistoryPanel {
         &[("Content", icons::CLOCK)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> PageBody {
         let recent = self.config.view == HistoryView::Recent;
         let never = self.config.view == HistoryView::Never;
         let desc = self.config.never_desc;
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                rox_i18n::t!("history-view-row"),
-                Some(rox_i18n::t!("history-view-row.description")),
+        PageBody::new().section(Section::bare(q, |rows| {
+            rows.keyed(
+                "history-view-row",
+                &["recent", "most played", "never played", "listens"],
                 panel::choices_shared(
                     &views(),
                     self.config.view,
                     |this: &mut Self, view, cx| this.set_view(view, cx),
                     cx,
                 ),
-            ))
-            .when(never, |d| {
-                d.child(panel::setting_row(
-                    rox_i18n::t!("history-sort-menu"),
-                    Some(rox_i18n::t!("history-sort-menu.description")),
+            )
+            .when(never, |rows| {
+                rows.keyed(
+                    "history-sort-menu",
+                    &["order", "date added", "browse"],
                     panel::choices_shared(
                         &never_sorts(),
                         self.config.never_sort,
                         |this: &mut Self, sort, cx| this.set_never_sort(sort, cx),
                         cx,
                     ),
-                ))
-                .child(panel::setting_row(
-                    rox_i18n::t!("history-descending"),
-                    Some(rox_i18n::t!("history-descending.description")),
+                )
+                .keyed(
+                    "history-descending",
+                    &["reverse", "order", "sort"],
                     panel::toggle(
                         desc,
                         |this: &mut Self, on, cx| this.set_never_desc(on, cx),
                         cx,
                     ),
-                ))
+                )
             })
-            .child(panel::setting_block(
-                rox_i18n::t!("library-columns"),
-                Some(rox_i18n::t!("panel-columns-description")),
-                None,
-                track_columns::checklist(&columns(), self, cx),
-            ))
-            .when(recent, |d| {
-                d.child(panel::setting_row(
+            // Its description is a shared key, not `library-columns.description`.
+            .labelled(
+                &rox_i18n::t!("library-columns"),
+                &["columns", "fields"],
+                || {
+                    panel::setting_block(
+                        rox_i18n::t!("library-columns"),
+                        Some(rox_i18n::t!("panel-columns-description")),
+                        None,
+                        track_columns::checklist(&columns(), self, cx),
+                    )
+                    .into_any_element()
+                },
+            )
+            .when(recent, |rows| {
+                rows.row(
                     rox_i18n::t!("panel-headings"),
                     Some(rox_i18n::t!("history-headings")),
                     panel::choices_shared(
@@ -1467,11 +1473,11 @@ impl PanelSettings for HistoryPanel {
                         |this: &mut Self, headers, cx| this.set_headers(headers, cx),
                         cx,
                     ),
-                ))
+                )
             })
-            .child(panel::setting_row(
-                rox_i18n::t!("library-stripes"),
-                Some(rox_i18n::t!("library-stripes.description")),
+            .keyed(
+                "library-stripes",
+                &["zebra", "stripes", "rows"],
                 panel::toggle(
                     self.config.stripes,
                     |this: &mut Self, on, cx| {
@@ -1480,22 +1486,32 @@ impl PanelSettings for HistoryPanel {
                     },
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
-    fn behavior(
+    fn behavior_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        Some(crate::query::shared_query::search_section(
-            self.config.search,
-            |this: &mut Self, on, cx| this.set_search(on, cx),
-            self.config.query_source,
-            |this: &mut Self, source, cx| this.pick_query_source(source, cx),
-            cx,
-        ))
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::SEARCH,
+            rox_i18n::t!("query-search"),
+            None,
+            |rows| {
+                crate::query::shared_query::search_rows(
+                    rows,
+                    self.config.search,
+                    |this: &mut Self, on, cx| this.set_search(on, cx),
+                    self.config.query_source,
+                    |this: &mut Self, source, cx| this.pick_query_source(source, cx),
+                    cx,
+                )
+            },
+        )]
     }
 }
 

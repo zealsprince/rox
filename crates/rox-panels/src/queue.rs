@@ -27,7 +27,7 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::group_head::Headers;
-use crate::panel::{self, AppState, PanelChrome, PanelSettings};
+use crate::panel::{self, AppState, PageBody, PanelChrome, PanelSettings, Query, Section};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
@@ -1329,23 +1329,31 @@ impl PanelSettings for QueuePanel {
         &[("View", icons::ROWS_3)]
     }
 
-    fn page(
+    fn page_body(
         &mut self,
         _page: &'static str,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_block(
-                rox_i18n::t!("library-columns"),
-                Some(rox_i18n::t!("panel-columns-description")),
-                None,
-                track_columns::checklist(&columns(), self, cx),
-            ))
-            .child(panel::setting_row(
+    ) -> PageBody {
+        PageBody::new().section(Section::bare(q, |rows| {
+            // Its description is a shared key, not `library-columns.description`.
+            let rows = rows.labelled(
+                &rox_i18n::t!("library-columns"),
+                &["columns", "fields"],
+                || {
+                    panel::setting_block(
+                        rox_i18n::t!("library-columns"),
+                        Some(rox_i18n::t!("panel-columns-description")),
+                        None,
+                        track_columns::checklist(&columns(), self, cx),
+                    )
+                    .into_any_element()
+                },
+            );
+
+            // Its description is the queue-specific text, not `panel-headings.description`.
+            rows.row(
                 rox_i18n::t!("panel-headings"),
                 Some(rox_i18n::t!("queue-headings")),
                 panel::choices_shared(
@@ -1358,25 +1366,35 @@ impl PanelSettings for QueuePanel {
                     |this: &mut Self, headers, cx| this.set_headers(headers, cx),
                     cx,
                 ),
-            ))
-            .into_any_element()
+            )
+        }))
     }
 
-    fn behavior(
+    fn behavior_section(
         &mut self,
+        q: &Query,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        Some(crate::query::shared_query::search_section(
-            self.config.search,
-            |this: &mut Self, on, cx| this.set_search(on, cx),
-            self.config.query_source,
-            |this: &mut Self, source, cx| {
-                this.pick_query_source(source, cx);
-                this.save_config(cx);
+    ) -> Vec<Section> {
+        vec![Section::new(
+            q,
+            icons::SEARCH,
+            rox_i18n::t!("query-search"),
+            None,
+            |rows| {
+                crate::query::shared_query::search_rows(
+                    rows,
+                    self.config.search,
+                    |this: &mut Self, on, cx| this.set_search(on, cx),
+                    self.config.query_source,
+                    |this: &mut Self, source, cx| {
+                        this.pick_query_source(source, cx);
+                        this.save_config(cx);
+                    },
+                    cx,
+                )
             },
-            cx,
-        ))
+        )]
     }
 }
 

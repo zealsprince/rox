@@ -275,6 +275,11 @@ struct TargetCache {
     rev: u64,
     /// None for a station between announcements.
     built: Option<LyricsTarget>,
+    /// The online lyrics flag when `lookup` was read.
+    online: bool,
+    /// Whether a lookup can answer. Past the flag this reads the settings
+    /// file, so it's read with the target or when the flag flips, never per frame.
+    lookup: bool,
 }
 
 pub struct LyricsPanel {
@@ -417,6 +422,7 @@ impl LyricsPanel {
         // The revision is an atomic, the title a lock and two string clones, so
         // only read the title when the revision moved.
         let rev = self.live_rev(key, cx);
+        let online = providers::lyrics_online();
         if self.target.as_ref().map(|cache| (&cache.key, cache.rev)) != Some((key, rev)) {
             let song = (rev > 0)
                 .then(|| self.state.player.read(cx).live_title())
@@ -427,7 +433,14 @@ impl LyricsPanel {
                 key: key.clone(),
                 rev,
                 built,
+                online,
+                lookup: rox_services::enrichment::lyrics_available(),
             });
+        }
+
+        if let Some(cache) = self.target.as_mut().filter(|cache| cache.online != online) {
+            cache.online = online;
+            cache.lookup = rox_services::enrichment::lyrics_available();
         }
 
         self.target.as_ref().and_then(|cache| cache.built.as_ref())
@@ -670,16 +683,16 @@ impl LyricsPanel {
     }
 
     /// Open the match window. Nothing is written until the user confirms a pick.
-    /// Online lookups, or the shown track's plugin with its lyrics on. Off
-    /// the cached target, so it's cheap in a paint.
+    /// A lookup that can answer, or the shown track's plugin with its lyrics
+    /// on. Off the cached target, so it's cheap in a paint.
     fn can_look_up(&self) -> bool {
-        let plugin = self
-            .target
-            .as_ref()
-            .and_then(|cache| cache.built.as_ref())
-            .is_some_and(|target| target.plugin.is_some());
-
-        plugin || providers::lyrics_online()
+        self.target.as_ref().is_some_and(|cache| {
+            cache.lookup
+                || cache
+                    .built
+                    .as_ref()
+                    .is_some_and(|target| target.plugin.is_some())
+        })
     }
 
     fn open_match(&mut self, cx: &mut Context<Self>) {
@@ -1518,11 +1531,14 @@ impl LyricsPanel {
     /// track. Never runs on a marked track: the mark is there because a
     /// lookup got it wrong.
     fn maybe_auto_search(&mut self, subject: &Subject, cx: &mut Context<Self>) {
-        let Some(target) = self.target.as_ref().and_then(|cache| cache.built.as_ref()) else {
+        let Some(cache) = self.target.as_ref() else {
             return;
         };
-        let online = providers::lyrics_online();
-        if !self.config.auto_search || !(online || target.plugin.is_some()) {
+        let Some(target) = cache.built.as_ref() else {
+            return;
+        };
+        let lookup = cache.lookup;
+        if !self.config.auto_search || !(lookup || target.plugin.is_some()) {
             return;
         }
         if self.auto_tried.as_ref() == Some(subject) {
@@ -1555,8 +1571,8 @@ impl LyricsPanel {
 
                         let best = match mine {
                             Some(mine) => mine,
-                            None if online && named => {
-                                let found = providers::search_lyrics(&query).ok()?;
+                            None if lookup && named => {
+                                let found = rox_services::enrichment::search_lyrics(&query).ok()?;
                                 let best = found.into_iter().next()?;
                                 if best.confidence < AUTO_SAVE_CONFIDENCE {
                                     return None;

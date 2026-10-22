@@ -1,8 +1,11 @@
 //! Online enrichment providers per ADR 14: per-domain traits implemented
 //! by per-service modules, blocking calls, plain data out. A provider never
 //! touches a file; what it fetches goes through the existing write paths.
-//! Lookups return ranked candidates for the user to confirm.
+//! Lookups return ranked candidates for the user to confirm. The lyrics and
+//! metadata aggregates also take outside providers from the caller; the
+//! online flags cover the built-ins only.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -222,7 +225,7 @@ pub struct TrackQuery {
 #[derive(Clone)]
 pub struct LyricsCandidate {
     /// A built-in provider's name, or the plugin's label.
-    pub provider: std::borrow::Cow<'static, str>,
+    pub provider: Cow<'static, str>,
     pub artist: String,
     pub title: String,
     pub album: String,
@@ -230,26 +233,55 @@ pub struct LyricsCandidate {
     pub synced: bool,
     pub text: String,
     pub confidence: f32,
+    /// The provider's own view of the match, blended by the aggregate.
+    /// Built-ins leave it None.
+    pub hint: Option<f32>,
 }
 
 /// Returns candidates unscored; the aggregate ranks across providers with one scorer.
 pub trait LyricsProvider {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> Cow<'static, str>;
     fn search(&self, query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String>;
 }
 
-/// Ranked by confidence, not by which service answered (ADR 14).
-pub fn search_lyrics(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
-    if !lyrics_online() {
+/// The session cache key for an aggregate. Which providers answer is part of
+/// the answer, so the built-ins' flag and every extra's name are in it.
+fn providers_key(
+    query: &TrackQuery,
+    online: bool,
+    extra: impl Iterator<Item = Cow<'static, str>>,
+) -> String {
+    let names: Vec<Cow<'static, str>> = extra.collect();
+    format!(
+        "{}\u{1f}{online}\u{1f}{}",
+        query_key(query),
+        names.join(",")
+    )
+}
+
+/// Built-ins when the lyrics flag is on, plus `extra`, ranked together by
+/// confidence, not by which service answered (ADR 14).
+pub fn search_lyrics(
+    query: &TrackQuery,
+    extra: &[&dyn LyricsProvider],
+) -> Result<Vec<LyricsCandidate>, String> {
+    let online = lyrics_online();
+    let mut providers: Vec<&dyn LyricsProvider> = Vec::new();
+    if online {
+        providers.push(&lrclib::Lrclib);
+    }
+    providers.extend_from_slice(extra);
+    if providers.is_empty() {
         return Ok(Vec::new());
     }
+
+    let key = providers_key(query, online, extra.iter().map(|p| p.name()));
     static CACHE: OnceLock<SessionCache<Vec<LyricsCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    cache.get_or_compute(query_key(query), || {
-        let providers: &[&dyn LyricsProvider] = &[&lrclib::Lrclib];
+    cache.get_or_compute(key, || {
         let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         for candidate in &mut found {
-            candidate.confidence = confidence(query, candidate);
+            candidate.confidence = blend(confidence(query, candidate), candidate.hint);
         }
         found.sort_by(|a, b| {
             b.confidence
@@ -264,7 +296,7 @@ pub fn search_lyrics(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String>
 /// alone. Year, track, and disc are strings, the shape the writer takes.
 #[derive(Clone)]
 pub struct MetadataCandidate {
-    pub provider: &'static str,
+    pub provider: Cow<'static, str>,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -278,30 +310,45 @@ pub struct MetadataCandidate {
     pub disc_no: String,
     pub duration_secs: Option<f64>,
     pub confidence: f32,
+    /// The provider's own view of the match, blended by the aggregate.
+    /// Built-ins leave it None.
+    pub hint: Option<f32>,
 }
 
 pub trait MetadataProvider {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> Cow<'static, str>;
     fn search(&self, query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String>;
 }
 
-pub fn search_metadata(query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String> {
-    if !metadata_online() {
+/// Built-ins when the metadata flag is on, plus `extra`, ranked together.
+pub fn search_metadata(
+    query: &TrackQuery,
+    extra: &[&dyn MetadataProvider],
+) -> Result<Vec<MetadataCandidate>, String> {
+    let online = metadata_online();
+    let mut providers: Vec<&dyn MetadataProvider> = Vec::new();
+    if online {
+        providers.push(&musicbrainz::MusicBrainz);
+    }
+    providers.extend_from_slice(extra);
+    if providers.is_empty() {
         return Ok(Vec::new());
     }
+
+    let key = providers_key(query, online, extra.iter().map(|p| p.name()));
     static CACHE: OnceLock<SessionCache<Vec<MetadataCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    cache.get_or_compute(query_key(query), || {
-        let providers: &[&dyn MetadataProvider] = &[&musicbrainz::MusicBrainz];
+    cache.get_or_compute(key, || {
         let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         for candidate in &mut found {
-            candidate.confidence = score_fields(
+            let scored = score_fields(
                 query,
                 &candidate.title,
                 &candidate.artist,
                 &candidate.album,
                 candidate.duration_secs,
             );
+            candidate.confidence = blend(scored, candidate.hint);
         }
         found.sort_by(|a, b| {
             b.confidence
@@ -342,7 +389,7 @@ pub fn identify(
                 found
                     .into_iter()
                     .map(|mut candidate| {
-                        candidate.provider = "acoustid";
+                        candidate.provider = "acoustid".into();
                         candidate.confidence = hit.score;
                         candidate
                     })
@@ -444,6 +491,20 @@ fn confidence(query: &TrackQuery, candidate: &LyricsCandidate) -> f32 {
         &candidate.album,
         candidate.duration_secs,
     )
+}
+
+/// Weight of a provider's hint in the final score. rox's own text score keeps
+/// the rest, so a hint lifts a differently spelled match but a hinted junk
+/// match (text 0.6, hint 1.0) lands at 0.76, under the lyrics auto-save bar.
+pub const HINT_WEIGHT: f32 = 0.4;
+
+/// `scored` is rox's text score; a hint outside 0..1 is clamped.
+pub fn blend(scored: f32, hint: Option<f32>) -> f32 {
+    let blended = match hint {
+        Some(hint) => (1.0 - HINT_WEIGHT) * scored + HINT_WEIGHT * hint.clamp(0.0, 1.0),
+        None => scored,
+    };
+    blended.clamp(0.0, 1.0)
 }
 
 /// Field-based so lyrics and metadata candidates share one scorer.
@@ -599,6 +660,7 @@ mod tests {
             synced: false,
             text: String::new(),
             confidence: 0.0,
+            hint: None,
         }
     }
 
@@ -849,5 +911,178 @@ mod tests {
             ),
         );
         assert!(score > 0.8);
+    }
+
+    #[test]
+    fn blend_weights_the_hint_at_forty_percent() {
+        assert!((blend(0.6, Some(1.0)) - 0.76).abs() < 1e-6);
+        assert_eq!(blend(0.5, None), 0.5);
+        assert_eq!(blend(0.5, Some(2.0)), blend(0.5, Some(1.0)));
+    }
+
+    /// The online flags are process-global, so the tests that flip them hold
+    /// this for their whole run. Each uses its own query: the caches are global too.
+    static FLAGS: Mutex<()> = Mutex::new(());
+
+    /// Turns the built-ins off for the test and puts the flags back after.
+    struct OfflineBuiltins {
+        _flags: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl OfflineBuiltins {
+        fn hold() -> Self {
+            let guard = FLAGS.lock().unwrap_or_else(|e| e.into_inner());
+            set_lyrics_online(false);
+            set_metadata_online(false);
+            Self { _flags: guard }
+        }
+    }
+
+    impl Drop for OfflineBuiltins {
+        fn drop(&mut self) {
+            set_lyrics_online(true);
+            set_metadata_online(true);
+        }
+    }
+
+    struct FakeLyrics {
+        name: &'static str,
+        answer: Vec<LyricsCandidate>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeLyrics {
+        fn new(name: &'static str, answer: Vec<LyricsCandidate>) -> Self {
+            Self {
+                name,
+                answer,
+                calls: Default::default(),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl LyricsProvider for FakeLyrics {
+        fn name(&self) -> Cow<'static, str> {
+            self.name.into()
+        }
+
+        fn search(&self, _query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.answer.clone())
+        }
+    }
+
+    struct FakeMetadata;
+
+    impl MetadataProvider for FakeMetadata {
+        fn name(&self) -> Cow<'static, str> {
+            "fake metadata".into()
+        }
+
+        fn search(&self, query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String> {
+            Ok(vec![MetadataCandidate {
+                provider: self.name(),
+                title: query.title.clone(),
+                artist: query.artist.clone(),
+                album: query.album.clone(),
+                album_artist: String::new(),
+                artist_sort: String::new(),
+                album_artist_sort: String::new(),
+                year: String::new(),
+                track_no: String::new(),
+                disc_no: String::new(),
+                duration_secs: query.duration_secs,
+                confidence: 0.0,
+                hint: Some(0.5),
+            }])
+        }
+    }
+
+    fn query(title: &str) -> TrackQuery {
+        TrackQuery {
+            artist: "Air".into(),
+            title: title.into(),
+            album: "Moon Safari".into(),
+            duration_secs: Some(300.0),
+        }
+    }
+
+    fn hinted(
+        provider: &'static str,
+        title: &str,
+        artist: &str,
+        hint: Option<f32>,
+    ) -> LyricsCandidate {
+        LyricsCandidate {
+            provider: provider.into(),
+            hint,
+            ..candidate(title, artist, "", None)
+        }
+    }
+
+    #[test]
+    fn extra_providers_rank_with_the_builtins() {
+        let _offline = OfflineBuiltins::hold();
+        let q = query("Kelly Watch the Stars");
+
+        // The same text match on both; only the hint separates them, and the
+        // hinted one answers second.
+        let plain = FakeLyrics::new(
+            "plain",
+            vec![hinted("plain", "Kelly Watch the Stars", "Air", None)],
+        );
+        let sure = FakeLyrics::new(
+            "sure",
+            vec![hinted("sure", "Kelly Watch the Stars", "Air", Some(1.0))],
+        );
+
+        let found = search_lyrics(&q, &[&plain, &sure]).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].provider, "sure");
+        assert_eq!(found[1].provider, "plain");
+
+        let text = confidence(&q, &found[1]);
+        assert_eq!(found[1].confidence, text);
+        assert!((found[0].confidence - blend(text, Some(1.0))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_extra_provider_answers_with_the_flag_off() {
+        let _offline = OfflineBuiltins::hold();
+        let q = query("Remember");
+
+        let extra = FakeLyrics::new("extra", vec![hinted("extra", "Remember", "Air", Some(0.8))]);
+        let found = search_lyrics(&q, &[&extra]).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].provider, "extra");
+
+        assert!(search_lyrics(&q, &[]).unwrap().is_empty());
+        assert_eq!(extra.calls(), 1);
+
+        let tags = search_metadata(&q, &[&FakeMetadata]).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].provider, "fake metadata");
+        assert!(search_metadata(&q, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cache_keys_name_the_extras() {
+        let _offline = OfflineBuiltins::hold();
+        let q = query("Ce Matin La");
+
+        let first = FakeLyrics::new("first", vec![hinted("first", "Ce Matin La", "Air", None)]);
+        let second = FakeLyrics::new("second", Vec::new());
+
+        search_lyrics(&q, &[&first]).unwrap();
+        search_lyrics(&q, &[&first]).unwrap();
+        assert_eq!(first.calls(), 1);
+
+        search_lyrics(&q, &[&first, &second]).unwrap();
+        assert_eq!(first.calls(), 2);
+        assert_eq!(second.calls(), 1);
     }
 }

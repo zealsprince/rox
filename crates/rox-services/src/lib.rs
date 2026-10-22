@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod cues;
 pub mod discord_presence;
 pub mod echoes;
+pub mod enrichment;
 pub mod history;
 pub mod lastfm;
 pub mod librefm;

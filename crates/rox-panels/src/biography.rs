@@ -1766,9 +1766,13 @@ impl BiographyPanel {
                     ),
             );
         }
-        // The attribution the wiki's license asks for.
+        // The attribution the wiki's license asks for, or the plugin whose bio this is.
         if !info.url.is_empty() {
             let url = info.url.clone();
+            let byline = match &artist.from_plugin {
+                Some(plugin) => rox_i18n::t!("biography-from-plugin", plugin = plugin.as_str()),
+                None => rox_i18n::t!("biography-from-lastfm"),
+            };
             content = content.child(
                 div().mt(tokens::SPACE_XS).text_xs().child(
                     div()
@@ -1776,7 +1780,7 @@ impl BiographyPanel {
                         .hover(|d| d.text_color(palette::text_muted()))
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url))
-                        .child(rox_i18n::t!("biography-from-lastfm")),
+                        .child(byline),
                 ),
             );
         }

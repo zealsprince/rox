@@ -23,7 +23,7 @@ use crate::matching::{
 use rox_core::settings::lyrics_dir;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_net::providers::{self, LyricsCandidate, TrackQuery};
+use rox_net::providers::{LyricsCandidate, TrackQuery};
 use rox_panel_api::panel::AppState;
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
@@ -579,7 +579,7 @@ fn ask_plugin(plugin: &PluginLyrics, query: &TrackQuery) -> Option<LyricsCandida
 fn search_online(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
     match query.artist.is_empty() || query.title.is_empty() {
         true => Ok(Vec::new()),
-        false => providers::search_lyrics(query),
+        false => rox_services::enrichment::search_lyrics(query),
     }
 }
 

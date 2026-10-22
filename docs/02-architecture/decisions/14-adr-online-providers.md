@@ -1,6 +1,6 @@
 # ADR 14: Per-domain provider traits for online enrichment
 
-**Status:** Decided
+**Status:** Decided; plugins behind the traits added by its amendment
 
 Decision: online enrichment covers lyrics, tag lookup, and cover art, and each of those
 gets its own trait: a lyrics provider, a metadata provider, an art provider. Every
@@ -91,3 +91,17 @@ clock, with no user action involved, where a provider pulls data inward when som
 for it. The shared HTTP agent is the only thing the two have in common. If Last.fm ever
 serves tag lookups, that would be a metadata provider module reusing its credentials,
 which still isn't a reason to fold the scrobbler in.
+
+**Amended 2026-10-21: plugins behind the traits.** A plugin may stand behind the lyrics
+and metadata traits for any track in the library, through the providers block in
+[ADR 30](30-adr-plugins.md)'s amendment of the same date. It's the case the extension
+host paragraph above anticipated, with ADR 30's host in place of a sandbox. The
+aggregates take those providers from the caller, so rox-net keeps no knowledge of
+plugins, and its online switches keep covering the built-ins only. A provider's name is
+owned rather than static, so a plugin's name can label its candidates in the picker.
+
+One scorer still ranks everything. A plugin's own confidence enters as a weighted hint,
+40 percent of the final score, never as the score itself, so the order still reflects
+how well a candidate matches the track. The session cache keys on the query, the online
+switch and the plugin providers in order, since which providers answered is part of the
+answer. Art stays with the built-ins: its candidates are URLs rox fetches.

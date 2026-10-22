@@ -2,6 +2,8 @@
 //! title. Album stays off the query: a mistagged one would drop good
 //! candidates the confidence score can rank instead.
 
+use std::borrow::Cow;
+
 use super::{LyricsCandidate, LyricsProvider, TrackQuery, agent, net_reason};
 
 const API: &str = "https://lrclib.net/api/search";
@@ -9,8 +11,8 @@ const API: &str = "https://lrclib.net/api/search";
 pub struct Lrclib;
 
 impl LyricsProvider for Lrclib {
-    fn name(&self) -> &'static str {
-        "lrclib"
+    fn name(&self) -> Cow<'static, str> {
+        "lrclib".into()
     }
 
     fn search(&self, query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
@@ -44,7 +46,7 @@ impl LyricsProvider for Lrclib {
                 continue;
             };
             out.push(LyricsCandidate {
-                provider: self.name().into(),
+                provider: self.name(),
                 artist: str_field("artistName").unwrap_or_default(),
                 title: str_field("trackName").unwrap_or_default(),
                 album: str_field("albumName").unwrap_or_default(),
@@ -52,6 +54,7 @@ impl LyricsProvider for Lrclib {
                 synced: is_synced,
                 text,
                 confidence: 0.0,
+                hint: None,
             });
         }
         Ok(out)

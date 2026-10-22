@@ -83,6 +83,8 @@ pub struct Meta {
 pub struct Capabilities {
     pub source: Option<SourceCap>,
     pub panels: Vec<DeclaredPanel>,
+    /// Answers `provider.*` for any track in the library, not just its own.
+    pub providers: ProvidersCap,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -116,6 +118,53 @@ pub struct SourceCap {
     /// favourites, which a heart in rox runs while Sync Favourites is on.
     #[serde(default)]
     pub favourites: Option<FavouritesDecl>,
+}
+
+/// Each flag says the plugin answers that `provider.*` method. Every one
+/// waits on its own switch on the Plugins page; the declaration alone
+/// reaches no user.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProvidersCap {
+    pub lyrics: bool,
+    pub metadata: bool,
+    pub artist: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderDomain {
+    Lyrics,
+    Metadata,
+    Artist,
+}
+
+impl ProviderDomain {
+    pub const ALL: [ProviderDomain; 3] = [Self::Lyrics, Self::Metadata, Self::Artist];
+
+    /// The manifest key and the `changes` diff's name for it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Lyrics => "lyrics",
+            Self::Metadata => "metadata",
+            Self::Artist => "artist",
+        }
+    }
+}
+
+impl ProvidersCap {
+    pub fn has(self, domain: ProviderDomain) -> bool {
+        match domain {
+            ProviderDomain::Lyrics => self.lyrics,
+            ProviderDomain::Metadata => self.metadata,
+            ProviderDomain::Artist => self.artist,
+        }
+    }
+
+    pub fn any(self) -> bool {
+        ProviderDomain::ALL
+            .into_iter()
+            .any(|domain| self.has(domain))
+    }
 }
 
 /// Names two of the plugin's own track actions. Rows say they're in the
@@ -742,6 +791,37 @@ mod tests {
 
     fn with_entry(entry: &str) -> String {
         format!(r#"{{ "id": "tones", "name": "T", "version": "1", "api": 1, "entry": {entry} }}"#)
+    }
+
+    #[test]
+    fn providers_parse_and_default_off() {
+        let text = script_manifest("").replace(
+            r#""source": {"#,
+            r#""providers": { "lyrics": true }, "source": {"#,
+        );
+        let providers = parse(&text).unwrap().capabilities.providers;
+
+        assert!(providers.lyrics);
+        assert!(!providers.metadata);
+        assert!(!providers.artist);
+        assert!(providers.any());
+        assert!(providers.has(ProviderDomain::Lyrics));
+        assert!(!providers.has(ProviderDomain::Artist));
+
+        let bare = parse(&script_manifest("")).unwrap();
+        assert!(!bare.capabilities.providers.any());
+    }
+
+    #[test]
+    fn a_provider_only_manifest_loads() {
+        let text = script_manifest("").replace(
+            r#""capabilities": { "source": { "label": "Tones", "scrobble": false } }"#,
+            r#""capabilities": { "providers": { "lyrics": true, "artist": true } }"#,
+        );
+        let manifest = parse(&text).expect("a provider-only plugin is valid");
+
+        assert_eq!(manifest.capabilities.source, None);
+        assert!(manifest.capabilities.providers.artist);
     }
 
     #[test]

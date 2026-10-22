@@ -2,7 +2,8 @@
 //! deezer portrait, and theaudiodb's record and images, kept as plain files
 //! under the artists folder so a bio reads offline. One JSON per artist
 //! under a hash of the folded name, images beside it. A failed fetch serves
-//! the stale copy. Blocking.
+//! the stale copy. A switched-on plugin's sheet lays its text over theirs
+//! and leaves the pictures to them (ADR 30). Blocking.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,10 @@ use serde::{Deserialize, Serialize};
 use rox_core::settings::artists_dir;
 use rox_net::providers::theaudiodb::ArtistProfile;
 use rox_net::providers::{self, lastfm::ArtistInfo};
+use rox_plugins::manifest::ProviderDomain;
+use rox_plugins::wire;
+
+use crate::plugins::{self, PluginProvider};
 
 const TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
@@ -52,6 +57,8 @@ pub struct Artist {
     /// cycle never shows one picture twice.
     pub fanarts: Vec<SizedImage>,
     pub background: Option<Arc<Image>>,
+    /// The plugin's label when the link is its sheet's.
+    pub from_plugin: Option<String>,
 }
 
 impl Artist {
@@ -74,7 +81,7 @@ impl Artist {
 }
 
 /// `info: None` records a miss, so it doesn't re-query on every open.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct Entry {
     fetched: u64,
     /// An entry in another language is stale however young. Absent on older
@@ -86,6 +93,47 @@ struct Entry {
     /// fills in on the next look without waiting out the TTL.
     #[serde(default)]
     profile: Option<ArtistProfile>,
+    /// The plugin providers switched on when this was fetched, by source. A
+    /// different set makes the entry stale however young, which is how an
+    /// entry from before plugins reads once one is on.
+    #[serde(default)]
+    providers: Vec<String>,
+    /// The leading plugin's sheet, laid over the built-ins at read time.
+    #[serde(default)]
+    overlay: Option<Overlay>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Overlay {
+    /// The plugin's label, for the byline where Last.fm's would go.
+    from: String,
+    sheet: wire::ArtistSheet,
+}
+
+fn is_fresh(entry: &Entry, lang: &str, providers: &[String], at: u64) -> bool {
+    let young = at.saturating_sub(entry.fetched) < TTL_SECS;
+    let same_lang = entry.lang.as_str() == lang || (entry.lang.is_empty() && lang == "en");
+    // An entry without the wiki's links predates them: stale however young.
+    let has_links = entry.info.as_ref().is_none_or(|info| info.links.is_some());
+
+    young && same_lang && has_links && entry.providers == providers
+}
+
+/// The first sheet any switched-on plugin has, in order. One that fails is
+/// skipped, like a built-in's gap.
+fn ask_plugins(on: &[PluginProvider], name: &str, lang: &str) -> Option<Overlay> {
+    on.iter().find_map(
+        |provider| match plugins::provider_artist(&provider.source, name, lang) {
+            Ok(sheet) => sheet.map(|sheet| Overlay {
+                from: provider.label.clone(),
+                sheet,
+            }),
+            Err(e) => {
+                log::debug!("artists: {name}: {}: {e}", provider.source);
+                None
+            }
+        },
+    )
 }
 
 /// The primary subtag, so en-CA asks for English.
@@ -155,38 +203,56 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());
     let lang = bio_lang();
-    let fresh = cached.as_ref().is_some_and(|entry| {
-        let young = now().saturating_sub(entry.fetched) < TTL_SECS;
-        let same_lang = entry.lang.as_str() == lang || (entry.lang.is_empty() && lang == "en");
-        // An entry without the wiki's links predates them: stale however young.
-        let has_links = entry.info.as_ref().is_none_or(|info| info.links.is_some());
-        young && same_lang && has_links
-    });
+    let on = plugins::providers_on(ProviderDomain::Artist);
+    let sources: Vec<String> = on.iter().map(|p| p.source.clone()).collect();
+    let fresh = cached
+        .as_ref()
+        .is_some_and(|entry| is_fresh(entry, &lang, &sources, now()));
+    let stale = !fresh || force;
+
+    // Asked on every stale look, plugins on or off, so one switched off
+    // takes its sheet with it.
+    let overlay = stale.then(|| ask_plugins(&on, name, &lang)).flatten();
+
     let online = providers::artist_online();
     let mut entry = cached;
     let mut dirty = false;
-    if online && (!fresh || force) {
+    if online && stale {
         match providers::lastfm::artist_info(name, &lang) {
             Ok(info) => {
                 entry = Some(Entry {
                     fetched: now(),
                     lang: lang.clone(),
                     info,
-                    profile: None,
+                    ..Entry::default()
                 });
                 dirty = true;
             }
             Err(e) => {
-                if entry
-                    .as_ref()
-                    .and_then(|entry| entry.info.as_ref())
-                    .is_none()
-                {
+                let has_info = entry.as_ref().is_some_and(|entry| entry.info.is_some());
+                if !has_info && overlay.is_none() {
                     return Err(e);
                 }
             }
         }
     }
+
+    if stale {
+        if entry.is_none() && overlay.is_some() {
+            // Fetched 0: the built-ins never answered, so they're asked again
+            // on the next look rather than waiting out the TTL.
+            entry = Some(Entry {
+                lang: lang.clone(),
+                ..Entry::default()
+            });
+        }
+        if let Some(entry) = entry.as_mut() {
+            entry.providers = sources;
+            entry.overlay = overlay;
+            dirty = true;
+        }
+    }
+
     let Some(mut entry) = entry else {
         return Ok(None);
     };
@@ -200,7 +266,17 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
         }
     }
     let profile = entry.profile.unwrap_or_default();
-    Ok(entry.info.map(|info| assemble(info, profile, &files)))
+    // A plugin's sheet stands on its own when the built-ins found nothing.
+    let info = match (entry.info, &entry.overlay) {
+        (Some(info), _) => info,
+        (None, Some(_)) => ArtistInfo {
+            name: name.to_string(),
+            ..ArtistInfo::default()
+        },
+        (None, None) => return Ok(None),
+    };
+
+    Ok(Some(assemble(info, profile, entry.overlay, &files)))
 }
 
 /// Each part runs only when missing or forced, and a failure is left for
@@ -326,7 +402,39 @@ fn download(file: &Path, force: bool, resolve: impl FnOnce() -> Result<Option<St
     }
 }
 
-fn assemble(info: ArtistInfo, profile: ArtistProfile, files: &Files) -> Artist {
+/// The overlay's text replaces the built-ins' wherever it has any; the
+/// numbers and every picture stay theirs.
+fn assemble(
+    mut info: ArtistInfo,
+    mut profile: ArtistProfile,
+    overlay: Option<Overlay>,
+    files: &Files,
+) -> Artist {
+    // The byline describes the link, so it names the plugin only when the
+    // plugin supplied the link.
+    let from_plugin = overlay.and_then(|Overlay { from, sheet }| {
+        // The wiki's links are byte ranges into the bio they came with.
+        info.bio = sheet.bio;
+        info.links = Some(Vec::new());
+        let linked = !sheet.url.is_empty();
+        if linked {
+            info.url = sheet.url;
+        }
+        if !sheet.tags.is_empty() {
+            info.tags = sheet.tags;
+        }
+        if !sheet.similar.is_empty() {
+            info.similar = sheet.similar;
+        }
+        if !sheet.country.is_empty() {
+            profile.country = sheet.country;
+        }
+        profile.formed = sheet.formed.or(profile.formed);
+        profile.ended = sheet.ended.or(profile.ended);
+
+        linked.then_some(from)
+    });
+
     let banner = decode(&files.banner);
     let background = decode(&files.background);
     // Pair each slot with its URL so a picture the banner already holds
@@ -356,6 +464,7 @@ fn assemble(info: ArtistInfo, profile: ArtistProfile, files: &Files) -> Artist {
         banner,
         fanarts,
         background: background.map(|sized| sized.image),
+        from_plugin,
     }
 }
 
@@ -403,5 +512,94 @@ fn sniff(bytes: &[u8]) -> ImageFormat {
         Ok(image::ImageFormat::WebP) => ImageFormat::Webp,
         Ok(image::ImageFormat::Gif) => ImageFormat::Gif,
         _ => ImageFormat::Jpeg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nowhere() -> Files {
+        Files {
+            info: PathBuf::new(),
+            portrait: PathBuf::new(),
+            banner: PathBuf::new(),
+            background: PathBuf::new(),
+            fanarts: Vec::new(),
+            thumb: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn an_overlay_replaces_text_and_keeps_pictures() {
+        let info = ArtistInfo {
+            name: "Band".into(),
+            bio: "From Last.fm.".into(),
+            url: "https://www.last.fm/music/Band".into(),
+            listeners: 1200,
+            ..ArtistInfo::default()
+        };
+        let profile = ArtistProfile {
+            banner: Some("https://example.com/banner.jpg".into()),
+            country: "GB".into(),
+            ..ArtistProfile::default()
+        };
+        let overlay = Overlay {
+            from: "Folder".into(),
+            sheet: wire::ArtistSheet {
+                bio: "From the plugin.".into(),
+                country: "US".into(),
+                ..wire::ArtistSheet::default()
+            },
+        };
+
+        let artist = assemble(info, profile, Some(overlay), &nowhere());
+
+        assert_eq!(artist.info.bio, "From the plugin.");
+        assert_eq!(artist.info.links, Some(Vec::new()));
+        assert_eq!(artist.profile.country, "US");
+        assert_eq!(artist.info.listeners, 1200);
+        assert_eq!(
+            artist.profile.banner.as_deref(),
+            Some("https://example.com/banner.jpg")
+        );
+        assert_eq!(artist.info.url, "https://www.last.fm/music/Band");
+        assert_eq!(artist.from_plugin, None);
+    }
+
+    #[test]
+    fn an_overlay_link_takes_the_byline() {
+        let info = ArtistInfo {
+            name: "Band".into(),
+            url: "https://www.last.fm/music/Band".into(),
+            ..ArtistInfo::default()
+        };
+        let overlay = Overlay {
+            from: "Folder".into(),
+            sheet: wire::ArtistSheet {
+                bio: "From the plugin.".into(),
+                url: "https://example.com/band".into(),
+                ..wire::ArtistSheet::default()
+            },
+        };
+
+        let artist = assemble(info, ArtistProfile::default(), Some(overlay), &nowhere());
+
+        assert_eq!(artist.info.url, "https://example.com/band");
+        assert_eq!(artist.from_plugin.as_deref(), Some("Folder"));
+    }
+
+    #[test]
+    fn an_entry_from_another_provider_set_is_stale() {
+        let entry = Entry {
+            fetched: 1000,
+            lang: "en".into(),
+            providers: vec!["plugin:a".into()],
+            ..Entry::default()
+        };
+
+        assert!(is_fresh(&entry, "en", &["plugin:a".into()], 1000));
+        assert!(!is_fresh(&entry, "en", &["plugin:b".into()], 1000));
+        assert!(!is_fresh(&entry, "en", &[], 1000));
     }
 }

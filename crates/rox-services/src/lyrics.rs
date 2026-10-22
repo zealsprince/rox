@@ -50,6 +50,7 @@ impl PluginLyrics {
             synced,
             text,
             confidence: 1.0,
+            hint: None,
         }))
     }
 }

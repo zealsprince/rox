@@ -748,6 +748,9 @@ pub struct TagEditor {
     unsupported: usize,
     error: Option<SharedString>,
     saving: bool,
+    /// Cached off the paint: reading it can load the settings file.
+    lookup: bool,
+    lookup_online: bool,
     /// One enter can reach [`Self::save`] twice (the input's binding and the
     /// root's), and an empty save closes on the first without raising `saving`.
     saved: bool,
@@ -933,6 +936,8 @@ impl TagEditor {
             unsupported: 0,
             error: None,
             saving: false,
+            lookup: rox_services::enrichment::metadata_available(),
+            lookup_online: providers::metadata_online(),
             saved: false,
             save_done: 0,
             save_total: 0,
@@ -1334,6 +1339,7 @@ impl TagEditor {
                 names,
                 order: (0..cells.len()).collect(),
                 editor: cx.entity().downgrade(),
+                lookup: self.lookup,
             };
             let grid = cx.new(|cx| TableState::new(delegate, window, cx));
             // The component owns the live widths; copy a resize into the delegate so
@@ -2033,6 +2039,24 @@ impl TagEditor {
 
     /// The compare calls back into [`Self::fill_fields`] rather than writing,
     /// so this editor stays the one writer.
+    /// Re-reads the lookup only when the online flag moves.
+    fn refresh_lookup(&mut self, cx: &mut Context<Self>) {
+        let online = providers::metadata_online();
+        if online == self.lookup_online {
+            return;
+        }
+
+        self.lookup_online = online;
+        self.lookup = rox_services::enrichment::metadata_available();
+        let lookup = self.lookup;
+        if let Some(grid) = &self.grid {
+            grid.update(cx, |table, cx| {
+                table.delegate_mut().lookup = lookup;
+                cx.notify();
+            });
+        }
+    }
+
     fn look_up(&mut self, track: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.tracks.get(track) else {
             return;
@@ -2546,7 +2570,7 @@ impl TagEditor {
         // Single track only: the compare matches one track's tags, and in the
         // table each row has its own button.
         let single = self.tracks.len() == 1;
-        let look_up = (!self.table && single && providers::metadata_online()).then(|| {
+        let look_up = (!self.table && single && self.lookup).then(|| {
             settings_ui::small_button(
                 rox_i18n::t!("tags-editor-look-up"),
                 icons::DOWNLOAD,
@@ -2892,6 +2916,7 @@ struct CellGrid {
     names: Vec<Entity<InputState>>,
     order: Vec<usize>,
     editor: WeakEntity<TagEditor>,
+    lookup: bool,
 }
 
 /// `saved` widths are positional and go through [`placed_widths`];
@@ -3003,7 +3028,7 @@ impl CellGrid {
                     }
                 },
             ))
-            .when(providers::metadata_online(), |d| {
+            .when(self.lookup, |d| {
                 d.child(settings_ui::icon_button(
                     icons::DOWNLOAD,
                     false,
@@ -3323,6 +3348,7 @@ fn leading_number(value: &str) -> u32 {
 
 impl Render for TagEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_lookup(cx);
         let page: gpui::AnyElement = if self.table {
             div()
                 .size_full()

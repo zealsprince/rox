@@ -49,7 +49,6 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::player::fmt_time;
-use crate::providers;
 use crate::query::shared_query::{self, SharedQuery};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
@@ -1882,9 +1881,10 @@ impl Panel for MetadataPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.config_menu(menu, window, cx);
-        // Gated on the provider toggle. The write waits for a confirmed,
+        // Gated on the provider toggles. The write waits for a confirmed,
         // field-by-field pick in the compare window.
-        let menu = match (providers::metadata_online(), self.editable_track(cx)) {
+        let lookup = rox_services::enrichment::metadata_available();
+        let menu = match (lookup, self.editable_track(cx)) {
             (true, Some(key)) => {
                 let library = self.state.library.clone();
                 let now_art = self.state.now_art.clone();
@@ -1907,13 +1907,9 @@ impl Panel for MetadataPanel {
         let menu = match self.editable_track(cx) {
             Some(_) => {
                 let weak = cx.entity().downgrade();
-                // With the provider off this row starts the group and draws the
+                // With no lookup this row starts the group and draws the
                 // separator.
-                let menu = if providers::metadata_online() {
-                    menu
-                } else {
-                    menu.separator()
-                };
+                let menu = if lookup { menu } else { menu.separator() };
                 menu.item(
                     PopupMenuItem::new(rox_i18n::t!("metadata-romanize-sort-names"))
                         .icon(Icon::default().path(icons::GLOBE))

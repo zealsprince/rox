@@ -2151,7 +2151,12 @@ pub struct PluginRecord {
     /// Off by default: a plugin row never scrobbles unless this is on.
     pub scrobble: bool,
     /// Off by default: rox never asks the plugin for lyrics unless this is on.
+    /// One switch for both of its lyrics roles, its own tracks and the library.
     pub lyrics: bool,
+    /// Off by default: the plugin's tag candidates join a lookup only when this is on.
+    pub metadata: bool,
+    /// Off by default: the plugin's artist sheet is asked for only when this is on.
+    pub artist: bool,
     pub synced: Vec<SyncedCollection>,
     /// The plugin's own settings, secrets included, as its config schema
     /// shapes them.
@@ -4090,6 +4095,8 @@ mod tests {
             approved_manifest: serde_json::json!({ "id": "demo", "api": 0 }),
             scrobble: true,
             lyrics: true,
+            metadata: true,
+            artist: true,
             synced: vec![SyncedCollection {
                 id: "likes".into(),
                 title: "Liked".into(),
@@ -4105,6 +4112,8 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&accounts).unwrap()).unwrap();
 
         assert_eq!(back.plugins, accounts.plugins);
+        assert!(back.plugins[0].metadata);
+        assert!(back.plugins[0].artist);
     }
 
     #[test]

@@ -152,6 +152,15 @@ fn string(field: &str, value: &str) -> Result<(), String> {
     }
 }
 
+fn confidence(value: Option<f32>) -> Result<(), String> {
+    match value {
+        Some(value) if !(0.0..=1.0).contains(&value) => {
+            Err(format!("a confidence of {value} is outside 0 to 1"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// A click hands a notice's link to the OS, which opens any scheme it has a
 /// handler for, `file:` included. Only a web address gets that far.
 fn web_url(field: &str, url: &str) -> Result<(), String> {
@@ -296,6 +305,12 @@ pub const MAX_CHAPTERS: usize = 500;
 /// A whole sheet in one answer: an enhanced LRC runs to tens of KB, far past
 /// [`MAX_STRING`], and this stays well under [`MAX_FRAME`].
 pub const MAX_LYRICS: usize = 256 * 1024;
+
+/// More than a picker shows; a plugin ranks its own before it answers.
+pub const MAX_CANDIDATES: usize = 50;
+
+/// A bio runs to paragraphs, past [`MAX_STRING`].
+pub const MAX_BIO: usize = 64 * 1024;
 
 /// More flags than a row has states worth gating an action on.
 pub const MAX_FLAGS: usize = 16;
@@ -762,6 +777,155 @@ impl Checked for LyricsAnswer {
             true => Err(format!("lyrics longer than {MAX_LYRICS} bytes")),
             false => Ok(()),
         }
+    }
+}
+
+fn candidates<T>(items: &[T]) -> Result<(), String> {
+    match items.len() > MAX_CANDIDATES {
+        true => Err(format!("more than {MAX_CANDIDATES} candidates")),
+        false => Ok(()),
+    }
+}
+
+/// `provider.lyrics`'s answer: sheets for a track the plugin found by its tags.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LyricsCandidates {
+    pub candidates: Vec<LyricsHit>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct LyricsHit {
+    pub artist: String,
+    pub title: String,
+    pub album: String,
+    pub duration_secs: Option<f64>,
+    /// LRC when `synced`, plain lines otherwise. Never blank.
+    pub text: String,
+    pub synced: bool,
+    /// The plugin's own view of the match, 0 to 1. rox blends it in; see
+    /// `blend` in rox-net.
+    pub confidence: Option<f32>,
+}
+
+impl Checked for LyricsCandidates {
+    fn check(&self) -> Result<(), String> {
+        candidates(&self.candidates)?;
+
+        for hit in &self.candidates {
+            if hit.text.trim().is_empty() {
+                return Err("a candidate with no text".into());
+            }
+            if hit.text.len() > MAX_LYRICS {
+                return Err(format!("a candidate longer than {MAX_LYRICS} bytes"));
+            }
+
+            string("artist", &hit.artist)?;
+            string("title", &hit.title)?;
+            string("album", &hit.album)?;
+            confidence(hit.confidence)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// `provider.metadata`'s answer. A field the service lacks stays empty and
+/// the tag compare leaves it alone, the same as a built-in's.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataCandidates {
+    pub candidates: Vec<MetadataHit>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct MetadataHit {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: String,
+    pub artist_sort: String,
+    pub album_artist_sort: String,
+    pub year: String,
+    pub track_no: String,
+    pub disc_no: String,
+    pub duration_secs: Option<f64>,
+    pub confidence: Option<f32>,
+}
+
+impl Checked for MetadataCandidates {
+    fn check(&self) -> Result<(), String> {
+        candidates(&self.candidates)?;
+
+        for hit in &self.candidates {
+            for (field, value) in [
+                ("title", &hit.title),
+                ("artist", &hit.artist),
+                ("album", &hit.album),
+                ("album_artist", &hit.album_artist),
+                ("artist_sort", &hit.artist_sort),
+                ("album_artist_sort", &hit.album_artist_sort),
+                ("year", &hit.year),
+                ("track_no", &hit.track_no),
+                ("disc_no", &hit.disc_no),
+            ] {
+                string(field, value)?;
+            }
+
+            confidence(hit.confidence)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// `provider.artist`'s answer: text only. No image reaches rox from a
+/// plugin as a URL (ADR 30), so pictures stay with the built-in providers.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct ArtistSheet {
+    /// Plain paragraphs separated by blank lines. Never blank.
+    pub bio: String,
+    /// The artist's page on the service, or empty.
+    pub url: String,
+    pub tags: Vec<String>,
+    pub similar: Vec<String>,
+    /// ISO 3166 alpha-2, uppercase, or empty.
+    pub country: String,
+    pub formed: Option<u16>,
+    pub ended: Option<u16>,
+}
+
+impl Checked for ArtistSheet {
+    fn check(&self) -> Result<(), String> {
+        if self.bio.trim().is_empty() {
+            return Err("a sheet with no bio; answer null for none".into());
+        }
+        if self.bio.len() > MAX_BIO {
+            return Err(format!("a bio longer than {MAX_BIO} bytes"));
+        }
+
+        if !self.url.is_empty() {
+            string("url", &self.url)?;
+            web_url("an artist url", &self.url)?;
+        }
+
+        for (field, items) in [("tags", &self.tags), ("similar", &self.similar)] {
+            list(field, items)?;
+            for item in items {
+                string(field, item)?;
+            }
+        }
+
+        let alpha2 =
+            self.country.len() == 2 && self.country.bytes().all(|b| b.is_ascii_uppercase());
+        if !self.country.is_empty() && !alpha2 {
+            return Err("a country that isn't two uppercase letters".into());
+        }
+
+        Ok(())
     }
 }
 
@@ -1354,6 +1518,73 @@ mod tests {
             json!({"text": "x", "source": "y"}),
         ] {
             assert!(decode::<LyricsAnswer>(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn lyrics_candidates_carry_sheets_and_hints() {
+        let hit = json!({
+            "artist": "A",
+            "title": "T",
+            "album": "",
+            "duration_secs": 241.0,
+            "text": "[00:12.00]One",
+            "synced": true,
+            "confidence": 0.95,
+        });
+        let good: LyricsCandidates = decode(json!({"candidates": [hit]})).unwrap();
+        assert_eq!(good.candidates[0].confidence, Some(0.95));
+        assert!(good.candidates[0].synced);
+
+        for bad in [
+            json!({"text": "  \n"}),
+            json!({"text": "x".repeat(MAX_LYRICS + 1)}),
+            json!({"text": "x", "confidence": 1.5}),
+            json!({"text": "x", "source": "y"}),
+        ] {
+            assert!(decode::<LyricsCandidates>(json!({"candidates": [bad]})).is_err());
+        }
+
+        let many = vec![json!({"text": "x"}); MAX_CANDIDATES + 1];
+        assert!(decode::<LyricsCandidates>(json!({"candidates": many})).is_err());
+    }
+
+    #[test]
+    fn metadata_candidates_leave_missing_fields_empty() {
+        let found: MetadataCandidates = decode(json!({"candidates": [{"title": "T"}]})).unwrap();
+
+        assert_eq!(
+            found.candidates[0],
+            MetadataHit {
+                title: "T".into(),
+                ..MetadataHit::default()
+            }
+        );
+        assert_eq!(found.candidates[0].confidence, None);
+    }
+
+    #[test]
+    fn an_artist_sheet_is_text_only() {
+        let sheet: ArtistSheet = decode(json!({
+            "bio": "One.\n\nTwo.",
+            "url": "https://example.com/artist/1",
+            "tags": ["rock"],
+            "similar": ["B"],
+            "country": "US",
+            "formed": 2001,
+            "ended": null,
+        }))
+        .unwrap();
+        assert_eq!(sheet.formed, Some(2001));
+
+        for bad in [
+            json!({"bio": " "}),
+            json!({"bio": "x", "url": "http://example.com/a b"}),
+            json!({"bio": "x", "country": "us"}),
+            json!({"bio": "x", "country": "USA"}),
+            json!({"bio": "x", "image": "https://example.com/a.jpg"}),
+        ] {
+            assert!(decode::<ArtistSheet>(bad).is_err());
         }
     }
 

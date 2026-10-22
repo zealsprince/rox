@@ -130,6 +130,7 @@ The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
 | `entry` | Exactly one of `script` or `native`. |
 | `meta` | `author`, `description`, `website`, `license`, `version`, all optional. The card shows the author and description. |
 | `capabilities.source` | `label` names the source in rox. `scrobble` defaults to false. `lyrics` says it answers `source.lyrics`, which rox asks only once the user switches Lyrics on for it. `favourites` names the actions a heart runs; see [Favourites](#favourites). |
+| `capabilities.providers` | `lyrics`, `metadata` and `artist`, each false by default, say the plugin answers `provider.lyrics`, `provider.metadata` or `provider.artist` for any track in the library. Each waits on its own switch on the Plugins page. See [`provider.lyrics`](#providerlyrics). |
 | `capabilities.panels` | Extra presets of core panel kinds, listed under the plugin in Add Panel. See [Panels](#panels). |
 | `programs` | Programs the plugin runs, by name. The page reports each as found on PATH or missing. rox enforces nothing with it. |
 | `config_schema` | JSON Schema for the plugin's settings. |
@@ -177,9 +178,12 @@ What refuses a manifest, with the reason the page shows:
 - A declared panel with no name or a repeated one, no `panel_name`, any children, `info`
   that isn't `{ "panel": { ... } }`, or a `source browser` naming any source but
   `plugin:<id>` (`check_panels`, `manifest.rs`).
-- A plugin with no `capabilities.source` loads but gets no host, since source is the only
-  capability that runs anything today (`apply`, `rox-services/src/plugins.rs`). It
-  doesn't list under Plugins either, since that lists the running hosts.
+- A plugin with neither `capabilities.source` nor a true flag under
+  `capabilities.providers` loads but gets no host, since those are the capabilities that
+  run anything (`apply`, `rox-services/src/plugins.rs`). One with providers only runs,
+  but it has no rows, no section under Add Panel's Plugins and no place in the External
+  Sources panel's picker: `running_plugins` and `live_sources` skip a host whose manifest
+  has no source.
 
 ## The wire
 
@@ -482,6 +486,95 @@ asked for once and leads every search, since it answers by the track. Find
 Online shows for a plugin track with the switch on even while online lookups are off,
 since the switch is the user's choice for that source.
 
+### `provider.lyrics`
+
+```json
+> {"jsonrpc":"2.0","id":21,"method":"provider.lyrics","params":{"artist":"Some Artist","title":"Some Song","album":"","duration_secs":241.3}}
+< {"jsonrpc":"2.0","id":21,"result":{"candidates":[{"artist":"Some Artist","title":"Some Song","album":"","duration_secs":241.0,"text":"[00:12.00]<00:12.00>Bring <00:12.40>me ...","synced":true,"confidence":0.95}]}}
+```
+
+Sheets for any track in the library, found by its tags. `params` are `TrackQuery`'s
+fields (`rox-net/src/providers/mod.rs`), with `duration_secs` `null` when unknown. Sent
+only to a plugin whose manifest declares `providers.lyrics` and whose user switched
+Lyrics on for it, the same switch `source.lyrics` waits on (`providers_on`,
+`rox-services/src/plugins.rs`). A hit's `text` is LRC when `synced` and plain lines
+otherwise, never blank and at most `MAX_LYRICS`. `artist`, `title` and `album` take
+`MAX_STRING`, a list holds at most `MAX_CANDIDATES` (50), and `confidence` is optional
+and has to sit in 0 to 1 (`LyricsCandidates`, `wire.rs`). `null` or an empty list says
+none.
+
+Every `provider.*` call goes through `ask_provider` (`rox-services/src/plugins.rs`). It
+refuses a plugin whose manifest doesn't declare the domain, takes the listing timeout,
+and reads `null` as none. `provider_lyrics` maps each hit onto rox-net's
+`LyricsCandidate` under the plugin's name, leaving `confidence` for the aggregate and
+carrying the plugin's own as `hint`.
+
+`enrichment::search_lyrics` (`rox-services/src/enrichment.rs`) gathers the switched-on
+plugins in name order and hands them to `providers::search_lyrics` as `extra`. rox-net
+runs the built-ins when online lyrics lookups are on, plus the extras, and scores every
+candidate with the one function. `blend` mixes a hint in at `HINT_WEIGHT` (0.4), so text
+0.6 with a hint of 1.0 scores 0.76, under the panel's `AUTO_SAVE_CONFIDENCE` (0.9). The
+session cache keys on the query, the online flag and the extras' names in order
+(`providers_key`), so a lookup with a plugin switched on never gets an answer cached
+without it. The Lyrics panel's automatic lookup and the match window both search through
+`enrichment`. Find Online shows when `lyrics_available` finds the online flag on or a
+switched-on plugin offering lyrics. Past the flag that reads the settings file, so the
+panel reads it with its target and again when the flag flips (`rox-panels/src/lyrics.rs`).
+
+### `provider.metadata`
+
+```json
+> {"jsonrpc":"2.0","id":22,"method":"provider.metadata","params":{"artist":"Some Artist","title":"Some Song","album":"","duration_secs":241.3}}
+< {"jsonrpc":"2.0","id":22,"result":{"candidates":[{"title":"Some Song","artist":"Some Artist","album":"Some Album","album_artist":"","artist_sort":"","album_artist_sort":"","year":"2003","track_no":"4","disc_no":"","duration_secs":241.0,"confidence":0.9}]}}
+```
+
+Tag candidates for any track, with the same `params` as `provider.lyrics`. Sent only to
+a plugin whose manifest declares `providers.metadata` and whose user switched Tag Lookup
+on for it. Every string field takes `MAX_STRING`, and one the service lacks stays empty,
+which the tag compare leaves alone the same as a built-in's. The list cap and
+`confidence` are as above (`MetadataCandidates`, `wire.rs`).
+
+`provider_metadata` maps each hit onto `MetadataCandidate` the way `provider_lyrics`
+does. `enrichment::search_metadata` hands the plugins to `providers::search_metadata`,
+which runs MusicBrainz when online tag lookups are on, scores with `score_fields`, and
+blends and caches the same way. The candidates land in the same picker, so a write still
+waits on the user's pick. The entry points (the tag editor's Look Up, its per-row button
+in table mode and the Metadata panel's Find Online) show when `metadata_available` finds
+MusicBrainz on or a switched-on plugin offering Tag Lookup. The tag editor reads that
+when it opens and again when the online flag moves (`refresh_lookup`,
+`rox/src/tags/editor.rs`), and the Metadata panel reads it when its menu opens
+(`rox-panels/src/metadata.rs`).
+
+### `provider.artist`
+
+```json
+> {"jsonrpc":"2.0","id":23,"method":"provider.artist","params":{"name":"Some Artist","lang":"en"}}
+< {"jsonrpc":"2.0","id":23,"result":{"bio":"...","url":"https://example.com/artist/1","tags":["..."],"similar":["..."],"country":"US","formed":2001,"ended":null}}
+```
+
+A sheet on the artist as tagged, in the primary subtag of the interface language
+(`bio_lang`, `rox-services/src/artists.rs`). Sent only to a plugin whose manifest
+declares `providers.artist` and whose user switched Artist Info on for it. `null` says
+none. `bio` is plain paragraphs separated by blank lines, never blank and at most
+`MAX_BIO` (64 KiB). `url` is empty or an http or https address, `tags` and `similar`
+hold at most `MAX_ENTRIES` strings of `MAX_STRING` each, and `country` is empty or two
+uppercase letters. There's no image field, so a sheet carrying one fails
+(`ArtistSheet`, `wire.rs`).
+
+`artists::get` asks the switched-on plugins in name order whenever its entry is stale or
+forced, whether or not online artist info is on, and keeps the first sheet. One that
+fails is logged and skipped. The sheet is saved on the entry as its overlay with the
+plugin's name, beside the sources of every plugin that was on, and an entry fetched
+under a different set is stale however young (`is_fresh`). `assemble` lays the overlay
+over the built-ins at read time: the bio always, and the url, tags, similar artists,
+country and years where the sheet has them. Listeners, play count, top tracks and every
+picture stay the built-ins'. The wiki's link spans go with the bio they index. A sheet
+with no built-in info behind it stands on its own, and that entry asks the built-ins
+again on the next look rather than waiting out the TTL. `Artist::from_plugin` carries the
+plugin's name when its sheet supplied the url, and the Biography panel's byline then
+reads "From { $plugin }" (`biography-from-plugin`, `rox-panels/src/biography.rs`). A
+sheet with no url keeps the Last.fm link and its byline.
+
 ### `shutdown`
 
 ```json
@@ -498,6 +591,7 @@ that reaches a plugin on every OS when rox goes away without a shutdown.
 |---|---|---|
 | `hello` | 30 s | `Timeouts`, `rox-plugins/src/host.rs:53-65` |
 | `source.browse`, `source.search`, each later sync page | 15 s | |
+| `provider.lyrics`, `provider.metadata`, `provider.artist` | 15 s, the listing timeout | `ask_provider`, `rox-services/src/plugins.rs` |
 | A sync's first page | 60 s | |
 | `source.open` | 20 s | |
 | `source.read`, `source.cover` | 10 s | |
@@ -505,6 +599,8 @@ that reaches a plugin on every OS when rox goes away without a shutdown.
 | A line on stdout | 1 MiB | `MAX_FRAME`, `rox-plugins/src/wire.rs:16` |
 | A string in a result | 4 KiB | `MAX_STRING`, `wire.rs:18` |
 | Entries or tracks per page | 500 | `MAX_ENTRIES`, `wire.rs:21` |
+| Candidates in a `provider.*` answer | 50 | `MAX_CANDIDATES`, `wire.rs` |
+| An artist sheet's bio | 64 KiB | `MAX_BIO`, `wire.rs` |
 | A read's `len` | 256 KiB asked, 512 KiB at most | `Options`, `stream.rs:35-42`; `MAX_READ`, `wire.rs:24` |
 | A stderr line | 4 KiB | `STDERR_LINE`, `process.rs:20` |
 | Sync pages per collection | 2,000 | `MAX_SYNC_PAGES`, `rox-services/src/plugins.rs:45` |
@@ -800,8 +896,8 @@ the shader approvals (`plugin_approved` and `approve_plugin`,
 `rox-core/src/settings.rs:1484-1521`). They're machine-local, so a copied settings file
 doesn't carry someone else's trust decision. What rox remembers about a plugin is its
 `PluginRecord` in `accounts.json` (`settings.rs:2048-2082`): the switch, the label, the
-hash and manifest at the last approval, the scrobble and lyrics choices, the kept
-collections and the config.
+hash and manifest at the last approval, the scrobble, lyrics, tag lookup and artist info
+choices, the kept collections and the config.
 
 Switching a plugin on checks the folder's current hash against the machine's approval
 (`switch_plugin`, `rox/src/settings/window/plugins_page.rs`). The same hash switches on
@@ -813,8 +909,9 @@ Whenever the folders, the records or the approvals change, a switched-on plugin 
 matches its approval is switched off (`apply`, `plugins.rs:209-232`). Its row reads
 "Changed on disk". Switching it on again opens the card with the manifest diff against
 the one approved last time (`changes`, `plugins.rs:553-601`): capabilities added or
-dropped, programs added, the scrobble declaration turned on or off, and a changed entry.
-When the manifest is the same, the card says other files changed.
+dropped, programs added, the scrobble declaration turned on or off, a changed entry, and
+a provider domain declared since, even inside a `providers` block already approved
+(`Change::ProviderAdded`). When the manifest is the same, the card says other files changed.
 
 Developer mode is a per-plugin toggle for its author, an icon button beside a
 switched-on plugin's switch (`plugin_row`, `rox/src/settings/window/plugins_page.rs`). It's
@@ -845,14 +942,18 @@ The Plugins page's copy, in English, for finding each string in the other locale
 | Card, source | Adds { $label } as a source: rox browses, searches, syncs and plays it through the plugin. |
 | Card, scrobbling | Asks to scrobble what it plays. |
 | Card, lyrics | Offers lyrics for its tracks. rox only asks once you switch them on. |
+| Card, providers | Offers { $domains } for any track in your library. rox only asks once you switch each on. (`$domains` from lyrics, tag lookup, artist info) |
 | Card, programs | Uses { $program }, found on this computer. / Uses { $program }, which isn't on this computer's PATH. |
 | Card, re-approval | Changed since you last switched it on: / The manifest is the same as last time. Other files in the folder changed. |
-| Card, changes | New capability: { $name } / Dropped capability: { $name } / New program: { $program } / Now asks to scrobble / No longer asks to scrobble / Starts a different way |
+| Card, changes | New capability: { $name } / Dropped capability: { $name } / New program: { $program } / Now asks to scrobble / No longer asks to scrobble / Starts a different way / Now offers { $domain } for your library |
 | Card button | Switch On |
 | Page switch | Enable Plugins: Let the plugins in the plugins folder run. Each one still has its own switch below, and runs as a program on this computer with your permissions |
 | Favourites switch | Sync Favourites: A heart on a plugin's track also favourites it on the plugin's service, for plugins that offer it. Hearts from before you switch this on stay where they are and show half filled until you click them |
 | Card, favourites | Can favourite its tracks on its service once you switch on Sync Favourites. |
-| Under a switched-on plugin | Scrobble Plays, Lyrics: Ask this plugin for its tracks' lyrics before the lyrics providers. Offered because the plugin answers them, Synced Collections, Sync Now, The last sync failed |
+| Under a switched-on plugin | Scrobble Plays, Lyrics, Tag Lookup, Artist Info, Synced Collections, Sync Now, The last sync failed |
+| Lyrics switch, by what the manifest declares | `source.lyrics`: Ask this plugin for its tracks' lyrics before the lyrics providers. Offered because the plugin answers them / `providers.lyrics`: Include this plugin's sheets when rox looks up lyrics for any track. Offered because the plugin answers them / both: Ask this plugin first for its own tracks, and include its sheets when rox looks up lyrics for any other. Offered because the plugin answers them |
+| Tag Lookup switch | Include this plugin's matches when you look up a track's tags. Offered because the plugin answers them |
+| Artist Info switch | Ask this plugin about an artist first, and let the artist providers fill in what it leaves out. Offered because the plugin answers it |
 | Developer mode tooltip | Developer mode: until rox quits, a change to this plugin's folder is approved on its own and restarts it. A change to what its manifest declares still switches it off |
 | Nothing kept | Nothing synced yet. Switch sync on for a collection in the plugin's source browser |
 | Remove title | Remove "{ $name }"? |
@@ -902,6 +1003,18 @@ loads and hashes the same after running, `hello` answers, browse lists both coll
 a sync pages and then answers unchanged, and a full read decodes to the frame count the
 track's duration states. The tests skip when no Python interpreter resolves.
 
+[`examples/plugins/lyrics-folder`](../../examples/plugins/lyrics-folder/) only provides:
+it declares `providers.lyrics` and no source, and answers `provider.lyrics` from the
+`.lrc` files under a folder its one config field names. It matches on the file's
+`[ar:]` and `[ti:]` tags, or on an `Artist - Title` file name without them, folded the
+way rox's `normalize` folds, and sends `confidence` 1.0 only for a match by tags. It
+reads nothing outside that folder and writes nothing at all. Its row on the Plugins page
+carries a Lyrics switch and no library or synced blocks, and it adds nothing to Add
+Panel. `crates/rox-plugins/tests/lyrics_folder.rs` runs it against the real host
+with a scratch folder holding one word-timed sheet: the manifest loads with no source,
+the folder hashes the same after a run, a tagged match answers with its hint and its
+word tags intact, and a miss answers an empty list.
+
 Two tones queued back to back play gaplessly through the engine. This was measured on the
 position clock, which counts only frames the output actually played: a gap plays silence
 the clock doesn't count (`rox-playback/src/output.rs:362-366`), so it would show as wall
@@ -920,8 +1033,9 @@ entry and the interpreter table), `hash.rs` (the folder hash), `loader.rs` (the 
 the folder watch), `wire.rs` (framing, the typed results and the caps), `process.rs`
 (spawn, stderr, the process group and the job object), `host.rs` (one plugin's process,
 calls, timeouts, crashes and shutdown) and `stream.rs` (reads by offset with read-ahead).
-Its tests are `tests/echo.rs` against the fixture in `tests/fixtures/echo/`, and
-`tests/tones.rs` against the example.
+Its tests are `tests/echo.rs` against the fixture in `tests/fixtures/echo/`,
+`tests/tones.rs` against the tones example and `tests/lyrics_folder.rs` against the
+lyrics-folder example.
 
 The services side is `crates/rox-services/src/plugins.rs` (the host table, apply and
 approval, browse, search, sync, pick, covers, the opener and the pre-open), with
@@ -929,7 +1043,9 @@ approval, browse, search, sync, pick, covers, the opener and the pre-open), with
 `plugin_favourites.rs` (Sync Favourites and the half heart),
 `plugin_criteria.rs` (parsing and holding results to search criteria),
 `unknown_resolver.rs` (filling queued Unknown rows),
-`lyrics.rs` (`PluginLyrics`, the lyrics gate),
+`lyrics.rs` (`PluginLyrics`, the lyrics gate), `enrichment.rs` (the lyrics and tag
+lookups with the switched-on plugin providers joined in), `artists.rs` (the artist
+sheet's overlay),
 `openers.rs` (the opener slot) and `thumbs.rs` (covers through the plugin). Records and
 approvals are `PluginRecord`, `SyncedCollection` and `approved_plugins` in
 `crates/rox-core/src/settings.rs`. The library side is `crates/rox-library/src/members.rs`

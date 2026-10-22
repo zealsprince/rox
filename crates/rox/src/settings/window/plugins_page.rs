@@ -15,6 +15,7 @@ use gpui_component::tooltip::Tooltip;
 use rox_library::members::InLibrary;
 use rox_library::projection::{FilterField, FilterSet};
 use rox_plugins::host::STOPPED_AFTER_CRASHES;
+use rox_plugins::manifest::ProviderDomain;
 use rox_plugins::{Loaded, Status};
 use rox_services::plugin_library;
 use rox_services::plugins::{self as host, Change};
@@ -322,6 +323,19 @@ impl EnableCard {
             }
         }
 
+        let providers = manifest.capabilities.providers;
+        if providers.any() {
+            let domains: Vec<SharedString> = ProviderDomain::ALL
+                .into_iter()
+                .filter(|domain| providers.has(*domain))
+                .map(domain_name)
+                .collect();
+            lines.push(rox_i18n::t!(
+                "settings-plugins-card-providers",
+                domains = domains.join(", ")
+            ));
+        }
+
         for (program, found) in &folder.programs {
             lines.push(match found {
                 true => rox_i18n::t!(
@@ -384,6 +398,19 @@ fn change_line(change: &Change) -> SharedString {
             "settings-plugins-change-action-changed",
             label = label.as_str()
         ),
+        Change::ProviderAdded(domain) => rox_i18n::t!(
+            "settings-plugins-change-provider",
+            domain = domain_name(*domain).to_string()
+        ),
+    }
+}
+
+/// A provider domain as the card and the change lines name it, mid-sentence.
+fn domain_name(domain: ProviderDomain) -> SharedString {
+    match domain {
+        ProviderDomain::Lyrics => rox_i18n::t!("settings-plugins-domain-lyrics"),
+        ProviderDomain::Metadata => rox_i18n::t!("settings-plugins-domain-metadata"),
+        ProviderDomain::Artist => rox_i18n::t!("settings-plugins-domain-artist"),
     }
 }
 
@@ -1009,50 +1036,65 @@ impl SettingsWindow {
         let record = self.record(&id);
         let config = record.map(|r| r.config.clone()).unwrap_or(Value::Null);
 
-        let cap = folder
-            .manifest
-            .as_ref()
-            .and_then(|m| m.capabilities.source.as_ref());
-        let declares_scrobble = cap.is_some_and(|cap| cap.scrobble);
-        let declares_lyrics = cap.is_some_and(|cap| cap.lyrics);
+        let manifest = folder.manifest.as_ref();
+        let cap = manifest.and_then(|m| m.capabilities.source.as_ref());
+        let providers = manifest
+            .map(|m| m.capabilities.providers)
+            .unwrap_or_default();
 
         let mut body = div().flex().flex_col().gap(tokens::SPACE_SM);
         // Each row under its own name, so its switch keeps its own focus.
-        let row = |name: String| div().id(SharedString::from(format!("plugin-{id}-{name}")));
+        let row = |name: &str| div().id(SharedString::from(format!("plugin-{id}-{name}")));
 
-        if declares_scrobble {
-            let scrobble = record.is_some_and(|r| r.scrobble);
-            let plugin = id.clone();
-            body = body.child(row("scrobble".into()).child(panel::setting_row(
+        if cap.is_some_and(|cap| cap.scrobble) {
+            body = body.child(row("scrobble").child(Self::plugin_switch(
+                &id,
                 rox_i18n::t!("settings-plugins-scrobble"),
                 rox_i18n::try_translate("settings-plugins-scrobble.description"),
-                panel::toggle(
-                    scrobble,
-                    move |this: &mut Self, on, cx| {
-                        host::set_scrobble(&plugin, on);
-                        this.refresh_plugins(cx);
-                        cx.notify();
-                    },
-                    cx,
-                ),
+                record.is_some_and(|r| r.scrobble),
+                host::set_scrobble,
+                cx,
             )));
         }
 
-        if declares_lyrics {
-            let lyrics = record.is_some_and(|r| r.lyrics);
-            let plugin = id.clone();
-            body = body.child(row("lyrics".into()).child(panel::setting_row(
+        // One switch covers both lyrics roles, so its line says which ones
+        // this plugin declares.
+        let lyrics_line = match (cap.is_some_and(|cap| cap.lyrics), providers.lyrics) {
+            (true, true) => Some("settings-plugins-lyrics-both"),
+            (true, false) => Some("settings-plugins-lyrics-own"),
+            (false, true) => Some("settings-plugins-lyrics-library"),
+            (false, false) => None,
+        };
+        if let Some(line) = lyrics_line {
+            body = body.child(row("lyrics").child(Self::plugin_switch(
+                &id,
                 rox_i18n::t!("settings-plugins-lyrics"),
-                rox_i18n::try_translate("settings-plugins-lyrics.description"),
-                panel::toggle(
-                    lyrics,
-                    move |this: &mut Self, on, cx| {
-                        host::set_lyrics(&plugin, on);
-                        this.refresh_plugins(cx);
-                        cx.notify();
-                    },
-                    cx,
-                ),
+                Some(rox_i18n::t!(line)),
+                record.is_some_and(|r| r.lyrics),
+                host::set_lyrics,
+                cx,
+            )));
+        }
+
+        if providers.metadata {
+            body = body.child(row("metadata").child(Self::plugin_switch(
+                &id,
+                rox_i18n::t!("settings-plugins-metadata"),
+                rox_i18n::try_translate("settings-plugins-metadata.description"),
+                record.is_some_and(|r| r.metadata),
+                host::set_metadata,
+                cx,
+            )));
+        }
+
+        if providers.artist {
+            body = body.child(row("artist").child(Self::plugin_switch(
+                &id,
+                rox_i18n::t!("settings-plugins-artist"),
+                rox_i18n::try_translate("settings-plugins-artist.description"),
+                record.is_some_and(|r| r.artist),
+                host::set_artist,
+                cx,
             )));
         }
 
@@ -1069,15 +1111,45 @@ impl SettingsWindow {
             let current = &config[key.as_str()];
 
             let control = self.config_control(&id, &key, &schema, current, cx);
-            body = body.child(row(format!("config-{key}")).child(panel::setting_row(
+            body = body.child(row(&format!("config-{key}")).child(panel::setting_row(
                 title,
                 description,
                 control,
             )));
         }
 
+        // Library counts and synced collections only exist for a source.
+        if cap.is_none() {
+            return body;
+        }
+
         body.child(self.library_block(&id))
             .child(self.synced_block(&id, record, cx))
+    }
+
+    /// One of a plugin's switches. `set` writes its record, then the page re-reads.
+    fn plugin_switch(
+        id: &str,
+        title: SharedString,
+        description: Option<SharedString>,
+        on: bool,
+        set: fn(&str, bool),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let plugin = id.to_string();
+        panel::setting_row(
+            title,
+            description,
+            panel::toggle(
+                on,
+                move |this: &mut Self, on, cx| {
+                    set(&plugin, on);
+                    this.refresh_plugins(cx);
+                    cx.notify();
+                },
+                cx,
+            ),
+        )
     }
 
     /// How many of the plugin's tracks are in the library, with a way to see
@@ -1435,6 +1507,29 @@ mod tests {
         );
         assert_eq!(standing(Some(&ok), Some(&on), true, None), Standing::On);
         assert_eq!(standing(Some(&ok), None, false, None), Standing::Off);
+    }
+
+    #[test]
+    fn the_card_names_every_declared_domain() {
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let mut provider = folder(None, &[]);
+        provider.manifest = Some(
+            rox_plugins::manifest::parse(
+                r#"{ "id": "tones", "name": "Tones", "version": "1", "api": 1,
+                     "entry": { "native": { "linux-x86_64": "a" } },
+                     "capabilities": { "providers": { "lyrics": true, "artist": true } } }"#,
+            )
+            .unwrap(),
+        );
+
+        let card = EnableCard::of(provider, None).unwrap();
+
+        assert_eq!(card.lines.len(), 1, "{:?}", card.lines);
+        assert!(
+            card.lines[0].contains("lyrics, artist info"),
+            "{}",
+            card.lines[0]
+        );
     }
 
     #[test]

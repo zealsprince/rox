@@ -343,6 +343,11 @@ doesn't sandbox it. Switching it on approves exactly the files in its
 folder. If any of them change, it switches off until you switch it on
 again. The card then shows what changed.
 
+A plugin can also offer lyrics, tag lookup and artist info for any track
+in your library, not only its own. Each of those gets a switch on the
+plugin's row, off until you turn it on. A plugin that offers only these
+has no source to browse, so it doesn't appear under Add Panel > Plugins.
+
 Browse and search a plugin's source by picking it under Add Panel >
 Plugins, which opens the External Sources panel on it. Hover a
 collection and click its checkmark to keep it in your library, which

@@ -12,6 +12,7 @@
 //! change instead when the manifest declares nothing new. A record whose
 //! folder is gone is Missing: nothing starts and nothing is swept.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -28,9 +29,10 @@ use rox_library::locator::{Locator, PluginStream};
 use rox_library::members::{self, PluginTrack};
 use rox_library::rusqlite::Connection;
 use rox_library::store;
+use rox_net::providers::{LyricsCandidate, MetadataCandidate, TrackQuery};
 use rox_playback::continuation::{self, Pick};
 use rox_playback::plugin::{Opened, ReadAt};
-use rox_plugins::manifest::SourceCap;
+use rox_plugins::manifest::{ProviderDomain, SourceCap};
 use rox_plugins::{Host, HostConfig, Loaded, Options, Status, Stream, loader, wire};
 
 use crate::catalog::Library;
@@ -499,7 +501,7 @@ pub fn apply(cx: &mut App) {
             let declares = folder
                 .manifest
                 .as_ref()
-                .is_some_and(|m| m.capabilities.source.is_some());
+                .is_some_and(|m| m.capabilities.source.is_some() || m.capabilities.providers.any());
 
             (folder.runs() && declares).then(|| (source_of(&record.id), (folder.clone(), record)))
         })
@@ -575,14 +577,10 @@ fn reconcile(wanted: HashMap<String, (Loaded, PluginRecord)>) -> (Vec<Host>, Vec
         let Some(manifest) = folder.manifest.clone() else {
             continue;
         };
-        let label = match record.label.is_empty() {
-            true => manifest
-                .capabilities
-                .source
-                .as_ref()
-                .map(|cap| cap.label.clone())
-                .unwrap_or_default(),
-            false => record.label.clone(),
+        let label = match (record.label.is_empty(), &manifest.capabilities.source) {
+            (false, _) => record.label.clone(),
+            (true, Some(cap)) => cap.label.clone(),
+            (true, None) => manifest.name.clone(),
         };
 
         log::info!("{source}: loaded, folder hash {}", folder.hash);
@@ -824,6 +822,14 @@ pub fn set_lyrics(id: &str, on: bool) {
     edit(id, move |record| record.lyrics = on);
 }
 
+pub fn set_metadata(id: &str, on: bool) {
+    edit(id, move |record| record.metadata = on);
+}
+
+pub fn set_artist(id: &str, on: bool) {
+    edit(id, move |record| record.artist = on);
+}
+
 /// One config value. The host picks it up when [`apply`] next runs, which
 /// restarts it with the new config.
 pub fn set_config(id: &str, key: &str, value: Value) {
@@ -894,6 +900,8 @@ pub enum Change {
     /// An action by its label: new, or declared differently.
     ActionAdded(String),
     ActionChanged(String),
+    /// A `provider.*` domain declared that the approved manifest didn't.
+    ProviderAdded(ProviderDomain),
 }
 
 /// Compares the manifests as written, so a capability this build doesn't
@@ -955,6 +963,18 @@ pub fn changes(approved: &Value, now: &Value) -> Vec<Change> {
                 .map(Change::CapabilityAdded),
         );
     }
+
+    // Each domain reaches the library on its own switch, so one declared
+    // inside a block that was already approved still asks.
+    let offers = |doc: &Value, domain: ProviderDomain| {
+        doc["capabilities"]["providers"][domain.key()].as_bool() == Some(true)
+    };
+    found.extend(
+        ProviderDomain::ALL
+            .into_iter()
+            .filter(|&domain| offers(now, domain) && !offers(approved, domain))
+            .map(Change::ProviderAdded),
+    );
 
     let actions = |doc: &Value| -> Vec<(String, Value)> {
         doc["capabilities"]["source"]["actions"]
@@ -1762,6 +1782,47 @@ pub fn lyrics_from(source: &str) -> Option<String> {
     cap.lyrics.then(|| cap.label.clone())
 }
 
+/// A running plugin that declares `domain` and whose record switches it on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginProvider {
+    /// `plugin:<id>`.
+    pub source: String,
+    /// The manifest's name, shown as the provider.
+    pub label: String,
+}
+
+/// Reads the settings file once, so ask per search, not per frame. Sorted,
+/// since rox-net keys its session cache on the order.
+pub fn providers_on(domain: ProviderDomain) -> Vec<PluginProvider> {
+    let mut on: Vec<PluginProvider> = Settings::load()
+        .accounts
+        .plugins
+        .iter()
+        .filter(|record| match domain {
+            ProviderDomain::Lyrics => record.lyrics,
+            ProviderDomain::Metadata => record.metadata,
+            ProviderDomain::Artist => record.artist,
+        })
+        .filter_map(|record| {
+            let source = source_of(&record.id);
+            let running = running(&source)?;
+            let manifest = running.host.manifest();
+
+            manifest
+                .capabilities
+                .providers
+                .has(domain)
+                .then(|| PluginProvider {
+                    label: manifest.name.clone(),
+                    source,
+                })
+        })
+        .collect();
+    on.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.source.cmp(&b.source)));
+
+    on
+}
+
 /// A track's sheet from its plugin: the text, and whether it's LRC. None
 /// when the plugin has none. Blocking.
 pub fn lyrics(source: &str, key: &str) -> Result<Option<(String, bool)>, String> {
@@ -1778,6 +1839,116 @@ pub fn lyrics(source: &str, key: &str) -> Result<Option<(String, bool)>, String>
     }
 
     wire::decode::<wire::LyricsAnswer>(answer).map(|sheet| Some((sheet.text, sheet.synced)))
+}
+
+/// Sheets the plugin found for any track by its tags. Unscored: the
+/// aggregate fills `confidence`, and the plugin's own view rides as `hint`.
+/// Blocking.
+pub fn provider_lyrics(source: &str, query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String> {
+    let Some((label, answer)) = ask_provider(source, ProviderDomain::Lyrics, track_params(query))?
+    else {
+        return Ok(Vec::new());
+    };
+    let found = wire::decode::<wire::LyricsCandidates>(answer)?;
+
+    Ok(found
+        .candidates
+        .into_iter()
+        .map(|hit| LyricsCandidate {
+            provider: Cow::Owned(label.clone()),
+            artist: hit.artist,
+            title: hit.title,
+            album: hit.album,
+            duration_secs: hit.duration_secs,
+            synced: hit.synced,
+            text: hit.text,
+            confidence: 0.0,
+            hint: hit.confidence,
+        })
+        .collect())
+}
+
+/// Tag candidates the plugin found for a track, unscored like
+/// [`provider_lyrics`]. Blocking.
+pub fn provider_metadata(
+    source: &str,
+    query: &TrackQuery,
+) -> Result<Vec<MetadataCandidate>, String> {
+    let Some((label, answer)) =
+        ask_provider(source, ProviderDomain::Metadata, track_params(query))?
+    else {
+        return Ok(Vec::new());
+    };
+    let found = wire::decode::<wire::MetadataCandidates>(answer)?;
+
+    Ok(found
+        .candidates
+        .into_iter()
+        .map(|hit| MetadataCandidate {
+            provider: Cow::Owned(label.clone()),
+            title: hit.title,
+            artist: hit.artist,
+            album: hit.album,
+            album_artist: hit.album_artist,
+            artist_sort: hit.artist_sort,
+            album_artist_sort: hit.album_artist_sort,
+            year: hit.year,
+            track_no: hit.track_no,
+            disc_no: hit.disc_no,
+            duration_secs: hit.duration_secs,
+            confidence: 0.0,
+            hint: hit.confidence,
+        })
+        .collect())
+}
+
+/// The plugin's sheet on an artist, by the name as tagged and the primary
+/// language subtag. Blocking.
+pub fn provider_artist(
+    source: &str,
+    name: &str,
+    lang: &str,
+) -> Result<Option<wire::ArtistSheet>, String> {
+    let params = json!({ "name": name, "lang": lang });
+    let Some((_, answer)) = ask_provider(source, ProviderDomain::Artist, params)? else {
+        return Ok(None);
+    };
+
+    wire::decode::<wire::ArtistSheet>(answer).map(Some)
+}
+
+/// One `provider.*` call: the plugin's name and its answer, or None when it
+/// answered null. A plugin is never sent a domain its manifest doesn't declare.
+fn ask_provider(
+    source: &str,
+    domain: ProviderDomain,
+    params: Value,
+) -> Result<Option<(String, Value)>, String> {
+    await_first_apply(source);
+    let running = running(source).ok_or_else(|| NO_HOST.to_string())?;
+    let manifest = running.host.manifest();
+    if !manifest.capabilities.providers.has(domain) {
+        return Err(format!("{source} doesn't offer {}", domain.key()));
+    }
+
+    let method = match domain {
+        ProviderDomain::Lyrics => "provider.lyrics",
+        ProviderDomain::Metadata => "provider.metadata",
+        ProviderDomain::Artist => "provider.artist",
+    };
+    let host = &running.host;
+    let answer = host.call(method, params, host.timeouts().listing)?;
+
+    Ok((!answer.is_null()).then(|| (manifest.name.clone(), answer)))
+}
+
+fn track_params(query: &TrackQuery) -> Value {
+    json!({
+        "artist": query.artist,
+        "title": query.title,
+        "album": query.album,
+        "duration_secs": query.duration_secs,
+    })
 }
 
 /// One batch of a station, and where the next starts. Blocking.
@@ -2577,6 +2748,9 @@ pub fn running_plugins() -> Vec<RunningPlugin> {
         .iter()
         .filter_map(|(source, running)| {
             let manifest = running.host.manifest();
+            // A provider-only plugin has no rows to browse.
+            manifest.capabilities.source.as_ref()?;
+
             Some(RunningPlugin {
                 id: record_id(source)?.to_string(),
                 name: manifest.name.clone(),
@@ -2638,7 +2812,8 @@ pub fn is_running(id: &str) -> bool {
     running(&source_of(id)).is_some()
 }
 
-/// `(source id, label)` for every plugin that's loaded and not stopped.
+/// `(source id, label)` for every plugin with a source capability that's
+/// loaded and not stopped. A provider-only plugin has a host and no rows.
 pub fn live_sources() -> Vec<(String, String)> {
     let Ok(table) = HOSTS.read() else {
         return Vec::new();
@@ -2646,6 +2821,7 @@ pub fn live_sources() -> Vec<(String, String)> {
 
     let mut live: Vec<(String, String)> = table
         .iter()
+        .filter(|(_, running)| running.host.manifest().capabilities.source.is_some())
         .filter(|(_, running)| !matches!(running.host.status(), Status::Stopped(_)))
         .map(|(source, running)| (source.clone(), running.label.clone()))
         .collect();
@@ -2662,11 +2838,7 @@ pub fn searchable_sources() -> Vec<(String, String)> {
         return Vec::new();
     }
 
-    let mut sources = live_sources();
-    // A panel-only plugin has a host too, with nothing to search.
-    sources.retain(|(source, _)| offers(source, |_| true));
-
-    sources
+    live_sources()
 }
 
 /// Searches `source` for the song and answers the key of the result that's
@@ -2899,6 +3071,39 @@ mod tests {
     fn an_unchanged_manifest_has_no_changes() {
         let doc = manifest(json!({ "source": { "label": "T" } }), json!(["a"]), "t.py");
         assert!(changes(&doc, &doc).is_empty());
+    }
+
+    #[test]
+    fn a_new_provider_domain_shows_on_the_card() {
+        let before = manifest(
+            json!({ "providers": { "lyrics": true } }),
+            json!([]),
+            "t.py",
+        );
+        let after = manifest(
+            json!({ "providers": { "lyrics": true, "metadata": true } }),
+            json!([]),
+            "t.py",
+        );
+        assert_eq!(
+            changes(&before, &after),
+            vec![Change::ProviderAdded(ProviderDomain::Metadata)]
+        );
+
+        let bare = manifest(json!({}), json!([]), "t.py");
+        let both = manifest(
+            json!({ "providers": { "lyrics": true, "artist": true, "metadata": false } }),
+            json!([]),
+            "t.py",
+        );
+        assert_eq!(
+            changes(&bare, &both),
+            vec![
+                Change::CapabilityAdded("providers".into()),
+                Change::ProviderAdded(ProviderDomain::Lyrics),
+                Change::ProviderAdded(ProviderDomain::Artist),
+            ]
+        );
     }
 
     #[test]

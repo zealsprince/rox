@@ -281,7 +281,7 @@ impl TagMatch {
             }
             let result = cx
                 .background_executor()
-                .spawn(async move { providers::search_metadata(&query) })
+                .spawn(async move { rox_services::enrichment::search_metadata(&query) })
                 .await;
             this.update(cx, |this, cx| this.apply_results(result, cx))
                 .ok();
@@ -500,7 +500,7 @@ impl TagMatch {
                                     .flex_none()
                                     .text_xs()
                                     .text_color(palette::text_muted())
-                                    .child(candidate.provider),
+                                    .child(SharedString::from(candidate.provider.to_string())),
                             )
                             .child(confidence_badge(candidate.confidence)),
                     )

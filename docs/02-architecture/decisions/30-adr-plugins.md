@@ -658,3 +658,40 @@ hands back. History's play-by-name search sends plain text and never parses: a t
 hold quotes and colons.
 
 The key is optional and plugins already ignore keys they don't know, so `api` stays 1.
+
+**Amended 2026-10-21: providers for the library.** Andrew's product call, after a request
+for word-timed lyrics on library tracks that no built-in source could serve. A plugin's
+lyrics reached only its own tracks, and [ADR 14](14-adr-online-providers.md)'s lookups
+ran a fixed list of built-in services. Lyrics, tag candidates and an artist's sheet are
+data a service already knows, the same line the chapters and lyrics amendment drew: the
+plugin supplies them and rox draws them. This time it's for any track in the library
+rather than only the plugin's own.
+
+The declaration sits under `capabilities.providers`, a flag per domain: `lyrics`,
+`metadata` and `artist`. rox asks `provider.lyrics` and `provider.metadata` with the
+track's tags and `provider.artist` with the artist's name as tagged, so the query is
+text only and never a row key. Each domain waits on its own switch on the Plugins page,
+off by default and never turned on by approval, which extends the lyrics amendment's
+gate. One Lyrics switch covers both lyrics roles: a plugin that declares `source.lyrics`
+and `providers.lyrics` gets one switch, and its line says which roles it covers. A
+domain declared since the last approval shows on the re-approval card even inside a
+block that was already approved, since each one reaches the library on a switch of its
+own.
+
+Candidates join ADR 14's lookups beside the built-ins' and rank with the same scorer, so
+the order stays by fit. A plugin may send its own confidence, and rox blends it in at 40
+percent with its own text score keeping the rest. That lifts a match the service spelled
+differently, while a hinted junk match, text 0.6 and hint 1.0, lands at 0.76, under the
+bar an automatic lyrics save has to clear. The Providers page's online switches keep
+covering the built-ins only, so a plugin's lookups run with them off.
+
+The artist sheet is text only: a bio, a link, tags, similar artists, a country and the
+years. It lays over the built-ins' fetch, each field the plugin fills replacing theirs,
+and the listener counts and every picture stay theirs. A picture from a plugin would be
+a URL rox fetches, which this record forbids, so art as a domain waits on a shape that
+carries bytes. The biography's byline names whoever supplied the link.
+
+A plugin that only provides runs a host but isn't a source. It has no rows, no place in
+the External Sources panel's picker and no section under Add Panel's Plugins. The
+methods are new requests and the block is a new key under `capabilities`, which a host
+that doesn't know it ignores, so `api` stays 1.

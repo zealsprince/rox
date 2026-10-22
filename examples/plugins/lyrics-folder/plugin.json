@@ -1,0 +1,29 @@
+{
+  "id": "lyrics-folder",
+  "name": "Lyrics Folder",
+  "version": "1.0.0",
+  "api": 1,
+  "entry": {
+    "script": { "path": "lyrics_folder.py", "interpreter": "python3" }
+  },
+  "meta": {
+    "author": "rox",
+    "description": "An example provider plugin. It answers lyrics for any track in your library from a folder of .lrc files, so it needs no network and no account.",
+    "website": "https://github.com/zealsprince/rox",
+    "license": "AGPL-3.0-only"
+  },
+  "capabilities": {
+    "providers": { "lyrics": true }
+  },
+  "programs": [],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "folder": {
+        "type": "string",
+        "title": "Folder",
+        "description": "The folder of .lrc files to search, subfolders included. Changing it restarts the plugin."
+      }
+    }
+  }
+}

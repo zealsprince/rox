@@ -5,12 +5,13 @@ syncs and plays it through a program the plugin supplies. The plugin is a folder
 holding a manifest and that program. rox starts the program as a subprocess and
 speaks newline-delimited JSON-RPC 2.0 with it over stdin and stdout.
 
-rox doesn't ship plugins for streaming services. Two examples are there to copy, both on
+rox doesn't ship plugins for streaming services. Three examples are there to copy, all on
 nothing beyond Python 3's standard library. [`examples/plugins/tones`](examples/plugins/tones/)
 generates sine tones and chords, so it needs no network, and it's the place to start.
 [`examples/plugins/internet-archive`](examples/plugins/internet-archive/) browses the
 Internet Archive's freely licensed netlabel releases and uses every optional part of the
-protocol.
+protocol. [`examples/plugins/lyrics-folder`](examples/plugins/lyrics-folder/) is no source
+at all: it answers lyrics for any track in the library from a folder of `.lrc` files.
 
 This guide covers plugin API version 1, the only one the host supports.
 
@@ -46,7 +47,8 @@ every file in it. The approval is stored per machine, so a copied settings file
 doesn't bring someone else's trust decision along. When any file in the folder
 changes, the plugin switches off and its row reads Changed on disk. Switching it on
 again shows what changed in the manifest since the last approval: capabilities added
-or dropped, new programs, the scrobble declaration, a different entry.
+or dropped, new programs, the scrobble declaration, a different entry, a provider newly
+offered.
 
 Some things about the hash matter when you write a plugin:
 
@@ -124,6 +126,7 @@ match the folder's name is refused.
 | `entry`               | Exactly one of `script` or `native`.                                                                             |
 | `meta`                | `author`, `description`, `website`, `license`, `version`, all optional. The card shows the author and description. |
 | `capabilities.source` | `label` names the source in rox. `scrobble` defaults to false. `icon` is optional, see [The icon](#the-icon). `radio: true` says the plugin answers [`source.radio`](#sourceradio). `links: true` says it answers [`source.link`](#sourcelink). `lyrics: true` says it answers [`source.lyrics`](#sourcelyrics). `actions` lists what it can do with its items, see [Actions](#actions). `favourites` names the pair of actions rox's heart runs, see [Favourites](#favourites). |
+| `capabilities.providers` | `lyrics`, `metadata` and `artist`, each false by default. `true` says the plugin answers [`provider.lyrics`](#providerlyrics), [`provider.metadata`](#providermetadata) or [`provider.artist`](#providerartist) for any track in the library, not just its own. A plugin can declare providers and no source. |
 | `capabilities.panels` | Extra panels listed under the plugin in Add Panel. Optional. See [Panels](#panels).                              |
 | `programs`            | Programs the plugin runs, by name. The page checks the plugin's own `bin/` folder, then Program Folders, then PATH, and reports each name as found or missing. rox doesn't enforce the list. |
 | `config_schema`       | JSON Schema for the plugin's settings.                                                                           |
@@ -239,6 +242,9 @@ rolls to `rox.log.1` at 2 MiB. The plugin never sends requests to rox.
 | `source.job`     | `job`                             | the job's progress, and its outcome once it ends |
 | `source.cancel`  | `job`                             | null                                             |
 | `source.flags`   | `items`                           | `{flags}`, each item's flags now                 |
+| `provider.lyrics`   | `artist`, `title`, `album`, `duration_secs` | `{candidates}`, sheets for the track, or null |
+| `provider.metadata` | `artist`, `title`, `album`, `duration_secs` | `{candidates}`, tags for the track, or null   |
+| `provider.artist`   | `name`, `lang`                    | a sheet on the artist, or null                   |
 | `shutdown`       |                                   | null, then the plugin exits                      |
 
 ### hello
@@ -586,6 +592,80 @@ providers, and saves the answer like a match the user picked:
 lines otherwise. Answer null for a track with no sheet, and rox goes on to the
 providers. The text can run to 256 KiB, past the usual string cap.
 
+### provider.lyrics
+
+Sent only to a plugin whose manifest says `"providers": {"lyrics": true}`, and only once
+the user switches Lyrics on for it on the Plugins page. That's the switch `source.lyrics`
+waits on too, so a plugin that declares both gets one switch, and it starts off. With it
+on, rox asks whenever it looks up lyrics for any track in the library, by the track's
+tags:
+
+```
+→ {"jsonrpc":"2.0","id":21,"method":"provider.lyrics","params":{"artist":"Some Artist","title":"Some Song","album":"","duration_secs":241.3}}
+← {"jsonrpc":"2.0","id":21,"result":{"candidates":[{"artist":"Some Artist","title":"Some Song","album":"","duration_secs":241.0,"text":"[00:12.00]<00:12.00>Bring <00:12.40>me ...","synced":true,"confidence":0.95}]}}
+```
+
+`params` are the tags as the user has them, and `duration_secs` is null when rox doesn't
+know the length. Answer every sheet you found, up to 50. Each one's `artist`, `title`,
+`album` and `duration_secs` say what track it's for, and all four are optional. `text`
+is LRC when `synced` is true and plain lines otherwise. It can't be blank and can run to
+256 KiB. An enhanced sheet's word timings come through, and the Lyrics panel follows
+them word by word. Answer null or an empty list when you have nothing.
+
+`confidence` is optional too: your own view of the match, from 0 to 1. rox doesn't rank
+by it. It compares every candidate's tags with the track's itself, yours and the
+built-in providers' alike, and blends your confidence in at 40 percent of the score. A
+match the service spelled differently gets a lift, and a poor match you're sure of still
+lands under the bar the Lyrics panel's automatic save has to clear. Leave it out and rox
+ranks the candidate by its own comparison alone.
+
+Your candidates show in the lyrics match window under your plugin's name, ranked among
+the built-ins'. rox asks you even with online lyrics lookups off on the Providers page,
+since your switch is the one that counts.
+
+### provider.metadata
+
+Sent only to a plugin whose manifest says `"providers": {"metadata": true}`, once the
+user switches Tag Lookup on for it. rox asks when the user looks up a track's tags, from
+the tag editor or the Metadata panel, with the same `params` as `provider.lyrics`:
+
+```
+→ {"jsonrpc":"2.0","id":22,"method":"provider.metadata","params":{"artist":"Some Artist","title":"Some Song","album":"","duration_secs":241.3}}
+← {"jsonrpc":"2.0","id":22,"result":{"candidates":[{"title":"Some Song","artist":"Some Artist","album":"Some Album","album_artist":"","artist_sort":"","album_artist_sort":"","year":"2003","track_no":"4","disc_no":"","duration_secs":241.0,"confidence":0.9}]}}
+```
+
+Answer up to 50 candidates. Every field is optional and every one but `duration_secs`
+and `confidence` is a string, the shape a tag takes. Leave a field empty when the
+service doesn't know it, and rox leaves that tag alone. `confidence` works as it does
+for lyrics. The candidates join the built-in ones in the same picker, and nothing is
+written until the user picks one and applies it.
+
+### provider.artist
+
+Sent only to a plugin whose manifest says `"providers": {"artist": true}`, once the user
+switches Artist Info on for it. rox asks when it fetches an artist for the Biography
+panel, with the name as tagged and the language rox's interface is in, as its primary
+subtag:
+
+```
+→ {"jsonrpc":"2.0","id":23,"method":"provider.artist","params":{"name":"Some Artist","lang":"en"}}
+← {"jsonrpc":"2.0","id":23,"result":{"bio":"...","url":"https://example.com/artist/1","tags":["..."],"similar":["..."],"country":"US","formed":2001,"ended":null}}
+```
+
+`bio` is plain paragraphs separated by blank lines. It can't be blank and can run to
+64 KiB; answer null rather than a sheet with no bio. The rest is optional. `url` is the
+artist's page on your service, `http` or `https`. `tags` and `similar` are lists of
+names, `country` is an ISO 3166 two-letter code in capitals, and `formed` and `ended`
+are years.
+
+Your sheet leads: its bio replaces the built-in providers', and so does each other field
+you fill. Listener counts, top tracks and every picture stay theirs, and a sheet with an
+image in it fails, because rox never fetches an address a plugin chose. The byline under
+the bio names your plugin when your `url` is the link it shows. When more than one
+plugin offers artist info, the first by name with a sheet leads. rox keeps the answer
+with the artist for a month, and asks again sooner when the user switches a plugin's
+Artist Info on or off.
+
 ### Actions
 
 A source can offer things to do with its tracks and nodes, like downloading one. Each
@@ -911,6 +991,7 @@ running. Switch it off on the Plugins page before updating its folder.
 | `source.browse`, `source.search`, later sync pages   | 15 s                           |
 | `source.radio`, `source.link`, `source.lyrics`       | 15 s                           |
 | `source.action`, `source.job`, `source.cancel`       | 15 s                           |
+| `provider.lyrics`, `provider.metadata`, `provider.artist` | 15 s                      |
 | A sync's first page                                  | 60 s                           |
 | `source.open`                                        | 20 s                           |
 | `source.read`, `source.cover`                        | 10 s                           |
@@ -923,6 +1004,8 @@ running. Switch it off on the Plugins page before updating its folder.
 | Fields a page declares                               | 4                              |
 | Chapters an open names                               | 500                            |
 | A lyrics sheet                                       | 256 KiB                        |
+| Candidates in a `provider.*` answer                  | 50                             |
+| An artist's bio                                      | 64 KiB                         |
 | Rows read to sort by a field                         | 1,000                          |
 | Tracks read from a node to play it or start a radio  | 1,000                          |
 | A read's `len`                                       | 256 KiB asked, 512 KiB at most |
@@ -953,8 +1036,8 @@ plugin restarts on the new files.
 It lasts until rox quits or you switch the plugin off, and it's never saved.
 
 It approves only changes that keep the manifest's declarations. A save that adds a
-capability or a program, changes the entry, or turns scrobbling on or off switches the
-plugin off as usual, and switching it back on shows the card with what changed.
+capability, a provider or a program, changes the entry, or turns scrobbling on or off
+switches the plugin off as usual, and switching it back on shows the card with what changed.
 Developer mode stays on through that. A folder that stops loading mid-edit, say with a
 half-written manifest, keeps its switch and starts again once it loads.
 

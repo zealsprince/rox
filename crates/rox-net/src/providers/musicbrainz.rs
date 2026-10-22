@@ -6,6 +6,7 @@
 //! The service allows one request a second and needs a contactable
 //! User-Agent (ADR 14); the throttle here is process-wide.
 
+use std::borrow::Cow;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -71,8 +72,8 @@ impl From<LookupError> for String {
 pub struct MusicBrainz;
 
 impl MetadataProvider for MusicBrainz {
-    fn name(&self) -> &'static str {
-        "musicbrainz"
+    fn name(&self) -> Cow<'static, str> {
+        "musicbrainz".into()
     }
 
     fn search(&self, query: &TrackQuery) -> Result<Vec<MetadataCandidate>, String> {
@@ -145,7 +146,7 @@ fn recording_candidate(
     if string(recording.get("title")).is_empty() {
         return None;
     }
-    let mut candidate = candidate("musicbrainz", query, recording);
+    let mut candidate = candidate("musicbrainz".into(), query, recording);
     candidate.confidence = super::score_fields(
         query,
         &candidate.title,
@@ -159,7 +160,7 @@ fn recording_candidate(
 /// The recording plus its release best matching the query album, so a track
 /// gets that release's numbers rather than a compilation's.
 fn candidate(
-    provider: &'static str,
+    provider: Cow<'static, str>,
     query: &TrackQuery,
     recording: &serde_json::Value,
 ) -> MetadataCandidate {
@@ -236,6 +237,7 @@ fn candidate(
         disc_no,
         duration_secs,
         confidence: 0.0,
+        hint: None,
     }
 }
 
@@ -293,7 +295,7 @@ pub fn release_facts(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String>
     let best = recordings
         .iter()
         .map(|recording| {
-            let candidate = candidate("musicbrainz", query, recording);
+            let candidate = candidate("musicbrainz".into(), query, recording);
             let confidence = super::score_fields(
                 query,
                 &candidate.title,
@@ -700,7 +702,7 @@ mod tests {
 
     fn parse(json: &str) -> MetadataCandidate {
         let recording: serde_json::Value = serde_json::from_str(json).expect("fixture parses");
-        candidate("musicbrainz", &query(), &recording)
+        candidate("musicbrainz".into(), &query(), &recording)
     }
 
     #[test]

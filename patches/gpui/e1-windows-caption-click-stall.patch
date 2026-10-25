@@ -1,0 +1,79 @@
+Clicking the title bar on Windows doesn't freeze animations.
+
+A caption press the app lets through goes to DefWindowProc, and Windows'
+move loop waits for the pointer to move before it pumps any messages:
+about half a second for a click that never moves, the whole hold for a
+press held still. No WM_PAINT, timer or posted task reaches gpui in that
+time, so everything animated stops. The drag grips stall the same way,
+since start_window_move sends its press through the same handler.
+
+Posting a WM_MOUSEMOVE with an lparam of 0 before handing the press over
+wakes the loop at once, the workaround winit has carried since its #839.
+A double click toggles maximize without a move loop, so it's split off and
+never gets the nudge, and a nudge still queued after a refused move is
+dropped before gpui reads it as a pointer jump to the corner.
+
+zed main still hands the press straight to DefWindowProc (checked October
+2026), so this stays through the next bump unless that changes.
+
+Diffed against the tree with every earlier patch applied.
+
+--- a/src/platform/windows/events.rs
++++ b/src/platform/windows/events.rs
+@@ -64,9 +64,15 @@
+             // Treat double click as a second single click, since we track the double clicks ourselves.
+             // If you don't interact with any elements, this will fall through to the windows default
+             // behavior of toggling whether the window is maximized.
+-            WM_NCLBUTTONDBLCLK | WM_NCLBUTTONDOWN => {
++            WM_NCLBUTTONDBLCLK => {
+                 self.handle_nc_mouse_down_msg(handle, MouseButton::Left, wparam, lparam)
+             }
++            // rox patch: split from the double click, which never starts a move
++            // loop, so only a press that does gets the nudge. See
++            // handle_caption_press.
++            WM_NCLBUTTONDOWN => self
++                .handle_nc_mouse_down_msg(handle, MouseButton::Left, wparam, lparam)
++                .or_else(|| self.handle_caption_press(handle, wparam, lparam)),
+             WM_NCRBUTTONDOWN => {
+                 self.handle_nc_mouse_down_msg(handle, MouseButton::Right, wparam, lparam)
+             }
+@@ -1094,6 +1100,39 @@
+         }
+     }
+ 
++    // rox patch: a caption press the app lets through goes to DefWindowProc,
++    // whose move loop waits for the pointer to move before it pumps anything:
++    // about half a second for a click that never moves, the whole hold for a
++    // press held still. Nothing of ours runs meanwhile (no WM_PAINT, no
++    // WM_TIMER, no posted tasks), so every animation stops dead. A posted
++    // WM_MOUSEMOVE wakes the loop at once, the loop swallows it, and from
++    // there WM_ENTERSIZEMOVE's timer keeps frames coming. lparam has to be 0:
++    // the press's own coordinates don't wake it. Same workaround winit ships
++    // (winit #839, regressed by #1852, restored in #4136). Covers
++    // start_window_move too, which sends its press through here.
++    fn handle_caption_press(&self, handle: HWND, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
++        if wparam.0 != HTCAPTION as usize {
++            return None;
++        }
++        unsafe {
++            PostMessageW(Some(handle), WM_MOUSEMOVE, WPARAM(0), LPARAM(0)).log_err();
++            let result = DefWindowProcW(handle, WM_NCLBUTTONDOWN, wparam, lparam);
++            // If the move was refused and no loop ran, the nudge is still
++            // queued and would reach handle_mouse_move_msg as a jump to the
++            // top-left corner. Posted messages only, so a real move waiting in
++            // the input queue stays put.
++            let mut msg = MSG::default();
++            let _ = PeekMessageW(
++                &mut msg,
++                Some(handle),
++                WM_MOUSEMOVE,
++                WM_MOUSEMOVE,
++                PM_REMOVE | PM_QS_POSTMESSAGE,
++            );
++            Some(result.0)
++        }
++    }
++
+     fn handle_nc_mouse_up_msg(
+         &self,
+         handle: HWND,

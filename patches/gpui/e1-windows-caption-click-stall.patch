@@ -4,8 +4,9 @@ A caption press the app lets through goes to DefWindowProc, and Windows'
 move loop waits for the pointer to move before it pumps any messages:
 about half a second for a click that never moves, the whole hold for a
 press held still. No WM_PAINT, timer or posted task reaches gpui in that
-time, so everything animated stops. The drag grips stall the same way,
-since start_window_move sends its press through the same handler.
+time, so everything animated stops. Grips that start a move on press,
+like the menubar's empty strip or the drag anchor panel, stall the same
+way, since start_window_move sends its press through the same handler.
 
 Posting a WM_MOUSEMOVE with an lparam of 0 before handing the press over
 wakes the loop at once, the workaround winit has carried since its #839.

@@ -4936,13 +4936,13 @@ mod tests {
             .connect("api-key", "sk".into(), "zealsprince".into());
         accounts.listenbrainz.token = "a-user-token".into();
         accounts.listenbrainz.username = Some("zealsprince".into());
-        accounts.listenbrainz.url = Some("https://api.listenbrainz.org/1/".into());
+        accounts.listenbrainz.url = "https://api.listenbrainz.org/1/".into();
         let back: AccountsState =
             serde_json::from_str(&serde_json::to_string(&accounts).unwrap()).unwrap();
         assert_eq!(back.lastfm.username("api-key"), "zealsprince");
         assert_eq!(back.listenbrainz.token, "a-user-token");
         assert_eq!(back.listenbrainz.username.as_deref(), Some("zealsprince"));
-        assert_eq!(back.listenbrainz.url.as_deref(), Some("https://api.listenbrainz.org/1/"));
+        assert_eq!(back.listenbrainz.url, "https://api.listenbrainz.org/1/");
 
         let windows = WindowsState {
             main: Some(WindowState {

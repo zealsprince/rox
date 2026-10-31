@@ -2086,6 +2086,7 @@ pub struct ListenBrainz {
     /// connected.
     pub token: String,
     pub username: Option<String>,
+    pub url: String,
 }
 
 /// Libre.fm takes any api pair, so there's no per-key session map.
@@ -4935,11 +4936,13 @@ mod tests {
             .connect("api-key", "sk".into(), "zealsprince".into());
         accounts.listenbrainz.token = "a-user-token".into();
         accounts.listenbrainz.username = Some("zealsprince".into());
+        accounts.listenbrainz.url = "https://api.listenbrainz.org/1/".into();
         let back: AccountsState =
             serde_json::from_str(&serde_json::to_string(&accounts).unwrap()).unwrap();
         assert_eq!(back.lastfm.username("api-key"), "zealsprince");
         assert_eq!(back.listenbrainz.token, "a-user-token");
         assert_eq!(back.listenbrainz.username.as_deref(), Some("zealsprince"));
+        assert_eq!(back.listenbrainz.url, "https://api.listenbrainz.org/1/");
 
         let windows = WindowsState {
             main: Some(WindowState {
@@ -5588,6 +5591,7 @@ mod tests {
         );
         assert!(accounts.listenbrainz.token.is_empty());
         assert!(accounts.listenbrainz.username.is_none());
+        assert!(accounts.listenbrainz.url.is_none());
 
         let look: LookState = serde_json::from_value(serde_json::json!({
             "bundle": {

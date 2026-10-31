@@ -105,6 +105,17 @@ impl ListenBrainz {
         self.validate(cx);
     }
 
+    pub fn set_url(&mut self, url: String, cx: &mut Context<Self>) {
+        self.config.url = url.trim().to_string();
+        self.persist();
+        if self.config.url.is_empty() {
+            self.status = Status::Off;
+            self.config.url = "https://api.listenbrainz.org/1/".to_string();
+            cx.notify();
+        }
+        self.validate(cx);
+    }
+
     /// Nothing is revoked over there; a token is only revoked on the site.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.config.token.clear();
@@ -122,6 +133,7 @@ impl ListenBrainz {
         self.validating = true;
         self.status = Status::Unverified;
         cx.notify();
+        listenbrainz::update_url(&self.config.url.clone());
         let token = self.config.token.clone();
         cx.spawn(async move |this, cx| {
             let result = cx

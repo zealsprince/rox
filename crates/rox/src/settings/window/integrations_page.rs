@@ -691,13 +691,44 @@ impl SettingsWindow {
                 icons::LINK,
                 token_empty,
                 cx.listener(|this, _, _, cx| {
+                    let url = this.listenbrainz_api_url.read(cx).value().trim().to_string();
                     let token = this.listenbrainz_token.read(cx).value().trim().to_string();
                     this.listenbrainz
-                        .update(cx, |lb, cx| lb.set_token(token, cx));
+                        .update(cx, |lb, cx| {
+                            lb.set_url(url, cx);
+                            lb.set_token(token, cx);
+                        });
                 }),
             )
             .into_any_element(),
         );
+
+        let url_field = panel::setting_row(
+            rox_i18n::t!("settings-integrations-listenbrainz-api-url"),
+            None,
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_MD)
+                // The link to fetch the token sits ahead of the field in
+                // reading order.
+                .child(
+                    div()
+                        .id("listenbrainz-api-url")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_XS)
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .hover(|d| d.text_color(palette::text_bright()))
+                        .cursor_pointer(),
+                )
+                .child(Input::new(&self.listenbrainz_api_url).w(px(240.))),
+        )
+        .into_any_element();
+
         let token_field = panel::setting_row(
             rox_i18n::t!("settings-integrations-listenbrainz-token-row"),
             None,
@@ -736,7 +767,7 @@ impl SettingsWindow {
                 icon: icons::AUDIO_WAVEFORM,
                 keywords: &["listenbrainz", "musicbrainz", "token", "listens"],
                 intro: rox_i18n::t!("settings-integrations-listenbrainz-intro"),
-                fields: vec![token_field],
+                fields: vec![url_field, token_field],
                 status,
                 actions,
                 trailing: None,

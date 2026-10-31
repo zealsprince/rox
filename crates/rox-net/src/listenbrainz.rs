@@ -4,10 +4,13 @@
 //! live in the service on top.
 
 use std::fmt;
+use std::sync::RwLock;
 
 use serde::Serialize;
 
-const API_ROOT: &str = "https://api.listenbrainz.org/1/";
+const DEFAULT_API_ROOT: &str = "https://api.listenbrainz.org/1/";
+
+static API_ROOT: RwLock<&'static str> = RwLock::new(DEFAULT_API_ROOT);
 
 const CLIENT: &str = "rox";
 
@@ -104,6 +107,16 @@ impl Listen {
     }
 }
 
+pub fn update_url(url: &str) {
+    let normalized = format!("{}/", url.trim_end_matches('/'));
+    let leaked: &'static str = Box::leak(normalized.into_boxed_str());
+    *API_ROOT.write().unwrap_or_else(|e| e.into_inner()) = leaked;
+}
+
+pub fn api_root() -> &'static str {
+    *API_ROOT.read().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Some(name) for a valid token, None for an invalid one. A 401 is the
 /// service's other way of saying invalid, so it folds into None.
 pub fn validate_token(token: &str) -> Result<Option<String>, ApiError> {
@@ -131,11 +144,13 @@ pub fn submit(token: &str, listen_type: &str, payload: &[Listen]) -> Result<(), 
 }
 
 fn agent_get(path: &str) -> ureq::Request {
-    crate::providers::agent().get(&format!("{API_ROOT}{path}"))
+    let api_root = api_root();
+    crate::providers::agent().get(&format!("{api_root}{path}"))
 }
 
 fn agent_post(path: &str) -> ureq::Request {
-    crate::providers::agent().post(&format!("{API_ROOT}{path}"))
+    let api_root = api_root();
+    crate::providers::agent().post(&format!("{api_root}{path}"))
 }
 
 /// A status error still carries a JSON body with the service's `error` string.

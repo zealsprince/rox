@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div,
-    ElementId, Entity, EntityId, FocusHandle, Global, Hsla, MouseButton, MouseDownEvent,
-    PathPromptOptions, Pixels, ScrollHandle, SharedString, Stateful, Subscription, Task,
-    WeakEntity, Window, WindowHandle,
+    AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div, ElementId, Entity, EntityId,
+    FocusHandle, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels,
+    ScrollHandle, SharedString, Stateful, Subscription, Task, WeakEntity, Window, WindowHandle,
+    div, prelude::*, px, size, svg,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -35,30 +35,30 @@ use crate::tempo_job;
 use crate::workspace::{ApplyShaders, Workspace};
 use rox_core::settings::layouts::Preset;
 use rox_core::settings::{
-    self, data_dir, settings_path, AcousticSave, ChromeSide, ChromeStyle, DiscordStatusLine, Frame,
-    GainModeSetting, LayoutSize, LyricsSave, NamedLayout, PluginRecord, Providers, RatingStyle,
-    ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceMeta, BORDER_MAX,
-    DEFAULT_PRESENCE_FIRST_LINE, DEFAULT_PRESENCE_HOVER, DEFAULT_PRESENCE_SECOND_LINE, MARGIN_MAX,
-    PADDING_MAX, ROUNDING_MAX,
+    self, AcousticSave, BORDER_MAX, ChromeSide, ChromeStyle, DEFAULT_PRESENCE_FIRST_LINE,
+    DEFAULT_PRESENCE_HOVER, DEFAULT_PRESENCE_SECOND_LINE, DiscordStatusLine, Frame,
+    GainModeSetting, LayoutSize, LyricsSave, MARGIN_MAX, NamedLayout, PADDING_MAX, PluginRecord,
+    Providers, ROUNDING_MAX, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme,
+    WorkspaceMeta, data_dir, settings_path,
 };
 use rox_design::assets::icons;
-use rox_design::palette::{self, Palette, Role, Side, Sides, ROLES};
+use rox_design::palette::{self, Palette, ROLES, Role, Side, Sides};
 use rox_design::tokens;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::stations::{self, Refusal, Station};
 use rox_library::store::{BpmCoverage, GainCoverage, Stats, Storage};
-use rox_net::lastfm::{has_builtin_keys, AuthPhase};
+use rox_net::lastfm::{AuthPhase, has_builtin_keys};
 use rox_net::providers;
 use rox_net::sources::stream_probe::Probe;
 use rox_panel_api::panel::{self, AppState, PatternNote};
 use rox_panel_api::panel_settings::{ShaderNameField, ShaderSource};
 use rox_panel_api::query::search::{SearchBox, SearchEvent};
 use rox_panel_api::signal_ui::{self, routes::RouteEditState};
-use rox_panel_kit::ui::{
-    self as settings_ui, chord, dialog_button, dialog_card, grid_columns, icon_button, kbd,
-    kbd_line, sidebar, small_button, PageBody, Query, Rows, Section, Seg, SidesScrub, SECTION_GAP,
-};
 use rox_panel_kit::ScrubState;
+use rox_panel_kit::ui::{
+    self as settings_ui, PageBody, Query, Rows, SECTION_GAP, Section, Seg, SidesScrub, chord,
+    dialog_button, dialog_card, grid_columns, icon_button, kbd, kbd_line, sidebar, small_button,
+};
 use rox_playback::continuation;
 use rox_playback::engine;
 use rox_playback::output;
@@ -1673,7 +1673,7 @@ impl Render for SettingsWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{Page, PAGES};
+    use super::{PAGES, Page};
     use rox_design::assets::icons;
 
     /// Exhaustive, so a new variant doesn't compile until it's named here.

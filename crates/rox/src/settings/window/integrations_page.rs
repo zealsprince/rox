@@ -691,13 +691,17 @@ impl SettingsWindow {
                 icons::LINK,
                 token_empty,
                 cx.listener(|this, _, _, cx| {
-                    let url = this.listenbrainz_api_url.read(cx).value().trim().to_string();
+                    let url = this
+                        .listenbrainz_api_url
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .to_string();
                     let token = this.listenbrainz_token.read(cx).value().trim().to_string();
-                    this.listenbrainz
-                        .update(cx, |lb, cx| {
-                            lb.set_url(url, cx);
-                            lb.set_token(token, cx);
-                        });
+                    this.listenbrainz.update(cx, |lb, cx| {
+                        lb.set_url(url, cx);
+                        lb.set_token(token, cx);
+                    });
                 }),
             )
             .into_any_element(),

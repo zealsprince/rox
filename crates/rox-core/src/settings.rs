@@ -5591,7 +5591,7 @@ mod tests {
         );
         assert!(accounts.listenbrainz.token.is_empty());
         assert!(accounts.listenbrainz.username.is_none());
-        assert!(accounts.listenbrainz.url.is_none());
+        assert!(accounts.listenbrainz.url.is_empty());
 
         let look: LookState = serde_json::from_value(serde_json::json!({
             "bundle": {

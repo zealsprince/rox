@@ -698,10 +698,8 @@ impl SettingsWindow {
                         .trim()
                         .to_string();
                     let token = this.listenbrainz_token.read(cx).value().trim().to_string();
-                    this.listenbrainz.update(cx, |lb, cx| {
-                        lb.set_url(url, cx);
-                        lb.set_token(token, cx);
-                    });
+                    this.listenbrainz
+                        .update(cx, |lb, cx| lb.connect(url, token, cx));
                 }),
             )
             .into_any_element(),
@@ -710,26 +708,7 @@ impl SettingsWindow {
         let url_field = panel::setting_row(
             rox_i18n::t!("settings-integrations-listenbrainz-api-url"),
             None,
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(tokens::SPACE_MD)
-                // The link to fetch the token sits ahead of the field in
-                // reading order.
-                .child(
-                    div()
-                        .id("listenbrainz-api-url")
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_XS)
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .hover(|d| d.text_color(palette::text_bright()))
-                        .cursor_pointer(),
-                )
-                .child(Input::new(&self.listenbrainz_api_url).w(px(240.))),
+            Input::new(&self.listenbrainz_api_url).w(px(240.)),
         )
         .into_any_element();
 

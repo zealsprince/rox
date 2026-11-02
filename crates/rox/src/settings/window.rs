@@ -693,7 +693,6 @@ impl SettingsWindow {
                 .placeholder(rox_i18n::t!(
                     "settings-integrations-listenbrainz-api-url-placeholder"
                 ))
-                .masked(true)
                 .default_value(settings.accounts.listenbrainz.url.clone())
         });
         let listenbrainz_token = cx.new(|cx| {

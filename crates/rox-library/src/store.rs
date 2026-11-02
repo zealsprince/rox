@@ -385,13 +385,34 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         },
         rescan: true,
     },
-    // Albums with no album artist tag whose tracks credit several artists in
-    // one folder take "Various Artists", so a soundtrack stops splitting into
-    // one album per artist. No mtime reset: the rule reads stored columns,
-    // and scans keep it from here on.
+    // The first cut of the folder compilation rule, which settled without a
+    // marker. Its work moved to the rung below; it stays so the ladder's
+    // positions hold for a database that already ran it.
     crate::migrate::Migration {
         name: "folder-compilations",
-        up: |conn| crate::compilation::settle_all(conn).map(|_| ()),
+        up: |_| Ok(()),
+        rescan: false,
+    },
+    // Albums with no album artist tag whose tracks credit several artists in
+    // one folder take "Various Artists", so a soundtrack stops splitting into
+    // one album per artist. The marker lets a folder that stops qualifying
+    // hand its rows their own artists back.
+    //
+    // A row the unmarked rung settled can't be told from a tagged "Various
+    // Artists", so every such row is re-read on the next scan, which settles
+    // it again with the marker. No full rescan: the rule reads stored columns.
+    crate::migrate::Migration {
+        name: "folder-compilations-marked",
+        up: |conn| {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN album_artist_settled INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            conn.execute(
+                "UPDATE tracks SET mtime = 0 WHERE source = 'local' AND album_artist = ?1",
+                [crate::compilation::VARIOUS_ARTISTS],
+            )?;
+            crate::compilation::settle_all(conn).map(|_| ())
+        },
         rescan: false,
     },
 ];
@@ -591,7 +612,7 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                      ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
              ON CONFLICT (source, path, sub) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
-                album_artist = excluded.album_artist,
+                album_artist = excluded.album_artist, album_artist_settled = 0,
                 album = excluded.album, genre = excluded.genre,
                 comment = excluded.comment,
                 title_sort = excluded.title_sort,
@@ -1772,9 +1793,15 @@ pub fn apply_changes(
             // the old album_artist_sort sorted a name the row no longer
             // carries.
             conn.execute(
-                "UPDATE tracks SET album_artist = artist, album_artist_sort = artist_sort \
-                 WHERE id = ?1",
+                "UPDATE tracks SET album_artist = artist, album_artist_sort = artist_sort, \
+                 album_artist_settled = 0 WHERE id = ?1",
                 rusqlite::params![id],
+            )?;
+        } else if column == "album_artist" {
+            // A typed album artist is a tag, never the compilation rule's.
+            conn.execute(
+                "UPDATE tracks SET album_artist = ?2, album_artist_settled = 0 WHERE id = ?1",
+                rusqlite::params![id, value],
             )?;
         } else {
             conn.execute(

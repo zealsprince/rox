@@ -619,7 +619,11 @@ fn answer_history(
     let entries: Vec<Value> = heard
         .iter()
         .map(|h| {
-            let row = rows.get(&h.track_id);
+            // Track ids can be reused after a delete, so a row only answers
+            // for a listen whose snapshot path it still matches.
+            let row = rows.get(&h.track_id).filter(|r| {
+                h.path.is_empty() || h.path == r.path || h.path == r.key().to_fragment()
+            });
             json!({
                 "played_at": h.played_at,
                 "key": row.map(|r| r.key().to_fragment()).or_else(|| text(&h.path)),
@@ -1046,6 +1050,25 @@ mod tests {
 
         let gone = (local("/m/gone.flac", 0), "/m/gone.flac".to_string());
         assert!(answer_history(&db, Some(&gone), Cursor::START, 50).is_err());
+    }
+
+    #[test]
+    fn a_reused_track_id_doesnt_answer_for_an_older_listen() {
+        let db = fixture("history-reused-id");
+        let conn = store::open(&db).unwrap();
+        // A listen of a file since deleted, whose id a newer row took over.
+        conn.execute(
+            "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)
+             VALUES (2, 500, 'Old', 'A', 'Al', 'rock', '/m/deleted.flac')",
+            [],
+        )
+        .unwrap();
+
+        let page = answer_history(&db, None, Cursor::START, 1).unwrap();
+        let entry = &page["entries"][0];
+        assert_eq!(entry["played_at"], 500);
+        assert!(entry["track"].is_null());
+        assert_eq!(entry["key"], "/m/deleted.flac");
     }
 
     #[test]

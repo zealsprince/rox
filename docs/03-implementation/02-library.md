@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     title         TEXT NOT NULL,
     artist        TEXT NOT NULL,
     album_artist  TEXT NOT NULL DEFAULT '',
+    album_artist_settled INTEGER NOT NULL DEFAULT 0,  -- 1 where the folder compilation rule set it
     album         TEXT NOT NULL,
     genre         TEXT NOT NULL,
     year          INTEGER NOT NULL,

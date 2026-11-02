@@ -97,14 +97,24 @@ pub fn parse_date(value: &str) -> Date {
         *candidates.last().unwrap_or(&first)
     };
     let year = plausible(groups[at].1).unwrap_or(0);
-    let run = |ix: usize| groups.get(ix).map(|&(_, run)| run);
+    // A group only belongs to the date when a separator joins it to the one
+    // before: "1999 remaster, 12.06.2007" leads with a bare year.
+    let joined = |ix: usize| {
+        let (start, run) = groups[ix - 1];
+        let gap = &value[start + run.len()..groups[ix].0];
+        (1..=2).contains(&gap.len()) && gap.chars().all(|c| matches!(c, '-' | '.' | '/' | ' '))
+    };
 
     if at == 0 {
+        let run = |ix: usize| (ix < groups.len() && (1..=ix).all(joined)).then(|| groups[ix].1);
         return with_parts(year, run(1), run(2));
     }
 
     // Year last: the two groups before it are the day and month in some order.
-    let before: Vec<(usize, &str)> = groups[..at].iter().rev().take(2).copied().collect();
+    let before: Vec<(usize, &str)> = (1..=2)
+        .take_while(|&back| back <= at && joined(at - back + 1))
+        .map(|back| groups[at - back])
+        .collect();
     match before[..] {
         [(_, b), (a_start, a)] => {
             let sep = value[a_start + a.len()..].chars().next();
@@ -243,5 +253,14 @@ mod tests {
             "day-first keeps the last"
         );
         assert_eq!(parse_date("rec. 1999, 12.06.2007"), date(2007, 6, 12));
+    }
+
+    #[test]
+    fn parts_come_only_from_groups_joined_to_the_year() {
+        assert_eq!(parse_date("1999 remaster, 12.06.2007"), date(1999, 0, 0));
+        assert_eq!(parse_date("2007-06-12, reissued 2008"), date(2007, 6, 12));
+        assert_eq!(parse_date("12.06, released 2008"), date(2008, 0, 0));
+        assert_eq!(parse_date("disc 2, 06.2007"), date(2007, 6, 0));
+        assert_eq!(parse_date("12. 06. 2007"), date(2007, 6, 12));
     }
 }

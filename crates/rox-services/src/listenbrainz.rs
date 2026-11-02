@@ -93,7 +93,8 @@ impl ListenBrainz {
 
     /// Saved before the check, so a check that never returns costs a retry
     /// rather than a re-paste.
-    pub fn set_token(&mut self, token: String, cx: &mut Context<Self>) {
+    pub fn connect(&mut self, url: String, token: String, cx: &mut Context<Self>) {
+        self.config.url = url.trim().to_string();
         self.config.token = token.trim().to_string();
         self.config.username = None;
         self.persist();
@@ -122,11 +123,12 @@ impl ListenBrainz {
         self.validating = true;
         self.status = Status::Unverified;
         cx.notify();
+        let root = listenbrainz::api_root(&self.config.url);
         let token = self.config.token.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { listenbrainz::validate_token(&token) })
+                .spawn(async move { listenbrainz::validate_token(&root, &token) })
                 .await;
             this.update(cx, |this, cx| {
                 this.validating = false;
@@ -165,11 +167,12 @@ impl ListenBrainz {
             event.duration_secs,
             None,
         );
+        let root = listenbrainz::api_root(&self.config.url);
         let token = self.config.token.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { listenbrainz::submit(&token, "playing_now", &[listen]) })
+                .spawn(async move { listenbrainz::submit(&root, &token, "playing_now", &[listen]) })
                 .await;
             if let Err(e) = result {
                 let rejected = e.token_rejected();
@@ -208,11 +211,12 @@ impl ListenBrainz {
         let batch = self.backlog.clone();
         let count = batch.len();
         let listen_type = if count == 1 { "single" } else { "import" };
+        let root = listenbrainz::api_root(&self.config.url);
         let token = self.config.token.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { listenbrainz::submit(&token, listen_type, &batch) })
+                .spawn(async move { listenbrainz::submit(&root, &token, listen_type, &batch) })
                 .await;
             this.update(cx, |this, cx| {
                 this.sending = false;

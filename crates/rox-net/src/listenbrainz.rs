@@ -7,7 +7,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-const API_ROOT: &str = "https://api.listenbrainz.org/1/";
+pub const DEFAULT_API_ROOT: &str = "https://api.listenbrainz.org/1/";
 
 const CLIENT: &str = "rox";
 
@@ -104,10 +104,18 @@ impl Listen {
     }
 }
 
+pub fn api_root(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return DEFAULT_API_ROOT.to_string();
+    }
+    format!("{}/", url.trim_end_matches('/'))
+}
+
 /// Some(name) for a valid token, None for an invalid one. A 401 is the
 /// service's other way of saying invalid, so it folds into None.
-pub fn validate_token(token: &str) -> Result<Option<String>, ApiError> {
-    let value = match request(agent_get("validate-token"), token, None) {
+pub fn validate_token(root: &str, token: &str) -> Result<Option<String>, ApiError> {
+    let value = match request(agent_get(root, "validate-token"), token, None) {
         Ok(value) => value,
         Err(e) if e.token_rejected() => return Ok(None),
         Err(e) => return Err(e),
@@ -125,17 +133,22 @@ pub fn validate_token(token: &str) -> Result<Option<String>, ApiError> {
 }
 
 /// `listen_type` is `"single"`, `"playing_now"`, or `"import"`.
-pub fn submit(token: &str, listen_type: &str, payload: &[Listen]) -> Result<(), ApiError> {
+pub fn submit(
+    root: &str,
+    token: &str,
+    listen_type: &str,
+    payload: &[Listen],
+) -> Result<(), ApiError> {
     let body = serde_json::json!({ "listen_type": listen_type, "payload": payload });
-    request(agent_post("submit-listens"), token, Some(body)).map(|_| ())
+    request(agent_post(root, "submit-listens"), token, Some(body)).map(|_| ())
 }
 
-fn agent_get(path: &str) -> ureq::Request {
-    crate::providers::agent().get(&format!("{API_ROOT}{path}"))
+fn agent_get(root: &str, path: &str) -> ureq::Request {
+    crate::providers::agent().get(&format!("{root}{path}"))
 }
 
-fn agent_post(path: &str) -> ureq::Request {
-    crate::providers::agent().post(&format!("{API_ROOT}{path}"))
+fn agent_post(root: &str, path: &str) -> ureq::Request {
+    crate::providers::agent().post(&format!("{root}{path}"))
 }
 
 /// A status error still carries a JSON body with the service's `error` string.
@@ -191,6 +204,29 @@ fn request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unset_endpoint_equals_public_server() {
+        assert_eq!(api_root(""), DEFAULT_API_ROOT);
+        assert_eq!(api_root("   "), DEFAULT_API_ROOT);
+    }
+
+    #[test]
+    fn a_root_keeps_one_trailing_slash() {
+        assert_eq!(api_root("https://api.listenbrainz.org/1"), DEFAULT_API_ROOT);
+        assert_eq!(
+            api_root("https://api.listenbrainz.org/1/"),
+            DEFAULT_API_ROOT
+        );
+        assert_eq!(
+            api_root("https://lb.example.tld"),
+            "https://lb.example.tld/"
+        );
+        assert_eq!(
+            api_root("https://lb.example.tld///"),
+            "https://lb.example.tld/"
+        );
+    }
 
     #[test]
     fn a_playing_now_listen_carries_no_timestamp() {

@@ -345,6 +345,8 @@ struct SettingsWindow {
     discord_hover_line: Entity<InputState>,
     lastfm_key: Entity<InputState>,
     lastfm_secret: Entity<InputState>,
+    /// The ListenBrainz API Endpoint
+    listenbrainz_api_url: Entity<InputState>,
     /// Not written through: storing a token starts a check, so it waits for
     /// Connect.
     listenbrainz_token: Entity<InputState>,
@@ -686,6 +688,13 @@ impl SettingsWindow {
         let _scrobbler_changed = cx.observe(&state.scrobbler, |_, _, cx| cx.notify());
         let _listenbrainz_changed = cx.observe(&state.listenbrainz, |_, _, cx| cx.notify());
         let _librefm_changed = cx.observe(&state.librefm, |_, _, cx| cx.notify());
+        let listenbrainz_api_url = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rox_i18n::t!(
+                    "settings-integrations-listenbrainz-api-url-placeholder"
+                ))
+                .default_value(settings.accounts.listenbrainz.url.clone())
+        });
         let listenbrainz_token = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(rox_i18n::t!(
@@ -1076,6 +1085,7 @@ impl SettingsWindow {
             discord_hover_line,
             lastfm_key,
             lastfm_secret,
+            listenbrainz_api_url,
             listenbrainz_token,
             broadcast_host,
             broadcast_port,

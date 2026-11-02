@@ -37,7 +37,7 @@ use crate::panel::{
     self, AppState, PageBody, PanelChrome, PanelSettings, Query, ScrubState, Section, ValueEdit,
 };
 use crate::panel_settings;
-use crate::player::{Player, PlayerView, fmt_time, fmt_time_padded, song_clock};
+use crate::player::{Player, PlayerView, fmt_time, fmt_time_padded, fmt_time_precise, song_clock};
 use crate::settings::ui as settings_ui;
 
 use super::{default_true, transport_panel};
@@ -124,6 +124,8 @@ pub struct SeekConfig {
     pub chrome: PanelChrome,
     /// The Ending clock shows the full duration instead of the time left.
     pub show_total: bool,
+    /// Milliseconds on the clocks, for timing lyrics by hand.
+    pub precise: bool,
     /// The Last.fm scrobble threshold. Only draws while scrobbling is on.
     pub scrobble_marker: bool,
     /// Chevrons under the line, each a seek and a right-click menu.
@@ -151,6 +153,7 @@ impl Default for SeekConfig {
         SeekConfig {
             chrome: PanelChrome::default(),
             show_total: false,
+            precise: false,
             scrobble_marker: false,
             bookmarks: true,
             thickness: tokens::SEEK_STRIP_H,
@@ -221,6 +224,8 @@ struct SeekConfigDump {
     #[serde(default)]
     show_total: bool,
     #[serde(default)]
+    precise: bool,
+    #[serde(default)]
     scrobble_marker: bool,
     #[serde(default = "default_true")]
     bookmarks: bool,
@@ -284,6 +289,7 @@ impl From<SeekConfigDump> for SeekConfig {
         SeekConfig {
             chrome: dump.chrome,
             show_total: dump.show_total,
+            precise: dump.precise,
             scrobble_marker: dump.scrobble_marker,
             bookmarks: dump.bookmarks,
             thickness: dump.thickness,
@@ -430,9 +436,11 @@ impl SeekStripPanel {
                     0.0
                 };
                 let width = f64::from(self.scrub.width().unwrap_or(0.0));
+                // Precise clocks change every tick, so they key in milliseconds.
+                let unit = if self.config.precise { 1000.0 } else { 1.0 };
                 (
-                    now.position_secs.floor() as i64,
-                    (duration - now.position_secs).max(0.0).floor() as i64,
+                    (now.position_secs * unit).floor() as i64,
+                    ((duration - now.position_secs).max(0.0) * unit).floor() as i64,
                     // Half-pixel steps, so the head still glides at 2x scale.
                     (progress * width * 2.0).round() as i64,
                 )
@@ -728,6 +736,19 @@ impl PanelSettings for SeekStripPanel {
                         ),
                     )
                 });
+
+                let rows = rows.keyed(
+                    "seek-precise",
+                    &["milliseconds", "ms", "lyrics", "timing"],
+                    panel::toggle(
+                        self.config.precise,
+                        |this: &mut Self, on, cx| {
+                            this.config.precise = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                );
 
                 let rows = rows.keyed(
                     "seek-scrobble-marker",
@@ -2116,12 +2137,14 @@ impl SeekStripPanel {
         // A station's clock shows the song, going back to zero when the stream
         // says the next one started.
         let elapsed = song_clock(now.position_secs, now.song_start_secs);
+        let fmt_clock = if self.config.precise {
+            fmt_time_precise
+        } else {
+            fmt_time_padded
+        };
         let ending = match now.duration_secs {
-            Some(d) if self.config.show_total => fmt_time_padded(d, digits),
-            Some(d) => format!(
-                "-{}",
-                fmt_time_padded((d - now.position_secs).max(0.0), digits)
-            ),
+            Some(d) if self.config.show_total => fmt_clock(d, digits),
+            Some(d) => format!("-{}", fmt_clock((d - now.position_secs).max(0.0), digits)),
             None => "-:--".into(),
         };
         // Counts back to the live edge. None at the edge, where the LIVE mark
@@ -2133,9 +2156,7 @@ impl SeekStripPanel {
         let mut track = Some(track);
         let mut piece = |item: &SeekItem| -> Option<AnyElement> {
             match item {
-                SeekItem::Elapsed => {
-                    Some(clock(fmt_time_padded(elapsed, digits)).into_any_element())
-                }
+                SeekItem::Elapsed => Some(clock(fmt_clock(elapsed, digits)).into_any_element()),
                 SeekItem::Strip => track.take().map(|t| t.into_any_element()),
                 // LIVE at the edge, since a countdown to an end that never comes is
                 // worse than none, then the distance back. Either face is the button
@@ -2165,7 +2186,7 @@ impl SeekStripPanel {
                 SeekItem::Ending => Some(clock(ending.clone()).into_any_element()),
                 SeekItem::Duration => Some(
                     clock(match now.duration_secs {
-                        Some(d) => fmt_time_padded(d, digits),
+                        Some(d) => fmt_clock(d, digits),
                         None => "-:--".into(),
                     })
                     .into_any_element(),

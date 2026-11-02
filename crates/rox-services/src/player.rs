@@ -47,7 +47,7 @@ use crate::catalog::Library;
 use crate::sources_registry;
 use crate::unknown_resolver::{self, Edit, Found, Job, Placeholders, Slot, Step, Waiting};
 
-pub use rox_core::fmt::{fmt_time, fmt_time_padded};
+pub use rox_core::fmt::{fmt_time, fmt_time_padded, fmt_time_precise};
 // Re-exported so crates calling [`Player::loop_mode`] can name the type.
 pub use rox_playback::engine::LoopMode;
 

@@ -29,6 +29,18 @@ pub fn fmt_time_padded(secs: f64, digits: usize) -> String {
     )
 }
 
+/// [`fmt_time_padded`] with milliseconds. Floored like it, so the seconds
+/// never run ahead of the plain clock's.
+pub fn fmt_time_precise(secs: f64, digits: usize) -> String {
+    let ms = (secs.max(0.0) * 1000.0).floor() as u64;
+    format!(
+        "{:0digits$}:{:02}.{:03}",
+        ms / 60_000,
+        ms / 1000 % 60,
+        ms % 1000
+    )
+}
+
 pub fn fmt_ago(secs: i64) -> String {
     let secs = secs.max(0);
     // One message per unit, not a shared "{value}{unit} ago" frame: German
@@ -165,6 +177,14 @@ mod tests {
         rox_i18n::pin_thread_locale("de");
         assert_eq!(fmt_span(90), "1 Minute, 30 Sekunden");
         assert_eq!(fmt_span(86_400 * 23), "3 Wochen, 2 Tage");
+    }
+
+    #[test]
+    fn precise_clocks_carry_milliseconds() {
+        assert_eq!(fmt_time_precise(0.0, 1), "0:00.000");
+        assert_eq!(fmt_time_precise(65.4321, 1), "1:05.432");
+        assert_eq!(fmt_time_precise(59.9999, 2), "00:59.999");
+        assert_eq!(fmt_time_precise(-1.0, 1), "0:00.000");
     }
 
     #[test]

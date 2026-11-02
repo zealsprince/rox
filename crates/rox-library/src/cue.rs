@@ -284,15 +284,6 @@ fn parse_time(s: &str) -> Option<u32> {
     Some(ms.min(u32::MAX as u64) as u32)
 }
 
-/// The first standalone four-digit run, so `1997-05-01` and `05/1997` both
-/// work.
-fn first_year(s: &str) -> u16 {
-    s.split(|c: char| !c.is_ascii_digit())
-        .find(|group| group.len() == 4)
-        .and_then(|group| group.parse().ok())
-        .unwrap_or(0)
-}
-
 /// INDEX 01 is the start; INDEX 00 (the pregap) stands in when it's the only
 /// one.
 struct Pending {
@@ -412,7 +403,7 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
                 if keyword.eq_ignore_ascii_case("GENRE") {
                     sheet.genre = value;
                 } else if keyword.eq_ignore_ascii_case("DATE") {
-                    sheet.year = first_year(&value);
+                    sheet.year = crate::year::parse(&value);
                 }
             }
             _ => {}
@@ -714,15 +705,6 @@ FILE "Urban Hymns.flac" WAVE
         assert_eq!(parse_time("99:59:00"), Some(5_999_000));
         assert_eq!(parse_time("01:30"), Some(90_000), "frames may be absent");
         assert_eq!(parse_time("nope"), None);
-    }
-
-    #[test]
-    fn year_reading_takes_the_four_digit_run() {
-        assert_eq!(first_year("1997"), 1997);
-        assert_eq!(first_year("1997-05-01"), 1997);
-        assert_eq!(first_year("05/1997"), 1997);
-        assert_eq!(first_year("no year here"), 0);
-        assert_eq!(first_year("123456"), 0, "a longer run isn't a year");
     }
 
     #[test]

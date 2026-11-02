@@ -242,6 +242,17 @@ pub const PLAYS_WIDTH: f32 = 56.;
 /// The "12|" tick: room for three digits and the bar.
 pub const COMPACT_PLAYS_WIDTH: f32 = 32.;
 pub const YEAR_WIDTH: f32 = 56.;
+pub const DATE_WIDTH: f32 = 96.;
+
+/// A date column's text: the locale's medium date when the tag carries a
+/// day, the bare year when it stops short of one, nothing without a year.
+pub fn date_text(year: u16, month: u8, day: u8) -> String {
+    match (year, month, day) {
+        (0, _, _) => String::new(),
+        (y, m, d) if m > 0 && d > 0 => rox_i18n::format::format_date(i32::from(y), m, d),
+        (y, _, _) => y.to_string(),
+    }
+}
 pub const DURATION_WIDTH: f32 = 64.;
 pub const LAST_PLAYED_WIDTH: f32 = 84.;
 pub const SOURCE_WIDTH: f32 = 140.;

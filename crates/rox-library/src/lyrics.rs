@@ -950,6 +950,31 @@ mod tests {
     }
 
     #[test]
+    fn stamps_inside_a_word_time_its_syllables() {
+        let (lines, _) =
+            parse("[00:12.00]<00:12.00>Hel<00:12.30>lo <00:12.60>wor<00:12.90>ld<00:13.50>\n");
+        let line = &lines[0];
+        assert_eq!(line.text, "Hello world");
+
+        let syllables: Vec<(&str, f64)> = line
+            .words
+            .iter()
+            .map(|word| (&line.text[word.range.clone()], word.at))
+            .collect();
+        assert_eq!(
+            syllables,
+            [("Hel", 12.0), ("lo", 12.3), ("wor", 12.6), ("ld", 12.9)]
+        );
+        assert_eq!(line.end, Some(13.5));
+
+        let head = |at| &line.text[..read_head(line, at, None)];
+        assert_eq!(head(12.3), "Hel");
+        assert_eq!(head(12.6), "Hello ");
+        assert_eq!(head(12.9), "Hello wor");
+        assert_eq!(head(14.0), "Hello world");
+    }
+
+    #[test]
     fn read_head_spreads_a_line_synced_line() {
         let (lines, _) = parse("[00:10.00]abcd\n[00:20.00]next\n");
         let line = &lines[0];

@@ -1486,6 +1486,8 @@ mod tests {
             album: "Album".into(),
             genre: "Rock".into(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year,
             disc_no: 1,
             track_no: 1,

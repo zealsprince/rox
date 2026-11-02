@@ -550,6 +550,78 @@ impl Cursor {
         played_at: i64::MAX,
         id: i64::MAX,
     };
+
+    /// For a cursor that went out over the wire and came back.
+    pub fn new(played_at: i64, id: i64) -> Cursor {
+        Cursor { played_at, id }
+    }
+
+    pub fn played_at(self) -> i64 {
+        self.played_at
+    }
+
+    pub fn id(self) -> i64 {
+        self.id
+    }
+}
+
+/// One listen as filed: when, which row, and the snapshot that went in with
+/// it. `path` is the key's fragment form; on a station the tags are the song
+/// that was on, which the row itself no longer knows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Heard {
+    pub played_at: i64,
+    pub track_id: i64,
+    pub path: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
+/// Up to `limit` listens below `before`, newest first, narrowed to one track
+/// when `track_id` is set. Filtered in SQL, unlike [`recent_page`], because
+/// a track id needs no folding. None for the cursor once the record ran out.
+pub fn page(
+    conn: &Connection,
+    before: Cursor,
+    limit: usize,
+    track_id: Option<i64>,
+) -> rusqlite::Result<(Vec<Heard>, Option<Cursor>)> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT played_at, track_id, path, title, artist, album, id FROM listens
+         WHERE (played_at, id) < (?1, ?2) AND (?3 IS NULL OR track_id = ?3)
+         ORDER BY played_at DESC, id DESC LIMIT ?4",
+    )?;
+
+    // One past the page says whether there's anything after it.
+    let want = limit.saturating_add(1) as i64;
+    let rows = stmt.query_map(
+        rusqlite::params![before.played_at, before.id, track_id, want],
+        |row| {
+            Ok((
+                Heard {
+                    played_at: row.get(0)?,
+                    track_id: row.get(1)?,
+                    path: row.get(2)?,
+                    title: row.get(3)?,
+                    artist: row.get(4)?,
+                    album: row.get(5)?,
+                },
+                row.get::<_, i64>(6)?,
+            ))
+        },
+    )?;
+    let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let next = more
+        .then(|| {
+            rows.last()
+                .map(|(heard, id)| Cursor::new(heard.played_at, *id))
+        })
+        .flatten();
+    Ok((rows.into_iter().map(|(heard, _)| heard).collect(), next))
 }
 
 /// Up to `limit` events below `after`, newest first, keeping only the rows
@@ -1027,6 +1099,8 @@ mod tests {
             album: album.into(),
             genre: genre.into(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 0,
             disc_no: 0,
             track_no: 0,
@@ -1046,6 +1120,71 @@ mod tests {
     fn listen(conn: &Connection, path: &str, at: i64) {
         let listen = listen_for_path(conn, path, at).unwrap().unwrap();
         append(conn, &listen).unwrap();
+    }
+
+    #[test]
+    fn history_pages_walk_back_without_repeats_and_narrow_to_one_track() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "rock"),
+                track("/m/2.mp3", "Two", "B", "Second", "jazz"),
+            ],
+        )
+        .unwrap();
+        // Two listens inside one second: the id has to break the tie.
+        for (path, at) in [
+            ("/m/1.mp3", 100),
+            ("/m/2.mp3", 200),
+            ("/m/1.mp3", 200),
+            ("/m/2.mp3", 300),
+            ("/m/1.mp3", 400),
+        ] {
+            listen(&conn, path, at);
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor = Cursor::START;
+        loop {
+            let (heard, next) = page(&conn, cursor, 2, None).unwrap();
+            assert!(heard.len() <= 2);
+            seen.extend(heard.iter().map(|h| (h.played_at, h.path.clone())));
+            match next {
+                Some(next) => cursor = next,
+                None => break,
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (400, "/m/1.mp3".to_string()),
+                (300, "/m/2.mp3".to_string()),
+                (200, "/m/1.mp3".to_string()),
+                (200, "/m/2.mp3".to_string()),
+                (100, "/m/1.mp3".to_string()),
+            ]
+        );
+
+        let one: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = '/m/1.mp3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let (heard, next) = page(&conn, Cursor::START, 10, Some(one)).unwrap();
+        assert_eq!(
+            heard.iter().map(|h| h.played_at).collect::<Vec<_>>(),
+            vec![400, 200, 100]
+        );
+        assert_eq!(next, None, "a page that holds the rest has no next");
+
+        // A bare timestamp reads as strictly before that second.
+        let (heard, _) = page(&conn, Cursor::new(200, 0), 10, None).unwrap();
+        assert_eq!(
+            heard.iter().map(|h| h.played_at).collect::<Vec<_>>(),
+            vec![100]
+        );
     }
 
     #[test]

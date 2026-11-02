@@ -600,6 +600,8 @@ mod tests {
             album_sort: String::new(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 2000,
             disc_no: 1,
             track_no: 1,

@@ -1,13 +1,15 @@
 //! Last.fm (ws.audioscrobbler.com): the unsigned artist and track reads
-//! behind the biography and metadata panels, with just an api key (the
-//! settings override or the build's own). Wiki HTML is stripped to plain
-//! paragraphs here.
+//! behind the biography, metadata and track info panels, with just an api
+//! key (the settings override or the build's own). Wiki HTML is stripped to
+//! plain paragraphs here.
+
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use rox_core::settings::Settings;
 
-use super::{ArtCandidate, ArtProvider, TrackQuery, agent, net_reason, string};
+use super::{ArtCandidate, ArtProvider, SessionCache, TrackQuery, agent, net_reason, string};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -210,6 +212,98 @@ pub fn track_info(
             .and_then(|v| v.as_str())
             .is_some_and(|v| v == "1"),
     }))
+}
+
+/// The named account's own scrobbles of an artist, or of one track when
+/// `title` is given. Cached for the session, so a run of one artist's
+/// tracks asks once. Ok(None) for an unknown name, no api key, no user, or
+/// the biography's lookups switched off.
+pub fn user_plays(
+    artist: &str,
+    title: Option<&str>,
+    username: &str,
+) -> Result<Option<u64>, String> {
+    let (artist, username) = (artist.trim(), username.trim());
+    let title = title.map(str::trim);
+    if !super::artist_online()
+        || artist.is_empty()
+        || username.is_empty()
+        || title.is_some_and(str::is_empty)
+    {
+        return Ok(None);
+    }
+
+    let key = format!(
+        "{}\u{1f}{}\u{1f}{}",
+        username.to_lowercase(),
+        super::normalize(artist),
+        title.map(super::normalize).unwrap_or_default(),
+    );
+    static CACHE: OnceLock<SessionCache<Option<u64>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+
+    cache.get_or_compute(key, || fetch_user_plays(artist, title, username))
+}
+
+fn fetch_user_plays(
+    artist: &str,
+    title: Option<&str>,
+    username: &str,
+) -> Result<Option<u64>, String> {
+    let key = api_key();
+    if key.is_empty() {
+        return Ok(None);
+    }
+
+    let method = match title {
+        Some(_) => "track.getinfo",
+        None => "artist.getinfo",
+    };
+    let mut request = agent()
+        .get(API)
+        .query("method", method)
+        .query("artist", artist);
+    if let Some(title) = title {
+        request = request.query("track", title);
+    }
+    let request = request
+        .query("username", username)
+        .query("autocorrect", "1")
+        .query("api_key", &key)
+        .query("format", "json");
+
+    let text = match request.call() {
+        Ok(response) => response.into_string().map_err(|e| e.to_string())?,
+        Err(ureq::Error::Status(_, response)) => {
+            response.into_string().map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(net_reason(&e)),
+    };
+    parse_user_plays(&text)
+}
+
+/// `artist.getinfo` files the count under `stats`, `track.getinfo` on the
+/// track itself. Absent means Last.fm didn't take the username.
+fn parse_user_plays(text: &str) -> Result<Option<u64>, String> {
+    let body: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if let Some(code) = body.get("error").and_then(|e| e.as_i64()) {
+        // 6: not found, a clean miss.
+        if code == 6 {
+            return Ok(None);
+        }
+        let message = body
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown api error");
+        return Err(message.to_string());
+    }
+
+    let plays = body
+        .get("artist")
+        .and_then(|artist| artist.get("stats"))
+        .or_else(|| body.get("track"))
+        .and_then(|holder| holder.get("userplaycount"));
+    Ok(plays.map(|plays| count(Some(plays))))
 }
 
 /// The first tag fallback. Fails quietly to empty: a fallback that errors
@@ -540,6 +634,50 @@ fn full_size_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_artist_read_gives_up_the_users_count() {
+        let body = r#"{"artist":{"name":"Boards of Canada","url":"x",
+            "stats":{"listeners":"1234567","playcount":"98765432","userplaycount":"1364"},
+            "bio":{"content":""}}}"#;
+        assert_eq!(parse_user_plays(body).unwrap(), Some(1364));
+    }
+
+    #[test]
+    fn a_track_read_gives_up_the_users_count() {
+        let body = r#"{"track":{"name":"Olson","listeners":"300000","playcount":"2000000",
+            "userplaycount":"42","userloved":"0"}}"#;
+        assert_eq!(parse_user_plays(body).unwrap(), Some(42));
+        assert_eq!(
+            parse_user_plays(r#"{"track":{"name":"Olson","userplaycount":7}}"#).unwrap(),
+            Some(7),
+            "a number reads the same as the string"
+        );
+    }
+
+    #[test]
+    fn an_unplayed_artist_is_a_real_zero() {
+        let body = r#"{"artist":{"name":"Air","stats":{"listeners":"1","userplaycount":"0"}}}"#;
+        assert_eq!(parse_user_plays(body).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn no_count_and_unknown_names_read_as_none() {
+        let body = r#"{"artist":{"name":"Air","stats":{"listeners":"1","playcount":"2"}}}"#;
+        assert_eq!(parse_user_plays(body).unwrap(), None, "no username taken");
+
+        let missing = r#"{"error":6,"message":"The artist you supplied could not be found"}"#;
+        assert_eq!(parse_user_plays(missing).unwrap(), None);
+    }
+
+    #[test]
+    fn other_api_errors_carry_their_message() {
+        let body = r#"{"error":10,"message":"Invalid API key"}"#;
+        assert_eq!(
+            parse_user_plays(body).err(),
+            Some("Invalid API key".to_string())
+        );
+    }
 
     #[test]
     fn wiki_tail_drops_but_inline_links_survive() {

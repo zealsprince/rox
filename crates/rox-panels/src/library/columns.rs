@@ -151,6 +151,15 @@ pub fn columns() -> &'static [ColumnDef] {
             default_on: false,
             sort: SortKey::Year,
         },
+        // Sorts by year: the parts past it are display only.
+        ColumnDef {
+            key: "date",
+            label: rox_i18n::t_static("columns-date"),
+            default_width: crate::track_ui::track_columns::DATE_WIDTH,
+            right: true,
+            default_on: false,
+            sort: SortKey::Year,
+        },
         ColumnDef {
             key: "codec",
             label: rox_i18n::t_static("columns-codec"),

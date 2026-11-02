@@ -375,6 +375,14 @@ struct Cell {
     dim: Option<f32>,
 }
 
+/// The tile whose run holds a view position. A scan, not a binary search on
+/// `start`: every sort but Artist reorders the tiles away from view order.
+fn cell_at(cells: &[Cell], view_ix: usize) -> Option<usize> {
+    cells
+        .iter()
+        .position(|cell| (cell.start..cell.start + cell.len as usize).contains(&view_ix))
+}
+
 /// A tile's caption. The `_reading` fields are sort names drawn after each.
 #[derive(Default)]
 struct TileLabels {
@@ -634,11 +642,7 @@ impl GridPanel {
             .view
             .iter()
             .position(|&row| projection.db_id[row as usize] == id)?;
-        Some(
-            self.cells
-                .partition_point(|cell| cell.start <= view_ix)
-                .saturating_sub(1),
-        )
+        cell_at(&self.cells, view_ix)
     }
 
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
@@ -915,6 +919,7 @@ impl GridPanel {
         let anchor = self.anchor.and_then(|ix| start_of(&self.cells, ix));
         let cursor = self.cursor.and_then(|ix| start_of(&self.cells, ix));
         let hovered = self.hovered.and_then(|ix| start_of(&self.cells, ix));
+        let playing = self.playing_ix.and_then(|ix| start_of(&self.cells, ix));
 
         self.sort_cells(cx);
 
@@ -932,6 +937,7 @@ impl GridPanel {
         self.anchor = anchor.and_then(|start| by_start.get(&start).copied());
         self.cursor = cursor.and_then(|start| by_start.get(&start).copied());
         self.hovered = hovered.and_then(|start| by_start.get(&start).copied());
+        self.playing_ix = playing.and_then(|start| by_start.get(&start).copied());
     }
 
     fn set_sort(&mut self, sort: GridSort, cx: &mut Context<Self>) {
@@ -2847,6 +2853,33 @@ impl GridPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(start: usize, len: u32) -> Cell {
+        Cell {
+            start,
+            len,
+            art: None,
+            dim: None,
+        }
+    }
+
+    #[test]
+    fn cell_at_finds_the_run_in_view_order() {
+        let cells = [run(0, 3), run(3, 2), run(5, 4)];
+        assert_eq!(cell_at(&cells, 0), Some(0));
+        assert_eq!(cell_at(&cells, 4), Some(1));
+        assert_eq!(cell_at(&cells, 8), Some(2));
+        assert_eq!(cell_at(&cells, 9), None);
+    }
+
+    #[test]
+    fn cell_at_finds_the_run_after_a_resort() {
+        // An added or plays sort leaves the starts out of order.
+        let cells = [run(5, 4), run(0, 3), run(3, 2)];
+        assert_eq!(cell_at(&cells, 6), Some(0));
+        assert_eq!(cell_at(&cells, 1), Some(1));
+        assert_eq!(cell_at(&cells, 3), Some(2));
+    }
 
     #[test]
     fn caption_header_fits_album_line_and_padding() {

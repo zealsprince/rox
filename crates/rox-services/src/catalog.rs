@@ -21,6 +21,7 @@ use rox_library::projection::{self, Builder, Patch, Projection, RowView};
 use rox_library::rusqlite::{self, Connection};
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
+use rox_library::track_row;
 use rox_library::unknown;
 use rox_library::watch::{LibraryWatcher, WatchBatch};
 use rox_library::writer;
@@ -1205,6 +1206,13 @@ impl Library {
                     .flatten()
             })
             .flatten()
+    }
+
+    /// The whole stored row for one key, for the control socket's playing
+    /// track. One keyed read; anything listing many rows opens its own
+    /// connection off the UI thread instead.
+    pub fn stored_row(&self, key: &TrackKey) -> Option<track_row::StoredTrack> {
+        track_row::by_key(self.conn.as_ref()?, key).ok().flatten()
     }
 
     /// Panel-open and listen-append cadence only, per ADR 11.
@@ -3025,6 +3033,8 @@ mod tests {
             album: "Album".into(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 0,
             disc_no: 0,
             track_no: 0,

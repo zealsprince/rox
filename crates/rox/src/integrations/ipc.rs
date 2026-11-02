@@ -14,14 +14,12 @@ use serde_json::{Value, json};
 
 use rox_ipc::{Request, RpcError};
 use rox_library::cue::TrackKey;
-use rox_library::projection::Projection;
 use rox_panel_api::panel::AppState;
 use rox_panels::milkdrop::MilkdropPanel;
 use rox_playback::Shift;
-use rox_services::catalog::Library;
 use rox_services::player::AbState;
 
-/// Each row costs a path lookup on the UI thread, so the cap bounds one greedy query.
+/// Each row costs a keyed read, so the cap bounds one greedy query.
 const SEARCH_LIMIT_DEFAULT: usize = 50;
 const SEARCH_LIMIT_MAX: usize = 500;
 
@@ -104,12 +102,15 @@ fn publish_events(state: &AppState, events: rox_ipc::Events, cx: &mut App) {
     .detach();
 }
 
-/// The blocking answers (art reads, search, plugin calls) respond from the
-/// background executor.
+/// The blocking answers (art reads, search, track and history reads, the
+/// queue's rows, plugin calls) respond from the background executor.
 fn dispatch(state: &AppState, request: Request, cx: &mut App) {
     match request.method.as_str() {
         "library.search" => return search(state, request, cx),
         "library.artwork" => return artwork(request, cx),
+        "library.track" => return super::ipc_track::track(state, request, cx),
+        "library.history" => return super::ipc_track::history(state, request, cx),
+        "queue.list" => return super::ipc_track::queue_list(state, request, cx),
         "plugins.browse" => return super::ipc_plugins::browse(state, request, cx),
         "plugins.search" => return super::ipc_plugins::search(state, request, cx),
         "plugins.action" => return super::ipc_plugins::action(request, cx),
@@ -223,7 +224,6 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             }
             Ok(status(state, cx))
         }
-        "queue.list" => Ok(queue_list(state, cx)),
         "queue.add" => queue_add(state, params, cx),
         "queue.remove" => {
             let ids = id_list(params)?;
@@ -674,11 +674,7 @@ fn milkdrop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
 fn status(state: &AppState, cx: &App) -> Value {
     let player = state.player.read(cx);
     let now = player.now_playing();
-    let track = now.as_ref().map(|now| {
-        // Through the player, so a station reports the song it announced.
-        let tags = player.live_over(state.library.read(cx).meta_for_key(&now.key));
-        track_json(&now.key, tags.as_ref())
-    });
+    let track = now.as_ref().map(|now| playing_row(state, &now.key, cx));
     json!({
         "playing": player.is_playing(),
         "active": player.is_active(),
@@ -721,9 +717,8 @@ fn now_playing(state: &AppState, cx: &App) -> Value {
     let Some(now) = player.now_playing() else {
         return Value::Null;
     };
-    let tags = player.live_over(state.library.read(cx).meta_for_key(&now.key));
-    let mut track = track_json(&now.key, tags.as_ref());
-    // Playback-scoped keys stay out of `track_json`, which the queue listing shares.
+    let mut track = playing_row(state, &now.key, cx);
+    // Playback-scoped keys stay out of the shared row.
     track["position_secs"] = json!(now.position_secs);
     track["duration_secs"] = json!(now.duration_secs);
     track["live"] = json!(now.live);
@@ -731,55 +726,15 @@ fn now_playing(state: &AppState, cx: &App) -> Value {
     track
 }
 
-fn track_json(key: &TrackKey, tags: Option<&rox_library::store::TrackMeta>) -> Value {
-    let fallback_title = || {
-        key.path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
-    json!({
-        "path": key.path,
-        "sub": key.sub,
-        "title": tags
-            .map(|t| t.title.clone())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(fallback_title),
-        "artist": tags.map(|t| t.artist.clone()).unwrap_or_default(),
-        "album": tags.map(|t| t.album.clone()).unwrap_or_default(),
-        "album_artist": tags.map(|t| t.album_artist.clone()).unwrap_or_default(),
-        "genre": tags.map(|t| t.genre.clone()).unwrap_or_default(),
-        "year": tags.map(|t| t.year),
-        "track_no": tags.map(|t| t.track_no),
-        "duration_ms": tags.map(|t| t.duration_ms),
-        "codec": tags.map(|t| t.codec.clone()).unwrap_or_default(),
-        "rating": tags.map(|t| t.rating),
-    })
-}
-
-fn queue_list(state: &AppState, cx: &App) -> Value {
-    let player = state.player.read(cx);
-    let Some((entries, cursor)) = player.play_order() else {
-        return json!({ "entries": [], "cursor": null, "queue_rev": player.queue_rev() });
-    };
-    let entries: Vec<Value> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, (id, key, explicit))| {
-            json!({
-                "id": id,
-                "path": key.path,
-                "sub": key.sub,
-                "explicit": explicit,
-                "current": i == cursor,
-            })
-        })
-        .collect();
-    json!({
-        "entries": entries,
-        "cursor": cursor,
-        "queue_rev": player.queue_rev(),
-    })
+/// The playing track's row: one keyed read through the catalog, then the
+/// station's announced song over it, so a station reports what's on.
+fn playing_row(state: &AppState, key: &TrackKey, cx: &App) -> Value {
+    let row = state.library.read(cx).stored_row(key);
+    let mut track = super::ipc_track::row_json(key, row.as_ref());
+    if let Some(title) = state.player.read(cx).live_title() {
+        super::ipc_track::overlay_live(&mut track, &title);
+    }
+    track
 }
 
 /// Parsed apart from the library lookup so it tests without an app.
@@ -813,6 +768,16 @@ fn add_target(s: &str, is_file: impl Fn(&str) -> bool) -> AddTarget {
     match key.sub > 0 {
         true => AddTarget::Subsong(key),
         false => AddTarget::Path(PathBuf::from(s)),
+    }
+}
+
+/// The track a `key` param names, read the way `queue.add` reads one. A
+/// folder or a missing file still comes back as a local key, which the
+/// caller's library lookup refuses.
+pub(super) fn key_for(s: &str) -> TrackKey {
+    match add_target(s, |p| std::path::Path::new(p).is_file()) {
+        AddTarget::Row(key) | AddTarget::Station(key) | AddTarget::Subsong(key) => key,
+        AddTarget::Path(path) => TrackKey::from(path),
     }
 }
 
@@ -899,8 +864,7 @@ fn id_list(params: &Value) -> Result<Vec<u64>, RpcError> {
 }
 
 /// The panels' scan widened to stations, whose hits come after the tracks.
-/// The scan runs on the background executor; only the path resolve returns
-/// to the UI side, bounded by the row cap.
+/// The scan and the row reads both run on the background executor.
 fn search(state: &AppState, request: Request, cx: &mut App) {
     let (_, params, responder) = request.into_parts();
     let Some(query) = params.get("query").and_then(Value::as_str) else {
@@ -920,61 +884,21 @@ fn search(state: &AppState, request: Request, cx: &mut App) {
         .map(|l| l as usize)
         .unwrap_or(SEARCH_LIMIT_DEFAULT)
         .min(SEARCH_LIMIT_MAX);
-    let library = state.library.clone();
-    cx.spawn(async move |cx| {
-        let scan = projection.clone();
-        let scanned = cx
-            .background_executor()
-            .spawn(async move {
-                let query = query;
-                scan.search_all(&query)
-            })
-            .await;
-        let total = scanned.len();
-        let rows: Vec<u32> = scanned.into_iter().take(limit).collect();
-        let result = cx.update(|cx| {
-            let library = library.read(cx);
-            json!({
-                "total": total,
-                "tracks": rows
-                    .iter()
-                    .map(|&row| search_row(&projection, row, library))
-                    .collect::<Vec<Value>>(),
-            })
-        });
-        match result {
-            Ok(result) => responder.respond(Ok(result)),
-            Err(_) => responder.respond(Err(RpcError::app("rox is shutting down"))),
-        }
-    })
-    .detach();
-}
-
-/// `path` alone doesn't name a track (two servers can share a string), so
-/// `source` and `key` do. `key` is what `queue.add` takes back.
-fn search_row(projection: &Projection, row: u32, library: &Library) -> Value {
-    let view = projection.resolve(row);
-    let id = projection.db_id[row as usize];
-    let key = library.keys_for(&[id]).ok().and_then(|mut keys| keys.pop());
-    json!({
-        "id": id,
-        "path": key.as_ref().map(|k| k.path.clone()),
-        "sub": key.as_ref().map(|k| k.sub),
-        "source": key.as_ref().map(|k| k.source.to_string()),
-        "key": key.as_ref().map(|k| k.to_fragment()),
-        "title": view.title,
-        "artist": view.artist,
-        "album_artist": view.album_artist,
-        "album": view.album,
-        "genre": view.genre,
-        "year": view.year,
-        "disc_no": view.disc_no,
-        "track_no": view.track_no,
-        "duration_ms": view.duration_ms,
-        "codec": view.codec,
-        "rating": view.rating,
-        "plays": view.plays,
-    })
+    let db_path = state.library.read(cx).db_path();
+    cx.background_executor()
+        .spawn(async move {
+            let scanned = projection.search_all(&query);
+            let total = scanned.len();
+            let ids: Vec<i64> = scanned
+                .into_iter()
+                .take(limit)
+                .map(|row| projection.db_id[row as usize])
+                .collect();
+            let result = super::ipc_track::search_rows(&db_path, &ids)
+                .map(|tracks| json!({ "total": total, "tracks": tracks }));
+            responder.respond(result);
+        })
+        .detach();
 }
 
 fn artwork(request: Request, cx: &mut App) {

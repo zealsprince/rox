@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     album         TEXT NOT NULL,
     genre         TEXT NOT NULL,
     year          INTEGER NOT NULL,
+    month         INTEGER NOT NULL DEFAULT 0,   -- the date tag past the year, 0 where it stops
+    day           INTEGER NOT NULL DEFAULT 0,
     disc_no       INTEGER NOT NULL DEFAULT 0,
     track_no      INTEGER NOT NULL,
     duration_ms   INTEGER NOT NULL,
@@ -105,6 +107,8 @@ pub struct Projection {
     pub folder: Vec<u32>,       // parent directory, interned like the rest
     comment: Option<Vec<u32>>,  // symbol into comments, None when no row has one
     pub year: Vec<u16>,
+    pub month: Vec<u8>,         // display only, the date column
+    pub day: Vec<u8>,
     pub disc_no: Vec<u16>,
     pub track_no: Vec<u16>,
     pub duration_ms: Vec<u32>,
@@ -205,7 +209,8 @@ pipeline, per ADR 4's single metadata layer:
 5. Upsert in batches of 512 rows, one transaction each.
 
 The scan returns a `ScanSummary` (`indexed`, `unchanged`, `untagged`) for the status
-line. Tag fields read: title, artist, album artist, album, genre, year, disc
+line. Tag fields read: title, artist, album artist, album, genre, date (the year, with the
+month and day when the tag has them, in any order a tagger writes), disc
 and track number, rating (FMPS exact, POPM stars), and the four ReplayGain values, all
 from the primary (or first) tag. Multi-value genres join on the `"; "` convention
 `rox_library::genre` owns, so a list makes the round trip through one column intact.

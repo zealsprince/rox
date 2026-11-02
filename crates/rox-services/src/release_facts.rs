@@ -42,6 +42,17 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// The cached facts and when they were fetched, at any age, without asking
+/// anyone. None for a track never looked up or a settled miss. Blocking.
+pub fn stored(query: &TrackQuery) -> Option<(ReleaseFacts, u64)> {
+    if query.artist.trim().is_empty() || query.title.trim().is_empty() {
+        return None;
+    }
+
+    let entry: Entry = serde_json::from_str(&fs::read_to_string(file_for(query)).ok()?).ok()?;
+    entry.facts.map(|facts| (facts, entry.fetched))
+}
+
 /// With the metadata provider off, the cache serves at any age. Blocking.
 pub fn get(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String> {
     if query.artist.trim().is_empty() || query.title.trim().is_empty() {

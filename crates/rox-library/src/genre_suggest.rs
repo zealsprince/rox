@@ -339,6 +339,8 @@ mod tests {
             album_sort: String::new(),
             genre: "Shoegaze".into(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 1993,
             disc_no: 1,
             track_no: 1,

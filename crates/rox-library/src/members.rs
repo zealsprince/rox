@@ -154,6 +154,8 @@ pub fn row_for(track: &PluginTrack, now: i64) -> TrackRow {
         album_sort: String::new(),
         genre: track.genre.clone(),
         comment: String::new(),
+        month: 0,
+        day: 0,
         year: track.year,
         disc_no: track.disc_no,
         track_no: track.track_no,

@@ -125,6 +125,7 @@ pub fn scan(
         }
         if !batch.is_empty() {
             store::insert_batch(conn, &batch)?;
+            settle_albums(conn, &batch)?;
         }
 
         if cancelled.load(Ordering::Relaxed) {
@@ -166,6 +167,7 @@ pub fn scan(
             }
             if !batch.is_empty() {
                 store::insert_batch(conn, &batch)?;
+                settle_albums(conn, &batch)?;
             }
             if cancelled.load(Ordering::Relaxed) {
                 summary.aborted = true;
@@ -249,6 +251,7 @@ pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usi
         .collect();
     if !rows.is_empty() {
         store::insert_batch(conn, &rows)?;
+        settle_albums(conn, &rows)?;
         // Same subsong bookkeeping as a full scan, in the same order.
         for (image, claim) in &claimed {
             let keep: Vec<u16> = claim.tracks.iter().map(|t| t.number).collect();
@@ -263,6 +266,19 @@ pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usi
         crate::bookmarks::reattach(conn)?;
     }
     Ok(rows.len())
+}
+
+/// Re-run the folder compilation rule over the folders these rows landed in.
+/// A stored row carries the borrowed album artist again until this runs.
+fn settle_albums(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Result<()> {
+    let mut dirs: Vec<&Path> = rows
+        .iter()
+        .filter_map(|row| Path::new(&row.path).parent())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    crate::compilation::settle_folders(conn, dirs)?;
+    Ok(())
 }
 
 /// Kept apart from the store write so reads run in parallel and the write
@@ -678,6 +694,10 @@ fn cue_rows(
                 } else {
                     claim.year
                 },
+                // A sheet's REM DATE is a bare year, so the parts only come
+                // from the image when the sheet has no say.
+                month: if claim.year == 0 { image_tags.month } else { 0 },
+                day: if claim.year == 0 { image_tags.day } else { 0 },
                 // The sheet knows nothing about discs.
                 disc_no: image_tags.disc_no,
                 track_no: track.number,
@@ -834,7 +854,10 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
             .unwrap_or_default()
             .trim()
             .to_string();
-        row.year = tag.date().map(|d| d.year).unwrap_or(0);
+        let date = crate::year::read(tag);
+        row.year = date.year;
+        row.month = date.month;
+        row.day = date.day;
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
         row.bpm = crate::tempo::read(tag);
@@ -894,6 +917,8 @@ fn fallback_row(path: &Path) -> TrackRow {
         album: String::new(),
         genre: String::new(),
         comment: String::new(),
+        month: 0,
+        day: 0,
         year: 0,
         disc_no: 0,
         track_no: 0,
@@ -1238,6 +1263,73 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(row.album_artist, "Various Artists");
         assert_eq!(row.album_artist_sort, "");
+    }
+
+    #[test]
+    fn a_folder_of_credited_artists_scans_as_one_album() {
+        let dir = std::env::temp_dir().join("rox-scanner-folder-compilation");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let tag = |name: &str, artist: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, &audio).unwrap();
+            writer::commit(
+                &path,
+                &[
+                    Change {
+                        field: Field::Artist,
+                        value: Some(artist.into()),
+                    },
+                    Change {
+                        field: Field::Album,
+                        value: Some("Hannah Montana The Movie".into()),
+                    },
+                ],
+            )
+            .unwrap();
+            path
+        };
+        tag("01.mp3", "Hannah Montana");
+        let edited = tag("02.mp3", "Steve Rushton");
+        tag("03.mp3", "Taylor Swift");
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        scan(&mut conn, &dir, &Exclusions::default(), |_, _, _| true).unwrap();
+        let album_artists = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare("SELECT album_artist FROM tracks ORDER BY path")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(
+            album_artists(&conn),
+            [crate::compilation::VARIOUS_ARTISTS; 3]
+        );
+
+        // A tag edit re-reads one file, which borrows its artist again.
+        writer::commit(
+            &edited,
+            &[Change {
+                field: Field::Artist,
+                value: Some("Steve Rushton & Friends".into()),
+            }],
+        )
+        .unwrap();
+        reindex(&mut conn, std::slice::from_ref(&edited)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            album_artists(&conn),
+            [crate::compilation::VARIOUS_ARTISTS; 3]
+        );
     }
 
     #[test]
@@ -1980,5 +2072,28 @@ FILE "disc.wav" WAVE
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_day_first_date_scans_as_its_year() {
+        use lofty::config::{ParseOptions, WriteOptions};
+        use lofty::file::AudioFile;
+
+        let dir = std::env::temp_dir().join(format!("rox-scanner-date-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tone.opus");
+        std::fs::copy(opus_fixture(), &path).unwrap();
+
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut opus = OpusFile::read_from(&mut file, ParseOptions::new()).unwrap();
+        opus.vorbis_comments_mut()
+            .push("DATE".to_string(), "12.06.2007".to_string());
+        opus.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        let row = read_one(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(row.year, 2007);
+        assert_eq!((row.month, row.day), (6, 12));
     }
 }

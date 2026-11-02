@@ -65,8 +65,8 @@ const FONT_MAX: f32 = 34.0;
 const FADE_SECS: f32 = 0.35;
 const FADE_FLOOR: f32 = 0.15;
 
-/// The fraction of a word's own slot its fade-in takes.
-const WORD_FADE: f32 = 0.5;
+/// How long a word takes to rise and fade in once the read head reaches it.
+const WORD_RISE_SECS: f32 = 0.25;
 
 /// How far a word rises as it fades in, as a fraction of the text size.
 const WORD_RISE: f32 = 0.35;
@@ -306,6 +306,9 @@ pub struct LyricsPanel {
     active_fade: f32,
     /// The read head as a byte offset into the active line's text.
     head: Option<usize>,
+    /// When each word of [`Self::rise_line`] met the read head, for the build rise.
+    risen: Vec<Option<Instant>>,
+    rise_line: Option<usize>,
     /// The playhead is on the shown track this render.
     positioned: bool,
     pad: Pixels,
@@ -381,6 +384,8 @@ impl LyricsPanel {
             faded_line: None,
             active_fade: 1.0,
             head: None,
+            risen: Vec::new(),
+            rise_line: None,
             positioned: false,
             pad: px(0.),
             wrap_scroll: ScrollHandle::new(),
@@ -1646,6 +1651,7 @@ impl LyricsPanel {
                 (Some(head), Some(ix)) => head < lyrics.lines[ix].text.len(),
                 _ => false,
             };
+        animating |= self.track_rise(&lyrics, active);
 
         self.pad = self.pad_height(line_height(self.config.font_size, self.config.line_spacing));
 
@@ -1723,6 +1729,29 @@ impl LyricsPanel {
                     .children(rows)
                     .child(div().flex_none().h(pad)),
             )
+    }
+
+    /// Stamp the build style's pieces as the head reaches them. Returns whether
+    /// a rise is still running.
+    fn track_rise(&mut self, lyrics: &Lyrics, active: Option<usize>) -> bool {
+        let (Some(head), Some(ix), WordStyle::Build) = (self.head, active, self.config.word_style)
+        else {
+            self.rise_line = None;
+            self.risen.clear();
+            return false;
+        };
+
+        let line = &lyrics.lines[ix];
+        let pieces: Vec<Range<usize>> = word_pieces(&line.text, &line.words)
+            .into_iter()
+            .flatten()
+            .collect();
+        if self.rise_line != Some(ix) || self.risen.len() != pieces.len() {
+            self.rise_line = Some(ix);
+            self.risen = vec![None; pieces.len()];
+        }
+
+        stamp_rise(&mut self.risen, &pieces, head, Instant::now())
     }
 
     /// Where the scroll should sit to center line `ix`, off the row's measured
@@ -1855,6 +1884,13 @@ impl LyricsPanel {
             })
         });
 
+        let now = Instant::now();
+        let lifts: Vec<f32> = self
+            .risen
+            .iter()
+            .map(|at| at.map_or(0.0, |at| rise(now.duration_since(at).as_secs_f32())))
+            .collect();
+
         let heights = std::mem::take(&mut self.heights);
         let rows = (0..lyrics.lines.len())
             .map(|ix| {
@@ -1884,21 +1920,43 @@ impl LyricsPanel {
                         )])
                         .into_any_element(),
 
-                    (Some(head), WordStyle::Build) => {
+                    (Some(_), WordStyle::Build) => {
                         let rise = font * WORD_RISE;
                         div()
                             .max_w_full()
                             .flex()
                             .flex_row()
                             .flex_wrap()
-                            .children(word_spans(text).into_iter().map(|span| {
-                                let opacity = crossed(head, &span);
-                                div()
-                                    .relative()
-                                    .top(px((1.0 - opacity) * rise))
-                                    .opacity(opacity)
-                                    .child(SharedString::from(format!("{}\u{a0}", &text[span])))
-                            }))
+                            .children({
+                                // One row per word so its syllables never wrap apart or space
+                                // out. The lifts run flat over the pieces in reading order.
+                                let lifts = &lifts;
+                                let mut p = 0;
+                                word_pieces(text, &line.words)
+                                    .into_iter()
+                                    .map(move |pieces| {
+                                        let last = pieces.len() - 1;
+                                        let row: Vec<_> = pieces
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(ix, piece)| {
+                                                // A mismatch shows the piece rather than hiding it.
+                                                let opacity = lifts.get(p).copied().unwrap_or(1.0);
+                                                p += 1;
+                                                let gap = if ix == last { "\u{a0}" } else { "" };
+                                                div()
+                                                    .relative()
+                                                    .top(px((1.0 - opacity) * rise))
+                                                    .opacity(opacity)
+                                                    .child(SharedString::from(format!(
+                                                        "{}{gap}",
+                                                        &text[piece]
+                                                    )))
+                                            })
+                                            .collect();
+                                        div().flex().flex_row().children(row)
+                                    })
+                            })
                             .into_any_element()
                     }
 
@@ -2081,17 +2139,61 @@ fn word_spans(text: &str) -> Vec<Range<usize>> {
     spans
 }
 
-/// How far `head` has crossed `span`, 0 to 1, fading over the first
-/// [`WORD_FADE`] of it.
-fn crossed(head: usize, span: &Range<usize>) -> f32 {
-    if head <= span.start {
-        return 0.0;
+/// Each word of `text` cut at the timed segments' edges, so a syllable-stamped
+/// word builds up per syllable. Word stamps fall on word edges and cut nothing.
+fn word_pieces(text: &str, words: &[lyrics::Word]) -> Vec<Vec<Range<usize>>> {
+    let mut cuts: Vec<usize> = words
+        .iter()
+        .flat_map(|word| [word.range.start, word.range.end])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    word_spans(text)
+        .into_iter()
+        .map(|span| {
+            let mut pieces = Vec::new();
+            let mut from = span.start;
+            for &cut in cuts
+                .iter()
+                .filter(|&&cut| cut > span.start && cut < span.end)
+            {
+                pieces.push(from..cut);
+                from = cut;
+            }
+            pieces.push(from..span.end);
+            pieces
+        })
+        .collect()
+}
+
+/// Stamp each piece the head has passed with when it got there, and clear
+/// one the head is back behind. Returns whether a rise is still running.
+fn stamp_rise(
+    risen: &mut [Option<Instant>],
+    spans: &[Range<usize>],
+    head: usize,
+    now: Instant,
+) -> bool {
+    let mut moving = false;
+    for (span, at) in spans.iter().zip(risen.iter_mut()) {
+        if head <= span.start {
+            *at = None;
+            continue;
+        }
+
+        let since = *at.get_or_insert(now);
+        moving |= rise(now.duration_since(since).as_secs_f32()) < 1.0;
     }
-    if head >= span.end {
-        return 1.0;
-    }
-    let through = (head - span.start) as f32 / (span.end - span.start).max(1) as f32;
-    (through / WORD_FADE).clamp(0.0, 1.0)
+    moving
+}
+
+/// A word's rise, 0 to 1, `elapsed` seconds after the head reached it. It runs
+/// on the clock because the head moves in whole bytes: tied to the head, a
+/// short word on a slow line climbs in a few visible jumps.
+fn rise(elapsed: f32) -> f32 {
+    let t = (elapsed / WORD_RISE_SECS).clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
 }
 
 /// Parse the edit window's draft the way [`lyrics::load`] would.
@@ -2152,5 +2254,99 @@ mod tests {
             assert_eq!(back.search_button, config.search_button, "{key}");
             assert!(back.chrome.title.is_none(), "{key}");
         }
+    }
+
+    #[test]
+    fn rise_eases_from_zero_to_one_and_holds() {
+        assert_eq!(rise(0.0), 0.0);
+        assert_eq!(rise(WORD_RISE_SECS), 1.0);
+        assert_eq!(rise(WORD_RISE_SECS * 4.0), 1.0);
+
+        // Monotonic, and no 60 Hz frame moves further than the ease's steepest slope allows.
+        let frame = 1.0 / 60.0;
+        let mut last = 0.0;
+        let mut t = 0.0;
+        while t <= WORD_RISE_SECS {
+            let now = rise(t);
+            assert!(now >= last);
+            assert!(now - last <= 3.0 * frame / WORD_RISE_SECS + 1e-4);
+            last = now;
+            t += frame;
+        }
+    }
+
+    #[test]
+    fn a_word_rises_on_the_clock_not_the_head() {
+        let spans = word_spans("slow sung line");
+        let mut risen = vec![None; spans.len()];
+        let start = Instant::now();
+
+        // The head one byte into the first word starts its rise and nothing else.
+        assert!(stamp_rise(&mut risen, &spans, 1, start));
+        assert_eq!(risen[0], Some(start));
+        assert!(risen[1..].iter().all(Option::is_none));
+
+        // The head sitting still doesn't hold the rise back.
+        let later = start + std::time::Duration::from_secs_f32(WORD_RISE_SECS * 2.0);
+        assert!(!stamp_rise(&mut risen, &spans, 1, later));
+        assert_eq!(risen[0], Some(start));
+
+        // Seeking back behind a word clears it, so it rises again.
+        assert!(stamp_rise(&mut risen, &spans, 6, later));
+        assert_eq!(risen[1], Some(later));
+        assert!(!stamp_rise(&mut risen, &spans, 0, later));
+        assert!(risen.iter().all(Option::is_none));
+    }
+
+    fn pieces_of(sheet: &str) -> (String, Vec<Vec<String>>) {
+        let (lines, _) = lyrics::parse(sheet);
+        let line = &lines[0];
+        let pieces = word_pieces(&line.text, &line.words)
+            .into_iter()
+            .map(|word| {
+                word.into_iter()
+                    .map(|piece| line.text[piece].to_string())
+                    .collect()
+            })
+            .collect();
+        (line.text.clone(), pieces)
+    }
+
+    #[test]
+    fn build_splits_a_word_at_its_syllable_stamps() {
+        let (text, pieces) =
+            pieces_of("[00:12.00]<00:12.00>Hel<00:12.30>lo <00:12.60>wor<00:12.90>ld<00:13.50>\n");
+        assert_eq!(text, "Hello world");
+        assert_eq!(pieces, [vec!["Hel", "lo"], vec!["wor", "ld"]]);
+
+        // With the head at the second syllable's start, only the first has begun to rise.
+        let (lines, _) = lyrics::parse(
+            "[00:12.00]<00:12.00>Hel<00:12.30>lo <00:12.60>wor<00:12.90>ld<00:13.50>\n",
+        );
+        let flat: Vec<Range<usize>> = word_pieces(&lines[0].text, &lines[0].words)
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut risen = vec![None; flat.len()];
+        assert!(stamp_rise(&mut risen, &flat, 3, Instant::now()));
+        assert!(risen[0].is_some());
+        assert!(risen[1..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn build_keeps_whole_words_for_word_stamps_and_plain_lines() {
+        let (_, pieces) = pieces_of(
+            "[00:12.00]<00:12.00>Bring <00:12.40>me <00:12.80>to <00:13.10>life<00:15.00>\n",
+        );
+        assert_eq!(
+            pieces,
+            [vec!["Bring"], vec!["me"], vec!["to"], vec!["life"]]
+        );
+
+        let (_, pieces) = pieces_of("[00:12.00]<00:12.00>two words <00:13.00>more\n");
+        assert_eq!(pieces, [vec!["two"], vec!["words"], vec!["more"]]);
+
+        let (_, pieces) = pieces_of("[00:12.00]line synced\n");
+        assert_eq!(pieces, [vec!["line"], vec!["synced"]]);
     }
 }

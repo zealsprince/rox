@@ -372,6 +372,28 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         },
         rescan: true,
     },
+    // The month and day of the date tag, for the date column. Zero where the
+    // tag stops at the year. The mtime reset is the comment rung's reason:
+    // the parts come off file tags, and only a re-read fills them.
+    crate::migrate::Migration {
+        name: "track-date",
+        up: |conn| {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN month INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE tracks ADD COLUMN day INTEGER NOT NULL DEFAULT 0;",
+            )
+        },
+        rescan: true,
+    },
+    // Albums with no album artist tag whose tracks credit several artists in
+    // one folder take "Various Artists", so a soundtrack stops splitting into
+    // one album per artist. No mtime reset: the rule reads stored columns,
+    // and scans keep it from here on.
+    crate::migrate::Migration {
+        name: "folder-compilations",
+        up: |conn| crate::compilation::settle_all(conn).map(|_| ()),
+        rescan: false,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -564,9 +586,9 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
               duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added, size, mtime,
               rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source,
               bpm, bpm_source,
-              title_sort, artist_sort, album_artist_sort, album_sort, comment)
+              title_sort, artist_sort, album_artist_sort, album_sort, comment, month, day)
              VALUES (?1, ?23, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0, ?25, ?26, ?27, ?28, ?29)
+                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
              ON CONFLICT (source, path, sub) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
@@ -576,8 +598,8 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 artist_sort = excluded.artist_sort,
                 album_artist_sort = excluded.album_artist_sort,
                 album_sort = excluded.album_sort,
-                year = excluded.year, disc_no = excluded.disc_no,
-                track_no = excluded.track_no,
+                year = excluded.year, month = excluded.month, day = excluded.day,
+                disc_no = excluded.disc_no, track_no = excluded.track_no,
                 duration_ms = excluded.duration_ms, codec = excluded.codec,
                 bitrate = excluded.bitrate,
                 sample_rate = excluded.sample_rate, bit_depth = excluded.bit_depth,
@@ -661,6 +683,8 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.album_artist_sort,
                 r.album_sort,
                 r.comment,
+                r.month,
+                r.day,
             ])?;
             if !spans_in_play {
                 continue;
@@ -827,7 +851,7 @@ pub fn cue_spans(conn: &Connection) -> rusqlite::Result<HashMap<i64, crate::cue:
 /// the root plus a trailing separator up to the separator's successor
 /// byte. SQLite compares TEXT bytewise, so the (source, path) index
 /// serves range queries directly where a LIKE would not.
-fn path_range(root: &Path) -> (String, String) {
+pub(crate) fn path_range(root: &Path) -> (String, String) {
     let mut lo = root.to_string_lossy().into_owned();
     if !lo.ends_with(std::path::MAIN_SEPARATOR) {
         lo.push(std::path::MAIN_SEPARATOR);
@@ -1481,6 +1505,25 @@ pub fn measured_replaygain(
     rows.collect()
 }
 
+/// Every row with a tempo rox measured itself, for [`crate::bake`]. A
+/// tag-sourced tempo came off the file already, and a refused row has none.
+pub fn measured_bpm(conn: &Connection) -> rusqlite::Result<Vec<(String, u16, f32)>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, sub, bpm
+         FROM tracks
+         WHERE source = 'local' AND bpm_source = ?1 AND bpm IS NOT NULL
+         ORDER BY path",
+    )?;
+    let rows = stmt.query_map([crate::tempo::Source::Measured.code()], |r| {
+        Ok((
+            r.get(0)?,
+            r.get::<_, i64>(1)? as u16,
+            r.get::<_, f64>(2)? as f32,
+        ))
+    })?;
+    rows.collect()
+}
+
 /// Drop every local track under one folder, for when it leaves the
 /// library. The files themselves are untouched.
 pub fn remove_under(conn: &Connection, root: &Path) -> rusqlite::Result<usize> {
@@ -1669,9 +1712,8 @@ pub fn apply_changes(
     changes: &[crate::writer::Change],
 ) -> rusqlite::Result<()> {
     use crate::writer::Field;
-    // The leading digits of a tag value: a "2020-05-01" date and a
-    // "5/12" track fraction both reduce to the number the column holds,
-    // the scanner's read of the same tags.
+    // The leading digits of a tag value: a "5/12" track fraction reduces to
+    // the number the column holds, the scanner's read of the same tag.
     fn leading(value: &str) -> i64 {
         let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
         // The projection reads these columns back as u16; saturate so an
@@ -1713,7 +1755,13 @@ pub fn apply_changes(
             Field::DiscNo => ("disc_no", true),
             _ => continue,
         };
-        if number {
+        if change.field == Field::Year {
+            let date = crate::year::parse_date(value);
+            conn.execute(
+                "UPDATE tracks SET year = ?2, month = ?3, day = ?4 WHERE id = ?1",
+                rusqlite::params![id, date.year, date.month, date.day],
+            )?;
+        } else if number {
             conn.execute(
                 &format!("UPDATE tracks SET {column} = ?2 WHERE id = ?1"),
                 rusqlite::params![id, leading(value)],
@@ -2305,6 +2353,8 @@ pub struct ScanRow<'a> {
     pub album_sort: &'a str,
     pub genre: &'a str,
     pub year: u16,
+    pub month: u8,
+    pub day: u8,
     pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,
@@ -2339,7 +2389,7 @@ pub fn scan_range(
                 title_sort, artist_sort, album_artist_sort, album_sort,
                 genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
-                rg_track_gain, rg_album_gain, bpm, bpm_source, sub, comment
+                rg_track_gain, rg_album_gain, bpm, bpm_source, sub, comment, month, day
          FROM tracks WHERE id > ?1 AND id <= ?2 AND source <> 'unknown' ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -2373,6 +2423,8 @@ pub fn scan_range(
             bpm_source: crate::tempo::Source::from_code(row.get(25)?),
             sub: row.get::<_, i64>(26)? as u16,
             comment: row.get_ref(27)?.as_str().unwrap_or(""),
+            month: row.get::<_, i64>(28)? as u8,
+            day: row.get::<_, i64>(29)? as u8,
         });
     }
     Ok(())
@@ -2499,6 +2551,8 @@ mod tests {
             album: album.into(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 0,
             disc_no: 0,
             track_no: 0,
@@ -4177,7 +4231,7 @@ mod tests {
                 },
                 Change {
                     field: Field::Year,
-                    value: Some("2020-05-01".into()),
+                    value: Some("01.05.2020".into()),
                 },
                 Change {
                     field: Field::TrackNo,
@@ -4198,7 +4252,7 @@ mod tests {
         let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
         let v = p.resolve(0);
         assert_eq!(v.title, "After");
-        assert_eq!(v.year, 2020, "the date's leading digits land as the year");
+        assert_eq!(v.year, 2020, "a day-first date lands as its year");
         assert_eq!(v.track_no, 5, "a track fraction lands as its number");
         assert_eq!(
             v.album_artist, "Someone",

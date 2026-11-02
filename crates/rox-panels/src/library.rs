@@ -1916,6 +1916,11 @@ impl TableDelegate for TrackTable {
             "year" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.year)),
+            "date" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(
+                    crate::track_ui::track_columns::date_text(v.year, v.month, v.day),
+                )),
             "codec" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(v.codec.to_string())),
@@ -4981,6 +4986,8 @@ mod tests {
             album: album.into(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 2000,
             disc_no: 1,
             track_no,

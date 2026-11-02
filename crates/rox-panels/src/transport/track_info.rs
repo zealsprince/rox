@@ -57,6 +57,10 @@ pub enum InfoPiece {
     Next,
     /// As "N queued".
     Queued,
+    /// The connected Last.fm account's scrobbles of the artist.
+    ArtistScrobbles,
+    /// The same account's scrobbles of the track.
+    TrackScrobbles,
     /// Claims its width first and never crawls.
     Output,
     Favourite,
@@ -129,6 +133,18 @@ const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
         key: "info-item-queued",
         icon: Some(icons::LAYERS),
         value: InfoPiece::Queued,
+        repeats: false,
+    },
+    panel::ArrangeSpec {
+        key: "info-item-artist-scrobbles",
+        icon: Some(icons::ACTIVITY),
+        value: InfoPiece::ArtistScrobbles,
+        repeats: false,
+    },
+    panel::ArrangeSpec {
+        key: "info-item-track-scrobbles",
+        icon: Some(icons::HASH),
+        value: InfoPiece::TrackScrobbles,
         repeats: false,
     },
     panel::ArrangeSpec {
@@ -597,6 +613,25 @@ struct PieceTexts {
     quality: Option<String>,
     next: Option<String>,
     queued: Option<String>,
+    artist_scrobbles: Option<String>,
+    track_scrobbles: Option<String>,
+}
+
+/// What a scrobble lookup asked, so a track change or a re-arranged line
+/// asks again.
+#[derive(Clone, PartialEq)]
+struct ScrobbleAsk {
+    username: String,
+    artist: String,
+    /// None when the line shows no track count.
+    title: Option<String>,
+    artist_count: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ScrobbleCounts {
+    artist: Option<u64>,
+    track: Option<u64>,
 }
 
 enum RowBit {
@@ -637,6 +672,8 @@ fn row_bits(
             InfoPiece::Quality => texts.quality.clone().map(|t| (t, true)),
             InfoPiece::Next => texts.next.clone().map(|t| (t, true)),
             InfoPiece::Queued => texts.queued.clone().map(|t| (t, true)),
+            InfoPiece::ArtistScrobbles => texts.artist_scrobbles.clone().map(|t| (t, true)),
+            InfoPiece::TrackScrobbles => texts.track_scrobbles.clone().map(|t| (t, true)),
             InfoPiece::Output
             | InfoPiece::Favourite
             | InfoPiece::Rating
@@ -702,6 +739,8 @@ pub struct TrackInfoPanel {
     /// Keyed on the queue revision, so the snapshot pass and the lookup only
     /// rerun when the queue moves.
     queue_info: Option<(u64, usize, Option<String>)>,
+    scrobbles: Option<(ScrobbleAsk, ScrobbleCounts)>,
+    scrobbles_pending: Option<ScrobbleAsk>,
     /// Cached like the tags. The rating shown comes off the tags, not this.
     marks: MarkCache,
     /// One per text run, in row order; rebuilt when the arrangement changes
@@ -759,6 +798,8 @@ impl TrackInfoPanel {
             config,
             meta: None,
             queue_info: None,
+            scrobbles: None,
+            scrobbles_pending: None,
             marks: MarkCache::default(),
             marquees: Vec::new(),
             cycle: RowCycle::new(),
@@ -952,6 +993,61 @@ impl TrackInfoPanel {
         }
         let (_, count, next) = self.queue_info.as_ref().unwrap();
         (*count, next.clone())
+    }
+
+    /// Only called while a scrobble piece is shown, so a line without one
+    /// never touches the network. Nothing shows until the answer for this
+    /// exact ask lands; a failure leaves the pieces out until the next track.
+    fn scrobbles_for(&mut self, ask: ScrobbleAsk, cx: &mut Context<Self>) -> ScrobbleCounts {
+        if let Some((held, counts)) = &self.scrobbles
+            && *held == ask
+        {
+            return *counts;
+        }
+        if self.scrobbles_pending.as_ref() == Some(&ask) {
+            return ScrobbleCounts::default();
+        }
+
+        self.scrobbles_pending = Some(ask.clone());
+        cx.spawn(async move |this, cx| {
+            let fetch = ask.clone();
+            let counts = cx
+                .background_executor()
+                .spawn(async move {
+                    let quiet = |result: Result<Option<u64>, String>| {
+                        result.unwrap_or_else(|e| {
+                            log::debug!("track info: scrobbles: {e}");
+                            None
+                        })
+                    };
+                    let user_plays = rox_net::providers::lastfm::user_plays;
+
+                    ScrobbleCounts {
+                        artist: fetch
+                            .artist_count
+                            .then(|| quiet(user_plays(&fetch.artist, None, &fetch.username)))
+                            .flatten(),
+                        track: fetch.title.as_deref().and_then(|title| {
+                            quiet(user_plays(&fetch.artist, Some(title), &fetch.username))
+                        }),
+                    }
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                // A newer ask went out while this one ran.
+                if this.scrobbles_pending.as_ref() != Some(&ask) {
+                    return;
+                }
+                this.scrobbles_pending = None;
+                this.scrobbles = Some((ask, counts));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
+        ScrobbleCounts::default()
     }
 
     fn favourite_for(&mut self, key: &TrackKey, cx: &App) -> Marks {
@@ -1435,6 +1531,8 @@ impl TrackInfoPanel {
         // freely.
         let meta = self.meta_for(&now.key, cx);
         let rating_value = meta.map(|m| m.rating).unwrap_or(0);
+        // The file-name stand-in below would only ask Last.fm about a path.
+        let tag_title = meta.map(|m| m.title.clone()).filter(|s| !s.is_empty());
         let title = meta.map(|m| m.title.clone()).unwrap_or_default();
         let title = if title.is_empty() {
             now.path()
@@ -1473,7 +1571,34 @@ impl TrackInfoPanel {
                 .filter(|s| !s.is_empty()),
             next: None,
             queued: None,
+            artist_scrobbles: None,
+            track_scrobbles: None,
         };
+        // A disconnected account leaves both pieces out.
+        let wants_artist = items.contains(&InfoPiece::ArtistScrobbles);
+        let wants_track = items.contains(&InfoPiece::TrackScrobbles);
+        let username = self.state.scrobbler.read(cx).username().to_string();
+        if (wants_artist || wants_track)
+            && !username.is_empty()
+            && let Some(artist) = texts.artist.clone()
+        {
+            let counts = self.scrobbles_for(
+                ScrobbleAsk {
+                    username,
+                    artist,
+                    title: tag_title.filter(|_| wants_track),
+                    artist_count: wants_artist,
+                },
+                cx,
+            );
+            let spell = |n: u64| rox_i18n::format::format_int(n as i64);
+            texts.artist_scrobbles = counts
+                .artist
+                .map(|n| rox_i18n::t!("track-info-artist-scrobbles", count = spell(n)).to_string());
+            texts.track_scrobbles = counts
+                .track
+                .map(|n| rox_i18n::t!("track-info-track-scrobbles", count = spell(n)).to_string());
+        }
         if items
             .iter()
             .any(|i| matches!(i, InfoPiece::Next | InfoPiece::Queued))
@@ -1941,7 +2066,53 @@ mod tests {
             quality: None,
             next: None,
             queued: None,
+            artist_scrobbles: None,
+            track_scrobbles: None,
         }
+    }
+
+    #[test]
+    fn scrobble_counts_join_the_byline_and_drop_out_until_known() {
+        let pieces = [
+            InfoPiece::Artist,
+            InfoPiece::ArtistScrobbles,
+            InfoPiece::TrackScrobbles,
+        ];
+
+        // Not connected, or still asking: the artist stands alone.
+        let bits = row_bits(&pieces, &texts(), None);
+        assert!(
+            matches!(&bits[..], [RowBit::Run(run)] if run == &vec![("USAO".to_string(), true)])
+        );
+
+        let mut known = texts();
+        known.artist_scrobbles = Some("1,364 artist scrobbles".into());
+        known.track_scrobbles = Some("42 track scrobbles".into());
+        let bits = row_bits(&pieces, &known, None);
+        let [RowBit::Run(run)] = &bits[..] else {
+            panic!("expected one run");
+        };
+        assert!(
+            run == &vec![(
+                "USAO - 1,364 artist scrobbles - 42 track scrobbles".to_string(),
+                true
+            )]
+        );
+    }
+
+    #[test]
+    fn scrobble_pieces_save_and_load_by_name() {
+        let config: TrackInfoConfig =
+            serde_json::from_str(r#"{"items": ["title", "artistscrobbles", "trackscrobbles"]}"#)
+                .unwrap();
+        assert!(
+            config.items
+                == vec![
+                    InfoPiece::Title,
+                    InfoPiece::ArtistScrobbles,
+                    InfoPiece::TrackScrobbles,
+                ]
+        );
     }
 
     #[test]

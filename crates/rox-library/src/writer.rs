@@ -65,6 +65,9 @@ pub enum Field {
     /// Written by [`commit_replay_gain`]. lofty matches the keys
     /// case-insensitively, so a set replaces a differently cased frame.
     ReplayGain(GainKind),
+    /// Whole beats per minute, resolved at commit to the format's own key
+    /// (see [`resolve_tempo`]).
+    Tempo,
     Custom(String),
     /// A tag outside the editable set, by its [`read_unknown`] key. A set writes
     /// back through the key's own carrier so it never leaves a TXXX twin.
@@ -176,7 +179,7 @@ fn item_key(field: &Field) -> Option<ItemKey> {
         Field::Lyrics => ItemKey::UnsyncLyrics,
         Field::ReplayGain(kind) => kind.item_key(),
         // `apply_rating` writes the rating's popularimeter form itself.
-        Field::Rating | Field::Custom(_) | Field::Unknown(_) => return None,
+        Field::Rating | Field::Tempo | Field::Custom(_) | Field::Unknown(_) => return None,
     })
 }
 
@@ -707,15 +710,48 @@ fn format_peak(peak: f32) -> String {
     format!("{peak:.6}")
 }
 
+/// A tempo as whole beats, the form ID3v2's TBPM is specified in and the
+/// one other players parse.
+pub fn tempo_change(bpm: f32) -> Change {
+    Change {
+        field: Field::Tempo,
+        value: Some(format!("{}", bpm.round() as u32)),
+    }
+}
+
+/// [`Field::Tempo`] becomes the format's tempo key, the one the editor lists
+/// and writes back through [`Field::Unknown`]. MP4 is refused: lofty's
+/// generic tag drops `tmpo` (see [`crate::tempo`]), so it can't verify.
+fn resolve_tempo(kind: FileType, changes: Vec<Change>) -> Result<Vec<Change>, String> {
+    changes
+        .into_iter()
+        .map(|change| {
+            if change.field != Field::Tempo {
+                return Ok(change);
+            }
+
+            let key = match kind {
+                FileType::Mpeg => "TBPM",
+                FileType::Flac => "BPM",
+                other => return Err(format!("writing a tempo into {other:?} is not supported")),
+            };
+            Ok(Change {
+                field: Field::Unknown(key.into()),
+                value: change.value,
+            })
+        })
+        .collect()
+}
+
 fn commit_inner(
     path: &Path,
     tmp: &Path,
     changes: &[Change],
     pictures: &[PicChange],
 ) -> Result<(), String> {
-    let changes = expand_rating(changes);
-    let changes = changes.as_slice();
     let kind = file_type(path)?;
+    let changes = resolve_tempo(kind, expand_rating(changes))?;
+    let changes = changes.as_slice();
     let audio_hash = hash_span(path, audio_span(path, kind)?)?;
     let rescue = if kind == FileType::Mpeg {
         art::unsync_apic(path, art::ArtKind::Front)
@@ -3139,5 +3175,40 @@ mod tests {
         assert_eq!(pics[0].0, PicKind::Front);
         assert_eq!(pics[0].1, image);
         assert_eq!(pics[0].2, "image/png");
+    }
+
+    #[test]
+    fn a_tempo_lands_in_each_formats_own_key_as_whole_beats() {
+        let dir = scratch("tempo-round-trip");
+        let mp3 = mp3_file(&dir, "track.mp3");
+        let flac = flac_file(&dir, "track.flac");
+
+        for (path, key) in [(&mp3, "TBPM"), (&flac, "BPM")] {
+            commit(path, &[tempo_change(127.6)]).unwrap();
+
+            let rows = read_unknown(path).unwrap();
+            assert_eq!(text_of(&rows, key).as_deref(), Some("128"), "{key}");
+            assert_eq!(
+                crate::scanner::read_one(path).unwrap().bpm,
+                Some(128.0),
+                "the scan reads the written tempo back as {key}"
+            );
+        }
+
+        // TBPM is a text frame; a TXXX twin would read as a second tempo.
+        let tag = parse_mpeg(&mp3).unwrap().id3v2().cloned().unwrap();
+        assert!(tag.get_user_text("TBPM").is_none());
+    }
+
+    #[test]
+    fn a_tempo_into_an_mp4_is_refused_before_the_file_is_touched() {
+        let dir = scratch("tempo-mp4");
+        let path = m4a_file(&dir, "track.m4a");
+        let before = fs::read(&path).unwrap();
+
+        let err = commit(&path, &[tempo_change(120.0)]).unwrap_err();
+        assert!(err.contains("tempo"), "{err}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!tmp_path(&path).exists());
     }
 }

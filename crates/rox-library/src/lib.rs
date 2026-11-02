@@ -8,6 +8,7 @@ pub mod art;
 pub mod artist_meta;
 pub mod bake;
 pub mod bookmarks;
+pub mod compilation;
 pub mod cue;
 pub mod duplicates;
 pub mod embed_tag;
@@ -44,11 +45,13 @@ pub mod tag_source;
 pub mod tempo;
 pub mod thumbs;
 pub mod track_meta;
+pub mod track_row;
 pub mod unknown;
 pub mod view;
 pub mod watch;
 pub mod writer;
 pub mod xspf;
+pub mod year;
 
 // Re-exported so embedders can name a Connection without the dep.
 pub use rusqlite;
@@ -98,6 +101,10 @@ pub struct TrackRow {
     /// The file's standard comment, trimmed, empty when it has none.
     pub comment: String,
     pub year: u16,
+    /// The rest of the date tag, 0 when it stops at the year. Display only:
+    /// sorts and filters read the year.
+    pub month: u8,
+    pub day: u8,
     pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,

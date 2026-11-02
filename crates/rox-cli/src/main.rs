@@ -41,6 +41,13 @@ commands:
   jump <id>                  play a queued entry now
   search [--limit N] <terms> search the library
   now                        the playing track's full tags
+  track [--include a,b] <key>
+                             everything stored about one track, by path or
+                             a key off `search --json`; sections: tags,
+                             lyrics, acoustic, enrichment, stats
+  history [--limit N] [--before C] [key]
+                             what was played, newest first; --before takes
+                             the cursor a page ends with
   rescan                     scan the library folders again
   tasks                      the long analysis passes and their progress
   task-start <pass>          start a pass: acoustic, replaygain, tempo,
@@ -243,6 +250,8 @@ fn run(
             ("library.search".into(), params)
         }
         "now" => ("library.now_playing".into(), json!({})),
+        "track" => ("library.track".into(), track_params(args)?),
+        "history" => ("library.history".into(), history_params(args)?),
         "rescan" => ("library.rescan".into(), json!({})),
         "tasks" => ("tasks.status".into(), json!({})),
         "task-start" => {
@@ -403,6 +412,8 @@ fn run(
         "queue" => print_queue(&result),
         "search" => print_search(&result),
         "now" => print_now(&result),
+        "track" => print_track(&result),
+        "history" => print_history(&result),
         "rescan" => println!("scan started"),
         "tasks" => print_tasks(&result),
         "task-start" => print_task_started(&result),
@@ -693,7 +704,222 @@ fn print_now(track: &Value) {
             println!("{field:>12}  {text}");
         }
     }
+    if let (Some(bpm), Some(source)) = (track["bpm"].as_f64(), track["bpm_source"].as_str()) {
+        println!("{:>12}  {bpm} ({source})", "bpm");
+    }
     print_shift(&track["shift"], "       shift  ");
+}
+
+fn track_params(args: &[String]) -> Result<Value, String> {
+    let mut include: Vec<&str> = Vec::new();
+    let mut key = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--include" {
+            let names = rest
+                .next()
+                .ok_or("--include takes section names, comma separated")?;
+            include.extend(names.split(',').map(str::trim).filter(|n| !n.is_empty()));
+        } else if key.is_none() {
+            key = Some(add_arg(arg));
+        } else {
+            return Err(format!("track takes one key; {arg} is a second"));
+        }
+    }
+
+    let key = key.ok_or("track takes a path or a key off `search --json`")?;
+    let mut params = json!({ "key": key });
+    if !include.is_empty() {
+        params["include"] = json!(include);
+    }
+    Ok(params)
+}
+
+fn history_params(args: &[String]) -> Result<Value, String> {
+    let mut params = json!({});
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--limit" => {
+                let n = rest.next().ok_or("--limit takes a number")?;
+                let n: u64 = n.parse().map_err(|_| format!("not a number: {n}"))?;
+                params["limit"] = json!(n);
+            }
+            "--before" => {
+                let cursor = rest
+                    .next()
+                    .ok_or("--before takes a cursor or a timestamp")?;
+                params["before"] = json!(cursor);
+            }
+            key => params["key"] = json!(add_arg(key)),
+        }
+    }
+    Ok(params)
+}
+
+/// The row's fields as `now` prints them, then each section asked for.
+fn print_track(result: &Value) {
+    let track = &result["track"];
+    for field in [
+        "title",
+        "artist",
+        "album",
+        "album_artist",
+        "genre",
+        "year",
+        "date",
+        "disc_no",
+        "track_no",
+        "codec",
+        "bitrate_kbps",
+        "sample_rate_hz",
+        "bit_depth",
+        "rating",
+        "plays",
+        "comment",
+        "key",
+    ] {
+        let value = &track[field];
+        let text = match value.as_str() {
+            Some(s) => s.to_owned(),
+            None if value.is_null() => continue,
+            None => value.to_string(),
+        };
+        println!("{field:>14}  {text}");
+    }
+    if let Some(duration) = track["duration_ms"].as_f64() {
+        println!("{:>14}  {}", "duration", clock(Some(duration / 1000.0)));
+    }
+    if let (Some(bpm), Some(source)) = (track["bpm"].as_f64(), track["bpm_source"].as_str()) {
+        println!("{:>14}  {bpm} ({source})", "bpm");
+    }
+    if let Some(gain) = track["track_gain_db"].as_f64() {
+        let source = track["replaygain_source"].as_str().unwrap_or("tag");
+        println!("{:>14}  {gain:+.2} dB ({source})", "track gain");
+    }
+    if let Some(start) = track["start_ms"].as_f64() {
+        println!(
+            "{:>14}  {} to {}",
+            "cue span",
+            clock(Some(start / 1000.0)),
+            clock(track["end_ms"].as_f64().map(|ms| ms / 1000.0)),
+        );
+    }
+
+    if let Some(tags) = result["tags"].as_array() {
+        println!("\ntags");
+        for tag in tags {
+            let value = match tag["binary_bytes"].as_u64() {
+                Some(bytes) => format!("({bytes} bytes, binary)"),
+                None => tag["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .replace('\n', " / "),
+            };
+            println!("  {:>20}  {value}", tag["key"].as_str().unwrap_or_default());
+        }
+    }
+    let lyrics = &result["lyrics"];
+    if !lyrics.is_null() {
+        println!(
+            "\nlyrics ({}, {} timing)\n{}",
+            lyrics["source"].as_str().unwrap_or_default(),
+            lyrics["synced"].as_str().unwrap_or("no"),
+            lyrics["text"].as_str().unwrap_or_default().trim_end(),
+        );
+    }
+    let acoustic = &result["acoustic"];
+    if !acoustic.is_null() {
+        println!(
+            "\nacoustic ({})",
+            acoustic["model"].as_str().unwrap_or_default()
+        );
+        match acoustic["neighbours"].as_array().filter(|n| !n.is_empty()) {
+            Some(neighbours) => {
+                for near in neighbours {
+                    println!(
+                        "  {:.3}  {} - {}",
+                        near["distance"].as_f64().unwrap_or_default(),
+                        near["artist"].as_str().unwrap_or_default(),
+                        near["title"].as_str().unwrap_or_default(),
+                    );
+                }
+            }
+            None => println!("  not described yet"),
+        }
+    }
+    let enrichment = &result["enrichment"];
+    if !enrichment.is_null() {
+        println!("\nenrichment");
+        for slot in ["artist", "album_artist", "album"] {
+            let entry = &enrichment[slot];
+            if entry.is_null() {
+                continue;
+            }
+            let mut facts = Vec::new();
+            for field in ["sort_name", "country", "formed"] {
+                if let Some(value) = entry[field]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| entry[field].as_u64().map(|n| n.to_string()))
+                {
+                    facts.push(format!("{field} {value}"));
+                }
+            }
+            let release = &entry["release"];
+            for field in ["release_title", "first_release_date", "label"] {
+                if let Some(value) = release[field].as_str().filter(|v| !v.is_empty()) {
+                    facts.push(format!("{field} {value}"));
+                }
+            }
+            if entry["bio"].is_string() {
+                facts.push("biography stored".into());
+            }
+            println!(
+                "  {:>12}  {}  {}",
+                slot,
+                entry["name"].as_str().unwrap_or_default(),
+                facts.join(", "),
+            );
+        }
+    }
+    let stats = &result["stats"];
+    if !stats.is_null() {
+        println!(
+            "\nplays {}, last played {}",
+            stats["plays"].as_u64().unwrap_or_default(),
+            stats["last_played"]
+                .as_i64()
+                .map(|at| at.to_string())
+                .unwrap_or_else(|| "never".into()),
+        );
+    }
+    if let Some(reasons) = result["reasons"].as_object() {
+        for (section, reason) in reasons {
+            println!("\n{section}: {}", reason.as_str().unwrap_or_default());
+        }
+    }
+}
+
+/// One line per listen: when, what was heard, and the key that names it.
+fn print_history(result: &Value) {
+    let Some(entries) = result["entries"].as_array().filter(|e| !e.is_empty()) else {
+        println!("nothing played");
+        return;
+    };
+    for entry in entries {
+        let heard = &entry["heard"];
+        println!(
+            "{:>10}  {} - {}  {}",
+            entry["played_at"].as_i64().unwrap_or_default(),
+            heard["artist"].as_str().unwrap_or("?"),
+            heard["title"].as_str().unwrap_or("?"),
+            entry["key"].as_str().unwrap_or_default(),
+        );
+    }
+    if let Some(next) = result["next"].as_str() {
+        println!("(more: --before {next})");
+    }
 }
 
 fn print_tasks(result: &Value) {
@@ -839,6 +1065,41 @@ mod tests {
 
         let here = std::env::current_dir().expect("a working directory");
         assert_eq!(add_arg("."), here.to_string_lossy());
+    }
+
+    #[test]
+    fn track_takes_one_key_and_a_comma_list_of_sections() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            track_params(&args(&["--include", "tags,stats", "/m/a.flac"])).unwrap(),
+            json!({ "key": "/m/a.flac", "include": ["tags", "stats"] })
+        );
+        assert_eq!(
+            track_params(&args(&["radio|http://127.0.0.1:8767/stream"])).unwrap(),
+            json!({ "key": "radio|http://127.0.0.1:8767/stream" })
+        );
+        assert!(track_params(&args(&[])).is_err());
+        assert!(track_params(&args(&["/m/a.flac", "/m/b.flac"])).is_err());
+    }
+
+    #[test]
+    fn history_reads_its_flags_and_an_optional_key() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(history_params(&args(&[])).unwrap(), json!({}));
+        assert_eq!(
+            history_params(&args(&[
+                "--limit",
+                "5",
+                "--before",
+                "1700000000:42",
+                "/m/a.flac"
+            ]))
+            .unwrap(),
+            json!({ "limit": 5, "before": "1700000000:42", "key": "/m/a.flac" })
+        );
+        assert!(history_params(&args(&["--limit", "many"])).is_err());
     }
 
     #[test]

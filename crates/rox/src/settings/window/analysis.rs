@@ -520,6 +520,23 @@ impl SettingsWindow {
                     );
                 }),
             ))
+            // The embed dialog on tempo alone: its survey and Embed button are the
+            // confirm step, so a measured tempo never reaches a file unasked.
+            .child(small_button(
+                rox_i18n::t!("settings-library-tempo-embed"),
+                icons::UPLOAD,
+                self.bpm_coverage.measured == 0 || busy,
+                cx.listener(|this, _, _, cx| {
+                    let library = this.library.clone();
+                    let now_art = this.now_art.clone();
+                    crate::bake_dialog::open(
+                        library,
+                        now_art,
+                        Some(rox_library::bake::Source::Tempo),
+                        cx,
+                    );
+                }),
+            ))
             .into_any_element()
     }
 

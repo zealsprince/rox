@@ -402,17 +402,67 @@ fn download(file: &Path, force: bool, resolve: impl FnOnce() -> Result<Option<St
     }
 }
 
-/// The overlay's text replaces the built-ins' wherever it has any; the
-/// numbers and every picture stay theirs.
-fn assemble(
-    mut info: ArtistInfo,
-    mut profile: ArtistProfile,
+/// What the store holds for an artist, read without asking anyone, for the
+/// control socket. The text is laid over the way [`get`] lays it, and the
+/// pictures are only counted, never decoded.
+pub struct StoredArtist {
+    pub info: ArtistInfo,
+    pub profile: ArtistProfile,
+    pub from_plugin: Option<String>,
+    /// A plugin's sheet supplied the text. Set even when the plugin gave no
+    /// link, which `from_plugin` alone wouldn't say.
+    pub plugin_text: bool,
+    /// Unix seconds; zero when only a plugin's sheet ever answered.
+    pub fetched: u64,
+    pub portrait: bool,
+    pub banner: bool,
+    pub background: bool,
+    pub fanarts: usize,
+}
+
+/// None when nothing was ever stored for the name, or the stored look was a
+/// miss. Blocking, file reads only.
+pub fn stored(name: &str) -> Option<StoredArtist> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let files = files_for(name);
+    let entry: Entry = serde_json::from_str(&fs::read_to_string(&files.info).ok()?).ok()?;
+    let mut profile = entry.profile.unwrap_or_default();
+    let mut info = match (entry.info, &entry.overlay) {
+        (Some(info), _) => info,
+        (None, Some(_)) => ArtistInfo {
+            name: name.to_string(),
+            ..ArtistInfo::default()
+        },
+        (None, None) => return None,
+    };
+    let plugin_text = entry.overlay.is_some();
+    let from_plugin = lay_over(&mut info, &mut profile, entry.overlay);
+
+    Some(StoredArtist {
+        info,
+        profile,
+        from_plugin,
+        plugin_text,
+        fetched: entry.fetched,
+        portrait: files.portrait.is_file(),
+        banner: files.banner.is_file(),
+        background: files.background.is_file(),
+        fanarts: files.fanarts.iter().filter(|file| file.is_file()).count(),
+    })
+}
+
+/// The byline describes the link, so it names the plugin only when the
+/// plugin supplied the link.
+fn lay_over(
+    info: &mut ArtistInfo,
+    profile: &mut ArtistProfile,
     overlay: Option<Overlay>,
-    files: &Files,
-) -> Artist {
-    // The byline describes the link, so it names the plugin only when the
-    // plugin supplied the link.
-    let from_plugin = overlay.and_then(|Overlay { from, sheet }| {
+) -> Option<String> {
+    overlay.and_then(|Overlay { from, sheet }| {
         // The wiki's links are byte ranges into the bio they came with.
         info.bio = sheet.bio;
         info.links = Some(Vec::new());
@@ -433,7 +483,18 @@ fn assemble(
         profile.ended = sheet.ended.or(profile.ended);
 
         linked.then_some(from)
-    });
+    })
+}
+
+/// The overlay's text replaces the built-ins' wherever it has any; the
+/// numbers and every picture stay theirs.
+fn assemble(
+    mut info: ArtistInfo,
+    mut profile: ArtistProfile,
+    overlay: Option<Overlay>,
+    files: &Files,
+) -> Artist {
+    let from_plugin = lay_over(&mut info, &mut profile, overlay);
 
     let banner = decode(&files.banner);
     let background = decode(&files.background);

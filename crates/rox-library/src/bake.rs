@@ -1,5 +1,5 @@
 //! Put what rox already holds about a track into its file: lyrics from the
-//! store or a sidecar, measured ReplayGain, acoustic vectors. The catch-up
+//! store or a sidecar, measured ReplayGain and tempo, acoustic vectors. The catch-up
 //! for a library described before its settings were turned to Tags. Nothing
 //! is computed here.
 //!
@@ -25,16 +25,23 @@ pub enum Source {
     Lyrics,
     Gain,
     Acoustic,
+    Tempo,
 }
 
 impl Source {
-    pub const ALL: [Source; 3] = [Source::Lyrics, Source::Gain, Source::Acoustic];
+    pub const ALL: [Source; 4] = [
+        Source::Lyrics,
+        Source::Gain,
+        Source::Acoustic,
+        Source::Tempo,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Source::Lyrics => "Lyrics",
             Source::Gain => "ReplayGain",
             Source::Acoustic => "Acoustic descriptions",
+            Source::Tempo => "Tempo",
         }
     }
 }
@@ -56,6 +63,8 @@ pub enum Value {
     Gain(ReplayGain),
     /// One model's vector, under that model's own key.
     Acoustic { model: String, vec: Vec<f32> },
+    /// A measured BPM, written as whole beats.
+    Tempo(f32),
 }
 
 impl Value {
@@ -64,6 +73,7 @@ impl Value {
             Value::Lyrics(_) => Source::Lyrics,
             Value::Gain(_) => Source::Gain,
             Value::Acoustic { .. } => Source::Acoustic,
+            Value::Tempo(_) => Source::Tempo,
         }
     }
 }
@@ -96,6 +106,7 @@ impl Candidate {
                 field: Field::Custom(embed_tag::key(model)),
                 value: Some(embed_tag::encode(vec)),
             }],
+            Value::Tempo(bpm) => vec![writer::tempo_change(*bpm)],
         }
     }
 }
@@ -200,6 +211,14 @@ pub fn candidates(
             },
         });
     }
+    for (path, sub, bpm) in crate::store::measured_bpm(conn)? {
+        let file = PathBuf::from(&path);
+        out.push(Candidate {
+            skip: refusal(&file, sub),
+            path: file,
+            value: Value::Tempo(bpm),
+        });
+    }
     Ok(out)
 }
 
@@ -219,6 +238,11 @@ pub fn examine(candidate: &mut Candidate) {
         // The value names model and width, so any hit is this model's.
         Value::Acoustic { model, vec } => {
             embed_tag::read(&candidate.path, model, vec.len()).is_some()
+        }
+        // Read rather than trusted: a tag that arrived since the last scan is the
+        // file's own number, and the estimate must not overwrite it.
+        Value::Tempo(_) => {
+            crate::scanner::read_one(&candidate.path).is_some_and(|row| row.bpm.is_some())
         }
     };
     if present {
@@ -419,6 +443,61 @@ mod tests {
         assert_eq!(items[0].path, fresh);
         apply(&items[0]).unwrap();
         assert!(embed_tag::read(&fresh, "builtin-v1", vec.len()).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_measured_tempo_lands_in_the_file_and_a_tagged_one_is_left_alone() {
+        let dir = scratch("bake-tempo");
+        let measured = mp3_file(&dir, "measured.mp3");
+        let tagged = flac_file(&dir, "tagged.flac");
+        let image = flac_file(&dir, "disc.flac");
+        let path_of = |p: &Path| p.display().to_string();
+
+        let mut conn = library(&[(&measured, 0), (&tagged, 0), (&image, 1)]);
+        crate::store::set_measured_bpm(
+            &mut conn,
+            &[
+                (path_of(&measured).as_str(), 0, 127.6),
+                (path_of(&tagged).as_str(), 0, 90.0),
+                (path_of(&image).as_str(), 1, 140.0),
+            ],
+        )
+        .unwrap();
+        // A tag the database hasn't seen yet: the file's number wins.
+        writer::commit(
+            &tagged,
+            &[Change {
+                field: Field::Unknown("BPM".into()),
+                value: Some("174".into()),
+            }],
+        )
+        .unwrap();
+
+        let mut found = candidates(&conn, "builtin-v1", None).unwrap();
+        for candidate in &mut found {
+            examine(candidate);
+        }
+        let skip_of = |p: &Path| found.iter().find(|c| c.path == p).unwrap().skip;
+        assert_eq!(skip_of(&measured), None);
+        assert_eq!(skip_of(&tagged), Some(Skip::Present));
+        assert_eq!(skip_of(&image), Some(Skip::Subsong));
+        assert_eq!(
+            counts(&found, Source::Tempo),
+            Counts {
+                writes: 1,
+                skipped: 2
+            }
+        );
+
+        let items = merge(&found, &[Source::Tempo]);
+        assert_eq!(items.len(), 1);
+        apply(&items[0]).unwrap();
+        assert_eq!(
+            crate::scanner::read_one(&measured).unwrap().bpm,
+            Some(128.0)
+        );
+        assert_eq!(crate::scanner::read_one(&tagged).unwrap().bpm, Some(174.0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

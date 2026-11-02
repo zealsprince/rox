@@ -540,6 +540,8 @@ mod tests {
             album: album.into(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 0,
             disc_no,
             track_no,

@@ -1,5 +1,5 @@
-//! The embed dialog: which of the three stored sources (lyrics, gain,
-//! acoustic) to write into the files, and what each would come to. The save
+//! The embed dialog: which of the stored sources (lyrics, gain, acoustic,
+//! tempo) to write into the files, and what each would come to. The save
 //! settings only apply to the next write, so this is the catch-up.
 //!
 //! The counts are real, from a survey that reads every candidate's tags, so
@@ -46,7 +46,14 @@ struct OpenBake(WindowHandle<Root>);
 
 impl Global for OpenBake {}
 
-pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut App) {
+/// `only` opens with that one source ticked, for a section that offers its
+/// own write. An already open dialog keeps its ticks.
+pub fn open(
+    library: Entity<Library>,
+    now_art: Entity<NowPlayingArt>,
+    only: Option<Source>,
+    cx: &mut App,
+) {
     if let Some(open) = cx.try_global::<OpenBake>() {
         let handle = open.0;
         if handle
@@ -68,7 +75,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
         rox_i18n::t!("bake-window-title"),
         bounds,
         Some(MIN),
-        move |window, cx| cx.new(|cx| BakeDialog::new(library, now_art, window, cx)),
+        move |window, cx| cx.new(|cx| BakeDialog::new(library, now_art, only, window, cx)),
     );
     cx.set_global(OpenBake(handle));
 }
@@ -79,7 +86,8 @@ pub struct BakeDialog {
     candidates: Vec<Candidate>,
     error: Option<SharedString>,
     /// In [`Source::ALL`] order.
-    picked: [bool; 3],
+    picked: [bool; Source::ALL.len()],
+    only: Option<Source>,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
     _backdrop_changed: Subscription,
@@ -89,6 +97,7 @@ impl BakeDialog {
     fn new(
         library: Entity<Library>,
         now_art: Entity<NowPlayingArt>,
+        only: Option<Source>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -110,7 +119,8 @@ impl BakeDialog {
             survey: None,
             candidates: Vec::new(),
             error: None,
-            picked: [false; 3],
+            picked: [false; Source::ALL.len()],
+            only,
             now_art,
             backdrop: WindowBackdrop::default(),
             _backdrop_changed,
@@ -153,14 +163,15 @@ impl BakeDialog {
         .detach();
     }
 
-    /// Every source with something to write starts ticked.
+    /// Every source with something to write starts ticked, or just `only`.
     fn settle(&mut self, found: Result<Vec<Candidate>, String>, cx: &mut Context<Self>) {
         self.survey = None;
         match found {
             Ok(found) => {
                 self.candidates = found;
                 for (at, source) in Source::ALL.into_iter().enumerate() {
-                    self.picked[at] = self.counts(source).writes > 0;
+                    self.picked[at] = self.counts(source).writes > 0
+                        && self.only.is_none_or(|only| only == source);
                 }
             }
             Err(e) => self.error = Some(e.into()),
@@ -249,6 +260,7 @@ impl BakeDialog {
                         Source::Lyrics => rox_i18n::t!("bake-source-lyrics"),
                         Source::Gain => rox_i18n::t!("bake-source-gain"),
                         Source::Acoustic => rox_i18n::t!("bake-source-acoustic"),
+                        Source::Tempo => rox_i18n::t!("bake-source-tempo"),
                     }),
             )
             .child(

@@ -496,7 +496,7 @@ impl SettingsWindow {
             cx.listener(|this, _, _, cx| {
                 let library = this.library.clone();
                 let now_art = this.now_art.clone();
-                crate::bake_dialog::open(library, now_art, cx);
+                crate::bake_dialog::open(library, now_art, None, cx);
             }),
         )
         .into_any_element();
@@ -515,6 +515,8 @@ impl SettingsWindow {
                         "lyrics",
                         "replaygain",
                         "acoustic",
+                        "tempo",
+                        "bpm",
                         "portable",
                     ],
                     div(),

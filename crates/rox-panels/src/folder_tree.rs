@@ -25,7 +25,7 @@ use rox_core::fmt::fmt_ms;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
 use rox_library::folders::{Node, build_roots, node_at, sum_counts};
-use rox_library::projection::FilterField;
+use rox_library::projection::{FilterField, Projection};
 use rox_library::sort::natural_cmp;
 use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 use serde::{Deserialize, Serialize};
@@ -81,6 +81,16 @@ pub enum FilterEffect {
     Hide,
 }
 
+/// How the songs inside a folder sort, and so the order they play in.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SongOrder {
+    /// Album artist, album, disc, then track number.
+    #[default]
+    Track,
+    Filename,
+}
+
 /// The folder tree panel's per-view config. The folder scope is app state
 /// and isn't saved here.
 #[derive(Clone, Serialize, Deserialize)]
@@ -95,6 +105,7 @@ pub struct FolderTreeConfig {
     pub folders: FilterEffect,
     /// What happens to non-matching songs inside a folder that's shown.
     pub songs: FilterEffect,
+    pub song_order: SongOrder,
     pub follow_playing: bool,
     /// Scroll back to the playing track after browsing stops.
     pub resume_playing: bool,
@@ -123,6 +134,7 @@ impl Default for FolderTreeConfig {
             // a folder still shows its whole contents.
             folders: FilterEffect::Hide,
             songs: FilterEffect::Dim,
+            song_order: SongOrder::default(),
             follow_playing: false,
             resume_playing: false,
             smooth_follow: false,
@@ -211,6 +223,22 @@ struct SongRow {
     id: i64,
     title: SharedString,
     key: Option<TrackKey>,
+    order: OrderKey,
+}
+
+/// The library's canonical album order, with unnumbered songs after the
+/// numbered ones on their disc instead of ahead of track 1.
+type OrderKey = (u32, u32, u16, bool, u16);
+
+fn order_key(projection: &Projection, row: u32) -> OrderKey {
+    let (album_artist, album, disc, track) = projection.canonical_key(row as usize);
+    (album_artist, album, disc, track == 0, track)
+}
+
+/// Reorder grouped files by track number, a CUE image by its first subsong.
+/// Stable, so ties keep the filename order `group_songs` left them in.
+fn sort_by_track(groups: &mut [SongGroup]) {
+    groups.sort_by_key(|group| group.songs.first().map(|song| song.order));
 }
 
 /// One file entry in a folder: a plain file with one song, or a CUE image
@@ -264,6 +292,15 @@ fn group_songs(songs: Vec<SongRow>) -> Vec<SongGroup> {
         .collect();
     groups.sort_by(|(a, _), (b, _)| natural_cmp(a, b));
     groups.into_iter().map(|(_, group)| group).collect()
+}
+
+/// A folder's projection rows in the order its file entries list them, what
+/// `play_track` queues.
+fn play_order(groups: &[SongGroup]) -> Vec<u32> {
+    groups
+        .iter()
+        .flat_map(|group| group.songs.iter().map(|song| song.row))
+        .collect()
 }
 
 /// Open the CUE image that owns `key`, if `key` is a subsong.
@@ -517,6 +554,7 @@ impl FolderTreePanel {
     fn recount(&mut self, cx: &mut Context<Self>) {
         {
             let song_hide = self.config.songs == FilterEffect::Hide;
+            let by_track = self.config.song_order == SongOrder::Track;
             let (text, facet) = (self.effective_query(cx), self.effective_filter(cx));
             let library = self.state.library.read(cx);
             self.folder_tracks.clear();
@@ -560,7 +598,7 @@ impl FolderTreePanel {
                     }
                 }
                 let mut counts: HashMap<&str, (u32, u32)> = HashMap::with_capacity(nsym);
-                for (sym, list) in listed.into_iter().enumerate() {
+                for (sym, mut list) in listed.into_iter().enumerate() {
                     // Bare-filename tracks intern to the empty folder and never get a node.
                     if total_sym[sym] == 0 || projection.folders.strings[sym].is_empty() {
                         continue;
@@ -568,6 +606,11 @@ impl FolderTreePanel {
                     let path = &projection.folders.strings[sym];
                     counts.insert(path, (total_sym[sym], matched_sym[sym]));
                     if !list.is_empty() {
+                        // Collapsed folders skip flatten's grouping, and a folder play still
+                        // queues them. Stable, so ties keep scan order.
+                        if by_track {
+                            list.sort_by_key(|&row| order_key(projection, row));
+                        }
                         self.folder_tracks.insert(path.clone(), list);
                     }
                 }
@@ -634,7 +677,7 @@ impl FolderTreePanel {
             }
         }
         // Collected first: `key_for` below needs `&mut self`.
-        let songs: Vec<(String, u32, i64, SharedString)> = {
+        let songs: Vec<(String, u32, i64, SharedString, OrderKey)> = {
             let library = self.state.library.read(cx);
             match library.projection() {
                 Some(projection) => self
@@ -648,6 +691,7 @@ impl FolderTreePanel {
                             row,
                             projection.db_id[row as usize],
                             SharedString::from(projection.title.get(row as usize).to_string()),
+                            order_key(projection, row),
                         )
                     })
                     .collect(),
@@ -655,29 +699,32 @@ impl FolderTreePanel {
             }
         };
         let mut by_folder: HashMap<String, Vec<SongRow>> = HashMap::new();
-        for (folder, row, id, title) in songs {
+        for (folder, row, id, title, order) in songs {
             let key = self.key_for(id, cx);
             by_folder.entry(folder).or_default().push(SongRow {
                 row,
                 id,
                 title,
                 key,
+                order,
             });
         }
+        let by_track = self.config.song_order == SongOrder::Track;
         let groups: HashMap<_, _> = by_folder
             .into_iter()
-            .map(|(folder, songs)| (folder, group_songs(songs)))
+            .map(|(folder, songs)| {
+                let mut groups = group_songs(songs);
+                if by_track {
+                    sort_by_track(&mut groups);
+                }
+                (folder, groups)
+            })
             .collect();
         // Play order follows the grouped order, so `pos` lines up, collapsed
         // images' children included.
         for (folder, groups) in &groups {
-            self.folder_tracks.insert(
-                folder.clone(),
-                groups
-                    .iter()
-                    .flat_map(|group| group.songs.iter().map(|song| song.row))
-                    .collect(),
-            );
+            self.folder_tracks
+                .insert(folder.clone(), play_order(groups));
         }
         let mut walk = Walk {
             expanded: &self.expanded,
@@ -1770,6 +1817,25 @@ impl PanelSettings for FolderTreePanel {
                     cx,
                 ),
             )
+            .keyed(
+                "folder-tree-song-order",
+                &["sort", "order", "track", "number", "file", "name", "album"],
+                panel::choices_shared(
+                    &[
+                        (
+                            rox_i18n::t!("folder-tree-song-order-track"),
+                            SongOrder::Track,
+                        ),
+                        (
+                            rox_i18n::t!("folder-tree-song-order-filename"),
+                            SongOrder::Filename,
+                        ),
+                    ],
+                    self.config.song_order,
+                    |this: &mut Self, order, cx| this.set_song_order(order, cx),
+                    cx,
+                ),
+            )
             // Its description is the folder-tree variant, not `library-stripes.description`.
             .row(
                 rox_i18n::t!("library-stripes"),
@@ -1901,6 +1967,14 @@ impl FolderTreePanel {
             return;
         }
         self.config.songs = effect;
+        self.recount(cx);
+    }
+
+    fn set_song_order(&mut self, order: SongOrder, cx: &mut Context<Self>) {
+        if self.config.song_order == order {
+            return;
+        }
+        self.config.song_order = order;
         self.recount(cx);
     }
 }
@@ -2127,6 +2201,34 @@ impl Panel for FolderTreePanel {
         });
         let menu = menu.item(PopupMenuItem::submenu(
             rox_i18n::t!("folder-tree-cover-art"),
+            submenu,
+        ));
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            submenu = submenu.check_side(Side::Right);
+            for (label, order) in [
+                (
+                    rox_i18n::t!("folder-tree-song-order-track"),
+                    SongOrder::Track,
+                ),
+                (
+                    rox_i18n::t!("folder-tree-song-order-filename"),
+                    SongOrder::Filename,
+                ),
+            ] {
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    move |this: &Self| this.config.song_order == order,
+                    move |this, cx| this.set_song_order(order, cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("folder-tree-song-order"),
             submenu,
         ));
         let panel = cx.entity();
@@ -2497,6 +2599,7 @@ mod tests {
                 path: path.into(),
                 sub,
             }),
+            order: OrderKey::default(),
         }
     }
 
@@ -2686,6 +2789,116 @@ mod tests {
         assert!(!restored.stripes);
     }
 
+    fn tagged(row: u32, path: &str, disc: u16, track: u16) -> SongRow {
+        SongRow {
+            order: (0, 0, disc, track == 0, track),
+            ..song(row, path, 0, path)
+        }
+    }
+
+    fn by_track(songs: Vec<SongRow>) -> Vec<SongGroup> {
+        let mut groups = group_songs(songs);
+        sort_by_track(&mut groups);
+        groups
+    }
+
+    #[test]
+    fn track_order_runs_disc_then_track_whatever_the_filenames() {
+        let groups = by_track(vec![
+            tagged(0, "Alpha.flac", 2, 1),
+            tagged(1, "Bravo.flac", 1, 2),
+            tagged(2, "Charlie.flac", 1, 10),
+            tagged(3, "Delta.flac", 1, 1),
+            tagged(4, "Echo.flac", 2, 2),
+        ]);
+        let out = rows(&groups, &[], &[]);
+        assert_eq!(
+            labels(&out),
+            [
+                "Delta.flac",
+                "Bravo.flac",
+                "Charlie.flac",
+                "Alpha.flac",
+                "Echo.flac"
+            ]
+        );
+
+        // What a click queues lines up with what the tree shows.
+        assert_eq!(play_order(&groups), [3, 1, 2, 0, 4]);
+        let positions: Vec<usize> = out
+            .iter()
+            .map(|row| match row.kind {
+                RowKind::Track { pos, .. } => pos,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(positions, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn unnumbered_songs_follow_the_numbered_ones_on_their_disc() {
+        let groups = by_track(vec![
+            tagged(0, "Bonus.flac", 1, 0),
+            tagged(1, "Second.flac", 1, 2),
+            tagged(2, "First.flac", 1, 1),
+            tagged(3, "Next disc.flac", 2, 1),
+        ]);
+        assert_eq!(play_order(&groups), [2, 1, 0, 3]);
+    }
+
+    #[test]
+    fn equal_track_keys_fall_back_to_filename_order() {
+        let groups = by_track(vec![
+            tagged(0, "track10.flac", 0, 0),
+            tagged(1, "Track2.flac", 0, 0),
+            tagged(2, "track1.flac", 0, 0),
+            tagged(3, "dup b.flac", 1, 5),
+            tagged(4, "dup a.flac", 1, 5),
+        ]);
+        let out = rows(&groups, &[], &[]);
+        assert_eq!(
+            labels(&out),
+            [
+                "track1.flac",
+                "Track2.flac",
+                "track10.flac",
+                "dup a.flac",
+                "dup b.flac"
+            ]
+        );
+    }
+
+    #[test]
+    fn cue_image_sorts_by_its_first_subsong() {
+        let mut image = vec![
+            song(0, "image.flac", 2, "Two"),
+            song(1, "image.flac", 1, "One"),
+        ];
+        image[0].order = (0, 0, 1, false, 2);
+        image[1].order = (0, 0, 1, false, 1);
+        let mut songs = vec![tagged(2, "aaa.flac", 1, 3)];
+        songs.extend(image);
+
+        let groups = by_track(songs);
+        assert_eq!(play_order(&groups), [1, 0, 2]);
+    }
+
+    #[test]
+    fn song_order_defaults_to_track_and_survives_old_layouts() {
+        assert!(FolderTreeConfig::default().song_order == SongOrder::Track);
+        let old: FolderTreeConfig = serde_json::from_str(r#"{"stripes":false}"#).unwrap();
+        assert!(old.song_order == SongOrder::Track);
+
+        let config = FolderTreeConfig {
+            song_order: SongOrder::Filename,
+            ..FolderTreeConfig::default()
+        };
+        let saved = serde_json::to_string(&config).unwrap();
+        assert!(saved.contains(r#""song_order":"filename""#));
+        let restored: FolderTreeConfig = serde_json::from_str(&saved).unwrap();
+        assert!(restored.song_order == SongOrder::Filename);
+    }
+
     #[test]
     fn builtin_presets_round_trip_through_the_dump() {
         let presets = builtin_presets();
@@ -2702,6 +2915,7 @@ mod tests {
             assert_eq!(back.stripes, config.stripes, "{key}");
             assert!(back.folders == config.folders, "{key}");
             assert!(back.songs == config.songs, "{key}");
+            assert!(back.song_order == config.song_order, "{key}");
             assert_eq!(back.search, config.search, "{key}");
             assert_eq!(back.follow_playing, config.follow_playing, "{key}");
             assert_eq!(back.resume_playing, config.resume_playing, "{key}");

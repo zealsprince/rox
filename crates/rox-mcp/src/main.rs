@@ -130,13 +130,18 @@ fn base_tools() -> Value {
     json!([
         {
             "name": "now_playing",
-            "description": "What rox is playing right now: the track's tags, where its \
-                            clock sits, and whether audio is moving. On a radio station \
+            "description": "What rox is playing right now: the track's stored row (the \
+                            shape track_info gives, with a station's announced song \
+                            over its tags), where its clock sits, and whether audio is \
+                            moving. On a radio station \
                             live is true and there is no position to speak of: the clock \
                             counts the listen, and shift says where the playhead sits \
                             against the broadcast (behind_secs from the live edge, \
                             window_secs of buffer taped so far, cap_secs the buffer's \
-                            size). shift is null for a file.",
+                            size). shift is null for a file. track.bpm is the \
+                            tempo and track.bpm_source says whose number it is: tag when \
+                            the file carries one, analyzed when rox worked it out. \
+                            Both are null when neither has a tempo.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {
@@ -178,11 +183,12 @@ fn base_tools() -> Value {
                             album artist, album, and genre; a field: prefix narrows to \
                             one, as in artist:name or year:1990. Fields: title, artist, \
                             albumartist, album, genre, year, folder, codec, rating, \
-                            plays, added. Each hit carries a key field, the string \
-                            add_to_queue takes to queue that exact track. Radio \
-                            stations match by name and come last, with source set to \
-                            radio, no artist or album, and duration_ms 0, since a \
-                            stream has no length.",
+                            plays, added. Each hit is the stored row track_info \
+                            gives, and its key field is the string add_to_queue and \
+                            track_info take for that exact track. Radio stations \
+                            match by name and come last, with source set to radio, \
+                            and a null artist, album, and duration_ms, since a stream \
+                            has no length.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -195,7 +201,8 @@ fn base_tools() -> Value {
         {
             "name": "get_queue",
             "description": "The play order: every queued entry with its stable id, \
-                            path, and whether it is the one playing.",
+                            path, whether it is the one playing, and its stored row \
+                            under track, as track_info gives it.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {
@@ -219,6 +226,62 @@ fn base_tools() -> Value {
                     "mode": { "type": "string", "enum": ["end", "next", "now"] },
                 },
                 "required": ["items"],
+            },
+        },
+        {
+            "name": "track_info",
+            "description": format!(
+                "Everything rox has stored about one track, by the key field \
+                 search_library, get_queue, now_playing, and listening_history \
+                 hand out. The track block is the stored row: tags, format, \
+                 rating, plays, ReplayGain, tempo (bpm with bpm_source tag or \
+                 analyzed), and a cue track's start_ms and end_ms; a field with \
+                 no value is null. include adds sections, each null with a \
+                 line under reasons when it can't be answered: tags is every \
+                 tag in the file, read now; lyrics is the sheet rox holds, with \
+                 line or word timing; acoustic says whether the track has an \
+                 acoustic description and lists its nearest neighbours as keys \
+                 with a distance (0 is identical, limit sets how many); \
+                 enrichment is the stored artist biography, release facts, sort \
+                 names, and genre aliases; stats is the play count and when it \
+                 last played. Nothing is fetched from the internet. An artist \
+                 entry with plugin_text true carries a plugin's biography. \
+                 {PLUGIN_TEXT}"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "include": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["tags", "lyrics", "acoustic", "enrichment", "stats"],
+                        },
+                    },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                },
+                "required": ["key"],
+            },
+        },
+        {
+            "name": "listening_history",
+            "description": "What was played, newest first: each listen's played_at \
+                            in unix seconds, the track's key, heard (the title, \
+                            artist, and album as they were when it played, which on \
+                            a radio station is the song that was on), and the \
+                            stored row as track_info gives it, null once the track \
+                            has left the library. key narrows to one track. A \
+                            non-null next is the before that fetches the page after; \
+                            before also takes a unix timestamp for everything \
+                            earlier than it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
+                    "before": { "type": ["string", "integer"] },
+                },
             },
         },
         {
@@ -557,6 +620,14 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
             }
             ("queue.add", params)
         }
+        "track_info" => match track_info_params(&args) {
+            Ok(params) => ("library.track", params),
+            Err(reason) => return refusal(&reason),
+        },
+        "listening_history" => match history_params(&args) {
+            Ok(params) => ("library.history", params),
+            Err(reason) => return refusal(&reason),
+        },
         "rescan_library" => ("library.rescan", json!({})),
         "get_tasks" => ("tasks.status", json!({})),
         "start_task" => ("tasks.start", args),
@@ -582,9 +653,79 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
             {
                 tasks.remove("plugin_jobs");
             }
+            if name == "track_info" && !reply.plugins {
+                hold_back_plugin_bios(&mut reply.result);
+            }
             text(&reply.result)
         }
         Err(reason) => refusal(&reason),
+    }
+}
+
+/// The tool's arguments as `library.track` takes them. The include names
+/// are checked here too, so a typo comes back before rox is asked.
+fn track_info_params(args: &Value) -> Result<Value, String> {
+    const INCLUDES: [&str; 5] = ["tags", "lyrics", "acoustic", "enrichment", "stats"];
+
+    let Some(key) = args.get("key").and_then(Value::as_str) else {
+        return Err("track_info takes a key, as search_library prints one".into());
+    };
+    let mut params = json!({ "key": key });
+
+    if let Some(include) = args.get("include").filter(|v| !v.is_null()) {
+        let names = include
+            .as_array()
+            .ok_or("include is a list of section names")?;
+        for name in names {
+            if !name.as_str().is_some_and(|name| INCLUDES.contains(&name)) {
+                return Err(format!(
+                    "unknown include {name}; the sections are {}",
+                    INCLUDES.join(", ")
+                ));
+            }
+        }
+        params["include"] = include.clone();
+    }
+    if let Some(limit) = args.get("limit").and_then(Value::as_u64) {
+        params["limit"] = json!(limit);
+    }
+    Ok(params)
+}
+
+fn history_params(args: &Value) -> Result<Value, String> {
+    let mut params = json!({});
+
+    if let Some(key) = args.get("key").filter(|v| !v.is_null()) {
+        let key = key.as_str().ok_or("key is a track key string")?;
+        params["key"] = json!(key);
+    }
+    if let Some(limit) = args.get("limit").and_then(Value::as_u64) {
+        params["limit"] = json!(limit);
+    }
+    match args.get("before") {
+        None | Some(Value::Null) => {}
+        Some(before @ (Value::String(_) | Value::Number(_))) => params["before"] = before.clone(),
+        Some(_) => return Err("before is a next cursor or a unix timestamp".into()),
+    }
+    Ok(params)
+}
+
+/// A plugin's biography is plugin text, held back with the plugins switch
+/// off like every other plugin answer. The numbers and pictures stay.
+fn hold_back_plugin_bios(result: &mut Value) {
+    let Some(enrichment) = result.get_mut("enrichment") else {
+        return;
+    };
+
+    for slot in ["artist", "album_artist"] {
+        let artist = &mut enrichment[slot];
+        if artist["plugin_text"].as_bool() != Some(true) {
+            continue;
+        }
+
+        for field in ["bio", "url", "tags", "similar", "from_plugin"] {
+            artist[field] = Value::Null;
+        }
     }
 }
 
@@ -669,4 +810,95 @@ fn refusal(reason: &str) -> Value {
         "isError": true,
         "content": [{ "type": "text", "text": reason }],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_info_passes_the_key_and_checks_the_includes() {
+        assert_eq!(
+            track_info_params(&json!({ "key": "/m/a.flac" })).unwrap(),
+            json!({ "key": "/m/a.flac" })
+        );
+        assert_eq!(
+            track_info_params(&json!({
+                "key": "radio|https://host/jazz",
+                "include": ["lyrics", "stats"],
+                "limit": 5,
+            }))
+            .unwrap(),
+            json!({
+                "key": "radio|https://host/jazz",
+                "include": ["lyrics", "stats"],
+                "limit": 5,
+            })
+        );
+
+        assert!(track_info_params(&json!({})).is_err());
+        let err = track_info_params(&json!({ "key": "k", "include": ["waveform"] })).unwrap_err();
+        assert!(
+            err.contains("waveform") && err.contains("enrichment"),
+            "{err}"
+        );
+        assert!(track_info_params(&json!({ "key": "k", "include": "tags" })).is_err());
+    }
+
+    #[test]
+    fn history_takes_a_cursor_or_a_timestamp_for_before() {
+        assert_eq!(history_params(&json!({})).unwrap(), json!({}));
+        assert_eq!(
+            history_params(&json!({ "key": "/m/a.flac", "limit": 20, "before": "1700000000:42" }))
+                .unwrap(),
+            json!({ "key": "/m/a.flac", "limit": 20, "before": "1700000000:42" })
+        );
+        assert_eq!(
+            history_params(&json!({ "before": 1700000000 })).unwrap(),
+            json!({ "before": 1700000000 })
+        );
+        assert!(history_params(&json!({ "before": [1] })).is_err());
+        assert!(history_params(&json!({ "key": 3 })).is_err());
+    }
+
+    #[test]
+    fn a_plugin_biography_is_held_back_and_the_rest_stays() {
+        let mut result = json!({
+            "track": { "title": "Joga" },
+            "enrichment": {
+                "artist": {
+                    "bio": "from a plugin",
+                    "url": "https://example.com",
+                    "tags": ["art pop"],
+                    "similar": [],
+                    "from_plugin": "Example",
+                    "plugin_text": true,
+                    "listeners": 10,
+                },
+                "album_artist": { "bio": "built in", "plugin_text": false },
+            },
+        });
+
+        hold_back_plugin_bios(&mut result);
+        let artist = &result["enrichment"]["artist"];
+        assert!(artist["bio"].is_null() && artist["from_plugin"].is_null());
+        assert_eq!(artist["listeners"], json!(10));
+        assert_eq!(
+            result["enrichment"]["album_artist"]["bio"],
+            json!("built in")
+        );
+    }
+
+    #[test]
+    fn every_track_tool_is_listed() {
+        let tools = base_tools();
+        let names: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(names.contains(&"track_info"));
+        assert!(names.contains(&"listening_history"));
+    }
 }

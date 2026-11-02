@@ -3,8 +3,9 @@
 //! [`rox_library::store`]; this module is the app-global bookkeeping around
 //! a running pass, the same shape as [`crate::replaygain_job`].
 //!
-//! Tempos only go to the database, never the files: that would rewrite audio
-//! files to record an estimate, and a cue subsong has no file of its own.
+//! A pass only writes the database: rewriting audio files to record an
+//! estimate is the user's call, made through the embed dialog
+//! ([`crate::bake_dialog`]), and a cue subsong has no file of its own.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

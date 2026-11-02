@@ -441,6 +441,8 @@ pub struct Builder {
     album: Vec<u32>,
     genre: Vec<u32>,
     year: Vec<u16>,
+    month: Vec<u8>,
+    day: Vec<u8>,
     disc_no: Vec<u16>,
     track_no: Vec<u16>,
     duration_ms: Vec<u32>,
@@ -563,6 +565,8 @@ impl Builder {
             .push(self.albums.intern(row.album, row.album_sort));
         self.genre.push(self.genres.intern(row.genre, ""));
         self.year.push(row.year);
+        self.month.push(row.month);
+        self.day.push(row.day);
         self.disc_no.push(row.disc_no);
         self.track_no.push(row.track_no);
         self.duration_ms.push(row.duration_ms);
@@ -749,6 +753,10 @@ pub struct Projection {
     pub album: Vec<u32>,
     pub genre: Vec<u32>,
     pub year: Vec<u16>,
+    /// The date tag past the year, 0 where it stops there. Two bytes a row
+    /// against interning the strings; nothing sorts or filters on them.
+    pub month: Vec<u8>,
+    pub day: Vec<u8>,
     pub disc_no: Vec<u16>,
     pub track_no: Vec<u16>,
     pub duration_ms: Vec<u32>,
@@ -907,6 +915,8 @@ pub struct RowView<'a> {
     pub album_sort: &'a str,
     pub genre: &'a str,
     pub year: u16,
+    pub month: u8,
+    pub day: u8,
     pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,
@@ -1829,6 +1839,8 @@ impl Projection {
         out.album.reserve(total);
         out.genre.reserve(total);
         out.year.reserve(total);
+        out.month.reserve(total);
+        out.day.reserve(total);
         out.disc_no.reserve(total);
         out.track_no.reserve(total);
         out.duration_ms.reserve(total);
@@ -1882,6 +1894,8 @@ impl Projection {
             out.genre
                 .extend(shard.genre.iter().map(|&s| map_g[s as usize]));
             out.year.extend_from_slice(&shard.year);
+            out.month.extend_from_slice(&shard.month);
+            out.day.extend_from_slice(&shard.day);
             out.disc_no.extend_from_slice(&shard.disc_no);
             out.track_no.extend_from_slice(&shard.track_no);
             out.duration_ms.extend_from_slice(&shard.duration_ms);
@@ -1944,6 +1958,8 @@ impl Projection {
             album: out.album,
             genre: out.genre,
             year: out.year,
+            month: out.month,
+            day: out.day,
             disc_no: out.disc_no,
             track_no: out.track_no,
             duration_ms: out.duration_ms,
@@ -2004,6 +2020,8 @@ impl Projection {
             album_sort: self.albums.sort_name(self.album[i] as usize),
             genre: &self.genres.strings[self.genre[i] as usize],
             year: self.year[i],
+            month: self.month[i],
+            day: self.day[i],
             disc_no: self.disc_no[i],
             track_no: self.track_no[i],
             duration_ms: self.duration_ms[i],
@@ -2866,6 +2884,17 @@ impl Projection {
         idx
     }
 
+    /// One row's [`Projection::sort_canonical`] key, for callers ordering a
+    /// handful of rows themselves.
+    pub fn canonical_key(&self, row: usize) -> (u32, u32, u16, u16) {
+        (
+            self.album_artist_ranks()[self.album_artist[row] as usize],
+            self.album_ranks()[self.album[row] as usize],
+            self.disc_no[row],
+            self.track_no[row],
+        )
+    }
+
     pub fn sort_title(&self) -> Vec<u32> {
         let mut idx = self.browse_rows();
         idx.par_sort_unstable_by(|&a, &b| {
@@ -3125,6 +3154,8 @@ impl Projection {
             self.album.push(map_b[shard.album[i] as usize]);
             self.genre.push(map_g[shard.genre[i] as usize]);
             self.year.push(shard.year[i]);
+            self.month.push(shard.month[i]);
+            self.day.push(shard.day[i]);
             self.disc_no.push(shard.disc_no[i]);
             self.track_no.push(shard.track_no[i]);
             self.duration_ms.push(shard.duration_ms[i]);
@@ -3311,6 +3342,8 @@ impl Projection {
                 * 2
             + (self.duration_ms.capacity() + self.sample_rate_hz.capacity()) * 4
             + self.rating.capacity()
+            + self.month.capacity()
+            + self.day.capacity()
             + self.bit_depth.capacity()
             + self.plays.capacity() * 4
             + self.artists.heap_bytes()
@@ -3352,6 +3385,8 @@ mod tests {
             album: album.into(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year: 0,
             disc_no,
             track_no,
@@ -3385,6 +3420,8 @@ mod tests {
             album: String::new(),
             genre: String::new(),
             comment: String::new(),
+            month: 0,
+            day: 0,
             year,
             disc_no: 0,
             track_no: 0,
@@ -4314,6 +4351,32 @@ mod tests {
     }
 
     #[test]
+    fn canonical_key_orders_rows_like_the_canonical_sort() {
+        let numbered = |path: &str, album: &str, disc: u16, track_no: u16| {
+            let mut row = track(path, path, "Artist", 2000);
+            row.album_artist = "Artist".into();
+            row.album = album.into();
+            row.disc_no = disc;
+            row.track_no = track_no;
+            row
+        };
+        let (_db, conn) = sorted_library(
+            "canonical-key",
+            &[
+                numbered("/m/b2-1.flac", "B", 2, 1),
+                numbered("/m/a1-2.flac", "A", 1, 2),
+                numbered("/m/b1-3.flac", "B", 1, 3),
+                numbered("/m/a1-1.flac", "A", 1, 1),
+            ],
+        );
+        let p = Projection::load_serial(&conn, false).unwrap();
+
+        let mut rows: Vec<u32> = (0..p.len() as u32).collect();
+        rows.sort_by_key(|&row| p.canonical_key(row as usize));
+        assert_eq!(rows, p.sort_canonical());
+    }
+
+    #[test]
     fn search_folds_accents_off_the_names_and_the_titles() {
         let mut lead = track("/m/1.mp3", "Déjà Vu", "Beyoncé", 2006);
         lead.album_artist = "Beyoncé".into();
@@ -4938,6 +5001,8 @@ mod tests {
                 album: album.into(),
                 genre: String::new(),
                 comment: String::new(),
+                month: 0,
+                day: 0,
                 year: 0,
                 disc_no: 0,
                 track_no: 0,
@@ -5249,6 +5314,8 @@ mod tests {
                 album: album.into(),
                 genre: String::new(),
                 comment: String::new(),
+                month: 0,
+                day: 0,
                 year: 0,
                 disc_no: 0,
                 track_no: 0,
@@ -5344,6 +5411,8 @@ mod tests {
                 album: album.into(),
                 genre: String::new(),
                 comment: String::new(),
+                month: 0,
+                day: 0,
                 year: 0,
                 disc_no: 0,
                 track_no: 0,

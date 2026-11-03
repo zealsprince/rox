@@ -2527,8 +2527,6 @@ impl PanelSettings for PlaylistsPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<Section> {
-        let headings = self.config.headers != Headers::Off;
-
         let rows = Section::new(
             q,
             icons::ROWS_3,
@@ -2537,13 +2535,12 @@ impl PanelSettings for PlaylistsPanel {
             |rows| self.rows_rows(rows, cx),
         );
 
-        // The heading look only matters while headings show.
         let headers = Section::new(
             q,
             icons::PANEL_TOP,
             rox_i18n::t!("library-headers"),
             None,
-            |rows| rows.when(headings, |rows| self.headings_rows(rows, cx)),
+            |rows| self.headings_rows(rows, cx),
         );
 
         let art = Section::new(

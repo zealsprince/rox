@@ -1309,14 +1309,26 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
                 .map(|(_, v)| v.display()),
             named => read_named(&generic, named),
         };
-        if read_back != change.value {
+        let expected = match change.field {
+            Field::TrackNo | Field::DiscNo => change.value.as_deref().map(number_form),
+            _ => change.value.clone(),
+        };
+        if read_back != expected {
             return Err(format!(
                 "verify: {:?} read back {:?}, expected {:?}",
-                change.field, read_back, change.value
+                change.field, read_back, expected
             ));
         }
     }
     Ok(())
+}
+
+/// lofty stores a track or disc number that parses as an integer as that
+/// integer, on every format, so "01" reads back "1". Same parse it runs.
+fn number_form(value: &str) -> String {
+    value
+        .parse::<u32>()
+        .map_or_else(|_| value.to_string(), |n| n.to_string())
 }
 
 /// Checks both lyrics keys: MP4's `©lyr` reads back as plain `Lyrics`.
@@ -2023,6 +2035,24 @@ mod tests {
         );
         let audio: Vec<u8> = (0..600u32).map(|i| (i * 11 % 253) as u8).collect();
         assert!(fs::read(&path).unwrap().ends_with(&audio));
+    }
+
+    /// Filename guessing captures "01" off `01 - Artist - Title.mp3`.
+    #[test]
+    fn zero_padded_numbers_verify_as_their_integer() {
+        let dir = scratch("zero-padded");
+        let files = [
+            mp3_file(&dir, "track.mp3"),
+            flac_file(&dir, "track.flac"),
+            m4a_file(&dir, "track.m4a"),
+        ];
+        for path in &files {
+            commit(path, &[set(Field::TrackNo, "01"), set(Field::DiscNo, "02")])
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let fields = read(path).unwrap();
+            assert_eq!(value_of(&fields, &Field::TrackNo).as_deref(), Some("1"));
+            assert_eq!(value_of(&fields, &Field::DiscNo).as_deref(), Some("2"));
+        }
     }
 
     /// One `ItemKey` routes differently on ID3v2 and Vorbis, and a missing read

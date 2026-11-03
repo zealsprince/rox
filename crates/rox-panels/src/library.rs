@@ -4013,17 +4013,15 @@ impl panel::PanelSettings for LibraryPanel {
         );
 
         let group_results = Section::bare(q, |rows| {
-            rows.when(self.headers != Headers::Off, |rows| {
-                rows.keyed(
-                    "library-group-search-results",
-                    &["search", "headers", "grouping"],
-                    panel::toggle(
-                        self.group_search_results,
-                        |this: &mut Self, on, cx| this.set_group_search_results(on, cx),
-                        cx,
-                    ),
-                )
-            })
+            rows.keyed(
+                "library-group-search-results",
+                &["search", "headers", "grouping"],
+                panel::toggle(
+                    self.group_search_results,
+                    |this: &mut Self, on, cx| this.set_group_search_results(on, cx),
+                    cx,
+                ),
+            )
         });
 
         let tracking = Section::new(
@@ -4206,70 +4204,68 @@ impl panel::PanelSettings for LibraryPanel {
             rox_i18n::t!("library-headers"),
             None,
             |rows| {
-                rows.when(self.headers != Headers::Off, |rows| {
-                    rows.keyed(
-                        "library-line-height",
-                        &["header", "size", "tall"],
-                        settings_ui::scalar(
-                            &self.head_scrub,
-                            &self.value_edit,
-                            self.head_height,
-                            settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
-                            Self::set_head_height,
-                            cx,
-                        ),
-                    )
-                    .keyed(
-                        "library-text-size",
-                        &["header", "font", "size"],
-                        settings_ui::scalar(
-                            &self.head_text_scrub,
-                            &self.value_edit,
-                            self.head_text,
-                            settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
-                            Self::set_head_text,
-                            cx,
-                        ),
-                    )
-                    .keyed(
-                        "library-flush-background",
-                        &["header", "fill", "background"],
-                        panel::toggle(
-                            self.header_flush,
-                            |this: &mut Self, on, cx| {
-                                this.header_flush = on;
-                                this.table
-                                    .update(cx, |table, _| table.delegate_mut().header_flush = on);
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    )
-                    .keyed(
-                        "library-gap-above",
-                        &["header", "spacing", "margin"],
-                        settings_ui::scalar(
-                            &self.header_gap_above_scrub,
-                            &self.value_edit,
-                            self.header_gap_above,
-                            settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                            Self::set_header_gap_above,
-                            cx,
-                        ),
-                    )
-                    .keyed(
-                        "library-gap-below",
-                        &["header", "spacing", "margin"],
-                        settings_ui::scalar(
-                            &self.header_gap_below_scrub,
-                            &self.value_edit,
-                            self.header_gap_below,
-                            settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                            Self::set_header_gap_below,
-                            cx,
-                        ),
-                    )
-                })
+                rows.keyed(
+                    "library-line-height",
+                    &["header", "size", "tall"],
+                    settings_ui::scalar(
+                        &self.head_scrub,
+                        &self.value_edit,
+                        self.head_height,
+                        settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
+                        Self::set_head_height,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-text-size",
+                    &["header", "font", "size"],
+                    settings_ui::scalar(
+                        &self.head_text_scrub,
+                        &self.value_edit,
+                        self.head_text,
+                        settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
+                        Self::set_head_text,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-flush-background",
+                    &["header", "fill", "background"],
+                    panel::toggle(
+                        self.header_flush,
+                        |this: &mut Self, on, cx| {
+                            this.header_flush = on;
+                            this.table
+                                .update(cx, |table, _| table.delegate_mut().header_flush = on);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-gap-above",
+                    &["header", "spacing", "margin"],
+                    settings_ui::scalar(
+                        &self.header_gap_above_scrub,
+                        &self.value_edit,
+                        self.header_gap_above,
+                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                        Self::set_header_gap_above,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    "library-gap-below",
+                    &["header", "spacing", "margin"],
+                    settings_ui::scalar(
+                        &self.header_gap_below_scrub,
+                        &self.value_edit,
+                        self.header_gap_below,
+                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                        Self::set_header_gap_below,
+                        cx,
+                    ),
+                )
             },
         );
 

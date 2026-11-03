@@ -1922,40 +1922,46 @@ impl LyricsPanel {
 
                     (Some(_), WordStyle::Build) => {
                         let rise = font * WORD_RISE;
-                        div()
-                            .max_w_full()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
+                        // The words are flex items, so text_align can't reach them. Each
+                        // wrapped line takes its alignment from justify instead.
+                        justify(div().max_w_full().flex().flex_row().flex_wrap(), align)
                             .children({
                                 // One row per word so its syllables never wrap apart or space
                                 // out. The lifts run flat over the pieces in reading order.
                                 let lifts = &lifts;
                                 let mut p = 0;
-                                word_pieces(text, &line.words)
-                                    .into_iter()
-                                    .map(move |pieces| {
-                                        let last = pieces.len() - 1;
-                                        let row: Vec<_> = pieces
-                                            .into_iter()
-                                            .enumerate()
-                                            .map(|(ix, piece)| {
-                                                // A mismatch shows the piece rather than hiding it.
-                                                let opacity = lifts.get(p).copied().unwrap_or(1.0);
-                                                p += 1;
-                                                let gap = if ix == last { "\u{a0}" } else { "" };
-                                                div()
-                                                    .relative()
-                                                    .top(px((1.0 - opacity) * rise))
-                                                    .opacity(opacity)
-                                                    .child(SharedString::from(format!(
-                                                        "{}{gap}",
-                                                        &text[piece]
-                                                    )))
-                                            })
-                                            .collect();
-                                        div().flex().flex_row().children(row)
-                                    })
+                                let words = word_pieces(text, &line.words);
+                                let final_word = words.len().saturating_sub(1);
+                                words.into_iter().enumerate().map(move |(w, pieces)| {
+                                    let last = pieces.len() - 1;
+                                    let row: Vec<_> = pieces
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(ix, piece)| {
+                                            // A mismatch shows the piece rather than hiding it.
+                                            let opacity = lifts.get(p).copied().unwrap_or(1.0);
+                                            p += 1;
+                                            // No gap after the line's final word. A settled
+                                            // line's trailing space hangs, but here it's real
+                                            // width that wraps a line that just fits and
+                                            // skews the centering.
+                                            let gap = if ix == last && w != final_word {
+                                                "\u{a0}"
+                                            } else {
+                                                ""
+                                            };
+                                            div()
+                                                .relative()
+                                                .top(px((1.0 - opacity) * rise))
+                                                .opacity(opacity)
+                                                .child(SharedString::from(format!(
+                                                    "{}{gap}",
+                                                    &text[piece]
+                                                )))
+                                        })
+                                        .collect();
+                                    div().flex().flex_row().children(row)
+                                })
                             })
                             .into_any_element()
                     }
@@ -2011,7 +2017,14 @@ impl LyricsPanel {
                 // Clicking the playing line does nothing rather than seeking to its start.
                 let row = row.when_some(at.filter(|_| !is_active), |d, at| {
                     d.cursor_pointer()
-                        .hover(|d| d.text_color(palette::text_bright()))
+                        // gpui's hover replaces the whole text style, so restate it or
+                        // alignment and size drop while hovered.
+                        .hover(move |d| {
+                            d.text_color(palette::text_bright())
+                                .text_size(px(font))
+                                .line_height(px(line_h))
+                                .text_align(text_align)
+                        })
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {

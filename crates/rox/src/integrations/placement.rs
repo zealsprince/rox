@@ -8,7 +8,7 @@
 // Some parameters only reach the KWin arms, which only Linux builds have.
 #![cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 
-use gpui::{App, Pixels, Point, Size, Window};
+use gpui::{App, Bounds, Pixels, Point, Size, Window};
 
 #[cfg(target_os = "linux")]
 use super::kwin;
@@ -61,9 +61,14 @@ pub(crate) fn bounds_have_origin() -> bool {
     backend() == Backend::Native
 }
 
+/// Windows parks a minimized window at -32000, and that's what its origin
+/// reads until it's restored. Saving it opens every later launch off-screen,
+/// so an origin on no display isn't one.
 pub(crate) fn origin(window: &Window, cx: &App) -> Option<Point<Pixels>> {
     match backend() {
-        Backend::Native => window.screen_origin(),
+        Backend::Native => window
+            .screen_origin()
+            .filter(|&origin| on_a_display(origin, window.bounds().size, cx)),
         #[cfg(target_os = "linux")]
         Backend::Kwin => kwin::origin(window, cx),
         #[cfg(target_os = "linux")]
@@ -106,7 +111,11 @@ pub(crate) fn move_to(
     }
 
     match backend() {
-        Backend::Native => window.move_to(origin),
+        Backend::Native => {
+            if on_a_display(origin, window.bounds().size, cx) {
+                window.move_to(origin);
+            }
+        }
         #[cfg(target_os = "linux")]
         Backend::Kwin => kwin::place(window, Some(origin), size, None, cx),
         #[cfg(target_os = "linux")]
@@ -126,10 +135,14 @@ pub(crate) fn restore(
     let origin = origin.filter(|_| !window.is_maximized() && !window.is_fullscreen());
     match backend() {
         // An X11 window manager can ignore a move for a window it hasn't
-        // taken on yet, so this waits for the first frame.
+        // taken on yet, so this waits for the first frame. The saved origin
+        // can be off every display, from a monitor unplugged since or a
+        // minimized window's parking spot saved by an older build.
         Backend::Native => {
-            window.on_next_frame(move |window, _| {
-                if let Some(origin) = origin {
+            window.on_next_frame(move |window, cx| {
+                if let Some(origin) = origin
+                    && on_a_display(origin, window.bounds().size, cx)
+                {
                     window.move_to(origin);
                 }
                 if pinned {
@@ -148,5 +161,66 @@ pub(crate) fn forget(window: &Window, cx: &mut App) {
     #[cfg(target_os = "linux")]
     if backend() == Backend::Kwin {
         kwin::forget(window, cx);
+    }
+}
+
+fn on_a_display(origin: Point<Pixels>, size: Size<Pixels>, cx: &App) -> bool {
+    let displays: Vec<Bounds<Pixels>> = cx.displays().iter().map(|d| d.bounds()).collect();
+    centered_on_any(origin, size, &displays)
+}
+
+/// By the window's center, the same test gpui uses when it opens one.
+fn centered_on_any(origin: Point<Pixels>, size: Size<Pixels>, displays: &[Bounds<Pixels>]) -> bool {
+    let center = Bounds { origin, size }.center();
+    displays.iter().any(|display| display.contains(&center))
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{point, px, size};
+
+    use super::*;
+
+    fn screen() -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(1920.), px(1080.)),
+        }
+    }
+
+    #[test]
+    fn a_minimized_windows_parking_spot_is_on_no_display() {
+        let parked = point(px(-21326.), px(-21345.334));
+
+        assert!(!centered_on_any(
+            parked,
+            size(px(1536.), px(864.)),
+            &[screen()]
+        ));
+    }
+
+    #[test]
+    fn a_window_hanging_off_an_edge_still_counts() {
+        let origin = point(px(-400.), px(100.));
+
+        assert!(centered_on_any(
+            origin,
+            size(px(1280.), px(720.)),
+            &[screen()]
+        ));
+    }
+
+    #[test]
+    fn a_monitor_left_of_the_primary_counts() {
+        let left = Bounds {
+            origin: point(px(-2560.), px(0.)),
+            size: size(px(2560.), px(1440.)),
+        };
+
+        assert!(centered_on_any(
+            point(px(-2000.), px(200.)),
+            size(px(1280.), px(720.)),
+            &[screen(), left]
+        ));
     }
 }

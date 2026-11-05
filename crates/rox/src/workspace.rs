@@ -5853,7 +5853,7 @@ impl Workspace {
         let frame = bounds.get_bounds();
         // The platform's read of the position where it has one, since X11's
         // frame origin is relative to the WM's decoration. Without one (a
-        // maximized window, or KWin not having reported yet), Wayland keeps
+        // maximized or minimized window, or KWin not having reported yet), Wayland keeps
         // the last real position rather than saving its made-up origin.
         let origin = self
             .placement_origin(window, cx)

@@ -598,7 +598,7 @@ mod tests {
                 if offset + len as u64 > self.fail_at
                     && self
                         .fails
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                         .is_ok()
                 {
                     return Err("upstream went away".into());

@@ -47,14 +47,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # Flathub's CI image: flatpak-builder, flatpak-builder-lint and the 25.08
-    # runtime and SDK preinstalled, so the run downloads nothing the build
-    # itself doesn't need. Privileged because flatpak-builder sandboxes each
+    # runtime and SDK preinstalled, which the build updates to Flathub's
+    # current commit. Privileged because flatpak-builder sandboxes each
     # module with bubblewrap, which needs the user namespaces the default
     # container profile blocks. The tag has to match the manifest's
     # runtime-version; bump both together.
+    #
+    # The volume gives the system installation a home off overlayfs. An
+    # update retires the old runtime checkout with rename(2), and on some
+    # runners (every AWS-hosted one so far) overlayfs refuses to rename a
+    # directory from an image layer with EXDEV. flatpak has no fallback, so
+    # the update fails and flatpak-builder segfaults. Docker seeds a new
+    # anonymous volume from the image, so the preinstalled runtimes carry over.
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
-      options: --privileged
+      options: --privileged --volume /var/lib/flatpak
     env:
       VERSION: ${{ inputs.version }}
       MANIFEST: com.zealsprince.rox.yml

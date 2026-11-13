@@ -189,7 +189,14 @@
               # libprojectM's only build system, driven by rox-milkdrop-sys.
               pkgs.cmake
             ];
-            buildInputs = linuxBuildInputs pkgs;
+            # nixpkgs' cargoSetupHook forces -sys crates onto system libs, so
+            # onig_sys (via tokenizers), libsqlite3-sys (via rusqlite) and
+            # libgit2-sys (via gpui_util) stop bundling theirs and need them here.
+            buildInputs = linuxBuildInputs pkgs ++ [
+              pkgs.oniguruma
+              pkgs.sqlite
+              pkgs.libgit2
+            ];
 
             # The dlopened libs are unused at link time, so the fixup phase's
             # rpath shrink would strip them; append after it runs.

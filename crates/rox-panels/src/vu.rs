@@ -465,8 +465,7 @@ impl Meters {
         let cell = seg_h + config.seg_gap();
         let cells = ((max_d / cell) as usize).max(1);
 
-        for i in 0..self.count {
-            let level = self.levels[i];
+        for (i, &level) in self.levels.iter().enumerate().take(self.count) {
             let a = i as f32 * slot;
             if config.style == MeterStyle::Segments {
                 let lit = (level * cells as f32).round() as usize;
@@ -499,15 +498,15 @@ impl Meters {
         if !config.caps {
             return;
         }
-        for i in 0..self.count {
+        for (i, &hold) in self.holds.iter().enumerate().take(self.count) {
             let a = i as f32 * slot;
             let cap = if config.style == MeterStyle::Segments {
-                let c = ((self.holds[i] * cells as f32).ceil() as usize)
+                let c = ((hold * cells as f32).ceil() as usize)
                     .saturating_sub(1)
                     .min(cells - 1);
                 rect(a, meter_w, c as f32 * cell, seg_h)
             } else {
-                rect(a, meter_w, (self.holds[i] * max_d).min(depth - 1.0), 1.0)
+                rect(a, meter_w, (hold * max_d).min(depth - 1.0), 1.0)
             };
             window.paint_quad(fill(cap, palette::highlight()));
         }

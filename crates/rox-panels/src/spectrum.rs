@@ -753,8 +753,7 @@ impl Bars {
         if config.style == SpectrumStyle::Line {
             self.paint_line(bounds, window, config, axis, half, step, max_d);
         } else {
-            for i in 0..count {
-                let level = self.levels[i];
+            for (i, &level) in self.levels.iter().enumerate() {
                 let a0 = i as f32 * step;
                 let a0 = if reversed { half - a0 - bar_w } else { a0 };
                 let slots = [a0, axis - a0 - bar_w];
@@ -808,19 +807,19 @@ impl Bars {
         }
         // The highlight, like the playheads, so the caps stay legible over
         // accent-colored bars.
-        for i in 0..count {
+        for (i, &hold) in self.holds.iter().enumerate().take(count) {
             let a0 = i as f32 * step;
             let a0 = if reversed { half - a0 - bar_w } else { a0 };
             let slots = [a0, axis - a0 - bar_w];
             let slots = if mirror { &slots[..] } else { &slots[..1] };
             for &a in slots {
                 let cap = if config.style == SpectrumStyle::Blocks {
-                    let c = ((self.holds[i] * cells as f32).ceil() as usize)
+                    let c = ((hold * cells as f32).ceil() as usize)
                         .saturating_sub(1)
                         .min(cells - 1);
                     rect(a, bar_w, c as f32 * cell, block_h)
                 } else {
-                    rect(a, bar_w, (self.holds[i] * max_d).min(depth - 1.0), 1.0)
+                    rect(a, bar_w, (hold * max_d).min(depth - 1.0), 1.0)
                 };
                 window.paint_quad(fill(cap, palette::highlight()));
             }

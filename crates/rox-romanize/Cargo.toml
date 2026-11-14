@@ -37,7 +37,7 @@ sha2 = "0.10"
 ureq = "2"
 # Unpacks the archive. Same version and the same one feature the Windows
 # updater takes, so on Windows this adds no crate to the build.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 # Where the download lands: `models/`, beside the acoustic weights. The one
 # sibling dependency, exactly the one rox-acoustic takes for the same
 # reason, and nothing in this crate reaches any further up.

@@ -119,8 +119,9 @@ gpui = { workspace = true, features = ["macos-blade"] }
 # The Win32 HWND souvlaki's SMTC backend binds to.
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-# Deflate only: all Compress-Archive writes.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# Deflate only: all Compress-Archive writes. `deflate-flate2` rather than
+# `deflate`, which would switch flate2 to zlib-rs for the whole workspace.
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 # Its defaults are the gtk and libxdo pair only Linux would need.
 tray-icon = { version = "0.24", default-features = false }
 # The tray's win32 message pump and thread messages.

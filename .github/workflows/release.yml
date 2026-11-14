@@ -98,13 +98,23 @@ jobs:
             artifact: windows-x86_64
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
+    # id-token is what lets the Windows leg sign in to Azure with GitHub's
+    # OIDC token. A job-level block replaces the workflow's, so contents is
+    # restated.
+    permissions:
+      contents: write
+      id-token: write
     # Job-level so `cargo build` picks the api identities up without a per-step
-    # env block, and so the macOS steps can gate on `env.X != ''` (a step's own
-    # env isn't visible to its `if`). Every one is optional: a fork or a run
-    # without the secrets set builds fine, it just ships no built-in identity
-    # and signs the app ad-hoc.
+    # env block, and so the signing steps can gate on `env.X != ''` (a step's
+    # own env isn't visible to its `if`). Every one is optional: a fork or a
+    # run without the secrets set builds fine, it just ships no built-in
+    # identity, signs the macOS app ad-hoc and leaves Windows unsigned.
     env:
       VERSION: ${{ needs.check.outputs.version }}
+      # Not named AZURE_CLIENT_ID: the Azure SDK reads that name from the
+      # environment and would try it as a managed identity. This one only
+      # gates the steps.
+      SIGNING_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -297,6 +307,34 @@ jobs:
           rm "$RUNNER_TEMP/notary-key.p8"
           xcrun stapler staple "$dmg"
 
+      # Azure Artifact Signing through a federated credential on the
+      # rox-release-signing app registration, so no secret is stored. The
+      # login stays next to the signing steps: the OIDC assertion behind it
+      # expires within minutes, long before a build that started with it ends.
+      - name: Azure login (Windows)
+        if: runner.os == 'Windows' && env.SIGNING_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Before the zip and the installer are made, so both carry the signed
+      # binaries. The endpoint is the signing account's region (North Europe).
+      - name: Sign binaries (Windows)
+        if: runner.os == 'Windows' && env.SIGNING_CLIENT_ID != ''
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: https://neu.codesigning.azure.net/
+          signing-account-name: rox
+          certificate-profile-name: rox-public
+          files: |
+            ${{ github.workspace }}\target\release\rox.exe
+            ${{ github.workspace }}\target\release\rox-mcp.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -307,15 +345,27 @@ jobs:
 
       # Inno Setup wizard around the same binaries: Start Menu shortcut,
       # Add/Remove Programs entry, in-place upgrades. ISCC is preinstalled on
-      # the Windows runners. Unsigned, so SmartScreen warns on first run, same
-      # as the zip; a signing certificate is blocked on legal logistics for
-      # now.
+      # the Windows runners. It signs nothing itself, so the installer is
+      # signed in the next step, and the uninstaller it writes at install time
+      # stays unsigned.
       - name: Package (Windows installer)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
             /DVersion=$env:VERSION scripts\rox.iss
+
+      - name: Sign installer (Windows)
+        if: runner.os == 'Windows' && env.SIGNING_CLIENT_ID != ''
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: https://neu.codesigning.azure.net/
+          signing-account-name: rox
+          certificate-profile-name: rox-public
+          files: ${{ github.workspace }}\rox-v${{ env.VERSION }}-${{ matrix.artifact }}-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - uses: actions/upload-artifact@v7
         with:

@@ -1,9 +1,9 @@
 ; Windows installer, compiled by the release workflow with
 ;   ISCC.exe /DVersion=<x.y.z> scripts\rox.iss
 ; Source and output paths are relative to this file, so it also builds from a
-; local checkout the same way. The installer is unsigned (no Windows signing
-; certificate yet), so SmartScreen shows the unknown-publisher warning, same
-; as the bare zip.
+; local checkout the same way. Nothing here signs: the release workflow signs
+; the binaries before this runs and the installer after, so a local build is
+; unsigned and SmartScreen shows the unknown-publisher warning for it.
 
 #ifndef Version
   #error Pass the workspace version with /DVersion=<x.y.z>

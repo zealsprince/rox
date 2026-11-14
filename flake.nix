@@ -190,10 +190,9 @@
               pkgs.cmake
             ];
             # nixpkgs' cargoSetupHook forces -sys crates onto system libs, so
-            # onig_sys (via tokenizers), libsqlite3-sys (via rusqlite) and
-            # libgit2-sys (via gpui_util) stop bundling theirs and need them here.
+            # libsqlite3-sys (via rusqlite) and libgit2-sys (via gpui_util) stop
+            # bundling theirs and need them here.
             buildInputs = linuxBuildInputs pkgs ++ [
-              pkgs.oniguruma
               pkgs.sqlite
               pkgs.libgit2
             ];

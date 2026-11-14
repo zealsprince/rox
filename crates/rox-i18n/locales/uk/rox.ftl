@@ -1957,6 +1957,7 @@ about-release-notes = Нотатки випуску
 about-restart-now = Перезапустити зараз
 about-up-to-date = У вас найновіша версія
 about-update-failed = Оновлення не вдалося: { $error }
+about-update-major-note = Це велике оновлення. Воно перетворює збережені робочі простори на новий формат, який старі версії rox не зможуть прочитати.
 about-version = Версія { $version }
 about-version-available = Доступна версія { $version }
 about-version-ready = Версія { $version } готова

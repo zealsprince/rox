@@ -1952,6 +1952,7 @@ about-release-notes = Note di rilascio
 about-restart-now = Riavvia adesso
 about-up-to-date = Sei all'ultima versione
 about-update-failed = Aggiornamento fallito: { $error }
+about-update-major-note = Questo è un aggiornamento importante. Converte gli spazi di lavoro salvati in un nuovo formato che le versioni precedenti di rox non possono leggere.
 about-version = Versione { $version }
 about-version-available = La versione { $version } è disponibile
 about-version-ready = La versione { $version } è pronta

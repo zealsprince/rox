@@ -1900,6 +1900,7 @@ about-release-notes = リリースノート
 about-restart-now = 今すぐ再起動
 about-up-to-date = 最新のバージョンです
 about-update-failed = 更新に失敗しました: { $error }
+about-update-major-note = これはメジャーアップデートです。保存済みのワークスペースが、以前のバージョンの rox では読めない新しい形式に変換されます。
 about-version = バージョン { $version }
 about-version-available = バージョン { $version } が利用できます
 about-version-ready = バージョン { $version } の準備ができました

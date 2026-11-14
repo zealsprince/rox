@@ -1899,6 +1899,7 @@ about-release-notes = 发行说明
 about-restart-now = 立即重启
 about-up-to-date = 你用的已经是最新版本
 about-update-failed = 更新失败：{ $error }
+about-update-major-note = 这是一次大版本更新。它会把已保存的工作区转换为旧版本 rox 无法读取的新格式。
 about-version = 版本 { $version }
 about-version-available = 有新版本 { $version }
 about-version-ready = 版本 { $version } 已就绪

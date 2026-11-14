@@ -4,8 +4,8 @@
 //! link to the release page.
 
 use gpui::{
-    App, Bounds, Context, Div, Global, MouseButton, ScrollHandle, SharedString, Subscription,
-    Window, WindowHandle, div, prelude::*, px, size, svg,
+    App, Bounds, Context, Div, Global, MouseButton, Pixels, ScrollHandle, SharedString, Size,
+    Subscription, Window, WindowHandle, div, prelude::*, px, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
@@ -26,6 +26,21 @@ const SITE: &str = "https://zealsprince.com";
 const PROFILE: &str = "https://github.com/zealsprince";
 const LICENSE_URL: &str = "https://www.gnu.org/licenses/";
 
+/// Tuned on the stock 16px rem.
+const WINDOW_WIDTH: f32 = 960.;
+const WINDOW_HEIGHT: f32 = 240.;
+/// A major's note is one more row, and two in the locales that wrap it.
+/// Without the room it pushes the update buttons under the fold.
+const MAJOR_NOTE_ROOM: f32 = 58.;
+
+/// Sized against the app font: a larger font would push the copy offscreen.
+fn window_size(major: bool) -> Size<Pixels> {
+    let scale = palette::font_scale();
+    let height = WINDOW_HEIGHT + if major { MAJOR_NOTE_ROOM } else { 0. };
+
+    size(px(WINDOW_WIDTH * scale), px(height * scale))
+}
+
 struct OpenAbout(WindowHandle<Root>);
 
 impl Global for OpenAbout {}
@@ -40,10 +55,8 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    // Size the fixed window against the app font: it was tuned at 960x240 on
-    // the stock 16px rem, and a larger font would push the copy offscreen.
-    let scale = palette::font_scale();
-    let bounds = Bounds::centered(None, size(px(960. * scale), px(240. * scale)), cx);
+    let major = UpdateCheck::from_cache(&Settings::load()).is_major();
+    let bounds = Bounds::centered(None, window_size(major), cx);
     let handle = rox_panel_api::panel::open_fixed_window(
         cx,
         rox_i18n::t!("about-window-title"),
@@ -79,6 +92,10 @@ impl UpdateCheck {
             None => UpdateCheck::Idle,
         }
     }
+
+    fn is_major(&self) -> bool {
+        matches!(self, UpdateCheck::Available(release) if release.is_major())
+    }
 }
 
 struct AboutWindow {
@@ -108,17 +125,17 @@ impl AboutWindow {
     }
 
     /// Also refreshes the cache so a launch treats this check as recent.
-    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+    fn check_for_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.update_check, UpdateCheck::Checking) {
             return;
         }
         self.update_check = UpdateCheck::Checking;
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { updates::fetch_latest() })
                 .await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 this.update_check = match result {
                     Ok(release) => {
                         let entry = updates::cache(&release);
@@ -137,6 +154,11 @@ impl AboutWindow {
                         UpdateCheck::Failed
                     }
                 };
+
+                // The window was sized before this check found a major.
+                if this.update_check.is_major() {
+                    window.resize(window_size(true));
+                }
                 cx.notify();
             })
             .ok();
@@ -188,7 +210,7 @@ impl AboutWindow {
             rox_i18n::t!("about-check-for-updates"),
             icons::REFRESH_CW,
             false,
-            cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
+            cx.listener(|this, _, window, cx| this.check_for_updates(window, cx)),
         )
     }
 
@@ -325,9 +347,16 @@ impl Render for AboutWindow {
                 .when_some(note, |d, note| d.child(line(note)))
                 .children(buttons);
 
+            let major_note = self
+                .update_check
+                .is_major()
+                .then(|| line(rox_i18n::t!("about-update-major-note")));
+
             let identity = div()
                 .flex()
                 .flex_col()
+                .flex_1()
+                .min_w_0()
                 .gap(tokens::SPACE_MD)
                 .child(
                     div()
@@ -361,6 +390,7 @@ impl Render for AboutWindow {
                         .child(rox_i18n::t!("about-notice-lead"))
                         .child(link_end("gnu.org/licenses", LICENSE_URL)),
                 )
+                .children(major_note)
                 .child(update_control);
 
             let page = div()

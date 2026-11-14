@@ -1932,6 +1932,7 @@ about-release-notes = Versionshinweise
 about-restart-now = Jetzt neu starten
 about-up-to-date = Du hast die neueste Version
 about-update-failed = Das Update ist fehlgeschlagen: { $error }
+about-update-major-note = Dies ist ein großes Update. Es wandelt deine gespeicherten Arbeitsflächen in ein neues Format um, das ältere Versionen von rox nicht lesen können.
 about-version = Version { $version }
 about-version-available = Version { $version } ist verfügbar
 about-version-ready = Version { $version } ist bereit

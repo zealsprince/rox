@@ -2014,6 +2014,7 @@ about-release-notes = Release Notes
 about-restart-now = Restart Now
 about-up-to-date = You're on the latest version
 about-update-failed = The update failed: { $error }
+about-update-major-note = This is a major update. It converts your saved workspaces to a new format that older versions of rox can't read.
 about-version = Version { $version }
 about-version-available = Version { $version } is available
 about-version-ready = Version { $version } is ready

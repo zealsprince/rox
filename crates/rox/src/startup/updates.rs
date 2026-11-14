@@ -87,6 +87,12 @@ impl Release {
         is_newer(&self.version, CURRENT).unwrap_or(false)
     }
 
+    /// A new major converts saved data one way, so it's offered and never
+    /// installed unasked.
+    pub fn is_major(&self) -> bool {
+        crosses_major(&self.version, CURRENT).unwrap_or(false)
+    }
+
     pub fn is_prerelease(&self) -> bool {
         is_prerelease(&self.version)
     }
@@ -183,8 +189,10 @@ pub fn check_on_launch(cx: &mut gpui::App) {
             Ok(release) => {
                 Settings::update(|s| s.session.update_cache = Some(cache(&release)));
                 refresh_available(&Settings::load());
+                // A major converts data one way, so it waits for a click.
                 if auto_download
                     && release.is_new()
+                    && !release.is_major()
                     && updater::can_update()
                     && let Some(job) = updater::begin(&release)
                 {
@@ -232,6 +240,11 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
     Some(Version::parse(latest).ok()? > Version::parse(current).ok()?)
 }
 
+/// None when either doesn't parse, like [`is_newer`].
+fn crosses_major(latest: &str, current: &str) -> Option<bool> {
+    Some(Version::parse(latest).ok()?.major > Version::parse(current).ok()?.major)
+}
+
 fn is_prerelease(version: &str) -> bool {
     Version::parse(version).is_ok_and(|v| !v.pre.is_empty())
 }
@@ -259,6 +272,21 @@ mod tests {
         assert!(is_prerelease("1.25.0-rc.1"));
         assert!(!is_prerelease("1.25.0"));
         assert!(!is_prerelease("nightly"));
+    }
+
+    #[test]
+    fn a_new_major_is_noticed() {
+        assert_eq!(crosses_major("2.0.0", "1.34.3"), Some(true));
+        assert_eq!(crosses_major("2.0.0-rc.1", "1.34.3"), Some(true));
+        assert_eq!(crosses_major("1.35.0", "1.34.3"), Some(false));
+        assert_eq!(crosses_major("2.1.0", "2.0.0-rc.1"), Some(false));
+        assert_eq!(crosses_major("1.99.0", "2.0.0"), Some(false));
+    }
+
+    #[test]
+    fn an_unparsed_version_never_crosses() {
+        assert_eq!(crosses_major("nightly", "1.34.3"), None);
+        assert_eq!(crosses_major("2.0.0", "dev"), None);
     }
 
     fn listed(tag: &str, draft: bool, prerelease: bool) -> Api {

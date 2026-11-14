@@ -111,6 +111,19 @@ JSON object. `dump` writes `to_value(config)` into the leaf node; restore reads 
 with `config_from_info`, which deserializes the blob and falls back to `Default` on any
 mismatch, so a config from an older shape still opens.
 
+A composable strip's `items` list (track info's pieces, for one) names each item. An item
+whose catalog declares variants writes its bare name while it's on the default variant,
+and `{ "item": ..., "variant": ... }` on any other, so a list saved before the item had
+variants reads unchanged:
+
+```json
+"items": ["title", { "item": "artistscrobbles", "variant": "badge" }, "trackscrobbles"]
+```
+
+`SavedItem` and `serialize_items` (`crates/rox-panel-api/src/panel/arrange.rs`) do the
+reshaping for any panel whose item enum implements `ArrangeItem`. An unknown item or
+variant name fails the decode, which puts the panel back on its default config.
+
 `PanelTheme` (`crates/rox-design/src/palette.rs`) is the per-panel look override: a
 `colors` map of role name to `#rrggbb`, plus optional `surface_opacity`, `margin`,
 `padding`, `rounding`, `border`, and `font`. Empty means inherit the app palette, so a

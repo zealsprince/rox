@@ -51,36 +51,42 @@ const ITEMS: &[panel::ArrangeSpec<ControlItem>] = &[
         icon: Some(icons::PIN),
         value: ControlItem::Pin,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "window-controls-mini-toggle",
         icon: Some(icons::MINIMIZE),
         value: ControlItem::Mini,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "window-controls-minimize",
         icon: Some(icons::MINUS),
         value: ControlItem::Minimize,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "window-controls-maximize",
         icon: Some(icons::STOP),
         value: ControlItem::Maximize,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "window-controls-close",
         icon: Some(icons::WINDOW_CLOSE),
         value: ControlItem::Close,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: ControlItem::Spacer,
         repeats: true,
+        variants: &[],
     },
 ];
 

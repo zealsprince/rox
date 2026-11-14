@@ -69,36 +69,42 @@ const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
         icon: Some(icons::CLOCK),
         value: SeekItem::Elapsed,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "seek-item-strip",
         icon: Some(icons::AUDIO_LINES),
         value: SeekItem::Strip,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "seek-item-ending",
         icon: Some(icons::CLOCK),
         value: SeekItem::Ending,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "seek-item-duration",
         icon: Some(icons::CLOCK),
         value: SeekItem::Duration,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: SeekItem::Spacer,
         repeats: true,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-divider",
         icon: Some(icons::MINUS),
         value: SeekItem::Divider,
         repeats: true,
+        variants: &[],
     },
 ];
 

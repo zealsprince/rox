@@ -9,10 +9,24 @@
 //! whose items are user-made (the custom controls strip), a `Vec` of
 //! [`ArrangeEntry`] with labels already resolved. Both convert into
 //! [`Arrangement`], which everything below works over.
+//!
+//! An item may declare variants, each its own value of the item enum. A
+//! placed chip picks between them from a menu, and every rule here treats
+//! the variants of one item as that item. A saved list writes an item on
+//! its default as the bare name and any other variant as
+//! `{ "item": ..., "variant": ... }`, through [`SavedItem`].
 
 use std::rc::Rc;
 
-use gpui::{Context, Div, SharedString, Stateful, Window, div, prelude::*, px, svg};
+use gpui::{
+    App, Context, DismissEvent, Div, ElementId, Entity, Focusable, MouseButton, MouseDownEvent,
+    Pixels, Point, SharedString, Stateful, Subscription, Window, anchored, deferred, div,
+    prelude::*, px, svg,
+};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser};
+use serde_json::Value;
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
@@ -24,10 +38,21 @@ pub struct ArrangeSpec<V: 'static> {
     /// stable across locales, so a drag survives a language change.
     pub key: &'static str,
     pub icon: Option<&'static str>,
+    /// The item on its default variant, which the tray places.
     pub value: V,
     /// Whether one row may hold more than one (spacers, dividers). A repeatable
     /// item keeps its tray chip while shown.
     pub repeats: bool,
+    /// Every way the item can draw, the default among them. Empty for an item
+    /// with one look, which gets no picker.
+    pub variants: &'static [ArrangeVariant<V>],
+}
+
+/// One choice in a placed chip's variant menu.
+pub struct ArrangeVariant<V: 'static> {
+    /// The message key for the name the chip and its menu show.
+    pub key: &'static str,
+    pub value: V,
 }
 
 /// An item built at runtime, with its text resolved instead of a message key.
@@ -40,6 +65,20 @@ pub struct ArrangeEntry<V> {
     pub icon: Option<&'static str>,
     pub value: V,
     pub repeats: bool,
+    /// Named like [`ArrangeSpec::variants`], with the labels resolved.
+    pub variants: Vec<(SharedString, V)>,
+}
+
+impl<V: PartialEq + Copy> ArrangeSpec<V> {
+    fn owns(&self, value: V) -> bool {
+        self.value == value || self.variants.iter().any(|variant| variant.value == value)
+    }
+}
+
+impl<V: PartialEq + Copy> ArrangeEntry<V> {
+    fn owns(&self, value: V) -> bool {
+        self.value == value || self.variants.iter().any(|(_, variant)| *variant == value)
+    }
 }
 
 /// The catalog in either form. The built side is refcounted because the
@@ -73,28 +112,42 @@ impl<V: 'static> From<Vec<ArrangeEntry<V>>> for Arrangement<V> {
 }
 
 impl<V: PartialEq + Copy + 'static> Arrangement<V> {
-    fn repeats(&self, value: V) -> bool {
+    /// The catalog item `value` belongs to, on whichever variant.
+    fn place(&self, value: V) -> Option<usize> {
         match self {
-            Arrangement::Stock(specs) => specs
-                .iter()
-                .find(|spec| spec.value == value)
-                .is_some_and(|spec| spec.repeats),
+            Arrangement::Stock(specs) => specs.iter().position(|spec| spec.owns(value)),
 
-            Arrangement::Built(entries) => entries
-                .iter()
-                .find(|entry| entry.value == value)
-                .is_some_and(|entry| entry.repeats),
+            Arrangement::Built(entries) => entries.iter().position(|entry| entry.owns(value)),
+        }
+    }
+
+    /// Two variants of one item are the same item. A value off the catalog is
+    /// only ever itself.
+    fn same(&self, a: V, b: V) -> bool {
+        a == b
+            || self
+                .place(a)
+                .is_some_and(|place| self.place(b) == Some(place))
+    }
+
+    fn holds(&self, items: &[V], value: V) -> bool {
+        items.iter().any(|item| self.same(*item, value))
+    }
+
+    fn repeats(&self, value: V) -> bool {
+        let Some(place) = self.place(value) else {
+            return false;
+        };
+
+        match self {
+            Arrangement::Stock(specs) => specs[place].repeats,
+
+            Arrangement::Built(entries) => entries[place].repeats,
         }
     }
 
     fn rank(&self, value: V) -> usize {
-        let place = match self {
-            Arrangement::Stock(specs) => specs.iter().position(|spec| spec.value == value),
-
-            Arrangement::Built(entries) => entries.iter().position(|entry| entry.value == value),
-        };
-
-        place.unwrap_or(usize::MAX)
+        self.place(value).unwrap_or(usize::MAX)
     }
 
     fn entries(&self) -> Vec<ArrangeEntry<V>> {
@@ -107,12 +160,118 @@ impl<V: PartialEq + Copy + 'static> Arrangement<V> {
                     icon: spec.icon,
                     value: spec.value,
                     repeats: spec.repeats,
+                    variants: spec
+                        .variants
+                        .iter()
+                        .map(|variant| (rox_i18n::t!(variant.key), variant.value))
+                        .collect(),
                 })
                 .collect(),
 
             Arrangement::Built(entries) => entries.to_vec(),
         }
     }
+}
+
+/// A panel's item enum, tied to its stock catalog so a saved list can tell
+/// which variant a bare name means.
+pub trait ArrangeItem: Serialize + DeserializeOwned + PartialEq + Copy + 'static {
+    fn catalog() -> &'static [ArrangeSpec<Self>];
+}
+
+/// One entry of a saved item list. The item enum keeps serde's derived
+/// shape, a unit variant as its name and a variant carrying a draw choice
+/// as `{ name: choice }`; this reshapes that so a list from before an item
+/// had variants still reads, and only a non-default variant writes the
+/// richer form.
+pub struct SavedItem<V>(pub V);
+
+#[derive(Serialize, Deserialize)]
+struct RichItem {
+    item: String,
+    variant: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ItemWire {
+    Bare(String),
+    Rich(RichItem),
+}
+
+/// The name serde gives the item, whatever variant it's on.
+fn derived_name<V: Serialize>(value: V) -> Option<String> {
+    match serde_json::to_value(value).ok()? {
+        Value::String(name) => Some(name),
+
+        Value::Object(map) => map.into_iter().next().map(|(name, _)| name),
+
+        _ => None,
+    }
+}
+
+impl<V: ArrangeItem> Serialize for SavedItem<V> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let derived = serde_json::to_value(self.0).map_err(ser::Error::custom)?;
+        let on_default = V::catalog().iter().any(|spec| spec.value == self.0);
+
+        let tagged = match &derived {
+            Value::Object(map) if map.len() == 1 => map.iter().next(),
+            _ => None,
+        };
+
+        match tagged {
+            Some((item, _)) if on_default => serializer.serialize_str(item),
+
+            Some((item, variant)) => RichItem {
+                item: item.clone(),
+                variant: variant.clone(),
+            }
+            .serialize(serializer),
+
+            None => derived.serialize(serializer),
+        }
+    }
+}
+
+impl<'de, V: ArrangeItem> Deserialize<'de> for SavedItem<V> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = match ItemWire::deserialize(deserializer)? {
+            // serde only reads a variant carrying a choice in its tagged form, so
+            // a bare name for one falls back to the catalog's default.
+            ItemWire::Bare(name) => match V::deserialize(Value::String(name.clone())) {
+                Ok(value) => value,
+
+                Err(e) => V::catalog()
+                    .iter()
+                    .map(|spec| spec.value)
+                    .find(|value| derived_name(*value).as_deref() == Some(name.as_str()))
+                    .ok_or_else(|| de::Error::custom(e))?,
+            },
+
+            // An unknown variant name fails like an unknown item name does.
+            ItemWire::Rich(RichItem { item, variant }) => {
+                let tagged = Value::Object([(item.clone(), variant)].into_iter().collect());
+                let value = V::deserialize(tagged).map_err(de::Error::custom)?;
+                if !V::catalog().iter().any(|spec| spec.owns(value)) {
+                    return Err(de::Error::custom(format!(
+                        "{item} declares no such variant"
+                    )));
+                }
+                value
+            }
+        };
+
+        Ok(SavedItem(value))
+    }
+}
+
+/// `serialize_with` for an item list, each entry written as a [`SavedItem`].
+pub fn serialize_items<V: ArrangeItem, S: Serializer>(
+    items: &[V],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.iter().map(|item| SavedItem(*item)))
 }
 
 /// Generic over the item enum, so a drop only reaches editors of the same
@@ -138,6 +297,97 @@ impl Render for ChipPreview {
         chip(self.label.clone(), self.icon, false)
             .border_1()
             .border_color(palette::border_light())
+    }
+}
+
+type MenuBuild = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
+
+/// The open variant menu: where it was asked for, the menu, and the dismiss
+/// subscription that clears it.
+#[derive(Default)]
+struct VariantMenu(Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>);
+
+/// A placed chip whose item has variants. A left or a right click opens the
+/// variant menu at the pointer. gpui-component's `context_menu` only answers
+/// the right button, so the chip holds its own menu the way `PopoutHost`
+/// does, with the same occluding layer that dismisses on an outside press.
+#[derive(IntoElement)]
+struct VariantChip {
+    /// The chip's own id, unique per place, so each chip keys its own menu
+    /// state instead of every chip sharing one.
+    id: ElementId,
+    chip: Stateful<Div>,
+    menu: MenuBuild,
+}
+
+impl RenderOnce for VariantChip {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = window.use_keyed_state(self.id, cx, |_, _| VariantMenu::default());
+
+        let open = {
+            let state = state.clone();
+            let build = self.menu;
+            Rc::new(
+                move |position: Point<Pixels>, window: &mut Window, cx: &mut App| {
+                    let build = build.clone();
+                    let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                        build(menu, window, cx)
+                    });
+                    menu.focus_handle(cx).focus(window);
+
+                    let dismiss = state.clone();
+                    let subscription =
+                        window.subscribe(&menu, cx, move |_, _: &DismissEvent, _, cx| {
+                            dismiss.update(cx, |open, cx| {
+                                open.0 = None;
+                                cx.notify();
+                            });
+                        });
+                    state.update(cx, |open, cx| {
+                        open.0 = Some((position, menu, subscription));
+                        cx.notify();
+                    });
+                },
+            )
+        };
+
+        let overlay = state.read(cx).0.as_ref().map(|(position, menu, _)| {
+            let close = state.clone();
+            let shut = move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                close.update(cx, |open, cx| {
+                    open.0 = None;
+                    cx.notify();
+                });
+            };
+            deferred(
+                anchored().child(
+                    div()
+                        .w(window.bounds().size.width)
+                        .h(window.bounds().size.height)
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, shut.clone())
+                        .on_mouse_down(MouseButton::Right, shut.clone())
+                        .on_mouse_down(MouseButton::Middle, shut)
+                        .child(
+                            anchored()
+                                .position(*position)
+                                .snap_to_window_with_margin(px(8.))
+                                .child(menu.clone()),
+                        ),
+                ),
+            )
+            .with_priority(1)
+        });
+
+        let left = open.clone();
+        self.chip
+            .on_click(move |event, window, cx| left(event.position(), window, cx))
+            // Stopped so the press doesn't reach a right-click handler further up.
+            .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                cx.stop_propagation();
+                open(event.position, window, cx);
+            })
+            .children(overlay)
     }
 }
 
@@ -208,14 +458,21 @@ fn caption(text: gpui::SharedString) -> Div {
         .child(text)
 }
 
-/// Uniqueness is per row: a non-repeatable value already on the row leaves
-/// first, pulling `at` along, so a drop replaces the row's copy.
-fn insert_row_unique<V: PartialEq + Copy>(row: &mut Vec<V>, value: V, at: usize, unique: bool) {
+/// Uniqueness is per row: a non-repeatable item already on the row leaves
+/// first, whatever its variant, pulling `at` along, so a drop replaces the
+/// row's copy.
+fn insert_row_unique<V: PartialEq + Copy>(
+    registry: &Arrangement<V>,
+    row: &mut Vec<V>,
+    value: V,
+    at: usize,
+    unique: bool,
+) {
     let mut at = at.min(row.len());
     if unique {
         let mut ix = 0;
         row.retain(|v| {
-            let keep = *v != value;
+            let keep = !registry.same(*v, value);
             if !keep && ix < at {
                 at -= 1;
             }
@@ -244,7 +501,7 @@ fn moved_at<V: PartialEq + Copy>(
     }
     let unique = !registry.repeats(value);
     if let Some(row) = rows.get_mut(to_row) {
-        insert_row_unique(row, value, to_ix, unique);
+        insert_row_unique(registry, row, value, to_ix, unique);
     }
     rows
 }
@@ -258,7 +515,7 @@ fn inserted<V: PartialEq + Copy>(
     let mut rows = rows.to_vec();
     let unique = !registry.repeats(value);
     if let Some(row) = rows.get_mut(to.0) {
-        insert_row_unique(row, value, to.1, unique);
+        insert_row_unique(registry, row, value, to.1, unique);
     }
     rows
 }
@@ -281,8 +538,12 @@ fn removed_row<V: Copy>(rows: &[Vec<V>], at: usize) -> Vec<Vec<V>> {
     rows
 }
 
-fn without<V: PartialEq + Copy>(items: &[V], value: V) -> Vec<V> {
-    items.iter().copied().filter(|v| *v != value).collect()
+fn without<V: PartialEq + Copy>(registry: &Arrangement<V>, items: &[V], value: V) -> Vec<V> {
+    items
+        .iter()
+        .copied()
+        .filter(|v| !registry.same(*v, value))
+        .collect()
 }
 
 /// Slot `value` after every shown item that precedes it in the catalog.
@@ -295,25 +556,33 @@ fn insert_stock<V: PartialEq + Copy>(registry: &Arrangement<V>, items: &[V], val
 }
 
 /// Show or hide `value`, slotting a re-shown item at its stock position.
+/// Hiding takes the item off on any variant.
 pub fn toggled<V: PartialEq + Copy + 'static>(
     registry: impl Into<Arrangement<V>>,
     items: &[V],
     value: V,
 ) -> Vec<V> {
-    if items.contains(&value) {
-        without(items, value)
+    let registry = registry.into();
+
+    if registry.holds(items, value) {
+        without(&registry, items, value)
     } else {
-        insert_stock(&registry.into(), items, value)
+        insert_stock(&registry, items, value)
     }
 }
 
 /// The stash, if it still describes the row: minus `hidden`, it has to
-/// match the live list exactly.
-fn restored<V: PartialEq + Copy>(stash: &[V], items: &[V], hidden: &[V]) -> Option<Vec<V>> {
+/// match the live list exactly, variants included.
+fn restored<V: PartialEq + Copy>(
+    registry: &Arrangement<V>,
+    stash: &[V],
+    items: &[V],
+    hidden: &[V],
+) -> Option<Vec<V>> {
     let kept: Vec<V> = stash
         .iter()
         .copied()
-        .filter(|v| !hidden.contains(v))
+        .filter(|v| !registry.holds(hidden, *v))
         .collect();
     (kept == items).then(|| stash.to_vec())
 }
@@ -328,24 +597,25 @@ pub fn toggled_stashed<V: PartialEq + Copy + 'static>(
     stash: &mut Option<Vec<V>>,
     values: &[V],
 ) -> Vec<V> {
-    if values.iter().any(|value| items.contains(value)) {
+    let registry = registry.into();
+
+    if values.iter().any(|value| registry.holds(items, *value)) {
         *stash = Some(items.to_vec());
         return items
             .iter()
             .copied()
-            .filter(|value| !values.contains(value))
+            .filter(|value| !registry.holds(values, *value))
             .collect();
     }
     if let Some(kept) = stash
         .take()
-        .and_then(|stash| restored(&stash, items, values))
+        .and_then(|stash| restored(&registry, &stash, items, values))
     {
         return kept;
     }
-    let registry = registry.into();
     let mut out = items.to_vec();
     for value in values {
-        if !out.contains(value) {
+        if !registry.holds(&out, *value) {
             out = insert_stock(&registry, &out, *value);
         }
     }
@@ -353,7 +623,7 @@ pub fn toggled_stashed<V: PartialEq + Copy + 'static>(
 }
 
 /// Drop repeats from a hand-edited dump, keeping first positions.
-/// Repeatable items pass through.
+/// Repeatable items pass through, and two variants of one item are a repeat.
 pub fn dedup<V: PartialEq + Copy + 'static>(
     registry: impl Into<Arrangement<V>>,
     items: Vec<V>,
@@ -362,7 +632,7 @@ pub fn dedup<V: PartialEq + Copy + 'static>(
 
     let mut out: Vec<V> = Vec::with_capacity(items.len());
     for item in items {
-        if registry.repeats(item) || !out.contains(&item) {
+        if registry.repeats(item) || !registry.holds(&out, item) {
             out.push(item);
         }
     }
@@ -414,7 +684,7 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
     for (row_ix, row) in rows.iter().enumerate() {
         let mut bar = well();
         for (ix, value) in row.iter().copied().enumerate() {
-            let Some(entry) = entries.iter().find(|entry| entry.value == value) else {
+            let Some(entry) = entries.iter().find(|entry| entry.owns(value)) else {
                 continue;
             };
             let drag = ArrangeDrag {
@@ -424,46 +694,103 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
                 label: entry.label.clone(),
                 icon: entry.icon,
             };
+            let picks = !entry.variants.is_empty();
+            let variant_label = entry
+                .variants
+                .iter()
+                .find(|(_, variant)| *variant == value)
+                .map(|(label, _)| label.clone());
+            // Keyed by place too: two spacers sharing an id would share drag state.
+            let chip_id = ElementId::from((entry.id.clone(), (row_ix << 16) | ix));
             let drop_registry = registry.clone();
             let drop_rows = rows.clone();
             let drop_apply = apply.clone();
             let hide_rows = rows.clone();
             let hide_apply = apply.clone();
-            bar = bar.child(
-                // Keyed by place too: two spacers sharing an id would share drag state.
-                chip(entry.label.clone(), entry.icon, false)
-                    .id((entry.id.clone(), (row_ix << 16) | ix))
-                    .cursor_pointer()
-                    .on_drag(drag, |drag, _pos, _window, cx| {
-                        cx.new(|_| ChipPreview {
-                            label: drag.label.clone(),
-                            icon: drag.icon,
-                        })
+            let placed = chip(entry.label.clone(), entry.icon, false)
+                .id(chip_id.clone())
+                .cursor_pointer()
+                .on_drag(drag, |drag, _pos, _window, cx| {
+                    cx.new(|_| ChipPreview {
+                        label: drag.label.clone(),
+                        icon: drag.icon,
                     })
-                    .drag_over::<ArrangeDrag<V>>(move |style, drag, _, _| {
-                        if drag.editor == id {
-                            style.bg(palette::alpha(palette::accent(), 0x33))
-                        } else {
-                            style
+                })
+                .drag_over::<ArrangeDrag<V>>(move |style, drag, _, _| {
+                    if drag.editor == id {
+                        style.bg(palette::alpha(palette::accent(), 0x33))
+                    } else {
+                        style
+                    }
+                })
+                .on_drop(cx.listener(move |this, drag: &ArrangeDrag<V>, _, cx| {
+                    if drag.editor != id {
+                        return;
+                    }
+                    let rows = match drag.from {
+                        Some(from) => moved_at(&drop_registry, &drop_rows, from, (row_ix, ix)),
+                        None => inserted(&drop_registry, &drop_rows, drag.value, (row_ix, ix)),
+                    };
+                    drop_apply(this, rows, cx);
+                }))
+                .when_some(variant_label, |chip, label| {
+                    chip.child(
+                        div()
+                            .text_xs()
+                            .whitespace_nowrap()
+                            .text_color(palette::text_faint())
+                            .child(label),
+                    )
+                })
+                .child(chip_action(icons::CLOSE).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        // Kept off the chip, whose click would open the picker.
+                        if picks {
+                            cx.stop_propagation();
                         }
-                    })
-                    .on_drop(cx.listener(move |this, drag: &ArrangeDrag<V>, _, cx| {
-                        if drag.editor != id {
-                            return;
-                        }
-                        let rows = match drag.from {
-                            Some(from) => moved_at(&drop_registry, &drop_rows, from, (row_ix, ix)),
-                            None => inserted(&drop_registry, &drop_rows, drag.value, (row_ix, ix)),
-                        };
-                        drop_apply(this, rows, cx);
-                    }))
-                    .child(chip_action(icons::CLOSE).on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            hide_apply(this, removed_at(&hide_rows, (row_ix, ix)), cx);
-                        }),
-                    )),
-            );
+                        hide_apply(this, removed_at(&hide_rows, (row_ix, ix)), cx);
+                    }),
+                ));
+            if !picks {
+                bar = bar.child(placed);
+                continue;
+            }
+
+            // A pick swaps this place's value and keeps everything else.
+            let weak = cx.entity().downgrade();
+            let pick_rows = rows.clone();
+            let pick_apply = apply.clone();
+            let variants = entry.variants.clone();
+            let menu: MenuBuild = Rc::new(move |mut menu, _, _| {
+                for (label, variant) in &variants {
+                    let variant = *variant;
+                    let weak = weak.clone();
+                    let rows = pick_rows.clone();
+                    let apply = pick_apply.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(variant == value)
+                            .on_click(move |_, _, cx| {
+                                let mut rows = rows.clone();
+                                if let Some(slot) =
+                                    rows.get_mut(row_ix).and_then(|row| row.get_mut(ix))
+                                {
+                                    *slot = variant;
+                                }
+                                if let Some(this) = weak.upgrade() {
+                                    this.update(cx, |this, cx| apply(this, rows, cx));
+                                }
+                            }),
+                    );
+                }
+                menu
+            });
+            bar = bar.child(VariantChip {
+                id: chip_id,
+                chip: placed,
+                menu,
+            });
         }
         let tail_registry = registry.clone();
         let tail_rows = rows.clone();
@@ -590,7 +917,7 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
         }));
     for entry in entries
         .iter()
-        .filter(|entry| entry.repeats || rows.iter().any(|row| !row.contains(&entry.value)))
+        .filter(|entry| entry.repeats || rows.iter().any(|row| !row.iter().any(|v| entry.owns(*v))))
     {
         let drag = ArrangeDrag {
             editor: id,
@@ -619,7 +946,7 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
                         let mut rows = show_rows.clone();
                         let target = rows
                             .iter()
-                            .position(|row| !row.contains(&value))
+                            .position(|row| !show_registry.holds(row, value))
                             .unwrap_or(0);
                         rows[target] = insert_stock(&show_registry, &rows[target], value);
                         show_apply(this, rows, cx);
@@ -644,8 +971,8 @@ mod tests {
     use gpui::SharedString;
 
     use super::{
-        ArrangeEntry, ArrangeSpec, Arrangement, dedup, insert_stock, inserted, moved_at,
-        removed_at, removed_row, toggled, toggled_stashed, without,
+        ArrangeEntry, ArrangeSpec, ArrangeVariant, Arrangement, dedup, insert_stock, inserted,
+        moved_at, removed_at, removed_row, toggled, toggled_stashed, without,
     };
 
     fn moved(rows: &[Vec<u8>], from: (usize, usize), to: (usize, usize)) -> Vec<Vec<u8>> {
@@ -665,24 +992,62 @@ mod tests {
             icon: None,
             value: 0,
             repeats: false,
+            variants: &[],
         },
         ArrangeSpec {
             key: "b",
             icon: None,
             value: 1,
             repeats: false,
+            variants: &[],
         },
         ArrangeSpec {
             key: "c",
             icon: None,
             value: 2,
             repeats: false,
+            variants: &[],
         },
         ArrangeSpec {
             key: "d",
             icon: None,
             value: 3,
             repeats: true,
+            variants: &[],
+        },
+    ];
+
+    /// Value 4 is one item drawn two ways: 4 its default, 5 the other look.
+    const VARIED: &[ArrangeSpec<u8>] = &[
+        ArrangeSpec {
+            key: "a",
+            icon: None,
+            value: 0,
+            repeats: false,
+            variants: &[],
+        },
+        ArrangeSpec {
+            key: "e",
+            icon: None,
+            value: 4,
+            repeats: false,
+            variants: &[
+                ArrangeVariant {
+                    key: "e-plain",
+                    value: 4,
+                },
+                ArrangeVariant {
+                    key: "e-badge",
+                    value: 5,
+                },
+            ],
+        },
+        ArrangeSpec {
+            key: "b",
+            icon: None,
+            value: 1,
+            repeats: false,
+            variants: &[],
         },
     ];
 
@@ -734,7 +1099,10 @@ mod tests {
     fn dedup_keeps_first_positions_and_repeats() {
         assert_eq!(dedup(REGISTRY, vec![2, 0, 2, 1, 0]), vec![2, 0, 1]);
         assert_eq!(dedup(REGISTRY, vec![3, 0, 3, 3]), vec![3, 0, 3, 3]);
-        assert_eq!(without(&[0, 1, 2], 1), vec![0, 2]);
+        assert_eq!(
+            without(&Arrangement::Stock(REGISTRY), &[0, 1, 2], 1),
+            vec![0, 2]
+        );
     }
 
     #[test]
@@ -789,6 +1157,7 @@ mod tests {
                 icon: None,
                 value: *value,
                 repeats: *repeats,
+                variants: Vec::new(),
             })
             .collect();
         let registry = Arrangement::from(built);
@@ -800,5 +1169,37 @@ mod tests {
             [vec![0, 2, 1]]
         );
         assert_eq!(insert_stock(&registry, &[0, 1, 3], 2), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn variants_of_one_item_keep_a_row_unique() {
+        let registry = Arrangement::Stock(VARIED);
+
+        // The tray's default lands over the row's badge, not beside it.
+        assert_eq!(inserted(&registry, &[vec![0, 5]], 4, (0, 0)), [vec![4, 0]]);
+        // A move keeps the dragged item's variant.
+        assert_eq!(
+            moved_at(&registry, &[vec![5, 0], vec![4]], (0, 0), (1, 1)),
+            [vec![0], vec![5]]
+        );
+        assert_eq!(dedup(VARIED, vec![5, 0, 4, 1]), vec![5, 0, 1]);
+    }
+
+    #[test]
+    fn hiding_takes_any_variant_and_the_stash_brings_it_back() {
+        assert_eq!(toggled(VARIED, &[0, 5, 1], 4), vec![0, 1]);
+        assert_eq!(toggled(VARIED, &[0, 1], 4), vec![0, 4, 1]);
+
+        let row = vec![1, 5, 0];
+        let mut stash = None;
+        let hidden = toggled_stashed(VARIED, &row, &mut stash, &[4]);
+        assert_eq!(hidden, vec![1, 0]);
+        assert_eq!(toggled_stashed(VARIED, &hidden, &mut stash, &[4]), row);
+
+        // A cold stash shows the default at stock rank.
+        assert_eq!(
+            toggled_stashed(VARIED, &[0, 1], &mut None, &[4]),
+            vec![0, 4, 1]
+        );
     }
 }

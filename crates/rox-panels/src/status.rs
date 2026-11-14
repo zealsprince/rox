@@ -46,36 +46,42 @@ const ITEMS: &[panel::ArrangeSpec<StatusItem>] = &[
         icon: Some(icons::LIST_MUSIC),
         value: StatusItem::Count,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "status-item-time",
         icon: Some(icons::CLOCK),
         value: StatusItem::Time,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "status-item-albums",
         icon: Some(icons::DISC),
         value: StatusItem::Albums,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "status-item-artists",
         icon: Some(icons::MIC),
         value: StatusItem::Artists,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "status-item-plays",
         icon: Some(icons::CHART_PIE),
         value: StatusItem::Plays,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: StatusItem::Spacer,
         repeats: true,
+        variants: &[],
     },
 ];
 

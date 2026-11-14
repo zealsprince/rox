@@ -50,24 +50,28 @@ const ITEMS: &[panel::ArrangeSpec<VolumeItem>] = &[
         icon: Some(icons::VOLUME_2),
         value: VolumeItem::Icon,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "volume-item-slider",
         icon: Some(icons::SLIDERS),
         value: VolumeItem::Slider,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "volume-item-percent",
         icon: None,
         value: VolumeItem::Percent,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: VolumeItem::Spacer,
         repeats: true,
+        variants: &[],
     },
 ];
 

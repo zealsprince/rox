@@ -183,6 +183,7 @@ fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>>
                 )),
                 value: WellItem::Button(def.id),
                 repeats: false,
+                variants: Vec::new(),
             }
         })
         .collect();
@@ -193,6 +194,7 @@ fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>>
         icon: Some(icons::MOVE_HORIZONTAL),
         value: WellItem::Furniture(Furniture::Spacer),
         repeats: true,
+        variants: Vec::new(),
     });
     entries.push(panel::ArrangeEntry {
         id: SharedString::new_static("divider"),
@@ -200,6 +202,7 @@ fn well_registry(buttons: &[CustomButton]) -> Vec<panel::ArrangeEntry<WellItem>>
         icon: Some(icons::MINUS),
         value: WellItem::Furniture(Furniture::Divider),
         repeats: true,
+        variants: Vec::new(),
     });
 
     entries

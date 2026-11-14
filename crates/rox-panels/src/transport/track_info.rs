@@ -58,9 +58,9 @@ pub enum InfoPiece {
     /// As "N queued".
     Queued,
     /// The connected Last.fm account's scrobbles of the artist.
-    ArtistScrobbles,
+    ArtistScrobbles(ScrobbleStyle),
     /// The same account's scrobbles of the track.
-    TrackScrobbles,
+    TrackScrobbles(ScrobbleStyle),
     /// Claims its width first and never crawls.
     Output,
     Favourite,
@@ -73,6 +73,21 @@ pub enum InfoPiece {
     Break,
 }
 
+impl InfoPiece {
+    fn scrobble_style(self) -> Option<ScrobbleStyle> {
+        match self {
+            InfoPiece::ArtistScrobbles(style) | InfoPiece::TrackScrobbles(style) => Some(style),
+            _ => None,
+        }
+    }
+}
+
+impl panel::ArrangeItem for InfoPiece {
+    fn catalog() -> &'static [panel::ArrangeSpec<Self>] {
+        ITEMS
+    }
+}
+
 /// Stock order: where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
     panel::ArrangeSpec {
@@ -80,108 +95,152 @@ const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
         icon: Some(icons::LIST_MUSIC),
         value: InfoPiece::TrackNo,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-title",
         icon: Some(icons::MUSIC),
         value: InfoPiece::Title,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-duration",
         icon: Some(icons::CLOCK),
         value: InfoPiece::Duration,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-artist",
         icon: Some(icons::MIC),
         value: InfoPiece::Artist,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-album",
         icon: Some(icons::DISC),
         value: InfoPiece::Album,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-year",
         icon: Some(icons::CALENDAR),
         value: InfoPiece::Year,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-genre",
         icon: Some(icons::TAG),
         value: InfoPiece::Genre,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-quality",
         icon: Some(icons::AUDIO_WAVEFORM),
         value: InfoPiece::Quality,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-next",
         icon: Some(icons::SKIP_FORWARD),
         value: InfoPiece::Next,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-queued",
         icon: Some(icons::LAYERS),
         value: InfoPiece::Queued,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-artist-scrobbles",
         icon: Some(icons::ACTIVITY),
-        value: InfoPiece::ArtistScrobbles,
+        value: InfoPiece::ArtistScrobbles(ScrobbleStyle::Text),
         repeats: false,
+        variants: &[
+            panel::ArrangeVariant {
+                key: "track-info-scrobble-style-text",
+                value: InfoPiece::ArtistScrobbles(ScrobbleStyle::Text),
+            },
+            panel::ArrangeVariant {
+                key: "track-info-scrobble-style-badge",
+                value: InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge),
+            },
+            panel::ArrangeVariant {
+                key: "track-info-scrobble-style-labelled",
+                value: InfoPiece::ArtistScrobbles(ScrobbleStyle::LabelledBadge),
+            },
+        ],
     },
     panel::ArrangeSpec {
         key: "info-item-track-scrobbles",
         icon: Some(icons::HASH),
-        value: InfoPiece::TrackScrobbles,
+        value: InfoPiece::TrackScrobbles(ScrobbleStyle::Text),
         repeats: false,
+        variants: &[
+            panel::ArrangeVariant {
+                key: "track-info-scrobble-style-text",
+                value: InfoPiece::TrackScrobbles(ScrobbleStyle::Text),
+            },
+            panel::ArrangeVariant {
+                key: "track-info-scrobble-style-badge",
+                value: InfoPiece::TrackScrobbles(ScrobbleStyle::Badge),
+            },
+            panel::ArrangeVariant {
+                key: "track-info-scrobble-style-labelled",
+                value: InfoPiece::TrackScrobbles(ScrobbleStyle::LabelledBadge),
+            },
+        ],
     },
     panel::ArrangeSpec {
         key: "info-item-output",
         icon: Some(icons::VOLUME_2),
         value: InfoPiece::Output,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-favourite",
         icon: Some(icons::HEART),
         value: InfoPiece::Favourite,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "info-item-rating",
         icon: Some(icons::STAR),
         value: InfoPiece::Rating,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-art",
         icon: Some(icons::IMAGE),
         value: InfoPiece::Art,
         repeats: false,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: InfoPiece::Spacer,
         repeats: true,
+        variants: &[],
     },
     panel::ArrangeSpec {
         key: "head-piece-divider",
         icon: Some(icons::MINUS),
         value: InfoPiece::Divider,
         repeats: true,
+        variants: &[],
     },
 ];
 
@@ -237,9 +296,8 @@ pub struct TrackInfoConfig {
     /// that needs one flat tone; the hover note still explains.
     #[serde(default = "default_output_tint")]
     pub output_tint: bool,
-    #[serde(default)]
-    pub scrobble_style: ScrobbleStyle,
     /// Display order; one not listed is hidden.
+    #[serde(serialize_with = "panel::serialize_items")]
     pub items: Vec<InfoPiece>,
     /// Per-row multiplier over the panel's base, indexed like the editor's
     /// rows; a row past the end reads 1.
@@ -258,7 +316,6 @@ impl Default for TrackInfoConfig {
             swap: false,
             swap_secs: default_swap_secs(),
             output_tint: default_output_tint(),
-            scrobble_style: ScrobbleStyle::default(),
             items: stock_items(Align::default(), true),
             scales: Vec::new(),
         }
@@ -313,7 +370,7 @@ pub fn builtin_presets() -> Vec<(&'static str, TrackInfoConfig)> {
 }
 
 /// Newer layouts write the ordered list. Older ones had a `show_output`
-/// toggle for the chip.
+/// toggle for the chip, and a `scrobble_style` that styled both counts.
 #[derive(Deserialize)]
 struct TrackInfoConfigDump {
     #[serde(flatten)]
@@ -337,14 +394,17 @@ struct TrackInfoConfigDump {
     #[serde(default)]
     scrobble_style: ScrobbleStyle,
     #[serde(default)]
-    items: Option<Vec<InfoPiece>>,
+    items: Option<Vec<panel::SavedItem<InfoPiece>>>,
     #[serde(default)]
     scales: Vec<f32>,
 }
 
 impl From<TrackInfoConfigDump> for TrackInfoConfig {
     fn from(dump: TrackInfoConfigDump) -> Self {
-        let items = match dump.items {
+        let items = dump
+            .items
+            .map(|items| items.into_iter().map(|item| item.0).collect::<Vec<_>>());
+        let items = match items {
             // Deduped per row: the catalog has no break (it's the editor's row
             // boundary), and each row may hold its own copy of a piece.
             Some(items) => items
@@ -370,6 +430,20 @@ impl From<TrackInfoConfigDump> for TrackInfoConfig {
             }
             None => stock_items(dump.align, dump.show_output),
         };
+
+        // The panel-wide style lands on every count still on its default.
+        let legacy = dump.scrobble_style;
+        let items = items
+            .into_iter()
+            .map(|piece| match piece {
+                InfoPiece::ArtistScrobbles(ScrobbleStyle::Text) => {
+                    InfoPiece::ArtistScrobbles(legacy)
+                }
+                InfoPiece::TrackScrobbles(ScrobbleStyle::Text) => InfoPiece::TrackScrobbles(legacy),
+                piece => piece,
+            })
+            .collect();
+
         TrackInfoConfig {
             chrome: dump.chrome,
             align: dump.align,
@@ -379,7 +453,6 @@ impl From<TrackInfoConfigDump> for TrackInfoConfig {
             swap: dump.swap,
             swap_secs: dump.swap_secs,
             output_tint: dump.output_tint,
-            scrobble_style: dump.scrobble_style,
             items,
             scales: dump.scales,
         }
@@ -417,8 +490,8 @@ pub enum MarqueeMode {
     Loop,
 }
 
-/// How the two scrobble counts draw. A badge holds its shape like the output
-/// chip, so it cuts the run it sits in and never crawls.
+/// How a scrobble count draws, picked per piece. A badge holds its shape
+/// like the output chip, so it cuts the run it sits in and never crawls.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScrobbleStyle {
@@ -633,8 +706,25 @@ struct PieceTexts {
     quality: Option<String>,
     next: Option<String>,
     queued: Option<String>,
-    artist_scrobbles: Option<String>,
-    track_scrobbles: Option<String>,
+    artist_scrobbles: Option<CountText>,
+    track_scrobbles: Option<CountText>,
+}
+
+impl PieceTexts {
+    fn scrobbles(&self, piece: InfoPiece) -> Option<&CountText> {
+        match piece {
+            InfoPiece::ArtistScrobbles(_) => self.artist_scrobbles.as_ref(),
+            InfoPiece::TrackScrobbles(_) => self.track_scrobbles.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+/// A count both ways, since each piece picks its own look: the byline's
+/// sentence, and the bare number a badge sets beside its own label.
+struct CountText {
+    line: String,
+    count: String,
 }
 
 /// What a scrobble lookup asked, so a track change or a re-arranged line
@@ -677,7 +767,6 @@ fn row_bits(
     pieces: &[InfoPiece],
     texts: &PieceTexts,
     glyph: Option<(InfoPiece, SharedString)>,
-    scrobbles: ScrobbleStyle,
 ) -> Vec<RowBit> {
     let mut bits = Vec::new();
     let mut run: Vec<(String, bool)> = Vec::new();
@@ -695,8 +784,9 @@ fn row_bits(
             InfoPiece::Quality => texts.quality.clone().map(|t| (t, true)),
             InfoPiece::Next => texts.next.clone().map(|t| (t, true)),
             InfoPiece::Queued => texts.queued.clone().map(|t| (t, true)),
-            InfoPiece::ArtistScrobbles => texts.artist_scrobbles.clone().map(|t| (t, true)),
-            InfoPiece::TrackScrobbles => texts.track_scrobbles.clone().map(|t| (t, true)),
+            InfoPiece::ArtistScrobbles(_) | InfoPiece::TrackScrobbles(_) => texts
+                .scrobbles(*piece)
+                .map(|count| (count.line.clone(), true)),
             InfoPiece::Output
             | InfoPiece::Favourite
             | InfoPiece::Rating
@@ -714,16 +804,15 @@ fn row_bits(
         };
         let Some((text, muted)) = text else { continue };
 
-        if scrobbles != ScrobbleStyle::Text
-            && matches!(
-                piece,
-                InfoPiece::ArtistScrobbles | InfoPiece::TrackScrobbles
-            )
+        if piece
+            .scrobble_style()
+            .is_some_and(|style| style != ScrobbleStyle::Text)
+            && let Some(count) = texts.scrobbles(*piece)
         {
             if !run.is_empty() {
                 bits.push(RowBit::Run(std::mem::take(&mut run)));
             }
-            bits.push(RowBit::Badge(*piece, text));
+            bits.push(RowBit::Badge(*piece, count.count.clone()));
             continue;
         }
 
@@ -752,6 +841,13 @@ fn row_bits(
     }
 
     bits
+}
+
+fn scrobble_styles(items: &[InfoPiece]) -> Vec<ScrobbleStyle> {
+    items
+        .iter()
+        .filter_map(|piece| piece.scrobble_style())
+        .collect()
 }
 
 /// Empty rows kept, so the per-row scales stay indexed like the editor's.
@@ -1191,7 +1287,12 @@ impl PanelSettings for TrackInfoPanel {
             &item_rows,
             None,
             |this: &mut Self, rows, cx| {
-                this.config.items = rows.join(&InfoPiece::Break);
+                let items = rows.join(&InfoPiece::Break);
+                // A badge cuts its run, so a count's new look changes the crawls.
+                if scrobble_styles(&items) != scrobble_styles(&this.config.items) {
+                    this.reset_marquees();
+                }
+                this.config.items = items;
                 cx.notify();
             },
             cx,
@@ -1210,42 +1311,13 @@ impl PanelSettings for TrackInfoPanel {
 
             let rows = rows.block("transport-pieces", &["pieces", "order", "layout"], editor);
 
-            let rows = rows.keyed(
+            let mut rows = rows.keyed(
                 "track-info-color-output-chip",
                 &["color", "warning", "resample", "fallback"],
                 panel::toggle(
                     self.config.output_tint,
                     |this: &mut Self, on, cx| {
                         this.config.output_tint = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            );
-
-            let mut rows = rows.keyed(
-                "track-info-scrobble-style",
-                &["scrobbles", "badge", "count", "last.fm"],
-                panel::choices_shared(
-                    &[
-                        (
-                            rox_i18n::t!("track-info-scrobble-style-text"),
-                            ScrobbleStyle::Text,
-                        ),
-                        (
-                            rox_i18n::t!("track-info-scrobble-style-badge"),
-                            ScrobbleStyle::Badge,
-                        ),
-                        (
-                            rox_i18n::t!("track-info-scrobble-style-labelled"),
-                            ScrobbleStyle::LabelledBadge,
-                        ),
-                    ],
-                    self.config.scrobble_style,
-                    |this: &mut Self, style, cx| {
-                        this.config.scrobble_style = style;
-                        // A badge cuts its run, so the crawls change shape.
-                        this.reset_marquees();
                         cx.notify();
                     },
                     cx,
@@ -1512,7 +1584,6 @@ impl TrackInfoPanel {
         let mode = self.config.marquee;
         let swap = self.config.swap;
         let scales = self.config.scales.clone();
-        let scrobble_style = self.config.scrobble_style;
         let speed = self.config.marquee_speed.clamp(
             MARQUEE_SPEED_MIN,
             settings_ui::ceiling(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX),
@@ -1639,8 +1710,12 @@ impl TrackInfoPanel {
             track_scrobbles: None,
         };
         // A disconnected account leaves both pieces out.
-        let wants_artist = items.contains(&InfoPiece::ArtistScrobbles);
-        let wants_track = items.contains(&InfoPiece::TrackScrobbles);
+        let wants_artist = items
+            .iter()
+            .any(|i| matches!(i, InfoPiece::ArtistScrobbles(_)));
+        let wants_track = items
+            .iter()
+            .any(|i| matches!(i, InfoPiece::TrackScrobbles(_)));
         let username = self.state.scrobbler.read(cx).username().to_string();
         if (wants_artist || wants_track)
             && !username.is_empty()
@@ -1656,15 +1731,13 @@ impl TrackInfoPanel {
                 cx,
             );
             let spell = |n: u64| rox_i18n::format::format_int(n as i64);
-            // A badge carries its own label, so it takes the bare count.
-            let text = self.config.scrobble_style == ScrobbleStyle::Text;
-            texts.artist_scrobbles = counts.artist.map(|n| match text {
-                true => rox_i18n::t!("track-info-artist-scrobbles", count = spell(n)).to_string(),
-                false => spell(n),
+            texts.artist_scrobbles = counts.artist.map(|n| CountText {
+                line: rox_i18n::t!("track-info-artist-scrobbles", count = spell(n)).to_string(),
+                count: spell(n),
             });
-            texts.track_scrobbles = counts.track.map(|n| match text {
-                true => rox_i18n::t!("track-info-track-scrobbles", count = spell(n)).to_string(),
-                false => spell(n),
+            texts.track_scrobbles = counts.track.map(|n| CountText {
+                line: rox_i18n::t!("track-info-track-scrobbles", count = spell(n)).to_string(),
+                count: spell(n),
             });
         }
         if items
@@ -1723,7 +1796,7 @@ impl TrackInfoPanel {
             .iter()
             .enumerate()
             .filter(|(_, row)| !row.is_empty())
-            .map(|(ix, row)| (ix, row_bits(row, &texts, glyph.clone(), scrobble_style)))
+            .map(|(ix, row)| (ix, row_bits(row, &texts, glyph.clone())))
             .collect();
         // The end-of-queue note trails the first row's last run, where
         // the single line has always worn it.
@@ -1917,7 +1990,7 @@ impl TrackInfoPanel {
                         );
                     }
                     RowBit::Badge(piece, count) => {
-                        row = row.child(scrobble_badge(piece, count, scrobble_style));
+                        row = row.child(scrobble_badge(piece, count));
                     }
                     RowBit::Fixed(_) => {}
                 }
@@ -1968,8 +2041,9 @@ fn empty_cover(glyph: &'static str, icon_px: f32) -> AnyElement {
 /// Bright segments hold their width and the muted ones give way.
 /// Shaped like the output chip, with the count in full text color so it
 /// reads first.
-fn scrobble_badge(piece: InfoPiece, count: String, style: ScrobbleStyle) -> Div {
-    let artist = piece == InfoPiece::ArtistScrobbles;
+fn scrobble_badge(piece: InfoPiece, count: String) -> Div {
+    let artist = matches!(piece, InfoPiece::ArtistScrobbles(_));
+    let style = piece.scrobble_style().unwrap_or_default();
     let (icon, word) = match (style, artist) {
         (ScrobbleStyle::LabelledBadge, true) => (
             icons::ACTIVITY,
@@ -2153,8 +2227,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        InfoPiece, MarqueeScroll, Motion, PieceTexts, RowBit, ScrobbleStyle, TrackInfoConfig,
-        editor_rows, icons, row_bits,
+        CountText, InfoPiece, MarqueeScroll, Motion, PieceTexts, RowBit, ScrobbleStyle,
+        TrackInfoConfig, editor_rows, icons, row_bits,
     };
     use crate::panel::Align;
 
@@ -2175,24 +2249,30 @@ mod tests {
         }
     }
 
+    fn counted(line: &str, count: &str) -> Option<CountText> {
+        Some(CountText {
+            line: line.into(),
+            count: count.into(),
+        })
+    }
+
+    const ARTIST_TEXT: InfoPiece = InfoPiece::ArtistScrobbles(ScrobbleStyle::Text);
+    const TRACK_TEXT: InfoPiece = InfoPiece::TrackScrobbles(ScrobbleStyle::Text);
+
     #[test]
     fn scrobble_counts_join_the_byline_and_drop_out_until_known() {
-        let pieces = [
-            InfoPiece::Artist,
-            InfoPiece::ArtistScrobbles,
-            InfoPiece::TrackScrobbles,
-        ];
+        let pieces = [InfoPiece::Artist, ARTIST_TEXT, TRACK_TEXT];
 
         // Not connected, or still asking: the artist stands alone.
-        let bits = row_bits(&pieces, &texts(), None, ScrobbleStyle::Text);
+        let bits = row_bits(&pieces, &texts(), None);
         assert!(
             matches!(&bits[..], [RowBit::Run(run)] if run == &vec![("USAO".to_string(), true)])
         );
 
         let mut known = texts();
-        known.artist_scrobbles = Some("1,364 artist scrobbles".into());
-        known.track_scrobbles = Some("42 track scrobbles".into());
-        let bits = row_bits(&pieces, &known, None, ScrobbleStyle::Text);
+        known.artist_scrobbles = counted("1,364 artist scrobbles", "1,364");
+        known.track_scrobbles = counted("42 track scrobbles", "42");
+        let bits = row_bits(&pieces, &known, None);
         let [RowBit::Run(run)] = &bits[..] else {
             panic!("expected one run");
         };
@@ -2209,14 +2289,119 @@ mod tests {
         let config: TrackInfoConfig =
             serde_json::from_str(r#"{"items": ["title", "artistscrobbles", "trackscrobbles"]}"#)
                 .unwrap();
+        assert!(config.items == vec![InfoPiece::Title, ARTIST_TEXT, TRACK_TEXT]);
+    }
+
+    #[test]
+    fn a_list_from_before_variants_loads_on_every_default() {
+        let config: TrackInfoConfig = serde_json::from_str(
+            r#"{"items": ["title", "artistscrobbles", "break", "trackscrobbles", "output"]}"#,
+        )
+        .unwrap();
         assert!(
             config.items
                 == vec![
                     InfoPiece::Title,
-                    InfoPiece::ArtistScrobbles,
-                    InfoPiece::TrackScrobbles,
+                    ARTIST_TEXT,
+                    InfoPiece::Break,
+                    TRACK_TEXT,
+                    InfoPiece::Output,
                 ]
         );
+
+        // Nothing new written back for it either.
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            saved["items"],
+            serde_json::json!([
+                "title",
+                "artistscrobbles",
+                "break",
+                "trackscrobbles",
+                "output"
+            ])
+        );
+    }
+
+    #[test]
+    fn only_a_non_default_variant_writes_the_richer_form() {
+        let config = TrackInfoConfig {
+            items: vec![
+                InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge),
+                TRACK_TEXT,
+                InfoPiece::TrackScrobbles(ScrobbleStyle::LabelledBadge),
+            ],
+            ..TrackInfoConfig::default()
+        };
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            saved["items"],
+            serde_json::json!([
+                { "item": "artistscrobbles", "variant": "badge" },
+                "trackscrobbles",
+                { "item": "trackscrobbles", "variant": "labelled-badge" },
+            ])
+        );
+
+        // The dedup keeps the first copy of the track count, on its own variant.
+        let back: TrackInfoConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.items == vec![InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge), TRACK_TEXT]);
+    }
+
+    #[test]
+    fn an_unknown_variant_fails_the_config_like_an_unknown_item() {
+        let unknown_item = r#"{"items": ["title", "nosuchpiece"]}"#;
+        assert!(serde_json::from_str::<TrackInfoConfig>(unknown_item).is_err());
+
+        let unknown_variant = r#"{"items": [{"item": "artistscrobbles", "variant": "sparkle"}]}"#;
+        assert!(serde_json::from_str::<TrackInfoConfig>(unknown_variant).is_err());
+
+        let no_variants = r#"{"items": [{"item": "title", "variant": "badge"}]}"#;
+        assert!(serde_json::from_str::<TrackInfoConfig>(no_variants).is_err());
+    }
+
+    #[test]
+    fn a_panel_wide_scrobble_style_migrates_onto_both_counts() {
+        let config: TrackInfoConfig = serde_json::from_str(
+            r#"{"scrobble_style": "badge", "items": ["artistscrobbles", "title", "trackscrobbles"]}"#,
+        )
+        .unwrap();
+        assert!(
+            config.items
+                == vec![
+                    InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge),
+                    InfoPiece::Title,
+                    InfoPiece::TrackScrobbles(ScrobbleStyle::Badge),
+                ]
+        );
+
+        // The setting itself is gone from what gets written.
+        let saved = serde_json::to_value(&config).unwrap();
+        assert!(saved.get("scrobble_style").is_none());
+    }
+
+    #[test]
+    fn each_count_draws_its_own_variant() {
+        let pieces = [
+            InfoPiece::Artist,
+            InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge),
+            TRACK_TEXT,
+        ];
+        let mut known = texts();
+        known.artist_scrobbles = counted("1,364 artist scrobbles", "1,364");
+        known.track_scrobbles = counted("42 track scrobbles", "42");
+
+        let bits = row_bits(&pieces, &known, None);
+        assert!(matches!(
+            &bits[..],
+            [
+                RowBit::Run(artist),
+                RowBit::Badge(InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge), count),
+                RowBit::Run(track),
+            ] if count == "1,364"
+                && artist == &vec![("USAO".to_string(), true)]
+                && track == &vec![("42 track scrobbles".to_string(), true)]
+        ));
     }
 
     #[test]
@@ -2287,23 +2472,27 @@ mod tests {
 
     #[test]
     fn badged_counts_cut_the_byline_and_drop_out_until_known() {
-        let pieces = [
-            InfoPiece::Artist,
-            InfoPiece::ArtistScrobbles,
-            InfoPiece::Album,
-        ];
-
-        let bits = row_bits(&pieces, &texts(), None, ScrobbleStyle::Badge);
+        let badge = InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge);
+        let bits = row_bits(
+            &[InfoPiece::Artist, badge, InfoPiece::Album],
+            &texts(),
+            None,
+        );
         assert!(matches!(&bits[..], [RowBit::Run(run)] if run.len() == 1));
 
+        let labelled = InfoPiece::ArtistScrobbles(ScrobbleStyle::LabelledBadge);
         let mut known = texts();
-        known.artist_scrobbles = Some("1,364".into());
-        let bits = row_bits(&pieces, &known, None, ScrobbleStyle::LabelledBadge);
+        known.artist_scrobbles = counted("1,364 artist scrobbles", "1,364");
+        let bits = row_bits(
+            &[InfoPiece::Artist, labelled, InfoPiece::Album],
+            &known,
+            None,
+        );
         assert!(matches!(
             &bits[..],
             [
                 RowBit::Run(_),
-                RowBit::Badge(InfoPiece::ArtistScrobbles, count),
+                RowBit::Badge(InfoPiece::ArtistScrobbles(ScrobbleStyle::LabelledBadge), count),
                 RowBit::Run(_)
             ] if count == "1,364"
         ));
@@ -2318,7 +2507,7 @@ mod tests {
             InfoPiece::Artist,
             InfoPiece::Album,
         ];
-        let bits = row_bits(&pieces, &texts(), None, ScrobbleStyle::Text);
+        let bits = row_bits(&pieces, &texts(), None);
         assert!(bits.len() == 1);
         let RowBit::Run(run) = &bits[0] else {
             panic!("expected a run");
@@ -2339,7 +2528,7 @@ mod tests {
             InfoPiece::Year,
             InfoPiece::Artist,
         ];
-        let bits = row_bits(&pieces, &texts(), None, ScrobbleStyle::Text);
+        let bits = row_bits(&pieces, &texts(), None);
         assert!(bits.len() == 3);
         assert!(matches!(&bits[0], RowBit::Run(run) if run.len() == 1));
         assert!(matches!(&bits[1], RowBit::Fixed(InfoPiece::Spacer)));
@@ -2358,7 +2547,6 @@ mod tests {
             &pieces,
             &texts(),
             Some((InfoPiece::Album, icons::RADIO.into())),
-            ScrobbleStyle::Text,
         );
         assert!(bits.len() == 2);
         let RowBit::Run(run) = &bits[0] else {
@@ -2378,25 +2566,23 @@ mod tests {
             &trailing,
             &texts(),
             Some((InfoPiece::Album, icons::RADIO.into())),
-            ScrobbleStyle::Text,
         );
         assert!(matches!(&bits[1], RowBit::Glyph(path) if path == icons::RADIO));
         assert!(matches!(&bits[2], RowBit::Fixed(InfoPiece::Output)));
 
         // A run past the chip doesn't drag the mark along with it.
-        let mut counted = texts();
-        counted.artist_scrobbles = Some("1,364 artist scrobbles".into());
+        let mut known = texts();
+        known.artist_scrobbles = counted("1,364 artist scrobbles", "1,364");
         let split = [
             InfoPiece::Title,
             InfoPiece::Album,
             InfoPiece::Output,
-            InfoPiece::ArtistScrobbles,
+            ARTIST_TEXT,
         ];
         let bits = row_bits(
             &split,
-            &counted,
+            &known,
             Some((InfoPiece::Album, icons::RADIO.into())),
-            ScrobbleStyle::Text,
         );
         assert!(matches!(
             &bits[..],
@@ -2413,11 +2599,10 @@ mod tests {
             &elsewhere,
             &texts(),
             Some((InfoPiece::Album, icons::RADIO.into())),
-            ScrobbleStyle::Text,
         );
         assert!(bits.len() == 1);
 
-        let bits = row_bits(&pieces, &texts(), None, ScrobbleStyle::Text);
+        let bits = row_bits(&pieces, &texts(), None);
         assert!(bits.len() == 1);
     }
 

@@ -147,13 +147,17 @@ impl Render for Framed {
             .map(|player| player.entity_id())
             .or_else(palette::focused_player);
 
-        let body = framed(
-            asked,
-            self.inner.clone().into_any_element(),
-            window,
-            player,
-            |_, window, _| window.remove_window(),
-        );
+        // Tinted here so no child window can forget it. One that also wraps
+        // itself pushes the same tint again, which changes nothing.
+        let inner = self.inner.clone().into_any_element();
+        let inner = match player {
+            Some(player) => rox_panel_kit::window_body(player, || inner).into_any_element(),
+            None => inner,
+        };
+
+        let body = framed(asked, inner, window, player, |_, window, _| {
+            window.remove_window()
+        });
 
         div()
             .relative()

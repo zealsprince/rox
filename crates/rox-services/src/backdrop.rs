@@ -350,14 +350,15 @@ fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, palette::Seed)> {
     Some((Arc::new(RenderImage::new(vec![Frame::new(baked)])), seed))
 }
 
-/// 15 degrees each, wide enough that one album color doesn't split.
+/// 15 degrees each. One album color can straddle an edge, so the vote runs
+/// over a band and its neighbours either side.
 const SEED_BANDS: usize = 24;
 const SEED_MIN_CHROMA: f32 = 0.03;
 /// 60 degrees: how far a runner-up must be to read as a second color.
 const SEED_MIN_SEPARATION: usize = 4;
 
-/// Chroma-weighted mean of the most-voted hue band, and of the strongest
-/// band far enough away. Near-gray, near-black, and near-white pixels don't
+/// Chroma-weighted mean of the most-voted hue window, and of the strongest
+/// window far enough away. Near-gray, near-black, and near-white pixels don't
 /// vote, and too little color leaves the seed None rather than amplifying
 /// noise. Lightness averages every pixel: it's the bright-album signal.
 fn extract_seed(small: &RgbaImage) -> palette::Seed {
@@ -388,31 +389,41 @@ fn extract_seed(small: &RgbaImage) -> palette::Seed {
         cos[band] += h.cos() * c;
     }
     let pixels = (small.width() * small.height()).max(1) as f32;
-    // A band counts only with the weight of 2% of the cover at minimum chroma.
+    // A window counts only with the weight of 2% of the cover at minimum chroma.
     let floor = pixels * 0.02 * SEED_MIN_CHROMA;
-    let band_color = |band: usize| {
+
+    // Pooled across the window, so a color split over an edge reads as one
+    // hue at its full weight. Wraps at the seam.
+    let pooled = |values: &[f32; SEED_BANDS], band: usize| {
+        values[(band + SEED_BANDS - 1) % SEED_BANDS]
+            + values[band]
+            + values[(band + 1) % SEED_BANDS]
+    };
+    let votes: [f32; SEED_BANDS] = std::array::from_fn(|band| pooled(&weight, band));
+    let window_color = |band: usize| {
         palette::oklch_to_rgba(
-            lightness[band] / weight[band],
-            chroma[band] / weight[band],
-            sin[band].atan2(cos[band]),
+            pooled(&lightness, band) / votes[band],
+            pooled(&chroma, band) / votes[band],
+            pooled(&sin, band).atan2(pooled(&cos, band)),
             1.0,
         )
     };
+
     let best = (0..SEED_BANDS)
-        .filter(|&band| weight[band] >= floor)
-        .max_by(|a, b| weight[*a].total_cmp(&weight[*b]));
+        .filter(|&band| votes[band] >= floor)
+        .max_by(|a, b| votes[*a].total_cmp(&votes[*b]));
     let second = best.and_then(|best| {
         (0..SEED_BANDS)
             .filter(|&band| {
                 let apart = band.abs_diff(best);
                 apart.min(SEED_BANDS - apart) >= SEED_MIN_SEPARATION
             })
-            .filter(|&band| weight[band] >= floor)
-            .max_by(|a, b| weight[*a].total_cmp(&weight[*b]))
+            .filter(|&band| votes[band] >= floor)
+            .max_by(|a, b| votes[*a].total_cmp(&votes[*b]))
     });
     palette::Seed {
-        primary: best.map(band_color),
-        secondary: second.map(band_color),
+        primary: best.map(window_color),
+        secondary: second.map(window_color),
         lightness: cover_l / pixels,
     }
 }
@@ -564,6 +575,32 @@ mod tests {
         let secondary = seed.secondary.expect("blue should place");
         assert!(hue_dist(hue_of(primary), hue_of(rgb(0xff0000))) < 0.3);
         assert!(hue_dist(hue_of(secondary), hue_of(rgb(0x0000ff))) < 0.3);
+    }
+
+    #[test]
+    fn a_color_split_over_a_band_edge_still_wins() {
+        // Two adjacent band centres at a low chroma: each half alone is under
+        // the floor, together they clear it.
+        use std::f32::consts::TAU;
+        let centre = |band: usize| ((band as f32 + 0.5) / SEED_BANDS as f32 - 0.5) * TAU;
+        let texel = |hue: f32| {
+            let c = palette::oklch_to_rgba(0.7, 0.04, hue, 1.0);
+            let byte = |v: f32| (v * 255.0).round() as u8;
+            image::Rgba([byte(c.r), byte(c.g), byte(c.b), 255])
+        };
+        let (low, high) = (texel(centre(9)), texel(centre(10)));
+
+        let small = RgbaImage::from_fn(100, 100, |x, y| match (x, y) {
+            (0..10, 0..10) => low,
+            (10..20, 0..10) => high,
+            _ => image::Rgba([255, 255, 255, 255]),
+        });
+        let seed = extract_seed(&small);
+
+        let primary = seed.primary.expect("the split color should win");
+        let edge = (10.0 / SEED_BANDS as f32 - 0.5) * TAU;
+        assert!(hue_dist(hue_of(primary), edge) < 0.15);
+        assert!(seed.secondary.is_none(), "one color read as two");
     }
 
     #[test]

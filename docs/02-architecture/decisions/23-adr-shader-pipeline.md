@@ -115,7 +115,7 @@ chain where they handed over a source string. The Critters bundle is the accepta
 look: a real pixel sort replacing the comet-tail approximation, and a plate stamped
 into the Serpent panel.
 
-**Amendment proposed 2026-11-14, with [ADR 31](31-adr-workspace-archives.md): assets
+**Amendment decided 2026-11-15, with [ADR 31](31-adr-workspace-archives.md): assets
 become files.** An asset leaves the bundle's JSON. A saved or shared workspace carries it
 as a file in its `.roxw` archive, and the live look keeps it in an `assets/` folder in the
 data directory. A shader's asset entry names an asset in the workspace's table where it

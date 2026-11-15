@@ -1,6 +1,6 @@
 # ADR 35: One security model for every package and every way in
 
-**Status:** Proposed
+**Status:** Decided 2026-11-15
 
 Proposal: the three rox packages, a workspace (`.roxw`, [ADR
 31](31-adr-workspace-archives.md)), a plugin (`.roxp`, [ADR

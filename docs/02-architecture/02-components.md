@@ -195,7 +195,7 @@ selection state stay shared without any cross-window messaging.
 
 Composite panels (group, overlay, drawer, slide) host other panels inside one dock slot
 and serialize them as their children (`rox/src/composite.rs`). The dock never sees a
-hosted child. [ADR 33](decisions/33-adr-scene-panel.md) proposes a Scene composite that
+hosted child. The Scene composite ([ADR 33](decisions/33-adr-scene-panel.md))
 hosts whole dock trees instead, one per grid item, placed with images, text and shader
 surfaces in 3D under one camera, with their dumps kept in the scene's own config. A
 full-window scene is a dock holding one Scene panel, so the dock stays the window's root.
@@ -241,13 +241,12 @@ library rows and playable streams ([ADR 30](decisions/30-adr-plugins.md)). The d
 in [implementation 10](../03-implementation/10-plugins.md).
 
 Boundary: a plugin is a subprocess in its own folder, spoken to over its stdin and stdout
-with JSON-RPC. The folder is one the user dropped in. Under [ADR
-32](decisions/32-adr-plugin-packages.md)'s proposal it can also be one rox unpacked from
-a `.roxp` package, kept in a cache under the package's hash. The host crate knows the
-manifest, the folder hash, the wire and the process, and nothing of the library, the
-player or the UI. The services layer turns a running plugin into a source: browse and
-search for the External Sources panel, sync and pick into the library, covers, and a
-stream opener for the engine.
+with JSON-RPC. The folder is one the user dropped in, or one rox unpacked from a `.roxp`
+package ([ADR 32](decisions/32-adr-plugin-packages.md)), kept in a cache under the
+package's hash. The host crate knows the manifest, the folder hash, the wire and the
+process, and nothing of the library, the player or the UI. The services layer turns a
+running plugin into a source: browse and search for the External Sources panel, sync and
+pick into the library, covers, and a stream opener for the engine.
 
 Contract:
 - Nothing runs until the user switches it on, and switching on approves the folder's exact

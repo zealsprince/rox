@@ -1,6 +1,6 @@
 # ADR 32: Plugins ship as packages, folders stay for authoring
 
-**Status:** Proposed
+**Status:** Decided 2026-11-15
 
 Proposal: a plugin is shared and installed as a `.roxp` file, a zip with `plugin.json`
 at its root and everything else the plugin folder holds around it. Install takes a

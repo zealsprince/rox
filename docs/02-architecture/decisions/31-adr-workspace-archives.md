@@ -1,6 +1,6 @@
 # ADR 31: Workspaces are archives, assets are files
 
-**Status:** Proposed
+**Status:** Decided 2026-11-15
 
 Proposal: a saved or shared workspace is a `.roxw` file, a zip holding `workspace.json`
 and a flat `assets/` folder. `workspace.json` is the `WorkspaceBundle` at format version
@@ -73,10 +73,10 @@ copy.
 Costs. A saved workspace is no longer a text file. [ADR 22](22-adr-control-surface.md)'s
 edit-on-disk loop is built on one: the watch on `workspaces/` re-applies the active
 workspace when its JSON changes (`rox/src/workspaces.rs:742`), and `$schema` gives the
-file's editor validation. A `.roxw` keeps `$schema` inside its `workspace.json`, and no
-text editor opens it in place. The live `workspace.json` stays text. Open question,
-owned by ADR 22: whether the loop moves to the live shard, to an unpacked copy, or ends
-for saved workspaces.
+file's editor validation. A `.roxw` keeps `$schema` inside its `workspace.json`, pointing
+at the schema as published at the release that wrote it, and no text editor opens it in
+place. The loop moves to the live `workspace.json`, which stays text: ADR 22's
+amendment holds the detail.
 
 Export can now be large. A look carrying video runs to megabytes where today's run to
 kilobytes. The confirm shows the unpacked size past a threshold, and nothing refuses it.

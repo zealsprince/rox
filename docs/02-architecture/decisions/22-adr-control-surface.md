@@ -111,3 +111,12 @@ A client's action is held to what the menu would offer: declared where it's run,
 items whose known flags allow it, with params that fit the action's schema. It ends in
 the toast a picked action gets, titled as a client's. An outcome that only names a
 folder never opens the file manager, since no click asked for it.
+
+**Amendment decided 2026-11-15, with [ADR 31](31-adr-workspace-archives.md): the loop
+moves to the live look.** A saved workspace is a `.roxw` zip, so it is no longer the
+file a person edits. The live look's `workspace.json` in the data directory is: it stays
+text, its files sit in `assets/` beside it, and an edit made outside rox re-applies the
+look the way an edit to the active saved workspace used to. Saving turns the live look
+into a `.roxw`. A saved archive isn't edited in place, and one replaced on disk by
+another tool still re-applies when it's the active workspace. The manifest inside an
+archive carries `$schema` pointing at the schema of the release that wrote it.

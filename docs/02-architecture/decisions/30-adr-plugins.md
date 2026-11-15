@@ -696,7 +696,7 @@ the External Sources panel's picker and no section under Add Panel's Plugins. Th
 methods are new requests and the block is a new key under `capabilities`, which a host
 that doesn't know it ignores, so `api` stays 1.
 
-**Amendment proposed 2026-11-14, with [ADR 32](32-adr-plugin-packages.md): packages.**
+**Amendment decided 2026-11-15, with [ADR 32](32-adr-plugin-packages.md): packages.**
 The decision above opens with a plugin as a folder the user drops into the data
 directory. Under ADR 32 the folder is the authoring form and a `.roxp` package is the
 shared one. Install takes a package, and rox unpacks it into a folder of its own before

@@ -1,6 +1,6 @@
 # ADR 33: A scene is a panel that places items in 3D
 
-**Status:** Proposed
+**Status:** Decided 2026-11-15
 
 Proposal: rox grows a Scene panel, a composite listed in Add Panel's Arrangement section
 beside group, overlay, drawer and slide. A scene places items in 3D space under one

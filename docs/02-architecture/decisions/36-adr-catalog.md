@@ -1,6 +1,6 @@
 # ADR 36: The catalog is a static index on one origin
 
-**Status:** Proposed
+**Status:** Decided 2026-11-15
 
 Proposal: rox reads a catalog of workspaces, plugins and objects from one origin,
 compiled into the app and reached over https. The catalog is a static JSON index plus a

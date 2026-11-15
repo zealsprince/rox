@@ -1,6 +1,6 @@
 # ADR 34: Objects carry one scene item and what it needs
 
-**Status:** Proposed
+**Status:** Decided 2026-11-15
 
 Proposal: an object is a `.roxo` file, a zip holding `object.json` and a flat `assets/`
 folder in the shape a `.roxw` uses ([ADR 31](31-adr-workspace-archives.md)). The object

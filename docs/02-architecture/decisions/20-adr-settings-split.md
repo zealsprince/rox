@@ -28,7 +28,7 @@ here would copy them into the global tier. It also stays off the list of shards 
 absence means an unsplit install, or every install split before it existed would migrate
 again.
 
-**Amendment proposed 2026-11-14, with [ADR 31](31-adr-workspace-archives.md):**
+**Amendment decided 2026-11-15, with [ADR 31](31-adr-workspace-archives.md):**
 `workspaces/` holds `.roxw` archives in place of JSON files, each one a bundle packed with
 the asset files it names. The live look gains an `assets/` folder beside `workspace.json`
 for the files its bundle names, and `workspace.json` itself stays text. A saved workspace

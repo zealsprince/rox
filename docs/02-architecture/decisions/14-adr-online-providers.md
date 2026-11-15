@@ -106,7 +106,7 @@ how well a candidate matches the track. The session cache keys on the query, the
 switch and the plugin providers in order, since which providers answered is part of the
 answer. Art stays with the built-ins: its candidates are URLs rox fetches.
 
-**Amendment proposed 2026-11-14, with [ADR 36](36-adr-catalog.md): the catalog.** The
+**Amendment decided 2026-11-15, with [ADR 36](36-adr-catalog.md): the catalog.** The
 catalog is a new thing rox fetches, and it's neither enrichment nor a provider: it lists
 packages a user can install. Its index and records go through the shared blocking agent
 like every other request. Package files go through a download agent with longer

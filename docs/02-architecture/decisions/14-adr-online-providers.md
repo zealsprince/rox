@@ -105,3 +105,12 @@ One scorer still ranks everything. A plugin's own confidence enters as a weighte
 how well a candidate matches the track. The session cache keys on the query, the online
 switch and the plugin providers in order, since which providers answered is part of the
 answer. Art stays with the built-ins: its candidates are URLs rox fetches.
+
+**Amendment proposed 2026-11-14, with [ADR 36](36-adr-catalog.md): the catalog.** The
+catalog is a new thing rox fetches, and it's neither enrichment nor a provider: it lists
+packages a user can install. Its index and records go through the shared blocking agent
+like every other request. Package files go through a download agent with longer
+timeouts, since the shared agent's ten seconds (`rox-net/src/providers/mod.rs:30-38`)
+is sized for a lookup and a package can run to megabytes. The background index fetch
+follows the app update check's switch and interval, and opening the catalog window
+fetches because the user asked.

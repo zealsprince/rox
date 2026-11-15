@@ -110,7 +110,9 @@ add a source under `plugin:<id>` that rox browses, searches, syncs, and streams 
 it, and list panel presets of core kinds under its name in Add Panel. It never runs code
 in the UI, touches the engine, or connects to the control socket. Its timeouts, read
 size and buffering come from the #8 prototype's numbers in
-[research 04](../0R-research/04-plugin-host.md).
+[research 04](../0R-research/04-plugin-host.md). [ADR
+32](decisions/32-adr-plugin-packages.md) proposes a `.roxp` package as the shared form,
+unpacked into a folder of rox's own before it runs, with the folder kept for authoring.
 
 ## Decisions (ADRs)
 
@@ -132,20 +134,26 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided; Unknown rows for unmatched scrobbles and loves added by its amendment |
 | [12 - Design tokens](decisions/12-adr-design-tokens.md) | Non-color tokens as consts beside the palette | Decided |
 | [13 - Panel theming](decisions/13-adr-panel-theming.md) | Sparse palette override per panel in config | Decided |
-| [14 - Online providers](decisions/14-adr-online-providers.md) | Per-domain provider traits for online enrichment | Decided; plugins behind the traits added by its amendment |
+| [14 - Online providers](decisions/14-adr-online-providers.md) | Per-domain provider traits for online enrichment | Decided; plugins behind the traits added by its amendment, the catalog's fetches proposed with 36 |
 | [15 - Shared query](decisions/15-adr-global-filter.md) | App-wide search entity panels follow by default, opt out per view | Decided |
 | [16 - Play queue](decisions/16-adr-play-queue.md) | Mutable timeline the engine owns, playlists in the library store | Decided |
 | [17 - Queue continuation](decisions/17-adr-queue-continuation.md) | Single provider feeding the live timeline | Decided; a context bringing its own provider added by its amendment |
 | [18 - Tag editor](decisions/18-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
 | [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Decided; zero-latency convolution added by its amendment |
-| [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, accounts, and global panel presets each in a file of their own | Decided |
+| [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, accounts, and global panel presets each in a file of their own | Decided; saved workspaces as archives proposed with 31 |
 | [21 - CUE subsongs](decisions/21-adr-cue-subsongs.md) | Cue tracks as ordinary rows under a subsong id, spans in a side table | Decided |
 | [22 - Control surface](decisions/22-adr-control-surface.md) | Machine interface on a local JSON-RPC socket, never a bundled web server | Decided |
-| [23 - Shader pipeline](decisions/23-adr-shader-pipeline.md) | Comment directives split one shader into a pass chain, assets in the bundle | Decided |
+| [23 - Shader pipeline](decisions/23-adr-shader-pipeline.md) | Comment directives split one shader into a pass chain, assets in the bundle | Decided; assets as files proposed with 31 |
 | [24 - Script panels](decisions/24-adr-script-panels.md) | Rhai script panels returning a node tree, behind the shader approval gate | Proposed |
 | [25 - Shader stacks](decisions/25-adr-shader-stacks.md) | Every shader surface holds an ordered stack, composed into one chain | Proposed |
 | [26 - Last.fm sessions](decisions/26-adr-lastfm-sessions.md) | One session per api key, so builds stop invalidating each other | Decided |
 | [27 - i18n](decisions/27-adr-i18n.md) | Fluent messages and ICU4X formatting behind one locale static, en-CA as source | Decided |
 | [28 - Milkdrop](decisions/28-adr-milkdrop.md) | MilkDrop presets through libprojectM, rendered off-thread and read back | Decided |
 | [29 - Source contract](decisions/29-adr-source-contract.md) | Sources as rows under a source id, in-process, trait and host deferred | Decided; plugin streams, rows by membership and picks kept out of the library added by its amendments, host taken up by 30 |
-| [30 - Plugins](decisions/30-adr-plugins.md) | Plugins as subprocesses bringing something external in, from a closed capability set, audio as bytes they serve | Decided; one switch opting in and Developer mode, then radio, fields and views, then actions, then chapters and lyrics, then favourites, then search criteria, then providers for the library, added by its amendments |
+| [30 - Plugins](decisions/30-adr-plugins.md) | Plugins as subprocesses bringing something external in, from a closed capability set, audio as bytes they serve | Decided; one switch opting in and Developer mode, then radio, fields and views, then actions, then chapters and lyrics, then favourites, then search criteria, then providers for the library, added by its amendments; packages proposed with 32 |
+| [31 - Workspace archives](decisions/31-adr-workspace-archives.md) | A workspace is a `.roxw` zip, its assets files named in a table | Proposed |
+| [32 - Plugin packages](decisions/32-adr-plugin-packages.md) | Plugins shared as `.roxp` packages with the folder's hash, folders kept for authoring | Proposed |
+| [33 - Scene panel](decisions/33-adr-scene-panel.md) | A composite panel placing grids and media in 3D, live UI flat, groups and nesting | Proposed |
+| [34 - Objects](decisions/34-adr-objects.md) | A `.roxo` carries one scene item and what it uses, merged in on placing | Proposed |
+| [35 - Package security](decisions/35-adr-package-security.md) | One set of archive, decoder and network rules for every package and every way in | Proposed |
+| [36 - Catalog](decisions/36-adr-catalog.md) | A reviewed static index on one origin, installs tracked by the hash rox verified | Proposed |

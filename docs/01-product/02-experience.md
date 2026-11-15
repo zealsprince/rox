@@ -17,9 +17,15 @@ for and generic players can't do:
 - **Pop a panel out into its own window.** The visualizer on a second monitor, the tag
   editor floating while you work, now-playing art on a spare display.
 
+A panel can also be a scene, where panels, images, text and shaders sit at different
+depths and move with the music. One scene can be the whole window.
+
 **You theme it.** Colors, fonts, spacing, accent. The green NekoRoX aesthetic in the
 reference shots should be reproducible, and a theme should be something a person can
-share, not a config only its author understands.
+share, not a config only its author understands. A whole look travels as one file with
+its images and fonts inside, and one piece of a scene can travel on its own. The catalog
+lists what other people shared, and installing from it shows what a thing holds before
+anything applies.
 
 **You tag like Foobar taught you.** Select a run of tracks, batch-edit fields, fix a
 messy import, correct album art, all keyboard-driven and fast. This is the workflow

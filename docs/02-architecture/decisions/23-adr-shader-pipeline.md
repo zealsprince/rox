@@ -114,3 +114,13 @@ post, region, and primitive keep their existing entry points, handing over a par
 chain where they handed over a source string. The Critters bundle is the acceptance
 look: a real pixel sort replacing the comet-tail approximation, and a plate stamped
 into the Serpent panel.
+
+**Amendment proposed 2026-11-14, with [ADR 31](31-adr-workspace-archives.md): assets
+become files.** An asset leaves the bundle's JSON. A saved or shared workspace carries it
+as a file in its `.roxw` archive, and the live look keeps it in an `assets/` folder in the
+data directory. A shader's asset entry names an asset in the workspace's table where it
+held base64 bytes, and `// @asset name: file` resolves through that table. A file beside
+a path-backed source still resolves as it does today
+(`rox-panel-api/src/panel/shader/chain.rs`, `beside`), so the external-editor loop holds.
+Eject stops writing images out, since they're already files. The directive, the rule
+that assets never gate, the soft warning in place of a size cap and `@cover` stand.

@@ -28,6 +28,14 @@ here would copy them into the global tier. It also stays off the list of shards 
 absence means an unsplit install, or every install split before it existed would migrate
 again.
 
+**Amendment proposed 2026-11-14, with [ADR 31](31-adr-workspace-archives.md):**
+`workspaces/` holds `.roxw` archives in place of JSON files, each one a bundle packed with
+the asset files it names. The live look gains an `assets/` folder beside `workspace.json`
+for the files its bundle names, and `workspace.json` itself stays text. A saved workspace
+and an exported one are still the same bytes, and the folder is still the collection.
+The five-file split and its reasons stand. ADR 31 holds the move off the JSON files and
+the backups it keeps.
+
 The single file had grown to where the preferences were a tenth of it, and everything in
 it belonged to a different owner. Two saved workspaces, the live dock dump, and the
 preset pool made up most of the bytes, so the file someone might open to check a library

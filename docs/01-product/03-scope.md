@@ -46,9 +46,10 @@ collection.
 The community builds plugins. rox publishes the contract a plugin is written against, an
 example plugin that talks to no service at all, and the host that runs them. It never
 publishes a plugin for a particular service, which keeps a layer between the project and
-any one service's terms. A user drops a plugin into a folder, sees it listed, and
-switches it on. Nothing runs before that. Switching one on says plainly that the plugin
-runs as a program with the user's permissions, and shows what it declared. A plugin
+any one service's terms. A user installs a plugin from a package file or from the
+catalog, sees it listed, and switches it on. Nothing runs before that. An author can work
+in a plain plugin folder instead of a package. Switching one on says plainly that the
+plugin runs as a program with the user's permissions, and shows what it declared. A plugin
 that changes on disk turns off until the user turns it on again.
 
 Plugins are the vehicle rather than core code for a practical reason: the viable
@@ -128,7 +129,9 @@ Product owns these requirements. The structure behind them is the architect's ca
   works fully offline: playback, browse, search, and tag editing never depend on the
   network. Enriching that library over the network (Last.fm scrobbling, tag lookup,
   lyrics) is fine and wanted. Streaming sources are plugins and purely additive; the
-  offline core doesn't grow dependencies on them.
+  offline core doesn't grow dependencies on them. The catalog of shared workspaces,
+  plugins and objects is the same: with no network it shows its last saved copy or
+  nothing, and whatever was installed from it keeps working.
 - **Don't paint sources into a corner.** Streaming isn't core, but two things are cheap
   in the initial design and brutal to retrofit. Track identity is source-qualified, with
   local files as the first source rather than the assumption baked into every key. And
@@ -139,7 +142,11 @@ Product owns these requirements. The structure behind them is the architect's ca
   tracks to disk the way it saves songs from a station.
 - **Themes are tokens, layouts are shareable, nothing is scripted.** A theme is colors,
   fonts, spacing, and accent. A layout is a saved arrangement of panels and their
-  configs. Both are artifacts a person can hand to someone else and have work. No
+  configs. Both are artifacts a person can hand to someone else and have work. A layout
+  can hold scenes: a scene is a panel that places other panels, images, text and shaders
+  in depth under one camera, and one scene can fill the window. An item in a scene has a
+  place, its content, one command from rox's own list that a click runs, a line of text
+  that can show what's playing, and signals that move it. None of those is code. No
   scripting layer, for the reason under Out of scope.
 - **Listening history is a record, not counters.** A real listen (a skip isn't a listen)
   is written to disk as an event with when it happened, keyed to track identity. History

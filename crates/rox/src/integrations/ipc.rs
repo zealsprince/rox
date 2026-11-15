@@ -612,11 +612,13 @@ fn workspace_for(
 fn milkdrop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let op = params.get("op").and_then(Value::as_str).unwrap_or("status");
     let workspace = workspace_for(params.get("window").and_then(Value::as_u64), cx)?;
+    // A Milkdrop inside a scene's grid counts. One in a composite's slot
+    // doesn't: the dock's walk stops at the composite.
     let panel = workspace
         .read(cx)
-        .dock()
-        .read(cx)
-        .panel_named("milkdrop", cx)
+        .docks(cx)
+        .iter()
+        .find_map(|dock| dock.read(cx).panel_named("milkdrop", cx))
         .and_then(|panel| panel.view().downcast::<MilkdropPanel>().ok())
         .ok_or_else(|| RpcError::app("no Milkdrop panel in the front workspace"))?;
     match op {

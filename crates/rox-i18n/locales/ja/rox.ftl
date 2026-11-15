@@ -2347,6 +2347,7 @@ panel-catalog-particles = パーティクル
 panel-catalog-playlists = プレイリスト
 panel-catalog-queue = キュー
 panel-catalog-queue-widget = キューウィジェット
+panel-catalog-scene = シーン
 panel-catalog-seek = シーク
 panel-catalog-slide = スライド
 panel-catalog-spectrogram = スペクトログラム
@@ -4007,6 +4008,7 @@ panel-title-overlay = オーバーレイ
 panel-title-playlists = プレイリスト
 panel-title-queue = キュー
 panel-title-queue-widget = キューウィジェット
+panel-title-scene = シーン
 panel-title-search = 検索
 panel-title-slide = スライド
 panel-title-spacer = スペーサー
@@ -4208,3 +4210,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = 再生
 source-browser-play-count = { $count } 曲を再生
+
+## Scene
+
+scene-panel-title = シーン
+scene-tree-grid = グリッド、{ $name }
+scene-image-missing = 画像がありません: { $asset }
+menu-layout-to-scene = レイアウトをシーンに変換

@@ -2401,6 +2401,7 @@ panel-catalog-particles = Particelle
 panel-catalog-playlists = Playlist
 panel-catalog-queue = Coda
 panel-catalog-queue-widget = Widget coda
+panel-catalog-scene = Scena
 panel-catalog-seek = Avanzamento
 panel-catalog-slide = Diapositiva
 panel-catalog-spectrogram = Spettrogramma
@@ -4191,6 +4192,7 @@ panel-title-overlay = Overlay
 panel-title-playlists = Playlist
 panel-title-queue = Coda
 panel-title-queue-widget = Widget coda
+panel-title-scene = Scena
 panel-title-search = Ricerca
 panel-title-slide = Diapositiva
 panel-title-spacer = Spaziatore
@@ -4402,3 +4404,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = Riproduci
 source-browser-play-count = Riproduci { $count } tracce
+
+## Scene
+
+scene-panel-title = Scena
+scene-tree-grid = Griglia, { $name }
+scene-image-missing = Immagine mancante: { $asset }
+menu-layout-to-scene = Converti layout in scena

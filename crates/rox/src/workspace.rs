@@ -43,6 +43,7 @@ use crate::panels::group::GroupPanel;
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::overlay::OverlayPanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
+use crate::panels::scene::ScenePanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::window_controls::{ControlItem, WindowControlsConfig, WindowControlsPanel};
 use crate::pass_prompt;
@@ -1373,7 +1374,7 @@ fn add_panel_item(
 /// Versions the layout dump in settings. Bump on incompatible panel or
 /// schema changes; a dump from another version is ignored and the default
 /// layout builds instead.
-const LAYOUT_VERSION: usize = 1;
+pub(crate) const LAYOUT_VERSION: usize = 1;
 
 /// Layout events fire for every step of a drag or resize, so a save waits
 /// out this much quiet first. The close hook catches whatever a pending
@@ -1467,6 +1468,7 @@ actions!(
         OpenSignals,
         NewEmptyWindow,
         ImportWorkspace,
+        ConvertLayoutToScene,
         ToggleQuitToTray,
         ToggleMenubar,
         ToggleDecorations,
@@ -1992,6 +1994,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenSignals, cx| run_menu_action(MenuAction::OpenSignals, cx));
     cx.on_action(|_: &NewEmptyWindow, cx| run_menu_action(MenuAction::EmptyWindow, cx));
     cx.on_action(|_: &ImportWorkspace, cx| run_menu_action(MenuAction::ImportWorkspace, cx));
+    cx.on_action(|_: &ConvertLayoutToScene, cx| {
+        run_menu_action(MenuAction::ConvertLayoutToScene, cx)
+    });
     cx.on_action(|_: &ToggleQuitToTray, cx| run_menu_action(MenuAction::ToggleQuitToTray, cx));
     cx.on_action(|_: &ToggleMenubar, cx| run_menu_action(MenuAction::ToggleMenubar, cx));
     cx.on_action(|_: &ToggleDecorations, cx| run_menu_action(MenuAction::ToggleDecorations, cx));
@@ -2302,6 +2307,15 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     // before the rename still rebuild it.
     composite!("depth", OverlayPanel);
     composite!("slide", SlidePanel);
+    // A scene keeps its children inside its config as grids, each its own
+    // dock, so there are no slots to restore. It takes the window to build
+    // them.
+    let s = state.clone();
+    let ws = workspace.clone();
+    register_panel(cx, "scene", move |_, _, info, window, cx| {
+        let config = panel::config_from_info(info);
+        Box::new(cx.new(|cx| ScenePanel::restore(s.clone(), ws.clone(), config, window, cx)))
+    });
     // The grid takes the window like the library: its search box builds
     // an input state.
     let s = state.clone();
@@ -2499,6 +2513,8 @@ pub(crate) enum MenuAction {
     TogglePostShader,
     /// Pick a workspace file and add it to the collection.
     ImportWorkspace,
+    /// Wrap the window's layout in a scene panel that fills it.
+    ConvertLayoutToScene,
     /// Open a catalog panel with its default config, opening where its
     /// placement says. One action for every panel in the catalog.
     OpenPanel(&'static PanelDef),
@@ -2581,6 +2597,7 @@ impl MenuAction {
             MenuAction::ToggleArtTheming => "toggle-art-theming".into(),
             MenuAction::TogglePostShader => "toggle-post-shader".into(),
             MenuAction::ImportWorkspace => "import-workspace".into(),
+            MenuAction::ConvertLayoutToScene => "layout-to-scene".into(),
             MenuAction::ToggleQuitToTray => "toggle-quit-to-tray".into(),
             MenuAction::CloseWindow => "close-window".into(),
             // Keyed by registry name. The label is an i18n key that a
@@ -2637,6 +2654,7 @@ impl MenuAction {
             "toggle-art-theming" => MenuAction::ToggleArtTheming,
             "toggle-post-shader" => MenuAction::TogglePostShader,
             "import-workspace" => MenuAction::ImportWorkspace,
+            "layout-to-scene" => MenuAction::ConvertLayoutToScene,
             "toggle-quit-to-tray" => MenuAction::ToggleQuitToTray,
             "close-window" => MenuAction::CloseWindow,
             _ => return None,
@@ -3208,6 +3226,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 target: LayoutTarget::Apply,
                 with_new: false,
             },
+            MenuEntry::Item(MenuItem {
+                label: "menu-layout-to-scene",
+                icon: icons::SPARKLES,
+                action: MenuAction::ConvertLayoutToScene,
+            }),
         ],
     },
     Menu {
@@ -3708,6 +3731,19 @@ fn empty_layout(
     Entity<TabPanel>,
     Entity<StackPanel>,
 ) {
+    let (center, center_tabs) = empty_center(weak_dock, window, cx);
+    let stack = split_view(&center);
+    let bottom_stack = cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx));
+    (center, stack, center_tabs, bottom_stack)
+}
+
+/// One empty tab group in a vertical root split, and that group: the tree
+/// of a blank window, and of a new grid in a scene.
+pub(crate) fn empty_center(
+    weak_dock: &WeakEntity<DockArea>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (DockItem, Entity<TabPanel>) {
     let (tabs, center_tabs) = tabs_item(Vec::new(), weak_dock, window, cx);
     let center = DockItem::split_with_sizes(
         Axis::Vertical,
@@ -3717,9 +3753,7 @@ fn empty_layout(
         window,
         cx,
     );
-    let stack = split_view(&center);
-    let bottom_stack = cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx));
-    (center, stack, center_tabs, bottom_stack)
+    (center, center_tabs)
 }
 
 /// Pull the workspace's add targets back out of a restored layout: the
@@ -4530,6 +4564,112 @@ impl Workspace {
     /// view walks it and export dumps it.
     pub fn dock(&self) -> &Entity<DockArea> {
         &self.dock
+    }
+
+    /// The window's dock, then every dock a scene in it hosts, nested ones
+    /// included.
+    pub(crate) fn docks(&self, cx: &App) -> Vec<Entity<DockArea>> {
+        // Walks the live stack and tab entities, which follow drags the
+        // DockItem tree hasn't been rebuilt for.
+        fn hosted(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Entity<DockArea>>) {
+            let view = node.view();
+            if let Ok(stack) = view.clone().downcast::<StackPanel>() {
+                for child in stack.read(cx).panels() {
+                    hosted(child, cx, out);
+                }
+                return;
+            }
+            if let Ok(tabs) = view.downcast::<TabPanel>() {
+                for panel in tabs.read(cx).panels() {
+                    if let Some(docks) = composite::hosted_docks(panel, cx) {
+                        out.extend(docks.into_iter().map(|(_, dock)| dock));
+                    }
+                }
+            }
+        }
+
+        let mut docks = vec![self.dock.clone()];
+        let mut ix = 0;
+        while ix < docks.len() {
+            let root = docks[ix].read(cx).items().view();
+            hosted(&root, cx, &mut docks);
+            ix += 1;
+        }
+        docks
+    }
+
+    /// Whether the dock holds one panel and it's a scene: what converting
+    /// the layout leaves, so converting again would only nest it.
+    fn dock_is_one_scene(&self, cx: &App) -> bool {
+        fn leaves(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Arc<dyn PanelView>>) {
+            let view = node.view();
+            if let Ok(stack) = view.clone().downcast::<StackPanel>() {
+                for child in stack.read(cx).panels() {
+                    leaves(child, cx, out);
+                }
+                return;
+            }
+            if let Ok(tabs) = view.downcast::<TabPanel>() {
+                out.extend(tabs.read(cx).panels().iter().cloned());
+            }
+        }
+
+        let mut panels = Vec::new();
+        leaves(&self.dock.read(cx).items().view(), cx, &mut panels);
+        matches!(panels.as_slice(), [only] if only.panel_name(cx) == crate::panels::scene::PANEL_NAME)
+    }
+
+    /// In a window that is one scene, the tab group in its first grid that a
+    /// plain window would add to: the first one directly under the root
+    /// split, as `layout_views` picks it, or else the first anywhere. Without
+    /// it the panel lands as a tab beside the scene and a tab strip appears
+    /// over the whole window.
+    fn scene_tabs(&self, cx: &App) -> Option<Entity<TabPanel>> {
+        fn first(node: &Arc<dyn PanelView>, cx: &App) -> Option<Entity<TabPanel>> {
+            let view = node.view();
+            if let Ok(tabs) = view.clone().downcast::<TabPanel>() {
+                return Some(tabs);
+            }
+            let stack = view.downcast::<StackPanel>().ok()?;
+            stack
+                .read(cx)
+                .panels()
+                .iter()
+                .find_map(|child| first(child, cx))
+        }
+
+        if !self.dock_is_one_scene(cx) {
+            return None;
+        }
+        let grid = self.docks(cx).into_iter().nth(1)?;
+        let root = grid.read(cx).items().view();
+        let direct = root.view().downcast::<StackPanel>().ok().and_then(|stack| {
+            stack
+                .read(cx)
+                .panels()
+                .iter()
+                .find_map(|child| child.view().downcast::<TabPanel>().ok())
+        });
+
+        direct.or_else(|| first(&root, cx))
+    }
+
+    /// Convert Layout to Scene: the dock's whole layout becomes one grid in
+    /// a scene that fills the window, so nothing moves until the scene is
+    /// edited.
+    fn convert_layout_to_scene(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dock_is_one_scene(cx) {
+            log::info!("workspace: the layout is already one scene, nothing to convert");
+            return;
+        }
+        let Ok(dump) = self.dock_dump(cx) else {
+            return;
+        };
+
+        let wrapped = crate::panels::scene::wrap_layout(dump, LAYOUT_VERSION);
+        if !self.apply_layout(wrapped, window, cx) {
+            log::warn!("workspace: the converted layout didn't apply");
+        }
     }
 
     /// Swap in an imported layout dump: the launch restore's checks and
@@ -5867,7 +6007,7 @@ impl Workspace {
 
     /// Debounced persist: wait out [`SAVE_DEBOUNCE`] of quiet, then dump.
     /// Replacing the task cancels the previous timer.
-    fn save_layout_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn save_layout_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SAVE_DEBOUNCE).await;
             this.update_in(cx, |this, window, cx| this.persist(window, cx))
@@ -5980,7 +6120,9 @@ impl Workspace {
         // Add to it while it still shows, otherwise to the newest live tab
         // panel, and failing both put the original one back at the top of
         // the root stack, above the transport row.
-        let tabs = if self.center_tabs.read(cx).visible(cx) {
+        let tabs = if let Some(tabs) = self.scene_tabs(cx) {
+            tabs
+        } else if self.center_tabs.read(cx).visible(cx) {
             self.center_tabs.clone()
         } else {
             match self.state.tab_hosts.read(cx).last_live(cx) {
@@ -7069,9 +7211,13 @@ impl Render for Workspace {
                     this.toggle_quick_play(window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                    this.dock.update(cx, |dock, cx| {
-                        dock.focus_panel_named("search", window, cx);
-                    });
+                    // The window's dock first, then the docks inside scenes.
+                    for dock in this.docks(cx) {
+                        if dock.update(cx, |dock, cx| dock.focus_panel_named("search", window, cx))
+                        {
+                            break;
+                        }
+                    }
                 }))
                 .on_action(cx.listener(|this, _: &ToggleZoom, window, cx| {
                     this.dock

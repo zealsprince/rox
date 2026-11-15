@@ -5,6 +5,7 @@
 use super::*;
 
 use rox_core::settings::panel_presets::SaveScope;
+use rox_dock::DockArea;
 
 /// Built when a row's details open and dropped when they close.
 pub(crate) struct CardEditor {
@@ -119,9 +120,17 @@ impl SettingsWindow {
                             );
                             match self.workspace.upgrade() {
                                 Some(workspace) => {
-                                    let root = workspace.read(cx).dock().read(cx).items().view();
+                                    let dock = workspace.read(cx).dock().clone();
+                                    let root = dock.read(cx).items().view();
                                     let mut rows = Vec::new();
-                                    self.tree_rows(root, 0, TreeSlot::Root, &mut rows, cx);
+                                    self.tree_rows(
+                                        root,
+                                        0,
+                                        TreeSlot::Root,
+                                        &dock.downgrade(),
+                                        &mut rows,
+                                        cx,
+                                    );
                                     body = body.child(div().flex().flex_col().children(rows));
                                 }
                                 None => {
@@ -1176,12 +1185,14 @@ impl SettingsWindow {
     }
 
     /// Walks the live stack and tab entities, not the dock's `DockItem` tree,
-    /// which goes stale once tabs move.
+    /// which goes stale once tabs move. `dock` is the area the tree belongs
+    /// to: the window's, or a scene grid's.
     fn tree_rows(
         &self,
         node: Arc<dyn PanelView>,
         depth: usize,
         slot: TreeSlot,
+        dock: &WeakEntity<DockArea>,
         rows: &mut Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) {
@@ -1234,10 +1245,11 @@ impl SettingsWindow {
             for (ix, child) in children.into_iter().enumerate() {
                 let child_slot = TreeSlot::Stack {
                     stack: stack.clone(),
+                    dock: dock.clone(),
                     ix,
                     len,
                 };
-                self.tree_rows(child, depth + 1, child_slot, rows, cx);
+                self.tree_rows(child, depth + 1, child_slot, dock, rows, cx);
             }
             return;
         }
@@ -1278,7 +1290,20 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let children = crate::composite::hosted_children(&panel, cx);
+        let grids = crate::composite::hosted_docks(&panel, cx);
         rows.push(self.panel_row(rows.len(), panel, depth, slot, cx));
+        // A scene's grids are docks of their own, and their rows keep the
+        // move and lock controls, since they are real tab groups.
+        for (name, grid) in grids.into_iter().flatten() {
+            rows.push(chrome_row(
+                rows.len(),
+                depth + 1,
+                rox_i18n::t!("scene-tree-grid", name = name),
+                None,
+            ));
+            let root = grid.read(cx).items().view();
+            self.tree_rows(root, depth + 2, TreeSlot::Root, &grid.downgrade(), rows, cx);
+        }
         if let Some(children) = children {
             for child in children {
                 match child {
@@ -1380,11 +1405,10 @@ impl SettingsWindow {
     /// into the enclosing split. The root split's children stay put.
     fn lift_button(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> AnyElement {
         match slot {
-            TreeSlot::Stack { stack, ix, .. } => {
-                let dock = self
-                    .workspace
-                    .upgrade()
-                    .map(|workspace| workspace.read(cx).dock().downgrade());
+            TreeSlot::Stack {
+                stack, dock, ix, ..
+            } => {
+                let dock = dock.upgrade().map(|dock| dock.downgrade());
                 let inert = dock.is_none() || stack.read(cx).parent().is_none();
                 let stack = stack.clone();
                 let from = *ix;
@@ -1784,6 +1808,8 @@ enum TreeSlot {
     Root,
     Stack {
         stack: Entity<StackPanel>,
+        /// The area the stack is in, which a lift hands the moved panel.
+        dock: WeakEntity<DockArea>,
         ix: usize,
         len: usize,
     },
@@ -1798,7 +1824,7 @@ enum TreeSlot {
 fn chrome_row(
     ix: usize,
     depth: usize,
-    label: &'static str,
+    label: impl Into<SharedString>,
     controls: Option<AnyElement>,
 ) -> AnyElement {
     div()
@@ -1815,7 +1841,7 @@ fn chrome_row(
         .group(TREE_ROW_GROUP)
         .text_xs()
         .text_color(palette::text_muted())
-        .child(label)
+        .child(label.into())
         .when_some(controls, |d, controls| d.child(controls))
         .into_any_element()
 }

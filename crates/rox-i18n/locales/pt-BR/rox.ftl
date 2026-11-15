@@ -2390,6 +2390,7 @@ panel-catalog-particles = Partículas
 panel-catalog-playlists = Playlists
 panel-catalog-queue = Fila
 panel-catalog-queue-widget = Widget de fila
+panel-catalog-scene = Cena
 panel-catalog-seek = Posição
 panel-catalog-slide = Slide
 panel-catalog-spectrogram = Espectrograma
@@ -4151,6 +4152,7 @@ panel-title-overlay = Overlay
 panel-title-playlists = Playlists
 panel-title-queue = Fila
 panel-title-queue-widget = Widget de fila
+panel-title-scene = Cena
 panel-title-search = Busca
 panel-title-slide = Slide
 panel-title-spacer = Espaçador
@@ -4362,3 +4364,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = Reproduzir
 source-browser-play-count = Reproduzir { $count } faixas
+
+## Scene
+
+scene-panel-title = Cena
+scene-tree-grid = Grade, { $name }
+scene-image-missing = Imagem ausente: { $asset }
+menu-layout-to-scene = Converter layout em cena

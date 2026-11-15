@@ -2469,6 +2469,7 @@ panel-catalog-particles = Particles
 panel-catalog-playlists = Playlists
 panel-catalog-queue = Queue
 panel-catalog-queue-widget = Queue Widget
+panel-catalog-scene = Scene
 panel-catalog-seek = Seek
 panel-catalog-slide = Slide
 panel-catalog-spectrogram = Spectrogram
@@ -4230,6 +4231,7 @@ panel-title-overlay = Overlay
 panel-title-playlists = Playlists
 panel-title-queue = Queue
 panel-title-queue-widget = Queue Widget
+panel-title-scene = Scene
 panel-title-search = Search
 panel-title-slide = Slide
 panel-title-spacer = Spacer
@@ -4451,3 +4453,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = Play
 source-browser-play-count = Play { $count } Tracks
+
+## Scene
+
+scene-panel-title = Scene
+scene-tree-grid = Grid, { $name }
+scene-image-missing = Missing image: { $asset }
+menu-layout-to-scene = Convert Layout to Scene

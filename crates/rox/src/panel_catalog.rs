@@ -15,6 +15,7 @@ use crate::panels::group::{GroupConfig, GroupPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
+use crate::panels::scene::{SceneConfig, ScenePanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::workspace::Workspace;
@@ -351,6 +352,17 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
                 Arc::new(
                     cx.new(|cx| SlidePanel::new(state.clone(), ws, SlideConfig::default(), cx)),
                 )
+            },
+        },
+        PanelDef {
+            label: "panel-catalog-scene",
+            name: "scene",
+            icon: icons::SPARKLES,
+            placement: PanelPlacement::Center,
+            build: |state, ws, window, cx| {
+                Arc::new(cx.new(|cx| {
+                    ScenePanel::restore(state.clone(), ws, SceneConfig::default(), window, cx)
+                }))
             },
         },
     ],

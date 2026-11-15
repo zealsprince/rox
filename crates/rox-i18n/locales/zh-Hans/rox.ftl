@@ -2346,6 +2346,7 @@ panel-catalog-particles = 粒子
 panel-catalog-playlists = 播放列表
 panel-catalog-queue = 队列
 panel-catalog-queue-widget = 队列部件
+panel-catalog-scene = 场景
 panel-catalog-seek = 进度
 panel-catalog-slide = 幻灯片
 panel-catalog-spectrogram = 频谱图
@@ -4006,6 +4007,7 @@ panel-title-overlay = 覆盖层
 panel-title-playlists = 播放列表
 panel-title-queue = 队列
 panel-title-queue-widget = 队列部件
+panel-title-scene = 场景
 panel-title-search = 搜索
 panel-title-slide = 幻灯片
 panel-title-spacer = 间隔
@@ -4207,3 +4209,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = 播放
 source-browser-play-count = 播放 { $count } 首曲目
+
+## Scene
+
+scene-panel-title = 场景
+scene-tree-grid = 网格：{ $name }
+scene-image-missing = 缺少图片：{ $asset }
+menu-layout-to-scene = 将布局转换为场景

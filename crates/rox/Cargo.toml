@@ -56,6 +56,8 @@ rox-playback = { path = "../rox-playback" }
 # The Plugins page reads scanned manifests and host status (ADR 30).
 rox-plugins = { path = "../rox-plugins" }
 rox-romanize = { path = "../rox-romanize" }
+# The scene panel's saved shape and its projection (ADR 33).
+rox-scene = { path = "../rox-scene" }
 rox-services = { path = "../rox-services" }
 rox-viz = { path = "../rox-viz" }
 # Home for file pickers, runtime dir for the instance socket, data dir for

@@ -2432,6 +2432,7 @@ panel-catalog-particles = Partículas
 panel-catalog-playlists = Listas de reproducción
 panel-catalog-queue = Cola
 panel-catalog-queue-widget = Widget de cola
+panel-catalog-scene = Escena
 panel-catalog-seek = Posición
 panel-catalog-slide = Diapositiva
 panel-catalog-spectrogram = Espectrograma
@@ -4225,6 +4226,7 @@ panel-title-overlay = Superposición
 panel-title-playlists = Listas de reproducción
 panel-title-queue = Cola
 panel-title-queue-widget = Widget de cola
+panel-title-scene = Escena
 panel-title-search = Búsqueda
 panel-title-slide = Diapositiva
 panel-title-spacer = Separador
@@ -4436,3 +4438,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = Reproducir
 source-browser-play-count = Reproducir { $count } pistas
+
+## Scene
+
+scene-panel-title = Escena
+scene-tree-grid = Cuadrícula, { $name }
+scene-image-missing = Falta la imagen: { $asset }
+menu-layout-to-scene = Convertir disposición en escena

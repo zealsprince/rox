@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    Along, App, Axis, Bounds, Context, Div, EntityId, Global, MouseButton, MouseMoveEvent,
+    Along, App, Axis, Bounds, Context, Div, Entity, EntityId, Global, MouseButton, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, SharedString, WeakEntity, Window, div, prelude::*, px, svg,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -279,6 +279,21 @@ pub fn hosted_children(panel: &Arc<dyn PanelView>, cx: &App) -> Option<Vec<Slot>
         return Some(slide.read(cx).slides().iter().cloned().map(Some).collect());
     }
     None
+}
+
+/// The docks a panel hosts, for the layout tree. None for a panel that
+/// hosts none.
+pub fn hosted_docks(
+    panel: &Arc<dyn PanelView>,
+    cx: &App,
+) -> Option<Vec<(String, Entity<DockArea>)>> {
+    let scene = panel
+        .view()
+        .downcast::<crate::panels::scene::ScenePanel>()
+        .ok()?;
+    let scene = scene.read(cx);
+
+    Some(scene.grid_names().into_iter().zip(scene.grids()).collect())
 }
 
 pub fn pick_items(

@@ -148,6 +148,7 @@ impl Workspace {
                 native_menu::rebuild(cx);
             }
             MenuAction::ImportWorkspace => self.import_workspace(window, cx),
+            MenuAction::ConvertLayoutToScene => self.convert_layout_to_scene(window, cx),
             MenuAction::ToggleQuitToTray => {
                 let on = !settings::quit_to_tray();
                 settings::set_quit_to_tray(on);

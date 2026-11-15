@@ -326,6 +326,61 @@ A preset read from another workspace comes from that archive's manifest, with no
 extracted. A global preset detached from a pool shader keeps the shader's source and
 loses its images, since presets have no place to keep files.
 
+## Scenes
+
+A scene is a composite panel, registry name `scene`, listed under Arrangement in the
+catalog ([ADR 33](../02-architecture/decisions/33-adr-scene-panel.md)). It places items
+in 3D space under its own camera. It docks, tabs and pops out like any panel, and the
+window's root stays the dock: a full-window scene is a dock holding one scene panel in
+one tab group, which draws no tab chrome. The Workspace menu's Convert Layout to Scene
+builds exactly that from the current layout. The whole dump becomes one grid that fills
+the stage, so the window looks the same afterwards.
+
+The saved shape is `SceneConfig` (`crates/rox/src/panels/scene.rs`): the panel chrome,
+a `rox_scene::SceneState` flattened beside it, and the scene's signal routes. A scene
+holds a stage size and fit, a camera (vertical field of view, with 0 for orthographic,
+and pointer parallax), and a list of items. Each item has an id that's unique across the
+whole scene, a place (an anchor on its parent's box, a position, a size in units or as a
+fraction of the parent, a rotation and a scale), visibility, a lock, an opacity, and its
+content. Grid, group and image content draw. Text, shader, video and model content, a
+kind this build doesn't know, and a known kind whose body doesn't parse are all kept as
+read and written back unchanged.
+
+`rox_scene` does the placing. An item's transform is its parent frame's times its own,
+and it turns and scales about its centre whatever its anchor. A point at depth `z`
+scales by `focal / (focal - z)` about the view centre. Siblings paint back to front by
+depth, with no depth buffer, so the order the panel adds its children is the whole
+depth story. A group takes one slot in its parent's order at its own depth and lays its
+children out inside it under its transform.
+
+Live UI is flat. A grid's centre is projected through every parent, and its box is
+drawn screen-aligned at its own size: its rotation and scale are stored and unused,
+since a live panel can't be drawn tilted. Images take real perspective through
+`paint_image_quad`. An image decodes off the UI thread from the asset store, and the
+header is read first so an image over the pixel cap (`MAX_PIXELS`, `MAX_SIDE` in
+`crates/rox/src/scene/image.rs`) is refused before its body is decoded. A missing
+image shows as a dashed outline with its asset id, only in design mode.
+
+A grid item is a dock tree of its own: one `DockArea` per item, built and gated the way
+the window's dock is (the layout version and a split at the root), with the middle-drag
+pop-out hook. Its tab groups are real tab groups, so they report into the workspace's
+`TabHosts`, and Add Panel and focus lookups reach them. Zoom covers only the grid it
+happens in. Each grid's dump sits in its item's `dock` value inside the scene's
+`info.panel`, never in `PanelState.children`: the dock's restore builds every child
+before handing a panel its state, so children there would be built twice. A dump that
+doesn't restore keeps its item as saved. The dump walkers (shader sources, shader
+wearing, stripping, scrubbing, plugin owners) recurse every object and array, so they
+reach a grid inside a scene with no change. A grid's own layout events go to the
+workspace's debounced save, since the scene emits none of its own.
+
+Scenes nest: a scene panel can sit in a grid inside another scene, and it projects its
+own items inside its bounds under its own camera. Scenes inside grids and groups inside
+groups count together against `rox_scene::MAX_DEPTH`, and a group or a scene-holding grid
+past it is kept as saved and not built, so a hand-edited layout can't recurse.
+`Workspace::docks` is the window's dock followed by every dock a scene in it hosts,
+nested ones included. Focus Search and the control socket's Milkdrop lookup walk it,
+and the Workspace page's layout tree lists each grid under its scene.
+
 ## Reference
 
 The dock is the vendored `crates/rox-dock`: `panel.rs` (the `Panel` / `PanelView`
@@ -346,4 +401,9 @@ wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore)
 `crates/rox-core/src/settings/panel_presets.rs` (the writable tiers, `PresetScope`),
 `crates/rox/src/preset_sources.rs` (the tiers gathered per kind),
 `crates/rox-panel-api/src/panel_settings.rs` (the Presets row, `PresetMarks`), and
-`crates/rox/src/composite.rs` (`Hosting`, `replace_hosted`).
+`crates/rox/src/composite.rs` (`Hosting`, `replace_hosted`, `hosted_docks`). Scenes span
+`crates/rox-scene/src/` (the saved shape in `state.rs`, the projection in `project.rs`),
+`crates/rox/src/panels/scene.rs` (`ScenePanel`, `SceneConfig`, `wrap_layout`),
+`crates/rox/src/scene/mod.rs` (the live bodies and the nesting cap),
+`crates/rox/src/scene/grid.rs` (a grid's dock area), `crates/rox/src/scene/image.rs`
+(the decode and the quad), and `Workspace::docks` in `crates/rox/src/workspace.rs`.

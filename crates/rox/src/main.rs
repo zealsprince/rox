@@ -38,6 +38,7 @@ mod preset_sources;
 mod quick_play;
 mod replaygain_job;
 mod romanize_job;
+mod scene;
 mod search_window;
 mod settings;
 mod shader_editor;

@@ -6952,6 +6952,7 @@ dependencies = [
  "rox-playback",
  "rox-plugins",
  "rox-romanize",
+ "rox-scene",
  "rox-services",
  "rox-viz",
  "rust-embed",

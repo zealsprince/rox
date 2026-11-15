@@ -2381,6 +2381,7 @@ panel-catalog-particles = Partikel
 panel-catalog-playlists = Playlists
 panel-catalog-queue = Warteschlange
 panel-catalog-queue-widget = Warteschlangen-Widget
+panel-catalog-scene = Szene
 panel-catalog-seek = Position
 panel-catalog-slide = Folie
 panel-catalog-spectrogram = Spektrogramm
@@ -4129,6 +4130,7 @@ panel-title-overlay = Overlay
 panel-title-playlists = Playlists
 panel-title-queue = Warteschlange
 panel-title-queue-widget = Warteschlangen-Widget
+panel-title-scene = Szene
 panel-title-search = Suche
 panel-title-slide = Folie
 panel-title-spacer = Abstandhalter
@@ -4340,3 +4342,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = Abspielen
 source-browser-play-count = { $count } Titel abspielen
+
+## Scene
+
+scene-panel-title = Szene
+scene-tree-grid = Raster, { $name }
+scene-image-missing = Bild fehlt: { $asset }
+menu-layout-to-scene = Layout in Szene umwandeln

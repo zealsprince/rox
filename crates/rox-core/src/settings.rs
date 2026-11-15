@@ -4736,6 +4736,188 @@ mod tests {
         assert_eq!(found, ["// the shader panel", "// the surface one"]);
     }
 
+    /// A dock dump holding one scene panel, whose one grid holds `panels`.
+    /// The grid's dump sits in the scene's config, never in `children`.
+    fn in_a_scene(panels: serde_json::Value, more_items: serde_json::Value) -> serde_json::Value {
+        let tabs = |children| {
+            serde_json::json!({
+                "panel_name": "TabPanel",
+                "children": children,
+                "info": { "tabs": { "active_index": 0 } },
+            })
+        };
+        let stack = |children| {
+            serde_json::json!({
+                "panel_name": "StackPanel",
+                "children": children,
+                "info": { "stack": { "sizes": [], "axis": 1 } },
+            })
+        };
+
+        let mut items = vec![serde_json::json!({
+            "id": "grid",
+            "content": {
+                "kind": "grid",
+                "dock": { "version": 1, "center": stack(serde_json::json!([tabs(panels)])) },
+            },
+        })];
+        items.extend(more_items.as_array().cloned().unwrap_or_default());
+
+        let scene = serde_json::json!({
+            "panel_name": "scene",
+            "children": [],
+            "info": { "panel": { "version": 1, "items": items } },
+        });
+        stack(serde_json::json!([tabs(serde_json::json!([scene]))]))
+    }
+
+    #[test]
+    fn a_scene_gives_up_its_grids_shaders() {
+        let dump = in_a_scene(
+            serde_json::json!([
+                {
+                    "panel_name": "shader",
+                    "info": { "panel": { "source": "// the shader panel" }},
+                },
+                {
+                    "panel_name": "folder tree",
+                    "info": { "panel": {
+                        "shader": { "enabled": true, "source": "// the surface one" },
+                    }},
+                },
+            ]),
+            serde_json::json!([{
+                "id": "glow",
+                "content": { "kind": "shader", "shader": { "source": "// a shader item" } },
+            }]),
+        );
+
+        let mut found = dump_shader_sources(&dump);
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                "// a shader item",
+                "// the shader panel",
+                "// the surface one"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_layout_knows_when_a_scene_in_it_wears_a_shader() {
+        let worn = in_a_scene(
+            serde_json::json!([{
+                "panel_name": "folder tree",
+                "info": { "panel": { "shader": { "enabled": true, "name": "Lace" } }},
+            }]),
+            serde_json::json!([]),
+        );
+        assert!(dump_wears_shader(&worn));
+
+        let plain = in_a_scene(
+            serde_json::json!([{
+                "panel_name": "folder tree",
+                "info": { "panel": { "path": "/home/someone/Music" }},
+            }]),
+            serde_json::json!([]),
+        );
+        assert!(!dump_wears_shader(&plain));
+    }
+
+    #[test]
+    fn stripping_reaches_a_grid_inside_a_scene() {
+        let mut dump = in_a_scene(
+            serde_json::json!([
+                {
+                    "panel_name": "shader",
+                    "info": { "panel": { "source": "// the shader panel" }},
+                },
+                {
+                    "panel_name": "folder tree",
+                    "info": { "panel": { "shader": { "enabled": true, "name": "Lace" } }},
+                },
+            ]),
+            serde_json::json!([]),
+        );
+        assert!(dump_wears_shader(&dump));
+
+        strip_dump_shaders(&mut dump);
+
+        assert!(!dump_wears_shader(&dump));
+        let grid = &dump["children"][0]["children"][0]["info"]["panel"]["items"][0];
+        let panels = &grid["content"]["dock"]["center"]["children"][0]["children"];
+        assert_eq!(panels[0]["info"]["panel"]["enabled"], false);
+        assert_eq!(panels[1]["info"]["panel"]["shader"]["enabled"], false);
+        assert_eq!(panels[1]["info"]["panel"]["shader"]["name"], "Lace");
+    }
+
+    #[test]
+    fn a_scene_names_the_plugins_its_panels_came_from() {
+        let bundle = WorkspaceBundle {
+            layouts: vec![NamedLayout {
+                name: "staged".to_string(),
+                size: None,
+                dump: in_a_scene(
+                    serde_json::json!([{
+                        "panel_name": "source browser",
+                        "info": { "panel": { "owner": "plugin:tones" }},
+                    }]),
+                    serde_json::json!([]),
+                ),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        assert_eq!(bundle.required_plugins(), ["tones"]);
+    }
+
+    #[test]
+    fn scrubbing_reaches_a_grid_inside_a_scene() {
+        let mut bundle = WorkspaceBundle {
+            layouts: vec![NamedLayout {
+                name: "staged".to_string(),
+                size: None,
+                dump: in_a_scene(
+                    serde_json::json!([
+                        {
+                            "panel_name": "shader",
+                            "info": { "panel": {
+                                "source": "// the panel's own",
+                                "path": "/home/someone/panel.wgsl",
+                            }},
+                        },
+                        {
+                            "panel_name": "folder tree",
+                            "info": { "panel": {
+                                "path": "/home/someone/Music",
+                                "shader": {
+                                    "source": "// the surface one",
+                                    "path": "/home/someone/surface.wgsl",
+                                },
+                            }},
+                        },
+                    ]),
+                    serde_json::json!([]),
+                ),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        bundle.scrub_paths();
+
+        let dump = &bundle.layouts[0].dump;
+        let grid = &dump["children"][0]["children"][0]["info"]["panel"]["items"][0];
+        let panels = &grid["content"]["dock"]["center"]["children"][0]["children"];
+        assert!(panels[0]["info"]["panel"].get("path").is_none(), "{dump}");
+        assert_eq!(panels[0]["info"]["panel"]["source"], "// the panel's own");
+        assert!(
+            panels[1]["info"]["panel"]["shader"].get("path").is_none(),
+            "{dump}"
+        );
+        assert_eq!(panels[1]["info"]["panel"]["path"], "/home/someone/Music");
+    }
+
     #[test]
     fn a_dump_knows_when_it_wears_a_shader() {
         let worn = |shader: serde_json::Value| {

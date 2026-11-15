@@ -2395,6 +2395,7 @@ panel-catalog-particles = Частицы
 panel-catalog-playlists = Плейлисты
 panel-catalog-queue = Очередь
 panel-catalog-queue-widget = Виджет очереди
+panel-catalog-scene = Сцена
 panel-catalog-seek = Перемотка
 panel-catalog-slide = Слайд
 panel-catalog-spectrogram = Спектрограмма
@@ -4167,6 +4168,7 @@ panel-title-overlay = Наложение
 panel-title-playlists = Плейлисты
 panel-title-queue = Очередь
 panel-title-queue-widget = Виджет очереди
+panel-title-scene = Сцена
 panel-title-search = Поиск
 panel-title-slide = Слайд
 panel-title-spacer = Распорка
@@ -4396,3 +4398,10 @@ source-browser-members = { $count ->
 }
 source-browser-play = Воспроизвести
 source-browser-play-count = Воспроизвести треки: { $count }
+
+## Scene
+
+scene-panel-title = Сцена
+scene-tree-grid = Сетка: { $name }
+scene-image-missing = Нет изображения: { $asset }
+menu-layout-to-scene = Преобразовать макет в сцену

@@ -7015,11 +7015,13 @@ dependencies = [
  "rox-design",
  "rox-dock",
  "rox-i18n",
+ "rox-package",
  "rox-playback",
  "rox-viz",
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

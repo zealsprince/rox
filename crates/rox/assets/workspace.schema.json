@@ -9,7 +9,7 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0,
-      "default": 1
+      "default": 2
     },
     "name": {
       "description": "The bundle's name. Empty falls back to the file stem.",
@@ -68,6 +68,13 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/NamedShader"
+      }
+    },
+    "assets": {
+      "description": "The files the workspace carries, each under `assets/` in its archive.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Asset"
       }
     },
     "meta": {
@@ -395,20 +402,83 @@
       }
     },
     "ShaderAsset": {
-      "description": "One image a shader samples via `// @asset name: file`, stored in the\nbundle as the encoded file in base64.\n\nAssets never gate: approval is over code, and an image can't run anything\n(ADR 23).",
+      "description": "One image a shader samples via `// @asset name: file`. The bytes live in\nthe workspace's asset table.\n\nAssets never gate: approval is over code, and an image can't run anything\n(ADR 23).",
       "type": "object",
       "properties": {
         "file": {
-          "description": "The flat filename the shader declares it under, also used by eject.",
+          "description": "The flat filename the shader's `// @asset` line declares.",
+          "type": "string",
+          "default": ""
+        },
+        "asset": {
+          "description": "The workspace asset holding the bytes.",
           "type": "string",
           "default": ""
         },
         "data": {
-          "description": "The encoded image file in base64.",
+          "description": "Version 1 only. Read so an old bundle can be drained, never written.",
           "type": "string",
-          "default": ""
+          "writeOnly": true
         }
       }
+    },
+    "Asset": {
+      "description": "One file the workspace carries.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "What configs reference. Unique in the workspace.",
+          "type": "string",
+          "default": ""
+        },
+        "file": {
+          "description": "The file's name under `assets/`. Flat, no separators.",
+          "type": "string",
+          "default": ""
+        },
+        "kind": {
+          "description": "What the file holds, from its extension.",
+          "$ref": "#/$defs/AssetKind",
+          "default": "image"
+        },
+        "sha256": {
+          "description": "The file's SHA-256 in lowercase hex.",
+          "type": "string",
+          "default": ""
+        },
+        "bytes": {
+          "description": "The file's size.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "AssetKind": {
+      "description": "What an asset file holds, worked out from its extension.",
+      "oneOf": [
+        {
+          "description": "A still or animated image.",
+          "type": "string",
+          "const": "image"
+        },
+        {
+          "description": "A TrueType or OpenType font.",
+          "type": "string",
+          "const": "font"
+        },
+        {
+          "description": "A video, played silent.",
+          "type": "string",
+          "const": "video"
+        },
+        {
+          "description": "A 3D model.",
+          "type": "string",
+          "const": "model"
+        }
+      ]
     },
     "WorkspaceMeta": {
       "description": "The card on a workspace. Free text throughout; empty means unset.",

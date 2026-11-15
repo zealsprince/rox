@@ -6,10 +6,14 @@
 //! reloads first so one writer's save never reverts another's fields.
 //!
 //! `layouts` holds the named dock presets, `panel_presets` the named single
-//! panels. The settings window lives up in rox, with the widgets.
+//! panels. `assets` keeps the live workspace's files and `roxw` reads and
+//! writes workspace archives. The settings window lives up in rox, with the
+//! widgets.
 
+pub mod assets;
 pub mod layouts;
 pub mod panel_presets;
+pub mod roxw;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -1416,28 +1420,59 @@ impl Default for QuickPlayConfig {
     }
 }
 
-/// One image a shader samples via `// @asset name: file`, stored in the
-/// bundle as the encoded file in base64.
+/// What an asset file holds, worked out from its extension.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+    /// A still or animated image.
+    #[default]
+    Image,
+    /// A TrueType or OpenType font.
+    Font,
+    /// A video, played silent.
+    Video,
+    /// A 3D model.
+    Model,
+}
+
+/// One file the workspace carries.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct Asset {
+    /// What configs reference. Unique in the workspace.
+    pub id: String,
+    /// The file's name under `assets/`. Flat, no separators.
+    pub file: String,
+    /// What the file holds, from its extension.
+    pub kind: AssetKind,
+    /// The file's SHA-256 in lowercase hex.
+    pub sha256: String,
+    /// The file's size.
+    pub bytes: u64,
+}
+
+/// One image a shader samples via `// @asset name: file`. The bytes live in
+/// the workspace's asset table.
 ///
 /// Assets never gate: approval is over code, and an image can't run anything
 /// (ADR 23).
 #[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ShaderAsset {
-    /// The flat filename the shader declares it under, also used by eject.
+    /// The flat filename the shader's `// @asset` line declares.
     pub file: String,
-    /// The encoded image file in base64.
+    /// The workspace asset holding the bytes.
+    pub asset: String,
+    /// Version 1 only. Read so an old bundle can be drained, never written.
+    #[serde(skip_serializing)]
     pub data: String,
 }
 
 impl ShaderAsset {
-    pub fn from_bytes(file: impl Into<String>, bytes: &[u8]) -> Self {
-        ShaderAsset {
-            file: file.into(),
-            data: BASE64.encode(bytes),
-        }
-    }
-
+    /// Version 1's base64 bytes. Only the drain into the asset table reads
+    /// them.
     pub fn decode(&self) -> Result<Vec<u8>, String> {
         BASE64
             .decode(self.data.as_bytes())
@@ -2603,7 +2638,7 @@ pub struct LayoutEdit {
 }
 
 /// Independent of the dock layout version the dumps carry.
-pub const WORKSPACE_VERSION: u32 = 1;
+pub const WORKSPACE_VERSION: u32 = 2;
 
 /// A shareable workspace: layouts, palettes, pools, and appearance. Machine
 /// and account state stays out, so a bundle travels as pure look.
@@ -2648,6 +2683,12 @@ pub struct WorkspaceBundle {
         deserialize_with = "lenient::vec"
     )]
     pub shaders: Vec<NamedShader>,
+    /// The files the workspace carries, each under `assets/` in its archive.
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
+    pub assets: Vec<Asset>,
     /// Who made this workspace and what it is.
     #[serde(skip_serializing_if = "WorkspaceMeta::is_empty")]
     pub meta: WorkspaceMeta,
@@ -2684,6 +2725,7 @@ impl Default for WorkspaceBundle {
             palette_light: BTreeMap::new(),
             signals: Vec::new(),
             shaders: Vec::new(),
+            assets: Vec::new(),
             meta: WorkspaceMeta::default(),
             post_shader: None,
             backdrop_shader: None,
@@ -3467,6 +3509,55 @@ fn seed_scrobbling(settings: &mut Settings, core: &serde_json::Value) {
     }
 }
 
+/// [`Settings::drain_v1_look`] against a given asset folder and shard. The
+/// shard is backed up before anything changes, and a failed write leaves the
+/// look as it was read.
+fn drain_v1_look_in(look: &mut LookState, assets_dir: &Path, shard: &Path, announce: bool) -> bool {
+    let inline = look
+        .bundle
+        .shaders
+        .iter()
+        .flat_map(|shader| &shader.assets)
+        .any(|carried| !carried.data.is_empty());
+    if !inline {
+        return false;
+    }
+
+    let backup = shard.with_extension("json.bak-v1");
+    if !backup.exists()
+        && shard.exists()
+        && let Err(e) = std::fs::copy(shard, &backup)
+    {
+        log::warn!("settings: backing up to {}: {e}", backup.display());
+        return false;
+    }
+
+    let mut bundle = look.bundle.clone();
+    let drained = roxw::upgrade(&mut bundle);
+    if announce {
+        log::info!("settings: moving {} shader images to files", drained.len());
+    }
+
+    // The folder belongs to the table, so a file there under a drained name
+    // that the table never held is overwritten.
+    for (asset, bytes) in &drained {
+        let path = assets_dir.join(&asset.file);
+        let current = assets::sha256_file(&path).ok();
+        if current.is_some_and(|(_, sha256)| sha256 == asset.sha256) {
+            continue;
+        }
+
+        if let Err(e) = assets::write_file_in(assets_dir, &asset.file, bytes) {
+            log::warn!("settings: moving shader images: {e}");
+            return false;
+        }
+    }
+
+    look.bundle = bundle;
+
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -3565,6 +3656,9 @@ impl Settings {
             Self::migrate_split(&value, text);
         }
         settings.look = load_shard(&look_path(), "look", &value, LookState::from_legacy);
+        // An edit's before and after prints both come from the drained look,
+        // so without the force a no-op edit leaves the inline images on disk.
+        settings.migrated |= Self::drain_v1_look(&mut settings.look);
         settings.windows = load_shard(&windows_path(), "windows", &value, from_legacy);
         settings.session = load_shard(&session_path(), "session", &value, from_legacy);
         settings.accounts = load_shard(&accounts_path(), "accounts", &value, from_legacy);
@@ -3674,6 +3768,23 @@ impl Settings {
         for bundle in saved {
             migrate(bundle);
         }
+    }
+
+    /// Move a version 1 look's inline shader images into the asset folder.
+    /// Runs on every load that still finds them, not once per process: a
+    /// later load in the same run would otherwise hold `data`, and its save
+    /// would drop the images, since `data` is never written. The drain is
+    /// idempotent, so only the log line is once.
+    fn drain_v1_look(look: &mut LookState) -> bool {
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        let logged = LOGGED.load(Ordering::Relaxed);
+
+        let drained = drain_v1_look_in(look, &assets::dir(), &look_path(), !logged);
+        if drained {
+            LOGGED.store(true, Ordering::Relaxed);
+        }
+
+        drained
     }
 
     /// Reload, apply, and write back, so one writer's save never reverts
@@ -4252,13 +4363,16 @@ mod tests {
             "a shader with no plates writes no key: {plain}"
         );
 
-        let plate = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00];
         let mut bundle = WorkspaceBundle {
             shaders: vec![NamedShader {
                 name: "Serpent".to_string(),
                 source: "// @asset plate: plate.png".to_string(),
                 path: Some(PathBuf::from("/home/someone/serpent.wgsl")),
-                assets: vec![ShaderAsset::from_bytes("plate.png", &plate)],
+                assets: vec![ShaderAsset {
+                    file: "plate.png".to_string(),
+                    asset: "serpent-plate".to_string(),
+                    data: String::new(),
+                }],
             }],
             ..WorkspaceBundle::default()
         };
@@ -4273,11 +4387,63 @@ mod tests {
         );
         assert_eq!(entry.assets.len(), 1);
         assert_eq!(entry.assets[0].file, "plate.png");
-        assert_eq!(
-            entry.assets[0].decode().unwrap(),
-            plate,
-            "the plate landed as the same file that went in"
+        assert_eq!(entry.assets[0].asset, "serpent-plate");
+    }
+
+    #[test]
+    fn a_bundle_carries_its_asset_table() {
+        let plain = serde_json::to_value(WorkspaceBundle::default()).unwrap();
+        assert!(
+            plain.get("assets").is_none(),
+            "an empty table writes no key"
         );
+
+        let asset = Asset {
+            id: "serpent-plate".to_string(),
+            file: "serpent-plate.png".to_string(),
+            kind: AssetKind::Image,
+            sha256: "ab".repeat(32),
+            bytes: 10,
+        };
+        let bundle = WorkspaceBundle {
+            assets: vec![asset.clone()],
+            ..WorkspaceBundle::default()
+        };
+
+        let json = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(json["assets"][0]["kind"], "image");
+        let back: WorkspaceBundle = serde_json::from_value(json).unwrap();
+        assert_eq!(back.assets, [asset]);
+
+        // A broken entry costs only itself.
+        let json = serde_json::json!({
+            "assets": [
+                { "id": "a", "file": "a.png", "kind": "image", "sha256": "", "bytes": 1 },
+                { "id": "b", "file": "b.png", "kind": "hologram" },
+            ],
+        });
+        let back: WorkspaceBundle = serde_json::from_value(json).unwrap();
+        assert_eq!(back.assets.len(), 1);
+        assert_eq!(back.assets[0].id, "a");
+    }
+
+    #[test]
+    fn a_v1_bundle_still_reads_its_data() {
+        let json = serde_json::json!({
+            "version": 1,
+            "shaders": [{
+                "name": "Serpent",
+                "source": "// serpent",
+                "assets": [{ "file": "plate.png", "data": "AAEC" }],
+            }],
+        });
+        let bundle: WorkspaceBundle = serde_json::from_value(json).unwrap();
+        let carried = &bundle.shaders[0].assets[0];
+        assert_eq!(carried.decode().unwrap(), vec![0u8, 1, 2]);
+
+        let written = serde_json::to_string(&bundle).unwrap();
+        assert!(!written.contains("AAEC"), "{written}");
+        assert!(!written.contains("\"data\""), "{written}");
     }
 
     #[test]
@@ -4299,6 +4465,7 @@ mod tests {
 
         let bad = ShaderAsset {
             file: "plate.png".to_string(),
+            asset: String::new(),
             data: "not base64!".to_string(),
         };
         assert!(bad.decode().is_err());
@@ -5735,6 +5902,53 @@ mod tests {
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("stale"));
         assert!(written.contains("volume"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_v1_look_moves_its_assets_to_files_once() {
+        let dir = std::env::temp_dir().join(format!("rox-drain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shard = dir.join("workspace.json");
+        let assets_dir = dir.join("assets");
+
+        let v1 = serde_json::json!({
+            "bundle": {
+                "version": 1,
+                "shaders": [{
+                    "name": "Serpent",
+                    "source": "// @asset plate: plate.png",
+                    "assets": [{ "file": "plate.png", "data": BASE64.encode(b"plate") }],
+                }],
+            },
+        })
+        .to_string();
+        std::fs::write(&shard, &v1).unwrap();
+
+        let mut look: LookState = serde_json::from_str(&v1).unwrap();
+        assert!(drain_v1_look_in(&mut look, &assets_dir, &shard, false));
+
+        let backup = dir.join("workspace.json.bak-v1");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), v1);
+        assert_eq!(look.bundle.version, WORKSPACE_VERSION);
+        let asset = &look.bundle.assets[0];
+        assert_eq!(look.bundle.shaders[0].assets[0].asset, asset.id);
+        assert_eq!(
+            std::fs::read(assets_dir.join(&asset.file)).unwrap(),
+            b"plate"
+        );
+
+        // What the forced rewrite puts down.
+        assert!(write_json(&shard, &look, "look"));
+        let written = std::fs::read_to_string(&shard).unwrap();
+        assert!(!written.contains("\"data\""), "{written}");
+
+        let mut again: LookState = serde_json::from_str(&written).unwrap();
+        assert!(!drain_v1_look_in(&mut again, &assets_dir, &shard, false));
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), v1);
+        assert_eq!(again.bundle.assets, look.bundle.assets);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

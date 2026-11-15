@@ -1,7 +1,7 @@
 //! Holds the committed workspace schema to the bundle types (ADR 22) and
 //! checks the write shape validates against it.
 
-use rox_core::settings::{NamedLayout, WorkspaceBundle, workspace_schema};
+use rox_core::settings::{Asset, AssetKind, NamedLayout, WorkspaceBundle, workspace_schema};
 
 const COMMITTED: &str = include_str!("../../rox/assets/workspace.schema.json");
 
@@ -34,6 +34,13 @@ fn saved_shape_validates_and_required_fields_bite() {
         size: None,
     });
     bundle.signals.push(rox_viz::signal::Signal::default());
+    bundle.assets.push(Asset {
+        id: "plate".into(),
+        file: "plate.png".into(),
+        kind: AssetKind::Image,
+        sha256: "ab".repeat(32),
+        bytes: 10,
+    });
     let mut file = serde_json::to_value(&bundle).expect("bundle serializes");
     file.as_object_mut()
         .expect("a bundle is an object")

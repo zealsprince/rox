@@ -26,7 +26,7 @@ pub const SUPPORTED_API: RangeInclusive<u32> = 1..=1;
 pub const FILE: &str = "plugin.json";
 
 /// A manifest is a few hundred bytes; this only stops a huge file being read.
-const MAX_BYTES: u64 = 256 * 1024;
+pub(crate) const MAX_BYTES: u64 = 256 * 1024;
 
 /// A logo is a few KiB.
 const MAX_ICON_BYTES: u64 = 64 * 1024;
@@ -280,7 +280,13 @@ pub fn load(dir: &Path) -> Result<Manifest, String> {
     parse(&text)
 }
 
+/// Checks a manifest's text, wherever it was read from, so a package's
+/// manifest is held to the same rules as a folder's.
 pub fn parse(text: &str) -> Result<Manifest, String> {
+    if text.len() as u64 > MAX_BYTES {
+        return Err(format!("{FILE} is larger than {MAX_BYTES} bytes"));
+    }
+
     let manifest: Manifest = serde_json::from_str(text).map_err(|e| format!("{FILE}: {e}"))?;
 
     if !valid_id(&manifest.id) {

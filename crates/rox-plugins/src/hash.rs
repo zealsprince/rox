@@ -5,14 +5,21 @@
 //!
 //! A symlink refuses the plugin instead of being followed: following one
 //! would let the approved hash stand for bytes outside the folder.
+//!
+//! A folder and the `.roxp` packed from it hash the same, so packing never
+//! asks for approval again (ADR 32).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 /// Written by the OS, never executed. `__pycache__` isn't here: Python runs a
 /// planted `.pyc`, so it counts.
 const SKIPPED: [&str; 3] = [".DS_Store", "Thumbs.db", "desktop.ini"];
+
+/// Kept for signatures in every rox archive. Matched without case, since a
+/// case-folding volume would open `_ROX/` as the same folder.
+pub(crate) const RESERVED: &str = "_rox";
 
 pub fn folder_hash(dir: &Path) -> Result<String, String> {
     let mut files = Vec::new();
@@ -23,24 +30,66 @@ pub fn folder_hash(dir: &Path) -> Result<String, String> {
     let mut hasher = Sha256::new();
     for (rel, path) in &files {
         let bytes = std::fs::read(path).map_err(|e| format!("{rel}: {e}"))?;
-
-        hasher.update(rel.as_bytes());
-        hasher.update([0u8]);
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+        feed(&mut hasher, rel, &bytes);
     }
 
-    Ok(hasher
+    Ok(hex(hasher))
+}
+
+/// The digest `folder_hash` gives the same files unpacked: same framing,
+/// same order, same skipped names.
+pub fn archive_hash(archive: &Path) -> Result<String, String> {
+    let mut entries: Vec<rox_package::Entry> = rox_package::list(archive, &crate::package::LIMITS)?
+        .into_iter()
+        .filter(|entry| hashed(&entry.name))
+        .collect();
+
+    entries.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+
+    let mut hasher = Sha256::new();
+    for entry in &entries {
+        let bytes = rox_package::read(archive, &entry.name, entry.bytes)?;
+        feed(&mut hasher, &entry.name, &bytes);
+    }
+
+    Ok(hex(hasher))
+}
+
+/// Whether an archive entry is part of the plugin: what an unpack extracts
+/// and what `archive_hash` feeds. Anything this drops never reaches the
+/// folder plugin code runs from.
+pub(crate) fn hashed(name: &str) -> bool {
+    let last = name.rsplit('/').next().unwrap_or(name);
+
+    !SKIPPED.contains(&last) && !reserved(name)
+}
+
+/// A name under `_rox/`.
+fn reserved(name: &str) -> bool {
+    name.split_once('/')
+        .is_some_and(|(first, _)| first.eq_ignore_ascii_case(RESERVED))
+}
+
+fn feed(hasher: &mut Sha256, rel: &str, bytes: &[u8]) {
+    hasher.update(rel.as_bytes());
+    hasher.update([0u8]);
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn hex(hasher: Sha256) -> String {
+    hasher
         .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect())
+        .collect()
 }
 
-fn walk(
+/// Every file `folder_hash` feeds, as `(relative path, path)`, unsorted.
+pub(crate) fn walk(
     dir: &Path,
     prefix: &str,
-    out: &mut Vec<(String, std::path::PathBuf)>,
+    out: &mut Vec<(String, PathBuf)>,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
 
@@ -182,6 +231,39 @@ mod tests {
         scratch.write("lib/Thumbs.db", "explorer");
         scratch.write("desktop.ini", "explorer");
         assert_eq!(scratch.hash(), before);
+    }
+
+    #[test]
+    fn an_archive_skips_what_a_folder_skips() {
+        let scratch = Scratch::new("archive");
+        let before = scratch.hash();
+
+        // Litter and a signature slot beside the plugin's own files. The
+        // sources sit outside the folder, which hashes only what it holds.
+        let mut files = Vec::new();
+        for (name, text) in [
+            ("plugin.json", "{}"),
+            ("lib/tones.py", "print('hi')"),
+            (".DS_Store", "finder"),
+            ("lib/Thumbs.db", "explorer"),
+            ("_rox/signature", "sig"),
+            ("_ROX/signature.old", "sig"),
+        ] {
+            let source = scratch.0.with_extension(format!("src-{}", files.len()));
+            std::fs::write(&source, text).unwrap();
+            files.push((name.to_string(), source));
+        }
+
+        let archive = scratch.0.with_extension("roxp");
+        rox_package::pack(&archive, &files).unwrap();
+        let packed = archive_hash(&archive);
+
+        for (_, source) in &files {
+            let _ = std::fs::remove_file(source);
+        }
+        let _ = std::fs::remove_file(&archive);
+
+        assert_eq!(packed.unwrap(), before);
     }
 
     #[cfg(unix)]

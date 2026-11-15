@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# The plugin host: manifest, folder hash, wire and subprocess (ADR 30). No
-# sibling rox crate, so the host tests on its own and the plugin wire versions
-# apart from the control socket's.
+# The plugin host: manifest, folder hash, wire and subprocess (ADR 30). The
+# one sibling is rox-package, the leaf that holds the archive rules, so the
+# host still tests on its own and the plugin wire versions apart from the
+# control socket's.
 [dependencies]
+rox-package = { path = "../rox-package" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Folder hashes, same line as the rest of the workspace.

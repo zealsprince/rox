@@ -41,7 +41,10 @@ fn call(host: &Host, method: &'static str, params: Value) -> Value {
 
 #[test]
 fn the_folder_loads_with_its_icon_radio_and_links() {
-    let found = loader::scan(&examples());
+    let found = loader::scan(
+        &examples(),
+        &std::env::temp_dir().join(format!("rox-plugins-cache-{}", std::process::id())),
+    );
     let archive = found
         .iter()
         .find(|loaded| loaded.id == ID)

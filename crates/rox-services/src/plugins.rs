@@ -11,6 +11,10 @@
 //! mode, which the user turns on per plugin for one session, approves such a
 //! change instead when the manifest declares nothing new. A record whose
 //! folder is gone is Missing: nothing starts and nothing is swept.
+//!
+//! A `.roxp` installs by landing in the plugins folder, and runs from the
+//! copy the scan unpacks (ADR 32). Installing only lists it: the switch is
+//! still the one approval.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -33,7 +37,9 @@ use rox_net::providers::{LyricsCandidate, MetadataCandidate, TrackQuery};
 use rox_playback::continuation::{self, Pick};
 use rox_playback::plugin::{Opened, ReadAt};
 use rox_plugins::manifest::{ProviderDomain, SourceCap};
-use rox_plugins::{Host, HostConfig, Loaded, Options, Status, Stream, loader, wire};
+use rox_plugins::{
+    Host, HostConfig, Loaded, Options, Origin, Status, Stream, loader, package, wire,
+};
 
 use crate::catalog::Library;
 use crate::player::Player;
@@ -225,7 +231,7 @@ static HOSTS: LazyLock<RwLock<HashMap<String, Arc<Running>>>> =
 /// The plugins folder as the last scan found it. The first read scans, which
 /// is the projection's first load at startup, so its rows hide right away.
 static FOLDERS: LazyLock<RwLock<Vec<Loaded>>> =
-    LazyLock::new(|| RwLock::new(loader::scan(&settings::plugins_dir())));
+    LazyLock::new(|| RwLock::new(scan(&settings::plugins_dir())));
 
 /// Run at the end of every [`apply`]. See [`after_apply`].
 static AFTER_APPLY: OnceLock<fn(&mut App)> = OnceLock::new();
@@ -633,7 +639,7 @@ pub fn rescan(cx: &mut App) {
             .background_executor()
             .spawn(async move {
                 rox_plugins::manifest::forget_probes();
-                loader::scan(&dir)
+                scan(&dir)
             })
             .await;
 
@@ -654,6 +660,85 @@ pub fn rescan(cx: &mut App) {
         }
     })
     .detach();
+}
+
+fn scan(dir: &Path) -> Vec<Loaded> {
+    loader::scan(dir, &settings::plugin_cache_dir())
+}
+
+/// Peek, copy to `plugins/<id>.roxp` (temp then rename), rescan. Never
+/// switches anything on. Returns the id.
+pub fn install(archive: &Path, cx: &mut App) -> Result<String, String> {
+    let id = install_into(archive, &settings::plugins_dir())?;
+    rescan(cx);
+
+    Ok(id)
+}
+
+/// [`install`]'s file work. It leaves the record and the approval alone, so
+/// an update to a plugin that's switched on lands as Changed in [`apply`].
+fn install_into(archive: &Path, plugins: &Path) -> Result<String, String> {
+    let peek = package::peek(archive)?;
+    let id = peek.manifest.id;
+
+    // A folder shadows a package, so installing under one would look like
+    // nothing happened.
+    let folder = plugins.join(&id);
+    if folder.symlink_metadata().is_ok_and(|meta| !meta.is_file()) {
+        return Err(format!("the folder {id} already holds plugin {id}"));
+    }
+
+    let target = plugins.join(format!("{id}.{}", package::EXT));
+    if let Some(other) = other_package(plugins, &target, &id) {
+        return Err(format!("{other} already holds plugin {id}"));
+    }
+
+    let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    if same(archive, &target) {
+        return Ok(id);
+    }
+
+    std::fs::create_dir_all(plugins).map_err(|e| format!("{}: {e}", plugins.display()))?;
+
+    // Not `.roxp`, so a scan mid-copy passes over it.
+    let tmp = plugins.join(format!("{id}.{}.tmp", package::EXT));
+    let copied = std::fs::copy(archive, &tmp)
+        .and_then(|_| std::fs::rename(&tmp, &target))
+        .map_err(|e| format!("{}: {e}", target.display()));
+    if copied.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    copied.map(|()| id)
+}
+
+/// Another package in the plugins folder holding `id`, by file name. The
+/// scan would refuse whichever sorts second.
+fn other_package(plugins: &Path, target: &Path, id: &str) -> Option<String> {
+    std::fs::read_dir(plugins)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path != target)
+        .filter(|path| path.extension().is_some_and(|ext| ext == package::EXT))
+        .find(|path| package::peek(path).is_ok_and(|peek| peek.manifest.id == id))
+        .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+}
+
+/// A folder plugin, packed for its author.
+pub fn pack(id: &str, out: &Path) -> Result<(), String> {
+    let folders = loaded();
+    let folder = folders
+        .iter()
+        .find(|folder| folder.id == id)
+        .ok_or_else(|| format!("no plugin {id}"))?;
+
+    if folder.origin != Origin::Folder {
+        return Err(format!("{id} is already a package"));
+    }
+
+    package::pack(&folder.dir, out)
 }
 
 /// Starts following the plugins folder, once. A folder that appears later is
@@ -747,7 +832,12 @@ fn record_approval(folder: &Loaded) {
 fn redevelop(records: &[PluginRecord], folders: &[Loaded]) -> bool {
     let mut approved = false;
     for record in records.iter().filter(|r| r.enabled && developing(&r.id)) {
-        let Some(folder) = folders.iter().find(|f| f.id == record.id) else {
+        // A package isn't edited in place, so it has no author's save to
+        // approve.
+        let Some(folder) = folders
+            .iter()
+            .find(|f| f.id == record.id && f.origin == Origin::Folder)
+        else {
             continue;
         };
         if !folder.runs() || settings::plugin_approved(&record.id, &folder.hash) {
@@ -854,12 +944,25 @@ fn edit(id: &str, change: impl FnOnce(&mut PluginRecord) + Send + 'static) {
 }
 
 /// Stops the plugin, drops its rows with their membership, forgets its
-/// record and its approval, and leaves its folder where it is. Answers the
-/// rows removed.
+/// record and its approval, and leaves its folder where it is. A package's
+/// file goes, with its unpacked copies. Answers the rows removed.
 pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
     let Some(library) = cx.try_global::<Wiring>().map(|w| w.library.clone()) else {
         return Task::ready(Err(NO_HOST.to_string()));
     };
+
+    // The first row for an id is the one that holds it. A valid id is one
+    // plain name, so the copies to delete stay inside the cache.
+    let package = loaded()
+        .into_iter()
+        .find(|folder| folder.id == id)
+        .and_then(|folder| match folder.origin {
+            Origin::Package(archive) => Some(archive),
+            Origin::Folder => None,
+        })
+        .filter(|_| rox_plugins::manifest::valid_id(id))
+        .map(|archive| (archive, settings::plugin_cache_dir().join(id)));
+    let rescans = package.is_some();
 
     let source = source_of(id);
     let stopping = HOSTS
@@ -875,16 +978,48 @@ pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
     live_moved();
     bump();
 
-    write(library, cx, move |db_path| {
+    let removed = write(library, cx, move |db_path| {
         // Stopped before the delete, so a sync in flight can't land rows
         // behind it.
         if let Some(running) = stopping {
             running.host.stop("removed");
         }
 
+        // After the stop, since Windows won't delete a running plugin's files.
+        if let Some((archive, copies)) = &package {
+            remove_package(archive, copies);
+        }
+
         let mut conn = store::open(&db_path).map_err(|e| e.to_string())?;
         members::remove_source(&mut conn, &source).map_err(|e| e.to_string())
+    });
+    if !rescans {
+        return removed;
+    }
+
+    // The watch only runs with plugins allowed, and the package's row has to
+    // go either way.
+    cx.spawn(async move |cx| {
+        let result = removed.await;
+        cx.update(rescan).ok();
+        result
     })
+}
+
+/// A copy that won't delete now goes at the next scan's sweep.
+fn remove_package(archive: &Path, copies: &Path) {
+    if let Err(e) = std::fs::remove_file(archive) {
+        log::warn!("plugins: couldn't remove {}: {e}", archive.display());
+    }
+
+    if let Err(e) = std::fs::remove_dir_all(copies)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        log::debug!(
+            "plugins: leaving {} for the next scan: {e}",
+            copies.display()
+        );
+    }
 }
 
 /// What changed in a manifest since it was approved, for the enable card.
@@ -3255,5 +3390,90 @@ mod tests {
     #[test]
     fn no_results_find_nothing() {
         assert_eq!(same_song(&[], "Air", "Sexy Boy"), None);
+    }
+
+    /// A plugins folder and a package of a native plugin built outside it,
+    /// so nothing has to resolve on PATH.
+    struct Installing(PathBuf);
+
+    impl Installing {
+        fn new(tag: &str) -> Installing {
+            let root = std::env::temp_dir()
+                .join(format!("rox-services-install-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+
+            let folder = root.join("src/tones");
+            std::fs::create_dir_all(folder.join("bin")).unwrap();
+            std::fs::write(folder.join("bin/tones"), "binary").unwrap();
+            let manifest = format!(
+                r#"{{ "id": "tones", "name": "Tones", "version": "1", "api": 1,
+                     "entry": {{ "native": {{ "{}": "bin/tones" }} }} }}"#,
+                rox_plugins::manifest::platform()
+            );
+            std::fs::write(folder.join("plugin.json"), manifest).unwrap();
+            package::pack(&folder, &root.join("tones-1.0.roxp")).unwrap();
+
+            Installing(root)
+        }
+
+        fn archive(&self) -> PathBuf {
+            self.0.join("tones-1.0.roxp")
+        }
+
+        fn plugins(&self) -> PathBuf {
+            self.0.join("plugins")
+        }
+    }
+
+    impl Drop for Installing {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn install_copies_the_package_under_its_id() {
+        let scratch = Installing::new("copies");
+
+        let id = install_into(&scratch.archive(), &scratch.plugins()).unwrap();
+        assert_eq!(id, "tones");
+
+        let names: Vec<String> = std::fs::read_dir(scratch.plugins())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["tones.roxp"]);
+        assert_eq!(
+            std::fs::read(scratch.plugins().join("tones.roxp")).unwrap(),
+            std::fs::read(scratch.archive()).unwrap()
+        );
+
+        // Installing the same package again only replaces the file.
+        assert_eq!(
+            install_into(&scratch.archive(), &scratch.plugins()).unwrap(),
+            "tones"
+        );
+    }
+
+    #[test]
+    fn install_refuses_an_id_a_folder_holds() {
+        let scratch = Installing::new("folder");
+        std::fs::create_dir_all(scratch.plugins().join("tones")).unwrap();
+
+        let err = install_into(&scratch.archive(), &scratch.plugins()).unwrap_err();
+        assert!(err.contains("the folder tones"), "{err}");
+        assert!(!scratch.plugins().join("tones.roxp").exists());
+    }
+
+    #[test]
+    fn install_refuses_an_id_another_package_holds() {
+        let scratch = Installing::new("package");
+        std::fs::create_dir_all(scratch.plugins()).unwrap();
+        std::fs::copy(scratch.archive(), scratch.plugins().join("old.roxp")).unwrap();
+
+        let err = install_into(&scratch.archive(), &scratch.plugins()).unwrap_err();
+        assert!(err.contains("old.roxp already holds plugin tones"), "{err}");
+        assert!(!scratch.plugins().join("tones.roxp").exists());
     }
 }

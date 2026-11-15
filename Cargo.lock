@@ -7260,6 +7260,7 @@ dependencies = [
  "libc",
  "log",
  "notify-debouncer-full",
+ "rox-package",
  "serde",
  "serde_json",
  "sha2 0.10.9",

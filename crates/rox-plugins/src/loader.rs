@@ -1,7 +1,9 @@
-//! The plugins folder (ADR 30): one subfolder per plugin, named after its id.
-//! A scan reads each manifest, hashes each folder and looks for the programs
-//! it lists. It runs nothing. A folder that doesn't load still comes back,
-//! with its reason, so the Plugins page can say what's wrong with it.
+//! The plugins folder (ADR 30): one subfolder per plugin, named after its id,
+//! or one `.roxp` per plugin (ADR 32), unpacked into the cache and loaded
+//! from there. A scan reads each manifest, hashes each folder and looks for
+//! the programs it lists. It runs nothing. A plugin that doesn't load still
+//! comes back, with its reason, so the Plugins page can say what's wrong
+//! with it.
 //!
 //! The watch follows the folder so a plugin dropped in or edited shows up
 //! without a restart. Events are hints to scan again, never a diff.
@@ -15,15 +17,31 @@ use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, ne
 
 use crate::hash;
 use crate::manifest::{self, Manifest};
+use crate::package;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// One folder under the plugins folder, as the last scan found it.
+/// One scan unpacks and sweeps the cache at a time, so two can't trample
+/// each other's copies.
+static UNPACKING: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Folder,
+    /// The `.roxp` the plugin was unpacked from.
+    Package(PathBuf),
+}
+
+/// One plugin under the plugins folder, as the last scan found it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loaded {
-    /// The folder's name, which a manifest has to match.
+    /// The folder's name, or the id a package's manifest gives. The manifest
+    /// it loads from has to match it.
     pub id: String,
+    /// The folder, or the unpacked copy. A package that never unpacked
+    /// points at its archive.
     pub dir: PathBuf,
+    pub origin: Origin,
     /// None when `plugin.json` is missing or doesn't parse.
     pub manifest: Option<Manifest>,
     /// `plugin.json` as written, which an approval stores for the next diff.
@@ -47,10 +65,11 @@ impl Loaded {
         self.manifest.is_some() && self.error.is_none()
     }
 
-    fn failed(id: String, dir: PathBuf, error: String) -> Loaded {
+    fn failed(id: String, dir: PathBuf, origin: Origin, error: String) -> Loaded {
         Loaded {
             id,
             dir,
+            origin,
             manifest: None,
             document: serde_json::Value::Null,
             hash: String::new(),
@@ -62,37 +81,145 @@ impl Loaded {
     }
 }
 
-/// Every plugin folder under `dir`, sorted by id. A missing `dir` scans to
-/// nothing; stray files beside the folders are skipped.
-pub fn scan(dir: &Path) -> Vec<Loaded> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
+/// Every folder, then every `*.roxp`. A folder shadows a package with
+/// its id. A second package with an id already taken fails to load and
+/// says which file holds it. Sorted by id, with the plugin that holds an id
+/// ahead of any row refused for it. A missing `dir` scans to nothing; stray
+/// files beside the plugins are skipped.
+pub fn scan(dir: &Path, cache: &Path) -> Vec<Loaded> {
+    let mut folders = Vec::new();
+    let mut archives = Vec::new();
+    let mut refused = Vec::new();
 
-    let mut found: Vec<Loaded> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            let path = entry.path();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        let is_package = path.extension().is_some_and(|ext| ext == package::EXT);
 
-            // `file_type` doesn't follow links, so a linked folder shows as one.
-            let kind = entry.file_type().ok()?;
-            if kind.is_symlink() {
-                return Some(Loaded::failed(id, path, "the folder is a symlink".into()));
+        // `file_type` doesn't follow links, so a linked folder shows as one.
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() && is_package {
+            let stem = stem_of(&path);
+            let origin = Origin::Package(path.clone());
+            refused.push(Loaded::failed(
+                stem,
+                path,
+                origin,
+                "the package is a symlink".into(),
+            ));
+        } else if kind.is_symlink() {
+            let error = "the folder is a symlink".into();
+            folders.push(Loaded::failed(name, path, Origin::Folder, error));
+        } else if kind.is_dir() {
+            folders.push(load(name, path, Origin::Folder));
+        } else if kind.is_file() && is_package {
+            archives.push(path);
+        }
+    }
+
+    // "Earlier" has to mean the same thing on every scan.
+    archives.sort();
+
+    let mut claimed: Vec<Loaded> = Vec::new();
+    let mut kept: Vec<(String, String)> = Vec::new();
+    let unpacking = UNPACKING.lock().unwrap_or_else(|e| e.into_inner());
+
+    for archive in archives {
+        let origin = Origin::Package(archive.clone());
+        let peek = match package::peek(&archive) {
+            Ok(peek) => peek,
+            Err(e) => {
+                refused.push(Loaded::failed(stem_of(&archive), archive, origin, e));
+                continue;
             }
+        };
 
-            kind.is_dir().then(|| load(id, path))
-        })
-        .collect();
+        let id = peek.manifest.id;
+        if let Some(holder) = folders.iter().chain(&claimed).find(|l| l.id == id) {
+            let error = format!("{} already holds plugin {id}", holder_name(holder));
+            refused.push(Loaded::failed(id, archive, origin, error));
+            continue;
+        }
 
+        kept.push((id.clone(), peek.hash[..16].to_string()));
+        claimed.push(match package::unpack(&archive, cache) {
+            Ok(copy) => load(id, copy, origin),
+            Err(e) => Loaded::failed(id, archive, origin, e),
+        });
+    }
+
+    sweep(cache, &kept);
+    drop(unpacking);
+
+    // A stable sort, so the holder of an id stays ahead of what it refused.
+    let mut found = folders;
+    found.extend(claimed);
+    found.extend(refused);
     found.sort_by(|a, b| a.id.cmp(&b.id));
     found
 }
 
-fn load(id: String, dir: PathBuf) -> Loaded {
+fn stem_of(archive: &Path) -> String {
+    archive
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn holder_name(holder: &Loaded) -> String {
+    match &holder.origin {
+        Origin::Folder => format!("the folder {}", holder.id),
+        Origin::Package(archive) => archive
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    }
+}
+
+/// Drops every copy in the cache but the ones `kept` names as `(id, first 16
+/// of hash)`. A copy that won't go, held open on Windows or by a plugin
+/// still running from it, waits for the next scan.
+fn sweep(cache: &Path, kept: &[(String, String)]) {
+    let discard = |path: &Path| {
+        if let Err(e) = package::clear(path) {
+            log::debug!("plugins: leaving {} for the next scan: {e}", path.display());
+        }
+    };
+
+    for home in std::fs::read_dir(cache).into_iter().flatten().flatten() {
+        let name = home.file_name();
+        let wanted: Vec<&str> = kept
+            .iter()
+            .filter(|(id, _)| name == id.as_str())
+            .map(|(_, short)| short.as_str())
+            .collect();
+
+        let is_dir = home.file_type().is_ok_and(|kind| kind.is_dir());
+        if wanted.is_empty() || !is_dir {
+            discard(&home.path());
+            continue;
+        }
+
+        for copy in std::fs::read_dir(home.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let keep = copy.file_type().is_ok_and(|kind| kind.is_dir())
+                && wanted.iter().any(|short| copy.file_name() == *short);
+            if !keep {
+                discard(&copy.path());
+            }
+        }
+    }
+}
+
+pub(crate) fn load(id: String, dir: PathBuf, origin: Origin) -> Loaded {
     let manifest = match manifest::load(&dir) {
         Ok(manifest) => manifest,
-        Err(e) => return Loaded::failed(id, dir, e),
+        Err(e) => return Loaded::failed(id, dir, origin, e),
     };
 
     // A second parse of a file just read whole, kept apart from the typed
@@ -116,14 +243,16 @@ fn load(id: String, dir: PathBuf) -> Loaded {
     let icon = manifest::icon_for(&manifest, &dir);
     let action_icons = manifest::action_icons_for(&manifest, &dir);
 
-    // The source id is fixed by the manifest, and the host finds a plugin by
-    // its folder, so the two have to agree.
+    // The source id is fixed by the manifest, so it has to match the id the
+    // plugin lists under: a folder's name, or for a package's copy, which is
+    // named for its hash, the id the archive's manifest gave.
     let error = match manifest.id == id {
         false => Some(format!(
             "the folder is named {id} but holds plugin {}",
             manifest.id
         )),
-        true => hash_error
+        true => reserved_error(&dir)
+            .or(hash_error)
             .or_else(|| manifest::entry_for(&manifest, &dir).err())
             .or_else(|| icon.as_ref().err().cloned())
             .or_else(|| action_icons.as_ref().err().cloned()),
@@ -132,6 +261,7 @@ fn load(id: String, dir: PathBuf) -> Loaded {
     Loaded {
         id,
         dir,
+        origin,
         manifest: Some(manifest),
         document,
         hash,
@@ -140,6 +270,29 @@ fn load(id: String, dir: PathBuf) -> Loaded {
         icon: icon.ok().flatten(),
         action_icons: action_icons.unwrap_or_default(),
     }
+}
+
+/// `_rox/` would sit outside the trust hash an archive gives, yet plugin code
+/// could still read it, so a folder holding one never loads.
+fn reserved_error(dir: &Path) -> Option<String> {
+    let holds = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(hash::RESERVED))
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        });
+
+    holds.then(|| {
+        format!(
+            "the folder holds {}/, a name kept for signatures",
+            hash::RESERVED
+        )
+    })
 }
 
 /// Follows the plugins folder, and its parent until the folder exists: rox
@@ -239,6 +392,11 @@ mod tests {
             Scratch(dir)
         }
 
+        /// Outside the scanned folder, as the real cache is.
+        fn cache(&self) -> PathBuf {
+            self.0.with_extension("cache")
+        }
+
         fn write(&self, rel: &str, text: &str) -> PathBuf {
             let path = self.0.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -269,6 +427,7 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_dir_all(self.cache());
         }
     }
 
@@ -277,7 +436,7 @@ mod tests {
         let scratch = Scratch::new("good");
         scratch.plugin("tones");
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         assert_eq!(found.len(), 1);
 
         let tones = &found[0];
@@ -319,7 +478,7 @@ mod tests {
         with_icon("peeks", "icon.svg");
         scratch.write("peeks/icon.svg", "<svg><IMAGE href='/etc/passwd'/></svg>");
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         let by_id = |id: &str| found.iter().find(|p| p.id == id).unwrap();
 
         assert!(by_id("good").runs(), "{:?}", by_id("good").error);
@@ -371,7 +530,7 @@ mod tests {
         with_icon("peeks", "save.svg");
         scratch.write("peeks/save.svg", "<svg><feImage href='/etc/passwd'/></svg>");
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         let by_id = |id: &str| found.iter().find(|p| p.id == id).unwrap();
 
         let good = by_id("good");
@@ -397,7 +556,7 @@ mod tests {
         scratch.plugin("tones");
         scratch.write("tones/bin/rox-no-such-program", "binary");
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         assert_eq!(
             found[0].programs,
             vec![("rox-no-such-program".into(), true)]
@@ -410,7 +569,7 @@ mod tests {
         scratch.write("broken/plugin.json", r#"{ "id": "broken", "tools": [] }"#);
         scratch.write("empty/readme.txt", "no manifest here");
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         let ids: Vec<&str> = found.iter().map(|loaded| loaded.id.as_str()).collect();
         assert_eq!(ids, ["broken", "empty"]);
 
@@ -427,9 +586,23 @@ mod tests {
         scratch.plugin("tones");
         std::fs::rename(scratch.0.join("tones"), scratch.0.join("other")).unwrap();
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         let error = found[0].error.as_deref().unwrap_or_default();
         assert!(error.contains("holds plugin tones"), "{error}");
+    }
+
+    #[test]
+    fn a_folder_with_a_reserved_directory_fails_to_load() {
+        let scratch = Scratch::new("reserved");
+        scratch.plugin("tones");
+        scratch.plugin("upper");
+        scratch.write("tones/_rox/signature", "sig");
+        scratch.write("upper/_ROX/signature", "sig");
+
+        for plugin in scan(&scratch.0, &scratch.cache()) {
+            let error = plugin.error.as_deref().unwrap_or_default();
+            assert!(error.contains("_rox/"), "{}: {error}", plugin.id);
+        }
     }
 
     #[test]
@@ -439,7 +612,10 @@ mod tests {
         scratch.write("notes.txt", "not a plugin");
         scratch.write(".DS_Store", "");
 
-        let ids: Vec<String> = scan(&scratch.0).into_iter().map(|l| l.id).collect();
+        let ids: Vec<String> = scan(&scratch.0, &scratch.cache())
+            .into_iter()
+            .map(|l| l.id)
+            .collect();
         assert_eq!(ids, ["tones"]);
     }
 
@@ -451,7 +627,7 @@ mod tests {
         std::os::unix::fs::symlink(scratch.0.join("tones"), scratch.0.join("linked")).unwrap();
         std::os::unix::fs::symlink("/etc/hosts", scratch.0.join("tones/hosts")).unwrap();
 
-        let found = scan(&scratch.0);
+        let found = scan(&scratch.0, &scratch.cache());
         let linked = found.iter().find(|l| l.id == "linked").unwrap();
         assert!(linked.manifest.is_none());
         assert_eq!(linked.error.as_deref(), Some("the folder is a symlink"));
@@ -465,10 +641,10 @@ mod tests {
     fn a_changed_byte_changes_the_hash() {
         let scratch = Scratch::new("changed");
         scratch.plugin("tones");
-        let before = scan(&scratch.0)[0].hash.clone();
+        let before = scan(&scratch.0, &scratch.cache())[0].hash.clone();
 
         scratch.write("tones/bin/tones", "binarY");
-        let after = scan(&scratch.0)[0].hash.clone();
+        let after = scan(&scratch.0, &scratch.cache())[0].hash.clone();
 
         assert!(!before.is_empty());
         assert_ne!(before, after);
@@ -500,6 +676,6 @@ mod tests {
     #[test]
     fn a_missing_folder_scans_to_nothing() {
         let scratch = Scratch::new("missing");
-        assert!(scan(&scratch.0.join("plugins")).is_empty());
+        assert!(scan(&scratch.0.join("plugins"), &scratch.cache()).is_empty());
     }
 }

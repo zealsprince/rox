@@ -1451,6 +1451,7 @@ mod tests {
         Loaded {
             id: "tones".into(),
             dir: "/plugins/tones".into(),
+            origin: rox_plugins::Origin::Folder,
             manifest: Some(manifest),
             document: Value::Null,
             hash: "beef".into(),

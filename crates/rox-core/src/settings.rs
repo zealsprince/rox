@@ -190,8 +190,7 @@ pub fn milkdrop_dir() -> PathBuf {
     data_dir().join("milkdrop")
 }
 
-/// One folder per plugin, each dropped in by the user. Not created here
-/// (ADR 30).
+/// A folder or a `.roxp` per plugin. Not created here (ADR 30).
 pub fn plugins_dir() -> PathBuf {
     data_dir().join("plugins")
 }
@@ -200,6 +199,12 @@ pub fn plugins_dir() -> PathBuf {
 /// change the folder hash and switch the plugin off. Not created here.
 pub fn plugin_data_dir(id: &str) -> PathBuf {
     data_dir().join("plugin-data").join(id)
+}
+
+/// Unpacked packages, rebuilt from the plugins folder and safe to delete.
+/// Kept outside it so unpacking doesn't wake the plugins watch.
+pub fn plugin_cache_dir() -> PathBuf {
+    data_dir().join("plugin-cache")
 }
 
 /// An unsaved look ejects under `_local`. A workspace named that shares the

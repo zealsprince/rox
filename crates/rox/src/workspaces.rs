@@ -886,6 +886,10 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
 
 /// The live half of [`apply_look`], for a bundle already on disk.
 fn show_look(bundle: &WorkspaceBundle, cx: &mut App) {
+    // Before the app font is set: gpui remembers a family it couldn't find
+    // for the rest of the session.
+    crate::workspace_fonts::register(cx);
+
     palette::set_palettes(
         Palette::from_map(&bundle.palette_dark),
         Palette::from_map_over(Palette::light(), &bundle.palette_light),
@@ -914,7 +918,6 @@ fn show_look(bundle: &WorkspaceBundle, cx: &mut App) {
     crate::backdrop_visual::wake(cx);
     crate::workspace::apply_decorations(cx);
     crate::workspace::apply_resize_border(cx);
-    crate::workspace_fonts::register(cx);
 }
 
 /// The file the list matched, so a hand-dropped file keeps its filename.

@@ -148,7 +148,21 @@ pub fn write(archive: &Path, bundle: &WorkspaceBundle, assets_from: &Path) -> Re
 
     let mut bundle = bundle.clone();
     bundle.version = WORKSPACE_VERSION;
-    let text = serde_json::to_string_pretty(&bundle).map_err(|e| format!("{MANIFEST}: {e}"))?;
+
+    // Stamped during serialization, not through a Value, so the manifest
+    // keeps its field order with `$schema` first.
+    #[derive(serde::Serialize)]
+    struct Stamped<'a> {
+        #[serde(rename = "$schema")]
+        schema: &'a str,
+        #[serde(flatten)]
+        bundle: &'a WorkspaceBundle,
+    }
+    let text = serde_json::to_string_pretty(&Stamped {
+        schema: &schema_url(),
+        bundle: &bundle,
+    })
+    .map_err(|e| format!("{MANIFEST}: {e}"))?;
 
     let manifest = suffixed(archive, ".manifest");
     std::fs::write(&manifest, text).map_err(|e| format!("{}: {e}", manifest.display()))?;
@@ -158,6 +172,15 @@ pub fn write(archive: &Path, bundle: &WorkspaceBundle, assets_from: &Path) -> Re
     let _ = std::fs::remove_file(&manifest);
 
     result
+}
+
+/// The schema at the release that wrote the file, so an unpacked manifest
+/// validates against the shape it was written in.
+pub fn schema_url() -> String {
+    format!(
+        "https://raw.githubusercontent.com/zealsprince/rox/v{}/crates/rox/assets/workspace.schema.json",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Version 1 to 2 in memory: every `ShaderAsset.data` becomes an asset and
@@ -396,6 +419,18 @@ mod tests {
         let archive = root.join("framed.roxw");
 
         write(&archive, &bundle, &root.join("live")).unwrap();
+
+        // The schema leads the manifest, pinned to this release.
+        let manifest = rox_package::read(&archive, MANIFEST, MANIFEST_MAX).unwrap();
+        let manifest = String::from_utf8(manifest).unwrap();
+        let first = manifest
+            .lines()
+            .nth(1)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        assert_eq!(first, format!("\"$schema\": \"{}\",", schema_url()));
+        assert!(schema_url().contains(&format!("/v{}/", env!("CARGO_PKG_VERSION"))));
 
         let back = read_bundle(&archive).unwrap();
         assert_eq!(back.name, "Framed");

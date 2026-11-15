@@ -1,0 +1,888 @@
+Texture quads: a caller-owned texture on a perspective face.
+
+`paint_image_quad` (b6) puts an atlas image on a keystoned quad. This adds
+`Window::paint_texture_quad`, the same face sampling a `UserTextureId`
+instead, so a frame that lives in a dynamic texture (c6) can ride a quad
+with real perspective. Covers blade (Linux, and macOS under `macos-blade`)
+and DirectX 11.
+
+A polychrome batch binds one atlas page and a user texture isn't in the
+atlas, so this is a primitive kind of its own, `TextureSprite`, batched on
+its texture id and slotted into `BatchIterator`'s merge right after the
+polychrome sprites. Its GPU struct is the polychrome sprite's face without
+the atlas parts: no tile, no grayscale, no corner radii, and the crop is a
+0..1 `source` rather than a shrunken tile. The primitive's bounds are the
+corners' bounding box and the homography comes from `quad_homography`, both
+through `quad_face`, the steps `paint_image_quad` takes inline. A quad
+leaning past its own horizon is skipped, the b6 rule, and so is an empty
+crop, which has no texel centers to clamp the sample to.
+
+Color: the polychrome fragment works on sRGB-encoded, straight-alpha
+values, since the atlas and the surface are plain Unorm (blade surfaces
+are configured `ColorSpace::Srgb`, DirectX targets B8G8R8A8_UNORM). User
+textures are Rgba8UnormSrgb with straight alpha, so their samples arrive
+linear. The new fragment stages encode the sample back with the exact sRGB
+curve before the wash, fade and blend, which then match the polychrome
+path. HLSL's own `linear_to_srgb` is a 2.2 power that decodes rather than
+encodes, so the DirectX stage carries its own.
+
+A released id paints nothing. Release drops the id from the renderer's map
+there and then, so a quad painted in the frame of its release finds nothing
+at draw time and the batch is skipped; blade's retirement list (c6) keeps
+the texture alive for a frame still in flight, and D3D11 does that on its
+own.
+
+blade: a `tex-sprites` pipeline beside `poly-sprites`, with `vs_tex_sprite`
+and `fs_tex_sprite` in shaders.wgsl reusing `PolySpriteVarying`, and the
+mask capture replays these faces the way it replays images. DirectX: a
+`texture_sprite` module in shaders.hlsl, compiled by build.rs with the
+built-ins, bound with the texture's view from the user shader texture map.
+The Metal renderer is untouched, and without `macos-blade` its batch match
+lacks the new arm; rox never builds it.
+
+Not a backport. A gpui bump carries this forward with b6 and c6.
+
+diff -ruN -x .rox-stamp -x target a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -295,6 +295,8 @@
+             "underline",
+             "monochrome_sprite",
+             "polychrome_sprite",
++            // rox patch: `paint_texture_quad`.
++            "texture_sprite",
+         ];
+ 
+         let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);
+diff -ruN -x .rox-stamp -x target a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -5,7 +5,7 @@
+ use crate::{
+     Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, PaintOperation, Path, Point,
+     PolychromeSprite, Primitive, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
+-    Underline, UserShader, UserShaderRegion,
++    TextureSprite, Underline, UserShader, UserShaderRegion,
+ };
+ // rox patch: the composed chain and its per-pass bindings, which is what the
+ // pipeline layouts and the draw-time fill are built from.
+@@ -124,6 +124,15 @@
+     b_poly_sprites: gpu::BufferPiece,
+ }
+ 
++// rox patch: `t_sprite` is a user texture here, not an atlas page.
++#[derive(blade_macros::ShaderData)]
++struct ShaderTexSpritesData {
++    globals: GlobalParams,
++    t_sprite: gpu::TextureView,
++    s_sprite: gpu::Sampler,
++    b_tex_sprites: gpu::BufferPiece,
++}
++
+ #[derive(blade_macros::ShaderData)]
+ struct ShaderSurfacesData {
+     globals: GlobalParams,
+@@ -151,6 +160,8 @@
+ // a pipeline is actually built on a GPU.
+ const _: () = assert!(std::mem::size_of::<ShaderParams>() == 128);
+ const _: () = assert!(std::mem::size_of::<UserShader>() == 160);
++// rox patch: the `TextureSprite` WGSL struct, which the HLSL one matches.
++const _: () = assert!(std::mem::size_of::<TextureSprite>() == 144);
+ 
+ // What one binding of a chain pass carries at draw time. Blade matches the
+ // bind group against the module's globals, and a pass only declares what its
+@@ -472,6 +483,8 @@
+     underlines: gpu::RenderPipeline,
+     mono_sprites: gpu::RenderPipeline,
+     poly_sprites: gpu::RenderPipeline,
++    // rox patch: `paint_texture_quad`.
++    tex_sprites: gpu::RenderPipeline,
+     surfaces: gpu::RenderPipeline,
+ }
+ 
+@@ -495,6 +508,7 @@
+         shader.check_struct_size::<Underline>();
+         shader.check_struct_size::<MonochromeSprite>();
+         shader.check_struct_size::<PolychromeSprite>();
++        shader.check_struct_size::<TextureSprite>();
+ 
+         // See https://apoorvaj.io/alpha-compositing-opengl-blending-and-premultiplied-alpha/
+         let blend_mode = match surface_info.alpha {
+@@ -628,6 +642,20 @@
+                 color_targets,
+                 multisample_state: gpu::MultisampleState::default(),
+             }),
++            tex_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
++                name: "tex-sprites",
++                data_layouts: &[&ShaderTexSpritesData::layout()],
++                vertex: shader.at("vs_tex_sprite"),
++                vertex_fetches: &[],
++                primitive: gpu::PrimitiveState {
++                    topology: gpu::PrimitiveTopology::TriangleStrip,
++                    ..Default::default()
++                },
++                depth_stencil: None,
++                fragment: Some(shader.at("fs_tex_sprite")),
++                color_targets,
++                multisample_state: gpu::MultisampleState::default(),
++            }),
+             surfaces: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+                 name: "surfaces",
+                 data_layouts: &[&ShaderSurfacesData::layout()],
+@@ -653,6 +681,7 @@
+         gpu.destroy_render_pipeline(&mut self.underlines);
+         gpu.destroy_render_pipeline(&mut self.mono_sprites);
+         gpu.destroy_render_pipeline(&mut self.poly_sprites);
++        gpu.destroy_render_pipeline(&mut self.tex_sprites);
+         gpu.destroy_render_pipeline(&mut self.surfaces);
+     }
+ }
+@@ -2296,6 +2325,41 @@
+                     );
+                     encoder.draw(0, 4, 0, sprites.len() as u32);
+                 }
++                // rox patch: a texture on a face is content, so it casts into
++                // the mask like an image does.
++                Primitive::TextureSprite(first_sprite) => {
++                    let texture_id = first_sprite.texture_id;
++                    let mut sprites = Vec::new();
++                    while let Some(PaintOperation::Primitive(Primitive::TextureSprite(sprite))) =
++                        operations.get(index)
++                    {
++                        if sprite.texture_id != texture_id {
++                            break;
++                        }
++                        sprites.push(sprite.clone());
++                        index += 1;
++                    }
++                    let Some(view) = self
++                        .user_textures
++                        .get(&texture_id)
++                        .map(|texture| texture.view)
++                    else {
++                        continue;
++                    };
++                    let instance_buf =
++                        unsafe { self.instance_belt.alloc_typed(&sprites, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.tex_sprites);
++                    encoder.bind(
++                        0,
++                        &ShaderTexSpritesData {
++                            globals,
++                            t_sprite: view,
++                            s_sprite: self.atlas_sampler,
++                            b_tex_sprites: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, sprites.len() as u32);
++                }
+                 Primitive::Path(_) => {
+                     let mut paths = Vec::new();
+                     while let Some(PaintOperation::Primitive(Primitive::Path(path))) =
+@@ -2611,6 +2675,33 @@
+                         },
+                     );
+                     encoder.draw(0, 4, 0, sprites.len() as u32);
++                }
++                // rox patch: a released id is already gone from the map, so a
++                // quad painted in its release frame skips here.
++                PrimitiveBatch::TextureSprites {
++                    texture_id,
++                    sprites,
++                } => {
++                    let Some(view) = self
++                        .user_textures
++                        .get(&texture_id)
++                        .map(|texture| texture.view)
++                    else {
++                        continue;
++                    };
++                    let instance_buf =
++                        unsafe { self.instance_belt.alloc_typed(sprites, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.tex_sprites);
++                    encoder.bind(
++                        0,
++                        &ShaderTexSpritesData {
++                            globals,
++                            t_sprite: view,
++                            s_sprite: self.atlas_sampler,
++                            b_tex_sprites: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, sprites.len() as u32);
+                 }
+                 PrimitiveBatch::Surfaces(surfaces) => {
+                     let mut _encoder = pass.with(&self.pipelines.surfaces);
+diff -ruN -x .rox-stamp -x target a/src/platform/blade/shaders.wgsl b/src/platform/blade/shaders.wgsl
+--- a/src/platform/blade/shaders.wgsl
++++ b/src/platform/blade/shaders.wgsl
+@@ -1293,6 +1293,78 @@
+     return blend_color(color, sprite.opacity * fade * saturate(0.5 - distance));
+ }
+ 
++// --- texture sprites --- //
++
++// rox patch: paint_texture_quad, the polychrome sprite's perspective face
++// sampling a user texture instead of an atlas tile. `source` is the 0..1
++// crop, and a negative size samples backwards.
++struct TextureSprite {
++    order: u32,
++    texture_id: u32,
++    opacity: f32,
++    pad: u32,
++    bounds: Bounds,
++    content_mask: Bounds,
++    source: Bounds,
++    transformation: TransformationMatrix,
++    pad2: vec2<f32>,
++    perspective: vec4<f32>,
++    fade: vec4<f32>,
++    wash: vec4<f32>,
++}
++var<storage, read> b_tex_sprites: array<TextureSprite>;
++
++@vertex
++fn vs_tex_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> PolySpriteVarying {
++    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
++    let sprite = b_tex_sprites[instance_id];
++
++    // Same projection as vs_poly_sprite.
++    var out = PolySpriteVarying();
++    let p = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
++    let s = transpose(sprite.transformation.rotation_scale) * p + sprite.transformation.translation;
++    let w = sprite.perspective.z + dot(sprite.perspective.xy, p);
++    let dp = s / globals.viewport_size * vec2<f32>(2.0, -2.0);
++    out.position = vec4<f32>(dp + vec2<f32>(-1.0, 1.0) * w, 0.0, w);
++    out.tile_position = sprite.source.origin + unit_vertex * sprite.source.size;
++    out.sprite_id = instance_id;
++    out.local_position = p;
++    out.clip_distances = distance_from_clip_rect_impl(s / w, sprite.content_mask);
++    return out;
++}
++
++@fragment
++fn fs_tex_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
++    let sprite = b_tex_sprites[input.sprite_id];
++    // Held to the crop's texel centers like an atlas tile, so the edge
++    // fragments don't filter in texels outside it. Sorted first for a
++    // backwards crop.
++    let half_texel = 0.5 / vec2<f32>(textureDimensions(t_sprite, 0));
++    let edge_a = sprite.source.origin;
++    let edge_b = sprite.source.origin + sprite.source.size;
++    let uv = clamp(input.tile_position, min(edge_a, edge_b) + half_texel, max(edge_a, edge_b) - half_texel);
++    let sample = textureSample(t_sprite, s_sprite, uv);
++    // Alpha clip after using the derivatives.
++    if (any(input.clip_distances < vec4<f32>(0.0))) {
++        return vec4<f32>(0.0);
++    }
++
++    // User textures are Rgba8UnormSrgb, so the sample arrives linear. The
++    // atlas and the surface are plain Unorm holding sRGB-encoded values,
++    // which is what blend_color and the wash expect, so encode it back.
++    // Alpha is straight in both.
++    var color = vec4<f32>(linear_to_srgb(sample.rgb), sample.a);
++    color = vec4<f32>(mix(color.rgb, sprite.wash.rgb, sprite.wash.a), color.a);
++    let uvq = (input.local_position - sprite.bounds.origin) / sprite.bounds.size;
++    let fade = saturate(mix(
++        mix(sprite.fade.x, sprite.fade.y, uvq.x),
++        mix(sprite.fade.w, sprite.fade.z, uvq.x),
++        uvq.y,
++    ));
++    let distance = quad_sdf(input.local_position, sprite.bounds, Corners(0.0, 0.0, 0.0, 0.0));
++    return blend_color(color, sprite.opacity * fade * saturate(0.5 - distance));
++}
++
+ // --- surfaces --- //
+ 
+ struct SurfaceParams {
+diff -ruN -x .rox-stamp -x target a/src/platform/windows/directx_renderer.rs b/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs
++++ b/src/platform/windows/directx_renderer.rs
+@@ -97,6 +97,8 @@
+     underline_pipeline: PipelineState<Underline>,
+     mono_sprites: PipelineState<MonochromeSprite>,
+     poly_sprites: PipelineState<PolychromeSprite>,
++    // rox patch: `paint_texture_quad`.
++    tex_sprites: PipelineState<TextureSprite>,
+ }
+ 
+ struct DirectXGlobalElements {
+@@ -376,6 +378,10 @@
+                     texture_id,
+                     sprites,
+                 } => self.draw_polychrome_sprites(texture_id, sprites),
++                PrimitiveBatch::TextureSprites {
++                    texture_id,
++                    sprites,
++                } => self.draw_texture_sprites(texture_id, sprites),
+                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(surfaces),
+                 // rox patch: the in-scene primitive draws here like any other
+                 // batch, and so do regions, at their place in the paint order.
+@@ -674,6 +680,37 @@
+         )
+     }
+ 
++    /// rox patch: a run of `paint_texture_quad` faces sampling one user
++    /// texture. A released id is already gone from the map, so a quad painted
++    /// in its release frame draws nothing, and so does every quad on a device
++    /// too old for user textures, which never registers one.
++    fn draw_texture_sprites(&mut self, texture_id: u32, sprites: &[TextureSprite]) -> Result<()> {
++        if sprites.is_empty() {
++            return Ok(());
++        }
++        let Some(texture_view) = self
++            .shaders
++            .textures
++            .get(&texture_id)
++            .map(|texture| texture.srv.clone())
++        else {
++            return Ok(());
++        };
++        self.pipelines.tex_sprites.update_buffer(
++            &self.devices.device,
++            &self.devices.device_context,
++            sprites,
++        )?;
++        self.pipelines.tex_sprites.draw_with_texture(
++            &self.devices.device_context,
++            &texture_view,
++            &self.resources.viewport,
++            &self.globals.global_params_buffer,
++            &self.globals.sampler,
++            sprites.len() as u32,
++        )
++    }
++
+     fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
+         if surfaces.is_empty() {
+             return Ok(());
+@@ -879,6 +916,13 @@
+             16,
+             create_blend_state(device)?,
+         )?;
++        let tex_sprites = PipelineState::new(
++            device,
++            "texture_sprite_pipeline",
++            ShaderModule::TextureSprite,
++            4,
++            create_blend_state(device)?,
++        )?;
+ 
+         Ok(Self {
+             shadow_pipeline,
+@@ -888,6 +932,7 @@
+             underline_pipeline,
+             mono_sprites,
+             poly_sprites,
++            tex_sprites,
+         })
+     }
+ }
+@@ -3139,6 +3184,8 @@
+         PathSprite,
+         MonochromeSprite,
+         PolychromeSprite,
++        // rox patch: `paint_texture_quad`.
++        TextureSprite,
+         EmojiRasterization,
+     }
+ 
+@@ -3209,6 +3256,10 @@
+                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
+                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                 },
++                ShaderModule::TextureSprite => match target {
++                    ShaderTarget::Vertex => TEXTURE_SPRITE_VERTEX_BYTES,
++                    ShaderTarget::Fragment => TEXTURE_SPRITE_FRAGMENT_BYTES,
++                },
+                 ShaderModule::EmojiRasterization => match target {
+                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
+                     ShaderTarget::Fragment => EMOJI_RASTERIZATION_FRAGMENT_BYTES,
+@@ -3298,6 +3349,7 @@
+                 ShaderModule::PathSprite => "path_sprite",
+                 ShaderModule::MonochromeSprite => "monochrome_sprite",
+                 ShaderModule::PolychromeSprite => "polychrome_sprite",
++                ShaderModule::TextureSprite => "texture_sprite",
+                 ShaderModule::EmojiRasterization => "emoji_rasterization",
+             }
+         }
+diff -ruN -x .rox-stamp -x target a/src/platform/windows/shaders.hlsl b/src/platform/windows/shaders.hlsl
+--- a/src/platform/windows/shaders.hlsl
++++ b/src/platform/windows/shaders.hlsl
+@@ -1227,3 +1227,87 @@
+     color.a *= sprite.opacity * fade * saturate(0.5 - distance);
+     return color;
+ }
++
++/*
++**
++**              Texture sprites
++**
++*/
++
++// rox patch: paint_texture_quad, the polychrome sprite's perspective face
++// sampling a user texture instead of an atlas tile. `source` is the 0..1
++// crop, and a negative size samples backwards.
++struct TextureSprite {
++    uint order;
++    uint texture_id;
++    float opacity;
++    uint pad;
++    Bounds bounds;
++    Bounds content_mask;
++    Bounds source;
++    TransformationMatrix transformation;
++    float2 pad2;
++    float4 perspective;
++    float4 fade;
++    float4 wash;
++};
++
++StructuredBuffer<TextureSprite> tex_sprites: register(t1);
++
++// The exact sRGB encode. `linear_to_srgb` above is a 2.2 power curve that
++// runs the other way.
++float3 encode_srgb(float3 linear_rgb) {
++    float3 higher = 1.055 * pow(linear_rgb, 1.0 / 2.4) - 0.055;
++    float3 lower = linear_rgb * 12.92;
++    return lerp(higher, lower, step(linear_rgb, 0.0031308));
++}
++
++PolychromeSpriteVertexOutput texture_sprite_vertex(uint vertex_id: SV_VertexID, uint sprite_id: SV_InstanceID) {
++    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
++    TextureSprite sprite = tex_sprites[sprite_id];
++    float2 local_position = unit_vertex * sprite.bounds.size + sprite.bounds.origin;
++    // Same projection as polychrome_sprite_vertex.
++    float2 transformed =
++        mul(local_position, sprite.transformation.rotation_scale) + sprite.transformation.translation;
++    float w = sprite.perspective.z + dot(sprite.perspective.xy, local_position);
++    float2 dp = transformed / global_viewport_size * float2(2.0, -2.0);
++    float4 device_position = float4(dp + float2(-1.0, 1.0) * w, 0.0, w);
++    float2 projected = transformed / w;
++
++    PolychromeSpriteVertexOutput output;
++    output.position = device_position;
++    output.tile_position = sprite.source.origin + unit_vertex * sprite.source.size;
++    output.sprite_id = sprite_id;
++    output.local_position = local_position;
++    output.clip_distance = distance_from_clip_rect_impl(projected, sprite.content_mask) * w;
++    return output;
++}
++
++float4 texture_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
++    TextureSprite sprite = tex_sprites[input.sprite_id];
++    // Held to the crop's texel centers like an atlas tile, so the edge
++    // fragments don't filter in texels outside it. Sorted first for a
++    // backwards crop.
++    float2 texture_size;
++    t_sprite.GetDimensions(texture_size.x, texture_size.y);
++    float2 half_texel = 0.5 / texture_size;
++    float2 edge_a = sprite.source.origin;
++    float2 edge_b = sprite.source.origin + sprite.source.size;
++    float2 uv = clamp(input.tile_position, min(edge_a, edge_b) + half_texel,
++                      max(edge_a, edge_b) - half_texel);
++    float4 sample = t_sprite.Sample(s_sprite, uv);
++    Corners square = (Corners)0;
++    float distance = quad_sdf(input.local_position, sprite.bounds, square);
++
++    // User textures are R8G8B8A8_UNORM_SRGB, so the sample arrives linear.
++    // The atlas and the render target are plain UNORM holding sRGB-encoded
++    // values, which is what the blend and the wash expect, so encode it
++    // back. Alpha is straight in both.
++    float4 color = float4(encode_srgb(sample.rgb), sample.a);
++    float2 uvq = (input.local_position - sprite.bounds.origin) / sprite.bounds.size;
++    color.rgb = lerp(color.rgb, sprite.wash.rgb, sprite.wash.a);
++    float fade = saturate(lerp(lerp(sprite.fade.x, sprite.fade.y, uvq.x),
++                               lerp(sprite.fade.w, sprite.fade.z, uvq.x), uvq.y));
++    color.a *= sprite.opacity * fade * saturate(0.5 - distance);
++    return color;
++}
+diff -ruN -x .rox-stamp -x target a/src/scene.rs b/src/scene.rs
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -48,6 +48,9 @@
+     pub(crate) underlines: Vec<Underline>,
+     pub(crate) monochrome_sprites: Vec<MonochromeSprite>,
+     pub(crate) polychrome_sprites: Vec<PolychromeSprite>,
++    // rox patch: caller-owned textures on perspective faces, painted by
++    // `Window::paint_texture_quad`.
++    pub(crate) texture_sprites: Vec<TextureSprite>,
+     pub(crate) surfaces: Vec<PaintSurface>,
+     // rox patch: user shader primitives, painted by `Window::paint_user_shader`.
+     pub(crate) user_shaders: Vec<UserShader>,
+@@ -69,6 +72,7 @@
+         self.underlines.clear();
+         self.monochrome_sprites.clear();
+         self.polychrome_sprites.clear();
++        self.texture_sprites.clear();
+         self.surfaces.clear();
+         self.user_shaders.clear();
+         self.user_shader_regions.clear();
+@@ -174,6 +178,10 @@
+                 sprite.order = order;
+                 self.polychrome_sprites.push(sprite.clone());
+             }
++            Primitive::TextureSprite(sprite) => {
++                sprite.order = order;
++                self.texture_sprites.push(sprite.clone());
++            }
+             Primitive::Surface(surface) => {
+                 surface.order = order;
+                 self.surfaces.push(surface.clone());
+@@ -232,6 +240,10 @@
+             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+         self.polychrome_sprites
+             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
++        // Sorted by texture too, so a run of one texture batches into one
++        // draw the way atlas tiles do.
++        self.texture_sprites
++            .sort_by_key(|sprite| (sprite.order, sprite.texture_id));
+         self.surfaces.sort_by_key(|surface| surface.order);
+         // Sorted by shader too, so a run of one shader batches into one draw.
+         self.user_shaders
+@@ -268,6 +280,9 @@
+             polychrome_sprites: &self.polychrome_sprites,
+             polychrome_sprites_start: 0,
+             polychrome_sprites_iter: self.polychrome_sprites.iter().peekable(),
++            texture_sprites: &self.texture_sprites,
++            texture_sprites_start: 0,
++            texture_sprites_iter: self.texture_sprites.iter().peekable(),
+             surfaces: &self.surfaces,
+             surfaces_start: 0,
+             surfaces_iter: self.surfaces.iter().peekable(),
+@@ -305,6 +320,8 @@
+     Underline,
+     MonochromeSprite,
+     PolychromeSprite,
++    // rox patch: `Window::paint_texture_quad`.
++    TextureSprite,
+     Surface,
+     UserShader,
+     UserShaderRegion,
+@@ -327,6 +344,7 @@
+     Underline(Underline),
+     MonochromeSprite(MonochromeSprite),
+     PolychromeSprite(PolychromeSprite),
++    TextureSprite(TextureSprite),
+     Surface(PaintSurface),
+     UserShader(UserShader),
+     UserShaderRegion(UserShaderRegion),
+@@ -341,6 +359,7 @@
+             Primitive::Underline(underline) => &underline.bounds,
+             Primitive::MonochromeSprite(sprite) => &sprite.bounds,
+             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
++            Primitive::TextureSprite(sprite) => &sprite.bounds,
+             Primitive::Surface(surface) => &surface.bounds,
+             Primitive::UserShader(user_shader) => &user_shader.bounds,
+             Primitive::UserShaderRegion(region) => &region.bounds,
+@@ -355,6 +374,7 @@
+             Primitive::Underline(underline) => &underline.content_mask,
+             Primitive::MonochromeSprite(sprite) => &sprite.content_mask,
+             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
++            Primitive::TextureSprite(sprite) => &sprite.content_mask,
+             Primitive::Surface(surface) => &surface.content_mask,
+             Primitive::UserShader(user_shader) => &user_shader.content_mask,
+             Primitive::UserShaderRegion(region) => &region.content_mask,
+@@ -388,6 +408,9 @@
+     polychrome_sprites: &'a [PolychromeSprite],
+     polychrome_sprites_start: usize,
+     polychrome_sprites_iter: Peekable<slice::Iter<'a, PolychromeSprite>>,
++    texture_sprites: &'a [TextureSprite],
++    texture_sprites_start: usize,
++    texture_sprites_iter: Peekable<slice::Iter<'a, TextureSprite>>,
+     surfaces: &'a [PaintSurface],
+     surfaces_start: usize,
+     surfaces_iter: Peekable<slice::Iter<'a, PaintSurface>>,
+@@ -423,6 +446,10 @@
+                 PrimitiveKind::PolychromeSprite,
+             ),
+             (
++                self.texture_sprites_iter.peek().map(|s| s.order),
++                PrimitiveKind::TextureSprite,
++            ),
++            (
+                 self.surfaces_iter.peek().map(|s| s.order),
+                 PrimitiveKind::Surface,
+             ),
+@@ -557,6 +584,28 @@
+                     sprites: &self.polychrome_sprites[sprites_start..sprites_end],
+                 })
+             }
++            PrimitiveKind::TextureSprite => {
++                // One batch per texture, since a draw binds one.
++                let texture_id = self.texture_sprites_iter.peek().unwrap().texture_id;
++                let sprites_start = self.texture_sprites_start;
++                let mut sprites_end = sprites_start + 1;
++                self.texture_sprites_iter.next();
++                while self
++                    .texture_sprites_iter
++                    .next_if(|sprite| {
++                        (sprite.order, batch_kind) < max_order_and_kind
++                            && sprite.texture_id == texture_id
++                    })
++                    .is_some()
++                {
++                    sprites_end += 1;
++                }
++                self.texture_sprites_start = sprites_end;
++                Some(PrimitiveBatch::TextureSprites {
++                    texture_id,
++                    sprites: &self.texture_sprites[sprites_start..sprites_end],
++                })
++            }
+             PrimitiveKind::Surface => {
+                 let surfaces_start = self.surfaces_start;
+                 let mut surfaces_end = surfaces_start + 1;
+@@ -639,6 +688,11 @@
+         texture_id: AtlasTextureId,
+         sprites: &'a [PolychromeSprite],
+     },
++    // rox patch: `texture_id` is the `UserTextureId` the run samples.
++    TextureSprites {
++        texture_id: u32,
++        sprites: &'a [TextureSprite],
++    },
+     Surfaces(&'a [PaintSurface]),
+     UserShaders(&'a [UserShader]),
+     UserShaderRegions(&'a [UserShaderRegion]),
+@@ -657,6 +711,7 @@
+             PrimitiveBatch::Underlines(primitives) => primitives.first().map(|p| p.order),
+             PrimitiveBatch::MonochromeSprites { sprites, .. } => sprites.first().map(|p| p.order),
+             PrimitiveBatch::PolychromeSprites { sprites, .. } => sprites.first().map(|p| p.order),
++            PrimitiveBatch::TextureSprites { sprites, .. } => sprites.first().map(|p| p.order),
+             PrimitiveBatch::Surfaces(primitives) => primitives.first().map(|p| p.order),
+             PrimitiveBatch::UserShaders(primitives) => primitives.first().map(|p| p.order),
+             PrimitiveBatch::UserShaderRegions(primitives) => primitives.first().map(|p| p.order),
+@@ -889,6 +944,36 @@
+     }
+ }
+ 
++/// rox patch: a caller-owned texture on a perspective face, painted by
++/// `Window::paint_texture_quad`. The polychrome sprite's face without the
++/// atlas: the texture is a `UserTextureId`, so it batches on that instead of
++/// an atlas texture, and the crop is a 0..1 `source` rather than a tile.
++/// Layout matches the `TextureSprite` struct in both shader files, padding
++/// included.
++#[derive(Clone, Debug)]
++#[repr(C)]
++pub(crate) struct TextureSprite {
++    pub order: DrawOrder,
++    pub texture_id: u32,
++    pub opacity: f32,
++    pub pad: u32,
++    pub bounds: Bounds<ScaledPixels>,
++    pub content_mask: ContentMask<ScaledPixels>,
++    pub source: Bounds<f32>,
++    pub transformation: TransformationMatrix,
++    pub pad2: [f32; 2],
++    // The homography's perspective row, as on `PolychromeSprite`.
++    pub perspective: [f32; 4],
++    pub fade: [f32; 4],
++    pub wash: [f32; 4],
++}
++
++impl From<TextureSprite> for Primitive {
++    fn from(sprite: TextureSprite) -> Self {
++        Primitive::TextureSprite(sprite)
++    }
++}
++
+ #[derive(Clone, Debug)]
+ pub(crate) struct PaintSurface {
+     pub order: DrawOrder,
+diff -ruN -x .rox-stamp -x target a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3394,6 +3394,89 @@
+         Ok(())
+     }
+ 
++    /// Paint a caller-owned texture stretched over an arbitrary convex quad
++    /// with perspective-correct sampling. Everything but the texture works
++    /// the way it does in [`Window::paint_image_quad`]: `corners` clockwise
++    /// from the top-left, `source` the 0..1 fraction of the texture to sample
++    /// (a negative size samples backwards), `fade` the alpha at each corner
++    /// and `wash` a straight-alpha color mixed over the sample.
++    ///
++    /// `texture` comes from [`Window::register_user_texture`] or
++    /// [`Window::register_dynamic_texture`]. An id the renderer no longer
++    /// holds paints nothing, including a dynamic one released in the same
++    /// frame. Backends without user textures return `Err("unsupported")`.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    ///
++    /// rox patch: the perspective face of the polychrome pipeline, sampling a
++    /// caller-owned texture where `paint_image_quad` samples the atlas.
++    pub fn paint_texture_quad(
++        &mut self,
++        corners: [Point<Pixels>; 4],
++        source: Bounds<f32>,
++        texture: UserTextureId,
++        fade: [f32; 4],
++        wash: Hsla,
++    ) -> Result<()> {
++        self.invalidator.debug_assert_paint();
++
++        #[cfg(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
++        ))]
++        {
++            use crate::TextureSprite;
++
++            if !self.platform_window.user_shaders_supported() {
++                return Err(anyhow!("unsupported"));
++            }
++            // The shader holds the sample inside the crop's texel centers, and
++            // an empty crop has no inside to hold it to.
++            if source.size.width == 0. || source.size.height == 0. {
++                return Ok(());
++            }
++
++            let scale_factor = self.scale_factor();
++            let Some((bounds, transformation, perspective)) = quad_face(corners, scale_factor)
++            else {
++                return Ok(());
++            };
++            let content_mask = self.content_mask().scale(scale_factor);
++            let opacity = self.element_opacity();
++
++            self.next_frame.scene.insert_primitive(TextureSprite {
++                order: 0,
++                texture_id: texture.0,
++                opacity,
++                pad: 0,
++                bounds,
++                content_mask,
++                source,
++                transformation,
++                pad2: [0.; 2],
++                perspective,
++                fade,
++                wash: {
++                    let wash = crate::Rgba::from(wash);
++                    [wash.r, wash.g, wash.b, wash.a]
++                },
++            });
++            Ok(())
++        }
++        #[cfg(not(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
++        )))]
++        {
++            let _ = (corners, source, texture, fade, wash);
++            Err(anyhow!("unsupported"))
++        }
++    }
++
+     /// Paint a surface into the scene for the next frame at the current z-index.
+     ///
+     /// This method should only be called as part of the paint phase of element drawing.
+@@ -7602,3 +7685,102 @@
+     ))
+ }
+ 
++/// The face a primitive painted over `corners` (window pixels, clockwise from
++/// the top-left) needs, in scaled pixels: the corners' bounding box, which is
++/// the primitive's bounds and so what its paint order is decided on, and the
++/// [`quad_homography`] carrying that box onto the corners. None when the quad
++/// is degenerate or leans past its own horizon.
++///
++/// rox patch: the CPU half of `paint_texture_quad`, the same steps
++/// `paint_image_quad` takes inline.
++#[cfg_attr(
++    not(any(
++        target_os = "linux",
++        target_os = "freebsd",
++        all(target_os = "macos", feature = "macos-blade"),
++        target_os = "windows"
++    )),
++    allow(dead_code)
++)]
++fn quad_face(
++    corners: [Point<Pixels>; 4],
++    scale_factor: f32,
++) -> Option<(Bounds<ScaledPixels>, TransformationMatrix, [f32; 4])> {
++    let quad = corners.map(|corner| {
++        let corner = corner.scale(scale_factor);
++        [corner.x.0, corner.y.0]
++    });
++    let (mut min_x, mut min_y) = (quad[0][0], quad[0][1]);
++    let (mut max_x, mut max_y) = (min_x, min_y);
++    for [x, y] in &quad {
++        min_x = min_x.min(*x);
++        min_y = min_y.min(*y);
++        max_x = max_x.max(*x);
++        max_y = max_y.max(*y);
++    }
++
++    let bounds = Bounds {
++        origin: point(ScaledPixels(min_x), ScaledPixels(min_y)),
++        size: size(ScaledPixels(max_x - min_x), ScaledPixels(max_y - min_y)),
++    };
++    let (transformation, perspective) =
++        quad_homography([min_x, min_y], [max_x - min_x, max_y - min_y], quad)?;
++    Some((bounds, transformation, perspective))
++}
++
++#[cfg(test)]
++mod quad_face_tests {
++    use super::*;
++
++    fn corners(points: [[f32; 2]; 4]) -> [Point<Pixels>; 4] {
++        points.map(|[x, y]| point(px(x), px(y)))
++    }
++
++    // Where the homography puts a point of the box, divide included.
++    fn project(
++        transformation: &TransformationMatrix,
++        perspective: &[f32; 4],
++        [x, y]: [f32; 2],
++    ) -> [f32; 2] {
++        let [row0, row1] = transformation.rotation_scale;
++        let [tx, ty] = transformation.translation;
++        let w = perspective[2] + perspective[0] * x + perspective[1] * y;
++        [
++            (row0[0] * x + row0[1] * y + tx) / w,
++            (row1[0] * x + row1[1] * y + ty) / w,
++        ]
++    }
++
++    #[test]
++    fn the_bounds_are_the_scaled_corners_bounding_box() {
++        // A keystone: the right edge is shorter than the left.
++        let quad = [[10., 20.], [110., 40.], [110., 80.], [10., 100.]];
++        let (bounds, transformation, perspective) = quad_face(corners(quad), 2.).unwrap();
++
++        assert_eq!(bounds.origin, point(ScaledPixels(20.), ScaledPixels(40.)));
++        assert_eq!(bounds.size, size(ScaledPixels(200.), ScaledPixels(160.)));
++
++        // The box's corners land on the scaled quad's.
++        let (x0, y0) = (bounds.origin.x.0, bounds.origin.y.0);
++        let (x1, y1) = (x0 + bounds.size.width.0, y0 + bounds.size.height.0);
++        for (from, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
++            .into_iter()
++            .zip(quad)
++        {
++            let [sx, sy] = project(&transformation, &perspective, from);
++            assert!((sx - x * 2.).abs() < 1e-2, "{sx} vs {}", x * 2.);
++            assert!((sy - y * 2.).abs() < 1e-2, "{sy} vs {}", y * 2.);
++        }
++    }
++
++    #[test]
++    fn a_crossed_or_flat_quad_has_no_face() {
++        // Crossed edges: the top-right and bottom-right corners swapped.
++        let bowtie = [[0., 0.], [100., 100.], [100., 0.], [0., 100.]];
++        assert!(quad_face(corners(bowtie), 1.).is_none());
++
++        let line = [[0., 0.], [100., 0.], [100., 0.], [0., 0.]];
++        assert!(quad_face(corners(line), 1.).is_none());
++    }
++}
++

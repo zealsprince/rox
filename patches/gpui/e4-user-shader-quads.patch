@@ -1,0 +1,316 @@
+User shader quads: the in-scene shader primitive on a perspective face.
+
+`paint_user_shader` (b0) draws a program over a screen-aligned box. This
+adds `Window::paint_user_shader_quad`, the same primitive over four
+corners. Covers blade (Linux, and macOS under `macos-blade`) and DirectX 11.
+
+`UserShader` gains the homography split the way `PolychromeSprite` carries
+it (b6): the affine rows and the perspective row. The template's vertex
+stage projects through them and emits clip w, so the hardware divide
+keystones the quad and `fs_user(uv)` still gets a perspective-correct 0..1
+across the face. A flat `paint_user_shader` carries the unit transform and
+(0, 0, 1, 0), where the new vertex math is the old one exactly. Clip
+distances move to linear interpolation, since the mask is a screen rect.
+The struct grows from 160 to 208 bytes; the WGSL spells the transform out
+as plain fields, so the template adds no type name a user source could
+collide with. The template's span test moves to 208, and a new test pins
+the transform's offsets against naga's layout of the template, because
+blade's own size check only fires on a GPU.
+
+Only a program that can run as the in-scene primitive paints on a quad,
+one `screen_pass_only` is false for. Any other logs once per program and
+paints nothing. `resolution` and `mouse` stay the bounding box's: the
+pointer is read in the box, untransformed, not on the face.
+
+blade takes the template as WGSL. DirectX translates it at registration
+(shader_translate.rs), so the vertex change rides that path with no
+DirectX code of its own: the instances are a `ByteAddressBuffer` read at
+naga's WGSL offsets and sized from the host struct. The Windows-only
+`the_in_scene_primitive_translates_and_compiles` test is what checks that
+FXC accepts the result. Metal draws no user shaders and is untouched.
+
+Not a backport. A gpui bump carries this forward with b0, b6 and e3.
+
+diff -ruN -x .rox-stamp -x target a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -159,7 +159,7 @@
+ // Belt and braces next to blade's `check_struct_size`, which only fires once
+ // a pipeline is actually built on a GPU.
+ const _: () = assert!(std::mem::size_of::<ShaderParams>() == 128);
+-const _: () = assert!(std::mem::size_of::<UserShader>() == 160);
++const _: () = assert!(std::mem::size_of::<UserShader>() == 208);
+ // rox patch: the `TextureSprite` WGSL struct, which the HLSL one matches.
+ const _: () = assert!(std::mem::size_of::<TextureSprite>() == 144);
+ 
+diff -ruN -x .rox-stamp -x target a/src/scene.rs b/src/scene.rs
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -1004,6 +1004,12 @@
+     pub mouse: [f32; 4],
+     pub params: [f32; 16],
+     pub meta: [f32; 8],
++    // rox patch: the homography `paint_user_shader_quad` puts the quad on,
++    // split the way `PolychromeSprite` carries it. A flat
++    // `paint_user_shader` is the unit transform and (0, 0, 1, 0).
++    pub transformation: TransformationMatrix,
++    pub pad2: [f32; 2],
++    pub perspective: [f32; 4],
+ }
+ 
+ impl From<UserShader> for Primitive {
+diff -ruN -x .rox-stamp -x target a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3823,6 +3823,78 @@
+             mouse,
+             params: signals,
+             meta,
++            transformation: TransformationMatrix::unit(),
++            pad2: [0.; 2],
++            perspective: [0., 0., 1., 0.],
++        });
++    }
++
++    /// Paints one instance of a registered shader stretched over an arbitrary
++    /// convex quad, `corners` clockwise from the top-left, with the signals
++    /// and `meta` [`Window::paint_user_shader`] takes. `fs_user(uv)` gets a
++    /// perspective-correct 0..1 across the face.
++    ///
++    /// `resolution` and `mouse` belong to the quad's bounding box, not the
++    /// face. `mouse` stays bounds-local and untransformed, so a shader on a
++    /// tilted face reads the pointer in the box rather than on the face.
++    ///
++    /// Only a program that can run as the in-scene primitive paints here, one
++    /// [`UserShaderCaps::screen_pass_only`] is false for. Any other logs once
++    /// and paints nothing, so check [`Window::user_shader_caps`] first. A quad
++    /// leaning past its own horizon paints nothing too.
++    ///
++    /// This method should only be called as part of the paint phase of
++    /// element drawing.
++    ///
++    /// rox patch: the in-scene shader primitive on a perspective face.
++    /// `fs_user(uv)` still sees 0..1 across it.
++    pub fn paint_user_shader_quad(
++        &mut self,
++        corners: [Point<Pixels>; 4],
++        shader: UserShaderId,
++        signals: [f32; 16],
++        meta: [f32; 8],
++    ) {
++        use crate::UserShader;
++
++        self.invalidator.debug_assert_paint();
++
++        let Some(caps) = self.user_shaders.caps(shader) else {
++            return;
++        };
++        if caps.screen_pass_only() || self.user_shaders.primitive_source(shader).is_none() {
++            if self.user_shaders.first_quad_refusal(shader) {
++                log::warn!(
++                    "user shader {} only runs as a screen pass, so it can't paint on a quad",
++                    shader.0
++                );
++            }
++            return;
++        }
++
++        let scale_factor = self.scale_factor();
++        let Some((bounds, transformation, perspective)) = quad_face(corners, scale_factor) else {
++            return;
++        };
++        let origin = point(
++            px(bounds.origin.x.0 / scale_factor),
++            px(bounds.origin.y.0 / scale_factor),
++        );
++        let mouse = self.shader_mouse(origin, scale_factor);
++        let content_mask = self.content_mask().scale(scale_factor);
++
++        self.next_frame.scene.insert_primitive(UserShader {
++            order: 0,
++            shader_id: shader.0,
++            bounds,
++            content_mask,
++            pad: [0; 2],
++            mouse,
++            params: signals,
++            meta,
++            transformation,
++            pad2: [0.; 2],
++            perspective,
+         });
+     }
+ 
+@@ -6192,12 +6264,20 @@
+     mouse: vec4<f32>,
+     signals: array<vec4<f32>, 4>,
+     user_meta: array<vec4<f32>, 2>,
++    // The host's TransformationMatrix, spelled out as fields so the template
++    // adds no type name a user source could collide with.
++    rotation_scale: mat2x2<f32>,
++    translation: vec2<f32>,
++    pad2: vec2<f32>,
++    perspective: vec4<f32>,
+ }
+ 
+ struct UserShaderVarying {
+     @builtin(position) position: vec4<f32>,
+     @location(0) uv: vec2<f32>,
+-    @location(1) clip_distances: vec4<f32>,
++    // Linear: the mask is a screen rect, and once w varies across the quad
++    // the default interpolation would bend a screen-space distance.
++    @location(1) @interpolate(linear) clip_distances: vec4<f32>,
+ }
+ 
+ @vertex
+@@ -6207,14 +6287,21 @@
+ ) -> UserShaderVarying {
+     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+     let quad = b_user_shaders[instance_id];
++    // The polychrome sprite's projection: the affine rows, then the
++    // perspective row as w. A flat quad has w = 1, which is the plain screen
++    // mapping. With perspective the hardware divide keystones the quad and
++    // interpolates uv perspective-correct, so fs_user still sees 0..1 across
++    // the face.
+     let position = unit_vertex * quad.bounds.size + quad.bounds.origin;
+-    let device_position =
+-        position / globals.viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+-    let top_left = position - quad.content_mask.origin;
+-    let bottom_right = quad.content_mask.origin + quad.content_mask.size - position;
++    let transformed = transpose(quad.rotation_scale) * position + quad.translation;
++    let w = quad.perspective.z + dot(quad.perspective.xy, position);
++    let device_position = transformed / globals.viewport_size * vec2<f32>(2.0, -2.0);
++    let projected = transformed / w;
++    let top_left = projected - quad.content_mask.origin;
++    let bottom_right = quad.content_mask.origin + quad.content_mask.size - projected;
+ 
+     var out = UserShaderVarying();
+-    out.position = vec4<f32>(device_position, 0.0, 1.0);
++    out.position = vec4<f32>(device_position + vec2<f32>(-1.0, 1.0) * w, 0.0, w);
+     out.uv = unit_vertex;
+     out.clip_distances = vec4<f32>(top_left.x, bottom_right.x, top_left.y, bottom_right.y);
+     return out;
+@@ -6299,6 +6386,10 @@
+     // The region pipelines are compiled on first `paint_screen_shader`, so a
+     // shader that only ever runs as a primitive never pays for the variant.
+     region_registered: bool,
++    // rox patch: whether `paint_user_shader_quad` has already logged turning
++    // this program away, so a caller that didn't check the caps logs once
++    // instead of every frame.
++    quad_refused: bool,
+ }
+ 
+ /// rox patch: what registration worked out about a program, from
+@@ -6498,6 +6589,15 @@
+         Some(entry.passes.clone())
+     }
+ 
++    /// rox patch: true the first time `paint_user_shader_quad` turns `id`
++    /// away, false on every call after and for an unknown id.
++    pub(crate) fn first_quad_refusal(&mut self, id: UserShaderId) -> bool {
++        let Some(entry) = self.entries.get_mut(id.0 as usize) else {
++            return false;
++        };
++        !std::mem::replace(&mut entry.quad_refused, true)
++    }
++
+     /// Registers `source` as a one-pass program, the shape everything that
+     /// predates chains has. The drivers go through `Window`, which wraps the
+     /// same way; this is the shorthand the tests register with.
+@@ -6674,6 +6774,7 @@
+             primitive_decorated,
+             caps,
+             region_registered: false,
++            quad_refused: false,
+         });
+         self.by_hash.insert(hash, id);
+         Ok((id, true))
+@@ -6845,6 +6946,50 @@
+         assert!(registry.screen_source(id).is_some());
+     }
+ 
++    // The span is pinned in the test above; this pins where the transform
++    // and the perspective row sit inside it, which DirectX reads at naga's
++    // WGSL offsets.
++    #[test]
++    fn the_primitive_template_puts_the_homography_where_the_host_does() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry.register(SOLID).unwrap();
++        let module =
++            validate_shader_source(registry.primitive_decorated_source(id).unwrap()).unwrap();
++        let (_, ty) = module
++            .types
++            .iter()
++            .find(|(_, ty)| ty.name.as_deref() == Some("UserShader"))
++            .unwrap();
++        let naga::TypeInner::Struct { members, .. } = &ty.inner else {
++            panic!("UserShader is not a struct");
++        };
++        let offset = |name: &str| {
++            members
++                .iter()
++                .find(|member| member.name.as_deref() == Some(name))
++                .unwrap()
++                .offset as usize
++        };
++
++        assert_eq!(
++            offset("rotation_scale"),
++            std::mem::offset_of!(crate::UserShader, transformation)
++        );
++        assert_eq!(
++            offset("perspective"),
++            std::mem::offset_of!(crate::UserShader, perspective)
++        );
++    }
++
++    #[test]
++    fn a_quad_refusal_is_reported_once() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry.register(SOLID).unwrap();
++        assert!(registry.first_quad_refusal(id));
++        assert!(!registry.first_quad_refusal(id));
++        assert!(!registry.first_quad_refusal(UserShaderId(99)));
++    }
++
+     #[test]
+     fn same_source_returns_same_id() {
+         let mut registry = UserShaderRegistry::default();
+@@ -7086,7 +7231,7 @@
+     }
+ 
+     #[test]
+-    fn the_primitive_instance_block_is_160_bytes_in_wgsl() {
++    fn the_primitive_instance_block_is_208_bytes_in_wgsl() {
+         // Mirrors `scene::UserShader`, which has a matching compile-time
+         // assertion on the Rust side.
+         let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }";
+@@ -7099,7 +7244,7 @@
+         let naga::TypeInner::Struct { span, .. } = quad.1.inner else {
+             panic!("UserShader should be a struct");
+         };
+-        assert_eq!(span, 160);
++        assert_eq!(span, 208);
+     }
+ 
+     fn pass(name: &str, source: &str, scale: f32) -> UserShaderPass {
+@@ -7691,17 +7836,8 @@
+ /// [`quad_homography`] carrying that box onto the corners. None when the quad
+ /// is degenerate or leans past its own horizon.
+ ///
+-/// rox patch: the CPU half of `paint_texture_quad`, the same steps
+-/// `paint_image_quad` takes inline.
+-#[cfg_attr(
+-    not(any(
+-        target_os = "linux",
+-        target_os = "freebsd",
+-        all(target_os = "macos", feature = "macos-blade"),
+-        target_os = "windows"
+-    )),
+-    allow(dead_code)
+-)]
++/// rox patch: the shared CPU half of `paint_texture_quad` and
++/// `paint_user_shader_quad`, the same steps `paint_image_quad` takes inline.
+ fn quad_face(
+     corners: [Point<Pixels>; 4],
+     scale_factor: f32,

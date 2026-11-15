@@ -1485,6 +1485,18 @@ settings-storage-waveforms = Форми хвилі
 
 ## Settings: workspace
 settings-workspace-apply-failed = Не вдалося застосувати { $name }
+settings-workspace-assets-add-failed = Не вдалося додати { $file }
+settings-workspace-assets-adding = Додаємо...
+settings-workspace-assets-font-too-large = Цей шрифт більший за { $size } МБ, а більше rox не завантажує
+settings-workspace-assets-hint = Файли, які вигляд бере з собою, коли ви зберігаєте чи експортуєте робочий простір. Шейдери беруть звідси свої зображення, а доданий тут шрифт з'являється у списку шрифтів на сторінці «Оформлення»
+settings-workspace-assets-hint-pending = Відео та файли 3D-моделей зберігаються разом із виглядом, але поки ніщо їх не відтворює і не показує
+settings-workspace-assets-kind-font = Шрифти
+settings-workspace-assets-kind-image = Зображення
+settings-workspace-assets-kind-model = 3D-моделі
+settings-workspace-assets-kind-video = Відео
+settings-workspace-assets-reveal = Показати теку
+settings-workspace-assets-too-many-fonts = У цьому робочому просторі вже стільки шрифтів, скільки завантажує rox
+settings-workspace-assets-unknown-kind = Робочий простір бере з собою зображення, шрифти (TTF, OTF), відео (MP4, WebM) і 3D-моделі (GLB)
 settings-workspace-card-author = Автор
 settings-workspace-card-author-placeholder = Хто це зробив
 settings-workspace-card-created = Створено { $date }
@@ -1519,6 +1531,7 @@ settings-workspace-panel-presets-hint-after = у меню будь-якої па
 settings-workspace-panel-presets-hint-before = По одній налаштованій панелі, збережені з меню самої панелі; повернути їх можна через
 settings-workspace-role-mini = Міні
 settings-workspace-role-primary = Основна
+settings-workspace-section-assets = Файли
 settings-workspace-section-composition = Композиція
 settings-workspace-section-global-presets = Глобальні пресети
 settings-workspace-section-layouts = Розкладки

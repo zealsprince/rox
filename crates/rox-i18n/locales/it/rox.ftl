@@ -1483,6 +1483,18 @@ settings-storage-waveforms = Forme d'onda
 
 ## Settings: workspace
 settings-workspace-apply-failed = Impossibile applicare { $name }
+settings-workspace-assets-add-failed = Impossibile aggiungere { $file }
+settings-workspace-assets-adding = Aggiunta in corso...
+settings-workspace-assets-font-too-large = Questo carattere supera { $size } MB, il massimo che rox carica
+settings-workspace-assets-hint = I file che il look porta con sé quando lo spazio di lavoro viene salvato o esportato. Gli shader leggono qui le loro immagini, e un carattere aggiunto qui entra nell'elenco dei caratteri della pagina Aspetto
+settings-workspace-assets-hint-pending = I file video e di modelli 3D restano con il look e vengono salvati, ma per ora niente li riproduce o li mostra
+settings-workspace-assets-kind-font = Caratteri
+settings-workspace-assets-kind-image = Immagini
+settings-workspace-assets-kind-model = Modelli 3D
+settings-workspace-assets-kind-video = Video
+settings-workspace-assets-reveal = Mostra cartella
+settings-workspace-assets-too-many-fonts = Questo spazio di lavoro porta già tutti i caratteri che rox carica
+settings-workspace-assets-unknown-kind = Uno spazio di lavoro porta immagini, caratteri (TTF, OTF), video (MP4, WebM) e modelli 3D (GLB)
 settings-workspace-card-author = Autore
 settings-workspace-card-author-placeholder = Chi l'ha fatto
 settings-workspace-card-created = Creato il { $date }
@@ -1517,6 +1529,7 @@ settings-workspace-panel-presets-hint-after = in qualsiasi menu del pannello. Va
 settings-workspace-panel-presets-hint-before = Un pannello configurato ciascuna, salvata dal menu di un pannello e recuperata da
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Primario
+settings-workspace-section-assets = File
 settings-workspace-section-composition = Composizione
 settings-workspace-section-global-presets = Preimpostazioni globali
 settings-workspace-section-layouts = Layout

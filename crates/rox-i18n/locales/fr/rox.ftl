@@ -1511,6 +1511,18 @@ settings-storage-waveforms = Formes d'onde
 
 ## Settings: workspace
 settings-workspace-apply-failed = Impossible d'appliquer { $name }
+settings-workspace-assets-add-failed = Impossible d'ajouter { $file }
+settings-workspace-assets-adding = Ajout en cours...
+settings-workspace-assets-font-too-large = Cette police dépasse { $size } Mo, le maximum que rox charge
+settings-workspace-assets-hint = Les fichiers que l'habillage emporte quand tu enregistres ou exportes l'espace de travail. Les shaders y lisent leurs images, et une police ajoutée ici rejoint la liste des polices de la page Apparence
+settings-workspace-assets-hint-pending = Les fichiers vidéo et de modèles 3D sont gardés et enregistrés avec l'habillage, mais rien ne les lit ni ne les affiche encore
+settings-workspace-assets-kind-font = Polices
+settings-workspace-assets-kind-image = Images
+settings-workspace-assets-kind-model = Modèles 3D
+settings-workspace-assets-kind-video = Vidéo
+settings-workspace-assets-reveal = Afficher le dossier
+settings-workspace-assets-too-many-fonts = Cet espace de travail emporte déjà autant de polices que rox en charge
+settings-workspace-assets-unknown-kind = Un espace de travail emporte des images, des polices (TTF, OTF), de la vidéo (MP4, WebM) et des modèles 3D (GLB)
 settings-workspace-card-author = Auteur
 settings-workspace-card-author-placeholder = Qui l'a fait
 settings-workspace-card-created = Créé le { $date }
@@ -1545,6 +1557,7 @@ settings-workspace-panel-presets-hint-after = dans n'importe quel menu de pannea
 settings-workspace-panel-presets-hint-before = Un panneau configuré chacun, enregistré depuis le menu d'un panneau et récupéré depuis
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Principale
+settings-workspace-section-assets = Fichiers
 settings-workspace-section-composition = Composition
 settings-workspace-section-global-presets = Préréglages globaux
 settings-workspace-section-layouts = Dispositions

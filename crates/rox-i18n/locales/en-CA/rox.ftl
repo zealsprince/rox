@@ -1535,6 +1535,18 @@ settings-storage-waveforms = Waveforms
 ## Settings: workspace
 
 settings-workspace-apply-failed = Couldn't apply { $name }
+settings-workspace-assets-add-failed = Couldn't add { $file }
+settings-workspace-assets-adding = Adding...
+settings-workspace-assets-font-too-large = This font is over { $size } MB, the most rox loads
+settings-workspace-assets-hint = Files the look carries with it when you save or export the workspace. Shaders read their images from here, and a font added here joins the font list on the Appearance page
+settings-workspace-assets-hint-pending = Video and 3D model files are kept and saved with the look, but nothing plays or shows them yet
+settings-workspace-assets-kind-font = Fonts
+settings-workspace-assets-kind-image = Images
+settings-workspace-assets-kind-model = 3D Models
+settings-workspace-assets-kind-video = Video
+settings-workspace-assets-reveal = Reveal Folder
+settings-workspace-assets-too-many-fonts = This workspace already carries as many fonts as rox loads
+settings-workspace-assets-unknown-kind = A workspace carries images, fonts (TTF, OTF), video (MP4, WebM) and 3D models (GLB)
 settings-workspace-card-author = Author
 settings-workspace-card-author-placeholder = Who made it
 settings-workspace-card-created = Created { $date }
@@ -1569,6 +1581,7 @@ settings-workspace-panel-presets-hint-after = in any panel menu. They belong to 
 settings-workspace-panel-presets-hint-before = One configured panel each, saved from a panel's own menu and added back from
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Primary
+settings-workspace-section-assets = Assets
 settings-workspace-section-composition = Composition
 settings-workspace-section-global-presets = Global Presets
 settings-workspace-section-layouts = Layouts

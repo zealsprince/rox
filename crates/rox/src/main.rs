@@ -53,6 +53,7 @@ mod tags;
 mod tasks_window;
 mod tempo_job;
 mod workspace;
+mod workspace_fonts;
 mod workspaces;
 
 use gpui::{
@@ -445,6 +446,8 @@ fn main() {
         set_seams(settings.look.bundle.appearance.seams, cx);
         palette::set_keep_theme(settings.look.bundle.appearance.keep_theme, cx);
         palette::set_art_theming(settings.look.bundle.appearance.art_theming, cx);
+        // Before anything draws in the app font, which may be one the look carries.
+        workspace_fonts::register(cx);
         set_app_font(settings.look.bundle.appearance.app_font.clone(), cx);
         palette::set_app_font_size(settings.app_font_size, cx);
         set_rating_style(settings.look.bundle.appearance.rating_style, cx);

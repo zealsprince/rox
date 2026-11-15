@@ -907,6 +907,7 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     crate::backdrop_visual::wake(cx);
     crate::workspace::apply_decorations(cx);
     crate::workspace::apply_resize_border(cx);
+    crate::workspace_fonts::register(cx);
 }
 
 /// The file the list matched, so a hand-dropped file keeps its filename.

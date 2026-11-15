@@ -1,7 +1,8 @@
 //! The font-family picker for the app settings window and every panel's
 //! Appearance page, built on [`search_picker`](crate::search_picker).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gpui::{App, Context, SharedString, prelude::*};
 
@@ -41,30 +42,48 @@ where
     )
 }
 
-/// Enumerated once: the settings pages render on every slider scrub.
+static FONTS_REV: AtomicU64 = AtomicU64::new(0);
+
+/// Fonts were added to the text system, so the next picker lists them.
+pub fn fonts_changed() {
+    FONTS_REV.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Enumerated once per [`fonts_changed`]: the settings pages render on every
+/// slider scrub.
 fn families(cx: &mut App) -> Arc<Vec<PickRow>> {
-    static FONTS: OnceLock<Arc<Vec<PickRow>>> = OnceLock::new();
-    FONTS
-        .get_or_init(|| {
-            let mut names = cx.text_system().all_font_names();
-            names.sort();
-            names.dedup();
-            let mut rows = vec![PickRow {
-                label: DEFAULT_LABEL.into(),
-                value: None,
-                terms: Vec::new(),
-                icon: None,
-            }];
-            rows.extend(names.into_iter().map(|name| {
-                let name = SharedString::from(name);
-                PickRow {
-                    label: name.clone(),
-                    value: Some(name),
-                    terms: Vec::new(),
-                    icon: None,
-                }
-            }));
-            Arc::new(rows)
-        })
-        .clone()
+    static FONTS: Mutex<Option<(u64, Arc<Vec<PickRow>>)>> = Mutex::new(None);
+
+    let rev = FONTS_REV.load(Ordering::Relaxed);
+    let mut cache = FONTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, rows)) = cache.as_ref()
+        && *at == rev
+    {
+        return rows.clone();
+    }
+
+    let mut names = cx.text_system().all_font_names();
+    names.sort();
+    names.dedup();
+
+    let mut rows = vec![PickRow {
+        label: DEFAULT_LABEL.into(),
+        value: None,
+        terms: Vec::new(),
+        icon: None,
+    }];
+    rows.extend(names.into_iter().map(|name| {
+        let name = SharedString::from(name);
+        PickRow {
+            label: name.clone(),
+            value: Some(name),
+            terms: Vec::new(),
+            icon: None,
+        }
+    }));
+
+    let rows = Arc::new(rows);
+    *cache = Some((rev, rows.clone()));
+
+    rows
 }

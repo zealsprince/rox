@@ -1457,6 +1457,18 @@ settings-storage-waveforms = 波形
 
 ## Settings: workspace
 settings-workspace-apply-failed = 无法应用 { $name }
+settings-workspace-assets-add-failed = 无法添加 { $file }
+settings-workspace-assets-adding = 正在添加…
+settings-workspace-assets-font-too-large = 这个字体超过了 { $size } MB，rox 最多只加载这么大
+settings-workspace-assets-hint = 保存或导出工作区时，这套外观随身带走的文件。着色器从这里读取图片，在这里添加的字体会出现在外观页面的字体列表里
+settings-workspace-assets-hint-pending = 视频和 3D 模型文件会随外观一起保存，但目前还没有东西播放或显示它们
+settings-workspace-assets-kind-font = 字体
+settings-workspace-assets-kind-image = 图片
+settings-workspace-assets-kind-model = 3D 模型
+settings-workspace-assets-kind-video = 视频
+settings-workspace-assets-reveal = 显示文件夹
+settings-workspace-assets-too-many-fonts = 这个工作区里的字体已经达到 rox 能加载的数量
+settings-workspace-assets-unknown-kind = 工作区可以带上图片、字体（TTF、OTF）、视频（MP4、WebM）和 3D 模型（GLB）
 settings-workspace-card-author = 作者
 settings-workspace-card-author-placeholder = 谁做的
 settings-workspace-card-created = 创建于 { $date }
@@ -1491,6 +1503,7 @@ settings-workspace-panel-presets-hint-after = 加回来，任意面板菜单里�
 settings-workspace-panel-presets-hint-before = 一个预设一个配置好的面板，从面板自己的菜单里保存，再从
 settings-workspace-role-mini = 迷你
 settings-workspace-role-primary = 主
+settings-workspace-section-assets = 文件
 settings-workspace-section-composition = 构成
 settings-workspace-section-global-presets = 全局预设
 settings-workspace-section-layouts = 布局

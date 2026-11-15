@@ -1457,6 +1457,18 @@ settings-storage-waveforms = 波形
 
 ## Settings: workspace
 settings-workspace-apply-failed = { $name } を適用できませんでした
+settings-workspace-assets-add-failed = { $file } を追加できませんでした
+settings-workspace-assets-adding = 追加中...
+settings-workspace-assets-font-too-large = このフォントは { $size } MB を超えています。rox が読み込むのはそこまでです
+settings-workspace-assets-hint = ワークスペースを保存やエクスポートするとき、見た目と一緒に持ち運ばれるファイルです。シェーダーはここから画像を読み、ここに追加したフォントは外観ページのフォント一覧に加わります
+settings-workspace-assets-hint-pending = 動画と 3D モデルのファイルは見た目と一緒に保存されますが、今はまだ再生も表示もされません
+settings-workspace-assets-kind-font = フォント
+settings-workspace-assets-kind-image = 画像
+settings-workspace-assets-kind-model = 3D モデル
+settings-workspace-assets-kind-video = 動画
+settings-workspace-assets-reveal = フォルダーを表示
+settings-workspace-assets-too-many-fonts = このワークスペースには、rox が読み込める数のフォントがすでに入っています
+settings-workspace-assets-unknown-kind = ワークスペースに入れられるのは画像、フォント (TTF, OTF)、動画 (MP4, WebM)、3D モデル (GLB) です
 settings-workspace-card-author = 作者
 settings-workspace-card-author-placeholder = 作った人
 settings-workspace-card-created = 作成 { $date }
@@ -1491,6 +1503,7 @@ settings-workspace-panel-presets-hint-after = をどのパネルメニューか�
 settings-workspace-panel-presets-hint-before = 設定済みのパネル 1 つずつ。パネル自身のメニューから保存し、戻すときは
 settings-workspace-role-mini = ミニ
 settings-workspace-role-primary = プライマリ
+settings-workspace-section-assets = ファイル
 settings-workspace-section-composition = 構成
 settings-workspace-section-global-presets = グローバルプリセット
 settings-workspace-section-layouts = レイアウト

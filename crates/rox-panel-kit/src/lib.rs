@@ -32,7 +32,7 @@ pub mod grade;
 pub mod wall;
 
 mod font_picker;
-pub use font_picker::font_picker;
+pub use font_picker::{font_picker, fonts_changed};
 mod icon_picker;
 pub use icon_picker::icon_picker;
 mod language_picker;

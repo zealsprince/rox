@@ -6,7 +6,7 @@
 //! Nothing here draws or decodes. Assets are data and never gate (ADR 23):
 //! approval is over code.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
@@ -90,6 +90,44 @@ pub fn import(src: &Path) -> Result<Asset, String> {
 pub fn import_bytes(file: &str, bytes: &[u8]) -> Result<Asset, String> {
     let mut table = all();
     let asset = import_in(&dir(), &table, file, bytes)?;
+
+    if !table.contains(&asset) {
+        table.push(asset.clone());
+        commit(table);
+    }
+
+    Ok(asset)
+}
+
+/// An import copied into the staging folder and hashed, waiting on
+/// [`commit_staged`]. Dropping it deletes the copy.
+pub struct Staged {
+    file: String,
+    tmp: PathBuf,
+    sha256: String,
+    bytes: u64,
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.tmp);
+    }
+}
+
+/// An import's slow half, for a background thread. It streams `src` into a
+/// staging folder beside the store while hashing it, so a video is never
+/// held in memory, and it touches neither the table nor the live folder, so
+/// an apply or a sweep can run meanwhile. Past `max_bytes` it refuses.
+pub fn stage(src: &Path, max_bytes: u64) -> Result<Staged, String> {
+    stage_in(&data_dir().join("assets.import"), src, max_bytes)
+}
+
+/// An import's quick half: a rename and the table write. Call it on the UI
+/// thread, where apply swaps the table, so the two never interleave. The
+/// same bytes already in the table return that entry.
+pub fn commit_staged(staged: Staged) -> Result<Asset, String> {
+    let mut table = all();
+    let asset = commit_staged_in(&dir(), &table, &staged)?;
 
     if !table.contains(&asset) {
         table.push(asset.clone());
@@ -298,6 +336,25 @@ fn import_in(dir: &Path, table: &[Asset], file: &str, bytes: &[u8]) -> Result<As
         return Ok(existing.clone());
     }
 
+    let (id, file, kind) = claim_in(dir, table, file)?;
+
+    write_file_in(dir, &file, bytes)?;
+
+    Ok(Asset {
+        id,
+        file,
+        kind,
+        sha256,
+        bytes: bytes.len() as u64,
+    })
+}
+
+/// A free id and file name for `file` against `dir` and `table`, with its kind.
+fn claim_in(
+    dir: &Path,
+    table: &[Asset],
+    file: &str,
+) -> Result<(String, String, AssetKind), String> {
     let name = store_name(file).ok_or_else(|| format!("{file} isn't a kind of file rox reads"))?;
     let kind = kind_for(&name).unwrap_or_default();
 
@@ -309,17 +366,86 @@ fn import_in(dir: &Path, table: &[Asset], file: &str, bytes: &[u8]) -> Result<As
             .any(|asset| asset.id == id || asset.file.eq_ignore_ascii_case(candidate))
             || dir.join(candidate).symlink_metadata().is_ok()
     };
-    let (id, file) = free_name(&name, taken)
+    let (id, claimed) = free_name(&name, taken)
         .ok_or_else(|| format!("every name for {file} up to {VARIANTS} is taken"))?;
 
-    write_file_in(dir, &file, bytes)?;
+    Ok((id, claimed, kind))
+}
+
+/// Refuses past `max_bytes` on what was actually read, whatever the file's
+/// size said when it was opened.
+fn stage_in(staging: &Path, src: &Path, max_bytes: u64) -> Result<Staged, String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", src.display());
+
+    let file = src
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{} has no usable file name", src.display()))?;
+    if store_name(file).is_none() {
+        return Err(format!("{file} isn't a kind of file rox reads"));
+    }
+
+    let mut input = std::fs::File::open(src).map_err(fail)?;
+    if input.metadata().map_err(fail)?.len() > max_bytes {
+        return Err(format!("{file} is over {max_bytes} bytes"));
+    }
+
+    std::fs::create_dir_all(staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut staged = Staged {
+        file: file.to_string(),
+        tmp: staging.join(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )),
+        sha256: String::new(),
+        bytes: 0,
+    };
+
+    // From here a failure drops `staged`, which deletes the partial copy.
+    let mut out = std::fs::File::create(&staged.tmp).map_err(fail)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0; 256 * 1024];
+    loop {
+        let read = input.read(&mut buf).map_err(fail)?;
+        if read == 0 {
+            break;
+        }
+
+        staged.bytes += read as u64;
+        if staged.bytes > max_bytes {
+            return Err(format!("{file} is over {max_bytes} bytes"));
+        }
+
+        hasher.update(&buf[..read]);
+        out.write_all(&buf[..read]).map_err(fail)?;
+    }
+    out.sync_all().map_err(fail)?;
+
+    staged.sha256 = hex(hasher.finalize().as_slice());
+
+    Ok(staged)
+}
+
+fn commit_staged_in(dir: &Path, table: &[Asset], staged: &Staged) -> Result<Asset, String> {
+    if let Some(existing) = table.iter().find(|asset| asset.sha256 == staged.sha256) {
+        return Ok(existing.clone());
+    }
+
+    let (id, file, kind) = claim_in(dir, table, &staged.file)?;
+
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(&file);
+    std::fs::rename(&staged.tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
 
     Ok(Asset {
         id,
         file,
         kind,
-        sha256,
-        bytes: bytes.len() as u64,
+        sha256: staged.sha256.clone(),
+        bytes: staged.bytes,
     })
 }
 
@@ -474,6 +600,57 @@ mod tests {
         assert_eq!(third.file, "frame-4.png");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_staged_import_lands_once_and_leaves_no_copy() {
+        let root = scratch("staged");
+        let (dir, staging) = (root.join("assets"), root.join("assets.import"));
+        let src = root.join("Plate.PNG");
+        std::fs::write(&src, b"a plate").unwrap();
+        let mut table = Vec::new();
+
+        let staged = stage_in(&staging, &src, u64::MAX).unwrap();
+        let first = commit_staged_in(&dir, &table, &staged).unwrap();
+        drop(staged);
+        table.push(first.clone());
+
+        assert_eq!(
+            (first.id.as_str(), first.file.as_str()),
+            ("plate", "plate.png")
+        );
+        assert_eq!(first.kind, AssetKind::Image);
+        assert_eq!(first.sha256, sha256_hex(b"a plate"));
+        assert_eq!(first.bytes, 7);
+        assert_eq!(std::fs::read(dir.join("plate.png")).unwrap(), b"a plate");
+
+        // The same bytes again return the entry, and the second copy goes.
+        let staged = stage_in(&staging, &src, u64::MAX).unwrap();
+        let second = commit_staged_in(&dir, &table, &staged).unwrap();
+        drop(staged);
+
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staging_refuses_past_its_cap_and_an_unknown_kind() {
+        let root = scratch("staged-cap");
+        let staging = root.join("assets.import");
+        let font = root.join("big.ttf");
+        std::fs::write(&font, [0u8; 64]).unwrap();
+        let script = root.join("run.sh");
+        std::fs::write(&script, b"#!/bin/sh").unwrap();
+
+        assert!(stage_in(&staging, &font, 63).is_err());
+        assert!(stage_in(&staging, &font, 64).is_ok());
+        assert!(stage_in(&staging, &script, u64::MAX).is_err());
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -4,7 +4,11 @@
 
 use super::*;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use rox_core::settings::assets;
 use rox_core::settings::panel_presets::SaveScope;
+use rox_core::settings::{Asset, AssetKind};
 use rox_dock::DockArea;
 
 /// Built when a row's details open and dropped when they close.
@@ -55,6 +59,44 @@ const CARD_FIELDS: [CardField; 5] = [
 /// look into megabytes.
 const EXPORT_SIZE_WARN: u64 = 4 * 1024 * 1024;
 
+/// One batch of asset imports at a time, across every window, with its files
+/// copied one after another. Add stays inert while a batch runs.
+static ADDING_ASSETS: AtomicBool = AtomicBool::new(false);
+
+/// Clears [`ADDING_ASSETS`] however the import task ends, a closed window
+/// dropping it included.
+struct AddingAssets;
+
+impl Drop for AddingAssets {
+    fn drop(&mut self) {
+        ADDING_ASSETS.store(false, Ordering::Release);
+    }
+}
+
+/// The order the Assets section groups by, with each group's heading.
+const ASSET_GROUPS: [(AssetKind, &str, &str); 4] = [
+    (
+        AssetKind::Image,
+        icons::IMAGE,
+        "settings-workspace-assets-kind-image",
+    ),
+    (
+        AssetKind::Font,
+        icons::A_LARGE_SMALL,
+        "settings-workspace-assets-kind-font",
+    ),
+    (
+        AssetKind::Video,
+        icons::PLAY,
+        "settings-workspace-assets-kind-video",
+    ),
+    (
+        AssetKind::Model,
+        icons::LAYERS,
+        "settings-workspace-assets-kind-model",
+    ),
+];
+
 /// Most dialogs only see `First`; the two that split read `Second` as the wider
 /// answer.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,6 +144,7 @@ impl SettingsWindow {
             .section(self.presets_section(q, live, cx))
             .section(self.panel_presets_section(q, cx))
             .section(self.global_presets_section(q, cx))
+            .section(self.assets_section(q, cx))
             // Built only once the query keeps it, since it walks the live dock.
             .section(Section::new(
                 q,
@@ -609,6 +652,206 @@ impl SettingsWindow {
                 )
             },
         )
+    }
+
+    /// The live look's files. Removing one doesn't look for what names it:
+    /// a shader whose image is gone says so in its own error readout.
+    fn assets_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let table = assets::all();
+        let adding = ADDING_ASSETS.load(Ordering::Acquire);
+        let dir = assets::dir();
+
+        let add_label = if adding {
+            rox_i18n::t!("settings-workspace-assets-adding")
+        } else {
+            rox_i18n::t!("settings-common-add")
+        };
+        let controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(
+                small_button(
+                    add_label,
+                    icons::PLUS,
+                    adding,
+                    cx.listener(|this, _, window, cx| this.add_assets(window, cx)),
+                )
+                .keyed("workspace-assets-add"),
+            )
+            .child(
+                small_button(
+                    rox_i18n::t!("settings-workspace-assets-reveal"),
+                    icons::FOLDER,
+                    false,
+                    move |_, _, cx| {
+                        // The store never makes the folder for a look without
+                        // files; this is where the user asks for it.
+                        if let Err(e) = std::fs::create_dir_all(&dir) {
+                            log::warn!("assets: creating {}: {e}", dir.display());
+                        }
+                        cx.reveal_path(&dir);
+                    },
+                )
+                .keyed("workspace-assets-reveal"),
+            );
+
+        Section::new(
+            q,
+            icons::FOLDER,
+            rox_i18n::t!("settings-workspace-section-assets"),
+            Some(controls.into_any_element()),
+            |rows| {
+                rows.custom(
+                    &["asset", "file", "image", "font", "video", "model"],
+                    || {
+                        let hint = |key: &'static str| {
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(rox_i18n::t!(key))
+                        };
+                        let mut list = div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(hint("settings-workspace-assets-hint"))
+                            // Until video and models draw somewhere.
+                            .child(hint("settings-workspace-assets-hint-pending"));
+
+                        for (kind, icon, heading) in ASSET_GROUPS {
+                            let mut group: Vec<&Asset> =
+                                table.iter().filter(|asset| asset.kind == kind).collect();
+                            if group.is_empty() {
+                                continue;
+                            }
+                            group.sort_by(|a, b| a.file.cmp(&b.file));
+
+                            list = list.child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(tokens::SPACE_XS)
+                                    .pt(tokens::SPACE_XS)
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(
+                                        svg().path(icon).size_3().text_color(palette::text_muted()),
+                                    )
+                                    .child(rox_i18n::t!(heading)),
+                            );
+                            list = list.child(div().flex().flex_col().children(
+                                group.into_iter().map(|asset| self.asset_row(asset, cx)),
+                            ));
+                        }
+
+                        list.into_any_element()
+                    },
+                )
+            },
+        )
+    }
+
+    fn asset_row(&self, asset: &Asset, cx: &mut Context<Self>) -> AnyElement {
+        let id = asset.id.clone();
+
+        div()
+            .id(ElementId::Name(format!("asset-row:{id}").into()))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(asset.file.clone())),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_core::fmt::fmt_bytes(asset.bytes)),
+            )
+            .child(icon_button(icons::TRASH, false, {
+                cx.listener(move |_, _, _, cx| {
+                    assets::remove(&id);
+                    cx.notify();
+                })
+            }))
+            .into_any_element()
+    }
+
+    /// Each file goes in on its own and a failure toasts for that file
+    /// alone. The copy and the hash run in the background, one file at a
+    /// time; the table write comes back to the UI thread, where an apply
+    /// would swap it.
+    fn add_assets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if ADDING_ASSETS.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let adding = AddingAssets;
+        cx.notify();
+
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = match rx.await {
+                Ok(Ok(Some(paths))) => paths,
+                _ => Vec::new(),
+            };
+
+            for path in paths {
+                let file = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+
+                if let Err(why) = asset_refusal(&path, &file) {
+                    this.update_in(cx, |_, window, cx| asset_failed(&file, why, window, cx))
+                        .ok();
+                    continue;
+                }
+
+                let max_bytes = match assets::kind_for(&file) {
+                    Some(AssetKind::Font) => crate::workspace_fonts::MAX_FONT_BYTES,
+                    _ => u64::MAX,
+                };
+                let src = path.clone();
+                let staged = cx
+                    .background_executor()
+                    .spawn(async move { assets::stage(&src, max_bytes) })
+                    .await;
+
+                this.update_in(cx, |_, window, cx| {
+                    match staged.and_then(assets::commit_staged) {
+                        Ok(asset) if asset.kind == AssetKind::Font => {
+                            crate::workspace_fonts::register(cx);
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::warn!("assets: adding {}: {e}", path.display());
+                            asset_failed(&file, e.into(), window, cx);
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+
+            drop(adding);
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
     }
 
     fn panel_preset_row(
@@ -1776,6 +2019,44 @@ impl SettingsWindow {
         self.mini_layout = bundle.mini_layout.clone();
         cx.notify();
     }
+}
+
+/// What the store would refuse anyway, caught before the copy starts so the
+/// toast can say why in the user's language.
+fn asset_refusal(path: &Path, file: &str) -> Result<(), SharedString> {
+    let Some(kind) = assets::kind_for(file) else {
+        return Err(rox_i18n::t!("settings-workspace-assets-unknown-kind"));
+    };
+    if kind != AssetKind::Font {
+        return Ok(());
+    }
+
+    let fonts = assets::all()
+        .iter()
+        .filter(|asset| asset.kind == AssetKind::Font)
+        .count();
+    if fonts >= crate::workspace_fonts::MAX_FONTS {
+        return Err(rox_i18n::t!("settings-workspace-assets-too-many-fonts"));
+    }
+
+    let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    if bytes > crate::workspace_fonts::MAX_FONT_BYTES {
+        return Err(rox_i18n::t!(
+            "settings-workspace-assets-font-too-large",
+            size = (crate::workspace_fonts::MAX_FONT_BYTES / 1_000_000).to_string()
+        ));
+    }
+
+    Ok(())
+}
+
+fn asset_failed(file: &str, why: SharedString, window: &mut Window, cx: &mut App) {
+    rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, why)
+        .title(rox_i18n::t!(
+            "settings-workspace-assets-add-failed",
+            file = file
+        ))
+        .show(window, cx);
 }
 
 /// The value wraps in its own column: a description runs as long as its author

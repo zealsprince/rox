@@ -1470,6 +1470,18 @@ settings-storage-waveforms = Wellenformen
 
 ## Settings: workspace
 settings-workspace-apply-failed = { $name } ließ sich nicht anwenden
+settings-workspace-assets-add-failed = { $file } ließ sich nicht hinzufügen
+settings-workspace-assets-adding = Füge hinzu...
+settings-workspace-assets-font-too-large = Diese Schrift ist größer als { $size } MB, mehr lädt rox nicht
+settings-workspace-assets-hint = Dateien, die das Erscheinungsbild mitnimmt, wenn du die Arbeitsfläche speicherst oder exportierst. Shader lesen ihre Bilder von hier, und eine hier hinzugefügte Schrift erscheint in der Schriftliste auf der Seite Aussehen
+settings-workspace-assets-hint-pending = Video- und 3D-Modelldateien bleiben beim Erscheinungsbild und werden mitgespeichert, aber noch spielt oder zeigt sie nichts
+settings-workspace-assets-kind-font = Schriften
+settings-workspace-assets-kind-image = Bilder
+settings-workspace-assets-kind-model = 3D-Modelle
+settings-workspace-assets-kind-video = Video
+settings-workspace-assets-reveal = Ordner zeigen
+settings-workspace-assets-too-many-fonts = Diese Arbeitsfläche bringt schon so viele Schriften mit, wie rox lädt
+settings-workspace-assets-unknown-kind = Eine Arbeitsfläche nimmt Bilder, Schriften (TTF, OTF), Video (MP4, WebM) und 3D-Modelle (GLB) mit
 settings-workspace-card-author = Autor
 settings-workspace-card-author-placeholder = Wer es gemacht hat
 settings-workspace-card-created = Erstellt { $date }
@@ -1504,6 +1516,7 @@ settings-workspace-panel-presets-hint-after = in jedem Panel-Menü. Sie gelten n
 settings-workspace-panel-presets-hint-before = Je ein eingerichtetes Panel, aus dem eigenen Menü eines Panels gespeichert und zurückgeholt über
 settings-workspace-role-mini = Mini
 settings-workspace-role-primary = Primär
+settings-workspace-section-assets = Dateien
 settings-workspace-section-composition = Aufbau
 settings-workspace-section-global-presets = Globale Vorlagen
 settings-workspace-section-layouts = Layouts

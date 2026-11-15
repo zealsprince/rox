@@ -99,14 +99,51 @@ pub fn from_args() -> (LaunchMode, Vec<PathBuf>) {
             mode = LaunchMode::Enqueue;
             continue;
         }
-        args.push(arg);
+        args.push(from_file_url(arg));
     }
     (mode, resolve_audio_paths(args))
+}
+
+/// A `file://` URL as its path. The desktop entry takes `%U` so links can
+/// reach rox, and a file manager then hands files over as URLs. Anything
+/// else, an unparsable URL included, comes back as it was.
+pub fn from_file_url(arg: std::ffi::OsString) -> PathBuf {
+    let decoded = arg
+        .to_str()
+        .filter(|text| text.len() > 7 && text[..7].eq_ignore_ascii_case("file://"))
+        .and_then(|text| url::Url::parse(text).ok())
+        .and_then(|url| url.to_file_path().ok());
+
+    decoded.unwrap_or_else(|| PathBuf::from(arg))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_url_becomes_its_path() {
+        let url = |text: &str| from_file_url(text.into());
+
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                url("file:///m/Bad%20&%20%C3%9Cber/one%20two.flac"),
+                PathBuf::from("/m/Bad & \u{dc}ber/one two.flac")
+            );
+            assert_eq!(url("FILE:///m/one.flac"), PathBuf::from("/m/one.flac"));
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            url("file:///C:/Music/one%20two.flac"),
+            PathBuf::from(r"C:\Music\one two.flac")
+        );
+
+        // Not a file URL, or not one that names a local path: kept as given.
+        assert_eq!(url("/m/one.flac"), PathBuf::from("/m/one.flac"));
+        assert_eq!(url("rox://install/x"), PathBuf::from("rox://install/x"));
+        assert_eq!(url("file://"), PathBuf::from("file://"));
+    }
 
     #[test]
     fn a_dropped_folder_skips_os_junk() {

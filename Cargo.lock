@@ -7156,6 +7156,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rox-package"
+version = "1.35.1"
+dependencies = [
+ "flate2",
+ "zip",
+]
+
+[[package]]
 name = "rox-panel-api"
 version = "1.35.1"
 dependencies = [

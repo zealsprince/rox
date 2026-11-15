@@ -15,6 +15,7 @@ members = [
     "crates/rox-milkdrop-sys",
     "crates/rox-mcp",
     "crates/rox-net",
+    "crates/rox-package",
     "crates/rox-panel-api",
     "crates/rox-panel-kit",
     "crates/rox-panels",

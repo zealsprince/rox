@@ -1,0 +1,16 @@
+[package]
+name = "rox-package"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Reads and writes the archives. The spec rox-romanize and the Windows
+# updater take, so the workspace still resolves one zip. `deflate-flate2`
+# rather than `deflate`, which would switch flate2 to zlib-rs for the whole
+# workspace.
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
+# The deflate backend. zip takes flate2 with its defaults off, and flate2
+# with no backend fails to compile. Its default is the miniz_oxide backend
+# already in the lock, and nothing else in this crate brings one.
+flate2 = "1.1"

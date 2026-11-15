@@ -180,6 +180,9 @@ fallback, so add `noto-fonts-cjk-sans-static` or `google-noto-sans-cjk-fonts`.
 
 - `rox <files or folders>` - play them now, replacing what's loaded. Folders expand to
   the audio files directly inside them.
+- `rox <file.roxw>` or `rox <file.roxp>` - open a workspace or a plugin. A workspace joins
+  your saved workspaces and the apply confirm comes up. A plugin lists on the Plugins page,
+  switched off. Double-clicking either file, or dropping it on the window, does the same.
 - `--enqueue` / `-e` - append the given files to the up-next queue instead of playing.
 - `--new-instance` - start a second rox against the same data directory. Without it a
   launch hands its files to the rox already running, which raises its window and takes

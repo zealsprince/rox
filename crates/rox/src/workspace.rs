@@ -5263,11 +5263,19 @@ impl Workspace {
             }
         };
 
-        // Always offered, whatever it holds: a file from outside never
-        // applies by itself, and the card is the only answer a double-click
-        // gets.
+        self.offer_imported(&bundle, cx);
+    }
+
+    /// The apply confirm for a workspace an import just stored. Always
+    /// offered, whatever it holds: a file from outside never applies by
+    /// itself, and the card is the only answer a double-click gets.
+    pub(crate) fn offer_imported(
+        &mut self,
+        bundle: &rox_core::settings::WorkspaceBundle,
+        cx: &mut Context<Self>,
+    ) {
         self.layout_dialog = Some(LayoutDialog::ConfirmApplyWorkspace {
-            card: crate::workspaces::ApplyCard::of(&bundle),
+            card: crate::workspaces::ApplyCard::of(bundle),
             imported: true,
         });
         cx.notify();
@@ -5789,8 +5797,22 @@ impl Workspace {
     /// queue instead; that panel's own handler catches the drop first. An OS
     /// file open (the .desktop default) still replaces the session, that path
     /// runs through open_paths, not here.
-    fn play_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn play_dropped(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.open_dropped_documents(paths, window, cx);
         self.play_keys(loose_keys(paths), cx);
+    }
+
+    /// A rox document dropped on either card is opened, which lists it and
+    /// asks. What's left is the audio half of the drop.
+    fn open_dropped_documents(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<PathBuf> {
+        let (documents, rest) = rox_library::open_files::split_documents(paths);
+        crate::documents::open_in(self, documents, window, cx);
+        rest
     }
 
     /// The same for a drag out of the library, which already has keys and
@@ -5806,7 +5828,8 @@ impl Workspace {
 
     /// Add dropped files or tracks to the up-next queue, filtered to decodable
     /// audio. The Add to queue drop zone routes here.
-    fn queue_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn queue_dropped(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.open_dropped_documents(paths, window, cx);
         self.queue_keys(loose_keys(paths), cx);
     }
 
@@ -5960,15 +5983,15 @@ impl Workspace {
             });
 
         if play_now {
-            card.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.play_dropped(paths.paths().to_vec(), cx);
+            card.on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.play_dropped(paths.paths().to_vec(), window, cx);
             }))
             .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
                 this.play_keys(drag.keys.to_vec(), cx);
             }))
         } else {
-            card.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.queue_dropped(paths.paths().to_vec(), cx);
+            card.on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.queue_dropped(paths.paths().to_vec(), window, cx);
             }))
             .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
                 this.queue_keys(drag.keys.to_vec(), cx);

@@ -55,6 +55,9 @@ commands:
   task-stop <pass>           stop a running pass at the next file
   watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
+  workspace import <file>    store a .roxw in the workspace list and offer
+                             it for applying in the front window
+  plugin install <file>      list a .roxp on the Plugins page, switched off
   raw <method> [json]        any method, params as one JSON argument
 
 drive commands (the debug scope: work the UI without OS input tools):
@@ -363,6 +366,18 @@ fn run(
             }
             ("debug.milkdrop".into(), params)
         }
+        "workspace" => match args {
+            [verb, file] if verb == "import" => {
+                ("workspace.import".into(), json!({ "path": absolute(file) }))
+            }
+            _ => return Err("workspace takes import <file>".into()),
+        },
+        "plugin" => match args {
+            [verb, file] if verb == "install" => {
+                ("plugins.install".into(), json!({ "path": absolute(file) }))
+            }
+            _ => return Err("plugin takes install <file>".into()),
+        },
         "watch" => return watch(client, as_json),
         "art" => {
             let path = args
@@ -421,6 +436,14 @@ fn run(
         "windows" => print_windows(&result),
         "actions" => print_actions(&result),
         "milkdrop" => print_milkdrop(&result),
+        "workspace" => println!(
+            "imported as {}",
+            result["name"].as_str().unwrap_or_default()
+        ),
+        "plugin" => println!(
+            "installed {}, switched off",
+            result["id"].as_str().unwrap_or_default()
+        ),
         _ => println!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_default()

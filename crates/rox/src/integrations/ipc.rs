@@ -4,8 +4,9 @@
 //! can never say something the UI wouldn't.
 //!
 //! Surface, version 1: `transport.*`, `queue.*`, `library.*`, `tasks.*`,
-//! `plugins.*`, `ai.status`, and `event.*` pushes after `subscribe`. `debug.*` is the
-//! runtime test surface; its input half is the sibling `drive` module.
+//! `plugins.*`, `workspace.import`, `ai.status`, and `event.*` pushes after
+//! `subscribe`. `debug.*` is the runtime test surface; its input half is the
+//! sibling `drive` module.
 
 use std::path::PathBuf;
 
@@ -114,6 +115,8 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
         "plugins.browse" => return super::ipc_plugins::browse(state, request, cx),
         "plugins.search" => return super::ipc_plugins::search(state, request, cx),
         "plugins.action" => return super::ipc_plugins::action(request, cx),
+        "plugins.install" => return super::ipc_documents::install_plugin(request, cx),
+        "workspace.import" => return super::ipc_documents::import_workspace(request, cx),
         _ => {}
     }
     let result = route(state, &request.method, &request.params, cx);

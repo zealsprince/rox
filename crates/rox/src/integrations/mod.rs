@@ -5,6 +5,7 @@
 pub mod broadcast;
 pub mod drive;
 pub mod ipc;
+mod ipc_documents;
 mod ipc_plugins;
 mod ipc_track;
 #[cfg(target_os = "linux")]

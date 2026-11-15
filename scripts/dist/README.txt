@@ -61,13 +61,17 @@ Command line
 
 rox <files or folders>   Play them now, replacing what's loaded. Folders
                          expand to the audio files directly inside them.
+rox <file.roxw|.roxp>    Open a workspace or a plugin. A workspace joins
+                         your saved workspaces and the apply confirm comes
+                         up. A plugin lists on the Plugins page, switched
+                         off. Double-clicking the file or dropping it on
+                         the window does the same.
 --enqueue / -e           Append the given files to the up-next queue instead
                          of playing.
 --new-instance           Start a second rox against the same data directory.
                          Without it a launch passes its files to the rox
                          already running, which raises its window and takes
-                         them. Linux and macOS only; on Windows every launch
-                         is its own instance.
+                         them.
 --portable               Keep all data (library, settings, caches) in a
                          rox-data folder beside the executable for this run.
 
@@ -169,6 +173,10 @@ what its command did without a second round trip:
   tasks.stop             {"pass": ..}; the pass stops at the next file,
                          keeping what's done. {"job": n} stops a plugin
                          action's job instead.
+  workspace.import       {"path": ".."}, an absolute path to a .roxw;
+                         answers {"name"}, the name it was stored under.
+                         The front window offers it in the apply confirm,
+                         and nothing changes until that's answered.
   plugins.list           The running plugins, each with its source and the
                          actions it declares.
   plugins.browse         {"source", "node"?, "view"?, "cursor"?}; one page
@@ -180,6 +188,8 @@ what its command did without a second round trip:
   plugins.action         {"source", "action", "items"?, "params"?}; runs a
                          declared action as its menu item would, and
                          answers its message or a job number.
+  plugins.install        {"path": ".."}, an absolute path to a .roxp;
+                         answers {"id"}. The plugin lists switched off.
   ai.status              {"enabled", "mcp", "plugins"}, the toggles
                          rox-mcp checks.
   debug.*                Diagnostics for working on rox itself; the
@@ -217,6 +227,8 @@ apply and the -32000 range for rox's own:
 The plugins.* methods make the same calls the External Sources panel and
 its menus make, so a plugin can't tell a socket client was behind one.
 They answer while plugins are on, whatever the MCP switches say.
+plugins.install is the exception: it only copies a file in, and works
+with plugins off.
 
 The surface is local, never a network port. Auth is filesystem
 permissions: the Unix socket is created user-only (0600), and the Windows

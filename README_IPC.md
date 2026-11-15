@@ -63,6 +63,8 @@ did without a second round trip.
 | `tasks.status`                                             |                                               | the analysis passes: switch state, tracks to do, progress while running |
 | `tasks.start`                                              | `{"pass": "acoustic"/"replaygain"/"tempo"/"sortnames"/"romanize"}` | what the pass took on: count, workers, estimate, save mode              |
 | `tasks.stop`                                               | `{"pass": ..}`                                | `{"stopping": true}`; the pass drops out at the next file               |
+| `workspace.import`                                         | `{"path": ".."}`                              | `{"name": ".."}`, the name it was stored under                          |
+| `plugins.install`                                          | `{"path": ".."}`                              | `{"id": ".."}`, the plugin it listed                                    |
 | `ai.status`                                                |                                               | `{"enabled": bool, "mcp": bool}`, the toggles rox-mcp checks            |
 | `subscribe`                                                |                                               | the pushed frames start: `{"subscribed": true}`                          |
 | `debug.settings`                                           |                                               | the settings as saved                                                  |
@@ -95,6 +97,13 @@ seconds and at least a quarter second apart. Status carries the section as `ab`:
 null with nothing marked, `{"a": secs}` while the cycle waits for B, and both ends
 once it repeats. A skip or a seek outside the section clears it, and the change
 shows up as an `event.playback` frame.
+
+`workspace.import` and `plugins.install` take an absolute path to a `.roxw` or a
+`.roxp` and do what a double-click on the file does. An imported workspace joins
+the saved list under a name no other workspace holds, and the front window offers it
+in the apply confirm. Nothing changes until someone answers that. An installed plugin
+lists on the Plugins page, switched off. A file rox refuses comes back as `-32000`
+with the reason.
 
 Search uses the panels' query language: free terms match title, artist, album artist,
 album, and genre, while a pin like `artist:name` or `year:1990` narrows one field. The
@@ -257,6 +266,9 @@ commands:
   task-stop <pass>           stop a running pass at the next file
   watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
+  workspace import <file>    store a .roxw in the workspace list and offer
+                             it for applying in the front window
+  plugin install <file>      list a .roxp on the Plugins page, switched off
   raw <method> [json]        any method, params as one JSON argument
 
 drive commands (the debug scope: work the UI without OS input tools):

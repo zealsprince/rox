@@ -75,6 +75,28 @@ pub fn portable_data_dir() -> Option<PathBuf> {
     exe_dir().map(|dir| dir.join(PORTABLE_DATA))
 }
 
+/// The launch arguments that can be flags: every one before the first
+/// `rox://` link. A link reaches rox from a browser or another app, and on
+/// Windows it arrives as `"%1"`, so a crafted one can carry arguments after
+/// it. None of those is ever read as a flag.
+pub fn flag_args() -> Vec<String> {
+    flags_before_link(std::env::args().skip(1))
+}
+
+fn flags_before_link(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    args.into_iter()
+        .take_while(|arg| {
+            !arg.get(..6)
+                .is_some_and(|head| head.eq_ignore_ascii_case("rox://"))
+        })
+        .collect()
+}
+
+/// Whether `flag` is among [`flag_args`].
+pub fn launch_flag(flag: &str) -> bool {
+    flag_args().iter().any(|arg| arg == flag)
+}
+
 /// The data root and whether it's portable, decided once per process so a
 /// mid-run toggle can't split the stores.
 static DATA_DIR: OnceLock<(PathBuf, bool)> = OnceLock::new();
@@ -82,14 +104,14 @@ static DATA_DIR: OnceLock<(PathBuf, bool)> = OnceLock::new();
 fn resolve_data_dir() -> (PathBuf, bool) {
     // `--fresh` wipes a scratch data dir so each launch is a real first run.
     // Debug builds only, so it never becomes user-facing.
-    if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--fresh") {
+    if cfg!(debug_assertions) && launch_flag("--fresh") {
         let dir = std::env::temp_dir().join("rox-fresh");
         let _ = std::fs::remove_dir_all(&dir);
         return (dir, false);
     }
 
-    let portable = std::env::args().any(|arg| arg == "--portable")
-        || portable_marker().is_some_and(|marker| marker.exists());
+    let portable =
+        launch_flag("--portable") || portable_marker().is_some_and(|marker| marker.exists());
     choose_data_dir(portable, exe_dir().as_deref())
 }
 
@@ -3886,6 +3908,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_from_a_link_on_is_a_flag() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            flags_before_link(args(&[
+                "--portable",
+                "ROX://install/x",
+                "--fresh",
+                "--portable"
+            ])),
+            args(&["--portable"])
+        );
+        assert_eq!(flags_before_link(args(&["--fresh"])), args(&["--fresh"]));
+        assert!(flags_before_link(args(&["rox://x", "--new-instance"])).is_empty());
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rox-portable-{tag}-{}", std::process::id()));

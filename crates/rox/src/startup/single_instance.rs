@@ -23,7 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::App;
-use rox_library::open_files::LaunchMode;
+use rox_library::open_files::{Document, LaunchArgs, LaunchMode};
 use serde::{Deserialize, Serialize};
 
 /// What a second launch hands over. The files are already filtered to audio
@@ -35,13 +35,31 @@ use serde::{Deserialize, Serialize};
 struct Launch {
     enqueue: bool,
     files: Vec<PathBuf>,
+    /// Document paths made absolute, links as written. Defaulted so a 1.x
+    /// launch, which never sends it, still reads.
+    #[serde(default)]
+    documents: Vec<String>,
 }
 
 impl Launch {
-    fn new(mode: LaunchMode, files: &[PathBuf]) -> Launch {
+    fn new(args: &LaunchArgs) -> Launch {
+        let documents = args
+            .documents
+            .iter()
+            .filter_map(|document| match document {
+                // A link is never a path: `absolute` on Windows would join it
+                // onto the working directory.
+                Document::Link(link) => Some(link.clone()),
+                Document::Workspace(path) | Document::Plugin(path) | Document::Object(path) => {
+                    absolute(path).to_str().map(str::to_owned)
+                }
+            })
+            .collect();
+
         Launch {
-            enqueue: mode == LaunchMode::Enqueue,
-            files: files.iter().map(|p| absolute(p)).collect(),
+            enqueue: args.mode == LaunchMode::Enqueue,
+            files: args.files.iter().map(|p| absolute(p)).collect(),
+            documents,
         }
     }
 }
@@ -84,7 +102,7 @@ pub struct Server {
 /// the app and hand the server to [`serve`]; `None` means a running rox took
 /// this launch and there's nothing left for this process to do.
 #[cfg(unix)]
-pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
+pub fn claim(args: &LaunchArgs) -> Option<Server> {
     use std::io::Write as _;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -96,11 +114,11 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
             inode: None,
         })
     };
-    if std::env::args().any(|arg| arg == "--new-instance") {
+    if rox_core::settings::launch_flag("--new-instance") {
         return unguarded();
     }
     let path = socket_path();
-    let launch = Launch::new(mode, files);
+    let launch = Launch::new(args);
     if let Ok(mut stream) = UnixStream::connect(&path) {
         let payload = serde_json::to_vec(&launch).unwrap_or_default();
         // The write is the whole handoff; closing our end is the EOF the
@@ -140,7 +158,7 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
 }
 
 #[cfg(windows)]
-pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
+pub fn claim(args: &LaunchArgs) -> Option<Server> {
     use rox_ipc::instance::Claim;
 
     let unguarded = |reason: Option<String>| {
@@ -149,11 +167,11 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
             unguarded: reason,
         })
     };
-    if std::env::args().any(|arg| arg == "--new-instance") {
+    if rox_core::settings::launch_flag("--new-instance") {
         return unguarded(None);
     }
 
-    let payload = serde_json::to_vec(&Launch::new(mode, files)).unwrap_or_default();
+    let payload = serde_json::to_vec(&Launch::new(args)).unwrap_or_default();
     match rox_ipc::instance::claim(&rox_core::settings::data_dir(), &payload) {
         Claim::Owner(listener) => Some(Server {
             listener: Some(listener),
@@ -167,7 +185,7 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub fn claim(_mode: LaunchMode, _files: &[PathBuf]) -> Option<Server> {
+pub fn claim(_args: &LaunchArgs) -> Option<Server> {
     Some(Server {})
 }
 
@@ -261,9 +279,9 @@ pub fn serve(server: Server, cx: &mut App) {
 #[cfg(not(any(unix, windows)))]
 pub fn serve(_server: Server, _cx: &mut App) {}
 
-/// A second launch, applied to this one. The window comes back first, out of
-/// the tray when residency swallowed it or raised when it's only buried, then
-/// the files go to whatever workspace is now front.
+/// A second launch, applied to this one. Split and filtered again on this
+/// side: what arrives is only as trustworthy as the socket, and re-running
+/// the resolve costs nothing.
 #[cfg(any(unix, windows))]
 fn adopt(launch: Launch, cx: &mut App) {
     let mode = if launch.enqueue {
@@ -271,9 +289,32 @@ fn adopt(launch: Launch, cx: &mut App) {
     } else {
         LaunchMode::Play
     };
-    // Filtered again on this side: what arrives is only as trustworthy as the
-    // socket, and re-running the resolve costs nothing.
+    let (documents, _) = rox_library::open_files::split_documents(launch.documents);
     let paths = rox_library::open_files::resolve_audio_paths(launch.files);
+
+    receive(mode, paths, documents, cx);
+}
+
+/// Files and documents from outside this process, opened in it. The window
+/// comes back first, out of the tray when residency swallowed it or raised
+/// when it's only buried, then the documents go to their routes and the
+/// files to whatever workspace is now front.
+#[cfg(any(unix, windows))]
+pub(crate) fn receive(
+    mode: LaunchMode,
+    paths: Vec<PathBuf>,
+    documents: Vec<Document>,
+    cx: &mut App,
+) {
+    raise(cx);
+    crate::documents::open(documents, cx);
+    if let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) {
+        crate::workspace::play_launch_paths(&state, mode, paths, cx);
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn raise(cx: &mut App) {
     match rox_panel_api::windows::front_workspace(cx) {
         // Best effort on Wayland: raising takes an activation token the
         // compositor can reject, and the launcher's token died with the
@@ -284,9 +325,6 @@ fn adopt(launch: Launch, cx: &mut App) {
                 .ok();
         }
         None => crate::integrations::tray::reopen(cx),
-    }
-    if let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) {
-        crate::workspace::play_launch_paths(&state, mode, paths, cx);
     }
 }
 
@@ -304,4 +342,31 @@ fn socket_path() -> PathBuf {
     data_dir.hash(&mut hasher);
 
     rox_ipc::socket_in(&data_dir, &format!("rox-{:016x}.sock", hasher.finish()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_without_documents_still_reads() {
+        let payload = br#"{"enqueue": true, "files": ["/m/one.flac"]}"#;
+
+        let launch: Launch = serde_json::from_slice(payload).unwrap();
+
+        assert!(launch.enqueue);
+        assert_eq!(launch.files, [PathBuf::from("/m/one.flac")]);
+        assert!(launch.documents.is_empty());
+    }
+
+    #[test]
+    fn a_link_crosses_as_written() {
+        let args = LaunchArgs {
+            mode: LaunchMode::Play,
+            files: Vec::new(),
+            documents: vec![Document::Link("rox://install/x".into())],
+        };
+
+        assert_eq!(Launch::new(&args).documents, ["rox://install/x"]);
+    }
 }

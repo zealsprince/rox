@@ -15,6 +15,7 @@ mod console_window;
 mod convert;
 mod convert_dialog;
 mod cover;
+mod documents;
 mod duplicates;
 mod embeddings;
 mod eq_presets;
@@ -84,7 +85,7 @@ use workspace::Workspace;
 pub(crate) fn window_size_override() -> Option<gpui::Size<gpui::Pixels>> {
     static SIZE: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
     SIZE.get_or_init(|| {
-        let mut args = std::env::args().skip(1);
+        let mut args = rox_core::settings::flag_args().into_iter();
         while let Some(arg) = args.next() {
             if arg == "--window-size" {
                 let value = args.next()?;
@@ -196,6 +197,8 @@ fn open_workspace_window(
         if let Some((mode, paths)) = open {
             workspace.update(cx, |ws, cx| ws.open_paths(mode, paths, cx));
         }
+        // Whatever arrived while no workspace was up to take it.
+        documents::drain(cx);
         cx.new(|cx| Root::new(workspace, window, cx))
     })
     .expect("failed to open the main window");
@@ -304,15 +307,48 @@ fn install_gpu_lost_restart() {
         };
         log::error!("restarting to get a fresh GPU device");
         log::logger().flush();
-        let err = std::process::Command::new(exe)
-            .args(std::env::args_os().skip(1))
-            .exec();
+        // Documents stay behind, or the restart opens them a second time.
+        let args = std::env::args_os()
+            .skip(1)
+            .filter(|arg| !rox_library::open_files::is_document_arg(arg));
+        let err = std::process::Command::new(exe).args(args).exec();
         log::error!("restart failed: {err}");
     });
 }
 
 #[cfg(not(unix))]
 fn install_gpu_lost_restart() {}
+
+/// The macOS open events, applied on the foreground the way a second launch
+/// is. Each URL decodes to a path first, and a `rox://` link passes as
+/// written.
+#[cfg(target_os = "macos")]
+fn serve_open_urls(urls: async_channel::Receiver<Vec<String>>, cx: &mut App) {
+    use rox_library::open_files;
+
+    cx.spawn(async move |cx| {
+        while let Ok(urls) = urls.recv().await {
+            let paths = urls
+                .into_iter()
+                .map(|url| open_files::from_file_url(url.into()));
+            let (documents, rest) = open_files::split_documents(paths);
+            let files = open_files::resolve_audio_paths(rest);
+
+            let received = cx.update(|cx| {
+                startup::single_instance::receive(
+                    open_files::LaunchMode::Play,
+                    files,
+                    documents,
+                    cx,
+                );
+            });
+            if received.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
 
 fn main() {
     // First: mallopt decides arena policy as threads first contend.
@@ -323,10 +359,10 @@ fn main() {
     set_workspace_migrator(workspaces::migrate_saved);
     install_openers();
     // Before the app boots, so the file filter reads the real argv, not gpui's.
-    let (launch_mode, launch_files) = rox_library::open_files::from_args();
+    let launch = rox_library::open_files::from_args();
     // One rox per data directory: a running one takes this launch, and this
     // process exits before opening a compositor connection.
-    let Some(instance) = startup::single_instance::claim(launch_mode, &launch_files) else {
+    let Some(instance) = startup::single_instance::claim(&launch) else {
         return;
     };
     let app = Application::new().with_assets(Assets);
@@ -336,10 +372,23 @@ fn main() {
             integrations::tray::reopen(cx);
         }
     });
+    // macOS hands files and links over as open events, not arguments.
+    // The callback has no app context and can fire before launch finishes,
+    // so the URLs wait on a channel for the foreground drain.
+    #[cfg(target_os = "macos")]
+    let opened = {
+        let (tx, rx) = async_channel::unbounded::<Vec<String>>();
+        app.on_open_urls(move |urls| {
+            let _ = tx.send_blocking(urls);
+        });
+        rx
+    };
     app.run(move |cx: &mut App| {
         logging::init();
         // Early, so a launch arriving mid-startup queues instead of starting its own rox.
         startup::single_instance::serve(instance, cx);
+        #[cfg(target_os = "macos")]
+        serve_open_urls(opened, cx);
         // Recorded before anything can write a settings file.
         note_first_run();
         // Version 1's saved workspaces, one JSON file each, become archives.
@@ -443,8 +492,9 @@ fn main() {
         startup::updates::check_on_launch(cx);
         // On KWin the placement script loads while the first window maps.
         integrations::placement::start(cx);
-        let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));
+        let open = (!launch.files.is_empty()).then_some((launch.mode, launch.files));
         open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
+        documents::open(launch.documents, cx);
         // The macOS menu bar needs a workspace to act on. A no-op elsewhere.
         workspace::native_menu::rebuild(cx);
         cx.activate(true);

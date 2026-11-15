@@ -1668,13 +1668,10 @@ impl SettingsWindow {
                         return;
                     }
                 };
-                let card = crate::workspaces::ApplyCard::of(&bundle);
-                if !card.shaders.is_empty() || card.heavy.is_some() {
-                    this.pending = Some(Pending::ApplyWorkspace {
-                        card,
-                        imported: true,
-                    });
-                }
+                this.pending = Some(Pending::ApplyWorkspace {
+                    card: crate::workspaces::ApplyCard::of(&bundle),
+                    imported: true,
+                });
                 this.workspace_authors = crate::workspaces::saved_authors();
                 cx.notify();
             })

@@ -5097,9 +5097,8 @@ impl Workspace {
     }
 
     /// The import half, for any way a file arrives: stored under a deduped
-    /// name, then offered through the apply confirm when it brings code
-    /// nobody here agreed to or more bytes than a look usually carries.
-    /// A refused file says why in a toast.
+    /// name, then offered through the apply confirm. A refused file says why
+    /// in a toast.
     pub(crate) fn import_workspace_file(
         &mut self,
         path: PathBuf,
@@ -5124,13 +5123,13 @@ impl Workspace {
             }
         };
 
-        let card = crate::workspaces::ApplyCard::of(&bundle);
-        if !card.shaders.is_empty() || card.heavy.is_some() {
-            self.layout_dialog = Some(LayoutDialog::ConfirmApplyWorkspace {
-                card,
-                imported: true,
-            });
-        }
+        // Always offered, whatever it holds: a file from outside never
+        // applies by itself, and the card is the only answer a double-click
+        // gets.
+        self.layout_dialog = Some(LayoutDialog::ConfirmApplyWorkspace {
+            card: crate::workspaces::ApplyCard::of(&bundle),
+            imported: true,
+        });
         cx.notify();
         native_menu::rebuild(cx);
     }

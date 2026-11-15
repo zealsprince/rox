@@ -21,7 +21,9 @@ use gpui::{App, SharedString};
 use rox_core::settings::assets as asset_store;
 use rox_core::settings::panel_presets::{self, PresetEntry, PresetScope};
 use rox_core::settings::roxw::{self, Drained};
-use rox_core::settings::{self, Asset, NamedShader, Settings, WORKSPACE_VERSION, WorkspaceBundle};
+use rox_core::settings::{
+    self, Asset, LookState, NamedShader, Settings, WORKSPACE_VERSION, WorkspaceBundle,
+};
 use rox_design::assets;
 use rox_design::palette::{self, Palette};
 use rox_design::tokens;
@@ -879,6 +881,11 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     // Persisted up front; the live statics below only repaint.
     let persist = bundle.clone();
     Settings::update(move |s| persist.apply_to(s));
+    show_look(bundle, cx);
+}
+
+/// The live half of [`apply_look`], for a bundle already on disk.
+fn show_look(bundle: &WorkspaceBundle, cx: &mut App) {
     palette::set_palettes(
         Palette::from_map(&bundle.palette_dark),
         Palette::from_map_over(Palette::light(), &bundle.palette_light),
@@ -1173,6 +1180,153 @@ fn reload_if_active(paths: &[PathBuf], cx: &mut App) {
             file.display()
         ),
     }
+}
+
+/// What the live look watch makes of `workspace.json`'s text.
+enum LiveChange {
+    /// rox wrote it.
+    Own(Box<LookState>),
+    Edited(Box<LookState>),
+    /// Half-saved, or not a look at all. The live look stays.
+    Unreadable(String),
+}
+
+fn read_live(text: &str, own: impl Fn(&str) -> bool) -> LiveChange {
+    let look: LookState = match serde_json::from_str(text) {
+        Ok(look) => look,
+        Err(e) => return LiveChange::Unreadable(e.to_string()),
+    };
+
+    if own(text) {
+        return LiveChange::Own(Box::new(look));
+    }
+
+    if look.bundle.version > WORKSPACE_VERSION {
+        return LiveChange::Unreadable(format!(
+            "the look is version {}, newer than this build reads ({WORKSPACE_VERSION})",
+            look.bundle.version
+        ));
+    }
+
+    LiveChange::Edited(Box::new(look))
+}
+
+/// Each table entry whose file isn't in `dir` with the bytes it names. The
+/// look still applies around them, the way a missing image degrades.
+fn asset_problems(dir: &Path, table: &[Asset]) -> Vec<String> {
+    table
+        .iter()
+        .filter_map(|asset| {
+            if !asset_store::flat_name(&asset.file) {
+                return Some(format!("{:?} isn't a plain file name", asset.file));
+            }
+
+            match asset_store::sha256_file(&dir.join(&asset.file)) {
+                Ok((bytes, sha256)) if bytes == asset.bytes && sha256 == asset.sha256 => None,
+                Ok(_) => Some(format!("{} doesn't match its hash", asset.file)),
+                Err(e) => Some(e),
+            }
+        })
+        .collect()
+}
+
+/// The last dock dump the watch saw in the file. A hand edit rebuilds the
+/// dock only when this moved, since the dump rox writes back after a
+/// rebuild never reads identical to the one typed in.
+struct LiveSeen {
+    layout: Option<serde_json::Value>,
+}
+
+/// Re-apply the live look when `workspace.json` changes from outside rox
+/// (ADR 22). Its folder is watched, since an editor that saves by rename
+/// replaces the file a direct watch would hold.
+pub(crate) fn watch_live(cx: &mut App) {
+    use notify_debouncer_full::notify::{EventKind, RecursiveMode};
+    use notify_debouncer_full::{DebounceEventResult, new_debouncer};
+
+    let file = settings::look_path();
+    let Some(dir) = file.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    let (tx, events) = async_channel::unbounded::<()>();
+
+    let watched = file.clone();
+    let mut debouncer =
+        match new_debouncer(WATCH_DEBOUNCE, None, move |result: DebounceEventResult| {
+            let Ok(batch) = result else { return };
+            let touched = batch
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)))
+                .any(|event| event.paths.contains(&watched));
+            if touched {
+                let _ = tx.send_blocking(());
+            }
+        }) {
+            Ok(debouncer) => debouncer,
+            Err(e) => {
+                log::warn!("look watch: not watching: {e}");
+                return;
+            }
+        };
+    if let Err(e) = debouncer.watch(&dir, RecursiveMode::NonRecursive) {
+        log::warn!("look watch: not watching {}: {e}", dir.display());
+        return;
+    }
+    log::info!("look watch: watching {}", file.display());
+
+    let mut seen = LiveSeen {
+        layout: Settings::load().look.layout,
+    };
+    cx.spawn(async move |cx| {
+        let _hold = debouncer;
+        while let Ok(()) = events.recv().await {
+            if cx.update(|cx| reload_live(&file, &mut seen, cx)).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+fn reload_live(file: &Path, seen: &mut LiveSeen, cx: &mut App) {
+    // Gone is the same as unreadable: the live look stays standing.
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return;
+    };
+
+    let edited = match read_live(&text, settings::live_look::is_own_write) {
+        LiveChange::Own(look) => {
+            seen.layout = look.layout;
+            return;
+        }
+        LiveChange::Unreadable(e) => {
+            log::warn!(
+                "look: {} changed on disk but doesn't read, keeping the current look: {e}",
+                file.display()
+            );
+            return;
+        }
+        LiveChange::Edited(look) => look,
+    };
+    log::info!("look: {} changed on disk, re-applying", file.display());
+    settings::live_look::forget_own_writes();
+
+    // Through the load, which clamps what a hand edit can push out of range.
+    // Everything here is already on disk, so nothing below writes the look
+    // back unless a window rebuilds its dock.
+    let look = Settings::load().look;
+    let dock_moved = edited.layout != seen.layout;
+    seen.layout = edited.layout;
+
+    for problem in asset_problems(&asset_store::dir(), &look.bundle.assets) {
+        log::warn!("look: {problem}");
+    }
+    asset_store::note(look.bundle.assets.clone());
+
+    show_look(&look.bundle, cx);
+    settings::note_shader_pool(look.bundle.shaders.clone());
+    settings::note_backdrop_shader(look.bundle.backdrop_shader.clone());
+    crate::workspace::reload_live_look_in_front(&look, dock_moved, cx);
 }
 
 #[cfg(test)]
@@ -2284,6 +2438,61 @@ mod tests {
                 .map(String::as_str),
             Some("#222222")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_live_watch_skips_its_own_write() {
+        let text = r##"{"bundle":{"palette_dark":{"accent":"#112233"}}}"##;
+
+        assert!(matches!(read_live(text, |_| true), LiveChange::Own(_)));
+        match read_live(text, |_| false) {
+            LiveChange::Edited(look) => assert_eq!(
+                look.bundle.palette_dark.get("accent").map(String::as_str),
+                Some("#112233")
+            ),
+            _ => panic!("an outside edit should re-apply"),
+        }
+    }
+
+    #[test]
+    fn the_live_watch_leaves_a_half_saved_or_newer_file_alone() {
+        let half = r##"{"bundle":{"palette_dark":{"accent":"#1122"##;
+        assert!(matches!(
+            read_live(half, |_| false),
+            LiveChange::Unreadable(_)
+        ));
+
+        let newer = format!(r#"{{"bundle":{{"version":{}}}}}"#, WORKSPACE_VERSION + 1);
+        match read_live(&newer, |_| false) {
+            LiveChange::Unreadable(e) => assert!(e.contains("newer"), "{e}"),
+            _ => panic!("a newer look should be refused"),
+        }
+    }
+
+    #[test]
+    fn an_edited_table_names_the_files_that_dont_match() {
+        let dir = scratch("live-assets");
+        std::fs::write(dir.join("plate.png"), b"plate").unwrap();
+        std::fs::write(dir.join("moved.png"), b"other bytes").unwrap();
+
+        let entry = |file: &str, bytes: &[u8]| Asset {
+            id: file.split('.').next().unwrap().to_string(),
+            file: file.to_string(),
+            sha256: asset_store::sha256_hex(bytes),
+            bytes: bytes.len() as u64,
+            ..Asset::default()
+        };
+        let table = [
+            entry("plate.png", b"plate"),
+            entry("moved.png", b"moved"),
+            entry("gone.png", b"gone"),
+            entry("../up.png", b"up"),
+        ];
+
+        let problems = asset_problems(&dir, &table);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems.iter().all(|p| !p.contains("plate.png")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

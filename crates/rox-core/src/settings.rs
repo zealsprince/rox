@@ -7,11 +7,13 @@
 //!
 //! `layouts` holds the named dock presets, `panel_presets` the named single
 //! panels. `assets` keeps the live workspace's files and `roxw` reads and
-//! writes workspace archives. The settings window lives up in rox, with the
-//! widgets.
+//! writes workspace archives. `live_look` tells rox's own writes to
+//! `workspace.json` from a hand edit. The settings window lives up in rox,
+//! with the widgets.
 
 pub mod assets;
 pub mod layouts;
+pub mod live_look;
 pub mod panel_presets;
 pub mod roxw;
 
@@ -266,6 +268,16 @@ pub fn safe_file_stem(name: &str, fallback: &str) -> String {
 /// Write pretty JSON through a sibling temp file and rename, so a crash
 /// mid-write can't truncate the file. Failures log under `what` and move on.
 pub fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bool {
+    write_json_noted(path, value, what, |_| {})
+}
+
+/// [`write_json`], handing the text to `note` before it lands.
+fn write_json_noted<T: Serialize>(
+    path: &Path,
+    value: &T,
+    what: &str,
+    note: impl FnOnce(&str),
+) -> bool {
     let text = match serde_json::to_string_pretty(value) {
         Ok(text) => text,
         // A non-finite f32 fails here. Keep the old file rather than panic.
@@ -280,6 +292,8 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bool {
         log::warn!("{what}: creating {}: {e}", dir.display());
         return false;
     }
+    note(&text);
+
     let tmp = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp, &text) {
         log::warn!("{what}: writing {}: {e}", tmp.display());
@@ -402,8 +416,20 @@ fn write_shard<T: Serialize>(
     forced: bool,
     value: &T,
 ) {
+    write_shard_noted(path, what, before, after, forced, value, |_| {});
+}
+
+fn write_shard_noted<T: Serialize>(
+    path: PathBuf,
+    what: &str,
+    before: &Option<String>,
+    after: &Option<String>,
+    forced: bool,
+    value: &T,
+    note: impl FnOnce(&str),
+) {
     if forced || before != after || !path.exists() {
-        write_json(&path, value, what);
+        write_json_noted(&path, value, what, note);
     }
 }
 
@@ -3677,7 +3703,7 @@ impl Settings {
         {
             Self::migrate_split(&value, text);
         }
-        settings.look = load_shard(&look_path(), "look", &value, LookState::from_legacy);
+        settings.look = live_look::load(&look_path(), &value);
         // An edit's before and after prints both come from the drained look,
         // so without the force a no-op edit leaves the inline images on disk.
         settings.migrated |= Self::drain_v1_look(&mut settings.look);
@@ -3847,13 +3873,15 @@ impl Settings {
             forced,
             self,
         );
-        write_shard(
+        // Noted, so the live look watch knows its own save from a hand edit.
+        write_shard_noted(
             look_path(),
             "look",
             &before.look,
             &after.look,
             forced,
             &self.look,
+            live_look::note_written,
         );
         write_shard(
             windows_path(),

@@ -249,6 +249,16 @@ naming a file outside the folder.
   `roxw::WARN_BYTES` (256 MiB) unpacked, opens the apply confirm, whose card then shows
   the size. A heavy workspace still imports.
 
+`workspace.json` is the file to hand-edit (ADR 22). `workspaces::watch_live` watches its
+folder, and an outside edit re-applies the look after a 500 ms debounce: the palettes,
+appearance, pools and asset table go live, and the front window rebuilds its dock only
+when the file's `layout` dump moved. rox records the text of each of its own writes in
+`rox_core::settings::live_look`, so its own saves never come back as a reload. A file
+that doesn't parse or carries a newer version is logged and left alone, and a load that
+meets one keeps the last look that parsed, so a half-saved edit never resets the look. A
+table entry whose file is missing from `assets/` or doesn't match its hash is logged,
+and the look applies without it.
+
 A pool shader's `// @asset name: file` line resolves through its pool entry: the entry's
 `ShaderAsset` maps `file` to an asset id and the store gives the bytes. A shader read
 from a file falls back to a file beside it. Ejecting a pool shader writes only its
@@ -394,6 +404,7 @@ wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore)
 `presets_elsewhere`, the version 1 folder migration). Workspace files span
 `crates/rox-core/src/settings/roxw.rs` (the archive, `upgrade`, `read_v1`),
 `crates/rox-core/src/settings/assets.rs` (the asset store, `swap_in`, `rev`),
+`crates/rox-core/src/settings/live_look.rs` (own writes, the last good look),
 `crates/rox-package/src/lib.rs` (the zip rules), `crates/rox-design/src/assets.rs`
 (`shipped_workspaces`, `shipped_workspace_asset`), and
 `crates/rox-panel-api/src/panel/shader/chain.rs` (`@asset` resolution). Each panel's config is defined beside it under

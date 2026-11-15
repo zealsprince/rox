@@ -1105,6 +1105,27 @@ pub(crate) fn apply_workspace_to_front(name: &str, cx: &mut App) {
     }
 }
 
+/// [`Workspace::reload_live_look`] on the frontmost workspace window, the
+/// one a whole-look apply from app level lands on.
+pub(crate) fn reload_live_look_in_front(
+    look: &rox_core::settings::LookState,
+    dock_moved: bool,
+    cx: &mut App,
+) {
+    let found = cx
+        .default_global::<WorkspaceWindows>()
+        .open
+        .iter()
+        .find_map(|w| Some((w.handle, typed_workspace(&w.workspace)?)));
+    if let Some((handle, ws)) = found {
+        let _ = handle.update(cx, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.reload_live_look(look, dock_moved, window, cx)
+            });
+        });
+    }
+}
+
 /// Whether `window` is one of the tracked workspace windows, told apart
 /// from settings, popouts, and editors. The Window Controls close button
 /// only runs the workspace teardown for these.
@@ -4192,12 +4213,13 @@ impl Workspace {
         // the app rather than any window: the drain holds its own state
         // clone, so a close to the tray leaves the socket serving. A reopen
         // adopts the same entities the running server is already bound to,
-        // so only the first ever open binds. The workspaces disk watch is
-        // app-level for the same reason and starts on the same edge.
+        // so only the first ever open binds. The workspace disk watches are
+        // app-level for the same reason and start on the same edge.
         if is_primary && !adopted {
             crate::integrations::ipc::serve(&state, cx);
             crate::integrations::broadcast::start(&state, cx);
             crate::workspaces::watch(cx);
+            crate::workspaces::watch_live(cx);
         }
 
         // The primary window owns the OS media service: a session the tray
@@ -4971,6 +4993,39 @@ impl Workspace {
         }
         cx.notify();
         true
+    }
+
+    /// The live look's file changed outside rox, and this window takes the
+    /// parts of it a window holds. The dock rebuilds only when the file's
+    /// dump moved, and from that dump the way a launch restores it, so a
+    /// palette edit never resets an arrangement.
+    pub(crate) fn reload_live_look(
+        &mut self,
+        look: &rox_core::settings::LookState,
+        dock_moved: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.signals.set_pool(look.bundle.signals.clone());
+        self.primary_layout = look.bundle.primary_layout.clone();
+        self.mini_layout = look.bundle.mini_layout.clone();
+
+        if dock_moved {
+            // The file already holds every layout's working copy, so the
+            // outgoing dock mustn't be stashed over the one it names.
+            self.active_layout = None;
+
+            let dump = look
+                .layout
+                .clone()
+                .and_then(|value| serde_json::from_value::<DockAreaState>(value).ok());
+            if !dump.is_some_and(|dump| self.apply_layout(dump, window, cx)) {
+                log::warn!("workspace: the edited layout doesn't restore, keeping the dock");
+            }
+        }
+
+        self.active_layout = look.active_layout.clone();
+        cx.notify();
     }
 
     /// The mini-player button's config, so the settings window can push a

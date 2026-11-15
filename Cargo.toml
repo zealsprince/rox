@@ -21,6 +21,7 @@ members = [
     "crates/rox-panels",
     "crates/rox-plugins",
     "crates/rox-romanize",
+    "crates/rox-scene",
     "crates/rox-services",
     "crates/rox-viz",
 ]

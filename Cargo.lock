@@ -7281,6 +7281,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rox-scene"
+version = "1.35.1"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rox-services"
 version = "1.35.1"
 dependencies = [

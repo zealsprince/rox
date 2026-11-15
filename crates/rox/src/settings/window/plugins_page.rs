@@ -493,6 +493,11 @@ impl SettingsWindow {
         self.plugins_enabled = on;
         Settings::update(move |s| s.plugins_enabled = on);
         settings::set_plugins_enabled(on, cx);
+        // The folder watch starts only once plugins are on, so whatever
+        // landed before that is found here.
+        if on {
+            host::rescan(cx);
+        }
         host::apply(cx);
         cx.notify();
     }

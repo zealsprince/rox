@@ -215,6 +215,7 @@ jobs:
           cp crates/rox/assets/app/rox-music.svg "$staging/rox.svg"
           cp crates/rox/assets/app/rox.png "$staging/"
           cp crates/rox/assets/app/rox.metainfo.xml "$staging/"
+          cp crates/rox/assets/app/com.zealsprince.rox.xml "$staging/"
           cp scripts/dist/README.txt "$staging/"
           cp LICENSE "$staging/"
           tar czf "$staging.tar.gz" "$staging"

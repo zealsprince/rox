@@ -37,6 +37,8 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Tells Explorer to reread the file types below once setup finishes.
+ChangesAssociations=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -46,6 +48,25 @@ Source: "..\target\release\rox.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Beside the app binary, where the MCP settings page says it is.
 Source: "..\target\release\rox-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+
+[Registry]
+; The same keys startup/file_types.rs heals under HKCU at launch, since a
+; self-updated install never runs this script again. Keep the two in step.
+Root: HKA; Subkey: "Software\Classes\.roxw"; ValueType: string; ValueName: ""; ValueData: "rox.workspace"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.workspace"; ValueType: string; ValueName: ""; ValueData: "rox workspace"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.workspace\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\rox.exe,0"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.workspace\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\rox.exe"" ""%1"""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\.roxp"; ValueType: string; ValueName: ""; ValueData: "rox.plugin"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.plugin"; ValueType: string; ValueName: ""; ValueData: "rox plugin"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.plugin\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\rox.exe,0"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.plugin\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\rox.exe"" ""%1"""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\.roxo"; ValueType: string; ValueName: ""; ValueData: "rox.object"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.object"; ValueType: string; ValueName: ""; ValueData: "rox object"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.object\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\rox.exe,0"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox.object\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\rox.exe"" ""%1"""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox"; ValueType: string; ValueName: ""; ValueData: "URL:rox"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\rox\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\rox.exe"" ""%1"""; Flags: uninsdeletekey
 
 [Icons]
 Name: "{autoprograms}\rox"; Filename: "{app}\rox.exe"

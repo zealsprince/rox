@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The document types rox opens, installed under share/mime/packages by every
+  Linux channel. The file name has to start with the app id: Flatpak exports
+  only files named that way.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-rox-workspace">
+    <comment>rox workspace</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.roxw"/>
+  </mime-type>
+  <mime-type type="application/x-rox-plugin">
+    <comment>rox plugin</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.roxp"/>
+  </mime-type>
+  <mime-type type="application/x-rox-object">
+    <comment>rox object</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.roxo"/>
+  </mime-type>
+</mime-info>

@@ -1,8 +1,8 @@
 //! The AppImage's menu entry. Packages register with the desktop when they
 //! install; an AppImage is one self-mounting file, so nothing tells the app
-//! menu it exists. This module writes the launcher entry and the logo into
-//! the user's XDG data folder and nowhere else, and removes the same two
-//! files.
+//! menu it exists. This module writes the launcher entry, the logo and the
+//! document types into the user's XDG data folder and nowhere else, and
+//! removes the same three files.
 //!
 //! The entry names the .AppImage by absolute path, and people move that
 //! file, so [`heal`] compares the entry's `Exec=` against `$APPIMAGE` at each
@@ -20,6 +20,9 @@ use rox_core::settings::Settings;
 
 /// The shipped entry; only its `Exec=` and `Icon=` lines are rewritten.
 const TEMPLATE: &str = include_str!("../../assets/app/rox.desktop");
+
+/// The shared-mime-info types the entry's `MimeType=` names, installed as is.
+const MIME_TYPES: &str = include_str!("../../assets/app/com.zealsprince.rox.xml");
 
 const ENTRY_STEM: &str = install::APP_ID_RDNS;
 
@@ -56,6 +59,18 @@ impl Layout {
         self.data_home
             .join("icons/hicolor/scalable/apps")
             .join(format!("{ENTRY_STEM}.svg"))
+    }
+
+    fn mime(&self) -> PathBuf {
+        self.data_home.join("mime")
+    }
+
+    /// shared-mime-info's source folder, which `update-mime-database`
+    /// compiles into the cache beside it.
+    fn mime_types(&self) -> PathBuf {
+        self.mime()
+            .join("packages")
+            .join(format!("{ENTRY_STEM}.xml"))
     }
 }
 
@@ -120,17 +135,19 @@ fn install_in(layout: &Layout) -> Result<(), String> {
     let icon = rox_design::assets::Assets::get("app/rox-music.svg")
         .ok_or_else(|| "the logo is missing from the build".to_string())?;
     write_atomic(&layout.icon(), &icon.data)?;
+    write_atomic(&layout.mime_types(), MIME_TYPES.as_bytes())?;
     write_atomic(&layout.entry(), entry_text(&layout.appimage).as_bytes())?;
 
-    refresh_database(&layout.applications());
+    refresh_databases(layout);
     Ok(())
 }
 
 fn remove_in(layout: &Layout) -> Result<(), String> {
     remove_if_present(&layout.entry())?;
     remove_if_present(&layout.icon())?;
+    remove_if_present(&layout.mime_types())?;
 
-    refresh_database(&layout.applications());
+    refresh_databases(layout);
     Ok(())
 }
 
@@ -263,16 +280,22 @@ fn remove_if_present(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Rebuild the MIME cache "Open With" reads. Best effort.
-fn refresh_database(applications: &Path) {
+/// Rebuild the handler cache "Open With" reads and the type cache that maps
+/// a file to its type. Best effort, both of them.
+fn refresh_databases(layout: &Layout) {
     use std::process::{Command, Stdio};
 
-    let _ = Command::new("update-desktop-database")
-        .arg(applications)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let run = |tool: &str, dir: PathBuf| {
+        let _ = Command::new(tool)
+            .arg(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+
+    run("update-desktop-database", layout.applications());
+    run("update-mime-database", layout.mime());
 }
 
 #[cfg(test)]
@@ -304,9 +327,9 @@ mod tests {
 
         let entry = std::fs::read_to_string(layout.entry()).unwrap();
         let exec = format!("\"{}\"", layout.appimage.display());
-        assert!(entry.contains(&format!("Exec={exec} %F\n")), "{entry}");
+        assert!(entry.contains(&format!("Exec={exec} %U\n")), "{entry}");
         assert!(
-            entry.contains(&format!("Exec={exec} --enqueue %F\n")),
+            entry.contains(&format!("Exec={exec} --enqueue %U\n")),
             "{entry}"
         );
         assert!(entry.contains("Icon=com.zealsprince.rox\n"), "{entry}");
@@ -395,6 +418,69 @@ mod tests {
     }
 
     #[test]
+    fn install_writes_the_mime_file() {
+        let layout = scratch("mime");
+
+        install_in(&layout).unwrap();
+
+        let types = std::fs::read_to_string(
+            layout
+                .data_home
+                .join("mime/packages/com.zealsprince.rox.xml"),
+        )
+        .unwrap();
+        for (mime, glob) in [
+            ("application/x-rox-workspace", "*.roxw"),
+            ("application/x-rox-plugin", "*.roxp"),
+            ("application/x-rox-object", "*.roxo"),
+        ] {
+            assert!(
+                types.contains(&format!("<mime-type type=\"{mime}\">")),
+                "{types}"
+            );
+            assert!(
+                types.contains(&format!("<glob pattern=\"{glob}\"/>")),
+                "{types}"
+            );
+        }
+
+        // The entry claims the same types and the link scheme.
+        let entry = std::fs::read_to_string(layout.entry()).unwrap();
+        let claimed = entry
+            .lines()
+            .find_map(|line| line.strip_prefix("MimeType="))
+            .unwrap();
+        for mime in [
+            "application/x-rox-workspace",
+            "application/x-rox-plugin",
+            "application/x-rox-object",
+            "x-scheme-handler/rox",
+        ] {
+            assert!(claimed.split(';').any(|m| m == mime), "{claimed}");
+        }
+
+        cleanup(&layout);
+    }
+
+    #[test]
+    fn remove_takes_it_back() {
+        let layout = scratch("mime-remove");
+        install_in(&layout).unwrap();
+        assert!(layout.mime_types().exists());
+
+        remove_in(&layout).unwrap();
+        assert!(!layout.mime_types().exists());
+        assert!(
+            !layout
+                .mime_types()
+                .with_file_name("com.zealsprince.rox.xml.tmp")
+                .exists()
+        );
+
+        cleanup(&layout);
+    }
+
+    #[test]
     fn remove_leaves_nothing_behind() {
         let layout = scratch("remove");
         install_in(&layout).unwrap();
@@ -421,7 +507,7 @@ mod tests {
         let awkward = Path::new("/mnt/Zeal/100% \"mine\" $HOME/`rox`\\.AppImage");
         let text = entry_text(awkward);
         assert!(
-            text.contains(r#"Exec="/mnt/Zeal/100%% \"mine\" \$HOME/\`rox\`\\.AppImage" %F"#),
+            text.contains(r#"Exec="/mnt/Zeal/100%% \"mine\" \$HOME/\`rox\`\\.AppImage" %U"#),
             "{text}"
         );
         assert_eq!(installed_exec(&text).as_deref(), Some(awkward));

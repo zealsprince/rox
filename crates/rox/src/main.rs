@@ -430,6 +430,8 @@ fn main() {
         rox_services::sources::install_registry();
         // Repoint the menu entry of an AppImage that moved.
         startup::desktop_integration::heal();
+        #[cfg(windows)]
+        startup::file_types::heal();
         // Inline, not spawned: the update check below may start a download whose
         // staging this sweep must not race.
         startup::updater::clean_leftovers();

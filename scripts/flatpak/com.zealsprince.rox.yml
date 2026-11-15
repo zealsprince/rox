@@ -158,6 +158,7 @@ modules:
       - install -Dm644 crates/rox/assets/app/rox.desktop /app/share/applications/rox.desktop
       - install -Dm644 crates/rox/assets/app/rox-music.svg /app/share/icons/hicolor/scalable/apps/rox.svg
       - install -Dm644 crates/rox/assets/app/rox.metainfo.xml /app/share/metainfo/rox.metainfo.xml
+      - install -Dm644 crates/rox/assets/app/com.zealsprince.rox.xml /app/share/mime/packages/com.zealsprince.rox.xml
     sources:
       # The release as its tag and the commit the tag points at; Flathub
       # wants both. scripts/flatpak/prepare.sh rewrites the two lines for the

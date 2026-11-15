@@ -147,6 +147,11 @@ sed "s|rox\.desktop</launchable>|$APP_ID.desktop</launchable>|" \
     "$ASSETS/rox.metainfo.xml" \
     > "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
 
+# The document types. rox's own menu integration writes this file into the
+# user's data folder; this copy is for integrators that read the image.
+mkdir -p "$APPDIR/usr/share/mime/packages"
+cp "$ASSETS/$APP_ID.xml" "$APPDIR/usr/share/mime/packages/"
+
 cp LICENSE scripts/dist/README.txt "$APPDIR/"
 
 fetch "$APPIMAGETOOL_URL" "$APPIMAGETOOL_SHA" "$TOOLS/appimagetool-x86_64.AppImage"

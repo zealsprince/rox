@@ -21,6 +21,11 @@
     <name>Andrew Lake</name>
   </developer>
   <launchable type="desktop-id">rox.desktop</launchable>
+  <provides>
+    <mediatype>application/x-rox-workspace</mediatype>
+    <mediatype>application/x-rox-plugin</mediatype>
+    <mediatype>application/x-rox-object</mediatype>
+  </provides>
   <description>
     <p>
       rox is a desktop music player for people with large, carefully tagged

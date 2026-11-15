@@ -5,6 +5,9 @@
 
 pub mod about_window;
 pub mod desktop_integration;
+// The registry half is Windows-only; the key list is tested everywhere.
+#[cfg(any(windows, test))]
+pub mod file_types;
 pub mod single_instance;
 pub mod updater;
 pub mod updates;

@@ -42,7 +42,10 @@ Running
 Linux: run ./rox from this folder. For an app menu entry, edit the Exec=
 lines in rox.desktop to the binary's full path, then copy it to
 ~/.local/share/applications/ and rox.svg to
-~/.local/share/icons/hicolor/scalable/apps/.
+~/.local/share/icons/hicolor/scalable/apps/. For rox to open .roxw, .roxp
+and .roxo files, also copy com.zealsprince.rox.xml to
+~/.local/share/mime/packages/ and run
+update-mime-database ~/.local/share/mime.
 
 Windows: run rox.exe. If SmartScreen objects, choose More info, then Run
 anyway. If you'd rather have a Start menu entry and in-place upgrades, the

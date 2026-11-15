@@ -26,6 +26,7 @@ assets = [
     ["assets/app/rox-music.svg", "usr/share/icons/hicolor/scalable/apps/rox.svg", "644"],
     ["assets/app/rox.png", "usr/share/pixmaps/rox.png", "644"],
     ["assets/app/rox.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/app/com.zealsprince.rox.xml", "usr/share/mime/packages/", "644"],
 ]
 
 [dependencies]
@@ -134,6 +135,7 @@ windows-sys = { version = "0.61", features = [
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }
 

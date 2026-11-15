@@ -208,6 +208,7 @@
               install -Dm644 crates/rox/assets/app/rox-music.svg $out/share/icons/hicolor/scalable/apps/rox.svg
               install -Dm644 crates/rox/assets/app/rox.png $out/share/pixmaps/rox.png
               install -Dm644 crates/rox/assets/app/rox.metainfo.xml $out/share/metainfo/rox.metainfo.xml
+              install -Dm644 crates/rox/assets/app/com.zealsprince.rox.xml $out/share/mime/packages/com.zealsprince.rox.xml
             '';
 
             meta = {

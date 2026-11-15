@@ -1498,6 +1498,7 @@ settings-storage-waveforms = Formas de onda
     .description = La tira de picos de cada pista, guardada tras su primera reproducción; las que borres se vuelven a decodificar la próxima vez
 
 ## Settings: workspace
+settings-workspace-apply-failed = No se pudo aplicar { $name }
 settings-workspace-card-author = Autor
 settings-workspace-card-author-placeholder = Quién lo hizo
 settings-workspace-card-created = Creado el { $date }
@@ -1519,7 +1520,9 @@ settings-workspace-composition-hint = Los paneles de la ventana tal como están 
 settings-workspace-empty = Todavía no hay espacios de trabajo
 settings-workspace-global-presets-empty = Todavía no hay preajustes globales
 settings-workspace-global-presets-hint = Preajustes de panel guardados como globales. Todos los espacios de trabajo los muestran, y sus shaders viajan dentro de ellos
+settings-workspace-heavy = Ocupa { $size } MB al desempaquetarse, más de lo que suele llevar un aspecto
 settings-workspace-hint = Un espacio de trabajo es un aspecto entero: disposiciones, paleta, apariencia. Aplicar uno reemplaza los tres
+settings-workspace-import-failed = No se pudo importar { $file }
 settings-workspace-layout-name-placeholder = Nombre de la disposición
 settings-workspace-layouts-empty = Todavía no hay disposiciones
 settings-workspace-layouts-hint = Principal y mini son las dos entre las que alterna el botón de mini reproductor de la barra de menús

@@ -7,8 +7,9 @@ contract from
 duplicated panel is a second view with its own config over the same entities, a
 popped-out panel is a second OS window over those same entities, and a layout serializes
 to disk as a shareable artifact. Version-sensitive: the dock is the vendored
-`rox-dock` crate, layouts serialize as JSON with serde, the whole thing is gpui entities
-and windows.
+`rox-dock` crate, layouts serialize as JSON with serde, saved workspaces are zip archives
+written through `rox-package` on `zip` 9, and the whole thing is gpui entities and
+windows.
 
 ## The layout tree
 
@@ -183,8 +184,8 @@ sends a panel dragged out of the window straight into `pop_out_view`.
 
 A layout is one arrangement of panels and their configs. A workspace is the wider
 shareable unit: a `WorkspaceBundle` (`crates/rox-core/src/settings.rs`) holding a set of
-named layout presets with their mini-player roles, plus the palette and appearance applied
-over them.
+named layout presets with their mini-player roles, the palette and appearance applied
+over them, the signal and shader pools, and a table of the files the look carries.
 
 ```rust
 pub struct WorkspaceBundle {
@@ -197,16 +198,76 @@ pub struct WorkspaceBundle {
     pub palette_dark: BTreeMap<String, String>,  // role name -> #rrggbb
     pub palette_light: BTreeMap<String, String>,
     pub signals: Vec<Signal>,                     // the pool the looks route from
+    pub shaders: Vec<NamedShader>,                // the shader pool
+    pub assets: Vec<Asset>,                       // id, file, kind, sha256, bytes
+    pub meta: WorkspaceMeta,                      // the card: author, description, ...
+    pub post_shader: Option<PostShaderConfig>,
+    pub backdrop_shader: Option<PostShaderConfig>,
     pub appearance: AppearanceBundle,             // opacity, frame, fonts, rating style, ...
+    pub requires: Vec<String>,                    // plugin ids the panels came from
 }
 ```
 
-`WORKSPACE_VERSION` = 1, independent of the dock `LAYOUT_VERSION` the dumps inside use,
+`WORKSPACE_VERSION` = 2, independent of the dock `LAYOUT_VERSION` the dumps inside use,
 so a reader can refuse a bundle from a newer format while the layouts still validate on
-their own version. The bundle is pure look: applying it (`workspaces::apply_look`)
-replaces the palettes, signals, appearance, and both kinds of preset wholesale and leaves
-machine- and account-bound state (library folders, Last.fm, window frames) untouched, so
-a bundle travels between installs without dragging along another machine's setup.
+their own version. The bundle is pure look: applying it replaces the palettes, signals,
+shaders, appearance, files, and both kinds of preset wholesale and leaves machine- and
+account-bound state (library folders, Last.fm, window frames) untouched, so a bundle
+travels between installs without dragging along another machine's setup.
+
+Saved workspaces are `.roxw` files under `workspaces/` in the data directory, which makes
+the folder the collection: drop a shared file in and it's in the list, delete it and it's
+gone. A `.roxw` is a zip holding `workspace.json`, the bundle, and one flat
+`assets/<file>` per entry in the bundle's asset table. Other entries are ignored and
+dropped on the next save. `rox_core::settings::roxw` reads the manifest alone, one asset,
+or every file the table names, each held to the size and SHA-256 its entry states, and
+writes an archive from a bundle and a folder of its files. The zip rules themselves
+(names, case folds, entry counts, the unpacked-to-packed ratio) live in `rox-package`.
+`workspaces::saved` names each entry off the filename and reads only the directory, so a
+manifest is read when a workspace is applied rather than every time a menu draws.
+
+The live look nests the same struct in `workspace.json`, and its files sit in
+`<data>/assets/`, the asset store (`rox_core::settings::assets`). The store caches the
+table the way the shader pool is cached, with a revision counter that moves on any table
+change and when the pool watch sees one of the files change on disk. A file name with a
+separator in it has no path in the store, which is what keeps a bundle's JSON from
+naming a file outside the folder.
+
+- Saving (`workspaces::store`) packs the live bundle with the files its table names out
+  of the store. A file the store doesn't hold comes out of the archive already saved
+  under that name, so a card edit on a workspace that isn't live keeps its files.
+- Export copies the saved archive, so an exported workspace and a saved one are the same
+  bytes. Past 4 MiB the export logs the size and still writes.
+- Applying (`Workspace::apply_workspace`) stages the incoming files in
+  `<data>/assets.incoming/` first: extracted from the archive, or written from the
+  app's embedded copy for a shipped workspace. `assets::swap_in` then swaps the folder
+  in whole and sets the table. A stage that fails stops the apply with a toast before
+  anything is replaced. `workspaces::apply_look` writes the rest of the look after.
+- Import (`workspaces::import_file`) takes a `.roxw` or a version 1 `.json` export,
+  dedupes the name against the shipped and saved lists, and stores a fresh archive under
+  it. A bundle carrying code nobody on this machine approved, or more than
+  `roxw::WARN_BYTES` (256 MiB) unpacked, opens the apply confirm, whose card then shows
+  the size. A heavy workspace still imports.
+
+A pool shader's `// @asset name: file` line resolves through its pool entry: the entry's
+`ShaderAsset` maps `file` to an asset id and the store gives the bytes. A shader read
+from a file falls back to a file beside it. Ejecting a pool shader writes only its
+source, and the ejected file keeps resolving its images through the entry. Images are
+data and never go through the shader approval gate (ADR 23).
+
+Version 1 bundles carried a shader's images inline, base64 in the `ShaderAsset`. At
+launch `workspaces::migrate_v1_files` turns each `workspaces/<stem>.json` into
+`<stem>.roxw` and moves the JSON to `workspaces/v1-backup/`. A stem that already has an
+archive holding the same bundle is a replay and only moves the JSON. A different
+workspace there sends the converted one to a numbered name. `Settings::load` drains a
+version 1 look's images into the store after copying the shard to
+`workspace.json.bak-v1`. An inline image whose extension no asset kind lists is dropped
+from the look and survives only in that backup.
+
+Shipped workspaces are JSON in `crates/rox/assets/workspaces/`, the manifest of an
+archive on its own, with their files in a sibling `<Stem>/assets/` folder. Both are
+embedded through `rox_design::assets`, and applying one checks each file against its
+table entry the way an archive's are checked.
 
 ## Panel presets
 
@@ -226,7 +287,7 @@ A panel kind's presets come from four tiers, listed in this order:
 | Built-in | Code: each panel module's `builtin_presets()`, named by i18n key | No |
 | Global | `presets.json` in the data directory (`PresetsState`) | Yes |
 | Workspace | The live `WorkspaceBundle::panel_presets` | Yes |
-| Other workspaces | Each saved bundle under `workspaces/` except the live one | No |
+| Other workspaces | Each saved `.roxw` under `workspaces/` except the live one | No |
 
 `rox_core::settings::panel_presets` stores the two writable tiers and tags each listed
 entry with its `PresetScope`. The built-ins and the other workspaces are gathered up in
@@ -261,12 +322,9 @@ the customize window took when it opened, along with the name that dump carried,
 undoes every pick and edit since then. It's inert while the panel still matches that
 dump.
 
-The live look nests the same struct a saved file holds, so saving a workspace is a clone
-and applying one is an assignment. Saved workspaces are one JSON file each under
-`workspaces/` in the data directory, which makes the folder the collection: drop a shared
-bundle in and it's in the list, delete the file and it's gone. `workspaces::saved` names
-each entry off the filename and reads only the directory, so a bundle is parsed when one
-is applied rather than every time a menu draws.
+A preset read from another workspace comes from that archive's manifest, with nothing
+extracted. A global preset detached from a pool shader keeps the shader's source and
+loses its images, since presets have no place to keep files.
 
 ## Reference
 
@@ -275,9 +333,15 @@ traits, the registry), `state.rs` (`DockAreaState`, `PanelState`, `PanelInfo`). 
 wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore),
 `crates/rox-panel-api/src/panel.rs` (`PanelChrome`, `AppState`, `pop_out`,
 `PopoutHost`), `crates/rox/src/panel_settings.rs` (the customize windows),
-`crates/rox-core/src/settings.rs` (`NamedLayout`, `WorkspaceBundle`),
-`crates/rox-design/src/palette.rs` (`PanelTheme`), and `crates/rox/src/workspaces.rs`
-(apply, `presets_elsewhere`). Each panel's config is defined beside it under
+`crates/rox-core/src/settings.rs` (`NamedLayout`, `WorkspaceBundle`, `Asset`,
+`ShaderAsset`), `crates/rox-design/src/palette.rs` (`PanelTheme`), and
+`crates/rox/src/workspaces.rs` (store, import, the stage before apply, `apply_look`,
+`presets_elsewhere`, the version 1 folder migration). Workspace files span
+`crates/rox-core/src/settings/roxw.rs` (the archive, `upgrade`, `read_v1`),
+`crates/rox-core/src/settings/assets.rs` (the asset store, `swap_in`, `rev`),
+`crates/rox-package/src/lib.rs` (the zip rules), `crates/rox-design/src/assets.rs`
+(`shipped_workspaces`, `shipped_workspace_asset`), and
+`crates/rox-panel-api/src/panel/shader/chain.rs` (`@asset` resolution). Each panel's config is defined beside it under
 `crates/rox-panels/src/`, with its `builtin_presets()`. Panel presets span
 `crates/rox-core/src/settings/panel_presets.rs` (the writable tiers, `PresetScope`),
 `crates/rox/src/preset_sources.rs` (the tiers gathered per kind),

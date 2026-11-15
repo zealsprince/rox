@@ -2,21 +2,26 @@
 //! appearance) under a name. Two sources: the user's files under
 //! [`settings::workspaces_dir`], and the bundles shipped in the app's assets.
 //!
-//! A saved workspace is one JSON file, so dropping a shared file in the
-//! folder adds it. The list reads names off the filenames and only parses a
-//! bundle when its contents are needed, so a menu flyout never parses every
-//! workspace per frame.
+//! A saved workspace is one `.roxw` archive, so dropping a shared file in the
+//! folder adds it. The list reads names off the filenames and only reads a
+//! bundle when its contents are needed, so a menu flyout never opens every
+//! archive per frame. Applying one swaps its files into the live asset
+//! folder before the look itself changes.
 //!
-//! To ship one: export it from the settings Workspace page and drop the file
-//! in `assets/workspaces/`.
+//! To ship one: export it from the settings Workspace page, put its
+//! `workspace.json` in `assets/workspaces/` under the workspace's name, and
+//! its `assets/` folder beside it as `<Name>/assets/`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use gpui::{App, SharedString};
 
+use rox_core::settings::assets as asset_store;
 use rox_core::settings::panel_presets::{self, PresetEntry, PresetScope};
-use rox_core::settings::{self, NamedShader, Settings, WORKSPACE_VERSION, WorkspaceBundle};
+use rox_core::settings::roxw::{self, Drained};
+use rox_core::settings::{self, Asset, NamedShader, Settings, WORKSPACE_VERSION, WorkspaceBundle};
 use rox_design::assets;
 use rox_design::palette::{self, Palette};
 use rox_design::tokens;
@@ -40,13 +45,24 @@ pub struct Entry {
     pub preview_light: Option<SharedString>,
 }
 
+/// Where a resolved workspace's files are read from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Origin {
+    /// A `.roxw` in the workspaces folder.
+    Saved(PathBuf),
+    /// Shipped in the app, by its file stem.
+    Shipped(String),
+}
+
 /// Refuses a newer format; names a nameless bundle after its file.
 fn read_file(path: &Path) -> Option<WorkspaceBundle> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut bundle = serde_json::from_str::<WorkspaceBundle>(&text).ok()?;
-    if bundle.version > WORKSPACE_VERSION {
-        return None;
-    }
+    let mut bundle = match roxw::read_bundle(path) {
+        Ok(bundle) => bundle,
+        Err(e) => {
+            log::debug!("workspace: skipping {}: {e}", path.display());
+            return None;
+        }
+    };
     if bundle.name.trim().is_empty() {
         bundle.name = stem_of(path)?;
     }
@@ -92,7 +108,8 @@ pub fn display_blurb(name: &str, own: &str) -> Option<SharedString> {
         .map(|d| SharedString::from(d.to_string()))
 }
 
-fn shipped_bundle(name: &str) -> Option<WorkspaceBundle> {
+/// With its file stem, which keys its pictures and its asset folder.
+fn shipped_bundle(name: &str) -> Option<(WorkspaceBundle, String)> {
     assets::shipped_workspaces()
         .into_iter()
         .find_map(|(stem, bytes)| {
@@ -101,9 +118,9 @@ fn shipped_bundle(name: &str) -> Option<WorkspaceBundle> {
                 return None;
             }
             if bundle.name.trim().is_empty() {
-                bundle.name = stem;
+                bundle.name = stem.clone();
             }
-            (bundle.name == name).then_some(bundle)
+            (bundle.name == name).then_some((bundle, stem))
         })
 }
 
@@ -153,7 +170,7 @@ fn saved_in(dir: &Path) -> Vec<Entry> {
     let mut out: Vec<Entry> = dir
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter(|path| is_archive(path))
         .filter_map(|path| {
             let name = stem_of(&path)?;
             Some(Entry {
@@ -189,8 +206,8 @@ fn saved_authors_in(dir: &Path) -> BTreeMap<String, String> {
 }
 
 /// The `kind` presets saved in every other workspace, read-only and detached
-/// from their own bundle's pool so they run in this one. One parse per saved
-/// file, at menu open.
+/// from their own bundle's pool so they run in this one. One manifest read
+/// per saved archive, at menu open, and nothing extracted.
 pub fn presets_elsewhere(kind: &str) -> Vec<PresetEntry> {
     let live = Settings::load().look.bundle.name;
     presets_elsewhere_in(&settings::workspaces_dir(), &live, kind)
@@ -401,6 +418,23 @@ pub struct ApplyCard {
     pub wears_shaders: bool,
     /// The plugins the look's panels came from that aren't running here.
     pub requires: Option<SharedString>,
+    /// The unpacked size, said only past [`roxw::WARN_BYTES`]. A heavy look
+    /// still applies.
+    pub heavy: Option<SharedString>,
+}
+
+fn heavy_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
+    let unpacked: u64 = bundle.assets.iter().map(|asset| asset.bytes).sum();
+    if unpacked <= roxw::WARN_BYTES {
+        return None;
+    }
+
+    // Decimal, since the string says MB.
+    let mb = unpacked as f64 / 1_000_000.0;
+    Some(rox_i18n::t!(
+        "settings-workspace-heavy",
+        size = format!("{mb:.0}")
+    ))
 }
 
 /// Informational: the look applies either way, and its plugin panels restore
@@ -436,6 +470,7 @@ impl ApplyCard {
                 screen_shader: None,
                 wears_shaders: false,
                 requires: None,
+                heavy: None,
             },
         }
     }
@@ -461,6 +496,7 @@ impl ApplyCard {
             screen_shader: screen_shader_line(bundle),
             wears_shaders: wears_shaders(bundle),
             requires: requires_line(bundle),
+            heavy: heavy_line(bundle),
         }
     }
 
@@ -529,38 +565,157 @@ pub fn path_for(name: &str) -> PathBuf {
 
 /// A name of pure punctuation falls back to "workspace".
 fn file_name(name: &str) -> String {
-    format!("{}.json", settings::safe_file_stem(name, "workspace"))
-}
-
-pub fn store(bundle: &WorkspaceBundle) -> bool {
-    store_in(&settings::workspaces_dir(), bundle)
-}
-
-/// Relative, so it holds when the data dir moves. On another machine it
-/// dead-ends and editors skip it.
-const SCHEMA_REF: &str = "../schemas/workspace.schema.json";
-
-fn store_in(dir: &Path, bundle: &WorkspaceBundle) -> bool {
-    ensure_schema_beside(dir);
-    // Stamped during serialization, not via a Value round-trip, so the file
-    // keeps its field order with `$schema` first.
-    #[derive(serde::Serialize)]
-    struct Stamped<'a> {
-        #[serde(rename = "$schema")]
-        schema: &'a str,
-        #[serde(flatten)]
-        bundle: &'a WorkspaceBundle,
-    }
-    let path = dir.join(file_name(&bundle.name));
-    note_own_write(&path);
-    settings::write_json(
-        &path,
-        &Stamped {
-            schema: SCHEMA_REF,
-            bundle,
-        },
-        "workspace",
+    format!(
+        "{}.{}",
+        settings::safe_file_stem(name, "workspace"),
+        roxw::EXT
     )
+}
+
+fn is_archive(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(roxw::EXT))
+}
+
+/// Packs the bundle with its files from the live asset folder.
+pub fn store(bundle: &WorkspaceBundle) -> bool {
+    store_in(
+        &settings::workspaces_dir(),
+        bundle,
+        Some(&asset_store::dir()),
+    )
+}
+
+/// A file `assets_from` lacks, or holds with other bytes, comes out of the
+/// archive already saved under the name. That's how a card edit on a
+/// workspace that isn't the live one keeps its files.
+fn store_in(dir: &Path, bundle: &WorkspaceBundle, assets_from: Option<&Path>) -> bool {
+    let path = dir.join(file_name(&bundle.name));
+    let files = Files {
+        dir: assets_from,
+        archives: vec![path.clone(), file_of_in(dir, &bundle.name)],
+        ..Files::default()
+    };
+
+    match pack_in(&path, bundle, files) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("workspace: saving {:?}: {e}", bundle.name);
+            false
+        }
+    }
+}
+
+/// Where [`pack_in`] looks for a table's files, matched by hash, in this
+/// order.
+#[derive(Default)]
+struct Files<'a> {
+    /// Bytes a version 1 bundle carried inline.
+    drained: Drained,
+    /// A folder holding them by file name.
+    dir: Option<&'a Path>,
+    /// Archives holding them under any name.
+    archives: Vec<PathBuf>,
+}
+
+/// Write `bundle` to `path` as an archive. A bundle still carrying version
+/// 1's inline images is upgraded on the way, its bytes packed as files.
+fn pack_in(path: &Path, bundle: &WorkspaceBundle, mut files: Files) -> Result<(), String> {
+    let mut bundle = bundle.clone();
+    files.drained.extend(roxw::upgrade(&mut bundle));
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    note_own_write(path);
+
+    // The common save: every file already sits in one folder. With an empty
+    // table the folder is never read.
+    let direct = files.drained.is_empty()
+        && bundle
+            .assets
+            .iter()
+            .all(|asset| files.dir.is_some_and(|from| holds(from, asset)));
+    if direct {
+        return roxw::write(path, &bundle, files.dir.unwrap_or(path));
+    }
+
+    let staging = suffixed(path, ".files");
+    let _ = std::fs::remove_dir_all(&staging);
+    let result =
+        gather(&staging, &bundle, &files).and_then(|()| roxw::write(path, &bundle, &staging));
+    let _ = std::fs::remove_dir_all(&staging);
+
+    result
+}
+
+/// Each table file into `staging`, from the first source holding its bytes.
+fn gather(staging: &Path, bundle: &WorkspaceBundle, files: &Files) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", staging.display());
+    std::fs::create_dir_all(staging).map_err(fail)?;
+
+    for asset in &bundle.assets {
+        // The table can come from an imported file, so its names are
+        // checked before one is joined onto a path.
+        if !asset_store::flat_name(&asset.file) {
+            return Err(format!("{} isn't a plain file name", asset.file));
+        }
+        let to = staging.join(&asset.file);
+
+        if let Some((_, bytes)) = files
+            .drained
+            .iter()
+            .find(|(held, _)| held.sha256 == asset.sha256)
+        {
+            std::fs::write(&to, bytes).map_err(fail)?;
+            continue;
+        }
+
+        if let Some(from) = files.dir.filter(|from| holds(from, asset)) {
+            std::fs::copy(from.join(&asset.file), &to).map_err(fail)?;
+            continue;
+        }
+
+        let Some(bytes) = files
+            .archives
+            .iter()
+            .find_map(|archive| from_archive(archive, asset))
+        else {
+            return Err(format!(
+                "{} isn't in the asset folder or a saved workspace",
+                asset.file
+            ));
+        };
+        std::fs::write(&to, bytes).map_err(fail)?;
+    }
+
+    Ok(())
+}
+
+/// Whether `dir` holds the table entry's file with the bytes it names.
+fn holds(dir: &Path, asset: &Asset) -> bool {
+    asset_store::flat_name(&asset.file)
+        && asset_store::sha256_file(&dir.join(&asset.file))
+            .is_ok_and(|(bytes, sha256)| bytes == asset.bytes && sha256 == asset.sha256)
+}
+
+/// The bytes an archive holds for `asset`, found by hash and checked by
+/// [`roxw::read_asset`].
+fn from_archive(archive: &Path, asset: &Asset) -> Option<Vec<u8>> {
+    let saved = roxw::read_bundle(archive).ok()?;
+    let held = saved
+        .assets
+        .iter()
+        .find(|held| held.sha256 == asset.sha256)?;
+
+    roxw::read_asset(archive, &saved, &held.id).ok()
+}
+
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 /// Past the watch debounce, so a UI save's own event never comes back as a
@@ -582,29 +737,6 @@ fn was_own_write(path: &Path) -> bool {
         .unwrap()
         .iter()
         .any(|(p, at)| p == path && at.elapsed() < OWN_WRITE_WINDOW)
-}
-
-/// Beside the workspaces folder, not in it: any JSON file in there reads as
-/// a workspace.
-fn ensure_schema_beside(dir: &Path) {
-    let Some(parent) = dir.parent() else {
-        return;
-    };
-    let path = parent.join("schemas").join("workspace.schema.json");
-    let text = match serde_json::to_string_pretty(&settings::workspace_schema()) {
-        Ok(text) => text + "\n",
-        Err(_) => return,
-    };
-    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
-        return;
-    }
-    if let Err(e) = std::fs::create_dir_all(path.parent().expect("schemas dir has a parent")) {
-        log::warn!("workspace schema: creating {}: {e}", path.display());
-        return;
-    }
-    if let Err(e) = std::fs::write(&path, text) {
-        log::warn!("workspace schema: writing {}: {e}", path.display());
-    }
 }
 
 /// A missing file is a success: the list can be one external delete stale.
@@ -646,12 +778,103 @@ fn migrate_saved_in(dir: &Path, mut bundle: WorkspaceBundle) {
         }
         None => {}
     }
-    store_in(dir, &bundle);
+    store_in(dir, &bundle, None);
+}
+
+/// Apply's first step: the incoming workspace's files staged into
+/// `<data>/assets.incoming/`, then swapped in whole for the live folder and
+/// table. A failure leaves both as they were, so the caller stops before
+/// anything else is replaced.
+pub(crate) fn swap_in_files(bundle: &WorkspaceBundle, origin: &Origin) -> Result<(), String> {
+    let staged = suffixed(&asset_store::dir(), ".incoming");
+    swap_in_files_with(&staged, bundle, origin, asset_store::swap_in)
+}
+
+fn swap_in_files_with(
+    staged: &Path,
+    bundle: &WorkspaceBundle,
+    origin: &Origin,
+    swap: impl FnOnce(&Path, Vec<Asset>) -> Result<(), String>,
+) -> Result<(), String> {
+    let result =
+        stage_in(staged, bundle, origin).and_then(|()| swap(staged, bundle.assets.clone()));
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(staged);
+    }
+
+    result
+}
+
+fn stage_in(staged: &Path, bundle: &WorkspaceBundle, origin: &Origin) -> Result<(), String> {
+    // An apply that died part way leaves its stage behind.
+    let _ = std::fs::remove_dir_all(staged);
+
+    match origin {
+        Origin::Saved(archive) => roxw::extract_assets(archive, bundle, staged),
+        Origin::Shipped(stem) => {
+            let fail = |e: std::io::Error| format!("{}: {e}", staged.display());
+            std::fs::create_dir_all(staged).map_err(fail)?;
+
+            for asset in &bundle.assets {
+                let bytes = shipped_asset(stem, asset)?;
+                std::fs::write(staged.join(&asset.file), bytes).map_err(fail)?;
+            }
+
+            Ok(())
+        }
+    }
+}
+
+/// A shipped workspace's file, held to its table entry the way an archive's
+/// is, so a JSON edited out of step with its folder fails the apply.
+fn shipped_asset(stem: &str, asset: &Asset) -> Result<Cow<'static, [u8]>, String> {
+    if !asset_store::flat_name(&asset.file) {
+        return Err(format!("{} isn't a plain file name", asset.file));
+    }
+
+    let bytes = assets::shipped_workspace_asset(stem, &asset.file)
+        .ok_or_else(|| format!("{stem} ships no {}", asset.file))?;
+    if bytes.len() as u64 != asset.bytes || asset_store::sha256_hex(&bytes) != asset.sha256 {
+        return Err(format!("{} doesn't match its hash", asset.file));
+    }
+
+    Ok(bytes)
+}
+
+/// A saved workspace's archive copied out byte for byte, a shipped one packed
+/// from the files it embeds. Returns the size written.
+pub(crate) fn export_to(name: &str, origin: &Origin, to: &Path) -> Result<u64, String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", to.display());
+
+    match origin {
+        Origin::Saved(archive) => {
+            // A copy onto itself truncates the source before reading it.
+            let same = std::fs::canonicalize(archive)
+                .ok()
+                .zip(std::fs::canonicalize(to).ok())
+                .is_some_and(|(from, to)| from == to);
+            if !same {
+                std::fs::copy(archive, to).map_err(fail)?;
+            }
+        }
+        Origin::Shipped(_) => {
+            let (bundle, _) =
+                shipped_bundle(name).ok_or_else(|| format!("{name} isn't shipped"))?;
+            let staging = suffixed(to, ".files");
+            let result = stage_in(&staging, &bundle, origin)
+                .and_then(|()| roxw::write(to, &bundle, &staging));
+            let _ = std::fs::remove_dir_all(&staging);
+            result?;
+        }
+    }
+
+    std::fs::metadata(to).map(|meta| meta.len()).map_err(fail)
 }
 
 /// Persist the bundle in one write and push each appearance knob live. The
 /// layout swap and mini-player roles are the caller's, since they need the
-/// workspace whose dock they change.
+/// workspace whose dock they change. The files go first, through
+/// [`swap_in_files`].
 pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     // Persisted up front; the live statics below only repaint.
     let persist = bundle.clone();
@@ -697,11 +920,21 @@ fn file_of_in(dir: &Path, name: &str) -> PathBuf {
 
 /// The user's own first, so a saved bundle shadows a shipped one.
 pub fn resolve(name: &str) -> Option<WorkspaceBundle> {
+    resolve_with_origin(name).map(|(bundle, _)| bundle)
+}
+
+/// [`resolve`], with where the workspace's files are.
+pub fn resolve_with_origin(name: &str) -> Option<(WorkspaceBundle, Origin)> {
     resolve_in(&settings::workspaces_dir(), name)
 }
 
-fn resolve_in(dir: &Path, name: &str) -> Option<WorkspaceBundle> {
-    read_file(&file_of_in(dir, name)).or_else(|| shipped_bundle(name))
+fn resolve_in(dir: &Path, name: &str) -> Option<(WorkspaceBundle, Origin)> {
+    let path = file_of_in(dir, name);
+    if let Some(bundle) = read_file(&path) {
+        return Some((bundle, Origin::Saved(path)));
+    }
+
+    shipped_bundle(name).map(|(bundle, stem)| (bundle, Origin::Shipped(stem)))
 }
 
 pub(crate) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
@@ -714,25 +947,155 @@ pub(crate) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| base.to_string())
 }
 
-/// Deduped against the current workspaces, so an import never shadows one.
-pub fn read_bundle(path: &Path) -> Option<WorkspaceBundle> {
-    read_bundle_in(&settings::workspaces_dir(), path)
+/// Read a `.roxw` or a version 1 `.json`, dedupe its name, store it. The
+/// error is the reason a file was refused, fit for a toast or a socket
+/// answer.
+pub fn import_file(path: &Path) -> Result<WorkspaceBundle, String> {
+    import_file_in(&settings::workspaces_dir(), path)
 }
 
-fn read_bundle_in(dir: &Path, path: &Path) -> Option<WorkspaceBundle> {
-    let mut bundle = read_file(path)?;
+/// Deduped against the current workspaces, so an import never shadows one.
+/// The stored copy is always a fresh archive, so whatever an imported one
+/// held past its manifest and table stays behind.
+fn import_file_in(dir: &Path, path: &Path) -> Result<WorkspaceBundle, String> {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    let (mut bundle, files) = match ext.as_deref() {
+        Some(roxw::EXT) => (
+            roxw::read_bundle(path)?,
+            Files {
+                archives: vec![path.to_path_buf()],
+                ..Files::default()
+            },
+        ),
+        Some("json") => {
+            let (bundle, drained) = roxw::read_v1(path)?;
+            (
+                bundle,
+                Files {
+                    drained,
+                    ..Files::default()
+                },
+            )
+        }
+        _ => return Err(format!("{} isn't a workspace file", path.display())),
+    };
+
     if bundle.name.trim().is_empty() {
-        bundle.name = "imported".to_string();
+        bundle.name = stem_of(path).unwrap_or_else(|| "imported".to_string());
     }
+    // A name whose file is taken would overwrite another workspace's
+    // archive, so the file counts as well as the listed names.
     let taken: Vec<String> = shipped()
         .into_iter()
         .chain(saved_in(dir))
         .map(|entry| entry.name)
         .collect();
     bundle.name = unique_name(&bundle.name, |candidate| {
-        taken.iter().any(|name| name == candidate)
+        taken.iter().any(|name| name == candidate) || dir.join(file_name(candidate)).exists()
     });
-    Some(bundle)
+
+    pack_in(&dir.join(file_name(&bundle.name)), &bundle, files)?;
+
+    Ok(bundle)
+}
+
+/// Where the folder migration puts the JSON files it converted.
+const V1_BACKUP: &str = "v1-backup";
+
+/// Version 1's saved workspaces, `workspaces/*.json`, into archives. Each
+/// JSON moves to `workspaces/v1-backup/` once its archive is written, so a
+/// second run finds nothing to convert.
+pub(crate) fn migrate_v1_files() {
+    migrate_v1_files_in(&settings::workspaces_dir());
+}
+
+fn migrate_v1_files_in(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    // Sorted, so which side of a collision keeps the name doesn't hang on
+    // the order the folder lists in.
+    found.sort();
+
+    for json in found {
+        match migrate_v1_file(dir, &json) {
+            Ok(name) => log::info!("workspace: converted {} to {name:?}", json.display()),
+            Err(e) => log::warn!("workspace: converting {}: {e}", json.display()),
+        }
+    }
+}
+
+fn migrate_v1_file(dir: &Path, json: &Path) -> Result<String, String> {
+    let stem = stem_of(json).ok_or_else(|| "the file has no usable name".to_string())?;
+    let (mut bundle, drained) = roxw::read_v1(json)?;
+    if bundle.name.trim().is_empty() {
+        bundle.name = stem.clone();
+    }
+
+    let target = dir.join(format!("{stem}.{}", roxw::EXT));
+    let target = match read_file(&target) {
+        None if !target.exists() => target,
+        // A replay: the archive was written and the move never happened.
+        Some(existing) if same_bundle(&existing, &bundle) => {
+            back_up(dir, json)?;
+            return Ok(existing.name);
+        }
+        // A different workspace holds the archive this one's file maps to,
+        // so this one takes a file and name of its own.
+        _ => {
+            let taken: Vec<String> = saved_in(dir).into_iter().map(|entry| entry.name).collect();
+            let renamed = unique_name(&stem, |candidate| {
+                taken.iter().any(|name| name == candidate)
+                    || dir.join(format!("{candidate}.{}", roxw::EXT)).exists()
+            });
+            bundle.name = renamed.clone();
+            dir.join(format!("{renamed}.{}", roxw::EXT))
+        }
+    };
+
+    pack_in(
+        &target,
+        &bundle,
+        Files {
+            drained,
+            ..Files::default()
+        },
+    )?;
+    back_up(dir, json)?;
+
+    Ok(bundle.name)
+}
+
+/// Compared as written, since a converted bundle and the archive it became
+/// read back through the same upgrade.
+fn same_bundle(a: &WorkspaceBundle, b: &WorkspaceBundle) -> bool {
+    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
+}
+
+/// Moved, never deleted. A name already backed up gets a numbered one.
+fn back_up(dir: &Path, json: &Path) -> Result<(), String> {
+    let backup = dir.join(V1_BACKUP);
+    std::fs::create_dir_all(&backup).map_err(|e| format!("{}: {e}", backup.display()))?;
+
+    let stem = stem_of(json).unwrap_or_else(|| "workspace".to_string());
+    let free = unique_name(&stem, |candidate| {
+        backup.join(format!("{candidate}.json")).exists()
+    });
+    let to = backup.join(format!("{free}.json"));
+
+    std::fs::rename(json, &to).map_err(|e| format!("{}: {e}", to.display()))
 }
 
 const WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -758,7 +1121,7 @@ pub(crate) fn watch(cx: &mut App) {
                 .iter()
                 .filter(|event| matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)))
                 .flat_map(|event| event.paths.iter().cloned())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .filter(|path| is_archive(path))
                 .collect();
             if !paths.is_empty() {
                 let _ = tx.send_blocking(paths);
@@ -786,7 +1149,7 @@ pub(crate) fn watch(cx: &mut App) {
     .detach();
 }
 
-/// A file that no longer parses leaves the current look standing.
+/// A file that no longer reads leaves the current look standing.
 fn reload_if_active(paths: &[PathBuf], cx: &mut App) {
     let active = Settings::load().look.bundle.name;
     if active.trim().is_empty() {
@@ -799,16 +1162,13 @@ fn reload_if_active(paths: &[PathBuf], cx: &mut App) {
     if was_own_write(&file) {
         return;
     }
-    let parsed = std::fs::read_to_string(&file)
-        .map_err(|e| e.to_string())
-        .and_then(|text| serde_json::from_str::<WorkspaceBundle>(&text).map_err(|e| e.to_string()));
-    match parsed {
+    match roxw::read_bundle(&file) {
         Ok(_) => {
             log::info!("workspace: {active:?} changed on disk, re-applying");
             crate::workspace::apply_workspace_to_front(&active, cx);
         }
         Err(e) => log::warn!(
-            "workspace: {} changed on disk but doesn't parse, keeping the current look: {e}",
+            "workspace: {} changed on disk but doesn't read, keeping the current look: {e}",
             file.display()
         ),
     }
@@ -918,6 +1278,10 @@ mod tests {
         for (stem, bytes) in assets::shipped_workspaces() {
             let bundle: WorkspaceBundle =
                 serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("{stem}: {err}"));
+            assert_eq!(
+                bundle.version, WORKSPACE_VERSION,
+                "{stem}: a shipped bundle is the current version"
+            );
             for pool in &bundle.shaders {
                 let where_ = format!("{stem}: shader '{}'", pool.name);
                 let spec = shader::parse_chain(&pool.source)
@@ -938,9 +1302,20 @@ mod tests {
                         .unwrap_or_else(|| {
                             panic!("{where_}: declares {} and doesn't carry it", asset.file)
                         });
-                    let bytes = carried.decode().unwrap_or_else(|err| {
-                        panic!("{where_}: {} is not base64: {err}", asset.file)
-                    });
+                    assert!(
+                        carried.data.is_empty(),
+                        "{where_}: {} is inline",
+                        asset.file
+                    );
+                    let entry = bundle
+                        .assets
+                        .iter()
+                        .find(|entry| entry.id == carried.asset)
+                        .unwrap_or_else(|| {
+                            panic!("{where_}: {} names no asset {}", asset.file, carried.asset)
+                        });
+                    let bytes = shipped_asset(&stem, entry)
+                        .unwrap_or_else(|err| panic!("{where_}: {}: {err}", asset.file));
                     let image = image::load_from_memory(&bytes).unwrap_or_else(|err| {
                         panic!("{where_}: {} won't decode: {err}", asset.file)
                     });
@@ -1265,10 +1640,11 @@ mod tests {
 
         settings::note_approved(&shader::fingerprint(source));
         let bare = bundle(Vec::new());
-        let plated = bundle(vec![rox_core::settings::ShaderAsset::from_bytes(
-            "plate.png",
-            &[1u8, 2, 3],
-        )]);
+        let plated = bundle(vec![rox_core::settings::ShaderAsset {
+            file: "plate.png".into(),
+            asset: "serpent-plate".into(),
+            data: String::new(),
+        }]);
         assert!(unapproved_shaders(&plated).is_empty(), "a plate isn't code");
         assert_eq!(
             bundle_fingerprints(&bare),
@@ -1358,7 +1734,7 @@ mod tests {
         first.meta.description = "Warm and quiet.".into();
         first.meta.created = "2026-01-02".into();
         first.meta.updated = "2026-01-02".into();
-        store_in(&dir, &first);
+        store_in(&dir, &first, None);
 
         let again = snapshot_in(&dir, "Nightfall", &Settings::default());
         assert_eq!(again.meta.author, "Nova");
@@ -1382,8 +1758,8 @@ mod tests {
         let dir = scratch("authors");
         let mut signed = named_bundle("Nightfall");
         signed.meta.author = "Nova".into();
-        store_in(&dir, &signed);
-        store_in(&dir, &named_bundle("Plain"));
+        store_in(&dir, &signed, None);
+        store_in(&dir, &named_bundle("Plain"), None);
 
         let authors = saved_authors_in(&dir);
         assert_eq!(authors.get("Nightfall").map(String::as_str), Some("Nova"));
@@ -1407,7 +1783,7 @@ mod tests {
         let mut live = named_bundle("Daylight");
         live.panel_presets
             .push(lyrics("Mine", serde_json::json!({ "enabled": true })));
-        store_in(&dir, &live);
+        store_in(&dir, &live, None);
 
         let mut other = named_bundle("Nightfall");
         other.shaders.push(NamedShader {
@@ -1423,7 +1799,7 @@ mod tests {
             name: "Scope".into(),
             panel: serde_json::json!({ "panel_name": "spectrum" }),
         });
-        store_in(&dir, &other);
+        store_in(&dir, &other, None);
 
         let entries = presets_elsewhere_in(&dir, "Daylight", "lyrics");
         assert_eq!(entries.len(), 1, "the live bundle and other kinds stay out");
@@ -1490,26 +1866,31 @@ mod tests {
     /// A name must survive the trip through a filename and back.
     #[test]
     fn file_name_folds_what_a_filename_cant_hold() {
-        assert_eq!(file_name("Nightfall"), "Nightfall.json");
-        assert_eq!(file_name("Drum & Bass / Neuro"), "Drum & Bass   Neuro.json");
-        assert_eq!(file_name("  padded  "), "padded.json");
-        assert_eq!(file_name(".hidden"), "hidden.json");
-        assert_eq!(file_name("..."), "workspace.json");
-        assert_eq!(file_name(""), "workspace.json");
+        assert_eq!(file_name("Nightfall"), "Nightfall.roxw");
+        assert_eq!(file_name("Drum & Bass / Neuro"), "Drum & Bass   Neuro.roxw");
+        assert_eq!(file_name("  padded  "), "padded.roxw");
+        assert_eq!(file_name(".hidden"), "hidden.roxw");
+        assert_eq!(file_name("..."), "workspace.roxw");
+        assert_eq!(file_name(""), "workspace.roxw");
     }
 
     #[test]
     fn store_lists_and_resolves_by_name() {
         let dir = scratch("store");
-        assert!(store_in(&dir, &named_bundle("Nightfall")));
+        assert!(store_in(&dir, &named_bundle("Nightfall"), None));
 
         let list = saved_in(&dir);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "Nightfall");
         assert!(!list[0].builtin);
+        let archive = dir.join("Nightfall.roxw");
+        assert_eq!(list[0].path.as_deref(), Some(archive.as_path()));
 
-        let back = resolve_in(&dir, "Nightfall").expect("stored bundle resolves");
+        let (back, origin) = resolve_in(&dir, "Nightfall").expect("stored bundle resolves");
         assert_eq!(back.name, "Nightfall");
+        assert_eq!(back.version, WORKSPACE_VERSION);
+        assert_eq!(origin, Origin::Saved(archive.clone()));
+        assert!(roxw::read_bundle(&archive).is_ok(), "an archive");
 
         remove_in(&dir, "Nightfall");
         assert!(saved_in(&dir).is_empty());
@@ -1519,13 +1900,15 @@ mod tests {
     }
 
     #[test]
-    fn saved_lists_json_files_by_name() {
+    fn saved_lists_roxw_files_by_name() {
         let dir = scratch("list");
         for name in ["Zephyr", "Alpha", "Mid"] {
-            store_in(&dir, &named_bundle(name));
+            store_in(&dir, &named_bundle(name), None);
         }
         std::fs::write(dir.join("notes.txt"), "not a bundle").unwrap();
+        std::fs::write(dir.join("Old.json"), "{}").unwrap();
         std::fs::create_dir(dir.join("nested")).unwrap();
+        std::fs::create_dir(dir.join(V1_BACKUP)).unwrap();
 
         let names: Vec<String> = saved_in(&dir).into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["Alpha", "Mid", "Zephyr"]);
@@ -1542,13 +1925,14 @@ mod tests {
             .map(|e| e.name.clone())
             .expect("a workspace ships");
 
-        let built_in = resolve_in(&dir, &shipped_name).expect("shipped resolves");
+        let (built_in, origin) = resolve_in(&dir, &shipped_name).expect("shipped resolves");
         assert_eq!(built_in.name, shipped_name);
+        assert!(matches!(origin, Origin::Shipped(_)));
 
         let mut mine = named_bundle(&shipped_name);
         mine.palette_dark.insert("accent".into(), "#336699".into());
-        store_in(&dir, &mine);
-        let shadowed = resolve_in(&dir, &shipped_name).expect("saved shadows shipped");
+        store_in(&dir, &mine, None);
+        let (shadowed, _) = resolve_in(&dir, &shipped_name).expect("saved shadows shipped");
         assert_eq!(
             shadowed.palette_dark.get("accent").map(String::as_str),
             Some("#336699")
@@ -1567,35 +1951,276 @@ mod tests {
     }
 
     #[test]
-    fn read_bundle_names_from_stem_and_dedupes() {
+    fn an_import_names_from_stem_and_dedupes() {
         let dir = scratch("import");
         let path = dir.join("Nightfall.json");
-        std::fs::write(&path, serde_json::to_string(&named_bundle("")).unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(&v1_bundle("")).unwrap()).unwrap();
 
         let empty = scratch("import-empty");
-        let bundle = read_bundle_in(&empty, &path).expect("nameless bundle reads");
+        let bundle = import_file_in(&empty, &path).expect("nameless bundle reads");
         assert_eq!(bundle.name, "Nightfall");
+        assert!(empty.join("Nightfall.roxw").is_file());
 
-        store_in(&empty, &named_bundle("Nightfall"));
-        let deduped = read_bundle_in(&empty, &path).expect("bundle reads");
+        let deduped = import_file_in(&empty, &path).expect("bundle reads");
         assert_eq!(deduped.name, "Nightfall (2)");
+        assert!(empty.join("Nightfall (2).roxw").is_file());
+
+        // An archive imports the same way and lands as a fresh one.
+        let again = import_file_in(&empty, &empty.join("Nightfall.roxw")).expect("archive reads");
+        assert_eq!(again.name, "Nightfall (3)");
+
+        std::fs::write(dir.join("notes.txt"), "not a workspace").unwrap();
+        assert!(import_file_in(&empty, &dir.join("notes.txt")).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]
-    fn read_bundle_refuses_newer_format() {
+    fn an_import_refuses_a_newer_format() {
         let dir = scratch("newer");
-        let path = dir.join("Future.json");
         let mut future = named_bundle("Future");
         future.version = WORKSPACE_VERSION + 1;
-        std::fs::write(&path, serde_json::to_string(&future).unwrap()).unwrap();
 
-        assert!(read_bundle_in(&dir, &path).is_none());
+        let json = dir.join("Future.json");
+        std::fs::write(&json, serde_json::to_string(&future).unwrap()).unwrap();
+        assert!(import_file_in(&dir, &json).is_err());
+
+        // Not an archive at all, under the archive's name.
+        let archive = dir.join("Future.roxw");
+        std::fs::write(&archive, serde_json::to_string(&future).unwrap()).unwrap();
+        assert!(import_file_in(&dir, &archive).is_err());
+
         // The list only reads filenames; resolving is where the refusal bites.
         assert_eq!(saved_in(&dir).len(), 1);
         assert!(resolve_in(&dir, "Future").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a 1.x export wrote, as far as the version reads.
+    fn v1_bundle(name: &str) -> WorkspaceBundle {
+        WorkspaceBundle {
+            version: 1,
+            ..named_bundle(name)
+        }
+    }
+
+    fn plated_v1(name: &str, bytes: &[u8]) -> serde_json::Value {
+        use base64::Engine as _;
+
+        serde_json::json!({
+            "version": 1,
+            "name": name,
+            "shaders": [{
+                "name": "Lace",
+                "source": "// @asset frame: frame.png",
+                "assets": [{
+                    "file": "frame.png",
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                }],
+            }],
+        })
+    }
+
+    #[test]
+    fn a_v1_json_imports_with_its_images() {
+        let dir = scratch("import-v1");
+        let into = scratch("import-v1-into");
+        let json = dir.join("Lacework.json");
+        std::fs::write(&json, plated_v1("Lacework", b"a frame").to_string()).unwrap();
+
+        let bundle = import_file_in(&into, &json).expect("a version 1 export imports");
+        assert_eq!(bundle.version, WORKSPACE_VERSION);
+        assert_eq!(bundle.assets.len(), 1);
+        let asset = &bundle.assets[0];
+        assert_eq!(bundle.shaders[0].assets[0].asset, asset.id);
+
+        let archive = into.join("Lacework.roxw");
+        let (stored, origin) = resolve_in(&into, "Lacework").expect("stored");
+        assert_eq!(origin, Origin::Saved(archive.clone()));
+        assert!(stored.shaders[0].assets[0].data.is_empty());
+        assert_eq!(
+            roxw::read_asset(&archive, &stored, &asset.id).unwrap(),
+            b"a frame"
+        );
+
+        // Applying it stages the same bytes.
+        let staged = into.join("staged");
+        stage_in(&staged, &stored, &origin).expect("stages");
+        assert_eq!(std::fs::read(staged.join(&asset.file)).unwrap(), b"a frame");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&into);
+    }
+
+    #[test]
+    fn a_card_edit_keeps_the_files_of_a_workspace_that_isnt_live() {
+        let dir = scratch("card-files");
+        let json = dir.join("Lacework.json");
+        std::fs::write(&json, plated_v1("Lacework", b"a frame").to_string()).unwrap();
+        import_file_in(&dir, &json).unwrap();
+
+        let (mut bundle, _) = resolve_in(&dir, "Lacework").unwrap();
+        bundle.meta.author = "Nova".into();
+        let live = scratch("card-files-live");
+        assert!(
+            store_in(&dir, &bundle, Some(&live)),
+            "the old archive has the file"
+        );
+
+        let (back, _) = resolve_in(&dir, "Lacework").unwrap();
+        assert_eq!(back.meta.author, "Nova");
+        let id = &back.assets[0].id;
+        assert_eq!(
+            roxw::read_asset(&dir.join("Lacework.roxw"), &back, id).unwrap(),
+            b"a frame"
+        );
+
+        // A file nobody holds fails the save and leaves the archive alone.
+        let mut orphan = back.clone();
+        orphan.assets[0].sha256 = "00".repeat(32);
+        assert!(!store_in(&dir, &orphan, Some(&live)));
+        assert!(resolve_in(&dir, "Lacework").is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&live);
+    }
+
+    #[test]
+    fn the_folder_migration_converts_once_and_keeps_the_json() {
+        let dir = scratch("migrate-v1");
+        let json = dir.join("Lacework.json");
+        let text = plated_v1("Lacework", b"a frame").to_string();
+        std::fs::write(&json, &text).unwrap();
+        std::fs::write(
+            dir.join("Plain.json"),
+            serde_json::to_string(&v1_bundle("")).unwrap(),
+        )
+        .unwrap();
+
+        migrate_v1_files_in(&dir);
+
+        let names: Vec<String> = saved_in(&dir).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Lacework", "Plain"]);
+        assert!(!json.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(V1_BACKUP).join("Lacework.json")).unwrap(),
+            text
+        );
+        assert!(dir.join(V1_BACKUP).join("Plain.json").is_file());
+
+        let (bundle, _) = resolve_in(&dir, "Lacework").unwrap();
+        let id = &bundle.assets[0].id;
+        assert_eq!(
+            roxw::read_asset(&dir.join("Lacework.roxw"), &bundle, id).unwrap(),
+            b"a frame"
+        );
+
+        // A second run has nothing to do.
+        let before = std::fs::read(dir.join("Lacework.roxw")).unwrap();
+        migrate_v1_files_in(&dir);
+        assert_eq!(std::fs::read(dir.join("Lacework.roxw")).unwrap(), before);
+        assert_eq!(saved_in(&dir).len(), 2);
+
+        // A replay: the archive landed and the JSON never moved.
+        std::fs::write(&json, &text).unwrap();
+        migrate_v1_files_in(&dir);
+        assert_eq!(saved_in(&dir).len(), 2);
+        assert!(!json.exists());
+        assert!(dir.join(V1_BACKUP).join("Lacework (2).json").is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The skip that makes a replay safe must not drop a different workspace.
+    #[test]
+    fn a_filename_collision_survives_the_migration() {
+        let dir = scratch("migrate-v1-collide");
+        let mut theirs = named_bundle("Nightfall");
+        theirs
+            .palette_dark
+            .insert("accent".into(), "#111111".into());
+        store_in(&dir, &theirs, None);
+
+        let mut mine = v1_bundle("Nightfall");
+        mine.palette_dark.insert("accent".into(), "#222222".into());
+        std::fs::write(
+            dir.join("Nightfall.json"),
+            serde_json::to_string(&mine).unwrap(),
+        )
+        .unwrap();
+
+        migrate_v1_files_in(&dir);
+
+        let names: Vec<String> = saved_in(&dir).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Nightfall", "Nightfall (2)"]);
+        let accent = |name: &str| {
+            resolve_in(&dir, name)
+                .unwrap()
+                .0
+                .palette_dark
+                .get("accent")
+                .cloned()
+        };
+        assert_eq!(accent("Nightfall").as_deref(), Some("#111111"));
+        assert_eq!(accent("Nightfall (2)").as_deref(), Some("#222222"));
+        assert!(dir.join(V1_BACKUP).join("Nightfall.json").is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn applying_a_workspace_swaps_its_files_in() {
+        let dir = scratch("apply-files");
+        let json = dir.join("Lacework.json");
+        std::fs::write(&json, plated_v1("Lacework", b"a frame").to_string()).unwrap();
+        import_file_in(&dir, &json).unwrap();
+        let (bundle, origin) = resolve_in(&dir, "Lacework").unwrap();
+
+        // Stands in for the store's swap, which rox-core tests on its own.
+        let live = dir.join("assets");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("old.png"), b"the last look").unwrap();
+        let staged = dir.join("assets.incoming");
+        let mut table = None;
+        swap_in_files_with(&staged, &bundle, &origin, |from, assets| {
+            std::fs::remove_dir_all(&live).unwrap();
+            std::fs::rename(from, &live).unwrap();
+            table = Some(assets);
+            Ok(())
+        })
+        .expect("swaps");
+
+        assert_eq!(table.as_deref(), Some(bundle.assets.as_slice()));
+        assert!(!live.join("old.png").exists());
+        assert_eq!(
+            std::fs::read(live.join(&bundle.assets[0].file)).unwrap(),
+            b"a frame"
+        );
+
+        // A file that doesn't match its table fails before the swap, and
+        // leaves no stage behind.
+        let mut broken = bundle.clone();
+        broken.assets[0].sha256 = "00".repeat(32);
+        let failed = swap_in_files_with(&staged, &broken, &origin, |_, _| {
+            panic!("a failed stage never swaps")
+        });
+        assert!(failed.is_err());
+        assert!(!staged.exists());
+
+        // A shipped workspace stages from the files it embeds.
+        let (critters, origin) = resolve_in(&dir, "Critters").expect("Critters ships");
+        assert_eq!(origin, Origin::Shipped("Critters".into()));
+        assert!(!critters.assets.is_empty());
+        stage_in(&staged, &critters, &origin).expect("stages");
+        for asset in &critters.assets {
+            let (bytes, sha256) = asset_store::sha256_file(&staged.join(&asset.file)).unwrap();
+            assert_eq!(
+                (bytes, sha256.as_str()),
+                (asset.bytes, asset.sha256.as_str())
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1615,7 +2240,7 @@ mod tests {
         migrate_saved_in(&dir, second);
 
         assert_eq!(saved_in(&dir).len(), 1);
-        let kept = resolve_in(&dir, "Nightfall").expect("bundle resolves");
+        let (kept, _) = resolve_in(&dir, "Nightfall").expect("bundle resolves");
         assert_eq!(
             kept.palette_dark.get("accent").map(String::as_str),
             Some("#111111")
@@ -1643,6 +2268,7 @@ mod tests {
         assert_eq!(
             resolve_in(&dir, "Live Studio")
                 .unwrap()
+                .0
                 .palette_dark
                 .get("accent")
                 .map(String::as_str),
@@ -1651,6 +2277,7 @@ mod tests {
         assert_eq!(
             resolve_in(&dir, "Live Studio (2)")
                 .unwrap()
+                .0
                 .palette_dark
                 .get("accent")
                 .map(String::as_str),

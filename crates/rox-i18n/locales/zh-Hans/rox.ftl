@@ -1456,6 +1456,7 @@ settings-storage-waveforms = 波形
     .description = 每首曲目首次播放后留下的峰值条；清掉的会在下次播放时重新解码
 
 ## Settings: workspace
+settings-workspace-apply-failed = 无法应用 { $name }
 settings-workspace-card-author = 作者
 settings-workspace-card-author-placeholder = 谁做的
 settings-workspace-card-created = 创建于 { $date }
@@ -1477,7 +1478,9 @@ settings-workspace-composition-hint = 窗口里的面板在分隔和标签组里
 settings-workspace-empty = 还没有工作区
 settings-workspace-global-presets-empty = 还没有全局预设
 settings-workspace-global-presets-hint = 以全局方式保存的面板预设。每个工作区都会列出它们，着色器也存在预设里
+settings-workspace-heavy = 解压后有 { $size } MB，比一般的外观大
 settings-workspace-hint = 一个工作区就是一整套外观：布局、调色板、外观设置。应用一个会把这三样全换掉
+settings-workspace-import-failed = 无法导入 { $file }
 settings-workspace-layout-name-placeholder = 布局名称
 settings-workspace-layouts-empty = 还没有布局
 settings-workspace-layouts-hint = 主布局和迷你布局，就是菜单栏迷你播放器按钮来回切换的那两个

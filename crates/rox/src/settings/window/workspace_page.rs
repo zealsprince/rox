@@ -52,7 +52,7 @@ const CARD_FIELDS: [CardField; 5] = [
 
 /// Soft: past this an export logs a note, never a refusal. Image assets push a
 /// look into megabytes.
-const EXPORT_SIZE_WARN: usize = 4 * 1024 * 1024;
+const EXPORT_SIZE_WARN: u64 = 4 * 1024 * 1024;
 
 /// Most dialogs only see `First`; the two that split read `Second` as the wider
 /// answer.
@@ -1073,6 +1073,7 @@ impl SettingsWindow {
                             .children(card.and_then(|card| card.byline.clone()).map(line))
                             .children(card.and_then(|card| card.description.clone()).map(line))
                             .children(card.and_then(|card| card.requires.clone()).map(line))
+                            .children(card.and_then(|card| card.heavy.clone()).map(line))
                             .children(plugin_lead.into_iter().map(line))
                             .child(line(body))
                             .children(plugin_lines.into_iter().map(line))
@@ -1595,33 +1596,37 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Shader assets ride inside the file as encoded bytes. Past
-    /// [`EXPORT_SIZE_WARN`] that goes to the log, never a cap (ADR 23).
+    /// A saved workspace exports as its archive, byte for byte, so a shared
+    /// file and a saved one are the same file. Past [`EXPORT_SIZE_WARN`] that
+    /// goes to the log, never a cap (ADR 23).
     fn export_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
-        let Some(mut bundle) = crate::workspaces::resolve(name) else {
+        let Some((_, origin)) = crate::workspaces::resolve_with_origin(name) else {
             return;
         };
-        // In place, so the bundle keeps its field order; a trip through
-        // serde_json::Value would sort the keys.
-        for layout in &mut bundle.layouts {
-            crate::workspace::denoise_f32(&mut layout.dump);
-        }
         let home = dirs::home_dir().unwrap_or_default();
-        let file = format!("{name}.json");
+        let file = format!(
+            "{}.{}",
+            rox_core::settings::safe_file_stem(name, "workspace"),
+            rox_core::settings::roxw::EXT
+        );
         let label = name.to_string();
         let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
         cx.spawn(async move |_, _| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
             };
-            if let Ok(json) = serde_json::to_string_pretty(&bundle) {
-                if json.len() > EXPORT_SIZE_WARN {
-                    log::warn!(
-                        "workspace {label:?}: exported at {:.1} MiB, heavier than a look usually runs. Its shader assets ride inside the file.",
-                        json.len() as f64 / (1024.0 * 1024.0)
-                    );
+            let written = match crate::workspaces::export_to(&label, &origin, &path) {
+                Ok(written) => written,
+                Err(e) => {
+                    log::warn!("workspace {label:?}: exporting to {}: {e}", path.display());
+                    return;
                 }
-                std::fs::write(path, json).ok();
+            };
+            if written > EXPORT_SIZE_WARN {
+                log::warn!(
+                    "workspace {label:?}: exported at {:.1} MiB, heavier than a look usually runs. Its assets ride inside the archive.",
+                    written as f64 / (1024.0 * 1024.0)
+                );
             }
         })
         .detach();
@@ -1644,13 +1649,27 @@ impl SettingsWindow {
             let Some(path) = paths.pop() else {
                 return;
             };
-            let Some(bundle) = crate::workspaces::read_bundle(&path) else {
-                return;
-            };
-            crate::workspaces::store(&bundle);
-            let card = crate::workspaces::ApplyCard::of(&bundle);
-            this.update(cx, |this, cx| {
-                if !card.shaders.is_empty() {
+            let imported = crate::workspaces::import_file(&path);
+            this.update_in(cx, |this, window, cx| {
+                let bundle = match imported {
+                    Ok(bundle) => bundle,
+                    Err(e) => {
+                        log::warn!("workspace: importing {}: {e}", path.display());
+                        let file = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
+                            .title(rox_i18n::t!(
+                                "settings-workspace-import-failed",
+                                file = file
+                            ))
+                            .show(window, cx);
+                        return;
+                    }
+                };
+                let card = crate::workspaces::ApplyCard::of(&bundle);
+                if !card.shaders.is_empty() || card.heavy.is_some() {
                     this.pending = Some(Pending::ApplyWorkspace {
                         card,
                         imported: true,
@@ -1671,7 +1690,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(bundle) = crate::workspaces::resolve(name) else {
+        let Some((bundle, origin)) = crate::workspaces::resolve_with_origin(name) else {
             return;
         };
         // The workspace's own apply strips its copy too; this one feeds the
@@ -1682,10 +1701,12 @@ impl SettingsWindow {
         };
         let workspace = self.workspace.clone();
         let name = name.to_string();
+        // None when there's no workspace window to apply in, otherwise
+        // whether its apply went ahead.
         let applied = self
             .workspace_window
             .update(cx, |_, window, cx| {
-                workspace.upgrade().is_some_and(|workspace| {
+                workspace.upgrade().map(|workspace| {
                     workspace.update(cx, |workspace, cx| {
                         workspace.apply_workspace(
                             &name,
@@ -1693,16 +1714,28 @@ impl SettingsWindow {
                             crate::workspace::ShaderNotice::Told,
                             window,
                             cx,
-                        );
-                    });
-                    true
+                        )
+                    })
                 })
             })
-            .unwrap_or(false);
-        // The workspace window can be gone; the look still applies, with no
-        // dock to swap.
-        if !applied {
-            crate::workspaces::apply_look(&bundle, cx);
+            .ok()
+            .flatten();
+        match applied {
+            // The workspace window said why in its own toast.
+            Some(false) => return,
+            Some(true) => {}
+            // The workspace window can be gone; the look still applies, with
+            // no dock to swap.
+            None => {
+                if let Err(e) = crate::workspaces::swap_in_files(&bundle, &origin) {
+                    log::warn!("workspace: applying {name:?}: {e}");
+                    rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
+                        .title(rox_i18n::t!("settings-workspace-apply-failed", name = name))
+                        .show(window, cx);
+                    return;
+                }
+                crate::workspaces::apply_look(&bundle, cx);
+            }
         }
         // Mirror the applied look into the editor. The apply may have flipped
         // the theme side.

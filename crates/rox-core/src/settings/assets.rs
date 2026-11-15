@@ -128,6 +128,21 @@ pub fn note_changed() {
     REV.fetch_add(1, Ordering::Relaxed);
 }
 
+/// A file edited in place stops matching its table entry, and a save checks
+/// every file against the table. This rehashes the named files and takes
+/// what's on disk, so the edit is what gets saved. A file that's gone keeps
+/// its entry. Returns whether an entry changed.
+pub fn refresh(files: &[String]) -> bool {
+    let mut table = all();
+    if !refresh_in(&dir(), &mut table, files) {
+        return false;
+    }
+
+    commit(table);
+
+    true
+}
+
 /// Delete files the table doesn't name.
 pub fn sweep() {
     sweep_in(&dir(), &all());
@@ -148,7 +163,7 @@ fn commit(assets: Vec<Asset>) {
 
 /// Whether `file` is one plain name. A bundle's JSON is untrusted, and this
 /// is what keeps a workspace from naming a path outside the asset folder.
-pub(crate) fn flat_name(file: &str) -> bool {
+pub fn flat_name(file: &str) -> bool {
     !file.is_empty() && file != "." && file != ".." && !file.contains(['/', '\\', ':', '\0'])
 }
 
@@ -156,12 +171,12 @@ pub(crate) fn path_in(dir: &Path, asset: &Asset) -> Option<PathBuf> {
     flat_name(&asset.file).then(|| dir.join(&asset.file))
 }
 
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(Sha256::digest(bytes).as_slice())
 }
 
 /// Size and hash of a file on disk, streamed so a video isn't read whole.
-pub(crate) fn sha256_file(path: &Path) -> Result<(u64, String), String> {
+pub fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     let fail = |e: std::io::Error| format!("{}: {e}", path.display());
 
     let mut file = std::fs::File::open(path).map_err(fail)?;
@@ -342,6 +357,27 @@ fn swap_in_at(
     Ok(())
 }
 
+fn refresh_in(dir: &Path, table: &mut [Asset], files: &[String]) -> bool {
+    let mut changed = false;
+
+    for asset in table.iter_mut().filter(|asset| files.contains(&asset.file)) {
+        let Some(path) = path_in(dir, asset) else {
+            continue;
+        };
+        let Ok((bytes, sha256)) = sha256_file(&path) else {
+            continue;
+        };
+
+        if bytes != asset.bytes || sha256 != asset.sha256 {
+            asset.bytes = bytes;
+            asset.sha256 = sha256;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
 fn sweep_in(dir: &Path, table: &[Asset]) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -510,6 +546,35 @@ mod tests {
         assert!(live.join("new.png").exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_edited_file_takes_its_new_hash() {
+        let dir = scratch("refresh");
+        let mut table = vec![
+            import_in(&dir, &[], "plate.png", b"one").unwrap(),
+            import_in(&dir, &[], "frame.png", b"frame").unwrap(),
+        ];
+        let frame = table[1].clone();
+        let named = ["plate.png".to_string(), "gone.png".to_string()];
+
+        assert!(!refresh_in(&dir, &mut table, &named), "nothing moved yet");
+
+        std::fs::write(dir.join("plate.png"), b"one and two").unwrap();
+        std::fs::write(dir.join("frame.png"), b"not asked about").unwrap();
+        assert!(refresh_in(&dir, &mut table, &named));
+
+        assert_eq!(table[0].bytes, 11);
+        assert_eq!(table[0].sha256, sha256_hex(b"one and two"));
+        assert_eq!(table[1], frame, "only the named files are rehashed");
+
+        // A file that's gone keeps the entry it had.
+        std::fs::remove_file(dir.join("plate.png")).unwrap();
+        let before = table.clone();
+        assert!(!refresh_in(&dir, &mut table, &named));
+        assert_eq!(table, before);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

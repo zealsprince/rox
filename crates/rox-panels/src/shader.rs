@@ -148,9 +148,9 @@ struct Resolved {
     ran: bool,
 }
 
-/// Includes the pool generation: replacing an image changes no source
-/// text, and the pool watch bumps the generation. [`surface`]'s driver
-/// keys the same way.
+/// Includes the pool and asset store generations: replacing an image
+/// changes no source text, and the pool watch bumps one or the other.
+/// [`surface`]'s driver keys the same way.
 fn program_hash(source: &str, ctx: &surface::ProgramCtx, cover: u64) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
 
@@ -159,6 +159,7 @@ fn program_hash(source: &str, ctx: &surface::ProgramCtx, cover: u64) -> u64 {
     ctx.name.hash(&mut hasher);
     ctx.path.hash(&mut hasher);
     rox_core::settings::shader_pool_rev().hash(&mut hasher);
+    rox_core::settings::assets::rev().hash(&mut hasher);
     cover.hash(&mut hasher);
     hasher.finish()
 }
@@ -1319,7 +1320,16 @@ mod tests {
         assert_ne!(
             key,
             program_hash(&source, &named, 0),
-            "a pool bump has to re-register, or an image hot reload never lands"
+            "a pool bump has to re-register, or a source hot reload never lands"
+        );
+
+        // An edited file in the asset store bumps the store and edits nothing else.
+        let key = program_hash(&source, &named, 0);
+        rox_core::settings::assets::note_changed();
+        assert_ne!(
+            key,
+            program_hash(&source, &named, 0),
+            "a store bump has to re-register, or an image hot reload never lands"
         );
         rox_core::settings::note_shader_pool(Vec::new());
     }

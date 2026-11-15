@@ -1479,6 +1479,7 @@ settings-storage-waveforms = Волновые формы
     .description = Полоса пиков каждого трека, сохранённая после первого воспроизведения; очищенные декодируются заново при следующем
 
 ## Settings: workspace
+settings-workspace-apply-failed = Не удалось применить { $name }
 settings-workspace-card-author = Автор
 settings-workspace-card-author-placeholder = Кто это сделал
 settings-workspace-card-created = Создано { $date }
@@ -1500,7 +1501,9 @@ settings-workspace-composition-hint = Панели окна так, как он�
 settings-workspace-empty = Пока нет рабочих пространств
 settings-workspace-global-presets-empty = Пока нет глобальных пресетов
 settings-workspace-global-presets-hint = Пресеты панелей, сохранённые как глобальные. Их видит каждое рабочее пространство, а шейдеры хранятся внутри них
+settings-workspace-heavy = В распакованном виде занимает { $size } МБ, больше, чем обычно у оформления
 settings-workspace-hint = Рабочее пространство — это целый внешний вид: макеты, палитра, оформление; применение заменяет все три
+settings-workspace-import-failed = Не удалось импортировать { $file }
 settings-workspace-layout-name-placeholder = Название макета
 settings-workspace-layouts-empty = Пока нет макетов
 settings-workspace-layouts-hint = Основной и мини — это те два, между которыми переключает кнопка мини-плеера в строке меню

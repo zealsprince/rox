@@ -401,7 +401,7 @@ const UNAPPROVED_POST_SHADER: &str =
 /// recorded it.
 ///
 /// The origin comes back with it because a program's images resolve from
-/// it: the pool entry's stored bytes, or files beside the source. It's
+/// it: the pool entry's assets in the store, or files beside the source. It's
 /// decided here rather than by the drivers so there's one reading of where
 /// a shader came from instead of one per surface.
 ///
@@ -4720,6 +4720,10 @@ impl Workspace {
     /// look; a blank window has nothing to replace, so it acts straight off
     /// the click with no confirm. The settings window's apply comes through
     /// here too, so both entry points share one flow.
+    ///
+    /// The workspace's files go in first. A stage that fails says so in a
+    /// toast and stops the apply before anything is replaced. Returns whether
+    /// the apply went ahead.
     pub(crate) fn apply_workspace(
         &mut self,
         name: &str,
@@ -4727,10 +4731,17 @@ impl Workspace {
         notice: ShaderNotice,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let Some(bundle) = crate::workspaces::resolve(name) else {
-            return;
+    ) -> bool {
+        let Some((bundle, origin)) = crate::workspaces::resolve_with_origin(name) else {
+            return false;
         };
+        if let Err(e) = crate::workspaces::swap_in_files(&bundle, &origin) {
+            log::warn!("workspace: applying {name:?}: {e}");
+            rox_panel_api::toast::Toast::new(panel::Tone::Bad, e)
+                .title(rox_i18n::t!("settings-workspace-apply-failed", name = name))
+                .show(window, cx);
+            return false;
+        }
         // Without Shaders takes them out here, before anything reads the
         // bundle: the overlay and every panel with one on it, the pool left
         // alone. Everything downstream then applies a look that doesn't
@@ -4819,6 +4830,7 @@ impl Workspace {
             self.apply_empty_layout(window, cx);
         }
         cx.notify();
+        true
     }
 
     /// The mini-player button's config, so the settings window can push a
@@ -5076,24 +5088,51 @@ impl Workspace {
             let Some(path) = paths.pop() else {
                 return;
             };
-            let Some(bundle) = crate::workspaces::read_bundle(&path) else {
-                return;
-            };
-            crate::workspaces::store(&bundle);
-            let card = crate::workspaces::ApplyCard::of(&bundle);
-            this.update(cx, |this, cx| {
-                if !card.shaders.is_empty() {
-                    this.layout_dialog = Some(LayoutDialog::ConfirmApplyWorkspace {
-                        card,
-                        imported: true,
-                    });
-                }
-                cx.notify();
-                native_menu::rebuild(cx);
+            this.update_in(cx, |this, window, cx| {
+                this.import_workspace_file(path, window, cx)
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The import half, for any way a file arrives: stored under a deduped
+    /// name, then offered through the apply confirm when it brings code
+    /// nobody here agreed to or more bytes than a look usually carries.
+    /// A refused file says why in a toast.
+    pub(crate) fn import_workspace_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let bundle = match crate::workspaces::import_file(&path) {
+            Ok(bundle) => bundle,
+            Err(e) => {
+                log::warn!("workspace: importing {}: {e}", path.display());
+                let file = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                rox_panel_api::toast::Toast::new(panel::Tone::Bad, e)
+                    .title(rox_i18n::t!(
+                        "settings-workspace-import-failed",
+                        file = file
+                    ))
+                    .show(window, cx);
+                return;
+            }
+        };
+
+        let card = crate::workspaces::ApplyCard::of(&bundle);
+        if !card.shaders.is_empty() || card.heavy.is_some() {
+            self.layout_dialog = Some(LayoutDialog::ConfirmApplyWorkspace {
+                card,
+                imported: true,
+            });
+        }
+        cx.notify();
+        native_menu::rebuild(cx);
     }
 
     /// Toggle the mini layout: on the mini preset the click goes back to the
@@ -6471,6 +6510,7 @@ impl Workspace {
                     .children(bundle_card.byline.clone().map(line))
                     .children(bundle_card.description.clone().map(line))
                     .children(bundle_card.requires.clone().map(line))
+                    .children(bundle_card.heavy.clone().map(line))
                     .child(line(if *imported {
                         rox_i18n::t!("workspace-apply-imported-body")
                     } else {

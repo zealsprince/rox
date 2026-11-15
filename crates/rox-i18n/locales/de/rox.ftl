@@ -1469,6 +1469,7 @@ settings-storage-waveforms = Wellenformen
     .description = Die Spitzenleiste jedes Titels, nach dem ersten Spielen behalten; geleerte werden beim nächsten Spielen neu dekodiert
 
 ## Settings: workspace
+settings-workspace-apply-failed = { $name } ließ sich nicht anwenden
 settings-workspace-card-author = Autor
 settings-workspace-card-author-placeholder = Wer es gemacht hat
 settings-workspace-card-created = Erstellt { $date }
@@ -1490,7 +1491,9 @@ settings-workspace-composition-hint = Die Panels des Fensters, wie sie in Teiler
 settings-workspace-empty = Noch keine Arbeitsflächen
 settings-workspace-global-presets-empty = Noch keine globalen Vorlagen
 settings-workspace-global-presets-hint = Als global gespeicherte Panel-Vorlagen. Jede Arbeitsfläche listet sie, und ihre Shader stecken in ihnen selbst
+settings-workspace-heavy = Entpackt { $size } MB, mehr als die meisten Erscheinungsbilder mitbringen
 settings-workspace-hint = Eine Arbeitsfläche ist ein ganzes Erscheinungsbild: Layouts, Palette, Aussehen. Eine anzuwenden ersetzt alle drei
+settings-workspace-import-failed = { $file } ließ sich nicht importieren
 settings-workspace-layout-name-placeholder = Layoutname
 settings-workspace-layouts-empty = Noch keine Layouts
 settings-workspace-layouts-hint = Primär und Mini sind die beiden, zwischen denen die Mini-Player-Taste der Menüleiste wechselt

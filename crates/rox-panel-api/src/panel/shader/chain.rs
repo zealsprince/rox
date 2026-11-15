@@ -5,8 +5,9 @@
 //! directives rather than config: the pool, eject, hot reload, approval
 //! fingerprint and bundle all assume one shader is one text.
 //!
-//! An `// @asset` image's bytes come from the pool entry or a file beside
-//! the source, never from a path the text itself picked.
+//! An `// @asset` image's bytes come from the workspace's asset store, by way
+//! of the pool entry, or from a file beside the source. Never from a path the
+//! text itself picked.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -298,12 +299,22 @@ pub struct AssetImage {
 }
 
 /// Find and decode every image a chain declares, in declaration order.
-/// The pool entry's bytes win over a file beside the source. A `cover` of
+/// The pool entry's asset wins over a file beside the source. A `cover` of
 /// None binds [`fallback_cover`] rather than failing.
 pub fn resolve_assets(
     spec: &ChainSpec,
     ctx: &ProgramCtx,
     cover: Option<&AssetImage>,
+) -> Result<Vec<(String, AssetImage)>, String> {
+    resolve_assets_with(spec, ctx, cover, &rox_core::settings::assets::read)
+}
+
+/// [`resolve_assets`] with the store's read handed in, for tests.
+fn resolve_assets_with(
+    spec: &ChainSpec,
+    ctx: &ProgramCtx,
+    cover: Option<&AssetImage>,
+    read: &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<(String, AssetImage)>, String> {
     if spec.assets.is_empty() {
         return Ok(Vec::new());
@@ -329,7 +340,7 @@ pub fn resolve_assets(
             images.push((asset.name.clone(), image));
             continue;
         }
-        let bytes = carried(entry.as_ref(), &asset.file)
+        let bytes = carried(entry.as_ref(), &asset.file, read)
             .or_else(|| beside(ctx.path.as_deref(), &asset.file))
             .or_else(|| beside(entry.as_ref().and_then(|e| e.path.as_deref()), &asset.file))
             .transpose()
@@ -346,15 +357,18 @@ pub fn resolve_assets(
     Ok(images)
 }
 
+/// The pool entry names an asset id for the file, and the store holds the
+/// bytes under it.
 fn carried(
     entry: Option<&rox_core::settings::NamedShader>,
     file: &str,
+    read: &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Option<Result<Vec<u8>, String>> {
     entry?
         .assets
         .iter()
         .find(|asset| asset.file == file)
-        .map(|asset| asset.decode())
+        .map(|asset| read(&asset.asset))
 }
 
 fn beside(source: Option<&Path>, file: &str) -> Option<Result<Vec<u8>, String>> {
@@ -743,15 +757,36 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(drift); }";
             name: "Stamp".to_string(),
             source: source.clone(),
             path: None,
-            assets: vec![ShaderAsset::from_bytes("plate.png", &plate())],
+            assets: vec![ShaderAsset {
+                file: "plate.png".to_string(),
+                asset: "stamp-plate".to_string(),
+                data: String::new(),
+            }],
         }]);
-        let carried =
-            resolve_assets(&spec, &ProgramCtx::named("Stamp"), None).expect("from the pool");
+
+        // The store, standing in: the entry's asset id is the key.
+        let store = scratch("resolve-store");
+        std::fs::write(store.join("stamp-plate.png"), plate()).expect("write");
+        let read = |id: &str| match id {
+            "stamp-plate" => {
+                std::fs::read(store.join("stamp-plate.png")).map_err(|e| e.to_string())
+            }
+            other => Err(format!("no asset {other}")),
+        };
+        let carried = resolve_assets_with(&spec, &ProgramCtx::named("Stamp"), None, &read)
+            .expect("from the pool");
         assert_eq!(carried.len(), 1);
         assert_eq!(carried[0].0, "plate");
         assert_eq!(carried[0].1.width, 2);
         assert_eq!(carried[0].1.height, 2);
         assert_eq!(carried[0].1.rgba8.len(), 2 * 2 * 4);
+
+        // An entry naming an asset the store lacks says so, rather than
+        // falling through to whatever sits beside some file.
+        let gone = |id: &str| Err(format!("no asset {id}"));
+        let missing = resolve_assets_with(&spec, &ProgramCtx::named("Stamp"), None, &gone)
+            .expect_err("not in the store");
+        assert!(missing.contains("no asset stamp-plate"), "{missing}");
 
         let dir = scratch("resolve");
         let wgsl = dir.join("stamp.wgsl");
@@ -774,6 +809,7 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(drift); }";
         rox_core::settings::note_shader_pool(Vec::new());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&empty).ok();
+        std::fs::remove_dir_all(&store).ok();
     }
 
     #[test]

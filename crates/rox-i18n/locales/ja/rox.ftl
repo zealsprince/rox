@@ -1456,6 +1456,7 @@ settings-storage-waveforms = 波形
     .description = 各曲のピーク波形。最初の再生のあと取っておく。消すと次の再生でデコードし直す
 
 ## Settings: workspace
+settings-workspace-apply-failed = { $name } を適用できませんでした
 settings-workspace-card-author = 作者
 settings-workspace-card-author-placeholder = 作った人
 settings-workspace-card-created = 作成 { $date }
@@ -1477,7 +1478,9 @@ settings-workspace-composition-hint = ウィンドウのパネルが分割とタ
 settings-workspace-empty = ワークスペースがまだありません
 settings-workspace-global-presets-empty = グローバルプリセットはまだありません
 settings-workspace-global-presets-hint = グローバルとして保存したパネルプリセットです。すべてのワークスペースに表示され、シェーダーも中に含まれます
+settings-workspace-heavy = 展開すると { $size } MB になり、一般的な見た目より大きめです
 settings-workspace-hint = ワークスペースは見た目のすべてです。レイアウト、パレット、外観。適用するとこの 3 つが入れ替わります
+settings-workspace-import-failed = { $file } を読み込めませんでした
 settings-workspace-layout-name-placeholder = レイアウト名
 settings-workspace-layouts-empty = レイアウトがまだありません
 settings-workspace-layouts-hint = メニューバーのミニプレイヤーボタンが行き来するのは、プライマリとミニの 2 つです

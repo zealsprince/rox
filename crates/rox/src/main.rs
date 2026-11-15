@@ -341,6 +341,10 @@ fn main() {
         startup::single_instance::serve(instance, cx);
         // Recorded before anything can write a settings file.
         note_first_run();
+        // Version 1's saved workspaces, one JSON file each, become archives.
+        // In here so the run is logged and only the instance that owns the
+        // data dir converts.
+        workspaces::migrate_v1_files();
         // Before any window opens, or a shipped look's first frame paints bare while
         // its shaders wait for approval.
         workspaces::trust_shipped_shaders();

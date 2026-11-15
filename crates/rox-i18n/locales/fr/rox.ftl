@@ -1510,6 +1510,7 @@ settings-storage-waveforms = Formes d'onde
     .description = La barre de crêtes de chaque piste, gardée après sa première écoute ; celles qu'on efface se redécodent à la lecture suivante
 
 ## Settings: workspace
+settings-workspace-apply-failed = Impossible d'appliquer { $name }
 settings-workspace-card-author = Auteur
 settings-workspace-card-author-placeholder = Qui l'a fait
 settings-workspace-card-created = Créé le { $date }
@@ -1531,7 +1532,9 @@ settings-workspace-composition-hint = Les panneaux de la fenêtre tels qu'ils so
 settings-workspace-empty = Aucun espace de travail pour l'instant
 settings-workspace-global-presets-empty = Aucun préréglage global pour l'instant
 settings-workspace-global-presets-hint = Les préréglages de panneau enregistrés en global. Tous les espaces de travail les listent, et leurs shaders voyagent avec eux
+settings-workspace-heavy = Fait { $size } Mo une fois décompressé, plus que la plupart des habillages
 settings-workspace-hint = Un espace de travail est un habillage entier : dispositions, palette, apparence. En appliquer un remplace les trois
+settings-workspace-import-failed = Impossible d'importer { $file }
 settings-workspace-layout-name-placeholder = Nom de la disposition
 settings-workspace-layouts-empty = Aucune disposition pour l'instant
 settings-workspace-layouts-hint = Principale et mini sont les deux entre lesquelles bascule le bouton mini-lecteur de la barre de menus

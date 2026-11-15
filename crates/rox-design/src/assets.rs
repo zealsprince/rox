@@ -322,11 +322,21 @@ pub mod icons {
 #[include = "app/rox-music.svg"]
 #[include = "workspaces/**/*.json"]
 #[include = "workspaces/**/*.png"]
+#[include = "workspaces/**/assets/*"]
 #[include = "disc/*.png"]
 pub struct Assets;
 
 pub fn shipped_workspaces() -> Vec<(String, Cow<'static, [u8]>)> {
     shipped_json("workspaces/")
+}
+
+/// A file a shipped workspace carries, from `workspaces/<stem>/assets/`.
+pub fn shipped_workspace_asset(stem: &str, file: &str) -> Option<Cow<'static, [u8]>> {
+    if file.contains(['/', '\\']) || stem.contains(['/', '\\']) {
+        return None;
+    }
+
+    Assets::get(&format!("workspaces/{stem}/assets/{file}")).map(|file| file.data)
 }
 
 /// `workspaces/<stem>_Dark.png` or `_Light.png`, falling back to a plain
@@ -359,10 +369,14 @@ pub fn png_aspect(path: &str) -> Option<f32> {
     (w > 0 && h > 0).then(|| w as f32 / h as f32)
 }
 
+/// Only the folder's own `<Stem>.json`, never a file further down.
 fn shipped_json(prefix: &str) -> Vec<(String, Cow<'static, [u8]>)> {
     Assets::iter()
         .filter_map(|path| {
             let rest = path.strip_prefix(prefix)?.strip_suffix(".json")?;
+            if rest.contains('/') {
+                return None;
+            }
             let file = Assets::get(path.as_ref())?;
             Some((rest.to_string(), file.data))
         })

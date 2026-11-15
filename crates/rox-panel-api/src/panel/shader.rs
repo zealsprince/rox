@@ -302,19 +302,17 @@ pub fn eject(name: &str, source: &str) -> std::io::Result<PathBuf> {
         &live_workspace(),
         name,
         source,
-        &[],
     )
 }
 
-/// [`eject`] under a given root, with the shader's images. Images are
-/// overwritten rather than slid to a variant: the shader binds them by file
-/// name, so a numbered copy would never be sampled.
+/// [`eject`] under a given root. Only the source goes out: a pool entry's
+/// images stay in the workspace's asset store, and the ejected file still
+/// resolves them through the entry.
 pub fn eject_in(
     root: &Path,
     workspace: &str,
     name: &str,
     source: &str,
-    assets: &[rox_core::settings::ShaderAsset],
 ) -> std::io::Result<PathBuf> {
     let print = fingerprint(source);
     for variant in 1..=EJECT_VARIANTS {
@@ -333,7 +331,6 @@ pub fn eject_in(
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, source)?;
-        write_assets(path.parent(), assets)?;
         return Ok(path);
     }
     Err(std::io::Error::new(
@@ -345,23 +342,6 @@ pub fn eject_in(
         )
         .to_string(),
     ))
-}
-
-/// Write a shader's images out beside its `.wgsl`.
-fn write_assets(
-    dir: Option<&Path>,
-    assets: &[rox_core::settings::ShaderAsset],
-) -> std::io::Result<()> {
-    let Some(dir) = dir else {
-        return Ok(());
-    };
-    for asset in assets {
-        let bytes = asset
-            .decode()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        std::fs::write(dir.join(&asset.file), bytes)?;
-    }
-    Ok(())
 }
 
 /// Eject a pool entry and bookmark the file on it, so [`poll_pool`] brings
@@ -378,7 +358,6 @@ pub fn eject_pool_entry(name: &str) -> std::io::Result<PathBuf> {
         &live_workspace(),
         name,
         &entry.source,
-        &entry.assets,
     )?;
     let mut pool = rox_core::settings::shader_pool();
     if let Some(entry) = pool.iter_mut().find(|entry| entry.name == name) {
@@ -403,7 +382,8 @@ pub fn eject_name(label: &str, source: &str) -> String {
 ///
 /// `path` replaces the entry's bookmark. Never keep a replaced entry's old
 /// one: that file holds the old shader and the pool watch would pull it
-/// back over the save. Images beside `path` travel with the entry.
+/// back over the save. Images beside `path` are imported into the asset
+/// store and travel with the entry.
 pub fn save_to_pool(name: &str, source: &str, path: Option<PathBuf>) -> bool {
     approve(source);
     let captured = sibling_assets(source, path.as_deref());
@@ -443,15 +423,27 @@ fn sibling_assets(source: &str, path: Option<&Path>) -> Vec<rox_core::settings::
     let Ok(spec) = parse_chain(source) else {
         return Vec::new();
     };
+
     spec.assets
         .iter()
         .filter(|asset| !asset.is_cover())
         .filter_map(|asset| {
-            let bytes = std::fs::read(dir.join(&asset.file)).ok()?;
-            Some(rox_core::settings::ShaderAsset::from_bytes(
-                asset.file.clone(),
-                &bytes,
-            ))
+            let beside = dir.join(&asset.file);
+            if !beside.is_file() {
+                return None;
+            }
+
+            match rox_core::settings::assets::import(&beside) {
+                Ok(stored) => Some(rox_core::settings::ShaderAsset {
+                    file: asset.file.clone(),
+                    asset: stored.id,
+                    data: String::new(),
+                }),
+                Err(e) => {
+                    log::warn!("shader pool: importing {}: {e}", beside.display());
+                    None
+                }
+            }
         })
         .collect()
 }
@@ -465,29 +457,21 @@ static POOL_WATCH: LazyLock<Mutex<PoolWatch>> = LazyLock::new(|| Mutex::new(Pool
 #[derive(Default)]
 struct PoolWatch {
     checked: Option<Instant>,
-    /// An entry with no stamp yet reads its files once, so an edit made
-    /// while rox was closed is picked up on open.
-    stamps: HashMap<String, EntryStamps>,
-}
-
-/// Size and mtime of an entry's `.wgsl` and each image it declares.
-#[derive(Default)]
-struct EntryStamps {
-    source: Option<(u64, i64)>,
+    /// Size and mtime of each entry's `.wgsl`. An entry with no stamp yet
+    /// reads its file once, so an edit made while rox was closed is picked
+    /// up on open.
+    stamps: HashMap<String, (u64, i64)>,
+    /// Size and mtime of each file in the asset store, by file name.
     assets: HashMap<String, (u64, i64)>,
-}
-
-#[derive(Default)]
-struct PoolEdits {
-    /// Sources that came back changed, for the caller to approve.
-    fresh: Vec<String>,
-    /// An image edit changes no source but still has to be written back.
-    changed: bool,
 }
 
 /// Stat the pool's bookmarked files and pull edits into their entries.
 /// A changed source is approved: the user pointed rox at the file and
-/// edited it. Writing the pool re-registers every panel using it.
+/// edited it. Writing the pool re-registers every panel using it. An edit
+/// to a file in the asset store bumps [`assets::rev`] instead, which
+/// re-registers the programs without touching the pool.
+///
+/// [`assets::rev`]: rox_core::settings::assets::rev
 pub fn poll_pool() {
     let Ok(mut watch) = POOL_WATCH.try_lock() else {
         return;
@@ -500,83 +484,98 @@ pub fn poll_pool() {
         return;
     }
     watch.checked = Some(now);
+
+    let moved = assets_moved(
+        &mut watch.assets,
+        &rox_core::settings::assets::dir(),
+        &rox_core::settings::assets::all(),
+    );
     let mut pool = rox_core::settings::shader_pool();
-    let edits = pool_reload(&mut watch.stamps, &mut pool);
+    let fresh = pool_reload(&mut watch.stamps, &mut pool);
+
     // Release before touching settings files, so no other panel's paint
     // waits on the write.
     drop(watch);
-    if !edits.changed {
+
+    // The table takes an edited file's new hash, or the next save would
+    // refuse it. That bumps the rev itself. A file that vanished changes no
+    // entry, and the programs still have to hear about it.
+    if !moved.is_empty() && !rox_core::settings::assets::refresh(&moved) {
+        rox_core::settings::assets::note_changed();
+    }
+    if fresh.is_empty() {
         return;
     }
-    for source in &edits.fresh {
+    for source in &fresh {
         approve(source);
     }
     rox_core::settings::set_shader_pool(pool);
 }
 
 /// The stat-and-read half of the pool watch, over a pool handed in for
-/// tests. Images to watch come off the source's `@asset` lines, so
-/// declaring one and dropping the file beside the shader is one save.
+/// tests. Returns the sources that came back changed, for the caller to
+/// approve.
 fn pool_reload(
-    stamps: &mut HashMap<String, EntryStamps>,
+    stamps: &mut HashMap<String, (u64, i64)>,
     pool: &mut [rox_core::settings::NamedShader],
-) -> PoolEdits {
-    let mut edits = PoolEdits::default();
+) -> Vec<String> {
+    let mut fresh = Vec::new();
     for entry in pool.iter_mut() {
         let Some(path) = entry.path.clone() else {
             continue;
         };
-        let marks = stamps.entry(entry.name.clone()).or_default();
         // A vanished file leaves the entry alone. The stamp stays put, so
         // the file coming back reads as news.
-        if let Some(stamp) = rox_core::settings::file_stamp(&path)
-            && marks.source != Some(stamp)
-        {
-            marks.source = Some(stamp);
-            if let Ok(text) = std::fs::read_to_string(&path)
-                && text.trim() != entry.source.trim()
-            {
-                entry.source = text.clone();
-                edits.fresh.push(text);
-                edits.changed = true;
-            }
-        }
-        let (Some(dir), Ok(spec)) = (path.parent(), parse_chain(&entry.source)) else {
+        let Some(stamp) = rox_core::settings::file_stamp(&path) else {
             continue;
         };
-        for asset in &spec.assets {
-            if asset.is_cover() {
-                continue;
-            }
-            let file = dir.join(&asset.file);
-            let Some(stamp) = rox_core::settings::file_stamp(&file) else {
-                continue;
-            };
-            if marks.assets.get(&asset.file) == Some(&stamp) {
-                continue;
-            }
-            marks.assets.insert(asset.file.clone(), stamp);
-            let Ok(bytes) = std::fs::read(&file) else {
-                continue;
-            };
-            let fresh = rox_core::settings::ShaderAsset::from_bytes(asset.file.clone(), &bytes);
-            match entry.assets.iter_mut().find(|held| held.file == asset.file) {
-                Some(held) if held.data == fresh.data => {}
-                Some(held) => {
-                    *held = fresh;
-                    edits.changed = true;
-                }
-                None => {
-                    entry.assets.push(fresh);
-                    edits.changed = true;
-                }
-            }
+        if stamps.insert(entry.name.clone(), stamp) == Some(stamp) {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && text.trim() != entry.source.trim()
+        {
+            entry.source = text.clone();
+            fresh.push(text);
         }
     }
     // Drop departed entries' stamps, or the name coming back would treat
     // its file's next edit as old news.
     stamps.retain(|name, _| pool.iter().any(|entry| entry.name == *name));
-    edits
+    fresh
+}
+
+/// The files the asset table names that changed on disk since the last
+/// look. One that vanished counts, so a program holding its old pixels
+/// re-registers and reports it. A file seen for the first time counts only
+/// when its size isn't the table's, which is how an edit made while rox was
+/// closed is caught without hashing every file at each start.
+fn assets_moved(
+    stamps: &mut HashMap<String, (u64, i64)>,
+    dir: &Path,
+    table: &[rox_core::settings::Asset],
+) -> Vec<String> {
+    let mut moved = Vec::new();
+
+    for asset in table {
+        let stamp = rox_core::settings::file_stamp(&dir.join(&asset.file));
+        let seen = match stamp {
+            Some(stamp) => stamps.insert(asset.file.clone(), stamp),
+            None => stamps.remove(&asset.file),
+        };
+
+        let changed = match seen {
+            Some(_) => seen != stamp,
+            None => stamp.is_some_and(|(size, _)| size != asset.bytes),
+        };
+        if changed {
+            moved.push(asset.file.clone());
+        }
+    }
+
+    stamps.retain(|file, _| table.iter().any(|asset| asset.file == *file));
+
+    moved
 }
 
 /// The mtime watch behind hot reload, for both shader surfaces. Never
@@ -940,10 +939,10 @@ fn source_hash(source: &str) -> u64 {
     hasher.finish()
 }
 
-/// The pool generation is in the key because a program can fail over an
-/// image, and fixing one changes no source text. Without it the error
-/// could only be cleared by editing the shader. `cover` is zero for
-/// programs that don't bind [`COVER_SOURCE`].
+/// The pool and asset store generations are in the key because a program
+/// can fail over an image, and fixing one changes no source text. Without
+/// them the error could only be cleared by editing the shader. `cover` is
+/// zero for programs that don't bind [`COVER_SOURCE`].
 fn program_key(window: u64, source: &str, ctx: &ProgramCtx, cover: u64) -> (u64, u64) {
     use std::hash::{Hash as _, Hasher as _};
 
@@ -952,6 +951,7 @@ fn program_key(window: u64, source: &str, ctx: &ProgramCtx, cover: u64) -> (u64,
     ctx.name.hash(&mut hasher);
     ctx.path.hash(&mut hasher);
     rox_core::settings::shader_pool_rev().hash(&mut hasher);
+    rox_core::settings::assets::rev().hash(&mut hasher);
     cover.hash(&mut hasher);
     (window, hasher.finish())
 }
@@ -1694,25 +1694,25 @@ mod tests {
         let root = eject_root("collision");
         let named = |stem: &str| rox_core::settings::shader_eject_path_in(&root, "Nightfall", stem);
 
-        let first = eject_in(&root, "Nightfall", "Grain", "// one", &[]).expect("eject");
+        let first = eject_in(&root, "Nightfall", "Grain", "// one").expect("eject");
         assert_eq!(first, named("Grain"));
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "// one");
 
-        let again = eject_in(&root, "Nightfall", "Grain", "\n// one\n", &[]).expect("eject");
+        let again = eject_in(&root, "Nightfall", "Grain", "\n// one\n").expect("eject");
         assert_eq!(again, first);
 
-        let second = eject_in(&root, "Nightfall", "Grain", "// two", &[]).expect("eject");
+        let second = eject_in(&root, "Nightfall", "Grain", "// two").expect("eject");
         assert_eq!(second, named("Grain-2"));
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "\n// one\n");
 
-        let third = eject_in(&root, "Nightfall", "Grain", "// three", &[]).expect("eject");
+        let third = eject_in(&root, "Nightfall", "Grain", "// three").expect("eject");
         assert_eq!(third, named("Grain-3"));
         assert_eq!(
-            eject_in(&root, "Nightfall", "Grain", "// two", &[]).expect("eject"),
+            eject_in(&root, "Nightfall", "Grain", "// two").expect("eject"),
             named("Grain-2")
         );
 
-        let awkward = eject_in(&root, "Nightfall", "a/b", "// slashed", &[]).expect("eject");
+        let awkward = eject_in(&root, "Nightfall", "a/b", "// slashed").expect("eject");
         assert_eq!(awkward, named("a b"));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1737,96 +1737,87 @@ mod tests {
         ];
         let mut stamps = HashMap::new();
 
-        assert!(!pool_reload(&mut stamps, &mut pool).changed);
+        assert!(pool_reload(&mut stamps, &mut pool).is_empty());
 
         std::fs::write(&path, "// one, and then some more").expect("rewrite");
         assert_eq!(
-            pool_reload(&mut stamps, &mut pool).fresh,
+            pool_reload(&mut stamps, &mut pool),
             vec!["// one, and then some more".to_string()]
         );
         assert_eq!(pool[0].source, "// one, and then some more");
-        assert!(!pool_reload(&mut stamps, &mut pool).changed);
+        assert!(pool_reload(&mut stamps, &mut pool).is_empty());
         assert_eq!(pool[1].source, "// bloom");
 
-        assert!(!pool_reload(&mut stamps, &mut Vec::new()).changed);
+        assert!(pool_reload(&mut stamps, &mut Vec::new()).is_empty());
         assert!(stamps.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    fn plate(red: u8) -> Vec<u8> {
-        let mut image = image::RgbaImage::new(1, 1);
-        image.put_pixel(0, 0, image::Rgba([red, 0, 0, 255]));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(image)
-            .write_to(&mut bytes, image::ImageFormat::Png)
-            .expect("encode");
-        bytes.into_inner()
-    }
-
     #[test]
-    fn ejecting_writes_the_images_beside_the_shader() {
+    fn ejecting_writes_only_the_source() {
         let root = eject_root("assets");
         let source = "// @asset plate: plate.png\nfn fs_user() {}";
-        let assets = vec![rox_core::settings::ShaderAsset::from_bytes(
-            "plate.png",
-            &plate(200),
-        )];
-        let path = eject_in(&root, "Nightfall", "Stamp", source, &assets).expect("eject");
-        let beside = path.parent().unwrap().join("plate.png");
-        assert_eq!(std::fs::read(&beside).unwrap(), plate(200));
 
-        // Images overwrite rather than sliding down to a variant.
-        std::fs::write(&beside, b"scribbled on").expect("write");
-        let again = eject_in(&root, "Nightfall", "Stamp", source, &assets).expect("eject");
-        assert_eq!(again, path);
-        assert_eq!(std::fs::read(&beside).unwrap(), plate(200));
+        let path = eject_in(&root, "Nightfall", "Stamp", source).expect("eject");
+        let folder: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(folder, vec![path.clone()], "the plate stays in the store");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
 
-        let broken = vec![rox_core::settings::ShaderAsset {
-            file: "plate.png".to_string(),
-            data: "not base64 at all!!".to_string(),
-        }];
-        assert!(eject_in(&root, "Nightfall", "Stamp", source, &broken).is_err());
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn the_pool_watch_pulls_an_image_edit_into_its_entry() {
-        let dir = eject_root("pool-assets");
+    fn an_edited_asset_file_bumps_the_rev() {
+        let dir = eject_root("asset-watch");
         std::fs::create_dir_all(&dir).expect("scratch dir");
-        let path = dir.join("stamp.wgsl");
-        let source = "// @asset plate: plate.png\nfn fs_user() {}";
-        std::fs::write(&path, source).expect("write");
-        std::fs::write(dir.join("plate.png"), plate(10)).expect("write");
+        std::fs::write(dir.join("plate.png"), b"one").expect("write");
 
-        let mut pool = vec![rox_core::settings::NamedShader {
-            name: "Stamp".to_string(),
-            source: source.to_string(),
-            path: Some(path.clone()),
-            assets: Vec::new(),
+        let table = vec![rox_core::settings::Asset {
+            id: "plate".to_string(),
+            file: "plate.png".to_string(),
+            bytes: 3,
+            ..Default::default()
         }];
+        let moved = vec!["plate.png".to_string()];
         let mut stamps = HashMap::new();
 
-        let edits = pool_reload(&mut stamps, &mut pool);
-        assert!(edits.changed, "a new image is news");
-        assert!(edits.fresh.is_empty(), "and it approves nothing: it's data");
-        assert_eq!(pool[0].assets.len(), 1);
-        assert_eq!(pool[0].assets[0].file, "plate.png");
-        assert_eq!(pool[0].assets[0].decode().unwrap(), plate(10));
-
-        assert!(!pool_reload(&mut stamps, &mut pool).changed);
+        assert!(
+            assets_moved(&mut stamps, &dir, &table).is_empty(),
+            "a first sighting of the size the table holds is only stamped"
+        );
+        assert!(assets_moved(&mut stamps, &dir, &table).is_empty());
 
         // mtime only resolves to the second, so the change is a length.
-        std::fs::write(dir.join("plate.png"), [plate(10), plate(240)].concat()).expect("rewrite");
-        assert!(pool_reload(&mut stamps, &mut pool).changed);
+        std::fs::write(dir.join("plate.png"), b"one and two").expect("rewrite");
+        assert_eq!(assets_moved(&mut stamps, &dir, &table), moved);
+        assert!(assets_moved(&mut stamps, &dir, &table).is_empty());
+
+        std::fs::remove_file(dir.join("plate.png")).expect("remove");
         assert_eq!(
-            pool[0].assets[0].decode().unwrap(),
-            [plate(10), plate(240)].concat()
+            assets_moved(&mut stamps, &dir, &table),
+            moved,
+            "a vanished file moved"
         );
 
-        std::fs::write(&path, "fn fs_user() {}").expect("rewrite");
-        let edits = pool_reload(&mut stamps, &mut pool);
-        assert_eq!(edits.fresh, vec!["fn fs_user() {}".to_string()]);
-        assert_eq!(pool[0].assets.len(), 1, "the bytes stay with the entry");
+        // Edited while rox was closed: nothing is stamped yet, and the size
+        // on disk isn't the table's.
+        std::fs::write(dir.join("plate.png"), b"one and two").expect("rewrite");
+        assert_eq!(assets_moved(&mut HashMap::new(), &dir, &table), moved);
+
+        assert!(assets_moved(&mut stamps, &dir, &[]).is_empty());
+        assert!(
+            stamps.is_empty(),
+            "a file the table dropped loses its stamp"
+        );
+
+        // What the watch does with the answer, and what the program keys read.
+        let before = rox_core::settings::assets::rev();
+        rox_core::settings::assets::note_changed();
+        assert!(rox_core::settings::assets::rev() > before);
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

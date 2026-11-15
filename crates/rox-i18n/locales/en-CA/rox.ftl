@@ -1534,6 +1534,7 @@ settings-storage-waveforms = Waveforms
 
 ## Settings: workspace
 
+settings-workspace-apply-failed = Couldn't apply { $name }
 settings-workspace-card-author = Author
 settings-workspace-card-author-placeholder = Who made it
 settings-workspace-card-created = Created { $date }
@@ -1555,7 +1556,9 @@ settings-workspace-composition-hint = The window's panels as they're arranged in
 settings-workspace-empty = No workspaces yet
 settings-workspace-global-presets-empty = No global presets yet
 settings-workspace-global-presets-hint = Panel presets saved as Global. Every workspace lists them, and their shaders travel inside them
+settings-workspace-heavy = Unpacks to { $size } MB, more than most looks carry
 settings-workspace-hint = A workspace is a whole look: layouts, palette, appearance. Applying one replaces all three
+settings-workspace-import-failed = Couldn't import { $file }
 settings-workspace-layout-name-placeholder = Layout name
 settings-workspace-layouts-empty = No layouts yet
 settings-workspace-layouts-hint = Primary and mini are the two the menubar's mini-player button swaps between

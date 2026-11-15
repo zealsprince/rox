@@ -669,10 +669,16 @@ fn scan(dir: &Path) -> Vec<Loaded> {
 /// Peek, copy to `plugins/<id>.roxp` (temp then rename), rescan. Never
 /// switches anything on. Returns the id.
 pub fn install(archive: &Path, cx: &mut App) -> Result<String, String> {
-    let id = install_into(archive, &settings::plugins_dir())?;
+    let id = install_file(archive)?;
     rescan(cx);
 
     Ok(id)
+}
+
+/// [`install`] without the rescan. It hashes the archive and copies it, so
+/// a window calls this off its own thread and [`rescan`]s after.
+pub fn install_file(archive: &Path) -> Result<String, String> {
+    install_into(archive, &settings::plugins_dir())
 }
 
 /// [`install`]'s file work. It leaves the record and the approval alone, so

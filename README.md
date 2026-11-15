@@ -191,9 +191,9 @@ fallback, so add `noto-fonts-cjk-sans-static` or `google-noto-sans-cjk-fonts`.
 ## Plugins
 
 A plugin brings a source from outside rox into the library: rox browses, searches, syncs
-and plays it through a program the plugin supplies. Each plugin is a folder in the
-`plugins` folder of rox's data directory, and nothing in it runs until you switch it on
-on the Plugins settings page. rox doesn't publish plugins for any service. It publishes
+and plays it through a program the plugin supplies. A plugin is a `.roxp` file you
+install from the Plugins settings page, and nothing in it runs until you switch it on
+there. rox doesn't publish plugins for any service. It publishes
 the protocol in the [plugin guide](README_PLUGINS.md) and an example
 to copy in [`examples/plugins/tones`](examples/plugins/tones/).
 

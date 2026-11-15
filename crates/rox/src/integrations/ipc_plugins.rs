@@ -222,7 +222,7 @@ fn unavailable(source: &str, why: Unavailable) -> String {
             "{source} changed on disk since it was switched on, and waits on Settings > \
              Plugins to be approved again"
         ),
-        Unavailable::Missing => format!("there's no plugin {source} in the plugins folder"),
+        Unavailable::Missing => format!("there's no plugin {source} installed"),
         Unavailable::Failed => format!("{source} doesn't load; Settings > Plugins says why"),
         Unavailable::Stopped => format!("{source} was stopped after crashing repeatedly"),
     }

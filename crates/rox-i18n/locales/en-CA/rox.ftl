@@ -1352,10 +1352,12 @@ settings-playback-unrated-dots = Unrated Dots
 
 settings-plugins-enable = Enable Plugins
     .description = Let the plugins in the plugins folder run. Each one still has its own switch below, and runs as a program on this computer with your permissions
-settings-plugins-intro = Each folder in the plugins folder is one plugin. Nothing in it runs until you switch it on, and one that changes on disk switches off until you switch it on again
+settings-plugins-intro = A plugin is a .roxp file in the plugins folder, or a folder while you're writing one. Nothing in it runs until you switch it on, and one that changes on disk switches off until you switch it on again
+settings-plugins-install = Install
 settings-plugins-reveal = Reveal Folder
 settings-plugins-guide = Plugin Guide
-settings-plugins-empty = No plugins yet. Drop a plugin's folder into the plugins folder
+settings-plugins-empty = No plugins yet. Install one, or drop a .roxp into the plugins folder
+settings-plugins-installed = Installed { $name }. It stays off until you switch it on
 settings-plugins-standing-missing = Missing
 settings-plugins-standing-failed = Failed
 settings-plugins-standing-changed = Changed on disk
@@ -1382,6 +1384,8 @@ settings-plugins-domain-lyrics = lyrics
 settings-plugins-domain-metadata = tag lookup
 settings-plugins-domain-artist = artist info
 settings-plugins-developer = Developer mode: until rox quits, a change to this plugin's folder is approved on its own and restarts it. A change to what its manifest declares still switches it off
+settings-plugins-pack = Pack into a .roxp to share
+settings-plugins-packed = Packed into { $path }
 settings-plugins-synced = Synced Collections
 settings-plugins-synced-none = Nothing synced yet. Switch sync on for a collection in the plugin's source browser
 settings-plugins-sync-now = Sync Now
@@ -1400,7 +1404,7 @@ settings-plugins-card-actions = Adds to rox's menus: { $actions }
 settings-plugins-card-program-found = Uses { $program }, found on this computer.
 settings-plugins-card-program-missing = Uses { $program }, which isn't on this computer's PATH.
 settings-plugins-card-changed = Changed since you last switched it on:
-settings-plugins-card-unchanged = The manifest is the same as last time. Other files in the folder changed.
+settings-plugins-card-unchanged = The manifest is the same as last time. Other files in the plugin changed.
 settings-plugins-change-capability-added = New capability: { $name }
 settings-plugins-change-capability-removed = Dropped capability: { $name }
 settings-plugins-change-program = New program: { $program }
@@ -1413,7 +1417,8 @@ settings-plugins-change-provider = Now offers { $domain } for your library
 settings-plugins-switch-on = Switch On
 settings-plugins-remove-title = Remove "{ $name }"?
 settings-plugins-remove-body = Its tracks, synced collections and settings go. Its folder stays in the plugins folder, so delete it there to stop it showing here.
-settings-plugins-remove-body-missing = Its tracks, synced collections and settings go. Its folder is already gone from the plugins folder, so it won't show here again.
+settings-plugins-remove-body-missing = Its tracks, synced collections and settings go. It's already gone from the plugins folder, so it won't show here again.
+settings-plugins-remove-package-body = Its tracks, synced collections and settings go, and so does its .roxp file. The files it saved in its data folder stay.
 
 ## Settings: providers
 

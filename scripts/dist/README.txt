@@ -333,18 +333,20 @@ doesn't ship plugins for any service.
 To add one:
 
   1. Turn on Enable Plugins at the top of Settings > Plugins.
-  2. Press Reveal Folder on the Plugins page. It opens the plugins folder,
-     creating it the first time. In portable mode that's rox-data/plugins
-     beside the executable.
-  3. Drop the plugin's folder in. The folder's name has to be the plugin's
-     id.
-  4. Switch it on. The card that opens says what the plugin declares and
+  2. Press Install on the Plugins page and pick the plugin's .roxp file.
+     It shows up with its switch off. Installing runs nothing.
+  3. Switch it on. The card that opens says what the plugin declares and
      which programs it runs, and asks you to confirm.
 
+A .roxp dropped into the plugins folder installs the same way. Reveal
+Folder opens that folder, creating it the first time. In portable mode
+that's rox-data/plugins beside the executable. Installing a newer .roxp
+of the same plugin replaces the old one.
+
 A plugin runs as a program on this computer with your permissions. rox
-doesn't sandbox it. Switching it on approves exactly the files in its
-folder. If any of them change, it switches off until you switch it on
-again. The card then shows what changed.
+doesn't sandbox it. Switching it on approves exactly the files in it. If
+any of them change, or a newer version replaces it, it switches off
+until you switch it on again. The card then shows what changed.
 
 A plugin can also offer lyrics, tag lookup and artist info for any track
 in your library, not only its own. Each of those gets a switch on the
@@ -360,7 +362,8 @@ in its menu, keeps it. A check stays lit while its collection or track
 is in the library. Library, beside the panel's search box, lists what
 the plugin has put there: its kept collections and the tracks added one
 at a time. Remove on the Plugins page drops the plugin's tracks, synced
-collections and settings, and leaves its folder where it is.
+collections and settings, and deletes its .roxp. A plugin kept as a
+folder stays where it is.
 
 The panel's search box takes artist:, title: and album: terms and
 "quoted phrases", and every result has to match them. That finds a song
@@ -379,8 +382,8 @@ views and search, and keeps its place in the queue, playlists and history.
 One that isn't played again for 30 days, and isn't in the saved queue, is
 forgotten when rox starts. Its playlist entries and plays come back with
 it if it returns. Switching a plugin off hides its tracks without deleting
-them, and so does deleting its folder, which is how many plugins update.
-Only Remove deletes them.
+them, and so does deleting it from the plugins folder, which is how many
+plugins update. Only Remove deletes them.
 
 The chevron beside a switched-on plugin on the Plugins page unfolds its
 details. They count its tracks in the library and those added one at a

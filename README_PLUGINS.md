@@ -1,9 +1,10 @@
 # Plugins
 
 A plugin brings a source from outside rox into the library: rox browses, searches,
-syncs and plays it through a program the plugin supplies. The plugin is a folder
-holding a manifest and that program. rox starts the program as a subprocess and
-speaks newline-delimited JSON-RPC 2.0 with it over stdin and stdout.
+syncs and plays it through a program the plugin supplies. A plugin is a manifest and
+that program, shipped as one `.roxp` file or kept as a folder while you write it. rox
+starts the program as a subprocess and speaks newline-delimited JSON-RPC 2.0 with it
+over stdin and stdout.
 
 rox doesn't ship plugins for streaming services. Three examples are there to copy, all on
 nothing beyond Python 3's standard library. [`examples/plugins/tones`](examples/plugins/tones/)
@@ -18,12 +19,16 @@ This guide covers plugin API version 1, the only one the host supports.
 ## Installing one
 
 1. Turn on Enable Plugins at the top of Settings > Plugins.
-2. Press Reveal Folder on the Plugins page. It opens the plugins folder, creating it
-   the first time.
-3. Drop the plugin's folder in. The folder's name has to be the plugin's id. The page
-   picks it up with its switch off.
-4. Switch it on. The first time, a card shows what the plugin declares and which
+2. Press Install on the Plugins page and pick the plugin's `.roxp`. The page lists it
+   with its switch off. Installing runs nothing.
+3. Switch it on. The first time, a card shows what the plugin declares and which
    programs it runs, and asks you to confirm.
+
+A `.roxp` dropped into the plugins folder installs the same way. Reveal Folder opens
+that folder, creating it the first time.
+
+To update a plugin, install its new `.roxp`. It replaces the old one, and the plugin
+switches off until you switch it on again, when the card shows what changed.
 
 The plugin then shows up under Add Panel > Plugins, which opens the External Sources
 panel on its source. The checkmark that shows when you hover a collection, Keep in the
@@ -34,7 +39,9 @@ search box, lists what the plugin has put there, its kept collections and the tr
 added one at a time, without asking the plugin.
 
 Remove on the Plugins page drops the plugin's tracks, synced collections, settings and
-approval. Its folder stays where it is.
+approval. An installed package's `.roxp` is deleted along with rox's unpacked copy of
+it. A plugin folder stays where it is. What the plugin wrote to its data folder stays
+either way.
 
 ## Trust
 
@@ -42,13 +49,14 @@ A plugin runs as a program on your computer with your permissions, its own netwo
 access and its own filesystem access. rox doesn't sandbox it, and the enable card says
 so.
 
-Switching a plugin on approves exactly the files in its folder, by a SHA-256 hash over
-every file in it. The approval is stored per machine, so a copied settings file
-doesn't bring someone else's trust decision along. When any file in the folder
-changes, the plugin switches off and its row reads Changed on disk. Switching it on
-again shows what changed in the manifest since the last approval: capabilities added
-or dropped, new programs, the scrobble declaration, a different entry, a provider newly
-offered.
+Switching a plugin on approves exactly the files in it, by a SHA-256 hash over every
+file in its package or folder. A package hashes the same as the folder it was packed
+from. The approval is stored per machine, so a copied settings file doesn't bring
+someone else's trust decision along. When any file changes, or a new version of the
+package replaces the old one, the plugin switches off and its row reads Changed on
+disk. Switching it on again shows what changed in the manifest since the last
+approval: capabilities added or dropped, new programs, the scrobble declaration, a
+different entry, a provider newly offered.
 
 Some things about the hash matter when you write a plugin:
 
@@ -57,7 +65,9 @@ Some things about the hash matter when you write a plugin:
 - Editing your own plugin changes its hash too. [Developer mode](#developer-mode)
   approves those edits for one session.
 - A symlink anywhere in the folder refuses the plugin, and so does a plugin folder
-  that is itself a symlink. So does a file name that isn't UTF-8.
+  or a `.roxp` that is itself a symlink. So does a file name that isn't UTF-8.
+- A `_rox/` folder at the top of a plugin is reserved. A plugin folder holding one
+  doesn't load, Pack refuses it, and a package's `_rox/` entries are never unpacked.
 - `.DS_Store`, `Thumbs.db` and `desktop.ini` are left out of the hash, since the OS
   writes them. `__pycache__` is hashed, because Python would run a planted `.pyc`.
   rox sets `PYTHONDONTWRITEBYTECODE=1` for every plugin so a Python plugin's first
@@ -71,20 +81,48 @@ write the plugins folder can write rox's settings too. It makes sure nothing run
 that the user didn't switch on, and shows what a plugin declares before any of it
 runs.
 
-## The folder
+## The plugins folder
 
 ```
-<data>/plugins/<id>/        the plugin, as the user dropped it
+<data>/plugins/<id>.roxp            an installed package
+<data>/plugins/<id>/                a plugin as a folder, the way you write one
     plugin.json
     <entry and anything else it ships>
-<data>/plugin-data/<id>/    where the plugin writes, created on its first start
+<data>/plugin-cache/<id>/<hash>/    a package unpacked, safe to delete
+<data>/plugin-data/<id>/            where the plugin writes, created on its first start
 ```
 
 `<data>` is rox's data directory, or `rox-data` beside the executable in portable
-mode. rox reads every subfolder of `plugins`, parses its manifest, hashes it and
-checks the programs it lists, all without running anything. A folder that can't load
-still shows on the Plugins page with the reason. A folder whose manifest `id` doesn't
-match the folder's name is refused.
+mode. rox reads every subfolder and every `.roxp` in `plugins`, parses the manifest,
+hashes the plugin and checks the programs it lists, all without running anything. A
+plugin that can't load still shows on the Plugins page with the reason. A folder whose
+manifest `id` doesn't match the folder's name is refused.
+
+A package runs from a copy rox unpacks into `plugin-cache`, under the package's hash.
+rox hashes that copy again on every scan and unpacks it afresh when it no longer
+matches. Old copies are swept, and the whole cache is rebuilt from the plugins folder
+if it's deleted.
+
+Each id lists one plugin. A folder holds its id ahead of any package, and of two
+packages with one id, the file whose name sorts first holds it. The other one stays on
+the page as a failed row that names what holds the id. Install refuses a package whose id a folder or
+another package already holds.
+
+### Making a package
+
+A `.roxp` is a zip with `plugin.json` at its top, beside everything else the folder
+holds. Two ways to make one:
+
+- On the Plugins page, turn on Developer mode for your switched-on plugin folder. The
+  Pack button beside it writes the folder to a `.roxp` you name. It packs only a folder
+  that loads, and the package hashes the same as the folder.
+- Zip the folder's contents, not the folder itself, and rename the zip to
+  `<id>.roxp`. A zip whose manifest is one folder down is refused, and the error
+  names the folder.
+
+A zip has unix permissions only when the tool that made it stores them, and rox
+takes the executable bit only from those. A package made on Windows usually has
+none, so a native binary in it unpacks without its executable bit on Linux and macOS.
 
 ## The manifest
 
@@ -94,7 +132,7 @@ match the folder's name is refused.
 {
   "id": "tones",
   "name": "Tones",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "api": 1,
   "entry": {
     "script": { "path": "tones.py", "interpreter": "python3" }
@@ -881,10 +919,10 @@ track out of a kept collection, since the next sync would put it back. Under eac
 switched-on plugin, the Plugins page counts its tracks in the library and those added
 on their own, and Show in Library narrows the shared search to the plugin's source.
 
-A plugin's tracks show only while it's switched on and its folder is present. A
-switched-off plugin's tracks are hidden, and so are those of a plugin whose folder is
-gone, since deleting the old folder is how many people update a plugin. They're
-deleted only on Remove. Playlist entries and play history reattach when a track comes
+A plugin's tracks show only while it's switched on and in the plugins folder. A
+switched-off plugin's tracks are hidden, and so are those of a plugin that's gone
+from the plugins folder, since deleting the old folder is how many people update a
+plugin. They're deleted only on Remove. Playlist entries and play history reattach when a track comes
 back with the same key.
 
 A plugin's tracks scrobble only when its manifest declares `"scrobble": true` and the
@@ -981,7 +1019,8 @@ Script plugins need Python installed on the machine running them. Most Linux
 installs already have it. Windows and macOS usually don't.
 
 On Windows, a native plugin's own files can't be replaced or deleted while it's
-running. Switch it off on the Plugins page before updating its folder.
+running. Switch it off on the Plugins page before updating its folder. A package
+doesn't need that: its new version unpacks beside the running copy.
 
 ## Timeouts and caps
 
@@ -1011,6 +1050,8 @@ running. Switch it off on the Plugins page before updating its folder.
 | A read's `len`                                       | 256 KiB asked, 512 KiB at most |
 | A stderr line                                        | 4 KiB                          |
 | Sync pages per collection                            | 2,000                          |
+| Entries in a `.roxp`                                 | 20,000                         |
+| A `.roxp`, unpacked                                  | 1 GiB                          |
 
 A call that times out fails on its own, and the plugin keeps serving its other calls.
 A longer stdout line is dropped with a warning in the log. A result over a cap fails
@@ -1031,8 +1072,10 @@ that call.
 
 Every save to a plugin you're writing changes its folder's hash, which switches it off
 until you approve it again. Developer mode, the terminal button beside a switched-on
-plugin's switch on the Plugins page, approves each change on its own instead, and the
-plugin restarts on the new files.
+plugin folder's switch on the Plugins page, approves each change on its own instead, and
+the plugin restarts on the new files. A package has no Developer mode, since nothing
+edits it in place. While Developer mode is on, the Pack button beside it makes the
+folder into a `.roxp` (see [Making a package](#making-a-package)).
 It lasts until rox quits or you switch the plugin off, and it's never saved.
 
 It approves only changes that keep the manifest's declarations. A save that adds a

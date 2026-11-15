@@ -1,30 +1,33 @@
-//! The Plugins settings page (ADR 30): every folder in the plugins folder and
-//! every plugin record, each with its switch, and Developer mode beside a
-//! switched-on one. A switched-on plugin's row unfolds to its config, how
-//! many of its tracks are in the library, its synced collections and, when
-//! it asks for it, scrobbling. The Plugins switch at the head of the page lets any of
-//! them run, and the list shows only while it's on.
+//! The Plugins settings page (ADR 30): every plugin in the plugins folder,
+//! a folder or a `.roxp`, and every plugin record, each with its switch, and
+//! Developer mode beside a switched-on folder. A switched-on plugin's row
+//! unfolds to its config, how many of its tracks are in the library, its
+//! synced collections and, when it asks for it, scrobbling. The Plugins
+//! switch at the head of the page lets any of them run, and the list shows
+//! only while it's on.
 //!
-//! The switch is the approving act. Turning on a folder this machine hasn't
+//! The switch is the approving act. Turning on a plugin this machine hasn't
 //! approved opens the enable card first, and confirming it is the only way
-//! an approval gets written.
+//! an approval gets written. Installing a package only lists it.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui_component::tooltip::Tooltip;
 use rox_library::members::InLibrary;
 use rox_library::projection::{FilterField, FilterSet};
+use rox_panel_api::toast::Toast;
 use rox_plugins::host::STOPPED_AFTER_CRASHES;
 use rox_plugins::manifest::ProviderDomain;
-use rox_plugins::{Loaded, Status};
+use rox_plugins::{Loaded, Origin, Status, package};
 use rox_services::plugin_library;
 use rox_services::plugins::{self as host, Change};
 use serde_json::Value;
 
 use super::*;
 
-/// The action cell here holds Developer mode and Remove beside the switch.
-const PLUGIN_ACTION_W: Pixels = px(100.);
+/// The action cell here holds Developer mode, Pack and Remove beside the
+/// switch.
+const PLUGIN_ACTION_W: Pixels = px(120.);
 
 /// The guide as of this build's release, so it describes the host that's
 /// running rather than whatever main has moved on to.
@@ -192,6 +195,61 @@ enum Standing {
     Needs(Vec<String>),
     On,
     Off,
+}
+
+/// Each picked file installs on its own and toasts its own outcome. The row
+/// shows up through the rescan that follows, switched off.
+fn install_plugins(window: &mut Window, cx: &mut App) {
+    let rx = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: true,
+        prompt: None,
+    });
+    let origin = window.window_handle();
+
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = rx.await else {
+            return;
+        };
+
+        for path in paths {
+            // The hash and the copy both scale with the archive, which can
+            // run to a gigabyte, so neither happens on the UI thread.
+            let archive = path.clone();
+            let installed = cx
+                .background_executor()
+                .spawn(async move {
+                    let peek = package::peek(&archive)?;
+                    host::install_file(&archive)?;
+
+                    Ok::<_, String>(peek.manifest.name)
+                })
+                .await;
+
+            cx.update(|cx| {
+                let toast = match installed {
+                    Ok(name) => {
+                        host::rescan(cx);
+                        Toast::new(
+                            panel::Tone::Good,
+                            rox_i18n::t!("settings-plugins-installed", name = name),
+                        )
+                    }
+                    Err(e) => Toast::new(panel::Tone::Bad, e).title(file_name(&path)),
+                };
+                toast.post(origin, cx);
+            })
+            .ok();
+        }
+    })
+    .detach();
+}
+
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn standing(
@@ -686,6 +744,51 @@ impl SettingsWindow {
             .any(|folder| folder.id == id)
     }
 
+    /// Whether the plugin holding `id` came from a `.roxp`, so removing it
+    /// deletes the file. The first row for an id is the holder, the one
+    /// `host::remove` acts on.
+    pub(super) fn plugin_is_package(&self, id: &str) -> bool {
+        self.plugin_page
+            .folders
+            .iter()
+            .find(|folder| folder.id == id)
+            .is_some_and(|folder| matches!(folder.origin, Origin::Package(_)))
+    }
+
+    /// Packing hashes and compresses the whole folder, so it runs off the UI
+    /// thread.
+    fn pack_plugin(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let home = dirs::home_dir().unwrap_or_default();
+        let file = format!("{id}.{}", package::EXT);
+        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+
+        let origin = window.window_handle();
+        let name = self.plugin_name(id);
+        let id = id.to_string();
+
+        cx.spawn(async move |_, cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+
+            let out = path.clone();
+            let packed = cx
+                .background_executor()
+                .spawn(async move { host::pack(&id, &out) })
+                .await;
+
+            let toast = match packed {
+                Ok(()) => Toast::new(
+                    panel::Tone::Good,
+                    rox_i18n::t!("settings-plugins-packed", path = path.display().to_string()),
+                ),
+                Err(e) => Toast::new(panel::Tone::Bad, e).title(name),
+            };
+            cx.update(|cx| toast.post(origin, cx)).ok();
+        })
+        .detach();
+    }
+
     pub(super) fn plugin_name(&self, id: &str) -> String {
         let manifest_name = self
             .plugin_page
@@ -747,6 +850,15 @@ impl SettingsWindow {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_XS)
+            .child(
+                small_button(
+                    rox_i18n::t!("settings-plugins-install"),
+                    icons::DOWNLOAD,
+                    false,
+                    |_, window, cx| install_plugins(window, cx),
+                )
+                .keyed("plugins-install"),
+            )
             .child(small_button(
                 rox_i18n::t!("settings-plugins-reveal"),
                 icons::FOLDER,
@@ -773,19 +885,14 @@ impl SettingsWindow {
                 |_, _, cx| cx.open_url(GUIDE_URL),
             ));
 
-        // One row per folder, then one per record whose folder is gone.
-        let mut ids: Vec<&str> = self
-            .plugin_page
-            .folders
+        // One row per plugin the scan found, then one per record whose plugin
+        // is gone.
+        let missing: Vec<&str> = self
+            .plugins
             .iter()
-            .map(|folder| folder.id.as_str())
+            .map(|(record, _)| record.id.as_str())
+            .filter(|id| !self.plugin_page.folders.iter().any(|f| f.id == *id))
             .collect();
-        ids.extend(
-            self.plugins
-                .iter()
-                .map(|(record, _)| record.id.as_str())
-                .filter(|id| !self.plugin_page.folders.iter().any(|f| f.id == *id)),
-        );
 
         let mut keywords = vec![
             "plugin",
@@ -795,17 +902,29 @@ impl SettingsWindow {
             "approve",
             "developer",
         ];
-        keywords.extend(ids.iter().copied());
+        keywords.extend(self.plugin_page.folders.iter().map(|f| f.id.as_str()));
+        keywords.extend(missing.iter().copied());
 
         let intro = div()
             .text_xs()
             .text_color(palette::text_muted())
             .child(rox_i18n::t!("settings-plugins-intro"));
 
-        let rows: Vec<AnyElement> = ids
-            .iter()
-            .map(|id| self.plugin_row(id, cx).into_any_element())
-            .collect();
+        // The scan puts the plugin holding an id ahead of every package it
+        // refused, and those share its id, so each refused one draws as its
+        // own row under its own key.
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for folder in &self.plugin_page.folders {
+            let before = seen.entry(folder.id.as_str()).or_default();
+            let refused = (*before > 0).then_some((folder, *before));
+            *before += 1;
+
+            rows.push(self.plugin_row(&folder.id, refused, cx).into_any_element());
+        }
+        for id in missing {
+            rows.push(self.plugin_row(id, None, cx).into_any_element());
+        }
         let empty = rows.is_empty();
         let table = div().flex().flex_col().children(rows).when(empty, |d| {
             d.child(
@@ -850,9 +969,24 @@ impl SettingsWindow {
         ))
     }
 
-    fn plugin_row(&self, id: &str, cx: &mut Context<Self>) -> Stateful<Div> {
-        let folder = self.plugin_page.folders.iter().find(|f| f.id == id);
-        let record = self.record(id);
+    /// `refused` is a package the scan turned away because another plugin
+    /// holds its id, with how many rows for that id came before it. It has
+    /// no record of its own: the one under its id is the holder's.
+    fn plugin_row(
+        &self,
+        id: &str,
+        refused: Option<(&Loaded, usize)>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let (folder, record, key) = match refused {
+            // A valid id has no colon, so this key can't be another plugin's.
+            Some((folder, before)) => (Some(folder), None, format!("{id}:refused-{before}")),
+            None => (
+                self.plugin_page.folders.iter().find(|f| f.id == id),
+                self.record(id),
+                id.to_string(),
+            ),
+        };
         let approved = folder.is_some_and(|f| settings::plugin_approved(id, &f.hash));
         let standing = standing(folder, record, approved, host::status(id));
         let on = record.is_some_and(|r| r.enabled) && folder.is_some_and(Loaded::runs);
@@ -900,7 +1034,10 @@ impl SettingsWindow {
                     .flex_none()
                     .text_color(palette::text_muted()),
             )
-            .child(div().min_w_0().truncate().child(self.plugin_name(id)))
+            .child(div().min_w_0().truncate().child(match refused {
+                Some((folder, _)) => file_name(&folder.dir),
+                None => self.plugin_name(id),
+            }))
             .when(!version.is_empty(), |d| {
                 d.child(
                     div()
@@ -932,8 +1069,31 @@ impl SettingsWindow {
             .keyed(key)
         });
 
-        let developer = on.then(|| {
-            let developing = host::developing(id);
+        // A package isn't edited in place, so Developer mode and Pack are a
+        // folder's alone.
+        let is_folder = folder.is_some_and(|f| f.origin == Origin::Folder);
+        let developing = host::developing(id);
+
+        let pack = (on && is_folder && developing).then(|| {
+            let plugin = id.to_string();
+            div()
+                .id(SharedString::from(format!("plugin-pack-{id}")))
+                .child(
+                    icon_button(
+                        icons::UPLOAD,
+                        false,
+                        cx.listener(move |this, _, window, cx| {
+                            this.pack_plugin(&plugin, window, cx)
+                        }),
+                    )
+                    .keyed(SharedString::from(format!("plugin-pack-button-{id}"))),
+                )
+                .tooltip(|window, cx| {
+                    Tooltip::new(rox_i18n::t!("settings-plugins-pack")).build(window, cx)
+                })
+        });
+
+        let developer = (on && is_folder).then(|| {
             let plugin = id.to_string();
             div()
                 .id(SharedString::from(format!("plugin-developer-{id}")))
@@ -990,6 +1150,7 @@ impl SettingsWindow {
                     .items_center()
                     .justify_end()
                     .gap(tokens::SPACE_XS)
+                    .children(pack)
                     .children(developer)
                     .children(remove)
                     .children(switch),
@@ -999,11 +1160,16 @@ impl SettingsWindow {
             Standing::Failed(reason) if !reason.is_empty() => Some(reason.clone()),
             _ => None,
         };
-        let sync_error = self.plugin_page.errors.get(id).cloned();
+        // A refused package shares the holder's id, and the error is the
+        // holder's.
+        let sync_error = match refused {
+            Some(_) => None,
+            None => self.plugin_page.errors.get(id).cloned(),
+        };
         let below = open || failure.is_some() || sync_error.is_some();
 
         div()
-            .id(SharedString::from(format!("plugin-{id}")))
+            .id(SharedString::from(format!("plugin-{key}")))
             .flex()
             .flex_col()
             .gap(tokens::SPACE_XS)

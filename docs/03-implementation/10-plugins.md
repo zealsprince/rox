@@ -1,16 +1,17 @@
 # Plugins
 
-How the plugin host is built: the folder a plugin is installed in, the manifest, the wire rox
-speaks to it, how its rows enter and leave the library, how its streams reach the engine,
-and the switch that approves it. This makes [ADR 30](../02-architecture/decisions/30-adr-plugins.md)
+How the plugin host is built: the package or folder a plugin is installed as, the
+manifest, the wire rox speaks to it, how its rows enter and leave the library, how its
+streams reach the engine, and the switch that approves it. This makes [ADR 30](../02-architecture/decisions/30-adr-plugins.md)
 concrete, along with ADR 29's amendments for plugin streams and rows by membership
-([ADR 29](../02-architecture/decisions/29-adr-source-contract.md)). The numbers behind
+([ADR 29](../02-architecture/decisions/29-adr-source-contract.md)) and the `.roxp`
+package of [ADR 32](../02-architecture/decisions/32-adr-plugin-packages.md). The numbers behind
 the timeouts, the read size and the buffering are in
 [research 04](../0R-research/04-plugin-host.md). A plugin author can start from the
 example in [`examples/plugins/tones`](../../examples/plugins/tones/).
 
 Version-sensitive: the host speaks plugin API version 1 and nothing else
-(`SUPPORTED_API = 1..=1`, `rox-plugins/src/manifest.rs:42`). The wire is JSON-RPC 2.0,
+(`SUPPORTED_API = 1..=1`, `rox-plugins/src/manifest.rs:24`). The wire is JSON-RPC 2.0,
 one object per line. A plugin's bytes are decoded by symphonia 0.6, so its containers and
 codecs are the ones the engine reads. Folder hashes are sha2 0.10's SHA-256, the folder
 watch is notify-debouncer-full 0.7, and the Windows job object is windows-sys 0.61.
@@ -22,77 +23,134 @@ the Plugins page links to [README_PLUGINS.md](../../README_PLUGINS.md), the auth
 guide drawn from this document.
 
 1. Plugins are behind one switch, Enable Plugins at the top of Settings > Plugins
-   (`set_plugins_enabled`, `rox/src/settings/window/plugins_page.rs`). The rest of the
-   page lists only while it's on.
-2. Reveal Folder on the Plugins page creates the plugins folder and opens it. rox never
-   creates it on its own.
-3. Drop the plugin's folder in. The folder's name has to be the plugin's id. The page
-   picks it up on its own, with its switch off.
-4. Switch it on. The first time, a card says what the plugin is and asks to confirm.
-   Confirming approves exactly the files in that folder.
-5. If any file in the folder changes, the plugin switches itself off until it's switched
-   on again, and the card shows what changed. Developer mode approves the change instead
-   when the manifest declares nothing new.
-6. A plugin source's tracks are browsed and searched in the External Sources panel:
+   (`set_plugins_enabled`, `rox/src/settings/window/plugins_page.rs:491`). The rest of
+   the page lists only while it's on.
+2. Install on the Plugins page takes one or more `.roxp` files from the file dialog
+   (`install_plugins`, `plugins_page.rs:202-246`). Each is copied in as
+   `plugins/<id>.roxp` and listed with its switch off, and a toast names it or gives
+   the reason it was refused. Installing runs nothing and asks nothing. A `.roxp` dropped
+   into the plugins folder by hand lists the same way. Reveal Folder creates the plugins
+   folder and opens it; rox never creates it on its own.
+3. Switch it on. The first time, a card says what the plugin is and asks to confirm.
+   Confirming approves exactly the files in that package or folder.
+4. If any of its files change, or a new `.roxp` with its id replaces the old one, the
+   plugin switches itself off until it's switched on again, and the card shows what
+   changed. For a folder, Developer mode approves the change instead when the manifest
+   declares nothing new.
+5. A plugin source's tracks are browsed and searched in the External Sources panel:
    Add Panel > Plugins > the plugin opens one on its source, and the bare panel is in
    the Catalogue group while plugins can run (`live` in `rox/src/panel_catalog.rs`).
    Keep in the library on a collection syncs it into the library, and Add to Library
    adds a single track. Playing, queueing or adding a track to a playlist plays it
    without adding it.
 7. Remove on the Plugins page drops the plugin's tracks, synced collections, settings
-   and approval. Its folder is left alone.
+   and approval. A package's `.roxp` and its unpacked copies are deleted with it. A
+   folder is left alone, and so is the plugin's data folder either way.
 
 The Plugins page links to that guide at the running build's release tag
-(`GUIDE_URL`, `rox/src/settings/window/plugins_page.rs:24-28`).
+(`GUIDE_URL`, `rox/src/settings/window/plugins_page.rs:34-38`).
 
-## The folder
+## The plugins folder
 
 ```
-<data>/plugins/<id>/        the plugin, as the user dropped it
+<data>/plugins/<id>.roxp            an installed package
+<data>/plugins/<id>/                a plugin as a folder, for its author
     plugin.json
     <entry and anything else it ships>
-<data>/plugin-data/<id>/    where the plugin writes, created on its first start
+<data>/plugin-cache/<id>/<hash16>/  a package unpacked, rebuilt from the plugins folder
+<data>/plugin-data/<id>/            where the plugin writes, created on its first start
 ```
 
 `<data>` is rox's data directory, `rox-data` beside the executable in portable mode
-(`plugins_dir` and `plugin_data_dir`, `rox-core/src/settings.rs:190-198`). The plugin is
-told its data directory in `hello` and should write nothing anywhere else inside rox's
-data. A write into its own folder would change its hash and switch it off.
+(`plugins_dir`, `plugin_data_dir` and `plugin_cache_dir`,
+`rox-core/src/settings.rs:193-208`). The plugin is told its data directory in `hello`
+and should write nothing anywhere else inside rox's data. A write into its own folder
+would change its hash and switch it off. The cache is outside the plugins folder, so
+unpacking into it doesn't wake the watch.
 
-A scan reads every subfolder, parses its manifest, hashes it and checks the programs it
-lists (`scan`, `rox-plugins/src/loader.rs:60`). It runs nothing. A folder that can't
-load still comes back with its reason, which the page shows under "This plugin can't
-run". A stray file beside the folders is skipped. A folder whose manifest `id` isn't
-the folder's name is refused (`loader.rs:111-115`), because rows are filed under the id
-and the host finds the plugin by its folder.
+A scan reads every subfolder, then every `.roxp` in file name order, parses the
+manifest, hashes the plugin and checks the programs it lists (`scan`,
+`rox-plugins/src/loader.rs:89-162`). It runs nothing. A plugin that can't load still
+comes back with its reason, which the page shows under "This plugin can't run". A
+stray file beside them is skipped. A folder whose manifest `id` isn't the folder's name
+is refused (`loader.rs:249-253`), because rows are filed under the id and the host
+finds the plugin by it. A package's copy is named for its hash, so it's held to the id
+its archive's manifest gave instead.
+
+A package is read without unpacking first (`peek`, `rox-plugins/src/package.rs:49-69`):
+the manifest at the archive's root, held to the same rules as a folder's, and the
+archive's hash. The peek is remembered per path, length and modified time, so a rescan
+rehashes only the packages that moved. A zip whose only manifest is one folder down is
+refused with an error naming that folder, the shape a file manager's "compress folder"
+gives. Then it's unpacked into `plugin-cache/<id>/<first 16 hex of the hash>/` and
+loaded from there like a folder (`unpack`, `package.rs:111-145`). A copy that already
+hashes to the archive's hash is reused. Anything else in its place is removed and the
+archive unpacked again. The fresh copy is hashed once more and refused on a mismatch,
+so the copy that runs is the copy that was approved. After the scan, copies
+under any other hash and ids with no package behind them are swept (`sweep`,
+`loader.rs:184`). A copy that won't delete, as on Windows while a native plugin runs
+from it, is left for the next scan.
+
+One id lists one plugin. A folder holds its id ahead of any package, and among packages
+the file that sorts first holds it. A package refused for an id already held still
+lists, failed, with an error naming the file or folder that holds it
+(`loader.rs:139-143`). The scan sorts by id with the holder first. The page keys a
+refused row on the id and its place among that id's rows, so the two draw as separate
+rows (`plugin_row`, `rox/src/settings/window/plugins_page.rs:974`). A `.roxp` that's a
+symlink lists as failed (`loader.rs:103-111`). Install refuses a package whose id a
+folder or another package already holds, and copies through a temporary name that
+isn't `.roxp`, so a scan mid-copy passes over it (`install_into`,
+`rox-services/src/plugins.rs:680-713`). It leaves the record and the approval alone, so
+an update to a switched-on plugin shows as Changed through `apply`.
+
+Pack, beside Developer mode on a switched-on folder's row, writes the folder to a
+`.roxp` the author names (`pack_plugin`, `plugins_page.rs:759`, then `pack`,
+`rox-services/src/plugins.rs:730-742`). It takes only a folder that loads, refuses an
+archive path inside that folder, and hashes the finished archive against the folder's
+hash, deleting it on a mismatch (`package.rs:148-180`). Pack and Install's hashing
+run off the UI thread. Install's copy runs on it, because `install` takes the `App`.
+
+The limits a package is held to are `LIMITS` (`package.rs:25-29`): 20,000 entries and
+1 GiB unpacked. Every archive rule beneath that (names, links, duplicates, sizes) is
+`rox-package`'s. The executable bit is kept from the unix mode an entry stores, masked to
+`0o755`. An entry with no stored mode unpacks as `0o644`.
 
 The watch follows the plugins folder, and follows its parent until the folder exists
-(`Watch`, `loader.rs:132-209`). Events are hints to scan again, 500 ms debounced; a scan
-that finds what the last one found changes nothing (`rescan`,
-`rox-services/src/plugins.rs:354-380`). macOS reports event paths with symlinks resolved,
-so the watch matches both spellings of the folder.
+(`Watch`, `loader.rs:300-377`). A dropped or replaced `.roxp` raises an event like a
+folder edit. Events are hints to scan again, 500 ms debounced; a scan that finds what
+the last one found changes nothing (`rescan`, `rox-services/src/plugins.rs:634-663`).
+macOS reports event paths with symlinks resolved, so the watch matches both spellings
+of the folder.
 
-## The folder hash
+## The plugin hash
 
 The hash is the plugin's identity for trust: SHA-256 over every file under the folder,
 each fed as `<relative path>\0<length as u64 little-endian><bytes>`, in byte order of the
 relative paths, with `/` as the separator on every OS (`folder_hash`,
-`rox-plugins/src/hash.rs:17-38`). `.DS_Store`, `Thumbs.db` and `desktop.ini` are skipped,
+`rox-plugins/src/hash.rs:24-37`). `.DS_Store`, `Thumbs.db` and `desktop.ini` are skipped,
 since the OS writes them and nothing runs them. `__pycache__` is not skipped: Python
 would run a planted `.pyc`.
 
-A symlink anywhere inside refuses the plugin (`hash.rs:58-60`), and so does a plugin
-folder that is itself a symlink (`loader.rs:73-75`). Following one would let an approved
+A package's hash is the same digest over its entries (`archive_hash`, `hash.rs:41-56`),
+so a folder and the `.roxp` packed from it hash the same and share one approval. One
+predicate picks what's hashed and what's unpacked (`hashed`, `hash.rs:61-71`): an
+entry the hash leaves out never reaches the folder the plugin runs from. Names under
+`_rox/` are reserved. An archive's are left out of the hash and never unpacked, and a
+folder holding a top-level `_rox/` fails to load (`reserved_error`, `loader.rs:277`),
+since plugin code could read files there that no hash covers.
+
+A symlink anywhere inside refuses the plugin (`hash.rs:107-109`), and so does a plugin
+folder that is itself a symlink (`loader.rs:112-114`). Following one would let an approved
 hash stand for bytes outside the folder. A file name that isn't UTF-8 is refused too,
 since it can't hash the same on every OS.
 
 The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
-(`rox-plugins/src/process.rs:44`), so a Python plugin's first import doesn't write
+(`rox-plugins/src/process.rs:48`), so a Python plugin's first import doesn't write
 `__pycache__/` into its own folder and change its own hash.
 
 ## The manifest
 
-`plugin.json`, at most 256 KiB (`rox-plugins/src/manifest.rs:47`). The tones example's:
+`plugin.json`, at most 256 KiB (`rox-plugins/src/manifest.rs:29`). The tones example's:
 
 ```json
 {
@@ -932,9 +990,10 @@ The Plugins page's copy, in English, for finding each string in the other locale
 
 | Where | English |
 |---|---|
-| Page intro | Each folder in the plugins folder is one plugin. Nothing in it runs until you switch it on, and one that changes on disk switches off until you switch it on again |
-| Buttons | Reveal Folder, Rescan, Plugin Guide |
-| Empty page | No plugins yet. Drop a plugin's folder into the plugins folder |
+| Page intro | A plugin is a .roxp file in the plugins folder, or a folder while you're writing one. Nothing in it runs until you switch it on, and one that changes on disk switches off until you switch it on again |
+| Buttons | Install, Reveal Folder, Rescan, Plugin Guide |
+| After Install | Installed { $name }. It stays off until you switch it on |
+| Empty page | No plugins yet. Install one, or drop a .roxp into the plugins folder |
 | Row status | Missing, Failed, Changed on disk, Stopped after repeated crashes, Needs { $programs }, On, Off |
 | Under a failed row | This plugin can't run |
 | Card title | Switch on "{ $name }"? |
@@ -944,7 +1003,7 @@ The Plugins page's copy, in English, for finding each string in the other locale
 | Card, lyrics | Offers lyrics for its tracks. rox only asks once you switch them on. |
 | Card, providers | Offers { $domains } for any track in your library. rox only asks once you switch each on. (`$domains` from lyrics, tag lookup, artist info) |
 | Card, programs | Uses { $program }, found on this computer. / Uses { $program }, which isn't on this computer's PATH. |
-| Card, re-approval | Changed since you last switched it on: / The manifest is the same as last time. Other files in the folder changed. |
+| Card, re-approval | Changed since you last switched it on: / The manifest is the same as last time. Other files in the plugin changed. |
 | Card, changes | New capability: { $name } / Dropped capability: { $name } / New program: { $program } / Now asks to scrobble / No longer asks to scrobble / Starts a different way / Now offers { $domain } for your library |
 | Card button | Switch On |
 | Page switch | Enable Plugins: Let the plugins in the plugins folder run. Each one still has its own switch below, and runs as a program on this computer with your permissions |
@@ -955,10 +1014,13 @@ The Plugins page's copy, in English, for finding each string in the other locale
 | Tag Lookup switch | Include this plugin's matches when you look up a track's tags. Offered because the plugin answers them |
 | Artist Info switch | Ask this plugin about an artist first, and let the artist providers fill in what it leaves out. Offered because the plugin answers it |
 | Developer mode tooltip | Developer mode: until rox quits, a change to this plugin's folder is approved on its own and restarts it. A change to what its manifest declares still switches it off |
+| Pack tooltip | Pack into a .roxp to share |
+| After Pack | Packed into { $path } |
 | Nothing kept | Nothing synced yet. Switch sync on for a collection in the plugin's source browser |
 | Remove title | Remove "{ $name }"? |
-| Remove body | Its tracks, synced collections and settings go. Its folder stays in the plugins folder, so delete it there to stop it showing here. |
-| Remove body, Missing plugin | Its tracks, synced collections and settings go. Its folder is already gone from the plugins folder, so it won't show here again. |
+| Remove body, folder | Its tracks, synced collections and settings go. Its folder stays in the plugins folder, so delete it there to stop it showing here. |
+| Remove body, package | Its tracks, synced collections and settings go, and so does its .roxp file. The files it saved in its data folder stay. |
+| Remove body, Missing plugin | Its tracks, synced collections and settings go. It's already gone from the plugins folder, so it won't show here again. |
 
 The keys are `settings-plugins-*` in `crates/rox-i18n/locales/*/rox.ftl`. The manifest's
 own text (name, description, the source label, config titles) isn't translated: a

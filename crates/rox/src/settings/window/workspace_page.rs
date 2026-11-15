@@ -1016,6 +1016,9 @@ impl SettingsWindow {
             Pending::RemovePlugin(id) => (
                 rox_i18n::t!("settings-plugins-remove-title", name = self.plugin_name(id)),
                 match self.plugin_folder_present(id) {
+                    true if self.plugin_is_package(id) => {
+                        rox_i18n::t!("settings-plugins-remove-package-body")
+                    }
                     true => rox_i18n::t!("settings-plugins-remove-body"),
                     false => rox_i18n::t!("settings-plugins-remove-body-missing"),
                 },

@@ -311,8 +311,10 @@ fn center_offset(item: &SceneItem, size: [f32; 2]) -> [f32; 3] {
     [left + size[0] / 2., top + size[1] / 2., 0.]
 }
 
-/// Translate to the anchor's point plus the position, rotate x then y then
-/// z, scale. A flat item stops after the translation.
+/// Translate to the anchor's point plus the position, then rotate x then y
+/// then z and scale about the item's centre. The anchor only places an item:
+/// a corner-anchored one still turns about its middle. A flat item stops
+/// after the translation.
 fn local(item: &SceneItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
     let place = &item.place;
     let [fx, fy] = place.anchor.fraction();
@@ -327,12 +329,17 @@ fn local(item: &SceneItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
         return moved;
     }
 
+    let pivot = center_offset(item, item_size(item, parent));
+    let back = [-pivot[0], -pivot[1], -pivot[2]];
+
     let turn = |axis: usize| place.rotation[axis] + live.rotation[axis];
     moved
+        * Mat4::translate(pivot)
         * Mat4::rotate_x(turn(0))
         * Mat4::rotate_y(turn(1))
         * Mat4::rotate_z(turn(2))
         * Mat4::scale(place.scale * live.scale)
+        * Mat4::translate(back)
 }
 
 #[cfg(test)]
@@ -406,6 +413,32 @@ mod tests {
         let denom = d1[0] * d2[1] - d1[1] * d2[0];
         let t = ((q[0] - p[0]) * d2[1] - (q[1] - p[1]) * d2[0]) / denom;
         [p[0] + t * d1[0], p[1] + t * d1[1]]
+    }
+
+    #[test]
+    fn an_item_turns_and_scales_about_its_centre_whatever_its_anchor() {
+        let plain = item(Anchor::TopLeft, [40., 30., 0.], [100., 50.]);
+        let before = put(&plain, &stage_frame(), &ORTHO, false);
+
+        let mut turned = plain.clone();
+        turned.place.rotation = [0., 0., 180.];
+        turned.place.scale = 0.5;
+        let after = put(&turned, &stage_frame(), &ORTHO, false);
+
+        let [x, y] = center(before.corners);
+        assert!(near(x, 90.) && near(y, 55.), "{x} {y}");
+        let [tx, ty] = center(after.corners);
+        assert!(
+            near(tx, x) && near(ty, y),
+            "the centre stays put: {tx} {ty}"
+        );
+
+        // Half the size, upside down, about the same middle.
+        assert!(
+            same(after.corners, rect(115., 67.5, 65., 42.5)),
+            "{:?}",
+            after.corners
+        );
     }
 
     #[test]

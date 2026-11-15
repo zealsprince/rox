@@ -37,7 +37,12 @@ pub fn kind_for(file: &str) -> Option<AssetKind> {
     let (_, ext) = file.rsplit_once('.')?;
 
     match ext.to_ascii_lowercase().as_str() {
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "apng" => Some(AssetKind::Image),
+        // What the image crate decodes with its default features, so no
+        // image a 1.x shader carried is dropped on the way to a file.
+        "png" | "apng" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tga" | "tif" | "tiff"
+        | "ico" | "qoi" | "dds" | "hdr" | "exr" | "pnm" | "pbm" | "pgm" | "ppm" | "pam" | "ff" => {
+            Some(AssetKind::Image)
+        }
         "ttf" | "otf" => Some(AssetKind::Font),
         "mp4" | "webm" => Some(AssetKind::Video),
         "glb" => Some(AssetKind::Model),
@@ -480,6 +485,8 @@ mod tests {
         assert_eq!(kind_for("clip.webm"), Some(AssetKind::Video));
         assert_eq!(kind_for("ship.glb"), Some(AssetKind::Model));
         assert_eq!(kind_for("png"), None);
+        assert_eq!(kind_for("Old Plate.TGA"), Some(AssetKind::Image));
+        assert_eq!(kind_for("plate.bmp"), Some(AssetKind::Image));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

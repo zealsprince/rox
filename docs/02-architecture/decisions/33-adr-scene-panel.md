@@ -98,3 +98,34 @@ change. Nested docks that every live layout walker has to reach, including the o
 written after this. Changes to the vendored dock for a drag between areas, which adds to
 the re-diff every gpui-component bump already costs (ADR 7's amendment). And a second
 place a dock dump can be stored, inside a panel's config.
+
+**Amended 2026-11-15: a canvas, held to flat items.** Andrew's product calls, made after
+weighing what real 3D inside a scene would take. Three things change.
+
+The panel is renamed Canvas. "Scene" promised a 3D world, and the shader settings
+already use the word for a shader that covers its panel
+(`rox-i18n/locales/en-CA/rox.ftl`, `panel-shader-is-scene`). This record keeps its
+title and its wording above. The code, the saved panel name and the strings say scene
+until they're renamed.
+
+The canvas composes rox's own things freely: placement, tilt, parallax and painter's
+order under one camera. It gets no depth buffer, no mesh pipeline and no second GPU
+device, in this record or a later one. The decision above left a depth buffer "out of
+this record". It's now out of core. The cost named above therefore stays: planes that
+cross each other paint in center order.
+
+"The format leaves room for video and 3D models" is withdrawn. The model item and the
+video item both go, and the model asset kind goes with them
+([ADR 31](31-adr-workspace-archives.md)'s amendment). No released build has saved
+either. A saved canvas that holds one is kept as saved and not built, as any kind the
+build doesn't know is (`rox-scene/src/state.rs`, `Content::Unknown`). The caller-owned
+texture on a quad stays (`rox/src/scene/texture.rs`), with nothing feeding it.
+
+What those items would have shown comes through a render target or not at all:
+[ADR 37](37-adr-render-targets.md), Proposed, has a program outside rox draw the
+picture and rox paint its frames on a canvas item. If that record isn't decided, the
+canvas shows no video and no 3D, and a WGSL shader item is the furthest it reaches.
+
+The alternative was a renderer in core, either patched into gpui's passes or run on a
+device of its own. ADR 37 weighs both. It lost because it's an engine: lighting,
+materials, mesh import and post effects, owned by a music player.

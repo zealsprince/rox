@@ -704,3 +704,15 @@ running it, so the host still starts every plugin in a real directory. A plain f
 the plugins directory still loads. The trust identity stays the folder hash above,
 computed so a folder and the package made from it hash the same, and nothing runs before
 the user's switch. The manifest and `api` are unchanged.
+
+**Amendment proposed 2026-11-15, with [ADR 37](37-adr-render-targets.md): renderers.**
+The decision above names a visualizer as "the clearest case of what's out, since
+rendering is something rox does rather than something it fetches." ADR 37 would reverse
+that for one shape. A third capability lets a plugin act as a renderer: rox sends it
+signals and the input that reaches a render target, and it sends frames back for rox to
+paint. `source` and `panels` are unchanged. The rest of the line holds: nothing a
+renderer supplies executes in rox's process or joins the element tree, it never touches
+the engine or the ring, and it never connects to the control socket. A verb into rox,
+if a renderer gets one, goes through the typed allowlist this record already reserves.
+The folder hash, the approval gate and the one switch cover a renderer as they cover
+any plugin. None of this is in force unless ADR 37 is decided.

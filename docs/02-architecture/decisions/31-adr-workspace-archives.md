@@ -86,3 +86,15 @@ it, and a file the table no longer names is swept rather than kept.
 A global preset detached from a pool shader keeps that shader's source and loses its
 images (`rox-core/src/settings/panel_presets.rs`, `detach`). That gap exists today, and
 this record gives presets no asset home, so it stands.
+
+**Amended 2026-11-15: three kinds, and video is only stored.** Andrew's product call,
+with [ADR 33](33-adr-scene-panel.md)'s amendment. An asset is one of three kinds: an
+image, a font or a video. The 3D model kind is withdrawn before any release wrote one,
+since nothing in rox will draw a model.
+
+Video stays a kind. rox stores a video file, lists it, hashes it and exports it like any
+asset, and decodes none of it: core has no video decoder and the canvas has no video
+item. The file is there for a renderer to play
+([ADR 37](37-adr-render-targets.md), Proposed). Until that record is decided a video
+asset is a file nothing in rox uses. The cost above about a look that holds video
+running to megabytes is unchanged.

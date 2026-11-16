@@ -225,7 +225,7 @@ fn color_for(role: &str) -> Rgba {
     (entry.get)(&palette::resolved())
 }
 
-fn state_spec(id: &str) -> Option<&'static StateSpec> {
+pub(crate) fn state_spec(id: &str) -> Option<&'static StateSpec> {
     buttons::STATES.iter().find(|spec| spec.id == id)
 }
 
@@ -327,7 +327,7 @@ fn seed_cases(spec: Option<&StateSpec>, held: &[ButtonCase]) -> Vec<ButtonCase> 
 }
 
 /// Never overwrites an action the user already chose.
-fn prefill_action(action: &mut String, spec: Option<&StateSpec>) {
+pub(crate) fn prefill_action(action: &mut String, spec: Option<&StateSpec>) {
     if !action.is_empty() {
         return;
     }
@@ -443,7 +443,12 @@ fn button_element(
 
 /// The playing track's marks, when `wanted`. Unwanted drops the held ones,
 /// so a button placed later doesn't start from a stale track.
-fn playing_marks(cache: &mut MarkCache, state: &AppState, wanted: bool, cx: &App) -> Option<Marks> {
+pub(crate) fn playing_marks(
+    cache: &mut MarkCache,
+    state: &AppState,
+    wanted: bool,
+    cx: &App,
+) -> Option<Marks> {
     let key = wanted
         .then(|| TrackSource::Playing.resolve(state, cx))
         .flatten();
@@ -895,17 +900,10 @@ impl ControlsPanel {
     }
 
     fn state_field(&self, id: u64, def: &CustomButton, cx: &mut Context<Self>) -> AnyElement {
-        let mut options = vec![(String::new(), rox_i18n::t!("button-editor-state-none"))];
-        options.extend(
-            buttons::STATES
-                .iter()
-                .map(|spec| (spec.id.to_string(), rox_i18n::t!(spec.label_key))),
-        );
-
         picker(
             "button-state",
             def.state.clone(),
-            options,
+            state_options(),
             false,
             move |this: &mut Self, state: String, cx| {
                 let spec = state_spec(&state);
@@ -1043,6 +1041,18 @@ impl ControlsPanel {
             .id(SharedString::from(format!("case-{id}-{when}")))
             .child(settings_ui::nested(body))
     }
+}
+
+/// The state picker's rows: Nothing first, then the table in its own order.
+pub(crate) fn state_options() -> Vec<(String, SharedString)> {
+    let mut options = vec![(String::new(), rox_i18n::t!("button-editor-state-none"))];
+    options.extend(
+        buttons::STATES
+            .iter()
+            .map(|spec| (spec.id.to_string(), rox_i18n::t!(spec.label_key))),
+    );
+
+    options
 }
 
 fn case_label(spec: Option<&'static StateSpec>, when: &str) -> SharedString {

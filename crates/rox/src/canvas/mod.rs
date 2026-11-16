@@ -15,6 +15,7 @@ pub(crate) mod image;
 pub(crate) mod overlay;
 pub(crate) mod routes;
 pub(crate) mod shader;
+pub(crate) mod states;
 pub(crate) mod text;
 pub(crate) mod texture;
 

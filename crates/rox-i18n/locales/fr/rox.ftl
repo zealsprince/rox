@@ -4565,6 +4565,10 @@ canvas-object-needs-canvas = { $name } ajouté. Les objets vont sur un canevas, 
 canvas-weight-counts = Éléments { $items }, grilles { $grids }, éléments shader { $shaders }, shaders de panneau { $surfaces }, grilles en mouvement { $moving }, imbrication { $depth }
 canvas-weight-many-grids = Éléments grille : { $count }, plus que ce qui s'affiche de façon fluide
 canvas-weight-many-shaders = Shaders de panneaux et de la fenêtre : { $count }, plus que ce qui s'affiche de façon fluide
+canvas-case-show = Afficher
+canvas-case-same-image = Même image
+canvas-case-same-color = Même couleur
+canvas-case-preview = Voir ce cas sur le canevas
 menu-layout-to-canvas = Convertir la disposition en canevas
 
 ## Catalog

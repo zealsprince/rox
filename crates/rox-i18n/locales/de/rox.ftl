@@ -4473,6 +4473,10 @@ canvas-object-needs-canvas = { $name } hinzugefügt. Objekte gehören auf eine L
 canvas-weight-counts = Elemente { $items }, Raster { $grids }, Shader-Elemente { $shaders }, Panel-Shader { $surfaces }, bewegte Raster { $moving }, Verschachtelung { $depth }
 canvas-weight-many-grids = Raster-Elemente: { $count }, mehr als sich flüssig zeichnen lässt
 canvas-weight-many-shaders = Panel- und Fenster-Shader: { $count }, mehr als sich flüssig zeichnen lässt
+canvas-case-show = Anzeigen
+canvas-case-same-image = Gleiches Bild
+canvas-case-same-color = Gleiche Farbe
+canvas-case-preview = Diesen Fall auf der Leinwand ansehen
 menu-layout-to-canvas = Layout in Leinwand umwandeln
 
 ## Catalog

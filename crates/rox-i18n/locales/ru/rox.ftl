@@ -4529,6 +4529,10 @@ canvas-object-needs-canvas = { $name } добавлен. Объекты поме
 canvas-weight-counts = Элементы { $items }, сетки { $grids }, элементы-шейдеры { $shaders }, шейдеры панелей { $surfaces }, движущиеся сетки { $moving }, вложенность { $depth }
 canvas-weight-many-grids = Элементы-сетки: { $count }, больше, чем рисуется плавно
 canvas-weight-many-shaders = Шейдеры панелей и окна: { $count }, больше, чем рисуется плавно
+canvas-case-show = Показывать
+canvas-case-same-image = То же изображение
+canvas-case-same-color = Тот же цвет
+canvas-case-preview = Показать этот случай на холсте
 menu-layout-to-canvas = Преобразовать макет в холст
 
 ## Catalog

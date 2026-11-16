@@ -372,6 +372,29 @@ header is read first so an image over the pixel cap (`MAX_PIXELS`, `MAX_SIDE` in
 `crates/rox/src/canvas/image.rs`) is refused before its body is decoded. A missing
 image shows as a dashed outline with its asset id, only in design mode.
 
+An item can follow a piece of state from the table Custom Controls picks from (`STATES`
+in `crates/rox-panel-api/src/buttons.rs`). It names one state id, and for each of that
+state's cases it can say whether it shows and an opacity that multiplies its own. An
+image can take another asset in a case and a text item another color. A case with no
+entry draws the item as it is. A state id or a case id the build doesn't have changes
+nothing, so a canvas from a newer build draws those items as if they followed nothing.
+The ids are kept as saved. A hidden case takes the item off the stage and out of the
+click walk, and a group's children go with it. The case's opacity rides the same product
+a route's does, so it reaches a group's children and composes with routes and with the
+Rest setting. A shader item's opacity doesn't reach its quad, so a shader takes only the
+hiding. In design mode a hidden item draws as a ghost at a quarter of its opacity and can
+still be picked, and the inspector can preview any case on the selected item while
+playback stays as it is. The preview is editor state and never saved.
+
+The states are read once per render, and the playing track's marks only while an item
+follows the favourite, through the same mark cache Custom Controls holds. The canvas
+watches what Custom Controls watches (the player, the scrobbler, the presence service,
+the EQ and the library's mark events) and redraws only when a followed state's case
+moves, since the player notifies on every pump tick. A command run from a click looks at
+the cases again once its flip has landed. A canvas where nothing follows a state reads
+none of it and redraws for none of it. A case's image is an asset in the store like the
+item's own: an object exports it with the item, and placing rewrites it to the store's id.
+
 A grid item is a dock tree of its own: one `DockArea` per item, built and gated the way
 the window's dock is (the layout version and a split at the root), with the middle-drag
 pop-out hook. Its tab groups are real tab groups, so they report into the workspace's
@@ -420,4 +443,5 @@ wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore)
 `crates/rox/src/panels/canvas.rs` (`CanvasPanel`, `CanvasConfig`, `wrap_layout`),
 `crates/rox/src/canvas/mod.rs` (the live bodies and the nesting cap),
 `crates/rox/src/canvas/grid.rs` (a grid's dock area), `crates/rox/src/canvas/image.rs`
-(the decode and the quad), and `Workspace::docks` in `crates/rox/src/workspace.rs`.
+(the decode and the quad), `crates/rox/src/canvas/states.rs` (items that follow state),
+and `Workspace::docks` in `crates/rox/src/workspace.rs`.

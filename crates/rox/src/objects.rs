@@ -202,9 +202,7 @@ pub(crate) fn lift(
     let mut used = BTreeSet::new();
     walk(&item, &mut |node| {
         ids.insert(node.id.clone());
-        if let Some(asset) = node.content.asset() {
-            used.insert(asset.to_string());
-        }
+        used.extend(node.assets().map(str::to_string));
     });
 
     let routes: Vec<Route> = routes
@@ -468,18 +466,16 @@ fn renumber(
     ids.entry(std::mem::replace(&mut item.id, fresh.clone()))
         .or_insert(fresh);
 
-    match &mut item.content {
-        Content::Image { asset, .. } => {
-            if let Some(to) = assets.get(asset.as_str()) {
-                *asset = to.clone();
-            }
+    item.assets_mut(&mut |asset| {
+        if let Some(to) = assets.get(asset.as_str()) {
+            *asset = to.clone();
         }
-        Content::Group { items } => {
-            for child in items {
-                renumber(child, taken, ids, assets);
-            }
+    });
+
+    if let Content::Group { items } = &mut item.content {
+        for child in items {
+            renumber(child, taken, ids, assets);
         }
-        _ => {}
     }
 }
 
@@ -1194,6 +1190,50 @@ mod tests {
         let object: CanvasItem = serde_json::from_value(image("pic", "plate")).unwrap();
         let (item, _) = rebase(object, &[], &stage(), &ids, &HashMap::new());
         assert_eq!(item.content.asset(), Some("frame"));
+    }
+
+    /// A play button: its own image for paused, another for playing.
+    fn play_button() -> serde_json::Value {
+        json!({
+            "id": "play",
+            "action": "toggle_playback",
+            "state": "player.playback",
+            "cases": [{ "when": "playing", "asset": "b" }],
+            "content": { "kind": "image", "asset": "a" },
+        })
+    }
+
+    #[test]
+    fn export_brings_the_assets_a_case_names() {
+        let canvas = canvas(json!([
+            group("pair", json!([play_button()])),
+            image("loose", "c")
+        ]));
+        let out = lifted(&canvas, &[], &[], "pair");
+
+        let ids: Vec<&str> = out.bundle.assets.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert_eq!(out.files[1].1, Path::new("/store/b.png"));
+
+        // The item carries its state and cases as they were.
+        let play = &out.bundle.item["content"]["items"][0];
+        assert_eq!(play["state"], "player.playback");
+        assert_eq!(play["cases"][0]["asset"], "b");
+    }
+
+    #[test]
+    fn placing_rewrites_a_cases_asset_to_the_stores() {
+        let object: CanvasItem = serde_json::from_value(play_button()).unwrap();
+        let ids = HashMap::from([
+            ("a".to_string(), "play-2".to_string()),
+            ("b".to_string(), "pause".to_string()),
+        ]);
+
+        let (item, _) = rebase(object, &[], &stage(), &ids, &HashMap::new());
+
+        assert_eq!(item.assets().collect::<Vec<_>>(), ["play-2", "pause"]);
+        assert_eq!(item.state, "player.playback");
+        assert_eq!(item.cases[0].when, "playing");
     }
 
     #[test]

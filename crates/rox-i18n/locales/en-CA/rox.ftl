@@ -4584,6 +4584,10 @@ canvas-object-needs-canvas = Added { $name }. Objects go onto a canvas, and this
 canvas-weight-counts = Items { $items }, grids { $grids }, shader items { $shaders }, panel shaders { $surfaces }, moving grids { $moving }, nesting { $depth }
 canvas-weight-many-grids = Grid items: { $count }, more than draws smoothly
 canvas-weight-many-shaders = Panel and window shaders: { $count }, more than draws smoothly
+canvas-case-show = Show
+canvas-case-same-image = Same image
+canvas-case-same-color = Same color
+canvas-case-preview = Preview this case on the canvas
 menu-layout-to-canvas = Convert Layout to Canvas
 
 ## Catalog

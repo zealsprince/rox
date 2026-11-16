@@ -53,22 +53,27 @@ use crate::canvas::image::{self, Images};
 use crate::canvas::overlay::Inspector;
 use crate::canvas::routes::{self, Snapshot};
 use crate::canvas::shader::{self as shader_item, Shaders};
+use crate::canvas::states::{self, Cases};
 use crate::canvas::text::{self, Values};
 use crate::canvas::texture::{self, TextureView};
 use crate::canvas::{self, Body, Placing};
 use crate::composite;
 use crate::keymap;
 use crate::objects;
+use crate::panels::controls;
 use crate::workspace::{LAYOUT_VERSION, Workspace};
 use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::palette;
+use rox_panel_api::buttons;
+use rox_panel_api::marks::MarkCache;
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Tone, ValueEdit};
 use rox_panel_api::panel_settings;
 use rox_panel_api::signal_ui::{RouteHost, SignalHost, SignalUi};
 use rox_panel_api::toast::Toast;
 use rox_panel_api::windows::WorkspaceWindows;
 use rox_services::catalog::LibraryEvent;
+use rox_services::player::EqChanged;
 
 /// The registry name.
 pub const PANEL_NAME: &str = "canvas";
@@ -139,6 +144,9 @@ pub(crate) struct Shape {
     pub label: SharedString,
     pub kind: ShapeKind,
     pub locked: bool,
+    /// Drawn as a ghost in design mode because a case hides it or a group
+    /// around it. It can be picked, and a click passes through it.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -385,9 +393,15 @@ pub struct CanvasPanel {
     pointing: Rc<Cell<bool>>,
     /// The export card or the place confirm, over the whole window.
     pub(crate) object_dialog: Option<objects::Dialog>,
+    /// The playing track's marks, resolved only while an item follows the
+    /// favourite.
+    marks: MarkCache,
+    /// The followed states' cases as the last render drew them.
+    cases: Cases,
     _player: Subscription,
     _player_view: Subscription,
     _library: Subscription,
+    _states: [Subscription; 4],
 }
 
 impl CanvasPanel {
@@ -425,18 +439,45 @@ impl CanvasPanel {
                 cx.notify();
             }
         });
-        // A tag edit to the playing track, as track info follows it.
+        // A tag edit to the playing track, as track info follows it, and a
+        // mark on it for an item following the favourite.
         let library = cx.subscribe(
             &state.library,
-            |this: &mut Self, _, event: &LibraryEvent, cx| {
+            |this: &mut Self, library, event: &LibraryEvent, cx| {
                 if matches!(event, LibraryEvent::Updated) {
                     this.text_values = None;
                     if text::holds_text(&this.config.canvas) {
                         cx.notify();
                     }
                 }
+
+                if states::needs_marks(&this.config.canvas)
+                    && this.marks.apply(event, library.read(cx))
+                {
+                    cx.notify();
+                }
             },
         );
+
+        // What Custom Controls watches, for the states an item follows. The
+        // player notifies on every pump tick, so each of these redraws only
+        // when a followed state's case moved.
+        let followed = [
+            cx.observe_in(&state.player, window, |this: &mut Self, _, window, cx| {
+                this.recheck_states(window, cx)
+            }),
+            cx.observe_in(
+                &state.scrobbler,
+                window,
+                |this: &mut Self, _, window, cx| this.recheck_states(window, cx),
+            ),
+            cx.observe_in(&state.discord, window, |this: &mut Self, _, window, cx| {
+                this.recheck_states(window, cx)
+            }),
+            cx.observe_global_in::<EqChanged>(window, |this: &mut Self, window, cx| {
+                this.recheck_states(window, cx)
+            }),
+        ];
 
         let seen_routes = config.routes.clone();
         let mut this = CanvasPanel {
@@ -471,9 +512,12 @@ impl CanvasPanel {
             pressed: None,
             pointing: Rc::default(),
             object_dialog: None,
+            marks: MarkCache::default(),
+            cases: Cases::new(),
             _player: player,
             _player_view: player_view,
             _library: library,
+            _states: followed,
         };
         this.build(HashMap::new(), window, cx);
         this
@@ -819,12 +863,31 @@ impl CanvasPanel {
             Rc::default()
         };
 
+        // A canvas where nothing follows a state reads none of it.
+        self.cases = if states::follows(&self.config.canvas) {
+            self.read_cases(window, cx)
+        } else {
+            self.marks.clear();
+            Cases::new()
+        };
+
+        // The case the inspector shows stands in for the live one, on the
+        // selected item only.
+        let active = design && self.is_active(cx);
+        let preview = self
+            .inspector
+            .preview()
+            .filter(|(id, _)| active && self.selected.as_deref() == Some(*id));
+
         // Before the first bounds land there's nothing to place against, and
         // a grid laid out at no size would lay its panels out at none.
         let mut draw = Draw {
             at: &at,
             lives: &lives,
             values: &values,
+            cases: &self.cases,
+            preview,
+            ghost: false,
             images: &mut self.images,
             shaders: &mut self.shaders,
             textures: &mut self.textures,
@@ -898,7 +961,6 @@ impl CanvasPanel {
         .absolute()
         .size_full();
 
-        let active = design && self.is_active(cx);
         if active {
             shader_item::absorb_hot(self, cx);
         }
@@ -979,6 +1041,36 @@ impl CanvasPanel {
             .children(dialog)
     }
 
+    /// Every followed state's case now. Marks resolve only when an item
+    /// follows the favourite, and then only on a new track.
+    fn read_cases(&mut self, window: &Window, cx: &mut Context<Self>) -> Cases {
+        let wanted = states::needs_marks(&self.config.canvas);
+        let marks = controls::playing_marks(&mut self.marks, &self.state, wanted, cx);
+
+        let live = buttons::Live {
+            player: self.state.player.read(cx),
+            library: self.state.library.read(cx),
+            scrobbler: self.state.scrobbler.read(cx),
+            discord: self.state.discord.read(cx),
+            marks,
+            shell: buttons::Shell {
+                mini: crate::workspace::mini_showing(window, cx),
+            },
+        };
+        states::read(&self.config.canvas, &live)
+    }
+
+    /// From an observer: a render only when a case moved since the last one.
+    fn recheck_states(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !states::follows(&self.config.canvas) {
+            return;
+        }
+
+        if self.read_cases(window, cx) != self.cases {
+            cx.notify();
+        }
+    }
+
     pub(crate) fn viewport(&self) -> Viewport {
         let size = self.bounds.get().size;
         Viewport {
@@ -1003,6 +1095,11 @@ struct Draw<'a> {
     at: &'a Placing,
     lives: &'a HashMap<String, Live>,
     values: &'a Values,
+    cases: &'a Cases,
+    /// The selected item's id and the case the inspector previews on it.
+    preview: Option<(&'a str, &'a str)>,
+    /// Inside a group its case hides, in design mode.
+    ghost: bool,
     images: &'a mut Images,
     shaders: &'a mut Shaders,
     textures: &'a mut HashMap<String, Entity<TextureView>>,
@@ -1035,7 +1132,26 @@ fn place(
             continue;
         }
 
-        let live = routes::live_for(draw.lives, item);
+        let preview = draw
+            .preview
+            .filter(|(id, _)| *id == item.id)
+            .map(|(_, case)| case);
+        let applied = states::resolve(item, draw.cases, preview);
+
+        // Off design mode a hidden case takes the item, and a group's
+        // children, off the stage and out of the hit walk. In design mode it
+        // draws as a ghost so it can still be picked.
+        if !applied.visible && !at.design {
+            continue;
+        }
+        let ghost = draw.ghost || !applied.visible;
+
+        let mut live = routes::live_for(draw.lives, item);
+        if applied.visible {
+            live = states::fold(live, &applied);
+        } else if !draw.ghost {
+            live.opacity *= states::GHOST;
+        }
 
         let flat = shader_item::sits_flat(&item.content, draw.shaders.painted_flat(&item.id, cx));
         let kind = if flat {
@@ -1054,6 +1170,7 @@ fn place(
             }),
             kind,
             locked: item.locked,
+            hidden: ghost,
         };
         let projected = || {
             project(
@@ -1096,6 +1213,9 @@ fn place(
                     at,
                     lives: draw.lives,
                     values: draw.values,
+                    cases: draw.cases,
+                    preview: draw.preview,
+                    ghost,
                     images: &mut *draw.images,
                     shaders: &mut *draw.shaders,
                     textures: &mut *draw.textures,
@@ -1122,7 +1242,8 @@ fn place(
             }
 
             (Body::Image, _) => {
-                let element = image::element(item, parent, at, &live, draw.images, cx);
+                let element =
+                    image::element(item, applied.asset, parent, at, &live, draw.images, cx);
                 let Some(projected) = projected() else {
                     continue;
                 };
@@ -1164,7 +1285,7 @@ fn place(
                     text: SharedString::from(line.render(draw.values)),
                     family: font.clone(),
                     size: size * parent.k * projected.scale,
-                    color: text::color(color),
+                    color: text::color(applied.color.unwrap_or(color.as_str())),
                     opacity: projected.opacity,
                     align: *align,
                 };
@@ -2314,7 +2435,7 @@ pub(crate) fn hit(shapes: &[Shape], canvas: &CanvasState, point: [f32; 2]) -> Hi
     let front = shapes
         .iter()
         .rev()
-        .filter(|shape| shape.kind != ShapeKind::Group)
+        .filter(|shape| shape.kind != ShapeKind::Group && !shape.hidden)
         .filter(|shape| canvas.find(&shape.id).is_some_and(|item| item.visible))
         .find(|shape| inside(&shape.corners, point));
     let Some(front) = front else {
@@ -2428,6 +2549,15 @@ impl CanvasPanel {
                         {
                             cx.stop_propagation();
                             keymap::dispatch(&action, window, cx);
+
+                            // A setting's own repaint skips the window the
+                            // command came from, so a canvas showing that
+                            // state looks again once the flip has landed.
+                            if states::follows(&this.config.canvas) {
+                                cx.defer_in(window, |this, window, cx| {
+                                    this.recheck_states(window, cx)
+                                });
+                            }
                         }
                     })
                     .ok();
@@ -3021,6 +3151,7 @@ mod tests {
             label: SharedString::from(id.to_string()),
             kind,
             locked: false,
+            hidden: false,
         }
     }
 
@@ -3142,6 +3273,37 @@ mod tests {
             shape("front", &[], square(0., 0., 100.), ShapeKind::Perspective),
         ];
 
+        assert_eq!(hit(&shapes, &canvas, [50., 50.]), command("back", "stop"));
+    }
+
+    #[test]
+    fn an_item_hidden_by_its_case_is_passed_through() {
+        let canvas = canvas_of(json!([
+            picture("back", "stop"),
+            {
+                "id": "group",
+                "action": "next_track",
+                "state": "player.mute",
+                "cases": [{ "when": "unmuted", "visible": false }],
+                "content": { "kind": "group", "items": [picture("child", "play_pause")] },
+            },
+        ]));
+        let mut shapes = [
+            shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape("child", &["group"], square(0., 0., 100.), ShapeKind::Flat),
+            shape("group", &[], square(0., 0., 100.), ShapeKind::Group),
+        ];
+
+        // Shown, the group's child takes the click with its own command.
+        assert_eq!(
+            hit(&shapes, &canvas, [50., 50.]),
+            command("child", "play_pause")
+        );
+
+        // Hidden by the group's case, the ghosts pass the click through.
+        for shape in &mut shapes[1..] {
+            shape.hidden = true;
+        }
         assert_eq!(hit(&shapes, &canvas, [50., 50.]), command("back", "stop"));
     }
 

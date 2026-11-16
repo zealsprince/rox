@@ -4495,6 +4495,10 @@ canvas-object-needs-canvas = { $name } adicionado. Objetos vão num canvas, e es
 canvas-weight-counts = Itens { $items }, grades { $grids }, itens de shader { $shaders }, shaders de painel { $surfaces }, grades em movimento { $moving }, aninhamento { $depth }
 canvas-weight-many-grids = Itens de grade: { $count }, mais do que se desenha com fluidez
 canvas-weight-many-shaders = Shaders de painéis e da janela: { $count }, mais do que se desenha com fluidez
+canvas-case-show = Mostrar
+canvas-case-same-image = Mesma imagem
+canvas-case-same-color = Mesma cor
+canvas-case-preview = Ver este caso no canvas
 menu-layout-to-canvas = Converter layout em canvas
 
 ## Catalog

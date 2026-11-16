@@ -4551,6 +4551,10 @@ canvas-object-needs-canvas = { $name } додано. Об'єкти розміщ�
 canvas-weight-counts = Елементи { $items }, сітки { $grids }, елементи-шейдери { $shaders }, шейдери панелей { $surfaces }, рухомі сітки { $moving }, вкладеність { $depth }
 canvas-weight-many-grids = Елементи-сітки: { $count }, більше, ніж малюється плавно
 canvas-weight-many-shaders = Шейдери панелей і вікна: { $count }, більше, ніж малюється плавно
+canvas-case-show = Показувати
+canvas-case-same-image = Те саме зображення
+canvas-case-same-color = Той самий колір
+canvas-case-preview = Показати цей випадок на полотні
 menu-layout-to-canvas = Перетворити розкладку на полотно
 
 ## Catalog

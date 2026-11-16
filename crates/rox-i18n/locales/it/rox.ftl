@@ -4535,6 +4535,10 @@ canvas-object-needs-canvas = { $name } aggiunto. Gli oggetti vanno su una tela, 
 canvas-weight-counts = Elementi { $items }, griglie { $grids }, elementi shader { $shaders }, shader dei pannelli { $surfaces }, griglie in movimento { $moving }, annidamento { $depth }
 canvas-weight-many-grids = Elementi griglia: { $count }, più di quanti se ne disegnano in modo fluido
 canvas-weight-many-shaders = Shader di pannelli e finestra: { $count }, più di quanti se ne disegnano in modo fluido
+canvas-case-show = Mostra
+canvas-case-same-image = Stessa immagine
+canvas-case-same-color = Stesso colore
+canvas-case-preview = Mostra questo caso sulla tela
 menu-layout-to-canvas = Converti layout in tela
 
 ## Catalog

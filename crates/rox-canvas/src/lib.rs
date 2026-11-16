@@ -16,6 +16,6 @@ pub use project::{
     Frame, Live, Projected, Viewport, child_frame, inside, paint_order, project, unproject_delta,
 };
 pub use state::{
-    Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Content, Cost, Fit, Idle,
+    Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Idle,
     ImageFit, Length, MAX_DEPTH, Place, Stage, Sway,
 };

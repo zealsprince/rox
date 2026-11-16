@@ -4340,6 +4340,10 @@ canvas-object-needs-canvas = 已添加 { $name }。对象需要放到画布上�
 canvas-weight-counts = 项目 { $items }，网格 { $grids }，着色器项目 { $shaders }，面板着色器 { $surfaces }，移动的网格 { $moving }，嵌套 { $depth }
 canvas-weight-many-grids = 网格项目：{ $count }，超出流畅绘制的数量
 canvas-weight-many-shaders = 面板和窗口着色器：{ $count }，超出流畅绘制的数量
+canvas-case-show = 显示
+canvas-case-same-image = 相同图片
+canvas-case-same-color = 相同颜色
+canvas-case-preview = 在画布上预览这种情况
 menu-layout-to-canvas = 将布局转换为画布
 
 ## Catalog

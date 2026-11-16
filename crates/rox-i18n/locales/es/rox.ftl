@@ -4569,6 +4569,10 @@ canvas-object-needs-canvas = { $name } añadido. Los objetos van en un lienzo, y
 canvas-weight-counts = Elementos { $items }, cuadrículas { $grids }, elementos shader { $shaders }, shaders de panel { $surfaces }, cuadrículas en movimiento { $moving }, anidamiento { $depth }
 canvas-weight-many-grids = Elementos de cuadrícula: { $count }, más de los que se dibujan con fluidez
 canvas-weight-many-shaders = Shaders de paneles y de la ventana: { $count }, más de los que se dibujan con fluidez
+canvas-case-show = Mostrar
+canvas-case-same-image = La misma imagen
+canvas-case-same-color = El mismo color
+canvas-case-preview = Ver este caso en el lienzo
 menu-layout-to-canvas = Convertir disposición en lienzo
 
 ## Catalog

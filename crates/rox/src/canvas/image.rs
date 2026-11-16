@@ -468,16 +468,32 @@ pub(crate) fn fit(how: ImageFit, item: [f32; 2], image: [f32; 2]) -> (Bounds<f32
 }
 
 /// The image's element with its depth, or None while nothing should show.
+/// `case` is the asset the item's case shows, drawn when the store holds it.
 pub(crate) fn element(
     item: &CanvasItem,
+    case: Option<&str>,
     parent: &Frame,
     at: &Placing,
     live: &Live,
     images: &mut Images,
     cx: &mut Context<CanvasPanel>,
 ) -> Option<(f32, AnyElement)> {
-    let Content::Image { asset, fit: how } = &item.content else {
+    let Content::Image {
+        asset: own,
+        fit: how,
+    } = &item.content
+    else {
         return None;
+    };
+
+    // Every case's image starts decoding with the item's own, so a case
+    // flip has its picture ready. Each one decodes once per store revision.
+    for named in item.assets() {
+        images.look(named, cx);
+    }
+    let asset = match case {
+        Some(case) if !matches!(images.look(case, cx), Look::Missing) => case,
+        _ => own.as_str(),
     };
 
     // The item's own box, turned and scaled, is the frame the face sits in.

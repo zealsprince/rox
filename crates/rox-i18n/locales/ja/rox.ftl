@@ -4341,6 +4341,10 @@ canvas-object-needs-canvas = { $name } を追加しました。オブジェク�
 canvas-weight-counts = アイテム { $items }、グリッド { $grids }、シェーダーアイテム { $shaders }、パネルシェーダー { $surfaces }、動くグリッド { $moving }、入れ子 { $depth }
 canvas-weight-many-grids = グリッドアイテム: { $count }、滑らかに描画できる数を超えています
 canvas-weight-many-shaders = パネルとウィンドウのシェーダー: { $count }、滑らかに描画できる数を超えています
+canvas-case-show = 表示
+canvas-case-same-image = 同じ画像
+canvas-case-same-color = 同じ色
+canvas-case-preview = このケースをキャンバスでプレビュー
 menu-layout-to-canvas = レイアウトをキャンバスに変換
 
 ## Catalog

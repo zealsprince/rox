@@ -122,6 +122,17 @@ pub struct CanvasItem {
     /// A command id run on click, empty for none. Ignored on a Grid.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub action: String,
+    /// A `buttons::STATES` id. Empty means the item follows nothing, and an id
+    /// the app doesn't have reads the same.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub state: String,
+    /// What the item does in each case of `state`. A case with no entry draws
+    /// the item as it is. Lenient: a broken case costs only itself.
+    #[serde(
+        deserialize_with = "lenient_cases",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub cases: Vec<Case>,
     pub content: Content,
 }
 
@@ -136,8 +147,84 @@ impl Default for CanvasItem {
             opacity: 1.,
             sway: Sway::default(),
             action: String::new(),
+            state: String::new(),
+            cases: Vec::new(),
             content: Content::default(),
         }
+    }
+}
+
+impl CanvasItem {
+    /// Every asset this item names, its cases' included, and not its
+    /// children's. Anything that collects or rewrites an item's assets goes
+    /// through here and [`assets_mut`](Self::assets_mut), so a case's image
+    /// is never left behind.
+    pub fn assets(&self) -> impl Iterator<Item = &str> {
+        self.content.asset().into_iter().chain(
+            self.cases
+                .iter()
+                .map(|case| case.asset.as_str())
+                .filter(|asset| !asset.is_empty()),
+        )
+    }
+
+    /// Each asset id [`assets`](Self::assets) yields, to rewrite in place.
+    pub fn assets_mut(&mut self, f: &mut dyn FnMut(&mut String)) {
+        if let Content::Image { asset, .. } = &mut self.content
+            && !asset.is_empty()
+        {
+            f(asset);
+        }
+
+        for case in &mut self.cases {
+            if !case.asset.is_empty() {
+                f(&mut case.asset);
+            }
+        }
+    }
+}
+
+/// One case of the state an item follows: whether it shows, and its look.
+/// The app reads `when` against the state's own list, so an id it doesn't
+/// have is never drawn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Case {
+    /// The `StateCase` id this applies in.
+    pub when: String,
+    /// False hides the item, and everything inside a group, in this case.
+    pub visible: bool,
+    /// Multiplies the item's opacity in this case.
+    pub opacity: f32,
+    /// Image items: the asset shown in this case. Empty keeps the item's own.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub asset: String,
+    /// Text items: the color in this case. Empty keeps the item's own.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub color: String,
+}
+
+impl Default for Case {
+    fn default() -> Self {
+        Self {
+            when: String::new(),
+            visible: true,
+            opacity: 1.,
+            asset: String::new(),
+            color: String::new(),
+        }
+    }
+}
+
+impl Case {
+    /// Shown, at full opacity, with the item's own image and color: a case
+    /// that changes nothing.
+    pub fn is_plain(&self) -> bool {
+        *self
+            == Case {
+                when: self.when.clone(),
+                ..Case::default()
+            }
     }
 }
 
@@ -384,6 +471,26 @@ fn lenient_items<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Canva
             Ok(item) => Some(item),
             Err(e) => {
                 log::warn!("canvas: dropping an item that doesn't parse: {e}");
+                None
+            }
+        })
+        .collect())
+}
+
+/// A `cases` that isn't a list reads as none, so it costs the cases and not
+/// the item.
+fn lenient_cases<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Case>, D::Error> {
+    let Value::Array(raw) = Value::deserialize(deserializer)? else {
+        log::warn!("canvas: dropping cases that aren't a list");
+        return Ok(Vec::new());
+    };
+
+    Ok(raw
+        .into_iter()
+        .filter_map(|value| match Case::deserialize(value) {
+            Ok(case) => Some(case),
+            Err(e) => {
+                log::warn!("canvas: dropping a case that doesn't parse: {e}");
                 None
             }
         })
@@ -800,6 +907,139 @@ mod tests {
                 depth: 2,
             }
         );
+    }
+
+    #[test]
+    fn an_item_with_no_cases_saves_as_before() {
+        let value = serde_json::to_value(grid("g")).unwrap();
+        let object = value.as_object().unwrap();
+
+        assert!(!object.contains_key("state"));
+        assert!(!object.contains_key("cases"));
+
+        // And one saved before the fields existed reads with neither.
+        let old: CanvasItem = serde_json::from_value(json!({ "id": "o" })).unwrap();
+        assert!(old.state.is_empty() && old.cases.is_empty());
+    }
+
+    #[test]
+    fn a_broken_case_costs_only_itself() {
+        let item: CanvasItem = serde_json::from_value(json!({
+            "id": "play",
+            "state": "player.playback",
+            "cases": [
+                { "when": "playing", "asset": "pause" },
+                { "when": 7 },
+                { "when": "paused", "visible": false, "opacity": 0.5 },
+                "loud",
+            ],
+            "content": { "kind": "image", "asset": "play" },
+        }))
+        .unwrap();
+
+        assert_eq!(item.id, "play");
+        assert_eq!(item.cases.len(), 2);
+        assert_eq!(item.cases[0].when, "playing");
+        assert!(item.cases[0].visible, "a missing field takes its default");
+        assert_eq!(item.cases[0].opacity, 1.);
+        assert!(!item.cases[1].visible);
+
+        // Cases that aren't a list at all cost the cases, not the item.
+        let item: CanvasItem =
+            serde_json::from_value(json!({ "id": "x", "state": "player.mute", "cases": "no" }))
+                .unwrap();
+        assert_eq!(item.state, "player.mute");
+        assert!(item.cases.is_empty());
+    }
+
+    #[test]
+    fn unknown_ids_in_a_state_and_its_cases_survive_a_save() {
+        let saved = json!({
+            "id": "x",
+            "state": "player.from_a_newer_build",
+            "cases": [{ "when": "sideways", "visible": false, "opacity": 1.0 }],
+            "content": { "kind": "image", "asset": "a" },
+        });
+        let item: CanvasItem = serde_json::from_value(saved.clone()).unwrap();
+        let again = serde_json::to_value(&item).unwrap();
+
+        assert_eq!(again["state"], saved["state"]);
+        assert_eq!(again["cases"], saved["cases"]);
+    }
+
+    #[test]
+    fn every_asset_an_item_names_includes_its_cases() {
+        let mut item = CanvasItem {
+            content: Content::Image {
+                asset: "play".into(),
+                fit: ImageFit::Contain,
+            },
+            cases: vec![
+                Case {
+                    when: "playing".into(),
+                    asset: "pause".into(),
+                    ..Case::default()
+                },
+                Case {
+                    when: "paused".into(),
+                    ..Case::default()
+                },
+            ],
+            ..CanvasItem::default()
+        };
+        assert_eq!(item.assets().collect::<Vec<_>>(), ["play", "pause"]);
+
+        item.assets_mut(&mut |asset| asset.push_str("-2"));
+        assert_eq!(item.assets().collect::<Vec<_>>(), ["play-2", "pause-2"]);
+        assert!(item.cases[1].asset.is_empty(), "an empty case stays empty");
+
+        // A text item names no asset of its own, and a case's still counts.
+        let text = CanvasItem {
+            content: Content::Text {
+                text: "%title%".into(),
+                font: None,
+                size: 12.,
+                color: "text".into(),
+                align: Align::Center,
+            },
+            cases: vec![Case {
+                when: "on".into(),
+                asset: "stray".into(),
+                ..Case::default()
+            }],
+            ..CanvasItem::default()
+        };
+        assert_eq!(text.assets().collect::<Vec<_>>(), ["stray"]);
+    }
+
+    #[test]
+    fn a_plain_case_changes_nothing() {
+        let plain = Case {
+            when: "on".into(),
+            ..Case::default()
+        };
+        assert!(plain.is_plain());
+
+        for changed in [
+            Case {
+                visible: false,
+                ..plain.clone()
+            },
+            Case {
+                opacity: 0.5,
+                ..plain.clone()
+            },
+            Case {
+                asset: "a".into(),
+                ..plain.clone()
+            },
+            Case {
+                color: "accent".into(),
+                ..plain.clone()
+            },
+        ] {
+            assert!(!changed.is_plain(), "{changed:?}");
+        }
     }
 
     #[test]

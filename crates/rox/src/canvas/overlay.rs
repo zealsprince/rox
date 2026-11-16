@@ -8,6 +8,8 @@
 //! lands in undo and saves. Each kind of content adds its rows in a
 //! function of its own below [`content_rows`].
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -18,9 +20,12 @@ use gpui::{
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use rox_canvas::{Align, Anchor, CanvasItem, CanvasState, Content, Fit, Idle, ImageFit, Length};
+use rox_canvas::{
+    Align, Anchor, CanvasItem, CanvasState, Case, Content, Fit, Idle, ImageFit, Length,
+};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_api::buttons::{StateCase, StateSpec};
 use rox_panel_api::panel::shader as surface;
 use rox_panel_api::panel::{
     self, PanelSettings, ScrubState, Tone, ValueEdit, setting_block, setting_row,
@@ -28,11 +33,10 @@ use rox_panel_api::panel::{
 use rox_panel_api::panel_settings::{self, ShaderSource};
 use rox_panel_api::signal_ui::{self, bindable_row, routes::RouteEditor, slots::SlotList};
 use rox_panel_kit::ui as settings_ui;
-use rox_panel_kit::{PickRow, search_picker};
+use rox_panel_kit::{PickRow, Tip, search_picker};
 
 use crate::canvas::shader::{self as shader_item, RowState};
-use crate::canvas::text;
-use crate::canvas::{cost, edit};
+use crate::canvas::{cost, edit, states, text};
 use crate::keymap;
 use crate::objects::{self, Dialog};
 use crate::panels::canvas::{self, CanvasPanel};
@@ -68,11 +72,22 @@ pub(crate) struct Inspector {
     /// The weight line, dropped by every edit and worked out again on the
     /// next render.
     weighed: Option<Weighed>,
+    /// The item and the case of its state drawn in place of the live one.
+    /// Editor state only, never saved.
+    preview: Option<(String, String)>,
+    /// The case opacity sliders, by case id.
+    case_scrubs: RefCell<HashMap<String, ScrubState>>,
 }
 
 impl Inspector {
     pub(crate) fn on_left(&self) -> bool {
         self.left
+    }
+
+    pub(crate) fn preview(&self) -> Option<(&str, &str)> {
+        self.preview
+            .as_ref()
+            .map(|(id, case)| (id.as_str(), case.as_str()))
     }
 
     pub(crate) fn value_edit(&self) -> &ValueEdit {
@@ -838,6 +853,7 @@ fn item_rows(
 
     rows.child(actions(item, cx))
         .child(content_rows(panel, item, window, cx))
+        .child(state_rows(panel, item, cx))
         .into_any_element()
 }
 
@@ -911,6 +927,299 @@ fn command_row(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
         picker,
     )
     .into_any_element()
+}
+
+/// Custom Controls' state picker, then one block per case of the picked
+/// state. A state this build doesn't have shows as Nothing and keeps its
+/// cases as saved.
+fn state_rows(panel: &CanvasPanel, item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
+    let id = item.id.clone();
+    let picker = panel::picker(
+        "canvas-item-state",
+        item.state.clone(),
+        controls::state_options(),
+        false,
+        move |this: &mut CanvasPanel, state: String, cx| {
+            let id = id.clone();
+            this.inspector.preview = None;
+            this.change_later(
+                "item.state",
+                move |canvas| {
+                    if let Some(item) = canvas.find_mut(&id) {
+                        states::set_state(item, state);
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    );
+
+    let mut rows = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .child(setting_row(
+            rox_i18n::t!("button-editor-state"),
+            None,
+            picker,
+        ));
+
+    if let Some(spec) = states::followed(item) {
+        for case in spec.cases {
+            rows = rows.child(case_block(panel, item, spec, case, cx));
+        }
+    }
+
+    rows.into_any_element()
+}
+
+/// One case: whether the item shows, and while it does, its opacity and the
+/// image or color its kind takes. A case left alone reads as the item's own.
+fn case_block(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    spec: &'static StateSpec,
+    case: &'static StateCase,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    let entry = item
+        .cases
+        .iter()
+        .find(|held| held.when == case.id)
+        .cloned()
+        .unwrap_or_default();
+    let previewing = panel.inspector.preview() == Some((item.id.as_str(), case.id));
+
+    let me = cx.entity().downgrade();
+    let preview_id = item.id.clone();
+    let mut eye = settings_ui::icon_button(icons::EYE, false, move |_, _, cx| {
+        let id = preview_id.clone();
+        me.update(cx, |this, cx| {
+            let pick = (id, case.id.to_string());
+            this.inspector.preview = if this.inspector.preview.as_ref() == Some(&pick) {
+                None
+            } else {
+                Some(pick)
+            };
+            cx.notify();
+        })
+        .ok();
+    })
+    .keyed(ElementId::Name(
+        format!("canvas-case-preview:{}:{}", spec.id, case.id).into(),
+    ));
+    if previewing {
+        eye = eye.bg(palette::alpha(palette::accent(), 0x40));
+    }
+    let eye = Tip::keyed(
+        ElementId::Name(format!("canvas-case-preview-tip:{}", case.id).into()),
+        rox_i18n::t!("canvas-case-preview"),
+    )
+    .apply(div().child(eye));
+
+    let header = settings_ui::block_header(
+        div()
+            .text_xs()
+            .text_color(if previewing {
+                palette::accent()
+            } else {
+                palette::text_muted()
+            })
+            .child(rox_i18n::t!(case.label_key)),
+        eye,
+    );
+
+    let show = {
+        let (id, when) = (item.id.clone(), case.id);
+        panel::toggle(
+            entry.visible,
+            move |this: &mut CanvasPanel, on, cx| {
+                edit_case(this, &id, when, "case.visible", move |c| c.visible = on, cx)
+            },
+            cx,
+        )
+    };
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .child(header)
+        .child(setting_row(rox_i18n::t!("canvas-case-show"), None, show));
+
+    // Hidden, nothing else about the case can be seen.
+    if entry.visible {
+        body = body.child(case_opacity(panel, item, case.id, entry.opacity, cx));
+
+        match &item.content {
+            Content::Image { .. } => body = body.child(case_image(&item.id, case.id, &entry, cx)),
+            Content::Text { .. } => body = body.child(case_color(&item.id, case.id, &entry, cx)),
+            _ => {}
+        }
+    }
+
+    div()
+        .id(SharedString::from(format!("canvas-case-{}", case.id)))
+        .child(settings_ui::nested(body))
+        .into_any_element()
+}
+
+/// Through `change`, so every case edit is an undo step and a save.
+fn edit_case(
+    this: &mut CanvasPanel,
+    id: &str,
+    when: &'static str,
+    key: &'static str,
+    edit: impl FnOnce(&mut Case) + 'static,
+    cx: &mut Context<CanvasPanel>,
+) {
+    let id = id.to_string();
+    this.change_later(
+        key,
+        move |canvas| {
+            if let Some(item) = canvas.find_mut(&id) {
+                states::edit_case(item, when, edit);
+            }
+        },
+        cx,
+    );
+}
+
+fn case_opacity(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    when: &'static str,
+    opacity: f32,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    let scrub = panel
+        .inspector
+        .case_scrubs
+        .borrow_mut()
+        .entry(when.to_string())
+        .or_default()
+        .clone();
+
+    let id = item.id.clone();
+    let slider = panel::value_slider_edit_sized(
+        &scrub,
+        &panel.inspector.edit,
+        opacity,
+        format!("{:.0}%", opacity * 100.),
+        format!("{:.0}", opacity * 100.),
+        1.,
+        panel::SliderWidth::Fill,
+        panel::SLIDER_STEP,
+        |v| v / 100.,
+        move |this: &mut CanvasPanel, f, cx| {
+            edit_case(
+                this,
+                &id,
+                when,
+                "case.opacity",
+                move |c| c.opacity = f.clamp(0., 1.),
+                cx,
+            )
+        },
+        cx,
+    );
+
+    // The slider takes what the label leaves: nested a step in, the fixed
+    // column runs its readout off the edge in a long language.
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_MD)
+        .child(div().flex_none().child(rox_i18n::t!("canvas-item-opacity")))
+        .child(div().flex_1().min_w_0().child(slider))
+        .into_any_element()
+}
+
+/// The image row's own picker, headed by the item's own image.
+fn case_image(
+    id: &str,
+    when: &'static str,
+    entry: &Case,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    let label = if entry.asset.is_empty() {
+        rox_i18n::t!("canvas-case-same-image")
+    } else {
+        SharedString::from(entry.asset.clone())
+    };
+
+    let me = cx.entity().downgrade();
+    let id = id.to_string();
+    let pick = settings_ui::small_button(label, icons::IMAGE, false, move |_, window, cx| {
+        let position = window.mouse_position();
+        let me = me.clone();
+        let id = id.clone();
+        let menu = PopupMenu::build(window, cx, {
+            let me = me.clone();
+            move |mut menu, _, _| {
+                let mut choices = vec![(
+                    String::new(),
+                    rox_i18n::t!("canvas-case-same-image").to_string(),
+                )];
+                choices.extend(canvas::image_assets());
+
+                for (asset, file) in choices {
+                    let me = me.clone();
+                    let id = id.clone();
+                    menu = menu.item(PopupMenuItem::new(SharedString::from(file)).on_click(
+                        move |_, window, cx| {
+                            let id = id.clone();
+                            let asset = asset.clone();
+                            me.update(cx, |this, cx| {
+                                this.change(
+                                    |canvas| {
+                                        if let Some(item) = canvas.find_mut(&id) {
+                                            states::edit_case(item, when, |c| c.asset = asset);
+                                        }
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .ok();
+                        },
+                    ));
+                }
+                menu
+            }
+        });
+        me.update(cx, |this, cx| this.open_menu(position, menu, window, cx))
+            .ok();
+    })
+    .keyed(ElementId::Name(format!("canvas-case-image:{when}").into()));
+
+    setting_row(rox_i18n::t!("canvas-image-asset"), None, pick).into_any_element()
+}
+
+/// The text row's color picker, headed by the item's own color.
+fn case_color(
+    id: &str,
+    when: &'static str,
+    entry: &Case,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    let mut roles = vec![(String::new(), rox_i18n::t!("canvas-case-same-color"))];
+    roles.extend(text_roles(&entry.color));
+
+    let id = id.to_string();
+    let picker = panel::picker(
+        "canvas-case-color",
+        entry.color.clone(),
+        roles,
+        false,
+        move |this: &mut CanvasPanel, role: String, cx| {
+            edit_case(this, &id, when, "case.color", move |c| c.color = role, cx)
+        },
+        cx,
+    );
+
+    setting_row(rox_i18n::t!("canvas-text-color"), None, picker).into_any_element()
 }
 
 /// Depth, grouping and delete, as buttons.
@@ -1154,6 +1463,22 @@ fn image_rows(
         .into_any_element()
 }
 
+/// The palette roles a text color picks from. A hex color typed into the
+/// file shows as its own head row.
+fn text_roles(color: &str) -> Vec<(String, SharedString)> {
+    let mut roles: Vec<(String, SharedString)> = Vec::new();
+    if !color.is_empty() && !palette::ROLES.iter().any(|role| role.name == color) {
+        roles.push((color.to_string(), SharedString::from(color.to_string())));
+    }
+    roles.extend(
+        palette::ROLES
+            .iter()
+            .map(|role| (role.name.to_string(), SharedString::from(role.label))),
+    );
+
+    roles
+}
+
 /// Keeps the pattern box on the selected text item. An undo that changes the
 /// text puts the new text in the box. Only a change to the item does: a
 /// render can land between a keystroke and its event, and comparing against
@@ -1308,21 +1633,11 @@ fn text_rows(
         cx,
     );
 
-    // A hex color typed into the file shows as its own head row.
-    let mut roles: Vec<(String, SharedString)> = Vec::new();
-    if !color.is_empty() && !palette::ROLES.iter().any(|role| role.name == color) {
-        roles.push((color.to_string(), SharedString::from(color.to_string())));
-    }
-    roles.extend(
-        palette::ROLES
-            .iter()
-            .map(|role| (role.name.to_string(), SharedString::from(role.label))),
-    );
     let color_id = id.to_string();
     let color_row = panel::picker(
         "canvas-text-color",
         color.to_string(),
-        roles,
+        text_roles(color),
         false,
         move |this: &mut CanvasPanel, role: String, cx| {
             this.change_later(

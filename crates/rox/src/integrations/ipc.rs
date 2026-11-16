@@ -118,6 +118,9 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
         "plugins.install" => return super::ipc_documents::install_plugin(request, cx),
         "workspace.import" => return super::ipc_documents::import_workspace(request, cx),
         "debug.frames" => return super::frames::request(request, cx),
+        // Debug builds only, like the origin override it drives.
+        #[cfg(debug_assertions)]
+        "debug.catalog" => return super::ipc_catalog::request(request, cx),
         _ => {}
     }
     let result = route(state, &request.method, &request.params, cx);

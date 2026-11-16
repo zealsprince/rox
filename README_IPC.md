@@ -74,6 +74,7 @@ did without a second round trip.
 | `debug.workspace`                                          | `{"name": ".."}`                              | null; applies that workspace to the front window                         |
 | `debug.entities`                                           |                                               | `{"total": n, "by_type": [[name, count], ..]}`, live gpui entity counts  |
 | `debug.frames`                                             | `{"ms": 100..20000?, "window": id?}`          | after the span: `{"window", "frames", "span_ms", "mean_ms", "worst_ms"}`, what that workspace window drew |
+| `debug.catalog`                                            | `{"refresh": true}`, `{"install": ".."}`, `{"updates": true}` or `{"cancel": true}` | debug builds only: `{"packages": [..], "dropped": [..]}`, `{"id", "kind", "sha256", "file"}`, `{"updates": [..]}` or `{"cancelled": id}` |
 | `debug.device_lost`                                        |                                               | `{"faulted": true}`; raises the output's device-lost flag, as an unplug does |
 | `debug.windows`                                            |                                               | every open window: id, title, logical size, scale, and which is active   |
 | `debug.actions`                                            | `{"filter": ".."}`, optional                  | `{"actions": [..]}`, the dispatchable action names                       |
@@ -209,6 +210,19 @@ that drew it, after gpui presents: main-thread time for layout, paint and the
 renderer's acquire and submit, plus its wait on the previous frame's GPU work. GPU
 time the main thread never waits on doesn't show. A window with nothing moving
 draws no frames, so give it something to animate first. One timing runs at a time.
+
+`debug.catalog` drives the catalog client, and exists in debug builds only: a
+release build has neither the method nor the origin override below. `refresh`
+fetches the index and answers its packages, with a reason for every entry it
+refused under `dropped`. `install` takes a package id from the cached index,
+downloads and verifies the file, then hands it to the same import or install that
+file takes from disk, and answers the record it kept once the file is stored. It
+applies, places and switches on nothing: the apply confirm, the Plugins page or the
+place confirm opens in the front window, as it would for a double-click. `updates`
+lists the installed packages whose index hash has moved, and `cancel` stops the
+install in flight. A debug build started with
+`ROX_CATALOG_ORIGIN=http://127.0.0.1:<port>` reads the catalog from a local static
+server instead of the compiled-in origin.
 
 `subscribe` enrols the connection in pushed frames. They arrive on the same
 connection as `event.track`, `event.playback`, and `event.queue` objects with a

@@ -6,6 +6,8 @@ pub mod broadcast;
 pub mod drive;
 pub(crate) mod frames;
 pub mod ipc;
+#[cfg(debug_assertions)]
+mod ipc_catalog;
 mod ipc_documents;
 mod ipc_plugins;
 mod ipc_track;

@@ -10,6 +10,7 @@ mod bake;
 mod bake_dialog;
 mod bookmark_dialog;
 mod canvas;
+mod catalog;
 mod cjk_fonts;
 mod composite;
 mod console_window;

@@ -4,12 +4,13 @@
 //! is one implementation, and a trait invented before the second is a guess.
 //!
 //! `radio_browser` (the station directory), `stream_probe` (is this URL a
-//! stream?) and `autoeq` (headphone EQ profiles) sit here without being
-//! source clients.
+//! stream?), `autoeq` (headphone EQ profiles) and `catalog` (rox's package
+//! catalog) sit here without being source clients.
 
 use serde_json::Value;
 
 pub mod autoeq;
+pub mod catalog;
 pub mod radio_browser;
 pub mod stream_probe;
 pub mod subsonic;

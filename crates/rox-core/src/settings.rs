@@ -236,6 +236,12 @@ pub fn plugin_cache_dir() -> PathBuf {
     data_dir().join("plugin-cache")
 }
 
+/// The last good catalog index, the record of what was installed from it,
+/// and downloads on their way in. Not created here.
+pub fn catalog_dir() -> PathBuf {
+    data_dir().join("catalog")
+}
+
 /// An unsaved look ejects under `_local`. A workspace named that shares the
 /// folder, which costs at worst a bookmark, since the re-link checks the hash.
 pub fn shader_eject_path(workspace: &str, shader: &str) -> PathBuf {

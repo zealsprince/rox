@@ -20,7 +20,7 @@ pub mod musicbrainz;
 pub mod theaudiodb;
 
 /// MusicBrainz requires a contactable User-Agent.
-const USER_AGENT: &str = concat!(
+pub(crate) const USER_AGENT: &str = concat!(
     "rox/",
     env!("CARGO_PKG_VERSION"),
     " (https://github.com/zealsprince/rox)"

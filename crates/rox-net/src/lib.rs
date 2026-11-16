@@ -3,6 +3,7 @@
 //! app runs them on its background executor.
 
 pub mod discord;
+pub mod download;
 pub mod lastfm;
 pub mod librefm;
 pub mod listenbrainz;

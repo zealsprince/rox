@@ -14,7 +14,8 @@
 //! resizes and turns items with handles drawn on the projection, keeps the
 //! undo history, and hosts the inspector ([`crate::scene::overlay`]). The
 //! arithmetic behind every gesture is in [`crate::scene::edit`]. Off design
-//! mode none of that shows and a scene is plain content.
+//! mode none of that shows and a scene is plain content, where a click on an
+//! item that names a command runs it through [`keymap::dispatch`].
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -25,9 +26,9 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, CursorStyle, DismissEvent, Div,
-    Entity, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, PathPromptOptions, Pixels, Point, Rgba,
-    SharedString, Subscription, WeakEntity, Window, actions, anchored, canvas, deferred, div,
+    Entity, EntityId, EventEmitter, FocusHandle, Focusable, HitboxBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathPromptOptions, Pixels, Point,
+    Rgba, SharedString, Subscription, WeakEntity, Window, actions, anchored, canvas, deferred, div,
     point, prelude::*, px,
 };
 use gpui_component::Icon;
@@ -46,12 +47,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::composite;
+use crate::keymap;
 use crate::scene::edit::{self, Edges, History};
 use crate::scene::grid::{self, Grid};
 use crate::scene::image::{self, Images};
 use crate::scene::overlay::Inspector;
 use crate::scene::routes::{self, Snapshot};
 use crate::scene::shader::{self as shader_item, Shaders};
+use crate::scene::text::{self, Values};
 use crate::scene::texture::{self, TextureView};
 use crate::scene::{self, Body, Placing};
 use crate::workspace::{LAYOUT_VERSION, Workspace};
@@ -63,6 +66,7 @@ use rox_panel_api::panel_settings;
 use rox_panel_api::signal_ui::{RouteHost, SignalHost, SignalUi};
 use rox_panel_api::toast::Toast;
 use rox_panel_api::windows::WorkspaceWindows;
+use rox_services::catalog::LibraryEvent;
 
 /// The registry name.
 pub const PANEL_NAME: &str = "scene";
@@ -222,6 +226,7 @@ pub(crate) enum NewItem {
     Group,
     Image(String),
     Shader,
+    Text,
 }
 
 /// `shader` and `owner` are the dump walkers' keys everywhere, and the
@@ -328,7 +333,17 @@ pub struct ScenePanel {
     window: Option<AnyWindowHandle>,
     pub(crate) inspector: Inspector,
     menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    /// The playing track's fields for text items, dropped when the track or
+    /// its tags change.
+    text_values: Option<Rc<Values>>,
+    /// The item whose command a left press landed on, so the release runs it
+    /// only over the same item.
+    pressed: Option<String>,
+    /// Whether the pointer is over an item that would run a command.
+    pointing: Rc<Cell<bool>>,
     _player: Subscription,
+    _player_view: Subscription,
+    _library: Subscription,
 }
 
 impl ScenePanel {
@@ -346,6 +361,34 @@ impl ScenePanel {
                 cx.notify();
             }
         });
+
+        // `observe_view`'s compare, inlined so the change also drops the held
+        // text values. A scene with no text doesn't redraw for it.
+        let mut last = state.player.read(cx).view();
+        let player_view = cx.observe(&state.player, move |this: &mut Self, player, cx| {
+            let now = player.read(cx).view();
+            if now == last {
+                return;
+            }
+
+            last = now;
+            this.text_values = None;
+            if text::holds_text(&this.config.scene) {
+                cx.notify();
+            }
+        });
+        // A tag edit to the playing track, as track info follows it.
+        let library = cx.subscribe(
+            &state.library,
+            |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if matches!(event, LibraryEvent::Updated) {
+                    this.text_values = None;
+                    if text::holds_text(&this.config.scene) {
+                        cx.notify();
+                    }
+                }
+            },
+        );
 
         let seen_routes = config.routes.clone();
         let mut this = ScenePanel {
@@ -375,7 +418,12 @@ impl ScenePanel {
             window: None,
             inspector: Inspector::default(),
             menu: None,
+            text_values: None,
+            pressed: None,
+            pointing: Rc::default(),
             _player: player,
+            _player_view: player_view,
+            _library: library,
         };
         this.build(HashMap::new(), window, cx);
         this
@@ -680,11 +728,20 @@ impl ScenePanel {
             window.request_animation_frame();
         }
 
+        let values = if text::holds_text(&self.config.scene) {
+            self.text_values
+                .get_or_insert_with(|| Rc::new(text::now_playing(&self.state, cx)))
+                .clone()
+        } else {
+            Rc::default()
+        };
+
         // Before the first bounds land there's nothing to place against, and
         // a grid laid out at no size would lay its panels out at none.
         let mut draw = Draw {
             at: &at,
             lives: &lives,
+            values: &values,
             images: &mut self.images,
             shaders: &mut self.shaders,
             textures: &mut self.textures,
@@ -763,6 +820,7 @@ impl ScenePanel {
             shader_item::absorb_hot(self, cx);
         }
         let chrome = design.then(|| self.chrome_layer(active, cx));
+        let clicks = (!design && has_commands(&self.config.scene)).then(|| self.click_layer(cx));
         let inspector = active.then(|| crate::scene::overlay::render(self, window, cx));
         let tab = (design && !active && self.near_edge.get()).then(|| self.edge_tab(cx));
         let menu = self.menu_overlay(window);
@@ -822,6 +880,7 @@ impl ScenePanel {
             .on_action(cx.listener(|this, _: &StepOut, window, cx| this.step_out(window, cx)))
             .child(watch)
             .children(layers)
+            .children(clicks)
             .children(chrome)
             .children(inspector)
             .children(tab)
@@ -851,6 +910,7 @@ impl ScenePanel {
 struct Draw<'a> {
     at: &'a Placing,
     lives: &'a HashMap<String, Live>,
+    values: &'a Values,
     images: &'a mut Images,
     shaders: &'a mut Shaders,
     textures: &'a mut HashMap<String, Entity<TextureView>>,
@@ -943,6 +1003,7 @@ fn place(
                 let mut inner = Draw {
                     at,
                     lives: draw.lives,
+                    values: draw.values,
                     images: &mut *draw.images,
                     shaders: &mut *draw.shaders,
                     textures: &mut *draw.textures,
@@ -991,6 +1052,37 @@ fn place(
                     depth: projected.depth,
                     elements: element.into_iter().collect(),
                     shapes: vec![shape(projected.corners, kind)],
+                });
+            }
+
+            (
+                Body::Text(line),
+                Content::Text {
+                    font,
+                    size,
+                    color,
+                    align,
+                    ..
+                },
+            ) => {
+                let Some(projected) = projected() else {
+                    continue;
+                };
+                let paint = text::Paint {
+                    text: SharedString::from(line.render(draw.values)),
+                    family: font.clone(),
+                    size: size * parent.k * projected.scale,
+                    color: text::color(color),
+                    opacity: projected.opacity,
+                    align: *align,
+                };
+                let element = scene::on_stage(&projected.corners, at.viewport)
+                    .then(|| text::element(paint, &projected.corners));
+
+                layers.push(Layer {
+                    depth: projected.depth,
+                    elements: element.into_iter().collect(),
+                    shapes: vec![shape(projected.corners, ShapeKind::Flat)],
                 });
             }
 
@@ -1124,8 +1216,8 @@ impl ScenePanel {
 
         let paint_selected = selected.clone();
         let canvas = canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
                 if let Some(shape) = &paint_selected {
                     paint_outline(shape, bounds.origin, window);
                     if shape.turns() {
@@ -1133,9 +1225,12 @@ impl ScenePanel {
                     }
                 }
 
+                // A popover from an inspector picker floats outside the
+                // inspector's own press guard, and a press on its rows must
+                // not land on the stage.
                 let down = me.clone();
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if !phase.bubble() || !bounds.contains(&event.position) {
+                    if !phase.bubble() || !hitbox.is_hovered(window) {
                         return;
                     }
 
@@ -1668,7 +1763,7 @@ impl ScenePanel {
         )
     }
 
-    /// Add Grid, Group, Image and Shader at `position`. `at` places the new
+    /// Add Grid, Group, Image, Shader and Text at `position`. `at` places the new
     /// item where the press was; None puts it at the stage center.
     pub(crate) fn open_add_menu(
         &mut self,
@@ -1728,6 +1823,11 @@ impl ScenePanel {
                     .icon(Icon::default().path(icons::BLEND))
                     .on_click(pick(NewItem::Shader)),
             )
+            .item(
+                PopupMenuItem::new(rox_i18n::t!("scene-add-text"))
+                    .icon(Icon::default().path(icons::A_LARGE_SMALL))
+                    .on_click(pick(NewItem::Text)),
+            )
         });
         self.open_menu(position, menu, window, cx);
     }
@@ -1777,6 +1877,17 @@ impl ScenePanel {
                         .unwrap_or(Value::Null),
                 },
                 Some([400., 300.]),
+            ),
+            NewItem::Text => (
+                "text",
+                Content::Text {
+                    text: text::NEW_TEXT.to_string(),
+                    font: None,
+                    size: 32.,
+                    color: "text".to_string(),
+                    align: rox_scene::Align::Center,
+                },
+                Some([480., 64.]),
             ),
         };
 
@@ -1992,6 +2103,163 @@ impl ScenePanel {
         });
 
         self.select(parent, window, cx);
+    }
+}
+
+// ── Commands ──
+
+/// What a click outside design mode lands on.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Hit {
+    /// A grid's panels own their input.
+    Grid,
+    /// The item whose command runs: the one clicked, or the nearest group
+    /// around it that has one.
+    Command { id: String, action: String },
+    /// Nothing commanded, so the click goes on to whatever is behind.
+    Nothing,
+}
+
+/// The front item under `point`, then its command or the nearest group's.
+/// `shapes` is in paint order, back to front.
+pub(crate) fn hit(shapes: &[Shape], scene: &SceneState, point: [f32; 2]) -> Hit {
+    let front = shapes
+        .iter()
+        .rev()
+        .filter(|shape| shape.kind != ShapeKind::Group)
+        .filter(|shape| scene.find(&shape.id).is_some_and(|item| item.visible))
+        .find(|shape| inside(&shape.corners, point));
+    let Some(front) = front else {
+        return Hit::Nothing;
+    };
+
+    if front.kind == ShapeKind::Grid {
+        return Hit::Grid;
+    }
+
+    front
+        .chain()
+        .iter()
+        .rev()
+        .filter_map(|id| scene.find(id))
+        .find(|item| commands(item))
+        .map_or(Hit::Nothing, |item| Hit::Command {
+            id: item.id.clone(),
+            action: item.action.clone(),
+        })
+}
+
+/// A grid's command is ignored: its panels own their input.
+fn commands(item: &SceneItem) -> bool {
+    !item.action.is_empty() && !matches!(item.content, Content::Grid { .. })
+}
+
+fn has_commands(scene: &SceneState) -> bool {
+    let mut found = false;
+    scene.walk(&mut |item, _| found |= commands(item));
+    found
+}
+
+impl ScenePanel {
+    /// Over every item, off design mode, in a scene that has a command
+    /// somewhere. It hit tests against what the last render placed.
+    fn click_layer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let me = cx.entity().downgrade();
+        let me_id = cx.entity_id();
+        let pointing = self.pointing.clone();
+
+        canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
+                if pointing.get() {
+                    window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
+                }
+
+                let (hover, moving) = (hitbox.clone(), me.clone());
+                let pointing = pointing.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if !phase.bubble() {
+                        return;
+                    }
+
+                    // Only a crossing re-renders, for the cursor.
+                    let local = local_point(event.position, bounds.origin);
+                    let over = hover.is_hovered(window)
+                        && moving
+                            .update(cx, |this, _| {
+                                matches!(this.hit_at(local), Hit::Command { .. })
+                            })
+                            .unwrap_or(false);
+                    if over != pointing.get() {
+                        pointing.set(over);
+                        cx.notify(me_id);
+                    }
+                });
+
+                let (hover, down) = (hitbox.clone(), me.clone());
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if !phase.bubble()
+                        || event.button != MouseButton::Left
+                        || !hover.is_hovered(window)
+                    {
+                        return;
+                    }
+
+                    let local = local_point(event.position, bounds.origin);
+                    down.update(cx, |this, cx| {
+                        this.pressed = match this.hit_at(local) {
+                            Hit::Command { id, .. } => {
+                                cx.stop_propagation();
+                                Some(id)
+                            }
+                            _ => None,
+                        };
+                    })
+                    .ok();
+                });
+
+                let up = me.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if !phase.bubble() || event.button != MouseButton::Left {
+                        return;
+                    }
+
+                    let local = local_point(event.position, bounds.origin);
+                    let over = hitbox.is_hovered(window);
+                    up.update(cx, |this, cx| {
+                        let pressed = this.pressed.take();
+                        if !over {
+                            return;
+                        }
+
+                        // The id comes from a workspace file that may not be
+                        // the user's own. It only ever goes to the fixed
+                        // command list, which ignores an id it doesn't have.
+                        if let Hit::Command { id, action } = this.hit_at(local)
+                            && pressed.as_deref() == Some(id.as_str())
+                        {
+                            cx.stop_propagation();
+                            keymap::dispatch(&action, window, cx);
+                        }
+                    })
+                    .ok();
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
+    }
+
+    fn hit_at(&self, local: [f32; 2]) -> Hit {
+        hit(&self.shapes, &self.config.scene, local)
+    }
+
+    /// Why a text item's pattern doesn't parse, if it doesn't.
+    pub(crate) fn text_error(&self, id: &str) -> Option<String> {
+        text::line_of(&self.config.scene.items, &self.bodies, id)
+            .and_then(text::Line::error)
+            .map(str::to_string)
     }
 }
 
@@ -2358,6 +2626,8 @@ impl Render for ScenePanel {
         let design = !self.config.chrome.controls_hidden();
         if design != self.design {
             self.design = design;
+            self.pointing.set(false);
+            self.pressed = None;
             if !design {
                 self.gesture = None;
                 self.menu = None;
@@ -2465,6 +2735,142 @@ mod tests {
         }
 
         assert!(grid::usable(&layout()).is_some());
+    }
+
+    fn square(x: f32, y: f32, side: f32) -> [[f32; 2]; 4] {
+        [[x, y], [x + side, y], [x + side, y + side], [x, y + side]]
+    }
+
+    fn shape(id: &str, groups: &[&str], corners: [[f32; 2]; 4], kind: ShapeKind) -> Shape {
+        Shape {
+            id: id.to_string(),
+            groups: groups.iter().map(|g| g.to_string()).collect(),
+            corners,
+            label: SharedString::from(id.to_string()),
+            kind,
+            locked: false,
+        }
+    }
+
+    fn picture(id: &str, action: &str) -> Value {
+        json!({ "id": id, "action": action, "content": { "kind": "image", "asset": "a" } })
+    }
+
+    fn scene_of(items: Value) -> SceneState {
+        serde_json::from_value(json!({ "items": items })).expect("a scene parses")
+    }
+
+    fn command(id: &str, action: &str) -> Hit {
+        Hit::Command {
+            id: id.to_string(),
+            action: action.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_click_goes_to_the_front_item() {
+        let scene = scene_of(json!([
+            picture("back", "stop"),
+            picture("front", "play_pause")
+        ]));
+        let shapes = [
+            shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape("front", &[], square(50., 50., 100.), ShapeKind::Perspective),
+        ];
+
+        assert_eq!(
+            hit(&shapes, &scene, [75., 75.]),
+            command("front", "play_pause")
+        );
+        assert_eq!(hit(&shapes, &scene, [10., 10.]), command("back", "stop"));
+        assert_eq!(hit(&shapes, &scene, [300., 300.]), Hit::Nothing);
+    }
+
+    #[test]
+    fn a_grid_stops_the_walk() {
+        let scene = scene_of(json!([
+            picture("back", "play_pause"),
+            { "id": "grid", "action": "stop", "content": { "kind": "grid", "dock": null } },
+        ]));
+        let shapes = [
+            shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape("grid", &[], square(20., 20., 40.), ShapeKind::Grid),
+        ];
+
+        assert_eq!(hit(&shapes, &scene, [30., 30.]), Hit::Grid);
+        assert_eq!(
+            hit(&shapes, &scene, [90., 90.]),
+            command("back", "play_pause")
+        );
+        assert!(!has_commands(&scene_of(json!([
+            { "id": "grid", "action": "stop", "content": { "kind": "grid", "dock": null } },
+        ]))));
+    }
+
+    #[test]
+    fn a_groups_command_covers_a_child_without_one() {
+        let scene = scene_of(json!([{
+            "id": "outer",
+            "action": "next_track",
+            "content": { "kind": "group", "items": [{
+                "id": "inner",
+                "content": { "kind": "group", "items": [picture("a", "")] },
+            }] },
+        }]));
+        let shapes = [
+            shape(
+                "a",
+                &["outer", "inner"],
+                square(0., 0., 50.),
+                ShapeKind::Perspective,
+            ),
+            shape("inner", &["outer"], square(0., 0., 50.), ShapeKind::Group),
+            shape("outer", &[], square(0., 0., 50.), ShapeKind::Group),
+        ];
+
+        assert_eq!(
+            hit(&shapes, &scene, [10., 10.]),
+            command("outer", "next_track")
+        );
+    }
+
+    #[test]
+    fn a_childs_own_command_wins() {
+        let scene = scene_of(json!([{
+            "id": "group",
+            "action": "next_track",
+            "content": { "kind": "group", "items": [picture("a", "stop"), picture("b", "")] },
+        }]));
+        let shapes = [
+            shape("a", &["group"], square(0., 0., 50.), ShapeKind::Perspective),
+            shape("b", &["group"], square(60., 0., 50.), ShapeKind::Flat),
+            shape("group", &[], square(0., 0., 110.), ShapeKind::Group),
+        ];
+
+        assert_eq!(hit(&shapes, &scene, [10., 10.]), command("a", "stop"));
+        assert_eq!(
+            hit(&shapes, &scene, [70., 10.]),
+            command("group", "next_track")
+        );
+        // Inside the group's box but on none of its children.
+        assert_eq!(hit(&shapes, &scene, [55., 80.]), Hit::Nothing);
+    }
+
+    #[test]
+    fn an_invisible_item_is_passed_through() {
+        let mut scene = scene_of(json!([
+            picture("back", "stop"),
+            picture("front", "play_pause")
+        ]));
+        if let Some(front) = scene.find_mut("front") {
+            front.visible = false;
+        }
+        let shapes = [
+            shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape("front", &[], square(0., 0., 100.), ShapeKind::Perspective),
+        ];
+
+        assert_eq!(hit(&shapes, &scene, [50., 50.]), command("back", "stop"));
     }
 
     #[test]

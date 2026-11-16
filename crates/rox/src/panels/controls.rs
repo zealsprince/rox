@@ -339,7 +339,7 @@ fn prefill_action(action: &mut String, spec: Option<&StateSpec>) {
 
 /// Built once: `COMMANDS` is a `LazyLock`, and a settings render shouldn't
 /// rebuild the list every frame.
-fn command_rows() -> Arc<Vec<PickRow>> {
+pub(crate) fn command_rows() -> Arc<Vec<PickRow>> {
     static ROWS: OnceLock<Arc<Vec<PickRow>>> = OnceLock::new();
 
     ROWS.get_or_init(|| {
@@ -356,7 +356,7 @@ fn command_rows() -> Arc<Vec<PickRow>> {
 
 /// The id goes in the search terms so a command is findable by its settings
 /// key.
-fn command_row(command: &'static keymap::Command) -> PickRow {
+pub(crate) fn command_row(command: &'static keymap::Command) -> PickRow {
     let label = command.label.to_lowercase();
 
     let mut terms: Vec<SharedString> = vec![command.id.to_lowercase().into()];

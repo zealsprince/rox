@@ -616,7 +616,7 @@ fn url_encode(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
 }
 
-fn format_quality(codec: &str, bitrate_kbps: u16) -> String {
+pub fn format_quality(codec: &str, bitrate_kbps: u16) -> String {
     if codec.is_empty() {
         return String::new();
     }

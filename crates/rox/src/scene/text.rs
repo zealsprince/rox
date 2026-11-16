@@ -1,0 +1,304 @@
+//! Text items (ADR 33): one line of now-playing text, written as a
+//! `rox_core::pattern` line with the presence card's fields. The pattern
+//! parses when the item changes and never while painting. Text is always
+//! flat: its center rides the projection and its size follows the depth,
+//! but it takes no tilt.
+
+use gpui::{
+    AnyElement, App, ContentMask, Font, Hsla, Rgba, SharedString, TextRun, canvas, point,
+    prelude::*, px,
+};
+use rox_core::pattern::{self, Name, Pattern, PatternField};
+use rox_design::palette;
+use rox_panel_api::panel::AppState;
+use rox_scene::{Align, Content, SceneItem, SceneState};
+use rox_services::discord_presence::{PresenceSample, format_quality};
+
+use crate::scene::{self, Body};
+
+/// The now-playing fields a text item fills. Every placeholder name parses,
+/// so a pattern written for the presence card works here too.
+#[derive(Clone, PartialEq)]
+pub(crate) enum SceneField {
+    Artist,
+    AlbumArtist,
+    Album,
+    Title,
+    Track,
+    Year,
+    Genre,
+    Station,
+    Source,
+    Format,
+    /// A name the scene has no value for. It renders nothing.
+    Unfilled,
+}
+
+impl PatternField for SceneField {
+    fn from_name(name: Name) -> Option<Self> {
+        Some(match name {
+            Name::Artist => SceneField::Artist,
+            Name::AlbumArtist => SceneField::AlbumArtist,
+            Name::Album => SceneField::Album,
+            Name::Title => SceneField::Title,
+            Name::Track => SceneField::Track,
+            Name::Year | Name::Date => SceneField::Year,
+            Name::Genre => SceneField::Genre,
+            Name::Station => SceneField::Station,
+            Name::Source => SceneField::Source,
+            Name::Format => SceneField::Format,
+            Name::Comment | Name::Disc => SceneField::Unfilled,
+            Name::Skip => return None,
+        })
+    }
+
+    fn fallback(&self) -> &'static str {
+        ""
+    }
+}
+
+/// The names the pattern box's tip lists: the ones that fill.
+pub(crate) const PLACEHOLDERS: &[&str] = &[
+    "%artist%",
+    "%albumartist%",
+    "%album%",
+    "%title%",
+    "%track%",
+    "%year%",
+    "%genre%",
+    "%station%",
+    "%source%",
+    "%format%",
+];
+
+/// What a new text item reads.
+pub(crate) const NEW_TEXT: &str = "%title%";
+
+pub(crate) type Values = Vec<(SceneField, String)>;
+
+/// A text item's line, parsed once per edit.
+pub(crate) struct Line {
+    raw: String,
+    parsed: Result<Pattern<SceneField>, String>,
+}
+
+impl Line {
+    pub(crate) fn new(text: &str) -> Line {
+        Line {
+            raw: text.to_string(),
+            parsed: pattern::parse_line(text),
+        }
+    }
+
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.parsed.as_ref().err().map(String::as_str)
+    }
+
+    /// A line that doesn't parse paints as typed, so a stray `%` shows
+    /// where it is instead of blanking the item.
+    pub(crate) fn render(&self, values: &[(SceneField, String)]) -> String {
+        match &self.parsed {
+            Ok(pattern) => pattern.render_line(values),
+            Err(_) => self.raw.clone(),
+        }
+    }
+}
+
+/// The values for the playing track. Nothing playing gives none, and every
+/// hole closes.
+pub(crate) fn values(sample: Option<&PresenceSample>) -> Values {
+    let Some(sample) = sample else {
+        return Vec::new();
+    };
+
+    vec![
+        (SceneField::Artist, sample.artist.clone()),
+        (SceneField::AlbumArtist, sample.album_artist.clone()),
+        (SceneField::Album, sample.album.clone()),
+        (SceneField::Title, sample.title.clone()),
+        (SceneField::Track, sample.track.clone()),
+        (SceneField::Year, sample.year.clone()),
+        (SceneField::Genre, sample.genre.clone()),
+        (SceneField::Station, sample.station.clone()),
+        (SceneField::Source, sample.source.clone()),
+        (
+            SceneField::Format,
+            format_quality(&sample.codec, sample.bitrate_kbps),
+        ),
+    ]
+}
+
+/// Reads the library's store, so it runs once per track or tag change and
+/// the result is held, never once per frame.
+pub(crate) fn now_playing(state: &AppState, cx: &App) -> Values {
+    let sample = PresenceSample::playing(state.player.read(cx), state.library.read(cx));
+    values(sample.as_ref())
+}
+
+pub(crate) fn holds_text(scene: &SceneState) -> bool {
+    let mut found = false;
+    scene.walk(&mut |item, _| found |= matches!(item.content, Content::Text { .. }));
+    found
+}
+
+/// The line built for `id`, groups descended.
+pub(crate) fn line_of<'a, G>(
+    items: &'a [SceneItem],
+    bodies: &'a [Body<G>],
+    id: &str,
+) -> Option<&'a Line> {
+    for (item, body) in items.iter().zip(bodies) {
+        match (&item.content, body) {
+            (_, Body::Text(line)) if item.id == id => return Some(line),
+            (Content::Group { items }, Body::Group(bodies)) => {
+                if let Some(line) = line_of(items, bodies, id) {
+                    return Some(line);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// A palette role by name, the way a Custom Controls case reads its color,
+/// or a hex color. Anything else is the text color.
+pub(crate) fn color(name: &str) -> Rgba {
+    if let Some(role) = palette::ROLES.iter().find(|role| role.name == name) {
+        return (role.get)(&palette::resolved());
+    }
+
+    palette::parse_hex(name).unwrap_or_else(palette::text)
+}
+
+/// How one text item paints this frame.
+pub(crate) struct Paint {
+    pub text: SharedString,
+    /// None takes the window's font.
+    pub family: Option<String>,
+    pub size: f32,
+    pub color: Rgba,
+    pub opacity: f32,
+    pub align: Align,
+}
+
+/// The line shaped and painted raw inside the item's box, clipped to it.
+pub(crate) fn element(paint: Paint, corners: &[[f32; 2]; 4]) -> AnyElement {
+    let (origin, extent) = scene::bbox(corners);
+
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            if paint.text.is_empty() || paint.size <= 0. {
+                return;
+            }
+
+            let base = window.text_style().font();
+            let font = match &paint.family {
+                Some(family) => Font {
+                    family: SharedString::from(family.clone()),
+                    ..base
+                },
+                None => base,
+            };
+
+            let mut color: Hsla = paint.color.into();
+            color.a *= paint.opacity.clamp(0., 1.);
+
+            let run = TextRun {
+                len: paint.text.len(),
+                font,
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let font_size = px(paint.size);
+            let line = window
+                .text_system()
+                .shape_line(paint.text.clone(), font_size, &[run], None);
+
+            let width = f32::from(bounds.size.width);
+            let spare = width - f32::from(line.width);
+            let x = match paint.align {
+                Align::Left => 0.,
+                Align::Center => spare / 2.,
+                Align::Right => spare,
+            };
+            let line_height = font_size * 1.25;
+            let y = (f32::from(bounds.size.height) - f32::from(line_height)) / 2.;
+            let at = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                let _ = line.paint(at, line_height, window, cx);
+            });
+        },
+    )
+    .absolute()
+    .left(px(origin[0]))
+    .top(px(origin[1]))
+    .w(px(extent[0]))
+    .h(px(extent[1]))
+    .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn playing(artist: &str, title: &str) -> Values {
+        vec![
+            (SceneField::Artist, artist.to_string()),
+            (SceneField::Title, title.to_string()),
+        ]
+    }
+
+    #[test]
+    fn an_empty_field_closes_its_hole() {
+        let line = Line::new("%artist% - %title%");
+
+        assert_eq!(
+            line.render(&playing("Boards", "Roygbiv")),
+            "Boards - Roygbiv"
+        );
+        assert_eq!(line.render(&playing("", "Roygbiv")), "Roygbiv");
+        assert_eq!(line.render(&playing("Boards", "")), "Boards");
+    }
+
+    #[test]
+    fn a_bad_pattern_keeps_its_text() {
+        let unclosed = Line::new("%artist - %title%");
+        assert!(unclosed.error().is_some());
+        assert_eq!(
+            unclosed.render(&playing("Boards", "Roygbiv")),
+            "%artist - %title%"
+        );
+
+        let unknown = Line::new("%tittle%");
+        assert!(unknown.error().is_some());
+        assert_eq!(unknown.render(&[]), "%tittle%");
+
+        assert!(Line::new("%title%").error().is_none());
+    }
+
+    #[test]
+    fn nothing_playing_renders_the_literals() {
+        let none = values(None);
+        assert!(none.is_empty());
+
+        assert_eq!(Line::new("Now playing").render(&none), "Now playing");
+        assert_eq!(Line::new("%artist% - %title%").render(&none), "");
+    }
+
+    #[test]
+    fn a_color_reads_a_role_or_hex() {
+        let accent = palette::ROLES.iter().find(|role| role.name == "accent");
+        assert_eq!(
+            Some(color("accent")),
+            accent.map(|role| (role.get)(&palette::resolved()))
+        );
+        assert_eq!(color("#ff0000"), palette::parse_hex("#ff0000").unwrap());
+        assert_eq!(color("not a color"), palette::text());
+    }
+}

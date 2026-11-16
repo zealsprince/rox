@@ -9,7 +9,7 @@
 //! function of its own below [`content_rows`].
 
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui::{
     AnyElement, Context, ElementId, Entity, Focusable, KeyContext, MouseButton, Render,
@@ -27,11 +27,15 @@ use rox_panel_api::panel::{
 use rox_panel_api::panel_settings::{self, ShaderSource};
 use rox_panel_api::signal_ui::{self, bindable_row, routes::RouteEditor, slots::SlotList};
 use rox_panel_kit::ui as settings_ui;
-use rox_scene::{Anchor, Content, Fit, ImageFit, Length, SceneItem, SceneState};
+use rox_panel_kit::{PickRow, search_picker};
+use rox_scene::{Align, Anchor, Content, Fit, ImageFit, Length, SceneItem, SceneState};
 
+use crate::keymap;
+use crate::panels::controls;
 use crate::panels::scene::{self, ScenePanel};
 use crate::scene::edit;
 use crate::scene::shader::{self as shader_item, RowState};
+use crate::scene::text;
 
 const WIDTH: f32 = 340.;
 
@@ -58,6 +62,8 @@ pub(crate) struct Inspector {
     edit: ValueEdit,
     scrubs: Scrubs,
     shader: RowState,
+    /// The selected text item's pattern box.
+    pattern: Option<PatternField>,
 }
 
 impl Inspector {
@@ -73,6 +79,14 @@ impl Inspector {
 struct Typing {
     field: String,
     input: Entity<InputState>,
+    _events: Subscription,
+}
+
+struct PatternField {
+    id: String,
+    input: Entity<InputState>,
+    /// The item's text as the box last saw it.
+    held: String,
     _events: Subscription,
 }
 
@@ -114,6 +128,7 @@ pub(crate) fn render(
     cx: &mut Context<ScenePanel>,
 ) -> AnyElement {
     signal_ui::sync(panel);
+    sync_pattern(panel, window, cx);
     let left = panel.inspector.left;
 
     // A press on one of these controls takes focus off the scene, so the
@@ -430,6 +445,7 @@ fn kind_icon(content: &Content) -> &'static str {
         Content::Group { .. } => icons::LAYERS,
         Content::Image { .. } => icons::IMAGE,
         Content::Shader { .. } => icons::BLEND,
+        Content::Text { .. } => icons::A_LARGE_SMALL,
         _ => icons::SQUARE_DASHED,
     }
 }
@@ -695,10 +711,10 @@ fn item_rows(
 
     if flat {
         // A shader is flat only because of what its program reads.
-        let note = if matches!(item.content, Content::Shader { .. }) {
-            rox_i18n::t!("scene-shader-flat-note")
-        } else {
-            rox_i18n::t!("scene-item-flat-note")
+        let note = match item.content {
+            Content::Shader { .. } => rox_i18n::t!("scene-shader-flat-note"),
+            Content::Text { .. } => rox_i18n::t!("scene-text-flat-note"),
+            _ => rox_i18n::t!("scene-item-flat-note"),
         };
         rows = rows.child(
             div()
@@ -739,9 +755,85 @@ fn item_rows(
         cx,
     ));
 
+    if !matches!(item.content, Content::Grid { .. }) {
+        rows = rows.child(command_row(item, cx));
+    }
+
     rows.child(actions(item, cx))
         .child(content_rows(panel, item, window, cx))
         .into_any_element()
+}
+
+/// Custom Controls' command list, headed by a row that clears the command.
+/// Held against the head row's label, which follows the language where the
+/// command labels don't.
+fn command_choices() -> Arc<Vec<PickRow>> {
+    static ROWS: Mutex<Option<(SharedString, Arc<Vec<PickRow>>)>> = Mutex::new(None);
+
+    let none = rox_i18n::t!("scene-item-on-click-none");
+    let mut held = ROWS.lock().unwrap();
+    if let Some((label, rows)) = &*held
+        && *label == none
+    {
+        return rows.clone();
+    }
+
+    let mut rows = vec![PickRow {
+        label: none.clone(),
+        value: None,
+        terms: Vec::new(),
+        icon: None,
+    }];
+    rows.extend(controls::command_rows().iter().cloned());
+
+    let rows = Arc::new(rows);
+    *held = Some((none, rows.clone()));
+    rows
+}
+
+/// What a click on the item runs off design mode. A grid has no row: its
+/// panels own their input.
+fn command_row(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
+    // A saved id this build doesn't have reads as none, and a click on it
+    // does nothing.
+    let command = keymap::COMMANDS
+        .iter()
+        .find(|command| !item.action.is_empty() && command.id == item.action);
+    let label = command.map_or_else(
+        || rox_i18n::t!("scene-item-on-click-none"),
+        |command| SharedString::from(command.label),
+    );
+    let current = command.map(|command| SharedString::from(command.id));
+
+    let id = item.id.clone();
+    let picker = search_picker(
+        "scene-item-action",
+        command_choices(),
+        label,
+        current,
+        rox_i18n::t!("button-editor-action-search"),
+        rox_i18n::t!("button-editor-action-empty"),
+        move |this: &mut ScenePanel, picked: Option<String>, cx| {
+            let id = id.clone();
+            this.change_later(
+                "item.action",
+                move |scene| {
+                    if let Some(item) = scene.find_mut(&id) {
+                        item.action = picked.unwrap_or_default();
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    );
+
+    setting_row(
+        rox_i18n::t!("scene-item-on-click"),
+        Some(rox_i18n::t!("scene-item-on-click.description")),
+        picker,
+    )
+    .into_any_element()
 }
 
 /// Depth, grouping and delete, as buttons.
@@ -867,6 +959,13 @@ fn content_rows(
     match &item.content {
         Content::Image { asset, fit } => image_rows(panel, &item.id, asset, *fit, window, cx),
         Content::Shader { .. } => shader_rows(panel, item, window, cx),
+        Content::Text {
+            font,
+            size,
+            color,
+            align,
+            ..
+        } => text_rows(panel, &item.id, font.clone(), *size, color, *align, cx),
         _ => div().into_any_element(),
     }
 }
@@ -964,6 +1063,226 @@ fn image_rows(
                 cx,
             ),
         ))
+        .into_any_element()
+}
+
+/// Keeps the pattern box on the selected text item. An undo that changes the
+/// text puts the new text in the box. Only a change to the item does: a
+/// render can land between a keystroke and its event, and comparing against
+/// the box then would throw the keystroke away.
+fn sync_pattern(panel: &mut ScenePanel, window: &mut Window, cx: &mut Context<ScenePanel>) {
+    let selected = panel
+        .selected
+        .as_ref()
+        .and_then(|id| panel.config.scene.find(id))
+        .and_then(|item| match &item.content {
+            Content::Text { text, .. } => Some((item.id.clone(), text.clone())),
+            _ => None,
+        });
+    let Some((id, held)) = selected else {
+        panel.inspector.pattern = None;
+        return;
+    };
+
+    if let Some(field) = &mut panel.inspector.pattern
+        && field.id == id
+    {
+        if field.held != held {
+            field.held = held.clone();
+            field
+                .input
+                .update(cx, |input, cx| input.set_value(held, window, cx));
+        }
+        return;
+    }
+
+    let input = cx.new(|cx| InputState::new(window, cx).default_value(held.clone()));
+    let target = id.clone();
+    let events = cx.subscribe_in(
+        &input,
+        window,
+        move |this: &mut ScenePanel, input, event: &InputEvent, window, cx| {
+            if !matches!(event, InputEvent::Change) {
+                return;
+            }
+
+            let typed = input.read(cx).value().to_string();
+            if let Some(field) = &mut this.inspector.pattern
+                && field.id == target
+            {
+                field.held = typed.clone();
+            }
+
+            // The box echoes what an undo put in it, which is no edit.
+            let same = this.config.scene.find(&target).is_some_and(
+                |item| matches!(&item.content, Content::Text { text, .. } if *text == typed),
+            );
+            if same {
+                return;
+            }
+
+            let target = target.clone();
+            this.change_keyed(
+                Some("text.pattern"),
+                move |scene| {
+                    if let Some(SceneItem {
+                        content: Content::Text { text, .. },
+                        ..
+                    }) = scene.find_mut(&target)
+                    {
+                        *text = typed;
+                    }
+                },
+                window,
+                cx,
+            );
+        },
+    );
+
+    panel.inspector.pattern = Some(PatternField {
+        id,
+        input,
+        held,
+        _events: events,
+    });
+}
+
+/// The pattern, its font, size, color and alignment.
+fn text_rows(
+    panel: &ScenePanel,
+    id: &str,
+    font: Option<String>,
+    size: f32,
+    color: &str,
+    align: Align,
+    cx: &mut Context<ScenePanel>,
+) -> AnyElement {
+    fn edit_text(
+        id: &str,
+        f: impl Fn(&mut Option<String>, &mut f32, &mut String, &mut Align) + 'static,
+    ) -> impl FnOnce(&mut SceneState) + 'static {
+        let id = id.to_string();
+        move |scene| {
+            if let Some(SceneItem {
+                content:
+                    Content::Text {
+                        font,
+                        size,
+                        color,
+                        align,
+                        ..
+                    },
+                ..
+            }) = scene.find_mut(&id)
+            {
+                f(font, size, color, align);
+            }
+        }
+    }
+
+    let note = panel
+        .text_error(id)
+        .map(|error| panel::PatternNote::Wrong(error.into()));
+    let pattern = panel.inspector.pattern.as_ref().map(|field| {
+        div()
+            .key_context("SearchInput")
+            .child(panel::pattern_input(
+                "scene-text-pattern",
+                &field.input,
+                text::PLACEHOLDERS,
+                Vec::new(),
+                note,
+            ))
+            .into_any_element()
+    });
+
+    let font_id = id.to_string();
+    let font_row = panel::font_picker(
+        "scene-text-font",
+        font,
+        move |this: &mut ScenePanel, family: Option<String>, cx| {
+            this.change_later(
+                "text.font",
+                edit_text(&font_id, move |font, _, _, _| *font = family.clone()),
+                cx,
+            )
+        },
+        cx,
+    );
+
+    let size_id = id.to_string();
+    let size_field = number(
+        panel,
+        &format!("text.size:{id}"),
+        size,
+        false,
+        move |scene, v| edit_text(&size_id, move |_, size, _, _| *size = v.max(1.))(scene),
+        cx,
+    );
+
+    // A hex color typed into the file shows as its own head row.
+    let mut roles: Vec<(String, SharedString)> = Vec::new();
+    if !color.is_empty() && !palette::ROLES.iter().any(|role| role.name == color) {
+        roles.push((color.to_string(), SharedString::from(color.to_string())));
+    }
+    roles.extend(
+        palette::ROLES
+            .iter()
+            .map(|role| (role.name.to_string(), SharedString::from(role.label))),
+    );
+    let color_id = id.to_string();
+    let color_row = panel::picker(
+        "scene-text-color",
+        color.to_string(),
+        roles,
+        false,
+        move |this: &mut ScenePanel, role: String, cx| {
+            this.change_later(
+                "text.color",
+                edit_text(&color_id, move |_, _, color, _| *color = role.clone()),
+                cx,
+            )
+        },
+        cx,
+    );
+
+    let align_id = id.to_string();
+    let align_row = panel::icon_choices(
+        &[
+            (icons::ALIGN_LEFT, Align::Left),
+            (icons::ALIGN_CENTER, Align::Center),
+            (icons::ALIGN_RIGHT, Align::Right),
+        ],
+        align,
+        move |this: &mut ScenePanel, picked: Align, cx| {
+            this.change_later(
+                "text.align",
+                edit_text(&align_id, move |_, _, _, align| *align = picked),
+                cx,
+            )
+        },
+        cx,
+    );
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .children(
+            pattern.map(|pattern| setting_block(rox_i18n::t!("scene-text"), None, None, pattern)),
+        )
+        .child(setting_row(rox_i18n::t!("scene-text-font"), None, font_row))
+        .child(setting_row(
+            rox_i18n::t!("scene-text-size"),
+            None,
+            size_field,
+        ))
+        .child(setting_row(
+            rox_i18n::t!("scene-text-color"),
+            None,
+            color_row,
+        ))
+        .child(setting_row(rox_i18n::t!("align-row"), None, align_row))
         .into_any_element()
 }
 

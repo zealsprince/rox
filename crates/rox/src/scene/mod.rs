@@ -1,12 +1,12 @@
 //! The parts of a scene panel (ADR 33) below the panel itself: the live
 //! bodies kept beside a scene's saved items, the nesting cap, and the grid,
-//! image, shader and texture items. [`crate::panels::scene`] owns them and
-//! draws the result.
+//! image, shader, text and texture items. [`crate::panels::scene`] owns them
+//! and draws the result.
 //!
 //! The saved items stay the source of truth. A body holds only what can't be
-//! saved, a grid's live dock area, so an item with no body here (text,
-//! video, model, or one that didn't build) is kept exactly as it was read
-//! and written back the same.
+//! saved, a grid's live dock area or a text item's parsed line, so an item
+//! with no body here (video, model, or one that didn't build) is kept
+//! exactly as it was read and written back the same.
 
 pub(crate) mod edit;
 pub(crate) mod grid;
@@ -14,6 +14,7 @@ pub(crate) mod image;
 pub(crate) mod overlay;
 pub(crate) mod routes;
 pub(crate) mod shader;
+pub(crate) mod text;
 pub(crate) mod texture;
 
 use std::cell::Cell;
@@ -28,6 +29,7 @@ pub(crate) enum Body<G> {
     Group(Vec<Body<G>>),
     Image,
     Shader,
+    Text(text::Line),
     /// Built into nothing: a kind with no body yet, a grid whose dump
     /// didn't restore, or a container past the nesting cap.
     Unknown,
@@ -111,6 +113,8 @@ pub(crate) fn build_bodies<G>(
             Content::Image { .. } => Body::Image,
 
             Content::Shader { .. } => Body::Shader,
+
+            Content::Text { text, .. } => Body::Text(text::Line::new(text)),
 
             _ => Body::Unknown,
         })

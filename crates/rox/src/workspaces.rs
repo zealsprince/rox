@@ -1017,6 +1017,42 @@ fn import_file_in(dir: &Path, path: &Path) -> Result<WorkspaceBundle, String> {
     Ok(bundle)
 }
 
+/// A catalog update's Replace: the downloaded `.roxw` at `path` packed fresh
+/// over `into`, the saved file an earlier install stored, which keeps its
+/// file name and the name the list shows. The download is read under the
+/// archive rules and every file it names is checked against its hash before
+/// the write, and the write lands by rename, so a failure leaves `into` as
+/// it was. The caller checks `into` is a saved workspace.
+pub(crate) fn replace_file(path: &Path, into: &Path) -> Result<WorkspaceBundle, String> {
+    let mut bundle = roxw::read_bundle(path)?;
+    bundle.name = kept_name(into)?;
+
+    let files = Files {
+        archives: vec![path.to_path_buf()],
+        ..Files::default()
+    };
+    pack_in(into, &bundle, files)?;
+
+    Ok(bundle)
+}
+
+/// The name a replaced file goes on under: the one inside it while that
+/// still resolves to this file, so a look applied under it stays linked,
+/// else the file's stem, which is what the list keys on.
+fn kept_name(into: &Path) -> Result<String, String> {
+    let stem = stem_of(into).ok_or_else(|| format!("{} has no name", into.display()))?;
+    let file = into
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+
+    let inside = roxw::read_bundle(into)
+        .ok()
+        .map(|saved| saved.name)
+        .filter(|name| !name.trim().is_empty() && file.as_deref() == Some(&file_name(name)));
+
+    Ok(inside.unwrap_or(stem))
+}
+
 /// Where the folder migration puts the JSON files it converted.
 const V1_BACKUP: &str = "v1-backup";
 
@@ -2214,6 +2250,106 @@ mod tests {
         assert!(resolve_in(&dir, "Future").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A saved archive named `name`, carrying `version` as its author's.
+    fn versioned(dir: &Path, file: &str, name: &str, version: &str) -> PathBuf {
+        let mut bundle = named_bundle(name);
+        bundle.meta.version = version.to_string();
+
+        let path = dir.join(file);
+        roxw::write(&path, &bundle, dir).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_replace_keeps_the_recorded_file_and_its_name() {
+        let saved = scratch("replace-saved");
+        let incoming = scratch("replace-incoming");
+        let stored = versioned(&saved, "Catalog Look.roxw", "Catalog Look", "1");
+
+        // The author renamed it in the new version: the file and the listed
+        // name stay the user's, and the contents are the new ones.
+        let download = versioned(&incoming, "download-0.roxw", "Renamed Look", "2");
+        let bundle = replace_file(&download, &stored).unwrap();
+        assert_eq!(bundle.name, "Catalog Look");
+
+        let names: Vec<String> = saved_in(&saved).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Catalog Look"]);
+
+        let read = roxw::read_bundle(&stored).unwrap();
+        assert_eq!(read.name, "Catalog Look");
+        assert_eq!(read.meta.version, "2");
+
+        let _ = std::fs::remove_dir_all(&saved);
+        let _ = std::fs::remove_dir_all(&incoming);
+    }
+
+    #[test]
+    fn a_replace_whose_name_inside_points_elsewhere_takes_the_file_stem() {
+        let saved = scratch("replace-stem");
+        let incoming = scratch("replace-stem-incoming");
+
+        // Renamed by hand on disk, so the name inside would resolve to
+        // another file.
+        let stored = versioned(&saved, "Mine.roxw", "Catalog Look", "1");
+        let download = versioned(&incoming, "download-0.roxw", "Catalog Look", "2");
+
+        assert_eq!(replace_file(&download, &stored).unwrap().name, "Mine");
+        assert_eq!(roxw::read_bundle(&stored).unwrap().meta.version, "2");
+
+        let _ = std::fs::remove_dir_all(&saved);
+        let _ = std::fs::remove_dir_all(&incoming);
+    }
+
+    #[test]
+    fn a_replace_that_fails_its_check_leaves_the_old_file_as_it_was() {
+        let saved = scratch("replace-fail");
+        let incoming = scratch("replace-fail-incoming");
+        let stored = versioned(&saved, "Catalog Look.roxw", "Catalog Look", "1");
+        let before = std::fs::read(&stored).unwrap();
+
+        let junk = incoming.join("download-0.roxw");
+        std::fs::write(&junk, b"not a zip at all").unwrap();
+
+        // An archive of another kind: it reads as a zip and holds no manifest.
+        let object = incoming.join("download-1.roxw");
+        let lamp = rox_core::settings::roxo::ObjectBundle {
+            name: "Lamp".to_string(),
+            ..Default::default()
+        };
+        rox_core::settings::roxo::write(&object, &lamp, &[]).unwrap();
+
+        for download in [&junk, &object] {
+            assert!(replace_file(download, &stored).is_err(), "{download:?}");
+            assert_eq!(std::fs::read(&stored).unwrap(), before);
+        }
+
+        // Nothing it would have written is left beside the file.
+        let left: Vec<_> = std::fs::read_dir(&saved).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&saved);
+        let _ = std::fs::remove_dir_all(&incoming);
+    }
+
+    #[test]
+    fn keep_both_stores_a_deduped_copy_and_leaves_the_old_file() {
+        let saved = scratch("keep-both");
+        let incoming = scratch("keep-both-incoming");
+        let stored = versioned(&saved, "Catalog Look.roxw", "Catalog Look", "1");
+        let before = std::fs::read(&stored).unwrap();
+
+        let download = versioned(&incoming, "download-0.roxw", "Catalog Look", "2");
+        let bundle = import_file_in(&saved, &download).unwrap();
+        assert_eq!(bundle.name, "Catalog Look (2)");
+
+        assert_eq!(std::fs::read(&stored).unwrap(), before);
+        let kept = roxw::read_bundle(&saved.join("Catalog Look (2).roxw")).unwrap();
+        assert_eq!(kept.meta.version, "2");
+
+        let _ = std::fs::remove_dir_all(&saved);
+        let _ = std::fs::remove_dir_all(&incoming);
     }
 
     /// What a 1.x export wrote, as far as the version reads.

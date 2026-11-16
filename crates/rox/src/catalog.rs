@@ -493,14 +493,31 @@ pub(crate) fn cancel(cx: &mut App) {
 enum Stored {
     Workspace(Box<WorkspaceBundle>),
     Plugin(String),
-    Object(String),
+    /// `place` is false for an update, which would otherwise drop another
+    /// copy onto the canvas every time.
+    Object {
+        name: String,
+        place: bool,
+    },
+}
+
+/// What an Update does with the file an earlier install of a workspace or
+/// an object stored. A first install, a plugin and an update whose recorded
+/// file doesn't pass [`replaceable`] all store as Keep Both does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Choice {
+    /// A copy beside the old file under a deduped name, and the record moves
+    /// to it. The old file stays as an ordinary saved one.
+    KeepBoth,
+    /// The new file takes the recorded file's place under its name.
+    Replace,
 }
 
 /// Download, verify, then the import or install a file from disk takes,
 /// ending in its confirm. One runs at a time. It runs detached, so dropping
 /// the answer doesn't stop it; [`cancel`] does, and quitting does.
-pub(crate) fn install(id: &str, cx: &mut App) -> Task<Result<Installed, String>> {
-    match start(id, cx) {
+pub(crate) fn install(id: &str, choice: Choice, cx: &mut App) -> Task<Result<Installed, String>> {
+    match start(id, choice, cx) {
         Ok(answer) => cx.background_executor().spawn(async move {
             answer
                 .recv()
@@ -513,6 +530,7 @@ pub(crate) fn install(id: &str, cx: &mut App) -> Task<Result<Installed, String>>
 
 fn start(
     id: &str,
+    choice: Choice,
     cx: &mut App,
 ) -> Result<async_channel::Receiver<Result<Installed, String>>, String> {
     // The id may come from a link or a script: checked before it's looked
@@ -547,7 +565,7 @@ fn start(
             .background_executor()
             .spawn({
                 let id = id.clone();
-                async move { fetch_and_store(&id, &progress) }
+                async move { fetch_and_store(&id, choice, &progress) }
             })
             .await;
 
@@ -590,7 +608,11 @@ fn incoming_dir() -> PathBuf {
 /// Off the main thread: the lookup, the download, then the same store step
 /// the socket verbs run for a file from disk, then the record. The
 /// downloaded file is deleted whatever the store step answers.
-fn fetch_and_store(id: &str, progress: &Progress) -> Result<(Installed, Stored), String> {
+fn fetch_and_store(
+    id: &str,
+    choice: Choice,
+    progress: &Progress,
+) -> Result<(Installed, Stored), String> {
     let index = load().ok_or("there's no catalog index yet")?;
     let summary = index
         .get(id)
@@ -623,7 +645,24 @@ fn fetch_and_store(id: &str, progress: &Progress) -> Result<(Installed, Stored),
         progress,
     )?;
 
-    let stored = store(summary, &file);
+    let earlier = installed()
+        .into_iter()
+        .find(|record| record.id == summary.id);
+    let into = match (choice, &earlier) {
+        (Choice::Replace, Some(record)) => match replaceable(record, summary.kind) {
+            Ok(path) => Some(path),
+            Err(why) => {
+                log::warn!(
+                    "catalog: {id}: not replacing {:?}, keeping both: {why}",
+                    record.file
+                );
+                None
+            }
+        },
+        _ => None,
+    };
+
+    let stored = store(summary, &file, into.as_deref(), earlier.is_some());
     let _ = std::fs::remove_dir_all(&dir);
     let (stored, path) = stored?;
 
@@ -640,9 +679,22 @@ fn fetch_and_store(id: &str, progress: &Progress) -> Result<(Installed, Stored),
 }
 
 /// The disk path's store step for each kind, and where it put the file.
-fn store(summary: &Summary, file: &Path) -> Result<(Stored, PathBuf), String> {
+/// `into` is a recorded file that passed [`replaceable`], for a Replace.
+fn store(
+    summary: &Summary,
+    file: &Path,
+    into: Option<&Path>,
+    update: bool,
+) -> Result<(Stored, PathBuf), String> {
     match summary.kind {
         Kind::Workspace => {
+            if let Some(into) = into {
+                let bundle = crate::workspaces::replace_file(file, into)?;
+                log::info!("catalog: replaced {}", into.display());
+
+                return Ok((Stored::Workspace(Box::new(bundle)), into.to_path_buf()));
+            }
+
             let bundle = crate::workspaces::import_file(file)?;
             let path = crate::workspaces::path_for(&bundle.name);
 
@@ -667,14 +719,98 @@ fn store(summary: &Summary, file: &Path) -> Result<(Stored, PathBuf), String> {
         }
 
         Kind::Object => {
+            let place = !update;
+
+            if let Some(into) = into {
+                let name = crate::objects::replace(file, into)?;
+                log::info!("catalog: replaced {}", into.display());
+
+                return Ok((Stored::Object { name, place }, into.to_path_buf()));
+            }
+
             let name = crate::objects::install(file)?;
             let path = roxo::objects_dir().join(format!("{name}.{}", roxo::EXT));
 
-            Ok((Stored::Object(name), path))
+            Ok((Stored::Object { name, place }, path))
         }
 
         Kind::Unknown => Err("that kind of package doesn't install".into()),
     }
+}
+
+/// Where the record's file sits as a place a Replace may write, or why it
+/// can't be one. `installed.json` is a file on disk anyone can edit, so the
+/// path it names is checked like any outside path before rox writes there:
+/// one plain file name with the kind's extension, directly in the folder
+/// that kind stores in, an existing regular file and not a symlink.
+fn replaceable(record: &Installed, kind: Kind) -> Result<PathBuf, String> {
+    replaceable_in(&settings::data_dir(), record, kind)
+}
+
+fn replaceable_in(data: &Path, record: &Installed, kind: Kind) -> Result<PathBuf, String> {
+    let (folder, ext) = match kind {
+        Kind::Workspace => ("workspaces", roxw::EXT),
+        Kind::Object => ("objects", roxo::EXT),
+        Kind::Plugin | Kind::Unknown => return Err("only a workspace or an object asks".into()),
+    };
+    if record.kind != kind {
+        return Err("the record is for another kind of package".into());
+    }
+
+    let Some((dir, name)) = record.file.split_once('/') else {
+        return Err(format!("the record's file isn't in {folder}/"));
+    };
+    if dir != folder {
+        return Err(format!("the record's file isn't in {folder}/"));
+    }
+
+    let ours = settings::assets::flat_name(name)
+        && !name.starts_with('.')
+        && Path::new(name)
+            .extension()
+            .is_some_and(|found| found.eq_ignore_ascii_case(ext));
+    if !ours {
+        return Err("the record's file isn't a plain file name".into());
+    }
+
+    let path = data.join(folder).join(name);
+
+    // symlink_metadata describes a link itself, so one is never followed.
+    let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("the record's file: {e}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("the record's file is a symlink".into());
+    }
+    if !meta.is_file() {
+        return Err("the record's file isn't a regular file".into());
+    }
+
+    Ok(path)
+}
+
+/// Whether an Update of `summary` asks Replace or Keep Both: a workspace or
+/// an object with an update pending whose recorded file a Replace could
+/// write. Anything else gets the one Update button.
+fn asks_in(data: &Path, summary: &Summary, installed: &[Installed]) -> bool {
+    installed
+        .iter()
+        .find(|record| record.id == summary.id)
+        .is_some_and(|record| {
+            record.sha256 != summary.latest.sha256
+                && replaceable_in(data, record, summary.kind).is_ok()
+        })
+}
+
+/// The ids among `updates` that ask. Reads the record and the disk, so it's
+/// for the background executor.
+pub(crate) fn asking(updates: &[Summary]) -> HashSet<String> {
+    let installed = installed();
+    let data = settings::data_dir();
+
+    updates
+        .iter()
+        .filter(|summary| asks_in(&data, summary, &installed))
+        .map(|summary| summary.id.clone())
+        .collect()
 }
 
 /// Under the data dir, with forward slashes, so a portable data dir that
@@ -694,7 +830,8 @@ fn relative_in(data: &Path, path: &Path) -> String {
 }
 
 /// What a file opened from disk shows next, in the front window: the apply
-/// confirm, the Plugins page with the new row off, or the place confirm.
+/// confirm, the Plugins page with the new row off, or the place confirm. An
+/// object's update is stored and offered nowhere.
 fn offer(stored: Stored, cx: &mut App) {
     match stored {
         Stored::Workspace(bundle) => {
@@ -715,11 +852,19 @@ fn offer(stored: Stored, cx: &mut App) {
             });
         }
 
-        Stored::Object(name) => {
+        // Copies already placed are the canvas's own items and stay as they are.
+        Stored::Object { place: false, .. } => {}
+
+        Stored::Object { name, place: true } => {
             crate::workspace::with_front_workspace(cx, move |ws, window, cx| {
                 match crate::objects::canvas_for(ws, cx) {
-                    Some(canvas) => canvas.update(cx, |canvas, cx| {
-                        crate::objects::offer(canvas, &name, window, cx)
+                    // Outside this workspace update: a place with nothing to
+                    // review edits the canvas at once, which reaches back into
+                    // the workspace, and gpui panics on that mid-update.
+                    Some(canvas) => window.defer(cx, move |window, cx| {
+                        canvas.update(cx, |canvas, cx| {
+                            crate::objects::offer(canvas, &name, window, cx)
+                        })
                     }),
                     None => Toast::new(
                         panel::Tone::Info,
@@ -962,6 +1107,165 @@ mod tests {
         ] {
             assert!(!stale_preview(foreign, old, &named, now), "{foreign}");
         }
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rox-catalog-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("workspaces")).unwrap();
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        dir
+    }
+
+    fn package(id: &str, kind: &str, sha256: &str) -> Summary {
+        let packages = serde_json::json!([{
+            "id": id,
+            "kind": kind,
+            "name": id,
+            "author": "someone",
+            "summary": "One line.",
+            "latest": {
+                "version": "1",
+                "file": format!("files/{id}"),
+                "bytes": 10,
+                "sha256": sha256,
+                "min_rox": "1.0.0",
+            },
+        }]);
+        let text = serde_json::json!({ "version": 1, "packages": packages }).to_string();
+
+        wire::parse_index(&text).unwrap().packages.remove(0)
+    }
+
+    fn record(id: &str, kind: Kind, file: &str) -> Installed {
+        Installed {
+            id: id.to_string(),
+            kind,
+            sha256: OLD.to_string(),
+            file: file.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_update_of_a_workspace_or_an_object_asks_and_a_plugin_doesnt() {
+        let data = scratch("asks");
+        std::fs::write(data.join("workspaces/Look.roxw"), b"saved").unwrap();
+        std::fs::write(data.join("objects/Lamp.roxo"), b"saved").unwrap();
+
+        let installed = [
+            record("look", Kind::Workspace, "workspaces/Look.roxw"),
+            record("lamp", Kind::Object, "objects/Lamp.roxo"),
+            record("hello", Kind::Plugin, "plugins/hello.roxp"),
+            record("gone", Kind::Workspace, "workspaces/Gone.roxw"),
+        ];
+
+        assert!(asks_in(
+            &data,
+            &package("look", "workspace", NEW),
+            &installed
+        ));
+        assert!(asks_in(&data, &package("lamp", "object", NEW), &installed));
+
+        // A plugin is always replaced in place, so it never asks.
+        assert!(!asks_in(
+            &data,
+            &package("hello", "plugin", NEW),
+            &installed
+        ));
+
+        // No update pending, no record, or the file deleted: one button.
+        assert!(!asks_in(
+            &data,
+            &package("look", "workspace", OLD),
+            &installed
+        ));
+        assert!(!asks_in(
+            &data,
+            &package("new", "workspace", NEW),
+            &installed
+        ));
+        assert!(!asks_in(
+            &data,
+            &package("gone", "workspace", NEW),
+            &installed
+        ));
+
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_replace_writes_only_a_plain_file_in_its_kinds_folder() {
+        let data = scratch("replaceable");
+        std::fs::write(data.join("workspaces/Look.roxw"), b"saved").unwrap();
+        std::fs::write(data.join("objects/Lamp.roxo"), b"saved").unwrap();
+        std::fs::write(data.join("settings.json"), b"{}").unwrap();
+        std::fs::create_dir_all(data.join("workspaces/Folder.roxw")).unwrap();
+
+        assert_eq!(
+            replaceable_in(
+                &data,
+                &record("look", Kind::Workspace, "workspaces/Look.roxw"),
+                Kind::Workspace
+            ),
+            Ok(data.join("workspaces/Look.roxw"))
+        );
+        assert_eq!(
+            replaceable_in(
+                &data,
+                &record("lamp", Kind::Object, "objects/Lamp.roxo"),
+                Kind::Object
+            ),
+            Ok(data.join("objects/Lamp.roxo"))
+        );
+
+        let outside = data.join("settings.json").display().to_string();
+        let refused = [
+            "../settings.json",
+            "settings.json",
+            outside.as_str(),
+            "workspaces/../settings.json",
+            "workspaces/sub/Look.roxw",
+            "workspaces\\Look.roxw",
+            "workspaces/",
+            "workspaces/.Look.roxw",
+            "workspaces/Look.json",
+            "objects/Lamp.roxo",
+            "workspaces/Missing.roxw",
+            "workspaces/Folder.roxw",
+        ];
+        for file in refused {
+            let record = record("look", Kind::Workspace, file);
+            assert!(
+                replaceable_in(&data, &record, Kind::Workspace).is_err(),
+                "{file}"
+            );
+        }
+
+        // A record that disagrees with the index on the kind, and a plugin.
+        let lamp = record("lamp", Kind::Workspace, "objects/Lamp.roxo");
+        assert!(replaceable_in(&data, &lamp, Kind::Object).is_err());
+        let hello = record("hello", Kind::Plugin, "plugins/hello.roxp");
+        assert!(replaceable_in(&data, &hello, Kind::Plugin).is_err());
+
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replace_never_follows_a_symlink() {
+        let data = scratch("symlink");
+        std::fs::write(data.join("settings.json"), b"{}").unwrap();
+        std::os::unix::fs::symlink(
+            data.join("settings.json"),
+            data.join("workspaces/Look.roxw"),
+        )
+        .unwrap();
+
+        let record = record("look", Kind::Workspace, "workspaces/Look.roxw");
+        let refused = replaceable_in(&data, &record, Kind::Workspace).unwrap_err();
+        assert!(refused.contains("symlink"), "{refused}");
+
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

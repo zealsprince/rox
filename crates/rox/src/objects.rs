@@ -65,17 +65,46 @@ fn install_in(dir: &Path, archive: &Path) -> Result<String, String> {
     let name = workspaces::unique_name(&base, |candidate| dir.join(file_name(candidate)).exists());
 
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let to = dir.join(file_name(&name));
-    let tmp = dir.join(format!(".{}.incoming", file_name(&name)));
+    copy_in(archive, &dir.join(file_name(&name)))?;
+
+    Ok(name)
+}
+
+/// A catalog update's Replace: the downloaded `.roxo` copied over `into`, the
+/// file an earlier install stored, which keeps its name. The download is
+/// read under the archive rules first and the copy lands by rename, so a
+/// failure leaves `into` as it was. The caller checks `into` is an
+/// installed object. Returns the kept name.
+pub(crate) fn replace(archive: &Path, into: &Path) -> Result<String, String> {
+    roxo::read_bundle(archive)?;
+
+    let name = into
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} has no name", into.display()))?;
+    copy_in(archive, into)?;
+
+    Ok(name)
+}
+
+/// Through a dot-named file beside `to`, which the list skips, then renamed.
+fn copy_in(archive: &Path, to: &Path) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", to.display());
+    let (Some(dir), Some(name)) = (to.parent(), to.file_name()) else {
+        return Err(format!("{} isn't a file in a folder", to.display()));
+    };
+    let tmp = dir.join(format!(".{}.incoming", name.to_string_lossy()));
+
+    // A leftover is removed first: copy follows a symlink left in its place.
+    let _ = std::fs::remove_file(&tmp);
     let copied = std::fs::copy(archive, &tmp)
-        .and_then(|_| std::fs::rename(&tmp, &to))
-        .map_err(|e| format!("{}: {e}", to.display()));
+        .and_then(|_| std::fs::rename(&tmp, to))
+        .map_err(fail);
     if copied.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    copied?;
 
-    Ok(name)
+    copied
 }
 
 /// Installed objects by name, sorted. Named after the file, so the list is
@@ -1304,6 +1333,47 @@ mod tests {
 
         assert!(path_in(&dir, "../escape").is_err());
         assert!(path_in(&dir, ".hidden").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_replace_keeps_the_name_and_a_failed_read_leaves_the_old_file() {
+        let root = std::env::temp_dir().join(format!("rox-objects-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join("objects");
+
+        let lamp = |name: &str, path: &Path| {
+            let bundle = ObjectBundle {
+                name: name.to_string(),
+                item: group("lamp", json!([])),
+                ..ObjectBundle::default()
+            };
+            roxo::write(path, &bundle, &[]).unwrap();
+        };
+
+        lamp("Catalog Lamp", &root.join("first.roxo"));
+        assert_eq!(
+            install_in(&dir, &root.join("first.roxo")).unwrap(),
+            "Catalog Lamp"
+        );
+        let stored = dir.join("Catalog Lamp.roxo");
+
+        // The author's new name doesn't move the file.
+        lamp("Brighter Lamp", &root.join("second.roxo"));
+        assert_eq!(
+            replace(&root.join("second.roxo"), &stored).unwrap(),
+            "Catalog Lamp"
+        );
+        assert_eq!(roxo::read_bundle(&stored).unwrap().name, "Brighter Lamp");
+        assert_eq!(all_in(&dir).len(), 1);
+
+        let before = std::fs::read(&stored).unwrap();
+        std::fs::write(root.join("junk.roxo"), b"not a zip").unwrap();
+        assert!(replace(&root.join("junk.roxo"), &stored).is_err());
+        assert_eq!(std::fs::read(&stored).unwrap(), before);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -295,6 +295,8 @@ struct Listing {
     too_new: HashMap<String, String>,
     installed: HashSet<String>,
     updates: HashSet<String>,
+    /// Updates whose Update asks Replace or Keep Both.
+    asking: HashSet<String>,
 }
 
 /// Reads the record of installs, so it's for the background executor.
@@ -315,10 +317,9 @@ fn listing(index: Index) -> Listing {
         .into_iter()
         .map(|installed| installed.id)
         .collect();
-    listing.updates = catalog::updates()
-        .into_iter()
-        .map(|summary| summary.id)
-        .collect();
+    let updates = catalog::updates();
+    listing.asking = catalog::asking(&updates);
+    listing.updates = updates.into_iter().map(|summary| summary.id).collect();
 
     listing
 }
@@ -497,6 +498,8 @@ enum Outcome {
     Failed(SharedString),
     /// Installed with no workspace window up, so there was no confirm to show.
     Quiet,
+    /// An object's update, stored and placed nowhere.
+    ObjectUpdated,
 }
 
 // ── The window ──
@@ -929,11 +932,19 @@ impl CatalogWindow {
 
     // ── Install ──
 
-    fn install(&mut self, id: String, cx: &mut Context<Self>) {
+    fn install(&mut self, id: String, choice: catalog::Choice, cx: &mut Context<Self>) {
         self.outcome = None;
         self.cancelled = None;
 
-        let installing = catalog::install(&id, cx);
+        let object_update = self
+            .entry(&id)
+            .is_some_and(|entry| entry.kind == Kind::Object)
+            && self
+                .listing
+                .as_ref()
+                .is_some_and(|listing| listing.updates.contains(&id));
+
+        let installing = catalog::install(&id, choice, cx);
         self.poll_install(cx);
         cx.notify();
 
@@ -955,7 +966,9 @@ impl CatalogWindow {
                         }
                         this.refilter(cx);
 
-                        if quiet {
+                        if object_update {
+                            this.outcome = Some((id, Outcome::ObjectUpdated));
+                        } else if quiet {
                             this.outcome = Some((id, Outcome::Quiet));
                         }
                     }
@@ -963,11 +976,18 @@ impl CatalogWindow {
                     // The user's own Cancel isn't a failure to report.
                     Err(_) if this.cancelled.as_deref() == Some(id.as_str()) => {}
 
+                    // Every failure on a Replace lands before the old file is
+                    // touched, so the line can say it's unchanged.
                     Err(reason) => {
-                        let said = rox_i18n::t!(
-                            "catalog-install-failed",
-                            reason = line(&reason, REASON_MAX)
-                        );
+                        let reason = line(&reason, REASON_MAX);
+                        let said = match choice {
+                            catalog::Choice::Replace => {
+                                rox_i18n::t!("catalog-replace-failed", reason = reason)
+                            }
+                            catalog::Choice::KeepBoth => {
+                                rox_i18n::t!("catalog-install-failed", reason = reason)
+                            }
+                        };
                         this.outcome = Some((id, Outcome::Failed(said)));
                     }
                 }
@@ -1428,6 +1448,7 @@ impl CatalogWindow {
         let listing = self.listing.as_ref();
         let installed = listing.is_some_and(|listing| listing.installed.contains(&entry.id));
         let update = listing.is_some_and(|listing| listing.updates.contains(&entry.id));
+        let asking = listing.is_some_and(|listing| listing.asking.contains(&entry.id));
         let running = catalog::running(cx);
 
         match &running {
@@ -1471,6 +1492,57 @@ impl CatalogWindow {
                 column = column.child(div().flex().child(installed_mark()));
             }
 
+            _ if update && asking => {
+                let busy = running.is_some();
+                let button = |id: &'static str, icon: &'static str, label, choice| {
+                    let package = entry.id.clone();
+
+                    Button::new(id)
+                        .icon(Icon::default().path(icon))
+                        .label(label)
+                        .small()
+                        .outline()
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.install(package.clone(), choice, cx)
+                        }))
+                };
+
+                // Objects already placed are the canvas's own items, which a
+                // user would otherwise expect to follow the update.
+                let explained = match entry.kind {
+                    Kind::Object => rox_i18n::t!("catalog-update-choice-object"),
+                    _ => rox_i18n::t!("catalog-update-choice-workspace"),
+                };
+
+                column = column
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(tokens::SPACE_XS)
+                            .child(button(
+                                "catalog-replace",
+                                icons::REFRESH_CW,
+                                rox_i18n::t!("catalog-replace"),
+                                catalog::Choice::Replace,
+                            ))
+                            .child(button(
+                                "catalog-keep-both",
+                                icons::COPY,
+                                rox_i18n::t!("catalog-keep-both"),
+                                catalog::Choice::KeepBoth,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(explained),
+                    );
+                column = self.busy_line(column, running.as_ref().map(|(id, _)| id.as_str()));
+            }
+
             _ => {
                 let label = if update {
                     rox_i18n::t!("catalog-update")
@@ -1487,21 +1559,12 @@ impl CatalogWindow {
                             .small()
                             .outline()
                             .disabled(running.is_some())
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.install(id.clone(), cx)),
-                            ),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.install(id.clone(), catalog::Choice::KeepBoth, cx)
+                            })),
                     ),
                 );
-
-                // One install at a time: say whose is holding this one up.
-                if let Some(other) = running.as_ref().and_then(|(id, _)| self.entry(id)) {
-                    column = column.child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::text_muted())
-                            .child(rox_i18n::t!("catalog-busy", name = other.name.clone())),
-                    );
-                }
+                column = self.busy_line(column, running.as_ref().map(|(id, _)| id.as_str()));
             }
         }
 
@@ -1518,7 +1581,26 @@ impl CatalogWindow {
                     .text_color(palette::text_muted())
                     .child(rox_i18n::t!("catalog-installed-quiet")),
             ),
+            Some((id, Outcome::ObjectUpdated)) if *id == entry.id => column.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("catalog-object-updated")),
+            ),
             _ => column,
+        }
+    }
+
+    /// One install at a time: say whose is holding this one up.
+    fn busy_line(&self, column: Div, running: Option<&str>) -> Div {
+        match running.and_then(|id| self.entry(id)) {
+            Some(other) => column.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("catalog-busy", name = other.name.clone())),
+            ),
+            None => column,
         }
     }
 

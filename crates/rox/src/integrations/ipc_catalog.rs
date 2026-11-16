@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 
 use rox_ipc::{Request, RpcError};
 
-/// One of `{"refresh": true}`, `{"install": "<id>"}`, `{"updates": true}`,
-/// `{"chip": true}` or `{"cancel": true}`. Answers once the refresh or the
-/// install is done.
+/// One of `{"refresh": true}`, `{"install": "<id>"}` with an optional
+/// `"replace": true`, `{"updates": true}`, `{"chip": true}` or
+/// `{"cancel": true}`. Answers once the refresh or the install is done.
 pub fn request(request: Request, cx: &mut App) {
     let (_, params, responder) = request.into_parts();
 
@@ -34,7 +34,12 @@ pub fn request(request: Request, cx: &mut App) {
     }
 
     if let Some(id) = params.get("install").and_then(Value::as_str) {
-        let installing = crate::catalog::install(id, cx);
+        let choice = match params.get("replace").and_then(Value::as_bool) {
+            Some(true) => crate::catalog::Choice::Replace,
+            _ => crate::catalog::Choice::KeepBoth,
+        };
+
+        let installing = crate::catalog::install(id, choice, cx);
         cx.spawn(async move |_| {
             let answer = installing
                 .await
@@ -48,9 +53,17 @@ pub fn request(request: Request, cx: &mut App) {
     if params.get("updates").and_then(Value::as_bool) == Some(true) {
         cx.background_executor()
             .spawn(async move {
-                let updates: Vec<Value> = crate::catalog::updates()
+                let pending = crate::catalog::updates();
+                let asking = crate::catalog::asking(&pending);
+                let updates: Vec<Value> = pending
                     .iter()
-                    .map(|summary| json!({ "id": summary.id, "sha256": summary.latest.sha256 }))
+                    .map(|summary| {
+                        json!({
+                            "id": summary.id,
+                            "sha256": summary.latest.sha256,
+                            "asks": asking.contains(&summary.id),
+                        })
+                    })
                     .collect();
                 responder.respond(Ok(json!({ "updates": updates })));
             })
@@ -69,6 +82,6 @@ pub fn request(request: Request, cx: &mut App) {
     }
 
     responder.respond(Err(RpcError::invalid_params(
-        "takes {\"refresh\": true}, {\"install\": \"<id>\"}, {\"updates\": true}, {\"chip\": true} or {\"cancel\": true}",
+        "takes {\"refresh\": true}, {\"install\": \"<id>\", \"replace\": bool}, {\"updates\": true}, {\"chip\": true} or {\"cancel\": true}",
     )));
 }

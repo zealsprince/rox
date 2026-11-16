@@ -1181,9 +1181,10 @@ pub fn design_mode() -> bool {
 
 pub fn set_design_mode(on: bool, cx: &mut App) {
     rox_dock::set_design_mode(on);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    // As an effect, not through each window's handle: the window the toggle
+    // came from is mid-update and its handle can't be reached, so it would
+    // keep its cached views and miss the flip.
+    cx.refresh_windows();
 }
 
 pub fn resize_lock() -> bool {

@@ -125,7 +125,8 @@ impl Default for SceneItem {
 #[serde(default)]
 pub struct Place {
     /// Measured on the parent's box. The item's own matching point sits
-    /// there, and it turns and scales about that point.
+    /// there. It only places the item, which turns and scales about its
+    /// centre.
     pub anchor: Anchor,
     /// Units, in the parent's space, from the anchor's point.
     pub position: [f32; 3],

@@ -2092,6 +2092,7 @@ fn begin_typing(
                 let commit = commit.clone();
                 this.inspector.typing = None;
                 this.change(move |canvas| commit(canvas, &typed), window, cx);
+                this.refocus_soon(window, cx);
             }
             InputEvent::Blur => {
                 this.inspector.typing = None;

@@ -1,10 +1,10 @@
-//! The texture body (ADR 33): a caller-owned texture on a scene item's
+//! The texture body (ADR 33): a caller-owned texture on a canvas item's
 //! quad, through `paint_texture_quad`. It's the seam for frames drawn
-//! outside the scene: whatever produces them hands them over here as
+//! outside the canvas: whatever produces them hands them over here as
 //! [`Frame`]s, the way Milkdrop hands its frames to the renderer.
 //!
 //! The texture belongs to one window's registry, so it's registered, fed and
-//! released from paint, and moves when the scene pops out. In a release
+//! released from paint, and moves when the canvas pops out. In a release
 //! build nothing feeds it. A debug build proves it with a gradient item
 //! (`{"kind": "debug_texture"}`), which a release build keeps as saved like
 //! any kind it doesn't know.
@@ -19,9 +19,9 @@ use gpui::{
     AnyElement, AnyWindowHandle, App, Bounds, Context, IntoElement, Render, UserTextureId, Window,
     canvas, point, prelude::*, px, size,
 };
-use rox_scene::{Content, Projected};
+use rox_canvas::{Content, Projected};
 
-use crate::scene::bbox;
+use crate::canvas::bbox;
 
 /// One frame for the texture: `width * height * 4` bytes of straight-alpha
 /// RGBA. `seq` moves on with each new frame, so a repaint of the same one
@@ -80,7 +80,7 @@ impl Texture {
                     })
                 }
                 Err(e) => {
-                    log::warn!("scene: texture {}x{}: {e}", want.0, want.1);
+                    log::warn!("canvas: texture {}x{}: {e}", want.0, want.1);
                     return;
                 }
             }
@@ -92,7 +92,7 @@ impl Texture {
 
         if held.seq != Some(frame.seq) {
             if let Err(e) = window.update_user_texture(held.id, frame.rgba8.clone()) {
-                log::warn!("scene: texture upload: {e}");
+                log::warn!("canvas: texture upload: {e}");
                 return;
             }
             held.seq = Some(frame.seq);
@@ -167,7 +167,7 @@ impl TextureView {
         self.face = face;
     }
 
-    /// For the scene's own cleanup, which has the window in hand.
+    /// For the canvas's own cleanup, which has the window in hand.
     pub(crate) fn release(&mut self, window: &mut Window, cx: &mut App) {
         self.texture.borrow_mut().release(window, cx);
     }
@@ -262,7 +262,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn the_test_item_is_a_kind_of_its_own() {
-        let item: rox_scene::SceneItem = serde_json::from_value(serde_json::json!({
+        let item: rox_canvas::CanvasItem = serde_json::from_value(serde_json::json!({
             "id": "t",
             "content": { "kind": "debug_texture" },
         }))

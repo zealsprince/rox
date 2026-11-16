@@ -1,9 +1,9 @@
-//! Where a scene's items land on screen. World space is viewport pixels, x
+//! Where a canvas's items land on screen. World space is viewport pixels, x
 //! right, y down, z toward the viewer. A frame's box runs from its origin to
 //! `size`, so an anchor is a fraction of that box.
 
 use crate::mat::Mat4;
-use crate::state::{Camera, Fit, SceneItem, Stage};
+use crate::state::{Camera, CanvasItem, Fit, Stage};
 
 /// `focal - z` at or under this is behind the camera.
 const BEHIND: f32 = 1e-3;
@@ -102,7 +102,7 @@ pub struct Projected {
 
 /// None when any corner falls behind the camera.
 pub fn project(
-    item: &SceneItem,
+    item: &CanvasItem,
     parent: &Frame,
     camera: &Camera,
     viewport: Viewport,
@@ -149,7 +149,7 @@ pub fn project(
 }
 
 /// The frame a group hands its children.
-pub fn child_frame(item: &SceneItem, parent: &Frame, live: &Live) -> Frame {
+pub fn child_frame(item: &CanvasItem, parent: &Frame, live: &Live) -> Frame {
     let size = item_size(item, parent);
     let [left, top] = box_origin(item, size);
 
@@ -189,7 +189,7 @@ pub fn inside(corners: &[[f32; 2]; 4], point: [f32; 2]) -> bool {
 /// The move in the parent's units that shifts the item by `screen_delta`
 /// pixels at its depth.
 pub fn unproject_delta(
-    item: &SceneItem,
+    item: &CanvasItem,
     parent: &Frame,
     camera: &Camera,
     viewport: Viewport,
@@ -295,18 +295,18 @@ impl View {
     }
 }
 
-fn item_size(item: &SceneItem, parent: &Frame) -> [f32; 2] {
+fn item_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
     let [w, h] = item.place.size;
     [w.resolve(parent.size[0]), h.resolve(parent.size[1])]
 }
 
 /// The item's top-left in its own space. Its anchor point is the origin.
-fn box_origin(item: &SceneItem, size: [f32; 2]) -> [f32; 2] {
+fn box_origin(item: &CanvasItem, size: [f32; 2]) -> [f32; 2] {
     let [fx, fy] = item.place.anchor.fraction();
     [-fx * size[0], -fy * size[1]]
 }
 
-fn center_offset(item: &SceneItem, size: [f32; 2]) -> [f32; 3] {
+fn center_offset(item: &CanvasItem, size: [f32; 2]) -> [f32; 3] {
     let [left, top] = box_origin(item, size);
     [left + size[0] / 2., top + size[1] / 2., 0.]
 }
@@ -315,7 +315,7 @@ fn center_offset(item: &SceneItem, size: [f32; 2]) -> [f32; 3] {
 /// then z and scale about the item's centre. The anchor only places an item:
 /// a corner-anchored one still turns about its middle. A flat item stops
 /// after the translation.
-fn local(item: &SceneItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
+fn local(item: &CanvasItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
     let place = &item.place;
     let [fx, fy] = place.anchor.fraction();
     let at = [
@@ -361,26 +361,26 @@ mod tests {
         Frame::stage(&Stage::default(), VIEW)
     }
 
-    fn item(anchor: Anchor, position: [f32; 3], size: [f32; 2]) -> SceneItem {
-        SceneItem {
+    fn item(anchor: Anchor, position: [f32; 3], size: [f32; 2]) -> CanvasItem {
+        CanvasItem {
             place: Place {
                 anchor,
                 position,
                 size: [Length::Units(size[0]), Length::Units(size[1])],
                 ..Place::default()
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         }
     }
 
-    fn group(position: [f32; 3], rotation: [f32; 3], size: [f32; 2]) -> SceneItem {
+    fn group(position: [f32; 3], rotation: [f32; 3], size: [f32; 2]) -> CanvasItem {
         let mut group = item(Anchor::Center, position, size);
         group.place.rotation = rotation;
         group.content = Content::Group { items: Vec::new() };
         group
     }
 
-    fn put(item: &SceneItem, parent: &Frame, camera: &Camera, flat: bool) -> Projected {
+    fn put(item: &CanvasItem, parent: &Frame, camera: &Camera, flat: bool) -> Projected {
         project(item, parent, camera, VIEW, None, flat, &Live::default())
             .expect("in front of the camera")
     }
@@ -820,7 +820,7 @@ mod tests {
         let camera = Camera::default();
         let drag = [30., -20.];
 
-        let check = |it: &SceneItem, parent: &Frame, flat: bool| {
+        let check = |it: &CanvasItem, parent: &Frame, flat: bool| {
             let before = center(put(it, parent, &camera, flat).corners);
             let [dx, dy] = unproject_delta(it, parent, &camera, VIEW, flat, drag);
 

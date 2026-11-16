@@ -150,7 +150,7 @@ pub fn set_focus_visible(on: bool) {
 }
 
 /// rox addition: the area holding the app's one middle drag, so a tab group
-/// in another area (a grid inside a scene) can preview and take it. The area
+/// in another area (a grid inside a canvas) can preview and take it. The area
 /// still owns the drag; a holder whose slot is empty holds nothing, so the
 /// name is never cleared.
 #[derive(Default)]

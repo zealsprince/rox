@@ -9,13 +9,13 @@ use rox_core::settings::PanelPreset;
 use rox_dock::PanelView;
 use rox_plugins::manifest::{DeclaredPanel, SOURCE_PREFIX};
 
+use crate::panels::canvas::{CanvasConfig, CanvasPanel};
 use crate::panels::controls::{ControlsConfig, ControlsPanel};
 use crate::panels::drawer::{DrawerConfig, DrawerPanel};
 use crate::panels::group::{GroupConfig, GroupPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
-use crate::panels::scene::{SceneConfig, ScenePanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::workspace::Workspace;
@@ -355,13 +355,13 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "panel-catalog-scene",
-            name: "scene",
+            label: "panel-catalog-canvas",
+            name: "canvas",
             icon: icons::SPARKLES,
             placement: PanelPlacement::Center,
             build: |state, ws, window, cx| {
                 Arc::new(cx.new(|cx| {
-                    ScenePanel::restore(state.clone(), ws, SceneConfig::default(), window, cx)
+                    CanvasPanel::restore(state.clone(), ws, CanvasConfig::default(), window, cx)
                 }))
             },
         },
@@ -661,7 +661,7 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
 /// Panels whose knobs the signal pool can drive, marked with the signal glyph
 /// in every menu. Joining takes [`rox_panel_api::signal_ui::RouteHost`] and
 /// [`rox_panel_api::signal_ui::bindable_row`].
-const SIGNAL_PANELS: &[&str] = &["particles", "scene", "shader"];
+const SIGNAL_PANELS: &[&str] = &["particles", "canvas", "shader"];
 
 pub(crate) fn supports_signals(def: &PanelDef) -> bool {
     // Registry names, never labels: labels change per language.

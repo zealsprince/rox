@@ -1,5 +1,5 @@
-//! Objects: one scene item lifted out of a scene with everything it uses,
-//! saved as a `.roxo`, and placed into another scene. A multi-part object
+//! Objects: one canvas item lifted out of a canvas with everything it uses,
+//! saved as a `.roxo`, and placed into another canvas. A multi-part object
 //! is a Group item. The archive's format and its read rules live in
 //! [`rox_core::settings::roxo`]; this is the app's half: the installed list,
 //! export, place and the place confirm.
@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Context, Entity, EntityId, FocusHandle, SharedString, Window};
 use gpui_component::input::InputState;
+use rox_canvas::{Anchor, CanvasItem, CanvasState, Content};
 use rox_core::settings::roxo::{self, ObjectBundle};
 use rox_core::settings::{
     self, Asset, NamedLayout, NamedShader, WorkspaceBundle, WorkspaceMeta, assets,
@@ -24,16 +25,15 @@ use rox_core::settings::{
 use rox_dock::{PanelView, StackPanel, TabPanel};
 use rox_panel_api::panel::shader;
 use rox_panel_api::signal_ui::{self, SignalHost as _};
-use rox_scene::{Anchor, Content, SceneItem, SceneState};
 use rox_viz::signal::{Route, Signal, Source};
 
-use crate::panels::scene::ScenePanel;
-use crate::scene::edit;
+use crate::canvas::edit;
+use crate::panels::canvas::CanvasPanel;
 use crate::workspace::Workspace;
 use crate::workspaces::{self, PendingShader};
 
 thread_local! {
-    /// The scene that last held focus, for a document opened from outside.
+    /// The canvas that last held focus, for a document opened from outside.
     static LAST_FOCUSED: Cell<Option<EntityId>> = const { Cell::new(None) };
 }
 
@@ -147,24 +147,24 @@ pub(crate) struct Card {
     pub meta: WorkspaceMeta,
 }
 
-/// Lift an item out of a live scene: its tree, the assets it names, the
+/// Lift an item out of a live canvas: its tree, the assets it names, the
 /// pool shaders and signals it uses, the routes aimed at it.
 pub(crate) fn export(
-    scene: &ScenePanel,
+    canvas: &CanvasPanel,
     item: &str,
     card: Card,
     out: &Path,
     cx: &App,
 ) -> Result<(), String> {
     // Each grid's dock as it stands now, not as it was loaded.
-    let config = scene.saved(cx);
+    let config = canvas.saved(cx);
 
     let mut lifted = lift(
-        &config.scene,
+        &config.canvas,
         &config.routes,
         item,
         &settings::shader_pool(),
-        &scene.hub().pool(),
+        &canvas.hub().pool(),
         &assets::all(),
         &assets::dir(),
     )?;
@@ -182,7 +182,7 @@ pub(crate) fn export(
 
 /// The pure half of [`export`], against the pools and the store as given.
 pub(crate) fn lift(
-    scene: &SceneState,
+    canvas: &CanvasState,
     routes: &[Route],
     id: &str,
     pool: &[NamedShader],
@@ -190,10 +190,10 @@ pub(crate) fn lift(
     store: &[Asset],
     store_dir: &Path,
 ) -> Result<Lifted, String> {
-    let item = scene
+    let item = canvas
         .find(id)
         .cloned()
-        .ok_or_else(|| format!("the scene has no item {id}"))?;
+        .ok_or_else(|| format!("the canvas has no item {id}"))?;
 
     let mut ids = HashSet::new();
     let mut used = BTreeSet::new();
@@ -236,7 +236,7 @@ pub(crate) fn lift(
             .filter(|asset| !asset.is_empty()),
     );
 
-    // The scene's routes and the item's own, then the signals any of those
+    // The canvas's routes and the item's own, then the signals any of those
     // total, so an aggregate keeps the signal it follows.
     let mut wanted: BTreeSet<u64> = routes.iter().map(|route| route.signal).collect();
     wanted.extend(roxo::route_signals(&json));
@@ -296,7 +296,7 @@ pub(crate) fn lift(
 }
 
 /// The item and every item inside it, parents first.
-fn walk(item: &SceneItem, f: &mut impl FnMut(&SceneItem)) {
+fn walk(item: &CanvasItem, f: &mut impl FnMut(&CanvasItem)) {
     f(item);
     if let Content::Group { items } = &item.content {
         for child in items {
@@ -404,18 +404,18 @@ pub(crate) fn merge_signals(pool: &mut Vec<Signal>, incoming: &[Signal]) -> Hash
     ids
 }
 
-/// The object's item made to fit `scene`: every id fresh, every asset the
+/// The object's item made to fit `canvas`: every id fresh, every asset the
 /// store's, and its routes re-aimed at the new ids and the pool's signals.
 /// A route whose item or signal didn't come along is dropped.
 pub(crate) fn rebase(
-    mut item: SceneItem,
+    mut item: CanvasItem,
     routes: &[Route],
-    scene: &SceneState,
+    canvas: &CanvasState,
     assets: &HashMap<String, String>,
     signals: &HashMap<u64, u64>,
-) -> (SceneItem, Vec<Route>) {
+) -> (CanvasItem, Vec<Route>) {
     let mut taken = HashSet::new();
-    scene.walk(&mut |held, _| {
+    canvas.walk(&mut |held, _| {
         taken.insert(held.id.clone());
     });
 
@@ -440,10 +440,10 @@ pub(crate) fn rebase(
     (item, routes)
 }
 
-/// `SceneState::fresh_id`'s naming, counted against the ids handed out so
-/// far in this placement too, since they aren't in the scene yet.
+/// `CanvasState::fresh_id`'s naming, counted against the ids handed out so
+/// far in this placement too, since they aren't in the canvas yet.
 fn renumber(
-    item: &mut SceneItem,
+    item: &mut CanvasItem,
     taken: &mut HashSet<String>,
     ids: &mut HashMap<String, String>,
     assets: &HashMap<String, String>,
@@ -480,29 +480,29 @@ fn renumber(
     }
 }
 
-/// Add an installed object to a scene: assets into the live store, shaders
+/// Add an installed object to a canvas: assets into the live store, shaders
 /// and signals into the pools, ids made fresh, routes re-aimed. One undo
 /// step takes the items and their routes back out. What it added to the
 /// store and the pools stays, as an image added and deleted again does.
 pub(crate) fn place(
-    scene: &mut ScenePanel,
+    canvas: &mut CanvasPanel,
     name: &str,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> Result<String, String> {
     let archive = path_in(&roxo::objects_dir(), name)?;
     let bundle = roxo::read_bundle(&archive)?;
 
     // Parsed once up front so a broken item stops here, before anything is
     // added to the stores.
-    let item: SceneItem =
+    let item: CanvasItem =
         serde_json::from_value(bundle.item.clone()).map_err(|e| format!("{name}: {e}"))?;
-    let alone = SceneState {
+    let alone = CanvasState {
         items: vec![item],
-        ..SceneState::default()
+        ..CanvasState::default()
     };
-    if !edit::fits(&alone, scene.levels_left()) {
-        return Err(format!("{name} nests deeper than this scene has room for"));
+    if !edit::fits(&alone, canvas.levels_left()) {
+        return Err(format!("{name} nests deeper than this canvas has room for"));
     }
 
     // Every file is read and checked against its hash before any goes into
@@ -533,7 +533,7 @@ pub(crate) fn place(
         settings::set_shader_pool(pool);
     }
 
-    let hub: Arc<_> = scene.hub().clone();
+    let hub: Arc<_> = canvas.hub().clone();
     let mut signal_ids = HashMap::new();
     if !bundle.signals.is_empty() {
         hub.edit(|pool| signal_ids = merge_signals(pool, &bundle.signals));
@@ -543,14 +543,14 @@ pub(crate) fn place(
     let mut json = bundle.item;
     roxo::rename_shaders(&mut json, &renamed);
     roxo::remap_route_signals(&mut json, &signal_ids);
-    let item: SceneItem = serde_json::from_value(json).map_err(|e| format!("{name}: {e}"))?;
+    let item: CanvasItem = serde_json::from_value(json).map_err(|e| format!("{name}: {e}"))?;
 
     // An item's `action` is a command id and travels as plain data. It only
     // ever reaches `keymap::dispatch`, which runs nothing outside its list.
     let (mut item, routes) = rebase(
         item,
         &bundle.routes,
-        &scene.config.scene,
+        &canvas.config.canvas,
         &asset_ids,
         &signal_ids,
     );
@@ -559,15 +559,15 @@ pub(crate) fn place(
     item.place.position[1] = 0.;
 
     let id = item.id.clone();
-    scene.change_routed(
-        move |scene, all| {
-            scene.items.push(item);
+    canvas.change_routed(
+        move |canvas, all| {
+            canvas.items.push(item);
             all.extend(routes);
         },
         window,
         cx,
     );
-    scene.select(Some(id.clone()), window, cx);
+    canvas.select(Some(id.clone()), window, cx);
 
     Ok(id)
 }
@@ -644,9 +644,9 @@ impl PlaceCard {
             heavy: (unpacked > roxo::WARN_BYTES).then(|| {
                 // Decimal, since the string says MB.
                 let mb = unpacked as f64 / 1_000_000.0;
-                rox_i18n::t!("scene-object-heavy", size = format!("{mb:.0}"))
+                rox_i18n::t!("canvas-object-heavy", size = format!("{mb:.0}"))
             }),
-            weight: crate::scene::cost::warnings(&crate::scene::cost::weigh_object(bundle)),
+            weight: crate::canvas::cost::warnings(&crate::canvas::cost::weigh_object(bundle)),
             shaders: workspaces::unapproved_shaders(&look),
         }
     }
@@ -677,7 +677,7 @@ impl PlaceCard {
     }
 }
 
-/// The dialog a scene shows over itself.
+/// The dialog a canvas shows over itself.
 pub(crate) enum Dialog {
     /// The card filled in before an export, then the save prompt.
     Export {
@@ -692,14 +692,14 @@ pub(crate) enum Dialog {
 /// The export card's fields in order: the name, then the workspace card's
 /// author, description and license. Label and placeholder are i18n keys.
 pub(crate) const EXPORT_FIELDS: [(&str, &str); 4] = [
-    ("scene-object-name", "scene-object-name-placeholder"),
+    ("canvas-object-name", "canvas-object-name-placeholder"),
     (
         "settings-workspace-card-author",
         "settings-workspace-card-author-placeholder",
     ),
     (
         "settings-workspace-card-description",
-        "scene-object-description-placeholder",
+        "canvas-object-description-placeholder",
     ),
     (
         "settings-workspace-card-license",
@@ -709,12 +709,12 @@ pub(crate) const EXPORT_FIELDS: [(&str, &str); 4] = [
 
 /// Opens the export card for `item`, its name filled in.
 pub(crate) fn open_export(
-    scene: &mut ScenePanel,
+    canvas: &mut CanvasPanel,
     item: &str,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
-    let Some(found) = scene.config.scene.find(item) else {
+    let Some(found) = canvas.config.canvas.find(item) else {
         return;
     };
     let name = if found.name.trim().is_empty() {
@@ -743,7 +743,7 @@ pub(crate) fn open_export(
         });
     }
 
-    scene.object_dialog = Some(Dialog::Export {
+    canvas.object_dialog = Some(Dialog::Export {
         item: item.to_string(),
         fields,
     });
@@ -752,14 +752,14 @@ pub(crate) fn open_export(
 
 /// The export card's yes: the save prompt, then the write.
 pub(crate) fn confirm_export(
-    scene: &mut ScenePanel,
+    canvas: &mut CanvasPanel,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
-    let Some(Dialog::Export { item, fields }) = scene.object_dialog.take() else {
+    let Some(Dialog::Export { item, fields }) = canvas.object_dialog.take() else {
         return;
     };
-    scene.close_object_dialog(window, cx);
+    canvas.close_object_dialog(window, cx);
 
     let typed: Vec<String> = fields
         .iter()
@@ -789,12 +789,12 @@ pub(crate) fn confirm_export(
             let toast = match export(this, &item, card, &path, cx) {
                 Ok(()) => rox_panel_api::toast::Toast::new(
                     rox_panel_api::panel::Tone::Good,
-                    rox_i18n::t!("scene-object-exported", name = label),
+                    rox_i18n::t!("canvas-object-exported", name = label),
                 ),
                 Err(e) => {
                     log::warn!("objects: exporting {item} to {}: {e}", path.display());
                     rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
-                        .title(rox_i18n::t!("scene-object-export-failed", name = label))
+                        .title(rox_i18n::t!("canvas-object-export-failed", name = label))
                 }
             };
             toast.show(window, cx);
@@ -807,17 +807,17 @@ pub(crate) fn confirm_export(
 /// Opens the place confirm for an installed object. A file that no longer
 /// reads, a newer one included, says why in a toast instead.
 pub(crate) fn offer(
-    scene: &mut ScenePanel,
+    canvas: &mut CanvasPanel,
     name: &str,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
     let bundle = path_in(&roxo::objects_dir(), name).and_then(|path| roxo::read_bundle(&path));
     match bundle {
         Ok(bundle) => {
             let focus = cx.focus_handle();
             focus.focus(window);
-            scene.object_dialog = Some(Dialog::Place {
+            canvas.object_dialog = Some(Dialog::Place {
                 card: PlaceCard::of(name, &bundle),
                 focus,
             });
@@ -826,27 +826,27 @@ pub(crate) fn offer(
         Err(e) => {
             log::warn!("objects: reading {name}: {e}");
             rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
-                .title(rox_i18n::t!("scene-object-place-failed", name = name))
+                .title(rox_i18n::t!("canvas-object-place-failed", name = name))
                 .show(window, cx);
         }
     }
 }
 
-/// Install a file from outside, then offer it to `scene`: a drop, or Add
+/// Install a file from outside, then offer it to `canvas`: a drop, or Add
 /// File in the Objects menu.
 pub(crate) fn offer_file(
-    scene: &mut ScenePanel,
+    canvas: &mut CanvasPanel,
     path: &Path,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
     match install(path) {
-        Ok(name) => offer(scene, &name, window, cx),
+        Ok(name) => offer(canvas, &name, window, cx),
         Err(e) => {
             log::warn!("objects: installing {}: {e}", path.display());
             rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
                 .title(rox_i18n::t!(
-                    "scene-object-add-failed",
+                    "canvas-object-add-failed",
                     file = display_name(path)
                 ))
                 .show(window, cx);
@@ -857,25 +857,25 @@ pub(crate) fn offer_file(
 /// The confirm's yes. `approve` is Approve and Place, the one click on this
 /// path that may write the approved list.
 pub(crate) fn confirm_place(
-    scene: &mut ScenePanel,
+    canvas: &mut CanvasPanel,
     approve: bool,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
-    let Some(Dialog::Place { card, .. }) = scene.object_dialog.take() else {
+    let Some(Dialog::Place { card, .. }) = canvas.object_dialog.take() else {
         return;
     };
-    scene.close_object_dialog(window, cx);
+    canvas.close_object_dialog(window, cx);
 
     if approve {
         card.approve_shaders();
     }
 
-    if let Err(e) = place(scene, &card.name, window, cx) {
+    if let Err(e) = place(canvas, &card.name, window, cx) {
         log::warn!("objects: placing {}: {e}", card.name);
         rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
             .title(rox_i18n::t!(
-                "scene-object-place-failed",
+                "canvas-object-place-failed",
                 name = card.title.as_str()
             ))
             .show(window, cx);
@@ -888,28 +888,28 @@ pub(crate) fn display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-// ── Which scene ──
+// ── Which canvas ──
 
-/// Called as a scene renders holding focus, itself or inside a grid.
-pub(crate) fn note_focused(scene: EntityId) {
-    LAST_FOCUSED.set(Some(scene));
+/// Called as a canvas renders holding focus, itself or inside a grid.
+pub(crate) fn note_focused(canvas: EntityId) {
+    LAST_FOCUSED.set(Some(canvas));
 }
 
-/// Every scene in the workspace's window, nested ones included: the one that
+/// Every canvas in the workspace's window, nested ones included: the one that
 /// last held focus, or else the first.
-pub(crate) fn scene_for(ws: &Workspace, cx: &App) -> Option<Entity<ScenePanel>> {
-    fn scenes(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Entity<ScenePanel>>) {
+pub(crate) fn canvas_for(ws: &Workspace, cx: &App) -> Option<Entity<CanvasPanel>> {
+    fn canvases(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Entity<CanvasPanel>>) {
         let view = node.view();
         if let Ok(stack) = view.clone().downcast::<StackPanel>() {
             for child in stack.read(cx).panels() {
-                scenes(child, cx, out);
+                canvases(child, cx, out);
             }
             return;
         }
         if let Ok(tabs) = view.downcast::<TabPanel>() {
             for panel in tabs.read(cx).panels() {
-                if let Ok(scene) = panel.view().downcast::<ScenePanel>() {
-                    out.push(scene);
+                if let Ok(canvas) = panel.view().downcast::<CanvasPanel>() {
+                    out.push(canvas);
                 }
             }
         }
@@ -917,13 +917,13 @@ pub(crate) fn scene_for(ws: &Workspace, cx: &App) -> Option<Entity<ScenePanel>> 
 
     let mut found = Vec::new();
     for dock in ws.docks(cx) {
-        scenes(&dock.read(cx).items().view(), cx, &mut found);
+        canvases(&dock.read(cx).items().view(), cx, &mut found);
     }
 
     let last = LAST_FOCUSED.get();
     found
         .iter()
-        .find(|scene| Some(scene.entity_id()) == last)
+        .find(|canvas| Some(canvas.entity_id()) == last)
         .or(found.first())
         .cloned()
 }
@@ -934,8 +934,8 @@ mod tests {
     use rox_core::settings::{AssetKind, ShaderAsset};
     use serde_json::json;
 
-    fn scene(items: serde_json::Value) -> SceneState {
-        serde_json::from_value(json!({ "items": items })).expect("a scene parses")
+    fn canvas(items: serde_json::Value) -> CanvasState {
+        serde_json::from_value(json!({ "items": items })).expect("a canvas parses")
     }
 
     fn image(id: &str, asset: &str) -> serde_json::Value {
@@ -982,16 +982,25 @@ mod tests {
     }
 
     /// A group of two images and a loose image beside it.
-    fn stage() -> SceneState {
-        scene(json!([
+    fn stage() -> CanvasState {
+        canvas(json!([
             group("pair", json!([image("left", "a"), image("right", "b")])),
             image("loose", "c"),
         ]))
     }
 
-    fn lifted(scene: &SceneState, routes: &[Route], signals: &[Signal], id: &str) -> Lifted {
+    fn lifted(canvas: &CanvasState, routes: &[Route], signals: &[Signal], id: &str) -> Lifted {
         let store = [asset("a", b"a"), asset("b", b"b"), asset("c", b"c")];
-        lift(scene, routes, id, &[], signals, &store, Path::new("/store")).unwrap()
+        lift(
+            canvas,
+            routes,
+            id,
+            &[],
+            signals,
+            &store,
+            Path::new("/store"),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1004,7 +1013,7 @@ mod tests {
         assert_eq!(out.bundle.name, "pair");
 
         // A pool shader the item picks brings its own images along.
-        let scene = scene(json!([{
+        let canvas = canvas(json!([{
             "id": "glow",
             "content": { "kind": "shader", "shader": { "name": "Glow", "path": "/home/me/g.wgsl" } },
         }]));
@@ -1016,7 +1025,7 @@ mod tests {
             data: String::new(),
         }];
         let store = [asset("c", b"c")];
-        let out = lift(&scene, &[], "glow", &[glow], &[], &store, Path::new("/s")).unwrap();
+        let out = lift(&canvas, &[], "glow", &[glow], &[], &store, Path::new("/s")).unwrap();
 
         assert_eq!(out.bundle.shaders.len(), 1);
         assert!(out.bundle.shaders[0].path.is_none());
@@ -1064,18 +1073,18 @@ mod tests {
 
         // A shader item's own slot route reads a total, which brings the
         // signal it follows.
-        let scene = scene(json!([{
+        let canvas = canvas(json!([{
             "id": "glow",
             "content": { "kind": "shader", "shader": { "routes": [{ "signal": 4, "target": "0" }] } },
         }]));
-        let out = lifted(&scene, &[], &signals, "glow");
+        let out = lifted(&canvas, &[], &signals, "glow");
         let ids: Vec<u64> = out.bundle.signals.iter().map(|s| s.id).collect();
         assert_eq!(ids, [4, 5]);
     }
 
     #[test]
     fn placing_twice_gives_distinct_ids() {
-        let object: SceneItem = serde_json::from_value(group(
+        let object: CanvasItem = serde_json::from_value(group(
             "pair",
             json!([image("left", "a"), image("right", "b")]),
         ))
@@ -1103,7 +1112,7 @@ mod tests {
 
     #[test]
     fn routes_follow_their_items_new_ids() {
-        let object: SceneItem = serde_json::from_value(group(
+        let object: CanvasItem = serde_json::from_value(group(
             "pair",
             json!([image("left", "a"), image("right", "b")]),
         ))
@@ -1140,7 +1149,7 @@ mod tests {
         assert!(!ids.contains_key("other"));
 
         // The item's image follows the store's id.
-        let object: SceneItem = serde_json::from_value(image("pic", "plate")).unwrap();
+        let object: CanvasItem = serde_json::from_value(image("pic", "plate")).unwrap();
         let (item, _) = rebase(object, &[], &stage(), &ids, &HashMap::new());
         assert_eq!(item.content.asset(), Some("frame"));
     }
@@ -1218,7 +1227,7 @@ mod tests {
     }
 
     /// The export without its save prompt, for driving a live run: lifts
-    /// `ROX_OBJECT_ITEM` out of the scene in the `workspace.json` at
+    /// `ROX_OBJECT_ITEM` out of the canvas in the `workspace.json` at
     /// `ROX_OBJECT_LOOK`, with files from the `assets/` beside it, and writes
     /// `ROX_OBJECT_OUT`.
     #[test]
@@ -1232,11 +1241,11 @@ mod tests {
         let text = std::fs::read_to_string(&look_path).unwrap();
         let look: settings::LookState = serde_json::from_str(&text).unwrap();
 
-        fn configs(value: &serde_json::Value, out: &mut Vec<crate::panels::scene::SceneConfig>) {
+        fn configs(value: &serde_json::Value, out: &mut Vec<crate::panels::canvas::CanvasConfig>) {
             match value {
                 serde_json::Value::Object(map) => {
                     if map.get("panel_name").and_then(|name| name.as_str())
-                        == Some(crate::panels::scene::PANEL_NAME)
+                        == Some(crate::panels::canvas::PANEL_NAME)
                         && let Some(config) = map.get("info").and_then(|info| info.get("panel"))
                         && let Ok(config) = serde_json::from_value(config.clone())
                     {
@@ -1252,12 +1261,12 @@ mod tests {
         configs(look.layout.as_ref().unwrap(), &mut found);
         let config = found
             .into_iter()
-            .find(|config| config.scene.find(&id).is_some())
-            .expect("a scene holds the item");
+            .find(|config| config.canvas.find(&id).is_some())
+            .expect("a canvas holds the item");
 
         let store_dir = look_path.parent().unwrap().join("assets");
         let lifted = lift(
-            &config.scene,
+            &config.canvas,
             &config.routes,
             &id,
             &look.bundle.shaders,

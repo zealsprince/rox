@@ -58,7 +58,7 @@ commands:
   workspace import <file>    store a .roxw in the workspace list and offer
                              it for applying in the front window
   plugin install <file>      list a .roxp on the Plugins page, switched off
-  object install <file>      store a .roxo in the objects a scene's Add
+  object install <file>      store a .roxo in the objects a canvas's Add
                              menu lists, placed nowhere
   raw <method> [json]        any method, params as one JSON argument
 

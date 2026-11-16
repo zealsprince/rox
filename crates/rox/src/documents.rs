@@ -5,7 +5,7 @@
 //!
 //! A workspace goes through the same import and apply confirm the menu
 //! shows, a plugin through the same install the Plugins page runs.
-//! Objects and links go to handlers the scene and the catalog set.
+//! Objects and links go to handlers the canvas and the catalog set.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -66,7 +66,7 @@ pub(crate) fn open_in(
 
             Document::Plugin(path) => install_plugin(path, window.window_handle(), cx),
 
-            // Deferred: a handler reaches into the scene, which may sit in
+            // Deferred: a handler reaches into the canvas, which may sit in
             // this workspace, and this runs inside its update.
             Document::Object(path) => match OBJECT_HANDLER.get().copied() {
                 Some(handler) => cx.defer(move |cx| handler(path, cx)),
@@ -94,7 +94,7 @@ pub(crate) fn set_link_handler(handler: fn(&str, &mut App)) {
 }
 
 /// The object handler: installed, then offered through the place confirm
-/// in the scene that last had focus in the front workspace. With no scene
+/// in the canvas that last had focus in the front workspace. With no canvas
 /// in the layout it stays installed, and a toast says it needs one.
 pub(crate) fn open_object(path: PathBuf, cx: &mut App) {
     crate::workspace::with_front_workspace(cx, move |ws, window, cx| {
@@ -104,7 +104,7 @@ pub(crate) fn open_object(path: PathBuf, cx: &mut App) {
                 log::warn!("documents: installing {}: {e}", path.display());
                 Toast::new(panel::Tone::Bad, e)
                     .title(rox_i18n::t!(
-                        "scene-object-add-failed",
+                        "canvas-object-add-failed",
                         file = file_name(&path)
                     ))
                     .show(window, cx);
@@ -112,13 +112,13 @@ pub(crate) fn open_object(path: PathBuf, cx: &mut App) {
             }
         };
 
-        match crate::objects::scene_for(ws, cx) {
-            Some(scene) => scene.update(cx, |scene, cx| {
-                crate::objects::offer(scene, &name, window, cx)
+        match crate::objects::canvas_for(ws, cx) {
+            Some(canvas) => canvas.update(cx, |canvas, cx| {
+                crate::objects::offer(canvas, &name, window, cx)
             }),
             None => Toast::new(
                 panel::Tone::Info,
-                rox_i18n::t!("scene-object-needs-scene", name = name.as_str()),
+                rox_i18n::t!("canvas-object-needs-canvas", name = name.as_str()),
             )
             .show(window, cx),
         }

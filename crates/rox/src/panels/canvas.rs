@@ -1,20 +1,20 @@
-//! The scene panel (ADR 33): a composite that places items in 3D space. Live
-//! UI goes in as grid items, each a dock tree of its own, so a scene holds
+//! The canvas panel (ADR 33): a composite that places items in 3D space. Live
+//! UI goes in as grid items, each a dock tree of its own, so a canvas holds
 //! real tab groups that drag, zoom and pop out like any other. Images,
 //! textures and plain shaders take real perspective; grids, and shaders
 //! that can only run as a screen pass, stay flat to the screen and take
 //! their place and depth order from the projection.
 //!
-//! A scene is only ever a panel. The window's root stays the dock, and a
-//! full-window scene is a dock holding one scene panel. Its saved state is
+//! A canvas is only ever a panel. The window's root stays the dock, and a
+//! full-window canvas is a dock holding one canvas panel. Its saved state is
 //! its config, nested dock dumps included, and `PanelState.children` stays
 //! empty.
 //!
-//! In design mode the panel is also the scene's editor: it picks, moves,
+//! In design mode the panel is also the canvas's editor: it picks, moves,
 //! resizes and turns items with handles drawn on the projection, keeps the
-//! undo history, and hosts the inspector ([`crate::scene::overlay`]). The
-//! arithmetic behind every gesture is in [`crate::scene::edit`]. Off design
-//! mode none of that shows and a scene is plain content, where a click on an
+//! undo history, and hosts the inspector ([`crate::canvas::overlay`]). The
+//! arithmetic behind every gesture is in [`crate::canvas::edit`]. Off design
+//! mode none of that shows and a canvas is plain content, where a click on an
 //! item that names a command runs it through [`keymap::dispatch`].
 
 use std::cell::Cell;
@@ -33,31 +33,31 @@ use gpui::{
 };
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use rox_canvas::{
+    Anchor, Camera, CanvasItem, CanvasState, Content, Frame, ImageFit, Length, Live, Place,
+    Viewport, child_frame, inside, paint_order, project,
+};
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_dock::{
     DockArea, DockAreaState, Panel, PanelEvent, PanelInfo, PanelState, PanelView, TabPanel,
 };
-use rox_scene::{
-    Anchor, Camera, Content, Frame, ImageFit, Length, Live, Place, SceneItem, SceneState, Viewport,
-    child_frame, inside, paint_order, project,
-};
 use rox_viz::signal::{Route, SignalHub};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::canvas::edit::{self, Edges, History};
+use crate::canvas::grid::{self, Grid};
+use crate::canvas::image::{self, Images};
+use crate::canvas::overlay::Inspector;
+use crate::canvas::routes::{self, Snapshot};
+use crate::canvas::shader::{self as shader_item, Shaders};
+use crate::canvas::text::{self, Values};
+use crate::canvas::texture::{self, TextureView};
+use crate::canvas::{self, Body, Placing};
 use crate::composite;
 use crate::keymap;
 use crate::objects;
-use crate::scene::edit::{self, Edges, History};
-use crate::scene::grid::{self, Grid};
-use crate::scene::image::{self, Images};
-use crate::scene::overlay::Inspector;
-use crate::scene::routes::{self, Snapshot};
-use crate::scene::shader::{self as shader_item, Shaders};
-use crate::scene::text::{self, Values};
-use crate::scene::texture::{self, TextureView};
-use crate::scene::{self, Body, Placing};
 use crate::workspace::{LAYOUT_VERSION, Workspace};
 use rox_core::settings;
 use rox_design::assets::icons;
@@ -70,10 +70,10 @@ use rox_panel_api::windows::WorkspaceWindows;
 use rox_services::catalog::LibraryEvent;
 
 /// The registry name.
-pub const PANEL_NAME: &str = "scene";
+pub const PANEL_NAME: &str = "canvas";
 
 actions!(
-    scene,
+    canvas,
     [
         Undo,
         Redo,
@@ -92,13 +92,13 @@ actions!(
     ]
 );
 
-/// The key context a scene sets while its own focus holds in design mode.
-/// Panels inside its grids hold their own focus, so the scene's keys never
+/// The key context a canvas sets while its own focus holds in design mode.
+/// Panels inside its grids hold their own focus, so the canvas's keys never
 /// reach past them.
-pub const KEY_CONTEXT: &str = "Scene";
+pub const KEY_CONTEXT: &str = "Canvas";
 
 /// Added beside [`KEY_CONTEXT`] while an item is selected.
-pub const SELECTED_CONTEXT: &str = "SceneSelected";
+pub const SELECTED_CONTEXT: &str = "CanvasSelected";
 
 /// The title strip a flat item wears in design mode, its drag handle.
 const STRIP_H: f32 = 18.;
@@ -115,14 +115,14 @@ const SAME_SPOT: f32 = 4.;
 /// The smallest a non-grid item resizes to, in pixels.
 const MIN_BOX: f32 = 16.;
 
-/// How near the scene's side the pointer comes before the inspector's tab
+/// How near the canvas's side the pointer comes before the inspector's tab
 /// shows, and how tall the band it shows in, both in pixels.
 const EDGE_REACH: f32 = 28.;
 const EDGE_BAND: f32 = 120.;
 
 thread_local! {
-    /// The scene whose selection and inspector show. Only one does at a
-    /// time, so a scene nested in another doesn't stack a second inspector
+    /// The canvas whose selection and inspector show. Only one does at a
+    /// time, so a canvas nested in another doesn't stack a second inspector
     /// over the first.
     static ACTIVE: Cell<Option<EntityId>> = const { Cell::new(None) };
 }
@@ -164,7 +164,7 @@ impl Shape {
 
     /// Left, top, right, bottom.
     fn edges(&self) -> [f32; 4] {
-        let (origin, extent) = scene::bbox(&self.corners);
+        let (origin, extent) = canvas::bbox(&self.corners);
         [
             origin[0],
             origin[1],
@@ -188,13 +188,13 @@ impl Shape {
     }
 }
 
-/// A drag in progress. It edits the scene live and lands in the history as
+/// A drag in progress. It edits the canvas live and lands in the history as
 /// one step on release.
 struct Gesture {
     id: String,
-    before: SceneState,
+    before: CanvasState,
     /// The item as it stood when the press landed.
-    item: SceneItem,
+    item: CanvasItem,
     parent: Frame,
     camera: Camera,
     viewport: Viewport,
@@ -234,18 +234,18 @@ pub(crate) enum NewItem {
 /// chrome already holds both. Nothing else in here may use them.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SceneConfig {
+pub struct CanvasConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(flatten)]
-    pub scene: SceneState,
+    pub canvas: CanvasState,
     /// Targets are `<item id>.<property>`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
 }
 
-/// The dock state a scene saves as: its config, with no children.
-pub(crate) fn state_of(config: &SceneConfig) -> PanelState {
+/// The dock state a canvas saves as: its config, with no children.
+pub(crate) fn state_of(config: &CanvasConfig) -> PanelState {
     PanelState {
         panel_name: PANEL_NAME.to_string(),
         children: Vec::new(),
@@ -253,11 +253,11 @@ pub(crate) fn state_of(config: &SceneConfig) -> PanelState {
     }
 }
 
-/// A layout as a scene: one grid holding `dump` across the whole stage, the
+/// A layout as a canvas: one grid holding `dump` across the whole stage, the
 /// one panel in the one tab group of a fresh root. `dump` goes in untouched,
 /// so the window looks the same once it's applied.
 pub(crate) fn wrap_layout(dump: Value, version: usize) -> DockAreaState {
-    let grid = SceneItem {
+    let grid = CanvasItem {
         id: "grid".to_string(),
         place: Place {
             anchor: Anchor::Center,
@@ -265,14 +265,14 @@ pub(crate) fn wrap_layout(dump: Value, version: usize) -> DockAreaState {
             ..Place::default()
         },
         content: Content::Grid { dock: dump },
-        ..SceneItem::default()
+        ..CanvasItem::default()
     };
-    let config = SceneConfig {
-        scene: SceneState {
+    let config = CanvasConfig {
+        canvas: CanvasState {
             items: vec![grid],
-            ..SceneState::default()
+            ..CanvasState::default()
         },
-        ..SceneConfig::default()
+        ..CanvasConfig::default()
     };
 
     let tabs = PanelState {
@@ -293,15 +293,15 @@ pub(crate) fn wrap_layout(dump: Value, version: usize) -> DockAreaState {
     }
 }
 
-pub struct ScenePanel {
+pub struct CanvasPanel {
     state: AppState,
     workspace: WeakEntity<Workspace>,
-    pub(crate) config: SceneConfig,
-    /// At the same indices as `config.scene.items`.
+    pub(crate) config: CanvasConfig,
+    /// At the same indices as `config.canvas.items`.
     bodies: Vec<Body<Grid>>,
     /// Grids built ahead of the edit that names them.
     spare: HashMap<String, Grid>,
-    /// Scenes and groups this scene sits inside.
+    /// Canvases and groups this canvas sits inside.
     level: usize,
     images: Images,
     pub(crate) shaders: Shaders,
@@ -349,16 +349,16 @@ pub struct ScenePanel {
     _library: Subscription,
 }
 
-impl ScenePanel {
+impl CanvasPanel {
     pub fn restore(
         state: AppState,
         workspace: WeakEntity<Workspace>,
-        config: SceneConfig,
+        config: CanvasConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // The player notifies on every pump tick while audio moves. Only a
-        // scene with routes has anything to redraw for it.
+        // canvas with routes has anything to redraw for it.
         let player = cx.observe(&state.player, |this: &mut Self, _, cx| {
             if routes::running(&this.config.routes) {
                 cx.notify();
@@ -366,7 +366,7 @@ impl ScenePanel {
         });
 
         // `observe_view`'s compare, inlined so the change also drops the held
-        // text values. A scene with no text doesn't redraw for it.
+        // text values. A canvas with no text doesn't redraw for it.
         let mut last = state.player.read(cx).view();
         let player_view = cx.observe(&state.player, move |this: &mut Self, player, cx| {
             let now = player.read(cx).view();
@@ -376,7 +376,7 @@ impl ScenePanel {
 
             last = now;
             this.text_values = None;
-            if text::holds_text(&this.config.scene) {
+            if text::holds_text(&this.config.canvas) {
                 cx.notify();
             }
         });
@@ -386,7 +386,7 @@ impl ScenePanel {
             |this: &mut Self, _, event: &LibraryEvent, cx| {
                 if matches!(event, LibraryEvent::Updated) {
                     this.text_values = None;
-                    if text::holds_text(&this.config.scene) {
+                    if text::holds_text(&this.config.canvas) {
                         cx.notify();
                     }
                 }
@@ -394,13 +394,13 @@ impl ScenePanel {
         );
 
         let seen_routes = config.routes.clone();
-        let mut this = ScenePanel {
+        let mut this = CanvasPanel {
             state,
             workspace,
             config,
             bodies: Vec::new(),
             spare: HashMap::new(),
-            level: scene::level_here(),
+            level: canvas::level_here(),
             images: Images::default(),
             shaders: Shaders::default(),
             textures: HashMap::new(),
@@ -436,7 +436,7 @@ impl ScenePanel {
     /// Every grid item's dock, groups included, in item order.
     pub fn grids(&self) -> Vec<Entity<DockArea>> {
         let mut out = Vec::new();
-        scene::each_grid(&self.config.scene.items, &self.bodies, &mut |_, grid| {
+        canvas::each_grid(&self.config.canvas.items, &self.bodies, &mut |_, grid| {
             out.push(grid.area.clone())
         });
         out
@@ -446,7 +446,7 @@ impl ScenePanel {
     /// same order: the item's name, or its id when it has none.
     pub(crate) fn grid_names(&self) -> Vec<String> {
         let mut out = Vec::new();
-        scene::each_grid(&self.config.scene.items, &self.bodies, &mut |item, _| {
+        canvas::each_grid(&self.config.canvas.items, &self.bodies, &mut |item, _| {
             out.push(if item.name.is_empty() {
                 item.id.clone()
             } else {
@@ -463,24 +463,24 @@ impl ScenePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = self.config.scene.fresh_id("grid");
+        let id = self.config.canvas.fresh_id("grid");
         let grid = grid::holding(&id, panel, &self.state, window, cx);
         let dock = grid::dump(&grid, cx).unwrap_or(Value::Null);
         self.spare.insert(id.clone(), grid);
 
-        let item = SceneItem {
+        let item = CanvasItem {
             id,
             content: Content::Grid { dock },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
-        self.change(move |scene| scene.items.push(item), window, cx);
+        self.change(move |canvas| canvas.items.push(item), window, cx);
     }
 
     /// The one path every edit takes: applies it, records undo, asks the
     /// workspace to save. Live grids are kept across it by item id.
     pub(crate) fn change(
         &mut self,
-        edit: impl FnOnce(&mut SceneState),
+        edit: impl FnOnce(&mut CanvasState),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -493,18 +493,18 @@ impl ScenePanel {
     pub(crate) fn change_keyed(
         &mut self,
         key: Option<&str>,
-        edit: impl FnOnce(&mut SceneState),
+        edit: impl FnOnce(&mut CanvasState),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.change_with_routes(key, |scene, _| edit(scene), window, cx);
+        self.change_with_routes(key, |canvas, _| edit(canvas), window, cx);
     }
 
     /// [`change_keyed`](Self::change_keyed) for an edit that adds routes
     /// with its items, so one undo step takes both back out.
     pub(crate) fn change_routed(
         &mut self,
-        edit: impl FnOnce(&mut SceneState, &mut Vec<Route>),
+        edit: impl FnOnce(&mut CanvasState, &mut Vec<Route>),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -514,7 +514,7 @@ impl ScenePanel {
     fn change_with_routes(
         &mut self,
         key: Option<&str>,
-        edit: impl FnOnce(&mut SceneState, &mut Vec<Route>),
+        edit: impl FnOnce(&mut CanvasState, &mut Vec<Route>),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -523,9 +523,9 @@ impl ScenePanel {
         let before = self.snapshot();
 
         let mut routes = std::mem::take(&mut self.config.routes);
-        self.rebuild_with(|scene| edit(scene, &mut routes), window, cx);
+        self.rebuild_with(|canvas| edit(canvas, &mut routes), window, cx);
         self.config.routes = routes;
-        routes::prune(&mut self.config.routes, &self.config.scene);
+        routes::prune(&mut self.config.routes, &self.config.canvas);
         self.seen_routes = self.config.routes.clone();
 
         self.history
@@ -534,7 +534,7 @@ impl ScenePanel {
 
     fn snapshot(&self) -> Snapshot {
         Snapshot {
-            scene: self.config.scene.clone(),
+            canvas: self.config.canvas.clone(),
             routes: self.config.routes.clone(),
         }
     }
@@ -543,7 +543,7 @@ impl ScenePanel {
     fn restore_snapshot(&mut self, to: Snapshot, window: &mut Window, cx: &mut Context<Self>) {
         self.config.routes = to.routes;
         self.seen_routes = self.config.routes.clone();
-        self.rebuild_with(move |scene| *scene = to.scene, window, cx);
+        self.rebuild_with(move |canvas| *canvas = to.canvas, window, cx);
     }
 
     /// A route bound, tuned or dropped from the inspector since the last
@@ -556,11 +556,11 @@ impl ScenePanel {
 
         self.config = self.saved(cx);
         let before = Snapshot {
-            scene: self.config.scene.clone(),
+            canvas: self.config.canvas.clone(),
             routes: std::mem::take(&mut self.seen_routes),
         };
 
-        routes::sway_new(&before.routes, &self.config.routes, &mut self.config.scene);
+        routes::sway_new(&before.routes, &self.config.routes, &mut self.config.canvas);
         self.seen_routes = self.config.routes.clone();
         self.inspector.reweigh();
         self.history
@@ -574,7 +574,7 @@ impl ScenePanel {
     pub(crate) fn change_later(
         &mut self,
         key: &'static str,
-        edit: impl FnOnce(&mut SceneState) + 'static,
+        edit: impl FnOnce(&mut CanvasState) + 'static,
         cx: &mut Context<Self>,
     ) {
         let Some(handle) = self.window else {
@@ -598,23 +598,23 @@ impl ScenePanel {
     /// Applies an edit and rebuilds, without touching the history.
     fn rebuild_with(
         &mut self,
-        edit: impl FnOnce(&mut SceneState),
+        edit: impl FnOnce(&mut CanvasState),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut keep = std::mem::take(&mut self.spare);
-        scene::take_grids(
-            &self.config.scene.items,
+        canvas::take_grids(
+            &self.config.canvas.items,
             std::mem::take(&mut self.bodies),
             &mut keep,
         );
 
-        edit(&mut self.config.scene);
+        edit(&mut self.config.canvas);
         self.build(keep, window, cx);
         self.inspector.reweigh();
 
         if let Some(id) = &self.selected
-            && self.config.scene.find(id).is_none()
+            && self.config.canvas.find(id).is_none()
         {
             self.selected = None;
         }
@@ -654,7 +654,7 @@ impl ScenePanel {
     }
 
     /// Ask the workspace for its debounced layout save. Only from the
-    /// workspace's own window: a popped-out scene isn't in its layout, and
+    /// workspace's own window: a popped-out canvas isn't in its layout, and
     /// the save would record the pop-out's frame as the window's.
     pub(crate) fn save_soon(&self, window: &mut Window, cx: &mut App) {
         let Some(workspace) = self.workspace.upgrade() else {
@@ -682,8 +682,8 @@ impl ScenePanel {
         cx: &mut Context<Self>,
     ) {
         let state = self.state.clone();
-        self.bodies = scene::build_bodies(
-            &self.config.scene.items,
+        self.bodies = canvas::build_bodies(
+            &self.config.canvas.items,
             self.level,
             &mut |item, dock, level| match keep.remove(&item.id) {
                 Some(grid) => Some(grid),
@@ -693,10 +693,10 @@ impl ScenePanel {
 
         // Views for items that are gone go with them. A texture is freed
         // here, where the window is in hand.
-        let scene = &self.config.scene;
-        self.shaders.keep(scene);
+        let canvas = &self.config.canvas;
+        self.shaders.keep(canvas);
         self.textures.retain(|id, view| {
-            let kept = scene
+            let kept = canvas
                 .find(id)
                 .is_some_and(|item| texture::is_test(&item.content));
             if !kept {
@@ -708,14 +708,14 @@ impl ScenePanel {
 
     /// Whether the item sits square to the screen this frame. A shader item
     /// answers from its last paint, so editing its source can flip it.
-    pub(crate) fn is_flat(&self, item: &SceneItem, cx: &App) -> bool {
+    pub(crate) fn is_flat(&self, item: &CanvasItem, cx: &App) -> bool {
         shader_item::sits_flat(&item.content, self.shaders.painted_flat(&item.id, cx))
     }
 
     /// The config with every live grid's dump folded in.
-    pub(crate) fn saved(&self, cx: &App) -> SceneConfig {
+    pub(crate) fn saved(&self, cx: &App) -> CanvasConfig {
         let mut config = self.config.clone();
-        scene::fold_dumps(&mut config.scene.items, &self.bodies, &|grid: &Grid| {
+        canvas::fold_dumps(&mut config.canvas.items, &self.bodies, &|grid: &Grid| {
             grid::dump(grid, cx)
         });
         config
@@ -723,7 +723,7 @@ impl ScenePanel {
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let bounds = self.bounds.get();
-        let camera = self.config.scene.camera;
+        let camera = self.config.canvas.camera;
         let parallax = camera.parallax > 0.;
         let design = self.design;
 
@@ -739,25 +739,25 @@ impl ScenePanel {
             }),
             design,
         };
-        let stage = Frame::stage(&self.config.scene.stage, at.viewport);
+        let stage = Frame::stage(&self.config.canvas.stage, at.viewport);
 
-        // Reading the hub advances it. A scene with no routes doesn't, and
+        // Reading the hub advances it. A canvas with no routes doesn't, and
         // asks for no frames.
         let hub = self.state.signals.clone();
         let routed = routes::running(&self.config.routes);
         let lives = if routed {
-            routes::lives(&self.config.scene, &self.config.routes, &hub)
+            routes::lives(&self.config.canvas, &self.config.routes, &hub)
         } else {
             HashMap::new()
         };
         // Every frame a routed grid moves, its dock lays out again at the new
         // place. That's allowed, and it's the cost to count when weighing a
-        // scene.
+        // canvas.
         if routed && (hub.live() || hub.settling()) {
             window.request_animation_frame();
         }
 
-        let values = if text::holds_text(&self.config.scene) {
+        let values = if text::holds_text(&self.config.canvas) {
             self.text_values
                 .get_or_insert_with(|| Rc::new(text::now_playing(&self.state, cx)))
                 .clone()
@@ -779,7 +779,7 @@ impl ScenePanel {
         };
         if at.viewport.width > 0. && at.viewport.height > 0. {
             place(
-                &self.config.scene.items,
+                &self.config.canvas.items,
                 &self.bodies,
                 &stage,
                 &[],
@@ -849,11 +849,11 @@ impl ScenePanel {
             shader_item::absorb_hot(self, cx);
         }
         let chrome = design.then(|| self.chrome_layer(active, cx));
-        let clicks = (!design && has_commands(&self.config.scene)).then(|| self.click_layer(cx));
-        let inspector = active.then(|| crate::scene::overlay::render(self, window, cx));
+        let clicks = (!design && has_commands(&self.config.canvas)).then(|| self.click_layer(cx));
+        let inspector = active.then(|| crate::canvas::overlay::render(self, window, cx));
         let tab = (design && !active && self.near_edge.get()).then(|| self.edge_tab(cx));
         let menu = self.menu_overlay(window);
-        let dialog = crate::scene::overlay::object_dialog(self, window, cx);
+        let dialog = crate::canvas::overlay::object_dialog(self, window, cx);
 
         let scoped = design && self.focus.is_focused(window);
         let mut context = gpui::KeyContext::default();
@@ -909,7 +909,7 @@ impl ScenePanel {
             )
             .on_action(cx.listener(|this, _: &StepOut, window, cx| this.step_out(window, cx)))
             // A `.roxo` dropped on the stage goes in here. Anything else is
-            // left alone, as it was before the scene took drops.
+            // left alone, as it was before the canvas took drops.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 for path in paths.paths().iter().filter(|path| is_object_file(path)) {
                     objects::offer_file(this, path, window, cx);
@@ -933,8 +933,8 @@ impl ScenePanel {
         }
     }
 
-    /// How many group levels this scene has left before the cap, counting
-    /// the scenes it sits inside.
+    /// How many group levels this canvas has left before the cap, counting
+    /// the canvases it sits inside.
     pub(crate) fn levels_left(&self) -> usize {
         edit::levels_left(self.level)
     }
@@ -966,12 +966,12 @@ struct Layer {
 /// Siblings back to front. A group takes one slot at its own depth and lays
 /// its children out inside it.
 fn place(
-    items: &[SceneItem],
+    items: &[CanvasItem],
     bodies: &[Body<Grid>],
     parent: &Frame,
     groups: &[String],
     draw: &mut Draw,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
     let at = draw.at;
     let mut layers: Vec<Layer> = Vec::new();
@@ -1083,7 +1083,7 @@ fn place(
                 let Some(projected) = projected() else {
                     continue;
                 };
-                let element = scene::on_stage(&projected.corners, at.viewport)
+                let element = canvas::on_stage(&projected.corners, at.viewport)
                     .then(|| shader_item::element(item, projected, at.design, draw.shaders, cx))
                     .flatten();
                 layers.push(Layer {
@@ -1114,7 +1114,7 @@ fn place(
                     opacity: projected.opacity,
                     align: *align,
                 };
-                let element = scene::on_stage(&projected.corners, at.viewport)
+                let element = canvas::on_stage(&projected.corners, at.viewport)
                     .then(|| text::element(paint, &projected.corners));
 
                 layers.push(Layer {
@@ -1135,7 +1135,7 @@ fn place(
                         cx.new(|cx| TextureView::new(texture::gradient(256, 256), cx))
                     })
                     .clone();
-                let seen = scene::on_stage(&projected.corners, at.viewport);
+                let seen = canvas::on_stage(&projected.corners, at.viewport);
                 view.update(cx, |view, _| view.place(seen.then_some(projected)));
 
                 layers.push(Layer {
@@ -1185,11 +1185,16 @@ fn around(shapes: &[Shape]) -> Option<[[f32; 2]; 4]> {
 }
 
 /// A grid is flat, so its corners are a screen-aligned box.
-fn grid_element(item: &SceneItem, grid: &Grid, corners: [[f32; 2]; 4], opacity: f32) -> AnyElement {
-    let (origin, extent) = scene::bbox(&corners);
+fn grid_element(
+    item: &CanvasItem,
+    grid: &Grid,
+    corners: [[f32; 2]; 4],
+    opacity: f32,
+) -> AnyElement {
+    let (origin, extent) = canvas::bbox(&corners);
 
     div()
-        .id(SharedString::from(format!("scene-grid-{}", item.id)))
+        .id(SharedString::from(format!("canvas-grid-{}", item.id)))
         .absolute()
         .left(px(origin[0]))
         .top(px(origin[1]))
@@ -1202,9 +1207,9 @@ fn grid_element(item: &SceneItem, grid: &Grid, corners: [[f32; 2]; 4], opacity: 
 
 // ── Editing ──
 
-impl ScenePanel {
-    /// Selects `id` and makes this the scene whose chrome and inspector
-    /// show. Focus comes here too, so the scene's keys apply.
+impl CanvasPanel {
+    /// Selects `id` and makes this the canvas whose chrome and inspector
+    /// show. Focus comes here too, so the canvas's keys apply.
     pub(crate) fn select(
         &mut self,
         id: Option<String>,
@@ -1216,7 +1221,7 @@ impl ScenePanel {
         cx.notify();
     }
 
-    /// Closes the object dialog and hands the keys back to the scene. Next
+    /// Closes the object dialog and hands the keys back to the canvas. Next
     /// turn, because the button pressed to close it takes focus on the same
     /// press, after this runs, and undo would go nowhere until a click.
     pub(crate) fn close_object_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1366,7 +1371,7 @@ impl ScenePanel {
         let height = self.viewport().height;
 
         div()
-            .id("scene-edge-tab")
+            .id("canvas-edge-tab")
             .absolute()
             .top(px((height - 48.) / 2.))
             .when(left, |d| d.left_0().rounded_r(px(6.)).border_r_1())
@@ -1402,13 +1407,13 @@ impl ScenePanel {
         let [left, top, right, _] = shape.edges();
 
         // Outside the top edge when there's room, so it covers none of the
-        // panel; inside it for an item flush with the top of the scene.
+        // panel; inside it for an item flush with the top of the canvas.
         let y = if top >= STRIP_H { top - STRIP_H } else { top };
         let accent = palette::accent();
         let chain = shape.chain();
 
         div()
-            .id(SharedString::from(format!("scene-strip-{}", shape.id)))
+            .id(SharedString::from(format!("canvas-strip-{}", shape.id)))
             .absolute()
             .left(px(left))
             .top(px(y))
@@ -1475,7 +1480,7 @@ impl ScenePanel {
                 let id = shape.id.clone();
 
                 div()
-                    .id(("scene-resize", ix))
+                    .id(("canvas-resize", ix))
                     .absolute()
                     .left(px(x - HANDLE / 2.))
                     .top(px(y - HANDLE / 2.))
@@ -1603,10 +1608,10 @@ impl ScenePanel {
         self.config = self.saved(cx);
 
         let viewport = self.viewport();
-        let scene = &self.config.scene;
+        let canvas = &self.config.canvas;
         let (Some(item), Some(parent), Some(shape)) = (
-            scene.find(id).cloned(),
-            edit::parent_frame(scene, id, viewport),
+            canvas.find(id).cloned(),
+            edit::parent_frame(canvas, id, viewport),
             self.shape(id).cloned(),
         ) else {
             return;
@@ -1639,10 +1644,10 @@ impl ScenePanel {
         let flat = self.is_flat(&item, cx);
         self.gesture = Some(Gesture {
             id: id.to_string(),
-            before: self.config.scene.clone(),
+            before: self.config.canvas.clone(),
             item,
             parent,
-            camera: self.config.scene.camera,
+            camera: self.config.canvas.camera,
             viewport,
             from: local,
             start_box: shape.edges(),
@@ -1657,15 +1662,15 @@ impl ScenePanel {
         let mut xs = Vec::new();
         let mut ys = Vec::new();
 
-        let parent_box = SceneItem {
+        let parent_box = CanvasItem {
             place: Place {
                 anchor: Anchor::TopLeft,
                 size: [Length::Units(parent.size[0]), Length::Units(parent.size[1])],
                 ..Place::default()
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
-        let camera = self.config.scene.camera;
+        let camera = self.config.canvas.camera;
         if let Some(projected) = project(
             &parent_box,
             parent,
@@ -1675,7 +1680,7 @@ impl ScenePanel {
             false,
             &Live::default(),
         ) {
-            let (origin, extent) = scene::bbox(&projected.corners);
+            let (origin, extent) = canvas::bbox(&projected.corners);
             xs.extend([origin[0], origin[0] + extent[0] / 2., origin[0] + extent[0]]);
             ys.extend([origin[1], origin[1] + extent[1] / 2., origin[1] + extent[1]]);
         }
@@ -1696,12 +1701,16 @@ impl ScenePanel {
     /// The smallest box a resize leaves, in pixels: a grid's dock floor.
     fn floor(&self, id: &str, cx: &App) -> [f32; 2] {
         let mut floor = [MIN_BOX, MIN_BOX];
-        scene::each_grid(&self.config.scene.items, &self.bodies, &mut |item, grid| {
-            if item.id == id {
-                let min = grid.area.read(cx).items().view().min_size(cx);
-                floor = [f32::from(min.width), f32::from(min.height)];
-            }
-        });
+        canvas::each_grid(
+            &self.config.canvas.items,
+            &self.bodies,
+            &mut |item, grid| {
+                if item.id == id {
+                    let min = grid.area.read(cx).items().view().min_size(cx);
+                    floor = [f32::from(min.width), f32::from(min.height)];
+                }
+            },
+        );
         floor
     }
 
@@ -1768,7 +1777,7 @@ impl ScenePanel {
         }
 
         let id = g.id.clone();
-        if let Some(item) = self.config.scene.find_mut(&id) {
+        if let Some(item) = self.config.canvas.find_mut(&id) {
             item.place = place;
         }
         cx.notify();
@@ -1781,11 +1790,11 @@ impl ScenePanel {
 
         let routes = self.config.routes.clone();
         let before = Snapshot {
-            scene: gesture.before,
+            canvas: gesture.before,
             routes: routes.clone(),
         };
         let after = Snapshot {
-            scene: self.saved(cx).scene,
+            canvas: self.saved(cx).canvas,
             routes,
         };
         self.history.record(before, after, None, Instant::now());
@@ -1845,7 +1854,7 @@ impl ScenePanel {
                 }
 
                 menu.separator().item(
-                    PopupMenuItem::new(rox_i18n::t!("scene-add-file"))
+                    PopupMenuItem::new(rox_i18n::t!("canvas-add-file"))
                         .icon(Icon::default().path(icons::FOLDER))
                         .on_click(move |_, window, cx| {
                             me.update(cx, |this, cx| this.add_file(at, window, cx)).ok();
@@ -1854,36 +1863,36 @@ impl ScenePanel {
             })
         };
 
-        let object_menu = crate::scene::overlay::objects_menu(window, cx);
+        let object_menu = crate::canvas::overlay::objects_menu(window, cx);
 
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
             menu.item(
-                PopupMenuItem::new(rox_i18n::t!("scene-add-grid"))
+                PopupMenuItem::new(rox_i18n::t!("canvas-add-grid"))
                     .icon(Icon::default().path(icons::LAYOUT_GRID))
                     .on_click(pick(NewItem::Grid)),
             )
             .item(
-                PopupMenuItem::new(rox_i18n::t!("scene-add-group"))
+                PopupMenuItem::new(rox_i18n::t!("canvas-add-group"))
                     .icon(Icon::default().path(icons::LAYERS))
                     .on_click(pick(NewItem::Group)),
             )
             .item(
-                PopupMenuItem::submenu(rox_i18n::t!("scene-add-image"), image_menu)
+                PopupMenuItem::submenu(rox_i18n::t!("canvas-add-image"), image_menu)
                     .icon(Icon::default().path(icons::IMAGE)),
             )
             .item(
-                PopupMenuItem::new(rox_i18n::t!("scene-add-shader"))
+                PopupMenuItem::new(rox_i18n::t!("canvas-add-shader"))
                     .icon(Icon::default().path(icons::BLEND))
                     .on_click(pick(NewItem::Shader)),
             )
             .item(
-                PopupMenuItem::new(rox_i18n::t!("scene-add-text"))
+                PopupMenuItem::new(rox_i18n::t!("canvas-add-text"))
                     .icon(Icon::default().path(icons::A_LARGE_SMALL))
                     .on_click(pick(NewItem::Text)),
             )
             .separator()
             .item(
-                PopupMenuItem::submenu(rox_i18n::t!("scene-add-objects"), object_menu)
+                PopupMenuItem::submenu(rox_i18n::t!("canvas-add-objects"), object_menu)
                     .icon(Icon::default().path(icons::BOOKMARK)),
             )
         });
@@ -1948,17 +1957,17 @@ impl ScenePanel {
                     font: None,
                     size: 32.,
                     color: "text".to_string(),
-                    align: rox_scene::Align::Center,
+                    align: rox_canvas::Align::Center,
                 },
                 Some([480., 64.]),
             ),
         };
 
-        let id = self.config.scene.fresh_id(stem);
-        let mut item = SceneItem {
+        let id = self.config.canvas.fresh_id(stem);
+        let mut item = CanvasItem {
             id: id.clone(),
             content,
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
         if let Some([w, h]) = size {
             item.place.size = [Length::Units(w), Length::Units(h)];
@@ -1967,8 +1976,8 @@ impl ScenePanel {
         // Carried from the stage center to the press.
         let viewport = self.viewport();
         if let Some(at) = at {
-            let stage = Frame::stage(&self.config.scene.stage, viewport);
-            let camera = self.config.scene.camera;
+            let stage = Frame::stage(&self.config.canvas.stage, viewport);
+            let camera = self.config.canvas.camera;
             let flat = edit::is_flat(&item.content);
             if let Some(projected) = project(
                 &item,
@@ -1979,7 +1988,7 @@ impl ScenePanel {
                 flat,
                 &Live::default(),
             ) {
-                let (origin, extent) = scene::bbox(&projected.corners);
+                let (origin, extent) = canvas::bbox(&projected.corners);
                 let shift = [
                     at[0] - (origin[0] + extent[0] / 2.),
                     at[1] - (origin[1] + extent[1] / 2.),
@@ -1989,7 +1998,7 @@ impl ScenePanel {
             }
         }
 
-        self.change(move |scene| scene.items.push(item), window, cx);
+        self.change(move |canvas| canvas.items.push(item), window, cx);
         self.select(Some(id), window, cx);
     }
 
@@ -2021,9 +2030,9 @@ impl ScenePanel {
                 match staged.and_then(assets::commit_staged) {
                     Ok(asset) => this.add(NewItem::Image(asset.id), at, window, cx),
                     Err(e) => {
-                        log::warn!("scene: adding {}: {e}", path.display());
+                        log::warn!("canvas: adding {}: {e}", path.display());
                         Toast::new(Tone::Bad, e)
-                            .title(rox_i18n::t!("scene-add-image-failed"))
+                            .title(rox_i18n::t!("canvas-add-image-failed"))
                             .show(window, cx);
                     }
                 }
@@ -2033,7 +2042,7 @@ impl ScenePanel {
         .detach();
     }
 
-    /// Installs a picked `.roxo`, then offers it to this scene.
+    /// Installs a picked `.roxo`, then offers it to this canvas.
     pub(crate) fn add_object_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
 
@@ -2065,7 +2074,7 @@ impl ScenePanel {
             return;
         };
 
-        self.change(move |scene| drop(edit::remove(scene, &id)), window, cx);
+        self.change(move |canvas| drop(edit::remove(canvas, &id)), window, cx);
     }
 
     pub(crate) fn group_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2075,7 +2084,7 @@ impl ScenePanel {
 
         let levels = self.levels_left();
         let mut made = None;
-        self.change(|scene| made = edit::group(scene, &id, levels), window, cx);
+        self.change(|canvas| made = edit::group(canvas, &id, levels), window, cx);
 
         if made.is_some() {
             self.select(made, window, cx);
@@ -2087,7 +2096,7 @@ impl ScenePanel {
             return;
         };
         if !matches!(
-            self.config.scene.find(&id).map(|item| &item.content),
+            self.config.canvas.find(&id).map(|item| &item.content),
             Some(Content::Group { .. })
         ) {
             return;
@@ -2095,8 +2104,8 @@ impl ScenePanel {
 
         let viewport = self.viewport();
         self.change(
-            |scene| {
-                edit::ungroup(scene, &id, viewport);
+            |canvas| {
+                edit::ungroup(canvas, &id, viewport);
             },
             window,
             cx,
@@ -2115,8 +2124,8 @@ impl ScenePanel {
         let viewport = self.viewport();
         let levels = self.levels_left();
         self.change(
-            |scene| {
-                edit::move_into(scene, id, group, viewport, levels);
+            |canvas| {
+                edit::move_into(canvas, id, group, viewport, levels);
             },
             window,
             cx,
@@ -2136,11 +2145,11 @@ impl ScenePanel {
 
         let viewport = self.viewport();
         self.change(
-            |scene| {
-                let Some(parent) = edit::parent_frame(scene, &id, viewport) else {
+            |canvas| {
+                let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
                     return;
                 };
-                let Some(siblings) = edit::siblings(&scene.items, &id) else {
+                let Some(siblings) = edit::siblings(&canvas.items, &id) else {
                     return;
                 };
                 let Some(index) = siblings.iter().position(|item| item.id == id) else {
@@ -2153,7 +2162,7 @@ impl ScenePanel {
                 };
                 let z = edit::z_for_depth(&siblings[index], &parent, depths[index], target);
 
-                if let Some(item) = scene.find_mut(&id) {
+                if let Some(item) = canvas.find_mut(&id) {
                     item.place.position[2] = z;
                 }
             },
@@ -2167,14 +2176,14 @@ impl ScenePanel {
         let Some(id) = self.selected.clone() else {
             return;
         };
-        if self.config.scene.find(&id).is_none_or(|item| item.locked) {
+        if self.config.canvas.find(&id).is_none_or(|item| item.locked) {
             return;
         }
 
         self.change_keyed(
             Some("nudge"),
-            |scene| {
-                if let Some(item) = scene.find_mut(&id) {
+            |canvas| {
+                if let Some(item) = canvas.find_mut(&id) {
                     item.place.position[0] += by[0];
                     item.place.position[1] += by[1];
                 }
@@ -2187,7 +2196,7 @@ impl ScenePanel {
     /// Escape: out to the group holding the selection, then to nothing.
     fn step_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let parent = self.selected.as_ref().and_then(|id| {
-            let mut path = edit::path_to(&self.config.scene.items, id)?;
+            let mut path = edit::path_to(&self.config.canvas.items, id)?;
             path.pop();
             path.pop()
         });
@@ -2212,12 +2221,12 @@ pub(crate) enum Hit {
 
 /// The front item under `point`, then its command or the nearest group's.
 /// `shapes` is in paint order, back to front.
-pub(crate) fn hit(shapes: &[Shape], scene: &SceneState, point: [f32; 2]) -> Hit {
+pub(crate) fn hit(shapes: &[Shape], canvas: &CanvasState, point: [f32; 2]) -> Hit {
     let front = shapes
         .iter()
         .rev()
         .filter(|shape| shape.kind != ShapeKind::Group)
-        .filter(|shape| scene.find(&shape.id).is_some_and(|item| item.visible))
+        .filter(|shape| canvas.find(&shape.id).is_some_and(|item| item.visible))
         .find(|shape| inside(&shape.corners, point));
     let Some(front) = front else {
         return Hit::Nothing;
@@ -2231,7 +2240,7 @@ pub(crate) fn hit(shapes: &[Shape], scene: &SceneState, point: [f32; 2]) -> Hit 
         .chain()
         .iter()
         .rev()
-        .filter_map(|id| scene.find(id))
+        .filter_map(|id| canvas.find(id))
         .find(|item| commands(item))
         .map_or(Hit::Nothing, |item| Hit::Command {
             id: item.id.clone(),
@@ -2240,18 +2249,18 @@ pub(crate) fn hit(shapes: &[Shape], scene: &SceneState, point: [f32; 2]) -> Hit 
 }
 
 /// A grid's command is ignored: its panels own their input.
-fn commands(item: &SceneItem) -> bool {
+fn commands(item: &CanvasItem) -> bool {
     !item.action.is_empty() && !matches!(item.content, Content::Grid { .. })
 }
 
-fn has_commands(scene: &SceneState) -> bool {
+fn has_commands(canvas: &CanvasState) -> bool {
     let mut found = false;
-    scene.walk(&mut |item, _| found |= commands(item));
+    canvas.walk(&mut |item, _| found |= commands(item));
     found
 }
 
-impl ScenePanel {
-    /// Over every item, off design mode, in a scene that has a command
+impl CanvasPanel {
+    /// Over every item, off design mode, in a canvas that has a command
     /// somewhere. It hit tests against what the last render placed.
     fn click_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let me = cx.entity().downgrade();
@@ -2342,12 +2351,12 @@ impl ScenePanel {
     }
 
     fn hit_at(&self, local: [f32; 2]) -> Hit {
-        hit(&self.shapes, &self.config.scene, local)
+        hit(&self.shapes, &self.config.canvas, local)
     }
 
     /// Why a text item's pattern doesn't parse, if it doesn't.
     pub(crate) fn text_error(&self, id: &str) -> Option<String> {
-        text::line_of(&self.config.scene.items, &self.bodies, id)
+        text::line_of(&self.config.canvas.items, &self.bodies, id)
             .and_then(text::Line::error)
             .map(str::to_string)
     }
@@ -2391,7 +2400,7 @@ impl TurnHandles {
     }
 }
 
-/// Whether `at` is in the band along the scene's side where the edge tab
+/// Whether `at` is in the band along the canvas's side where the edge tab
 /// shows: near the edge and around the middle.
 fn edge_band(bounds: Bounds<Pixels>, at: Point<Pixels>, left: bool) -> bool {
     let [x, y] = local_point(at, bounds.origin);
@@ -2500,7 +2509,7 @@ async fn stage_image(path: PathBuf) -> Result<assets::Staged, String> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     if assets::kind_for(&file) != Some(AssetKind::Image) {
-        return Err(rox_i18n::t!("scene-add-image-not-image").to_string());
+        return Err(rox_i18n::t!("canvas-add-image-not-image").to_string());
     }
 
     assets::stage(&path, u64::MAX)
@@ -2528,7 +2537,7 @@ fn empty_dock() -> Value {
     .unwrap_or(Value::Null)
 }
 
-impl PanelSettings for ScenePanel {
+impl PanelSettings for CanvasPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
@@ -2550,7 +2559,7 @@ impl PanelSettings for ScenePanel {
 
 /// The value edit is the inspector's, so a route slider and a place slider
 /// never type at once.
-impl SignalHost for ScenePanel {
+impl SignalHost for CanvasPanel {
     fn hub(&self) -> &Arc<SignalHub> {
         &self.state.signals
     }
@@ -2572,21 +2581,21 @@ impl SignalHost for ScenePanel {
     }
 }
 
-impl RouteHost for ScenePanel {
+impl RouteHost for CanvasPanel {
     fn routes_mut(&mut self) -> &mut Vec<Route> {
         &mut self.config.routes
     }
 }
 
-impl EventEmitter<PanelEvent> for ScenePanel {}
+impl EventEmitter<PanelEvent> for CanvasPanel {}
 
-impl Focusable for ScenePanel {
+impl Focusable for CanvasPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
 
-impl Panel for ScenePanel {
+impl Panel for CanvasPanel {
     fn panel_name(&self) -> &'static str {
         PANEL_NAME
     }
@@ -2598,7 +2607,7 @@ impl Panel for ScenePanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
-            rox_i18n::t!("scene-panel-title"),
+            rox_i18n::t!("canvas-panel-title"),
         )
     }
 
@@ -2620,7 +2629,7 @@ impl Panel for ScenePanel {
     }
 
     /// A drop over a grid is the grid's panel's to take, which the workspace
-    /// can't see past the scene.
+    /// can't see past the canvas.
     fn accepts_drop(&self, cx: &App) -> bool {
         let Some(at) = self.pointer.get() else {
             return false;
@@ -2712,12 +2721,12 @@ impl Panel for ScenePanel {
     }
 }
 
-impl Render for ScenePanel {
+impl Render for CanvasPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.images.follow_store(window);
         self.window = Some(window.window_handle());
 
-        // Off design mode a scene is plain content: no drag carries over and
+        // Off design mode a canvas is plain content: no drag carries over and
         // no menu stays open.
         let design = !self.config.chrome.controls_hidden();
         if design != self.design {
@@ -2774,17 +2783,17 @@ mod tests {
 
         let tabs = &wrapped["center"]["children"];
         assert_eq!(tabs.as_array().map(Vec::len), Some(1));
-        let scene = &tabs[0]["children"];
-        assert_eq!(scene.as_array().map(Vec::len), Some(1));
-        assert_eq!(scene[0]["panel_name"], PANEL_NAME);
+        let canvas = &tabs[0]["children"];
+        assert_eq!(canvas.as_array().map(Vec::len), Some(1));
+        assert_eq!(canvas[0]["panel_name"], PANEL_NAME);
 
         // Read back the way the registry hands it to the panel.
         let info: PanelInfo =
-            serde_json::from_value(scene[0]["info"].clone()).expect("info parses");
-        let config: SceneConfig = panel::config_from_info(&info);
-        assert_eq!(config.scene.items.len(), 1);
+            serde_json::from_value(canvas[0]["info"].clone()).expect("info parses");
+        let config: CanvasConfig = panel::config_from_info(&info);
+        assert_eq!(config.canvas.items.len(), 1);
 
-        let item = &config.scene.items[0];
+        let item = &config.canvas.items[0];
         assert_eq!(item.place.anchor, Anchor::Center);
         assert_eq!(item.place.size, [Length::Stage(1.), Length::Stage(1.)]);
         match &item.content {
@@ -2794,7 +2803,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_dumps_no_children() {
+    fn a_canvas_dumps_no_children() {
         let state = wrap_layout(layout(), 1).center.children[0].children[0].clone();
         assert_eq!(state.panel_name, PANEL_NAME);
         assert!(state.children.is_empty());
@@ -2820,14 +2829,14 @@ mod tests {
 
             let item =
                 json!({ "id": "old", "name": "Kept", "content": { "kind": "grid", "dock": dock } });
-            let mut state: SceneState =
+            let mut state: CanvasState =
                 serde_json::from_value(json!({ "items": [item.clone()] })).expect("parses");
-            let bodies = scene::build_bodies(&state.items, 0, &mut |_, dock, _| {
+            let bodies = canvas::build_bodies(&state.items, 0, &mut |_, dock, _| {
                 grid::usable(dock).map(|_| ())
             });
             assert!(matches!(bodies[0], Body::Unknown));
 
-            scene::fold_dumps(&mut state.items, &bodies, &|_| Some(json!("fresh")));
+            canvas::fold_dumps(&mut state.items, &bodies, &|_| Some(json!("fresh")));
             let saved = serde_json::to_value(&state.items[0]).expect("serializes");
             assert_eq!(saved["content"], item["content"]);
             assert_eq!(saved["name"], "Kept");
@@ -2865,9 +2874,9 @@ mod tests {
             assert!(grid::usable(&dock).is_some(), "{dock}");
 
             let item = json!({ "id": "empty", "content": { "kind": "grid", "dock": dock } });
-            let state: SceneState =
+            let state: CanvasState =
                 serde_json::from_value(json!({ "items": [item] })).expect("parses");
-            let bodies = scene::build_bodies(&state.items, 0, &mut |_, dock, _| {
+            let bodies = canvas::build_bodies(&state.items, 0, &mut |_, dock, _| {
                 grid::usable(dock).map(|_| ())
             });
             assert!(matches!(bodies[0], Body::Grid(())), "{dock}");
@@ -2893,8 +2902,8 @@ mod tests {
         json!({ "id": id, "action": action, "content": { "kind": "image", "asset": "a" } })
     }
 
-    fn scene_of(items: Value) -> SceneState {
-        serde_json::from_value(json!({ "items": items })).expect("a scene parses")
+    fn canvas_of(items: Value) -> CanvasState {
+        serde_json::from_value(json!({ "items": items })).expect("a canvas parses")
     }
 
     fn command(id: &str, action: &str) -> Hit {
@@ -2906,7 +2915,7 @@ mod tests {
 
     #[test]
     fn a_click_goes_to_the_front_item() {
-        let scene = scene_of(json!([
+        let canvas = canvas_of(json!([
             picture("back", "stop"),
             picture("front", "play_pause")
         ]));
@@ -2916,16 +2925,16 @@ mod tests {
         ];
 
         assert_eq!(
-            hit(&shapes, &scene, [75., 75.]),
+            hit(&shapes, &canvas, [75., 75.]),
             command("front", "play_pause")
         );
-        assert_eq!(hit(&shapes, &scene, [10., 10.]), command("back", "stop"));
-        assert_eq!(hit(&shapes, &scene, [300., 300.]), Hit::Nothing);
+        assert_eq!(hit(&shapes, &canvas, [10., 10.]), command("back", "stop"));
+        assert_eq!(hit(&shapes, &canvas, [300., 300.]), Hit::Nothing);
     }
 
     #[test]
     fn a_grid_stops_the_walk() {
-        let scene = scene_of(json!([
+        let canvas = canvas_of(json!([
             picture("back", "play_pause"),
             { "id": "grid", "action": "stop", "content": { "kind": "grid", "dock": null } },
         ]));
@@ -2934,19 +2943,19 @@ mod tests {
             shape("grid", &[], square(20., 20., 40.), ShapeKind::Grid),
         ];
 
-        assert_eq!(hit(&shapes, &scene, [30., 30.]), Hit::Grid);
+        assert_eq!(hit(&shapes, &canvas, [30., 30.]), Hit::Grid);
         assert_eq!(
-            hit(&shapes, &scene, [90., 90.]),
+            hit(&shapes, &canvas, [90., 90.]),
             command("back", "play_pause")
         );
-        assert!(!has_commands(&scene_of(json!([
+        assert!(!has_commands(&canvas_of(json!([
             { "id": "grid", "action": "stop", "content": { "kind": "grid", "dock": null } },
         ]))));
     }
 
     #[test]
     fn a_groups_command_covers_a_child_without_one() {
-        let scene = scene_of(json!([{
+        let canvas = canvas_of(json!([{
             "id": "outer",
             "action": "next_track",
             "content": { "kind": "group", "items": [{
@@ -2966,14 +2975,14 @@ mod tests {
         ];
 
         assert_eq!(
-            hit(&shapes, &scene, [10., 10.]),
+            hit(&shapes, &canvas, [10., 10.]),
             command("outer", "next_track")
         );
     }
 
     #[test]
     fn a_childs_own_command_wins() {
-        let scene = scene_of(json!([{
+        let canvas = canvas_of(json!([{
             "id": "group",
             "action": "next_track",
             "content": { "kind": "group", "items": [picture("a", "stop"), picture("b", "")] },
@@ -2984,22 +2993,22 @@ mod tests {
             shape("group", &[], square(0., 0., 110.), ShapeKind::Group),
         ];
 
-        assert_eq!(hit(&shapes, &scene, [10., 10.]), command("a", "stop"));
+        assert_eq!(hit(&shapes, &canvas, [10., 10.]), command("a", "stop"));
         assert_eq!(
-            hit(&shapes, &scene, [70., 10.]),
+            hit(&shapes, &canvas, [70., 10.]),
             command("group", "next_track")
         );
         // Inside the group's box but on none of its children.
-        assert_eq!(hit(&shapes, &scene, [55., 80.]), Hit::Nothing);
+        assert_eq!(hit(&shapes, &canvas, [55., 80.]), Hit::Nothing);
     }
 
     #[test]
     fn an_invisible_item_is_passed_through() {
-        let mut scene = scene_of(json!([
+        let mut canvas = canvas_of(json!([
             picture("back", "stop"),
             picture("front", "play_pause")
         ]));
-        if let Some(front) = scene.find_mut("front") {
+        if let Some(front) = canvas.find_mut("front") {
             front.visible = false;
         }
         let shapes = [
@@ -3007,12 +3016,12 @@ mod tests {
             shape("front", &[], square(0., 0., 100.), ShapeKind::Perspective),
         ];
 
-        assert_eq!(hit(&shapes, &scene, [50., 50.]), command("back", "stop"));
+        assert_eq!(hit(&shapes, &canvas, [50., 50.]), command("back", "stop"));
     }
 
     #[test]
-    fn the_config_reads_routes_and_chrome_beside_the_scene() {
-        let config: SceneConfig = serde_json::from_value(json!({
+    fn the_config_reads_routes_and_chrome_beside_the_canvas() {
+        let config: CanvasConfig = serde_json::from_value(json!({
             "title": "Stage",
             "camera": { "fov": 0, "parallax": 12 },
             "routes": [{ "signal": 3, "target": "grid.opacity" }],
@@ -3021,10 +3030,10 @@ mod tests {
         .expect("parses");
 
         assert_eq!(config.chrome.title.as_deref(), Some("Stage"));
-        assert_eq!(config.scene.camera.parallax, 12.);
+        assert_eq!(config.canvas.camera.parallax, 12.);
         assert_eq!(config.routes[0].target, "grid.opacity");
 
-        let empty = serde_json::to_value(SceneConfig::default()).expect("serializes");
+        let empty = serde_json::to_value(CanvasConfig::default()).expect("serializes");
         assert!(empty.get("routes").is_none());
     }
 }

@@ -1063,7 +1063,7 @@ impl PanelSurface {
         self.paint_on(None, bounds, window, cx);
     }
 
-    /// [`paint`](Self::paint) for a scene item: on the four corners when the
+    /// [`paint`](Self::paint) for a canvas item: on the four corners when the
     /// program can run as the in-scene primitive, flat over `bounds` when it
     /// can't. Some(true) when it painted flat, None while nothing compiled.
     pub fn paint_face(

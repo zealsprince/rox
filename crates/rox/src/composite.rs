@@ -287,13 +287,19 @@ pub fn hosted_docks(
     panel: &Arc<dyn PanelView>,
     cx: &App,
 ) -> Option<Vec<(String, Entity<DockArea>)>> {
-    let scene = panel
+    let canvas = panel
         .view()
-        .downcast::<crate::panels::scene::ScenePanel>()
+        .downcast::<crate::panels::canvas::CanvasPanel>()
         .ok()?;
-    let scene = scene.read(cx);
+    let canvas = canvas.read(cx);
 
-    Some(scene.grid_names().into_iter().zip(scene.grids()).collect())
+    Some(
+        canvas
+            .grid_names()
+            .into_iter()
+            .zip(canvas.grids())
+            .collect(),
+    )
 }
 
 pub fn pick_items(

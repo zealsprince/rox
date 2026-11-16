@@ -37,13 +37,13 @@ use crate::integrations::placement;
 use crate::integrations::tray;
 use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
 use crate::panel_presets;
+use crate::panels::canvas::CanvasPanel;
 use crate::panels::controls::ControlsPanel;
 use crate::panels::drawer::DrawerPanel;
 use crate::panels::group::GroupPanel;
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::overlay::OverlayPanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
-use crate::panels::scene::ScenePanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::window_controls::{ControlItem, WindowControlsConfig, WindowControlsPanel};
 use crate::pass_prompt;
@@ -1489,7 +1489,7 @@ actions!(
         OpenSignals,
         NewEmptyWindow,
         ImportWorkspace,
-        ConvertLayoutToScene,
+        ConvertLayoutToCanvas,
         ToggleQuitToTray,
         ToggleMenubar,
         ToggleDecorations,
@@ -2015,8 +2015,8 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenSignals, cx| run_menu_action(MenuAction::OpenSignals, cx));
     cx.on_action(|_: &NewEmptyWindow, cx| run_menu_action(MenuAction::EmptyWindow, cx));
     cx.on_action(|_: &ImportWorkspace, cx| run_menu_action(MenuAction::ImportWorkspace, cx));
-    cx.on_action(|_: &ConvertLayoutToScene, cx| {
-        run_menu_action(MenuAction::ConvertLayoutToScene, cx)
+    cx.on_action(|_: &ConvertLayoutToCanvas, cx| {
+        run_menu_action(MenuAction::ConvertLayoutToCanvas, cx)
     });
     cx.on_action(|_: &ToggleQuitToTray, cx| run_menu_action(MenuAction::ToggleQuitToTray, cx));
     cx.on_action(|_: &ToggleMenubar, cx| run_menu_action(MenuAction::ToggleMenubar, cx));
@@ -2328,14 +2328,14 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     // before the rename still rebuild it.
     composite!("depth", OverlayPanel);
     composite!("slide", SlidePanel);
-    // A scene keeps its children inside its config as grids, each its own
+    // A canvas keeps its children inside its config as grids, each its own
     // dock, so there are no slots to restore. It takes the window to build
     // them.
     let s = state.clone();
     let ws = workspace.clone();
-    register_panel(cx, "scene", move |_, _, info, window, cx| {
+    register_panel(cx, "canvas", move |_, _, info, window, cx| {
         let config = panel::config_from_info(info);
-        Box::new(cx.new(|cx| ScenePanel::restore(s.clone(), ws.clone(), config, window, cx)))
+        Box::new(cx.new(|cx| CanvasPanel::restore(s.clone(), ws.clone(), config, window, cx)))
     });
     // The grid takes the window like the library: its search box builds
     // an input state.
@@ -2534,8 +2534,8 @@ pub(crate) enum MenuAction {
     TogglePostShader,
     /// Pick a workspace file and add it to the collection.
     ImportWorkspace,
-    /// Wrap the window's layout in a scene panel that fills it.
-    ConvertLayoutToScene,
+    /// Wrap the window's layout in a canvas panel that fills it.
+    ConvertLayoutToCanvas,
     /// Open a catalog panel with its default config, opening where its
     /// placement says. One action for every panel in the catalog.
     OpenPanel(&'static PanelDef),
@@ -2618,7 +2618,7 @@ impl MenuAction {
             MenuAction::ToggleArtTheming => "toggle-art-theming".into(),
             MenuAction::TogglePostShader => "toggle-post-shader".into(),
             MenuAction::ImportWorkspace => "import-workspace".into(),
-            MenuAction::ConvertLayoutToScene => "layout-to-scene".into(),
+            MenuAction::ConvertLayoutToCanvas => "layout-to-canvas".into(),
             MenuAction::ToggleQuitToTray => "toggle-quit-to-tray".into(),
             MenuAction::CloseWindow => "close-window".into(),
             // Keyed by registry name. The label is an i18n key that a
@@ -2675,7 +2675,7 @@ impl MenuAction {
             "toggle-art-theming" => MenuAction::ToggleArtTheming,
             "toggle-post-shader" => MenuAction::TogglePostShader,
             "import-workspace" => MenuAction::ImportWorkspace,
-            "layout-to-scene" => MenuAction::ConvertLayoutToScene,
+            "layout-to-canvas" => MenuAction::ConvertLayoutToCanvas,
             "toggle-quit-to-tray" => MenuAction::ToggleQuitToTray,
             "close-window" => MenuAction::CloseWindow,
             _ => return None,
@@ -3248,9 +3248,9 @@ pub(crate) const MENUS: &[Menu] = &[
                 with_new: false,
             },
             MenuEntry::Item(MenuItem {
-                label: "menu-layout-to-scene",
+                label: "menu-layout-to-canvas",
                 icon: icons::SPARKLES,
-                action: MenuAction::ConvertLayoutToScene,
+                action: MenuAction::ConvertLayoutToCanvas,
             }),
         ],
     },
@@ -3759,7 +3759,7 @@ fn empty_layout(
 }
 
 /// One empty tab group in a vertical root split, and that group: the tree
-/// of a blank window, and of a new grid in a scene.
+/// of a blank window, and of a new grid in a canvas.
 pub(crate) fn empty_center(
     weak_dock: &WeakEntity<DockArea>,
     window: &mut Window,
@@ -4588,7 +4588,7 @@ impl Workspace {
         &self.dock
     }
 
-    /// The window's dock, then every dock a scene in it hosts, nested ones
+    /// The window's dock, then every dock a canvas in it hosts, nested ones
     /// included.
     pub(crate) fn docks(&self, cx: &App) -> Vec<Entity<DockArea>> {
         // Walks the live stack and tab entities, which follow drags the
@@ -4620,9 +4620,9 @@ impl Workspace {
         docks
     }
 
-    /// Whether the dock holds one panel and it's a scene: what converting
+    /// Whether the dock holds one panel and it's a canvas: what converting
     /// the layout leaves, so converting again would only nest it.
-    fn dock_is_one_scene(&self, cx: &App) -> bool {
+    fn dock_is_one_canvas(&self, cx: &App) -> bool {
         fn leaves(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Arc<dyn PanelView>>) {
             let view = node.view();
             if let Ok(stack) = view.clone().downcast::<StackPanel>() {
@@ -4638,15 +4638,15 @@ impl Workspace {
 
         let mut panels = Vec::new();
         leaves(&self.dock.read(cx).items().view(), cx, &mut panels);
-        matches!(panels.as_slice(), [only] if only.panel_name(cx) == crate::panels::scene::PANEL_NAME)
+        matches!(panels.as_slice(), [only] if only.panel_name(cx) == crate::panels::canvas::PANEL_NAME)
     }
 
-    /// In a window that is one scene, the tab group in its first grid that a
+    /// In a window that is one canvas, the tab group in its first grid that a
     /// plain window would add to: the first one directly under the root
     /// split, as `layout_views` picks it, or else the first anywhere. Without
-    /// it the panel lands as a tab beside the scene and a tab strip appears
+    /// it the panel lands as a tab beside the canvas and a tab strip appears
     /// over the whole window.
-    fn scene_tabs(&self, cx: &App) -> Option<Entity<TabPanel>> {
+    fn canvas_tabs(&self, cx: &App) -> Option<Entity<TabPanel>> {
         fn first(node: &Arc<dyn PanelView>, cx: &App) -> Option<Entity<TabPanel>> {
             let view = node.view();
             if let Ok(tabs) = view.clone().downcast::<TabPanel>() {
@@ -4660,7 +4660,7 @@ impl Workspace {
                 .find_map(|child| first(child, cx))
         }
 
-        if !self.dock_is_one_scene(cx) {
+        if !self.dock_is_one_canvas(cx) {
             return None;
         }
         let grid = self.docks(cx).into_iter().nth(1)?;
@@ -4676,19 +4676,19 @@ impl Workspace {
         direct.or_else(|| first(&root, cx))
     }
 
-    /// Convert Layout to Scene: the dock's whole layout becomes one grid in
-    /// a scene that fills the window, so nothing moves until the scene is
+    /// Convert Layout to Canvas: the dock's whole layout becomes one grid in
+    /// a canvas that fills the window, so nothing moves until the canvas is
     /// edited.
-    fn convert_layout_to_scene(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.dock_is_one_scene(cx) {
-            log::info!("workspace: the layout is already one scene, nothing to convert");
+    fn convert_layout_to_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dock_is_one_canvas(cx) {
+            log::info!("workspace: the layout is already one canvas, nothing to convert");
             return;
         }
         let Ok(dump) = self.dock_dump(cx) else {
             return;
         };
 
-        let wrapped = crate::panels::scene::wrap_layout(dump, LAYOUT_VERSION);
+        let wrapped = crate::panels::canvas::wrap_layout(dump, LAYOUT_VERSION);
         if !self.apply_layout(wrapped, window, cx) {
             log::warn!("workspace: the converted layout didn't apply");
         }
@@ -6198,7 +6198,7 @@ impl Workspace {
         // Add to it while it still shows, otherwise to the newest live tab
         // panel, and failing both put the original one back at the top of
         // the root stack, above the transport row.
-        let tabs = if let Some(tabs) = self.scene_tabs(cx) {
+        let tabs = if let Some(tabs) = self.canvas_tabs(cx) {
             tabs
         } else if self.center_tabs.read(cx).visible(cx) {
             self.center_tabs.clone()
@@ -7292,7 +7292,7 @@ impl Render for Workspace {
                     this.toggle_quick_play(window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                    // The window's dock first, then the docks inside scenes.
+                    // The window's dock first, then the docks inside canvases.
                     for dock in this.docks(cx) {
                         if dock.update(cx, |dock, cx| dock.focus_panel_named("search", window, cx))
                         {

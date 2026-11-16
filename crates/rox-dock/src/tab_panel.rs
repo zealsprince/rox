@@ -665,7 +665,7 @@ impl TabPanel {
     /// E.g. if the parent and self only have one panel, it is not draggable.
     fn draggable(&self, cx: &App) -> bool {
         // rox: the last-panel guard keeps the window from being emptied. A
-        // nested area may empty: the scene keeps it as an item.
+        // nested area may empty: the canvas keeps it as an item.
         let nested = self
             .dock_area
             .upgrade()
@@ -1301,7 +1301,7 @@ impl TabPanel {
 
         let is_render_in_tabs = self.panels.len() > 1 && self.inner_padding(cx);
 
-        // rox: a body holding dock areas of its own (a scene's grids) hands
+        // rox: a body holding dock areas of its own (a canvas's grids) hands
         // every drag gesture to them. The innermost drop target already
         // takes a drop, but this group's preview would cover theirs, its
         // capture-phase Alt+Left would arm a move of the whole host, and a
@@ -2232,7 +2232,7 @@ mod tests {
         (area, groups)
     }
 
-    // Mark `area` as nested in a panel's body, the way a scene's grid is.
+    // Mark `area` as nested in a panel's body, the way a canvas's grid is.
     fn nest(area: &Entity<DockArea>, cx: &mut App) {
         let host = cx.new(|_| Host).entity_id();
         area.update(cx, |area, cx| area.set_nested(host, cx));

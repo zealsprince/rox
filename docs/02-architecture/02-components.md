@@ -195,10 +195,10 @@ selection state stay shared without any cross-window messaging.
 
 Composite panels (group, overlay, drawer, slide) host other panels inside one dock slot
 and serialize them as their children (`rox/src/composite.rs`). The dock never sees a
-hosted child. The Scene composite ([ADR 33](decisions/33-adr-scene-panel.md))
+hosted child. The Canvas composite ([ADR 33](decisions/33-adr-canvas-panel.md))
 hosts whole dock trees instead, one per grid item, placed with images, text and shader
-surfaces in 3D under one camera, with their dumps kept in the scene's own config. A
-full-window scene is a dock holding one Scene panel, so the dock stays the window's root.
+surfaces in 3D under one camera, with their dumps kept in the canvas's own config. A
+full-window canvas is a dock holding one Canvas panel, so the dock stays the window's root.
 
 Contract:
 - Layouts and themes serialize to disk as shareable artifacts. A layout is an arrangement

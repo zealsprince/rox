@@ -1,4 +1,4 @@
-//! A scene's saved shape. Every struct reads with defaults, so a scene saved
+//! A canvas's saved shape. Every struct reads with defaults, so a canvas saved
 //! before a field existed still loads, and every item list reads leniently,
 //! so one broken item costs only itself.
 
@@ -8,27 +8,27 @@ use std::collections::HashSet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-pub const SCENE_VERSION: u32 = 1;
+pub const CANVAS_VERSION: u32 = 1;
 
-/// Scenes inside scenes and groups inside groups, counted together.
+/// Canvases inside canvases and groups inside groups, counted together.
 /// Placeholder.
 pub const MAX_DEPTH: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SceneState {
+pub struct CanvasState {
     pub version: u32,
     pub stage: Stage,
     pub camera: Camera,
     /// Lenient: a broken item costs only itself.
     #[serde(deserialize_with = "lenient_items")]
-    pub items: Vec<SceneItem>,
+    pub items: Vec<CanvasItem>,
 }
 
-impl Default for SceneState {
+impl Default for CanvasState {
     fn default() -> Self {
         Self {
-            version: SCENE_VERSION,
+            version: CANVAS_VERSION,
             stage: Stage::default(),
             camera: Camera::default(),
             items: Vec::new(),
@@ -36,7 +36,7 @@ impl Default for SceneState {
     }
 }
 
-/// The size the scene was laid out at.
+/// The size the canvas was laid out at.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Stage {
@@ -88,8 +88,8 @@ impl Default for Camera {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SceneItem {
-    /// Unique in the whole scene, groups included. Stable across saves.
+pub struct CanvasItem {
+    /// Unique in the whole canvas, groups included. Stable across saves.
     pub id: String,
     pub name: String,
     pub place: Place,
@@ -105,7 +105,7 @@ pub struct SceneItem {
     pub content: Content,
 }
 
-impl Default for SceneItem {
+impl Default for CanvasItem {
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -240,7 +240,7 @@ pub enum Content {
     },
     Group {
         #[serde(default, deserialize_with = "lenient_items")]
-        items: Vec<SceneItem>,
+        items: Vec<CanvasItem>,
     },
     Image {
         asset: String,
@@ -297,13 +297,15 @@ impl<'de> Deserialize<'de> for Content {
         let value = Value::deserialize(deserializer)?;
         let kind = value.get("kind").and_then(Value::as_str);
 
-        // The cap is checked while reading, so a hand-edited scene can't
+        // The cap is checked while reading, so a hand-edited canvas can't
         // nest without end, and the over-deep group stays exactly as saved.
         let _level = match kind {
             Some("group") => match GroupLevel::enter() {
                 Some(level) => Some(level),
                 None => {
-                    log::warn!("scene: a group nests past {MAX_DEPTH} levels, keeping it as saved");
+                    log::warn!(
+                        "canvas: a group nests past {MAX_DEPTH} levels, keeping it as saved"
+                    );
                     return Ok(Content::Unknown(value));
                 }
             },
@@ -316,9 +318,9 @@ impl<'de> Deserialize<'de> for Content {
             Err(e) => {
                 match kind {
                     Some(kind) if KINDS.contains(&kind) => {
-                        log::warn!("scene: keeping a {kind} item whose body doesn't parse: {e}")
+                        log::warn!("canvas: keeping a {kind} item whose body doesn't parse: {e}")
                     }
-                    _ => log::debug!("scene: keeping an item of a kind this build doesn't know"),
+                    _ => log::debug!("canvas: keeping an item of a kind this build doesn't know"),
                 }
                 Ok(Content::Unknown(value))
             }
@@ -353,22 +355,22 @@ impl Drop for GroupLevel {
     }
 }
 
-fn lenient_items<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<SceneItem>, D::Error> {
+fn lenient_items<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<CanvasItem>, D::Error> {
     let raw = Vec::<Value>::deserialize(deserializer)?;
 
     Ok(raw
         .into_iter()
-        .filter_map(|value| match SceneItem::deserialize(value) {
+        .filter_map(|value| match CanvasItem::deserialize(value) {
             Ok(item) => Some(item),
             Err(e) => {
-                log::warn!("scene: dropping an item that doesn't parse: {e}");
+                log::warn!("canvas: dropping an item that doesn't parse: {e}");
                 None
             }
         })
         .collect())
 }
 
-/// What a scene asks of the renderer, counted without building it.
+/// What a canvas asks of the renderer, counted without building it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cost {
     pub items: usize,
@@ -379,17 +381,17 @@ pub struct Cost {
     pub depth: usize,
 }
 
-impl SceneState {
+impl CanvasState {
     /// Every item, parents before children, with its nesting level.
-    pub fn walk(&self, f: &mut dyn FnMut(&SceneItem, usize)) {
+    pub fn walk(&self, f: &mut dyn FnMut(&CanvasItem, usize)) {
         walk_items(&self.items, 0, f);
     }
 
-    pub fn find(&self, id: &str) -> Option<&SceneItem> {
+    pub fn find(&self, id: &str) -> Option<&CanvasItem> {
         find_in(&self.items, id)
     }
 
-    pub fn find_mut(&mut self, id: &str) -> Option<&mut SceneItem> {
+    pub fn find_mut(&mut self, id: &str) -> Option<&mut CanvasItem> {
         find_in_mut(&mut self.items, id)
     }
 
@@ -435,7 +437,7 @@ impl SceneState {
     }
 }
 
-fn walk_items(items: &[SceneItem], level: usize, f: &mut dyn FnMut(&SceneItem, usize)) {
+fn walk_items(items: &[CanvasItem], level: usize, f: &mut dyn FnMut(&CanvasItem, usize)) {
     for item in items {
         f(item, level);
 
@@ -445,7 +447,7 @@ fn walk_items(items: &[SceneItem], level: usize, f: &mut dyn FnMut(&SceneItem, u
     }
 }
 
-fn find_in<'a>(items: &'a [SceneItem], id: &str) -> Option<&'a SceneItem> {
+fn find_in<'a>(items: &'a [CanvasItem], id: &str) -> Option<&'a CanvasItem> {
     items.iter().find_map(|item| {
         if item.id == id {
             return Some(item);
@@ -458,7 +460,7 @@ fn find_in<'a>(items: &'a [SceneItem], id: &str) -> Option<&'a SceneItem> {
     })
 }
 
-fn find_in_mut<'a>(items: &'a mut [SceneItem], id: &str) -> Option<&'a mut SceneItem> {
+fn find_in_mut<'a>(items: &'a mut [CanvasItem], id: &str) -> Option<&'a mut CanvasItem> {
     for item in items {
         if item.id == id {
             return Some(item);
@@ -474,7 +476,7 @@ fn find_in_mut<'a>(items: &'a mut [SceneItem], id: &str) -> Option<&'a mut Scene
     None
 }
 
-fn collect_dumps<'a>(items: &'a [SceneItem], dumps: &mut Vec<&'a Value>) {
+fn collect_dumps<'a>(items: &'a [CanvasItem], dumps: &mut Vec<&'a Value>) {
     for item in items {
         match &item.content {
             Content::Grid { dock } => dumps.push(dock),
@@ -490,34 +492,34 @@ mod tests {
 
     use super::*;
 
-    fn grid(id: &str) -> SceneItem {
-        SceneItem {
+    fn grid(id: &str) -> CanvasItem {
+        CanvasItem {
             id: id.into(),
             content: Content::Grid {
                 dock: json!({ "root": id }),
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         }
     }
 
-    fn group(id: &str, items: Vec<SceneItem>) -> SceneItem {
-        SceneItem {
+    fn group(id: &str, items: Vec<CanvasItem>) -> CanvasItem {
+        CanvasItem {
             id: id.into(),
             content: Content::Group { items },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         }
     }
 
     /// Groups nested `levels` deep, a grid at the bottom.
-    fn nested(levels: usize) -> SceneItem {
+    fn nested(levels: usize) -> CanvasItem {
         (0..levels).fold(grid("leaf"), |inner, n| {
             group(&format!("g{n}"), vec![inner])
         })
     }
 
     #[test]
-    fn a_scene_round_trips() {
-        let scene = SceneState {
+    fn a_canvas_round_trips() {
+        let canvas = CanvasState {
             stage: Stage {
                 width: 1280.,
                 height: 720.,
@@ -531,7 +533,7 @@ mod tests {
                 grid("grid"),
                 group(
                     "group",
-                    vec![SceneItem {
+                    vec![CanvasItem {
                         id: "cover".into(),
                         name: "Cover".into(),
                         place: Place {
@@ -552,10 +554,10 @@ mod tests {
                             asset: "a1b2".into(),
                             fit: ImageFit::Cover,
                         },
-                        ..SceneItem::default()
+                        ..CanvasItem::default()
                     }],
                 ),
-                SceneItem {
+                CanvasItem {
                     id: "title".into(),
                     content: Content::Text {
                         text: "%artist% - %title%".into(),
@@ -564,23 +566,23 @@ mod tests {
                         color: "#ffffff".into(),
                         align: Align::Left,
                     },
-                    ..SceneItem::default()
+                    ..CanvasItem::default()
                 },
-                SceneItem {
+                CanvasItem {
                     id: "glow".into(),
                     content: Content::Shader {
                         shader: json!({ "preset": "glow" }),
                     },
-                    ..SceneItem::default()
+                    ..CanvasItem::default()
                 },
             ],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
 
-        let text = serde_json::to_string(&scene).unwrap();
-        let back: SceneState = serde_json::from_str(&text).unwrap();
+        let text = serde_json::to_string(&canvas).unwrap();
+        let back: CanvasState = serde_json::from_str(&text).unwrap();
 
-        assert_eq!(back, scene);
+        assert_eq!(back, canvas);
         assert!(text.contains(r#""size":[{"stage":0.5},{"units":200.0}]"#));
         assert!(text.contains(r#""fit":"cover""#));
         assert!(text.contains(r#""anchor":"top_right""#));
@@ -588,7 +590,7 @@ mod tests {
 
     #[test]
     fn a_broken_item_costs_only_itself() {
-        let scene: SceneState = serde_json::from_value(json!({
+        let canvas: CanvasState = serde_json::from_value(json!({
             "items": [
                 { "id": "a", "content": { "kind": "image", "asset": "v" } },
                 { "id": 7, "opacity": "loud" },
@@ -601,7 +603,7 @@ mod tests {
         .unwrap();
 
         let mut ids = Vec::new();
-        scene.walk(&mut |item, _| ids.push(item.id.clone()));
+        canvas.walk(&mut |item, _| ids.push(item.id.clone()));
 
         assert_eq!(ids, ["a", "b", "c"]);
     }
@@ -610,7 +612,7 @@ mod tests {
     fn an_unknown_kind_comes_back_byte_for_byte() {
         // Keys sorted, so the bytes hold whichever map serde_json was built with.
         let raw = r#"{"extra":{"deep":[1,2.5,"x",null]},"kind":"hologram","z":true}"#;
-        let item: SceneItem =
+        let item: CanvasItem =
             serde_json::from_str(&format!(r#"{{"id":"h","content":{raw}}}"#)).unwrap();
 
         assert!(matches!(item.content, Content::Unknown(_)));
@@ -623,7 +625,7 @@ mod tests {
             r#"{"asset":"clip","kind":"video"}"#,
             r#"{"asset":"ship","kind":"model"}"#,
         ] {
-            let item: SceneItem =
+            let item: CanvasItem =
                 serde_json::from_str(&format!(r#"{{"id":"x","content":{raw}}}"#)).unwrap();
 
             assert!(matches!(item.content, Content::Unknown(_)), "{raw}");
@@ -635,29 +637,29 @@ mod tests {
     #[test]
     fn a_known_kind_with_a_bad_body_is_kept_not_dropped() {
         let body = json!({ "kind": "image", "asset": 42 });
-        let scene: SceneState =
+        let canvas: CanvasState =
             serde_json::from_value(json!({ "items": [{ "id": "i", "content": body.clone() }] }))
                 .unwrap();
 
-        assert_eq!(scene.items.len(), 1);
-        assert_eq!(scene.items[0].content, Content::Unknown(body.clone()));
+        assert_eq!(canvas.items.len(), 1);
+        assert_eq!(canvas.items[0].content, Content::Unknown(body.clone()));
 
-        let again = serde_json::to_value(&scene).unwrap();
+        let again = serde_json::to_value(&canvas).unwrap();
         assert_eq!(again["items"][0]["content"], body);
     }
 
     #[test]
-    fn an_old_scene_reads_fields_it_never_had() {
-        let scene: SceneState = serde_json::from_value(json!({
+    fn an_old_canvas_reads_fields_it_never_had() {
+        let canvas: CanvasState = serde_json::from_value(json!({
             "items": [{ "id": "a", "place": { "position": [10, 0, 0] }, "content": { "kind": "image", "asset": "x" } }]
         }))
         .unwrap();
 
-        assert_eq!(scene.version, SCENE_VERSION);
-        assert_eq!(scene.stage, Stage::default());
-        assert_eq!(scene.camera.fov, 35.);
+        assert_eq!(canvas.version, CANVAS_VERSION);
+        assert_eq!(canvas.stage, Stage::default());
+        assert_eq!(canvas.camera.fov, 35.);
 
-        let item = &scene.items[0];
+        let item = &canvas.items[0];
         assert_eq!(item.place.position, [10., 0., 0.]);
         assert_eq!(item.place.size, [Length::Units(480.), Length::Units(320.)]);
         assert_eq!(item.place.anchor, Anchor::Center);
@@ -685,34 +687,34 @@ mod tests {
 
     #[test]
     fn fresh_ids_count_up_and_see_inside_groups() {
-        let mut scene = SceneState::default();
-        assert_eq!(scene.fresh_id("grid"), "grid");
+        let mut canvas = CanvasState::default();
+        assert_eq!(canvas.fresh_id("grid"), "grid");
 
-        scene
+        canvas
             .items
             .push(group("group", vec![grid("grid"), grid("grid-2")]));
-        assert_eq!(scene.fresh_id("grid"), "grid-3");
-        assert_eq!(scene.fresh_id("group"), "group-2");
-        assert_eq!(scene.fresh_id("image"), "image");
+        assert_eq!(canvas.fresh_id("grid"), "grid-3");
+        assert_eq!(canvas.fresh_id("group"), "group-2");
+        assert_eq!(canvas.fresh_id("image"), "image");
     }
 
     #[test]
     fn find_reaches_a_grandchild() {
-        let mut scene = SceneState {
+        let mut canvas = CanvasState {
             items: vec![
                 grid("top"),
                 group("outer", vec![group("inner", vec![grid("deep")])]),
             ],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
 
-        assert_eq!(scene.find("deep").map(|i| i.id.as_str()), Some("deep"));
-        assert!(scene.find("missing").is_none());
+        assert_eq!(canvas.find("deep").map(|i| i.id.as_str()), Some("deep"));
+        assert!(canvas.find("missing").is_none());
 
-        scene.find_mut("deep").unwrap().name = "Found".into();
-        assert_eq!(scene.find("deep").unwrap().name, "Found");
+        canvas.find_mut("deep").unwrap().name = "Found".into();
+        assert_eq!(canvas.find("deep").unwrap().name, "Found");
 
-        let dumps = scene.grid_dumps();
+        let dumps = canvas.grid_dumps();
         assert_eq!(
             dumps,
             [&json!({ "root": "top" }), &json!({ "root": "deep" })]
@@ -721,16 +723,16 @@ mod tests {
 
     #[test]
     fn a_group_past_the_depth_cap_is_kept_as_saved() {
-        let saved = serde_json::to_value(SceneState {
+        let saved = serde_json::to_value(CanvasState {
             items: vec![nested(MAX_DEPTH + 1)],
-            ..SceneState::default()
+            ..CanvasState::default()
         })
         .unwrap();
 
-        let scene: SceneState = serde_json::from_value(saved.clone()).unwrap();
+        let canvas: CanvasState = serde_json::from_value(saved.clone()).unwrap();
 
         let mut levels = Vec::new();
-        scene.walk(&mut |item, level| {
+        canvas.walk(&mut |item, level| {
             levels.push((level, matches!(item.content, Content::Unknown(_))))
         });
 
@@ -739,13 +741,13 @@ mod tests {
             .map(|level| (level, level == MAX_DEPTH))
             .collect();
         assert_eq!(levels, expected);
-        assert_eq!(scene.cost().depth, MAX_DEPTH);
-        assert_eq!(serde_json::to_value(&scene).unwrap(), saved);
+        assert_eq!(canvas.cost().depth, MAX_DEPTH);
+        assert_eq!(serde_json::to_value(&canvas).unwrap(), saved);
 
-        let fits: SceneState = serde_json::from_value(
-            serde_json::to_value(SceneState {
+        let fits: CanvasState = serde_json::from_value(
+            serde_json::to_value(CanvasState {
                 items: vec![nested(MAX_DEPTH)],
-                ..SceneState::default()
+                ..CanvasState::default()
             })
             .unwrap(),
         )
@@ -755,22 +757,22 @@ mod tests {
 
     #[test]
     fn cost_counts_every_level() {
-        let shader = SceneItem {
+        let shader = CanvasItem {
             content: Content::Shader { shader: json!({}) },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
 
-        let scene = SceneState {
+        let canvas = CanvasState {
             items: vec![
                 grid("a"),
                 shader.clone(),
                 group("g", vec![grid("b"), group("h", vec![shader])]),
             ],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
 
         assert_eq!(
-            scene.cost(),
+            canvas.cost(),
             Cost {
                 items: 6,
                 grids: 2,

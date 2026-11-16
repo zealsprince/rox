@@ -24,7 +24,7 @@ use rox_panel_api::actions::{
 };
 use rox_panels::lyrics::StampLine;
 
-use crate::panels::scene::{
+use crate::panels::canvas::{
     DeleteItem, GroupItem, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight,
     NudgeRightFar, NudgeUp, NudgeUpFar, Redo, StepOut, Undo, UngroupItem,
 };
@@ -67,12 +67,12 @@ const LYRICS: Option<&str> = Some("LyricsEdit");
 /// Only present while a panel holds a phrase, so tab walks panels otherwise.
 const TYPE_AHEAD: Option<&str> = Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT);
 
-/// A scene in design mode holding its own focus, so a panel inside one of
+/// A canvas in design mode holding its own focus, so a panel inside one of
 /// its grids keeps its keys.
-const SCENE: Option<&str> = Some("Scene");
+const CANVAS: Option<&str> = Some("Canvas");
 
-/// [`SCENE`] with an item selected.
-const SCENE_ITEM: Option<&str> = Some("Scene && SceneSelected");
+/// [`CANVAS`] with an item selected.
+const CANVAS_ITEM: Option<&str> = Some("Canvas && CanvasSelected");
 
 /// The Keymap page draws one section per group, in this order.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -268,10 +268,10 @@ mod defaults {
     pub const MUTE: &[&str] = &["cmd-shift-m"];
     pub const DESIGN_MODE: &[&str] = &["cmd-shift-d"];
     pub const THEME: &[&str] = &["cmd-shift-t"];
-    pub const SCENE_UNDO: &[&str] = &["cmd-z"];
-    pub const SCENE_REDO: &[&str] = &["cmd-shift-z"];
-    pub const SCENE_GROUP: &[&str] = &["cmd-g"];
-    pub const SCENE_UNGROUP: &[&str] = &["cmd-shift-g"];
+    pub const CANVAS_UNDO: &[&str] = &["cmd-z"];
+    pub const CANVAS_REDO: &[&str] = &["cmd-shift-z"];
+    pub const CANVAS_GROUP: &[&str] = &["cmd-g"];
+    pub const CANVAS_UNGROUP: &[&str] = &["cmd-shift-g"];
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -307,10 +307,10 @@ mod defaults {
     pub const MUTE: &[&str] = &["ctrl-shift-m"];
     pub const DESIGN_MODE: &[&str] = &["ctrl-shift-d"];
     pub const THEME: &[&str] = &["ctrl-shift-t"];
-    pub const SCENE_UNDO: &[&str] = &["ctrl-z"];
-    pub const SCENE_REDO: &[&str] = &["ctrl-shift-z", "ctrl-y"];
-    pub const SCENE_GROUP: &[&str] = &["ctrl-g"];
-    pub const SCENE_UNGROUP: &[&str] = &["ctrl-shift-g"];
+    pub const CANVAS_UNDO: &[&str] = &["ctrl-z"];
+    pub const CANVAS_REDO: &[&str] = &["ctrl-shift-z", "ctrl-y"];
+    pub const CANVAS_GROUP: &[&str] = &["ctrl-g"];
+    pub const CANVAS_UNGROUP: &[&str] = &["ctrl-shift-g"];
 }
 
 /// Page order within each group. A `LazyLock` because the labels resolve
@@ -1272,143 +1272,143 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             Reach::Panel
         ),
         command!(
-            "scene_undo",
-            rox_i18n::t_static("scene-key-undo"),
+            "canvas_undo",
+            rox_i18n::t_static("canvas-key-undo"),
             Group::Editing,
-            SCENE,
-            defaults::SCENE_UNDO,
+            CANVAS,
+            defaults::CANVAS_UNDO,
             Undo,
-            rox_i18n::t_static("scene-key-undo.description"),
+            rox_i18n::t_static("canvas-key-undo.description"),
             Reach::Panel
         ),
         command!(
-            "scene_redo",
-            rox_i18n::t_static("scene-key-redo"),
+            "canvas_redo",
+            rox_i18n::t_static("canvas-key-redo"),
             Group::Editing,
-            SCENE,
-            defaults::SCENE_REDO,
+            CANVAS,
+            defaults::CANVAS_REDO,
             Redo,
-            rox_i18n::t_static("scene-key-redo.description"),
+            rox_i18n::t_static("canvas-key-redo.description"),
             Reach::Panel
         ),
         command!(
-            "scene_delete",
-            rox_i18n::t_static("scene-key-delete"),
+            "canvas_delete",
+            rox_i18n::t_static("canvas-key-delete"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["delete", "backspace"],
             DeleteItem,
-            rox_i18n::t_static("scene-key-delete.description"),
+            rox_i18n::t_static("canvas-key-delete.description"),
             Reach::Panel
         ),
         command!(
-            "scene_group",
-            rox_i18n::t_static("scene-key-group"),
+            "canvas_group",
+            rox_i18n::t_static("canvas-key-group"),
             Group::Editing,
-            SCENE_ITEM,
-            defaults::SCENE_GROUP,
+            CANVAS_ITEM,
+            defaults::CANVAS_GROUP,
             GroupItem,
-            rox_i18n::t_static("scene-key-group.description"),
+            rox_i18n::t_static("canvas-key-group.description"),
             Reach::Panel
         ),
         command!(
-            "scene_ungroup",
-            rox_i18n::t_static("scene-key-ungroup"),
+            "canvas_ungroup",
+            rox_i18n::t_static("canvas-key-ungroup"),
             Group::Editing,
-            SCENE_ITEM,
-            defaults::SCENE_UNGROUP,
+            CANVAS_ITEM,
+            defaults::CANVAS_UNGROUP,
             UngroupItem,
-            rox_i18n::t_static("scene-key-ungroup.description"),
+            rox_i18n::t_static("canvas-key-ungroup.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_left",
-            rox_i18n::t_static("scene-key-nudge-left"),
+            "canvas_nudge_left",
+            rox_i18n::t_static("canvas-key-nudge-left"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["left"],
             NudgeLeft,
-            rox_i18n::t_static("scene-key-nudge-left.description"),
+            rox_i18n::t_static("canvas-key-nudge-left.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_right",
-            rox_i18n::t_static("scene-key-nudge-right"),
+            "canvas_nudge_right",
+            rox_i18n::t_static("canvas-key-nudge-right"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["right"],
             NudgeRight,
-            rox_i18n::t_static("scene-key-nudge-right.description"),
+            rox_i18n::t_static("canvas-key-nudge-right.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_up",
-            rox_i18n::t_static("scene-key-nudge-up"),
+            "canvas_nudge_up",
+            rox_i18n::t_static("canvas-key-nudge-up"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["up"],
             NudgeUp,
-            rox_i18n::t_static("scene-key-nudge-up.description"),
+            rox_i18n::t_static("canvas-key-nudge-up.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_down",
-            rox_i18n::t_static("scene-key-nudge-down"),
+            "canvas_nudge_down",
+            rox_i18n::t_static("canvas-key-nudge-down"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["down"],
             NudgeDown,
-            rox_i18n::t_static("scene-key-nudge-down.description"),
+            rox_i18n::t_static("canvas-key-nudge-down.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_left_far",
-            rox_i18n::t_static("scene-key-nudge-left-far"),
+            "canvas_nudge_left_far",
+            rox_i18n::t_static("canvas-key-nudge-left-far"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["shift-left"],
             NudgeLeftFar,
-            rox_i18n::t_static("scene-key-nudge-left-far.description"),
+            rox_i18n::t_static("canvas-key-nudge-left-far.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_right_far",
-            rox_i18n::t_static("scene-key-nudge-right-far"),
+            "canvas_nudge_right_far",
+            rox_i18n::t_static("canvas-key-nudge-right-far"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["shift-right"],
             NudgeRightFar,
-            rox_i18n::t_static("scene-key-nudge-right-far.description"),
+            rox_i18n::t_static("canvas-key-nudge-right-far.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_up_far",
-            rox_i18n::t_static("scene-key-nudge-up-far"),
+            "canvas_nudge_up_far",
+            rox_i18n::t_static("canvas-key-nudge-up-far"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["shift-up"],
             NudgeUpFar,
-            rox_i18n::t_static("scene-key-nudge-up-far.description"),
+            rox_i18n::t_static("canvas-key-nudge-up-far.description"),
             Reach::Panel
         ),
         command!(
-            "scene_nudge_down_far",
-            rox_i18n::t_static("scene-key-nudge-down-far"),
+            "canvas_nudge_down_far",
+            rox_i18n::t_static("canvas-key-nudge-down-far"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["shift-down"],
             NudgeDownFar,
-            rox_i18n::t_static("scene-key-nudge-down-far.description"),
+            rox_i18n::t_static("canvas-key-nudge-down-far.description"),
             Reach::Panel
         ),
         command!(
-            "scene_step_out",
-            rox_i18n::t_static("scene-key-step-out"),
+            "canvas_step_out",
+            rox_i18n::t_static("canvas-key-step-out"),
             Group::Editing,
-            SCENE_ITEM,
+            CANVAS_ITEM,
             &["escape"],
             StepOut,
-            rox_i18n::t_static("scene-key-step-out.description"),
+            rox_i18n::t_static("canvas-key-step-out.description"),
             Reach::Panel
         ),
     ]
@@ -1764,20 +1764,20 @@ mod tests {
         "open_panel_settings",
         "toggle_zoom",
         "stamp_line",
-        "scene_undo",
-        "scene_redo",
-        "scene_delete",
-        "scene_group",
-        "scene_ungroup",
-        "scene_nudge_left",
-        "scene_nudge_right",
-        "scene_nudge_up",
-        "scene_nudge_down",
-        "scene_nudge_left_far",
-        "scene_nudge_right_far",
-        "scene_nudge_up_far",
-        "scene_nudge_down_far",
-        "scene_step_out",
+        "canvas_undo",
+        "canvas_redo",
+        "canvas_delete",
+        "canvas_group",
+        "canvas_ungroup",
+        "canvas_nudge_left",
+        "canvas_nudge_right",
+        "canvas_nudge_up",
+        "canvas_nudge_down",
+        "canvas_nudge_left_far",
+        "canvas_nudge_right_far",
+        "canvas_nudge_up_far",
+        "canvas_nudge_down_far",
+        "canvas_step_out",
     ];
 
     /// A Global command handled on a panel gives a button that silently does nothing.

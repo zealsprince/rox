@@ -502,7 +502,7 @@ impl ApplyCard {
             wears_shaders: wears_shaders(bundle),
             requires: requires_line(bundle),
             heavy: heavy_line(bundle),
-            weight: crate::scene::cost::warnings(&crate::scene::cost::heaviest(bundle)),
+            weight: crate::canvas::cost::warnings(&crate::canvas::cost::heaviest(bundle)),
         }
     }
 
@@ -1678,12 +1678,12 @@ mod tests {
     }
 
     #[test]
-    fn a_scenes_shader_item_is_reviewed_like_a_panels() {
-        use crate::panels::scene::{SceneConfig, state_of};
-        use rox_scene::{Content, SceneItem, SceneState};
+    fn a_canvas_shader_item_is_reviewed_like_a_panels() {
+        use crate::panels::canvas::{CanvasConfig, state_of};
+        use rox_canvas::{CanvasItem, CanvasState, Content};
 
-        let source = "// only on a scene's item";
-        let item = SceneItem {
+        let source = "// only on a canvas's item";
+        let item = CanvasItem {
             id: "glow".into(),
             content: Content::Shader {
                 shader: serde_json::to_value(shader::PanelShader {
@@ -1692,14 +1692,14 @@ mod tests {
                 })
                 .expect("serializes"),
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
-        let config = SceneConfig {
-            scene: SceneState {
+        let config = CanvasConfig {
+            canvas: CanvasState {
                 items: vec![item],
-                ..SceneState::default()
+                ..CanvasState::default()
             },
-            ..SceneConfig::default()
+            ..CanvasConfig::default()
         };
         let dump = serde_json::json!({
             "panel_name": "StackPanel",
@@ -1719,11 +1719,11 @@ mod tests {
         assert_eq!(pending[0].source, source);
         assert!(wears_shaders(&bundle));
 
-        // Without Shaders parks the item's shader, and the scene reads it back off.
+        // Without Shaders parks the item's shader, and the canvas reads it back off.
         let bare = without_shaders(&bundle);
-        let scene = &bare.layouts[0].dump["children"][0]["info"]["panel"];
-        let config: SceneConfig = serde_json::from_value(scene.clone()).expect("parses");
-        let parked = crate::scene::shader::of(&config.scene.items[0]).expect("a shader item");
+        let canvas = &bare.layouts[0].dump["children"][0]["info"]["panel"];
+        let config: CanvasConfig = serde_json::from_value(canvas.clone()).expect("parses");
+        let parked = crate::canvas::shader::of(&config.canvas.items[0]).expect("a shader item");
         assert!(!parked.enabled);
         assert_eq!(parked.source, source);
         assert!(!wears_shaders(&bare));

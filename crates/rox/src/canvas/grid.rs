@@ -1,10 +1,10 @@
-//! A grid item: a dock tree of its own inside a scene, built and restored the
+//! A grid item: a dock tree of its own inside a canvas, built and restored the
 //! way the window builds its dock. Its tab groups are real tab groups, so a
 //! tab drags, zooms and pops out as it does anywhere. Zoom covers only the
 //! grid it happens in.
 //!
-//! The dump lives in the item's `dock` value inside the scene's config,
-//! never in the scene's `PanelState.children`, so the dock's restore
+//! The dump lives in the item's `dock` value inside the canvas's config,
+//! never in the canvas's `PanelState.children`, so the dock's restore
 //! doesn't build the children a second time.
 
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
 use rox_dock::{DockArea, DockAreaState, DockEvent, PanelInfo, PanelView, StackPanel};
 use serde_json::Value;
 
-use crate::panels::scene::ScenePanel;
-use crate::scene::Nesting;
+use crate::canvas::Nesting;
+use crate::panels::canvas::CanvasPanel;
 use crate::workspace::{LAYOUT_VERSION, empty_center};
 use rox_panel_api::panel::AppState;
 
@@ -42,10 +42,10 @@ pub(crate) fn restore(
     level: usize,
     state: &AppState,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> Option<Grid> {
     let Some(dump) = usable(dump) else {
-        log::warn!("scene: keeping grid {id} as saved, its dock dump doesn't restore");
+        log::warn!("canvas: keeping grid {id} as saved, its dock dump doesn't restore");
         return None;
     };
 
@@ -55,7 +55,7 @@ pub(crate) fn restore(
         // the empty group a new grid starts with.
         empty_center(&area.downgrade(), window, cx).0
     } else {
-        // A scene panel the registry builds inside this dump reads its
+        // A canvas panel the registry builds inside this dump reads its
         // level from here.
         let _nesting = Nesting::enter(level);
         dump.center.to_item(area.downgrade(), window, cx)
@@ -71,7 +71,7 @@ pub(crate) fn holding(
     panel: Arc<dyn PanelView>,
     state: &AppState,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> Grid {
     let area = new_area(id, state, window, cx);
     let (center, tabs) = empty_center(&area.downgrade(), window, cx);
@@ -106,14 +106,14 @@ fn new_area(
     id: &str,
     state: &AppState,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> Entity<DockArea> {
-    let area = cx.new(|cx| DockArea::new(format!("scene-{id}"), Some(LAYOUT_VERSION), window, cx));
-    let scene = cx.entity_id();
+    let area = cx.new(|cx| DockArea::new(format!("canvas-{id}"), Some(LAYOUT_VERSION), window, cx));
+    let canvas = cx.entity_id();
 
     area.update(cx, |area, cx| {
         area.set_toggle_button_visible(false, cx);
-        area.set_nested(scene, cx);
+        area.set_nested(canvas, cx);
 
         // A middle drag released outside the window pops the panel out, the
         // same as in the window's own dock.
@@ -126,9 +126,9 @@ fn new_area(
     area
 }
 
-/// The scene emits no layout event of its own, so without this an edit
+/// The canvas emits no layout event of its own, so without this an edit
 /// inside a grid waits for something else to save it.
-fn watch(area: Entity<DockArea>, window: &mut Window, cx: &mut Context<ScenePanel>) -> Grid {
+fn watch(area: Entity<DockArea>, window: &mut Window, cx: &mut Context<CanvasPanel>) -> Grid {
     let changed = cx.subscribe_in(&area, window, |this, _, event: &DockEvent, window, cx| {
         if matches!(event, DockEvent::LayoutChanged) {
             this.save_soon(window, cx);

@@ -1,4 +1,4 @@
-//! Signals on scene items (ADR 33): the scene's route targets and what a
+//! Signals on canvas items (ADR 33): the canvas's route targets and what a
 //! route's factor does to an item this frame. A target is
 //! `<item id>.<property>`. Opacity and scale take a share of the item's own
 //! setting, the way every route knob does. Position and rotation take a
@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 
+use rox_canvas::{CanvasItem, CanvasState, Live};
 use rox_panel_api::signal_ui::{self, RouteTargets};
-use rox_scene::{Live, SceneItem, SceneState};
 use rox_viz::signal::{Route, SignalHub};
 
 /// The properties a route can drive on every item, in display order.
@@ -46,17 +46,17 @@ impl Property {
 
     fn label(self) -> String {
         let key = match self {
-            Property::Opacity => "scene-item-opacity",
-            Property::Scale => "scene-item-scale",
+            Property::Opacity => "canvas-item-opacity",
+            Property::Scale => "canvas-item-scale",
             Property::Position(axis) => [
-                "scene-item-position-x",
-                "scene-item-position-y",
-                "scene-item-position-z",
+                "canvas-item-position-x",
+                "canvas-item-position-y",
+                "canvas-item-position-z",
             ][axis],
             Property::Rotation(axis) => [
-                "scene-item-rotation-x",
-                "scene-item-rotation-y",
-                "scene-item-rotation-z",
+                "canvas-item-rotation-x",
+                "canvas-item-rotation-y",
+                "canvas-item-rotation-z",
             ][axis],
         };
         rox_i18n::t!(key).to_string()
@@ -72,14 +72,14 @@ fn split(target: &str) -> Option<(&str, Property)> {
 
 /// This frame's offsets, by item id. Items no route reaches have no entry.
 pub(crate) struct Lives<'a> {
-    scene: &'a SceneState,
+    canvas: &'a CanvasState,
     pub live: HashMap<String, Live>,
 }
 
 impl<'a> Lives<'a> {
-    pub(crate) fn new(scene: &'a SceneState) -> Self {
+    pub(crate) fn new(canvas: &'a CanvasState) -> Self {
         Self {
-            scene,
+            canvas,
             live: HashMap::new(),
         }
     }
@@ -88,7 +88,7 @@ impl<'a> Lives<'a> {
 impl RouteTargets for Lives<'_> {
     fn targets(&self) -> Vec<(String, String)> {
         let mut targets = Vec::new();
-        self.scene.walk(&mut |item, _| {
+        self.canvas.walk(&mut |item, _| {
             let name = if item.name.is_empty() {
                 item.id.as_str()
             } else {
@@ -101,7 +101,7 @@ impl RouteTargets for Lives<'_> {
                 targets.push((
                     format!("{}.{property}", item.id),
                     rox_i18n::t!(
-                        "scene-route-target",
+                        "canvas-route-target",
                         item = name.to_string(),
                         property = parsed.label()
                     )
@@ -116,7 +116,7 @@ impl RouteTargets for Lives<'_> {
         let Some((item_id, property)) = split(id) else {
             return;
         };
-        let Some(item) = self.scene.find(item_id) else {
+        let Some(item) = self.canvas.find(item_id) else {
             return;
         };
 
@@ -133,39 +133,39 @@ impl RouteTargets for Lives<'_> {
     }
 }
 
-/// Whether any route is switched on, which is what keeps a scene listening.
+/// Whether any route is switched on, which is what keeps a canvas listening.
 pub(crate) fn running(routes: &[Route]) -> bool {
     routes.iter().any(|route| route.enabled)
 }
 
 /// Every routed item's offsets this frame.
 pub(crate) fn lives(
-    scene: &SceneState,
+    canvas: &CanvasState,
     routes: &[Route],
     hub: &SignalHub,
 ) -> HashMap<String, Live> {
-    let mut lives = Lives::new(scene);
+    let mut lives = Lives::new(canvas);
     signal_ui::apply_routes(routes, hub, &mut lives);
     lives.live
 }
 
 /// The offsets for one item, none when no route reaches it.
-pub(crate) fn live_for(lives: &HashMap<String, Live>, item: &SceneItem) -> Live {
+pub(crate) fn live_for(lives: &HashMap<String, Live>, item: &CanvasItem) -> Live {
     lives.get(&item.id).copied().unwrap_or_default()
 }
 
 /// Drops the routes whose item is gone. Every edit runs this, so deleting an
 /// item takes its routes and its children's in the same undo step.
-pub(crate) fn prune(routes: &mut Vec<Route>, scene: &SceneState) {
+pub(crate) fn prune(routes: &mut Vec<Route>, canvas: &CanvasState) {
     routes.retain(|route| match route.target.rsplit_once('.') {
-        Some((id, _)) => scene.find(id).is_some(),
+        Some((id, _)) => canvas.find(id).is_some(),
         None => true,
     });
 }
 
 /// Gives each position or rotation route new since `before` a sway on its
 /// axis, where that axis has none.
-pub(crate) fn sway_new(before: &[Route], after: &[Route], scene: &mut SceneState) {
+pub(crate) fn sway_new(before: &[Route], after: &[Route], canvas: &mut CanvasState) {
     for route in after {
         if before.iter().any(|old| old.target == route.target) {
             continue;
@@ -173,7 +173,7 @@ pub(crate) fn sway_new(before: &[Route], after: &[Route], scene: &mut SceneState
         let Some((id, property)) = split(&route.target) else {
             continue;
         };
-        let Some(item) = scene.find_mut(id) else {
+        let Some(item) = canvas.find_mut(id) else {
             continue;
         };
 
@@ -201,16 +201,16 @@ pub(crate) fn same(a: &[Route], b: &[Route]) -> bool {
         })
 }
 
-/// One undo step's worth of a scene: the items and the routes aimed at them.
+/// One undo step's worth of a canvas: the items and the routes aimed at them.
 #[derive(Clone)]
 pub(crate) struct Snapshot {
-    pub scene: SceneState,
+    pub canvas: CanvasState,
     pub routes: Vec<Route>,
 }
 
 impl PartialEq for Snapshot {
     fn eq(&self, other: &Self) -> bool {
-        self.scene == other.scene && same(&self.routes, &other.routes)
+        self.canvas == other.canvas && same(&self.routes, &other.routes)
     }
 }
 
@@ -218,15 +218,15 @@ impl PartialEq for Snapshot {
 mod tests {
     use std::time::Instant;
 
-    use rox_scene::{Content, Sway};
+    use rox_canvas::{Content, Sway};
 
     use super::*;
-    use crate::scene::edit::{self, History};
+    use crate::canvas::edit::{self, History};
 
-    fn item(id: &str) -> SceneItem {
-        SceneItem {
+    fn item(id: &str) -> CanvasItem {
+        CanvasItem {
             id: id.to_string(),
-            ..SceneItem::default()
+            ..CanvasItem::default()
         }
     }
 
@@ -237,20 +237,20 @@ mod tests {
         }
     }
 
-    fn scene(items: Vec<SceneItem>) -> SceneState {
-        SceneState {
+    fn canvas(items: Vec<CanvasItem>) -> CanvasState {
+        CanvasState {
             items,
-            ..SceneState::default()
+            ..CanvasState::default()
         }
     }
 
     #[test]
     fn a_route_scales_opacity_by_its_share() {
-        let scene = scene(vec![SceneItem {
+        let canvas = canvas(vec![CanvasItem {
             opacity: 0.8,
             ..item("logo")
         }]);
-        let mut lives = Lives::new(&scene);
+        let mut lives = Lives::new(&canvas);
 
         lives.apply("logo.opacity", 0.5);
         assert_eq!(lives.live["logo"].opacity, 0.5);
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn a_position_route_with_no_sway_moves_nothing() {
-        let scene = scene(vec![item("logo")]);
-        let mut lives = Lives::new(&scene);
+        let canvas = canvas(vec![item("logo")]);
+        let mut lives = Lives::new(&canvas);
 
         lives.apply("logo.x", 1.);
         lives.apply("logo.rz", 1.);
@@ -273,14 +273,14 @@ mod tests {
 
     #[test]
     fn a_position_route_moves_by_its_share_of_the_sway() {
-        let scene = scene(vec![SceneItem {
+        let canvas = canvas(vec![CanvasItem {
             sway: Sway {
                 position: [0., 40., 0.],
                 rotation: [0., 0., 30.],
             },
             ..item("logo")
         }]);
-        let mut lives = Lives::new(&scene);
+        let mut lives = Lives::new(&canvas);
 
         lives.apply("logo.y", 0.5);
         lives.apply("logo.rz", 0.25);
@@ -291,8 +291,8 @@ mod tests {
 
     #[test]
     fn an_unknown_target_does_nothing() {
-        let scene = scene(vec![item("logo")]);
-        let mut lives = Lives::new(&scene);
+        let canvas = canvas(vec![item("logo")]);
+        let mut lives = Lives::new(&canvas);
 
         lives.apply("ghost.opacity", 0.2);
         lives.apply("logo.wobble", 0.2);
@@ -302,8 +302,8 @@ mod tests {
 
     #[test]
     fn a_later_route_to_the_same_target_wins() {
-        let scene = scene(vec![item("logo")]);
-        let mut lives = Lives::new(&scene);
+        let canvas = canvas(vec![item("logo")]);
+        let mut lives = Lives::new(&canvas);
 
         lives.apply("logo.scale", 0.3);
         lives.apply("logo.scale", 0.7);
@@ -312,9 +312,9 @@ mod tests {
 
     #[test]
     fn targets_list_every_item_in_tree_order() {
-        let scene = scene(vec![
+        let canvas = canvas(vec![
             item("a"),
-            SceneItem {
+            CanvasItem {
                 content: Content::Group {
                     items: vec![item("b.1"), item("c")],
                 },
@@ -322,7 +322,7 @@ mod tests {
             },
             item("d"),
         ]);
-        let targets = Lives::new(&scene).targets();
+        let targets = Lives::new(&canvas).targets();
 
         let ids: Vec<&str> = targets
             .iter()
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(targets[1].0, "a.scale");
 
         // A dotted id still resolves to its item.
-        let mut lives = Lives::new(&scene);
+        let mut lives = Lives::new(&canvas);
         lives.apply("b.1.opacity", 0.5);
         assert_eq!(lives.live["b.1"].opacity, 0.5);
     }
@@ -342,9 +342,9 @@ mod tests {
     #[test]
     fn deleting_an_item_takes_its_routes_and_undo_returns_them() {
         let mut now = Snapshot {
-            scene: scene(vec![
+            canvas: canvas(vec![
                 item("keep"),
-                SceneItem {
+                CanvasItem {
                     content: Content::Group {
                         items: vec![item("inner")],
                     },
@@ -357,8 +357,8 @@ mod tests {
 
         // The way the panel's one edit path runs a delete.
         let before = now.clone();
-        edit::remove(&mut now.scene, "group").expect("present");
-        prune(&mut now.routes, &now.scene);
+        edit::remove(&mut now.canvas, "group").expect("present");
+        prune(&mut now.routes, &now.canvas);
         history.record(before.clone(), now.clone(), None, Instant::now());
 
         let targets: Vec<&str> = now.routes.iter().map(|r| r.target.as_str()).collect();
@@ -367,14 +367,14 @@ mod tests {
         let back = history.undo().expect("one step");
         assert!(back == before);
         assert_eq!(back.routes.len(), 3);
-        assert!(back.scene.find("inner").is_some());
+        assert!(back.canvas.find("inner").is_some());
     }
 
     #[test]
     fn a_new_axis_route_gets_a_sway_where_it_has_none() {
-        let mut scene = scene(vec![
+        let mut canvas = canvas(vec![
             item("a"),
-            SceneItem {
+            CanvasItem {
                 sway: Sway {
                     position: [5., 0., 0.],
                     ..Sway::default()
@@ -389,10 +389,10 @@ mod tests {
             route("b.x"),
         ];
 
-        sway_new(&[], &after, &mut scene);
-        let a = scene.find("a").expect("present").sway;
+        sway_new(&[], &after, &mut canvas);
+        let a = canvas.find("a").expect("present").sway;
         assert_eq!(a.position, [NEW_SWAY_UNITS, 0., 0.]);
         assert_eq!(a.rotation, [0., NEW_SWAY_DEGREES, 0.]);
-        assert_eq!(scene.find("b").expect("present").sway.position[0], 5.);
+        assert_eq!(canvas.find("b").expect("present").sway.position[0], 5.);
     }
 }

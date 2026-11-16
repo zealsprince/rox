@@ -1,10 +1,10 @@
-//! `.roxo`, the object archive: `object.json` holding one scene item and
+//! `.roxo`, the object archive: `object.json` holding one canvas item and
 //! what it uses, plus one flat `assets/<file>` per entry in its asset table.
 //! Nothing else in an archive is read, and nothing is ever unpacked: an
 //! object's files are read one at a time, straight into the asset store,
 //! when it's placed. The zip rules themselves live in rox-package.
 //!
-//! The item is kept as JSON, since rox-core doesn't know scenes. The walks
+//! The item is kept as JSON, since rox-core doesn't know canvases. The walks
 //! over it below match the dump walks in `settings.rs` key for key.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -40,7 +40,7 @@ pub const MANIFEST_MAX: u64 = 4 * 1024 * 1024;
 
 const ASSETS: &str = "assets/";
 
-/// One item lifted out of a scene, with everything it needs to work in
+/// One item lifted out of a canvas, with everything it needs to work in
 /// another. Reads leniently field by field, so one broken entry costs only
 /// itself.
 #[derive(Clone, Serialize, Deserialize)]
@@ -54,7 +54,7 @@ pub struct ObjectBundle {
         deserialize_with = "lenient::or_default"
     )]
     pub meta: WorkspaceMeta,
-    /// A `rox_scene::SceneItem`. Ids inside are local to the object.
+    /// A `rox_canvas::CanvasItem`. Ids inside are local to the object.
     pub item: serde_json::Value,
     /// Routes whose targets name the item or one of its children.
     #[serde(
@@ -246,7 +246,7 @@ pub fn rename_shaders(item: &mut serde_json::Value, renamed: &HashMap<String, St
 }
 
 /// Every signal a route inside the item reads: a surface shader's slot
-/// routes, and any panel's in a grid. The scene's own routes aren't in here.
+/// routes, and any panel's in a grid. The canvas's own routes aren't in here.
 pub fn route_signals(item: &serde_json::Value) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     visit_routes(item, &mut |route| {

@@ -143,8 +143,8 @@ Product owns these requirements. The structure behind them is the architect's ca
 - **Themes are tokens, layouts are shareable, nothing is scripted.** A theme is colors,
   fonts, spacing, and accent. A layout is a saved arrangement of panels and their
   configs. Both are artifacts a person can hand to someone else and have work. A layout
-  can hold scenes: a scene is a panel that places other panels, images, text and shaders
-  in depth under one camera, and one scene can fill the window. An item in a scene has a
+  can hold canvases: a canvas is a panel that places other panels, images, text and shaders
+  in depth under one camera, and one canvas can fill the window. An item in a canvas has a
   place, its content, one command from rox's own list that a click runs, a line of text
   that can show what's playing, and signals that move it. None of those is code. No
   scripting layer, for the reason under Out of scope.

@@ -1,17 +1,17 @@
-//! The scene editor's arithmetic (ADR 33): what a drag, a resize or a turn
+//! The canvas editor's arithmetic (ADR 33): what a drag, a resize or a turn
 //! does to an item's place, where snapping pulls it, how grouping and
 //! ungrouping re-express a place so nothing moves on screen, and the undo
-//! stack. Pure functions over rox-scene's types, so every one of them tests
+//! stack. Pure functions over rox-canvas's types, so every one of them tests
 //! without a window.
 //!
-//! Drawing the handles and reading the pointer belong to the scene panel,
+//! Drawing the handles and reading the pointer belong to the canvas panel,
 //! which calls in here with screen pixels and writes the result through its
 //! one edit path.
 
 use std::time::{Duration, Instant};
 
-use rox_scene::{
-    Anchor, Camera, Content, Frame, Length, Live, MAX_DEPTH, Mat4, Place, SceneItem, SceneState,
+use rox_canvas::{
+    Anchor, Camera, CanvasItem, CanvasState, Content, Frame, Length, Live, MAX_DEPTH, Mat4, Place,
     Viewport, child_frame, paint_order, project, unproject_delta,
 };
 
@@ -49,10 +49,10 @@ struct Step<T> {
     at: Instant,
 }
 
-/// The scene's history: whole item trees before and after each edit. Dock
+/// The canvas's history: whole item trees before and after each edit. Dock
 /// edits inside a grid stay out of it, because a live grid keeps its own
 /// tree across an undo and folds its dump back in on the next save.
-pub(crate) struct History<T = SceneState> {
+pub(crate) struct History<T = CanvasState> {
     undos: Vec<Step<T>>,
     redos: Vec<Step<T>>,
 }
@@ -124,7 +124,7 @@ impl<T: Clone + PartialEq> History<T> {
 // ── The tree ──
 
 /// Ids from the top level down to `id`, `id` last.
-pub(crate) fn path_to(items: &[SceneItem], id: &str) -> Option<Vec<String>> {
+pub(crate) fn path_to(items: &[CanvasItem], id: &str) -> Option<Vec<String>> {
     for item in items {
         if item.id == id {
             return Some(vec![item.id.clone()]);
@@ -143,9 +143,9 @@ pub(crate) fn path_to(items: &[SceneItem], id: &str) -> Option<Vec<String>> {
 
 /// The list holding `id` and its index there.
 fn siblings_mut<'a>(
-    items: &'a mut Vec<SceneItem>,
+    items: &'a mut Vec<CanvasItem>,
     id: &str,
-) -> Option<(&'a mut Vec<SceneItem>, usize)> {
+) -> Option<(&'a mut Vec<CanvasItem>, usize)> {
     if let Some(ix) = items.iter().position(|item| item.id == id) {
         return Some((items, ix));
     }
@@ -162,7 +162,7 @@ fn siblings_mut<'a>(
 }
 
 /// The list holding `id`, read only.
-pub(crate) fn siblings<'a>(items: &'a [SceneItem], id: &str) -> Option<&'a [SceneItem]> {
+pub(crate) fn siblings<'a>(items: &'a [CanvasItem], id: &str) -> Option<&'a [CanvasItem]> {
     if items.iter().any(|item| item.id == id) {
         return Some(items);
     }
@@ -174,10 +174,10 @@ pub(crate) fn siblings<'a>(items: &'a [SceneItem], id: &str) -> Option<&'a [Scen
 }
 
 /// The frame `id` is placed in: the stage's, or its group's.
-pub(crate) fn parent_frame(scene: &SceneState, id: &str, viewport: Viewport) -> Option<Frame> {
-    let path = path_to(&scene.items, id)?;
-    let mut frame = Frame::stage(&scene.stage, viewport);
-    let mut items = scene.items.as_slice();
+pub(crate) fn parent_frame(canvas: &CanvasState, id: &str, viewport: Viewport) -> Option<Frame> {
+    let path = path_to(&canvas.items, id)?;
+    let mut frame = Frame::stage(&canvas.stage, viewport);
+    let mut items = canvas.items.as_slice();
 
     for group_id in &path[..path.len() - 1] {
         let group = items.iter().find(|item| &item.id == group_id)?;
@@ -193,22 +193,22 @@ pub(crate) fn parent_frame(scene: &SceneState, id: &str, viewport: Viewport) -> 
 }
 
 /// The frame a group hands its children.
-pub(crate) fn group_frame(scene: &SceneState, id: &str, viewport: Viewport) -> Option<Frame> {
-    let parent = parent_frame(scene, id, viewport)?;
-    let group = scene.find(id)?;
+pub(crate) fn group_frame(canvas: &CanvasState, id: &str, viewport: Viewport) -> Option<Frame> {
+    let parent = parent_frame(canvas, id, viewport)?;
+    let group = canvas.find(id)?;
     matches!(group.content, Content::Group { .. })
         .then(|| child_frame(group, &parent, &Live::default()))
 }
 
 /// Takes `id` out wherever it sits, children and dock dump with it.
-pub(crate) fn remove(scene: &mut SceneState, id: &str) -> Option<SceneItem> {
-    let (list, ix) = siblings_mut(&mut scene.items, id)?;
+pub(crate) fn remove(canvas: &mut CanvasState, id: &str) -> Option<CanvasItem> {
+    let (list, ix) = siblings_mut(&mut canvas.items, id)?;
     Some(list.remove(ix))
 }
 
-/// Whether the groups nest within what this scene has left of the cap.
-pub(crate) fn fits(scene: &SceneState, levels_left: usize) -> bool {
-    scene.cost().depth <= levels_left
+/// Whether the groups nest within what this canvas has left of the cap.
+pub(crate) fn fits(canvas: &CanvasState, levels_left: usize) -> bool {
+    canvas.cost().depth <= levels_left
 }
 
 // ── Moving ──
@@ -216,7 +216,7 @@ pub(crate) fn fits(scene: &SceneState, levels_left: usize) -> bool {
 /// The position that carries `item` by `screen_delta` pixels from where it
 /// sat at `start`, at its own depth.
 pub(crate) fn moved(
-    item: &SceneItem,
+    item: &CanvasItem,
     parent: &Frame,
     camera: &Camera,
     viewport: Viewport,
@@ -296,7 +296,7 @@ impl Edges {
 /// length keeps its unit, and the box never shrinks under `floor` pixels.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resized(
-    item: &SceneItem,
+    item: &CanvasItem,
     parent: &Frame,
     camera: &Camera,
     viewport: Viewport,
@@ -358,7 +358,7 @@ pub(crate) fn resized(
 }
 
 /// The same place measured from another anchor, so the item stays put.
-pub(crate) fn with_anchor(item: &SceneItem, parent: &Frame, anchor: Anchor) -> Place {
+pub(crate) fn with_anchor(item: &CanvasItem, parent: &Frame, anchor: Anchor) -> Place {
     let size = [
         item.place.size[0].resolve(parent.size[0]),
         item.place.size[1].resolve(parent.size[1]),
@@ -443,7 +443,7 @@ pub(crate) fn step_depth(depths: &[f32], index: usize, forward: bool) -> Option<
 }
 
 /// Each sibling's depth, as the painter orders them.
-pub(crate) fn depths(siblings: &[SceneItem], parent: &Frame) -> Vec<f32> {
+pub(crate) fn depths(siblings: &[CanvasItem], parent: &Frame) -> Vec<f32> {
     siblings
         .iter()
         .map(|item| {
@@ -457,7 +457,7 @@ pub(crate) fn depths(siblings: &[SceneItem], parent: &Frame) -> Vec<f32> {
 
 /// The `position.z` that puts the item at `target` depth. Depth runs along
 /// the parent's z axis as it sits in the world, so a turned group scales it.
-pub(crate) fn z_for_depth(item: &SceneItem, parent: &Frame, current: f32, target: f32) -> f32 {
+pub(crate) fn z_for_depth(item: &CanvasItem, parent: &Frame, current: f32, target: f32) -> f32 {
     let along = parent.transform.vector([0., 0., 1.])[2];
     if along.abs() <= f32::EPSILON {
         return item.place.position[2];
@@ -470,11 +470,11 @@ pub(crate) fn z_for_depth(item: &SceneItem, parent: &Frame, current: f32, target
 
 /// Wraps `id` in a new group at its place, with the item at the group's
 /// center filling it, so nothing moves on screen. The group's id.
-pub(crate) fn group(scene: &mut SceneState, id: &str, levels_left: usize) -> Option<String> {
-    let group_id = scene.fresh_id("group");
-    let before = scene.clone();
+pub(crate) fn group(canvas: &mut CanvasState, id: &str, levels_left: usize) -> Option<String> {
+    let group_id = canvas.fresh_id("group");
+    let before = canvas.clone();
 
-    let (list, ix) = siblings_mut(&mut scene.items, id)?;
+    let (list, ix) = siblings_mut(&mut canvas.items, id)?;
     let mut item = list.remove(ix);
     let place = std::mem::replace(
         &mut item.place,
@@ -487,16 +487,16 @@ pub(crate) fn group(scene: &mut SceneState, id: &str, levels_left: usize) -> Opt
 
     list.insert(
         ix,
-        SceneItem {
+        CanvasItem {
             id: group_id.clone(),
             place,
             content: Content::Group { items: vec![item] },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         },
     );
 
-    if !fits(scene, levels_left) {
-        *scene = before;
+    if !fits(canvas, levels_left) {
+        *canvas = before;
         return None;
     }
 
@@ -505,15 +505,15 @@ pub(crate) fn group(scene: &mut SceneState, id: &str, levels_left: usize) -> Opt
 
 /// Lifts every child of group `id` into the group's parent, each re-placed
 /// so it stays where it was on screen. The group's opacity folds into them.
-pub(crate) fn ungroup(scene: &mut SceneState, id: &str, viewport: Viewport) -> bool {
-    let Some(parent) = parent_frame(scene, id, viewport) else {
+pub(crate) fn ungroup(canvas: &mut CanvasState, id: &str, viewport: Viewport) -> bool {
+    let Some(parent) = parent_frame(canvas, id, viewport) else {
         return false;
     };
-    let Some(inner) = group_frame(scene, id, viewport) else {
+    let Some(inner) = group_frame(canvas, id, viewport) else {
         return false;
     };
 
-    let Some((list, ix)) = siblings_mut(&mut scene.items, id) else {
+    let Some((list, ix)) = siblings_mut(&mut canvas.items, id) else {
         return false;
     };
     let group = list.remove(ix);
@@ -538,7 +538,7 @@ pub(crate) fn ungroup(scene: &mut SceneState, id: &str, viewport: Viewport) -> b
 /// it stays where it was on screen. Refused into itself, into one of its
 /// own children, or past the nesting cap.
 pub(crate) fn move_into(
-    scene: &mut SceneState,
+    canvas: &mut CanvasState,
     id: &str,
     into: Option<&str>,
     viewport: Viewport,
@@ -546,43 +546,43 @@ pub(crate) fn move_into(
 ) -> bool {
     if let Some(into) = into {
         let inside_itself =
-            path_to(&scene.items, into).is_none_or(|path| path.iter().any(|step| step == id));
+            path_to(&canvas.items, into).is_none_or(|path| path.iter().any(|step| step == id));
         if inside_itself {
             return false;
         }
     }
 
-    let Some(from) = parent_frame(scene, id, viewport) else {
+    let Some(from) = parent_frame(canvas, id, viewport) else {
         return false;
     };
     let to = match into {
-        Some(into) => match group_frame(scene, into, viewport) {
+        Some(into) => match group_frame(canvas, into, viewport) {
             Some(frame) => frame,
             None => return false,
         },
-        None => Frame::stage(&scene.stage, viewport),
+        None => Frame::stage(&canvas.stage, viewport),
     };
 
-    let before = scene.clone();
-    let Some(mut item) = remove(scene, id) else {
+    let before = canvas.clone();
+    let Some(mut item) = remove(canvas, id) else {
         return false;
     };
     item.place = reexpress(&item, &from, &to);
 
     let list = match into {
-        Some(into) => match scene.find_mut(into).map(|group| &mut group.content) {
+        Some(into) => match canvas.find_mut(into).map(|group| &mut group.content) {
             Some(Content::Group { items }) => items,
             _ => {
-                *scene = before;
+                *canvas = before;
                 return false;
             }
         },
-        None => &mut scene.items,
+        None => &mut canvas.items,
     };
     list.push(item);
 
-    if !fits(scene, levels_left) {
-        *scene = before;
+    if !fits(canvas, levels_left) {
+        *canvas = before;
         return false;
     }
 
@@ -592,7 +592,7 @@ pub(crate) fn move_into(
 /// The place in `to` that lands `item` where it sits in `from`: the same
 /// center, the same turn, the same size on screen. Rotation and scale
 /// compose through the frames; the size keeps its unit.
-pub(crate) fn reexpress(item: &SceneItem, from: &Frame, to: &Frame) -> Place {
+pub(crate) fn reexpress(item: &CanvasItem, from: &Frame, to: &Frame) -> Place {
     let own = child_frame(item, from, &Live::default());
     let size = own.size;
     let center = own.transform.point([size[0] / 2., size[1] / 2., 0.]);
@@ -696,7 +696,7 @@ fn invert(m: &Mat4) -> Option<Mat4> {
     Some(out)
 }
 
-/// How many more group levels a scene `level` deep can hold.
+/// How many more group levels a canvas `level` deep can hold.
 pub(crate) fn levels_left(level: usize) -> usize {
     MAX_DEPTH.saturating_sub(level)
 }
@@ -704,7 +704,7 @@ pub(crate) fn levels_left(level: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rox_scene::{Projected, Stage};
+    use rox_canvas::{Projected, Stage};
     use serde_json::json;
 
     const VIEW: Viewport = Viewport {
@@ -723,8 +723,8 @@ mod tests {
         Frame::stage(&Stage::default(), VIEW)
     }
 
-    fn image(id: &str, position: [f32; 3], size: [f32; 2]) -> SceneItem {
-        SceneItem {
+    fn image(id: &str, position: [f32; 3], size: [f32; 2]) -> CanvasItem {
+        CanvasItem {
             id: id.into(),
             place: Place {
                 position,
@@ -735,12 +735,12 @@ mod tests {
                 asset: "a".into(),
                 fit: Default::default(),
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         }
     }
 
-    fn grid(id: &str, position: [f32; 3], size: [Length; 2]) -> SceneItem {
-        SceneItem {
+    fn grid(id: &str, position: [f32; 3], size: [Length; 2]) -> CanvasItem {
+        CanvasItem {
             id: id.into(),
             place: Place {
                 position,
@@ -750,11 +750,11 @@ mod tests {
             content: Content::Grid {
                 dock: json!({ "id": id }),
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         }
     }
 
-    fn put(item: &SceneItem, parent: &Frame) -> Projected {
+    fn put(item: &CanvasItem, parent: &Frame) -> Projected {
         project(
             item,
             parent,
@@ -786,9 +786,9 @@ mod tests {
             .all(|(p, q)| near(p[0], q[0]) && near(p[1], q[1]))
     }
 
-    fn on_screen(scene: &SceneState, id: &str) -> Projected {
-        let parent = parent_frame(scene, id, VIEW).expect("placed");
-        put(scene.find(id).expect("present"), &parent)
+    fn on_screen(canvas: &CanvasState, id: &str) -> Projected {
+        let parent = parent_frame(canvas, id, VIEW).expect("placed");
+        put(canvas.find(id).expect("present"), &parent)
     }
 
     #[test]
@@ -1005,22 +1005,22 @@ mod tests {
         let mut item = image("pic", [120., -40., -200.], [300., 200.]);
         item.place.rotation = [10., 25., -5.];
         item.place.anchor = Anchor::TopLeft;
-        let mut scene = SceneState {
+        let mut canvas = CanvasState {
             items: vec![item, grid("g", [0., 0., 0.], [Length::Stage(0.5); 2])],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
-        let before = on_screen(&scene, "pic");
-        let grid_before = on_screen(&scene, "g");
+        let before = on_screen(&canvas, "pic");
+        let grid_before = on_screen(&canvas, "g");
 
-        let group_id = group(&mut scene, "pic", MAX_DEPTH).expect("groups");
+        let group_id = group(&mut canvas, "pic", MAX_DEPTH).expect("groups");
         assert_eq!(
-            path_to(&scene.items, "pic"),
+            path_to(&canvas.items, "pic"),
             Some(vec![group_id, "pic".into()])
         );
-        assert!(same_corners(&before, &on_screen(&scene, "pic")));
+        assert!(same_corners(&before, &on_screen(&canvas, "pic")));
 
-        group(&mut scene, "g", MAX_DEPTH).expect("groups");
-        assert!(same_corners(&grid_before, &on_screen(&scene, "g")));
+        group(&mut canvas, "g", MAX_DEPTH).expect("groups");
+        assert!(same_corners(&grid_before, &on_screen(&canvas, "g")));
     }
 
     #[test]
@@ -1036,7 +1036,7 @@ mod tests {
             [Length::Stage(0.25), Length::Units(90.)],
         );
 
-        let mut wrapper = SceneItem {
+        let mut wrapper = CanvasItem {
             id: "group".into(),
             place: Place {
                 position: [200., 50., -100.],
@@ -1049,35 +1049,35 @@ mod tests {
             content: Content::Group {
                 items: vec![a, b, g],
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
         wrapper.place.anchor = Anchor::Left;
-        let mut scene = SceneState {
+        let mut canvas = CanvasState {
             items: vec![wrapper],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
 
         let before: Vec<Projected> = ["a", "b", "g"]
             .iter()
-            .map(|id| on_screen(&scene, id))
+            .map(|id| on_screen(&canvas, id))
             .collect();
 
-        assert!(ungroup(&mut scene, "group", VIEW));
-        assert_eq!(scene.items.len(), 3);
+        assert!(ungroup(&mut canvas, "group", VIEW));
+        assert_eq!(canvas.items.len(), 3);
 
         for (id, was) in ["a", "b", "g"].iter().zip(&before) {
-            let now = on_screen(&scene, id);
+            let now = on_screen(&canvas, id);
             assert!(same_corners(was, &now), "{id}: {was:?} became {now:?}");
             assert!(near(now.opacity, was.opacity), "{id}");
         }
-        assert!(matches!(scene.items[2].place.size[0], Length::Stage(_)));
+        assert!(matches!(canvas.items[2].place.size[0], Length::Stage(_)));
     }
 
     #[test]
     fn moving_into_a_turned_group_keeps_the_screen_position() {
         let mut pic = image("pic", [-300., 100., 50.], [240., 180.]);
         pic.place.rotation = [0., 0., 20.];
-        let turned = SceneItem {
+        let turned = CanvasItem {
             id: "turned".into(),
             place: Place {
                 position: [250., -60., -150.],
@@ -1086,30 +1086,30 @@ mod tests {
                 ..Place::default()
             },
             content: Content::Group { items: Vec::new() },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
-        let mut scene = SceneState {
+        let mut canvas = CanvasState {
             items: vec![pic, turned],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
-        let before = on_screen(&scene, "pic");
+        let before = on_screen(&canvas, "pic");
 
         assert!(move_into(
-            &mut scene,
+            &mut canvas,
             "pic",
             Some("turned"),
             VIEW,
             MAX_DEPTH
         ));
         assert_eq!(
-            path_to(&scene.items, "pic"),
+            path_to(&canvas.items, "pic"),
             Some(vec!["turned".into(), "pic".into()])
         );
-        assert!(same_corners(&before, &on_screen(&scene, "pic")));
+        assert!(same_corners(&before, &on_screen(&canvas, "pic")));
 
         // A group can't go inside itself.
         assert!(!move_into(
-            &mut scene,
+            &mut canvas,
             "turned",
             Some("turned"),
             VIEW,
@@ -1117,43 +1117,43 @@ mod tests {
         ));
 
         // And back out to the top keeps it too.
-        assert!(move_into(&mut scene, "pic", None, VIEW, MAX_DEPTH));
-        assert!(same_corners(&before, &on_screen(&scene, "pic")));
+        assert!(move_into(&mut canvas, "pic", None, VIEW, MAX_DEPTH));
+        assert!(same_corners(&before, &on_screen(&canvas, "pic")));
     }
 
     #[test]
     fn grouping_stops_at_the_cap() {
-        let mut scene = SceneState {
+        let mut canvas = CanvasState {
             items: vec![image("pic", [0.; 3], [10., 10.])],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
 
         for _ in 0..2 {
-            group(&mut scene, "pic", 2).expect("under the cap");
+            group(&mut canvas, "pic", 2).expect("under the cap");
         }
 
-        let saved = scene.clone();
-        assert_eq!(group(&mut scene, "pic", 2), None);
-        assert_eq!(scene, saved);
+        let saved = canvas.clone();
+        assert_eq!(group(&mut canvas, "pic", 2), None);
+        assert_eq!(canvas, saved);
     }
 
     #[test]
     fn undo_restores_a_deleted_grid() {
         let dock = json!({ "version": 1, "center": { "kept": true } });
-        let mut scene = SceneState {
-            items: vec![SceneItem {
+        let mut canvas = CanvasState {
+            items: vec![CanvasItem {
                 id: "grid".into(),
                 content: Content::Grid { dock: dock.clone() },
-                ..SceneItem::default()
+                ..CanvasItem::default()
             }],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
         let mut undo = History::default();
 
-        let before = scene.clone();
-        remove(&mut scene, "grid").expect("present");
-        undo.record(before, scene.clone(), None, Instant::now());
-        assert!(scene.items.is_empty());
+        let before = canvas.clone();
+        remove(&mut canvas, "grid").expect("present");
+        undo.record(before, canvas.clone(), None, Instant::now());
+        assert!(canvas.items.is_empty());
 
         let back = undo.undo().expect("one step");
         match &back.find("grid").expect("restored").content {
@@ -1166,16 +1166,16 @@ mod tests {
 
     #[test]
     fn one_drag_is_one_undo_step() {
-        let mut scene = SceneState {
+        let mut canvas = CanvasState {
             items: vec![image("pic", [0.; 3], [100., 100.])],
-            ..SceneState::default()
+            ..CanvasState::default()
         };
         let mut undo = History::default();
 
         // A drag edits live from its start and records once on release.
-        let start = scene.clone();
+        let start = canvas.clone();
         for step in 1..=20 {
-            let item = scene.find_mut("pic").expect("present");
+            let item = canvas.find_mut("pic").expect("present");
             item.place.position = moved(
                 &start.items[0],
                 &stage(),
@@ -1186,7 +1186,7 @@ mod tests {
                 is_flat(&start.items[0].content),
             );
         }
-        undo.record(start.clone(), scene.clone(), None, Instant::now());
+        undo.record(start.clone(), canvas.clone(), None, Instant::now());
 
         assert_eq!(undo.undo(), Some(start));
         assert!(!undo.can_undo());
@@ -1197,9 +1197,9 @@ mod tests {
     fn a_scrub_merges_and_a_new_edit_drops_the_redos() {
         let mut undo = History::default();
         let at = |n: usize| {
-            let mut scene = SceneState::default();
-            scene.camera.fov = n as f32;
-            scene
+            let mut canvas = CanvasState::default();
+            canvas.camera.fov = n as f32;
+            canvas
         };
         let now = Instant::now();
 

@@ -8,18 +8,18 @@ use gpui::{
     AnyElement, App, ContentMask, Font, Hsla, Rgba, SharedString, TextRun, canvas, point,
     prelude::*, px,
 };
+use rox_canvas::{Align, CanvasItem, CanvasState, Content};
 use rox_core::pattern::{self, Name, Pattern, PatternField};
 use rox_design::palette;
 use rox_panel_api::panel::AppState;
-use rox_scene::{Align, Content, SceneItem, SceneState};
 use rox_services::discord_presence::{PresenceSample, format_quality};
 
-use crate::scene::{self, Body};
+use crate::canvas::{self, Body};
 
 /// The now-playing fields a text item fills. Every placeholder name parses,
 /// so a pattern written for the presence card works here too.
 #[derive(Clone, PartialEq)]
-pub(crate) enum SceneField {
+pub(crate) enum CanvasField {
     Artist,
     AlbumArtist,
     Album,
@@ -30,24 +30,24 @@ pub(crate) enum SceneField {
     Station,
     Source,
     Format,
-    /// A name the scene has no value for. It renders nothing.
+    /// A name the canvas has no value for. It renders nothing.
     Unfilled,
 }
 
-impl PatternField for SceneField {
+impl PatternField for CanvasField {
     fn from_name(name: Name) -> Option<Self> {
         Some(match name {
-            Name::Artist => SceneField::Artist,
-            Name::AlbumArtist => SceneField::AlbumArtist,
-            Name::Album => SceneField::Album,
-            Name::Title => SceneField::Title,
-            Name::Track => SceneField::Track,
-            Name::Year | Name::Date => SceneField::Year,
-            Name::Genre => SceneField::Genre,
-            Name::Station => SceneField::Station,
-            Name::Source => SceneField::Source,
-            Name::Format => SceneField::Format,
-            Name::Comment | Name::Disc => SceneField::Unfilled,
+            Name::Artist => CanvasField::Artist,
+            Name::AlbumArtist => CanvasField::AlbumArtist,
+            Name::Album => CanvasField::Album,
+            Name::Title => CanvasField::Title,
+            Name::Track => CanvasField::Track,
+            Name::Year | Name::Date => CanvasField::Year,
+            Name::Genre => CanvasField::Genre,
+            Name::Station => CanvasField::Station,
+            Name::Source => CanvasField::Source,
+            Name::Format => CanvasField::Format,
+            Name::Comment | Name::Disc => CanvasField::Unfilled,
             Name::Skip => return None,
         })
     }
@@ -74,12 +74,12 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
 /// What a new text item reads.
 pub(crate) const NEW_TEXT: &str = "%title%";
 
-pub(crate) type Values = Vec<(SceneField, String)>;
+pub(crate) type Values = Vec<(CanvasField, String)>;
 
 /// A text item's line, parsed once per edit.
 pub(crate) struct Line {
     raw: String,
-    parsed: Result<Pattern<SceneField>, String>,
+    parsed: Result<Pattern<CanvasField>, String>,
 }
 
 impl Line {
@@ -96,7 +96,7 @@ impl Line {
 
     /// A line that doesn't parse paints as typed, so a stray `%` shows
     /// where it is instead of blanking the item.
-    pub(crate) fn render(&self, values: &[(SceneField, String)]) -> String {
+    pub(crate) fn render(&self, values: &[(CanvasField, String)]) -> String {
         match &self.parsed {
             Ok(pattern) => pattern.render_line(values),
             Err(_) => self.raw.clone(),
@@ -112,17 +112,17 @@ pub(crate) fn values(sample: Option<&PresenceSample>) -> Values {
     };
 
     vec![
-        (SceneField::Artist, sample.artist.clone()),
-        (SceneField::AlbumArtist, sample.album_artist.clone()),
-        (SceneField::Album, sample.album.clone()),
-        (SceneField::Title, sample.title.clone()),
-        (SceneField::Track, sample.track.clone()),
-        (SceneField::Year, sample.year.clone()),
-        (SceneField::Genre, sample.genre.clone()),
-        (SceneField::Station, sample.station.clone()),
-        (SceneField::Source, sample.source.clone()),
+        (CanvasField::Artist, sample.artist.clone()),
+        (CanvasField::AlbumArtist, sample.album_artist.clone()),
+        (CanvasField::Album, sample.album.clone()),
+        (CanvasField::Title, sample.title.clone()),
+        (CanvasField::Track, sample.track.clone()),
+        (CanvasField::Year, sample.year.clone()),
+        (CanvasField::Genre, sample.genre.clone()),
+        (CanvasField::Station, sample.station.clone()),
+        (CanvasField::Source, sample.source.clone()),
         (
-            SceneField::Format,
+            CanvasField::Format,
             format_quality(&sample.codec, sample.bitrate_kbps),
         ),
     ]
@@ -135,15 +135,15 @@ pub(crate) fn now_playing(state: &AppState, cx: &App) -> Values {
     values(sample.as_ref())
 }
 
-pub(crate) fn holds_text(scene: &SceneState) -> bool {
+pub(crate) fn holds_text(canvas: &CanvasState) -> bool {
     let mut found = false;
-    scene.walk(&mut |item, _| found |= matches!(item.content, Content::Text { .. }));
+    canvas.walk(&mut |item, _| found |= matches!(item.content, Content::Text { .. }));
     found
 }
 
 /// The line built for `id`, groups descended.
 pub(crate) fn line_of<'a, G>(
-    items: &'a [SceneItem],
+    items: &'a [CanvasItem],
     bodies: &'a [Body<G>],
     id: &str,
 ) -> Option<&'a Line> {
@@ -185,7 +185,7 @@ pub(crate) struct Paint {
 
 /// The line shaped and painted raw inside the item's box, clipped to it.
 pub(crate) fn element(paint: Paint, corners: &[[f32; 2]; 4]) -> AnyElement {
-    let (origin, extent) = scene::bbox(corners);
+    let (origin, extent) = canvas::bbox(corners);
 
     canvas(
         |_, _, _| (),
@@ -249,8 +249,8 @@ mod tests {
 
     fn playing(artist: &str, title: &str) -> Values {
         vec![
-            (SceneField::Artist, artist.to_string()),
-            (SceneField::Title, title.to_string()),
+            (CanvasField::Artist, artist.to_string()),
+            (CanvasField::Title, title.to_string()),
         ]
     }
 

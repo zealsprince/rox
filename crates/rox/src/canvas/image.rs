@@ -9,8 +9,8 @@
 //! A GIF, an APNG or an animated WebP plays. Its frames are held to the
 //! header's size, and decoding stops at [`MAX_FRAMES`] or
 //! [`MAX_ANIMATION_BYTES`], whichever comes first. Each item keeps its own
-//! clock, and the scene wakes only when the next frame is due, from a
-//! render. A scene that isn't drawn (a hidden tab, a hidden window) stops
+//! clock, and the canvas wakes only when the next frame is due, from a
+//! render. A canvas that isn't drawn (a hidden tab, a hidden window) stops
 //! asking after one wake, and a still image never asks.
 
 use std::collections::HashMap;
@@ -23,15 +23,15 @@ use gpui::{
     size,
 };
 use image::{AnimationDecoder, ImageDecoder, ImageFormat};
+use rox_canvas::{
+    Anchor, CanvasItem, Content, Frame, ImageFit, Length, Live, Place, child_frame, project,
+};
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_design::palette;
-use rox_scene::{
-    Anchor, Content, Frame, ImageFit, Length, Live, Place, SceneItem, child_frame, project,
-};
 
-use crate::panels::scene::ScenePanel;
-use crate::scene::{Placing, bbox, on_stage};
+use crate::canvas::{Placing, bbox, on_stage};
+use crate::panels::canvas::CanvasPanel;
 
 /// The most pixels an image may hold, 4096 square. A 4K frame fits with
 /// room to spare, and the decoded copy stays under 64 MiB. Placeholder.
@@ -68,7 +68,7 @@ pub(crate) enum Look {
     Missing,
 }
 
-/// Decoded images by asset id, for one scene. Each one sits in the window's
+/// Decoded images by asset id, for one canvas. Each one sits in the window's
 /// atlas until it's dropped here.
 #[derive(Default)]
 pub(crate) struct Images {
@@ -184,7 +184,7 @@ impl Images {
     /// After a render has placed every item: one timer for the earliest
     /// frame due, kept when one already fires in time. With nothing playing
     /// any pending wake goes too.
-    pub(crate) fn wake_when_due(&mut self, cx: &mut Context<ScenePanel>) {
+    pub(crate) fn wake_when_due(&mut self, cx: &mut Context<CanvasPanel>) {
         let Some(due) = self.due.take() else {
             self.wake = None;
             return;
@@ -207,7 +207,7 @@ impl Images {
     }
 
     /// A miss starts one decode and answers Pending until it lands.
-    pub(crate) fn look(&mut self, id: &str, cx: &mut Context<ScenePanel>) -> Look {
+    pub(crate) fn look(&mut self, id: &str, cx: &mut Context<CanvasPanel>) -> Look {
         match self.slots.get(id) {
             Some(Slot::Ready(image)) => return Look::Ready(image.clone()),
             Some(Slot::Loading(_)) => return Look::Pending,
@@ -254,7 +254,7 @@ impl Images {
         let slot = match decoded {
             Ok(image) => Slot::Ready(image),
             Err(e) => {
-                log::warn!("scene: image {id}: {e}");
+                log::warn!("canvas: image {id}: {e}");
                 Slot::Failed
             }
         };
@@ -380,7 +380,7 @@ fn keep_frames(
 
         if kept.len() == MAX_FRAMES || bytes + each > MAX_ANIMATION_BYTES {
             log::warn!(
-                "scene: an animation stops at {} frames, its cap",
+                "canvas: an animation stops at {} frames, its cap",
                 kept.len()
             );
             break;
@@ -450,12 +450,12 @@ pub(crate) fn fit(how: ImageFit, item: [f32; 2], image: [f32; 2]) -> (Bounds<f32
 
 /// The image's element with its depth, or None while nothing should show.
 pub(crate) fn element(
-    item: &SceneItem,
+    item: &CanvasItem,
     parent: &Frame,
     at: &Placing,
     live: &Live,
     images: &mut Images,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> Option<(f32, AnyElement)> {
     let Content::Image { asset, fit: how } = &item.content else {
         return None;
@@ -465,13 +465,13 @@ pub(crate) fn element(
     // The face rides that frame, so it takes no offsets of its own.
     let frame = child_frame(item, parent, live);
     let face_on = |face: [f32; 2]| {
-        let face = SceneItem {
+        let face = CanvasItem {
             place: Place {
                 anchor: Anchor::Center,
                 size: [Length::Units(face[0]), Length::Units(face[1])],
                 ..Place::default()
             },
-            ..SceneItem::default()
+            ..CanvasItem::default()
         };
         project(
             &face,
@@ -573,7 +573,7 @@ fn missing(corners: &[[f32; 2]; 4], asset: &str) -> AnyElement {
         .text_xs()
         .text_color(palette::text_faint())
         .child(rox_i18n::t!(
-            "scene-image-missing",
+            "canvas-image-missing",
             asset = asset.to_string()
         ))
         .into_any_element()

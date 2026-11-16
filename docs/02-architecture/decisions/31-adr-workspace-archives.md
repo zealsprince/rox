@@ -88,7 +88,7 @@ images (`rox-core/src/settings/panel_presets.rs`, `detach`). That gap exists tod
 this record gives presets no asset home, so it stands.
 
 **Amended 2026-11-15: two kinds, image and font.** Andrew's product call, with [ADR
-33](33-adr-scene-panel.md)'s amendment. An asset is an image or a font. The video and 3D
+33](33-adr-canvas-panel.md)'s amendment. An asset is an image or a font. The video and 3D
 model kinds are withdrawn before any release wrote one, since nothing in rox will play a
 video or draw a model.
 

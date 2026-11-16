@@ -4801,9 +4801,9 @@ mod tests {
         assert_eq!(found, ["// the shader panel", "// the surface one"]);
     }
 
-    /// A dock dump holding one scene panel, whose one grid holds `panels`.
-    /// The grid's dump sits in the scene's config, never in `children`.
-    fn in_a_scene(panels: serde_json::Value, more_items: serde_json::Value) -> serde_json::Value {
+    /// A dock dump holding one canvas panel, whose one grid holds `panels`.
+    /// The grid's dump sits in the canvas's config, never in `children`.
+    fn in_a_canvas(panels: serde_json::Value, more_items: serde_json::Value) -> serde_json::Value {
         let tabs = |children| {
             serde_json::json!({
                 "panel_name": "TabPanel",
@@ -4828,17 +4828,17 @@ mod tests {
         })];
         items.extend(more_items.as_array().cloned().unwrap_or_default());
 
-        let scene = serde_json::json!({
-            "panel_name": "scene",
+        let canvas = serde_json::json!({
+            "panel_name": "canvas",
             "children": [],
             "info": { "panel": { "version": 1, "items": items } },
         });
-        stack(serde_json::json!([tabs(serde_json::json!([scene]))]))
+        stack(serde_json::json!([tabs(serde_json::json!([canvas]))]))
     }
 
     #[test]
-    fn a_scene_gives_up_its_grids_shaders() {
-        let dump = in_a_scene(
+    fn a_canvas_gives_up_its_grids_shaders() {
+        let dump = in_a_canvas(
             serde_json::json!([
                 {
                     "panel_name": "shader",
@@ -4870,8 +4870,8 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_knows_when_a_scene_in_it_wears_a_shader() {
-        let worn = in_a_scene(
+    fn a_layout_knows_when_a_canvas_in_it_wears_a_shader() {
+        let worn = in_a_canvas(
             serde_json::json!([{
                 "panel_name": "folder tree",
                 "info": { "panel": { "shader": { "enabled": true, "name": "Lace" } }},
@@ -4880,7 +4880,7 @@ mod tests {
         );
         assert!(dump_wears_shader(&worn));
 
-        let plain = in_a_scene(
+        let plain = in_a_canvas(
             serde_json::json!([{
                 "panel_name": "folder tree",
                 "info": { "panel": { "path": "/home/someone/Music" }},
@@ -4891,8 +4891,8 @@ mod tests {
     }
 
     #[test]
-    fn stripping_reaches_a_grid_inside_a_scene() {
-        let mut dump = in_a_scene(
+    fn stripping_reaches_a_grid_inside_a_canvas() {
+        let mut dump = in_a_canvas(
             serde_json::json!([
                 {
                     "panel_name": "shader",
@@ -4918,12 +4918,12 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_names_the_plugins_its_panels_came_from() {
+    fn a_canvas_names_the_plugins_its_panels_came_from() {
         let bundle = WorkspaceBundle {
             layouts: vec![NamedLayout {
                 name: "staged".to_string(),
                 size: None,
-                dump: in_a_scene(
+                dump: in_a_canvas(
                     serde_json::json!([{
                         "panel_name": "source browser",
                         "info": { "panel": { "owner": "plugin:tones" }},
@@ -4938,12 +4938,12 @@ mod tests {
     }
 
     #[test]
-    fn scrubbing_reaches_a_grid_inside_a_scene() {
+    fn scrubbing_reaches_a_grid_inside_a_canvas() {
         let mut bundle = WorkspaceBundle {
             layouts: vec![NamedLayout {
                 name: "staged".to_string(),
                 size: None,
-                dump: in_a_scene(
+                dump: in_a_canvas(
                     serde_json::json!([
                         {
                             "panel_name": "shader",

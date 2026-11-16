@@ -1413,7 +1413,7 @@ impl SettingsWindow {
 
     /// Walks the live stack and tab entities, not the dock's `DockItem` tree,
     /// which goes stale once tabs move. `dock` is the area the tree belongs
-    /// to: the window's, or a scene grid's.
+    /// to: the window's, or a canvas grid's.
     fn tree_rows(
         &self,
         node: Arc<dyn PanelView>,
@@ -1519,13 +1519,13 @@ impl SettingsWindow {
         let children = crate::composite::hosted_children(&panel, cx);
         let grids = crate::composite::hosted_docks(&panel, cx);
         rows.push(self.panel_row(rows.len(), panel, depth, slot, cx));
-        // A scene's grids are docks of their own, and their rows keep the
+        // A canvas's grids are docks of their own, and their rows keep the
         // move and lock controls, since they are real tab groups.
         for (name, grid) in grids.into_iter().flatten() {
             rows.push(chrome_row(
                 rows.len(),
                 depth + 1,
-                rox_i18n::t!("scene-tree-grid", name = name),
+                rox_i18n::t!("canvas-tree-grid", name = name),
                 None,
             ));
             let root = grid.read(cx).items().view();

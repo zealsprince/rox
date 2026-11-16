@@ -127,7 +127,7 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
 fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     match method {
         "transport.status" => Ok(status(state, cx)),
-        // Stored, not placed: placing goes through a scene's confirm.
+        // Stored, not placed: placing goes through a canvas's confirm.
         "objects.install" => {
             let path = super::ipc_documents::path_param(params)?;
             let name = crate::objects::install(&path).map_err(RpcError::app)?;
@@ -622,7 +622,7 @@ fn workspace_for(
 fn milkdrop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let op = params.get("op").and_then(Value::as_str).unwrap_or("status");
     let workspace = workspace_for(params.get("window").and_then(Value::as_u64), cx)?;
-    // A Milkdrop inside a scene's grid counts. One in a composite's slot
+    // A Milkdrop inside a canvas's grid counts. One in a composite's slot
     // doesn't: the dock's walk stops at the composite.
     let panel = workspace
         .read(cx)

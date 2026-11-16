@@ -1,6 +1,6 @@
-//! The parts of a scene panel (ADR 33) below the panel itself: the live
-//! bodies kept beside a scene's saved items, the nesting cap, and the grid,
-//! image, shader, text and texture items. [`crate::panels::scene`] owns them
+//! The parts of a canvas panel (ADR 33) below the panel itself: the live
+//! bodies kept beside a canvas's saved items, the nesting cap, and the grid,
+//! image, shader, text and texture items. [`crate::panels::canvas`] owns them
 //! and draws the result.
 //!
 //! The saved items stay the source of truth. A body holds only what can't be
@@ -21,7 +21,7 @@ pub(crate) mod texture;
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use rox_scene::{Camera, Content, MAX_DEPTH, SceneItem, Viewport};
+use rox_canvas::{Camera, CanvasItem, Content, MAX_DEPTH, Viewport};
 use serde_json::Value;
 
 /// What one saved item holds live, at the same index as the item.
@@ -50,7 +50,7 @@ thread_local! {
     static RESTORING: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
-/// Held around a grid's restore, so a scene the registry builds inside it
+/// Held around a grid's restore, so a canvas the registry builds inside it
 /// knows how deep it sits. Restores the outer value on drop, a panic
 /// included.
 pub(crate) struct Nesting(Option<usize>);
@@ -67,30 +67,30 @@ impl Drop for Nesting {
     }
 }
 
-/// The level a scene built now starts at: 0 on its own, one past the grid
+/// The level a canvas built now starts at: 0 on its own, one past the grid
 /// restoring it.
 pub(crate) fn level_here() -> usize {
     RESTORING.get().map_or(0, |level| level + 1)
 }
 
-/// Every item's body. `level` counts the scenes and groups these items sit
+/// Every item's body. `level` counts the canvases and groups these items sit
 /// inside, and nothing past [`MAX_DEPTH`] is built, so a hand-edited layout
 /// can't nest without end. `grid` builds one grid at the level its item
 /// sits at; None keeps the item as saved.
 pub(crate) fn build_bodies<G>(
-    items: &[SceneItem],
+    items: &[CanvasItem],
     level: usize,
-    grid: &mut impl FnMut(&SceneItem, &Value, usize) -> Option<G>,
+    grid: &mut impl FnMut(&CanvasItem, &Value, usize) -> Option<G>,
 ) -> Vec<Body<G>> {
     items
         .iter()
         .map(|item| match &item.content {
             Content::Grid { dock } => {
-                // Only a scene inside the grid opens a level, so a grid of
+                // Only a canvas inside the grid opens a level, so a grid of
                 // plain panels still builds at the cap.
-                if level >= MAX_DEPTH && holds_scene(dock) {
+                if level >= MAX_DEPTH && holds_canvas(dock) {
                     log::warn!(
-                        "scene: grid {} holds a scene past {MAX_DEPTH} levels, keeping it as saved",
+                        "canvas: grid {} holds a canvas past {MAX_DEPTH} levels, keeping it as saved",
                         item.id
                     );
                     return Body::Unknown;
@@ -102,7 +102,7 @@ pub(crate) fn build_bodies<G>(
             Content::Group { items } => {
                 if level >= MAX_DEPTH {
                     log::warn!(
-                        "scene: group {} nests past {MAX_DEPTH} levels, keeping it as saved",
+                        "canvas: group {} nests past {MAX_DEPTH} levels, keeping it as saved",
                         item.id
                     );
                     return Body::Unknown;
@@ -122,15 +122,15 @@ pub(crate) fn build_bodies<G>(
         .collect()
 }
 
-/// Whether a dock dump holds a scene panel anywhere, a composite's slots
+/// Whether a dock dump holds a canvas panel anywhere, a composite's slots
 /// included.
-pub(crate) fn holds_scene(dump: &Value) -> bool {
+pub(crate) fn holds_canvas(dump: &Value) -> bool {
     match dump {
         Value::Object(map) => {
-            map.get("panel_name").and_then(Value::as_str) == Some(crate::panels::scene::PANEL_NAME)
-                || map.values().any(holds_scene)
+            map.get("panel_name").and_then(Value::as_str) == Some(crate::panels::canvas::PANEL_NAME)
+                || map.values().any(holds_canvas)
         }
-        Value::Array(items) => items.iter().any(holds_scene),
+        Value::Array(items) => items.iter().any(holds_canvas),
         _ => false,
     }
 }
@@ -138,7 +138,7 @@ pub(crate) fn holds_scene(dump: &Value) -> bool {
 /// Write each live grid's dump over its saved one. An item with no live
 /// grid keeps what it was saved with.
 pub(crate) fn fold_dumps<G>(
-    items: &mut [SceneItem],
+    items: &mut [CanvasItem],
     bodies: &[Body<G>],
     dump: &impl Fn(&G) -> Option<Value>,
 ) {
@@ -157,9 +157,9 @@ pub(crate) fn fold_dumps<G>(
 
 /// Every live grid with its item, groups descended, in item order.
 pub(crate) fn each_grid<'a, G>(
-    items: &'a [SceneItem],
+    items: &'a [CanvasItem],
     bodies: &'a [Body<G>],
-    f: &mut impl FnMut(&'a SceneItem, &'a G),
+    f: &mut impl FnMut(&'a CanvasItem, &'a G),
 ) {
     for (item, body) in items.iter().zip(bodies) {
         match (&item.content, body) {
@@ -173,7 +173,7 @@ pub(crate) fn each_grid<'a, G>(
 /// Pull the live grids out by item id, so a rebuild after an edit keeps
 /// them. The first of two items sharing an id keeps the grid.
 pub(crate) fn take_grids<G>(
-    items: &[SceneItem],
+    items: &[CanvasItem],
     bodies: Vec<Body<G>>,
     out: &mut HashMap<String, G>,
 ) {
@@ -213,25 +213,25 @@ pub(crate) fn on_stage(corners: &[[f32; 2]; 4], viewport: Viewport) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rox_scene::SceneState;
+    use rox_canvas::CanvasState;
     use serde_json::json;
 
-    fn scene(items: Value) -> SceneState {
-        serde_json::from_value(json!({ "items": items })).expect("a scene parses")
+    fn canvas(items: Value) -> CanvasState {
+        serde_json::from_value(json!({ "items": items })).expect("a canvas parses")
     }
 
     fn grid(id: &str, dock: Value) -> Value {
         json!({ "id": id, "content": { "kind": "grid", "dock": dock } })
     }
 
-    fn nested_scene_dump() -> Value {
+    fn nested_canvas_dump() -> Value {
         json!({
             "version": 1,
             "center": {
                 "panel_name": "StackPanel",
                 "children": [{
                     "panel_name": "TabPanel",
-                    "children": [{ "panel_name": "scene", "children": [], "info": { "panel": {} } }],
+                    "children": [{ "panel_name": "canvas", "children": [], "info": { "panel": {} } }],
                     "info": { "tabs": { "active_index": 0 } },
                 }],
                 "info": { "stack": { "sizes": [], "axis": 1 } },
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn an_unknown_item_survives_a_dump() {
         let text = json!({ "id": "t", "content": { "kind": "hologram", "beam": [1, 2, 3] } });
-        let mut state = scene(json!([text.clone(), grid("a", json!({ "stale": true }))]));
+        let mut state = canvas(json!([text.clone(), grid("a", json!({ "stale": true }))]));
         let bodies = build_bodies(&state.items, 0, &mut |_, _, _| Some(()));
 
         fold_dumps(&mut state.items, &bodies, &|_| {
@@ -266,9 +266,9 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_in_a_grid_stops_at_the_cap() {
+    fn a_canvas_in_a_grid_stops_at_the_cap() {
         let at = |levels| {
-            let state = scene(json!([grouped(levels, grid("deep", nested_scene_dump()))]));
+            let state = canvas(json!([grouped(levels, grid("deep", nested_canvas_dump()))]));
             let mut built = 0;
             let bodies = build_bodies(&state.items, 0, &mut |_, _, _| {
                 built += 1;
@@ -281,13 +281,13 @@ mod tests {
         assert_eq!(built, 1, "one level under the cap still builds");
 
         let (_, built) = at(MAX_DEPTH);
-        assert_eq!(built, 0, "a scene at the cap would open one more level");
+        assert_eq!(built, 0, "a canvas at the cap would open one more level");
     }
 
     #[test]
     fn a_grid_of_plain_panels_builds_at_the_cap() {
         let plain = json!({ "version": 1, "center": { "panel_name": "StackPanel" } });
-        let state = scene(json!([grouped(MAX_DEPTH, grid("deep", plain))]));
+        let state = canvas(json!([grouped(MAX_DEPTH, grid("deep", plain))]));
         let mut built = 0;
 
         build_bodies(&state.items, 0, &mut |_, _, _| {
@@ -299,8 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn a_nested_scene_starts_its_count_where_the_grid_left_it() {
-        let state = scene(json!([grid("a", nested_scene_dump())]));
+    fn a_nested_canvas_starts_its_count_where_the_grid_left_it() {
+        let state = canvas(json!([grid("a", nested_canvas_dump())]));
         let bodies = build_bodies(&state.items, MAX_DEPTH, &mut |_, _, _| Some(()));
         assert!(matches!(bodies[0], Body::Unknown));
 
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn grids_come_back_by_id_after_an_edit() {
-        let state = scene(json!([
+        let state = canvas(json!([
             grid("a", Value::Null),
             { "id": "g", "content": { "kind": "group", "items": [grid("b", Value::Null)] } },
         ]));

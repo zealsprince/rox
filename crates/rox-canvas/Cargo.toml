@@ -1,11 +1,11 @@
 [package]
-name = "rox-scene"
+name = "rox-canvas"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# A scene saves as JSON inside its panel's config.
+# A canvas saves as JSON inside its panel's config.
 serde = { version = "1", features = ["derive"] }
 # Grid dumps, shader configs and kinds this build doesn't know stay raw JSON.
 serde_json = "1"

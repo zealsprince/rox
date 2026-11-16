@@ -1,10 +1,10 @@
-//! The scene inspector (ADR 33): a panel floating over the scene in design
+//! The canvas inspector (ADR 33): a panel floating over the canvas in design
 //! mode, along its right or left edge, with the item tree and every number
 //! the selected item has. With nothing selected it holds the stage and the
 //! camera. The panel's own chrome stays in its settings window; this holds
-//! only the scene.
+//! only the canvas.
 //!
-//! Every edit here goes through [`ScenePanel::change`], so it shows live,
+//! Every edit here goes through [`CanvasPanel::change`], so it shows live,
 //! lands in undo and saves. Each kind of content adds its rows in a
 //! function of its own below [`content_rows`].
 
@@ -18,6 +18,7 @@ use gpui::{
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use rox_canvas::{Align, Anchor, CanvasItem, CanvasState, Content, Fit, ImageFit, Length};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::shader as surface;
@@ -28,15 +29,14 @@ use rox_panel_api::panel_settings::{self, ShaderSource};
 use rox_panel_api::signal_ui::{self, bindable_row, routes::RouteEditor, slots::SlotList};
 use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{PickRow, search_picker};
-use rox_scene::{Align, Anchor, Content, Fit, ImageFit, Length, SceneItem, SceneState};
 
+use crate::canvas::shader::{self as shader_item, RowState};
+use crate::canvas::text;
+use crate::canvas::{cost, edit};
 use crate::keymap;
 use crate::objects::{self, Dialog};
+use crate::panels::canvas::{self, CanvasPanel};
 use crate::panels::controls;
-use crate::panels::scene::{self, ScenePanel};
-use crate::scene::shader::{self as shader_item, RowState};
-use crate::scene::text;
-use crate::scene::{cost, edit};
 
 const WIDTH: f32 = 340.;
 
@@ -133,28 +133,28 @@ impl Render for RowDragView {
     }
 }
 
-/// The inspector, absolutely placed over the scene. It takes every press,
+/// The inspector, absolutely placed over the canvas. It takes every press,
 /// wheel and hover over it, so nothing reaches the stage underneath.
 pub(crate) fn render(
-    panel: &mut ScenePanel,
+    panel: &mut CanvasPanel,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     signal_ui::sync(panel);
     sync_pattern(panel, window, cx);
     let left = panel.inspector.left;
 
-    // A press on one of these controls takes focus off the scene, so the
-    // inspector carries the scene's keys too. A field typing here sits deeper
+    // A press on one of these controls takes focus off the canvas, so the
+    // inspector carries the canvas's keys too. A field typing here sits deeper
     // and keeps its own.
     let mut context = KeyContext::default();
-    context.add(scene::KEY_CONTEXT);
+    context.add(canvas::KEY_CONTEXT);
     if panel.selected.is_some() {
-        context.add(scene::SELECTED_CONTEXT);
+        context.add(canvas::SELECTED_CONTEXT);
     }
 
     let shell = div()
-        .id("scene-inspector")
+        .id("canvas-inspector")
         .key_context(context)
         .absolute()
         .top(tokens::SPACE_SM)
@@ -177,11 +177,11 @@ pub(crate) fn render(
     let selected = panel
         .selected
         .as_ref()
-        .and_then(|id| panel.config.scene.find(id))
+        .and_then(|id| panel.config.canvas.find(id))
         .cloned();
 
     let body = div()
-        .id("scene-inspector-body")
+        .id("canvas-inspector-body")
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
@@ -207,13 +207,13 @@ pub(crate) fn render(
         .into_any_element()
 }
 
-fn panel_height(panel: &ScenePanel) -> gpui::Pixels {
+fn panel_height(panel: &CanvasPanel) -> gpui::Pixels {
     px(panel.viewport().height)
 }
 
-fn header(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
+fn header(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyElement {
     let me = cx.entity().downgrade();
-    let on = |f: fn(&mut ScenePanel, &mut Window, &mut Context<ScenePanel>)| {
+    let on = |f: fn(&mut CanvasPanel, &mut Window, &mut Context<CanvasPanel>)| {
         let me = me.clone();
         move |_: &settings_ui::Press, window: &mut Window, cx: &mut gpui::App| {
             me.update(cx, |this, cx| f(this, window, cx)).ok();
@@ -240,7 +240,7 @@ fn header(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
                 .flex_1()
                 .truncate()
                 .text_color(palette::text_muted())
-                .child(rox_i18n::t!("scene-inspector-title")),
+                .child(rox_i18n::t!("canvas-inspector-title")),
         )
         .child(
             settings_ui::icon_button(icons::PLUS, false, {
@@ -253,15 +253,15 @@ fn header(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
                     .ok();
                 }
             })
-            .keyed("scene-inspector-add"),
+            .keyed("canvas-inspector-add"),
         )
         .child(
-            settings_ui::icon_button(icons::ARROW_LEFT, !panel.can_undo(), on(ScenePanel::undo))
-                .keyed("scene-inspector-undo"),
+            settings_ui::icon_button(icons::ARROW_LEFT, !panel.can_undo(), on(CanvasPanel::undo))
+                .keyed("canvas-inspector-undo"),
         )
         .child(
-            settings_ui::icon_button(icons::ARROW_RIGHT, !panel.can_redo(), on(ScenePanel::redo))
-                .keyed("scene-inspector-redo"),
+            settings_ui::icon_button(icons::ARROW_RIGHT, !panel.can_redo(), on(CanvasPanel::redo))
+                .keyed("canvas-inspector-redo"),
         )
         .child(
             settings_ui::icon_button(
@@ -272,32 +272,32 @@ fn header(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
                     cx.notify();
                 }),
             )
-            .keyed("scene-inspector-side"),
+            .keyed("canvas-inspector-side"),
         )
         .child(
             settings_ui::icon_button(icons::MINIMIZE, false, on(|this, _, cx| this.put_away(cx)))
-                .keyed("scene-inspector-collapse"),
+                .keyed("canvas-inspector-collapse"),
         )
         .into_any_element()
 }
 
 // ── The item tree ──
 
-fn tree(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
+fn tree(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyElement {
     let mut rows = Vec::new();
     panel
         .config
-        .scene
+        .canvas
         .walk(&mut |item, level| rows.push((item.clone(), level)));
 
     // The heading takes a row dropped on it back to the top level.
     let heading = div()
-        .id("scene-tree-top")
+        .id("canvas-tree-top")
         .px(tokens::SPACE_XS)
         .rounded(tokens::RADIUS)
         .text_xs()
         .text_color(palette::text_muted())
-        .child(rox_i18n::t!("scene-inspector-items"))
+        .child(rox_i18n::t!("canvas-inspector-items"))
         .drag_over::<RowDrag>(|style, _, _, _| style.bg(palette::alpha(palette::accent(), 0x1a)))
         .on_drop(cx.listener(|this, drag: &RowDrag, window, cx| {
             this.move_into(&drag.id, None, window, cx);
@@ -317,12 +317,12 @@ fn tree(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
         .into_any_element()
 }
 
-/// The scene's counts under the tree, then a line for each count that's
+/// The canvas's counts under the tree, then a line for each count that's
 /// over. Grid docks are read as last saved, which every edit refreshes.
-fn weight(panel: &mut ScenePanel) -> AnyElement {
+fn weight(panel: &mut CanvasPanel) -> AnyElement {
     let weighed = panel.inspector.weighed.get_or_insert_with(|| {
         let weight = serde_json::to_value(&panel.config)
-            .map(cost::weigh_scene)
+            .map(cost::weigh_canvas)
             .unwrap_or_default();
         Weighed {
             counts: cost::counts(&weight),
@@ -350,7 +350,7 @@ fn weight(panel: &mut ScenePanel) -> AnyElement {
     });
 
     div()
-        .id("scene-weight")
+        .id("canvas-weight")
         .flex()
         .flex_col()
         .gap(px(1.))
@@ -363,11 +363,11 @@ fn weight(panel: &mut ScenePanel) -> AnyElement {
 }
 
 fn tree_row(
-    panel: &ScenePanel,
+    panel: &CanvasPanel,
     ix: usize,
-    item: &SceneItem,
+    item: &CanvasItem,
     level: usize,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let id = item.id.clone();
     let selected = panel.selected.as_deref() == Some(item.id.as_str());
@@ -395,15 +395,15 @@ fn tree_row(
     };
 
     let me = cx.entity().downgrade();
-    let toggle = |icon: &'static str, key: &str, flip: fn(&mut SceneItem)| {
+    let toggle = |icon: &'static str, key: &str, flip: fn(&mut CanvasItem)| {
         let me = me.clone();
         let id = id.clone();
         settings_ui::icon_button(icon, false, move |_, window, cx| {
             let id = id.clone();
             me.update(cx, |this, cx| {
                 this.change(
-                    |scene| {
-                        if let Some(item) = scene.find_mut(&id) {
+                    |canvas| {
+                        if let Some(item) = canvas.find_mut(&id) {
                             flip(item);
                         }
                     },
@@ -417,7 +417,7 @@ fn tree_row(
     };
 
     let row = div()
-        .id(("scene-tree-row", ix))
+        .id(("canvas-tree-row", ix))
         .flex()
         .flex_row()
         .items_center()
@@ -463,8 +463,8 @@ fn tree_row(
                         this,
                         format!("name:{id}"),
                         name.clone(),
-                        Rc::new(move |scene: &mut SceneState, text: &str| {
-                            if let Some(item) = scene.find_mut(&id) {
+                        Rc::new(move |canvas: &mut CanvasState, text: &str| {
+                            if let Some(item) = canvas.find_mut(&id) {
                                 item.name = text.trim().to_string();
                             }
                         }),
@@ -512,25 +512,25 @@ fn kind_icon(content: &Content) -> &'static str {
 
 // ── With nothing selected ──
 
-fn stage_rows(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
-    let scene = &panel.config.scene;
-    let stage = scene.stage;
-    let camera = scene.camera;
+fn stage_rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyElement {
+    let canvas = &panel.config.canvas;
+    let stage = canvas.stage;
+    let camera = canvas.camera;
     let scrubs = &panel.inspector.scrubs;
 
     let fits = [
-        (rox_i18n::t!("scene-fit-anchor"), Fit::Anchor),
-        (rox_i18n::t!("scene-fit-contain"), Fit::Contain),
-        (rox_i18n::t!("scene-fit-cover"), Fit::Cover),
+        (rox_i18n::t!("canvas-fit-anchor"), Fit::Anchor),
+        (rox_i18n::t!("canvas-fit-contain"), Fit::Contain),
+        (rox_i18n::t!("canvas-fit-cover"), Fit::Cover),
     ];
 
     div()
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(section_label(rox_i18n::t!("scene-stage")))
+        .child(section_label(rox_i18n::t!("canvas-stage")))
         .child(setting_row(
-            rox_i18n::t!("scene-stage-size"),
+            rox_i18n::t!("canvas-stage-size"),
             None,
             div()
                 .flex()
@@ -553,20 +553,20 @@ fn stage_rows(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
                 )),
         ))
         .child(setting_row(
-            rox_i18n::t!("scene-stage-fit"),
+            rox_i18n::t!("canvas-stage-fit"),
             None,
             panel::choices_shared(
                 &fits,
                 stage.fit,
-                |this: &mut ScenePanel, fit, cx| {
+                |this: &mut CanvasPanel, fit, cx| {
                     this.change_later("stage.fit", move |s| s.stage.fit = fit, cx)
                 },
                 cx,
             ),
         ))
-        .child(section_label(rox_i18n::t!("scene-camera")))
+        .child(section_label(rox_i18n::t!("canvas-camera")))
         .child(setting_row(
-            rox_i18n::t!("scene-camera-fov"),
+            rox_i18n::t!("canvas-camera-fov"),
             None,
             panel::value_slider_edit(
                 &scrubs.fov,
@@ -575,14 +575,14 @@ fn stage_rows(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
                 format!("{}°", whole(camera.fov)),
                 format!("{:.0}", camera.fov),
                 |v| v / FOV_MAX,
-                |this: &mut ScenePanel, f, cx| {
+                |this: &mut CanvasPanel, f, cx| {
                     this.change_later("camera.fov", move |s| s.camera.fov = f * FOV_MAX, cx)
                 },
                 cx,
             ),
         ))
         .child(setting_row(
-            rox_i18n::t!("scene-camera-parallax"),
+            rox_i18n::t!("canvas-camera-parallax"),
             None,
             panel::value_slider_edit(
                 &scrubs.parallax,
@@ -591,7 +591,7 @@ fn stage_rows(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
                 format!("{:.0}", camera.parallax),
                 format!("{:.0}", camera.parallax),
                 |v| v / PARALLAX_MAX,
-                |this: &mut ScenePanel, f, cx| {
+                |this: &mut CanvasPanel, f, cx| {
                     this.change_later(
                         "camera.parallax",
                         move |s| s.camera.parallax = f * PARALLAX_MAX,
@@ -607,10 +607,10 @@ fn stage_rows(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
 // ── With an item selected ──
 
 fn item_rows(
-    panel: &ScenePanel,
-    item: &SceneItem,
+    panel: &CanvasPanel,
+    item: &CanvasItem,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let flat = panel.is_flat(item, cx);
     let place = item.place;
@@ -632,15 +632,15 @@ fn item_rows(
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(setting_row(
-            rox_i18n::t!("scene-item-anchor"),
+            rox_i18n::t!("canvas-item-anchor"),
             None,
             anchor_picker(&id, place.anchor, viewport, cx),
         ));
 
     let axes = [
-        rox_i18n::t!("scene-item-position-x"),
-        rox_i18n::t!("scene-item-position-y"),
-        rox_i18n::t!("scene-item-position-z"),
+        rox_i18n::t!("canvas-item-position-x"),
+        rox_i18n::t!("canvas-item-position-y"),
+        rox_i18n::t!("canvas-item-position-z"),
     ];
     for (axis, label) in axes.into_iter().enumerate() {
         let property = ["x", "y", "z"][axis];
@@ -650,8 +650,8 @@ fn item_rows(
             &format!("{property}:{id}"),
             place.position[axis],
             false,
-            move |scene, v| {
-                if let Some(item) = scene.find_mut(&setter) {
+            move |canvas, v| {
+                if let Some(item) = canvas.find_mut(&setter) {
                     item.place.position[axis] = v;
                 }
             },
@@ -678,9 +678,9 @@ fn item_rows(
     // A flat item stores its turn and scale and draws neither, so those rows
     // stay inert and take no route.
     let axes = [
-        rox_i18n::t!("scene-item-rotation-x"),
-        rox_i18n::t!("scene-item-rotation-y"),
-        rox_i18n::t!("scene-item-rotation-z"),
+        rox_i18n::t!("canvas-item-rotation-x"),
+        rox_i18n::t!("canvas-item-rotation-y"),
+        rox_i18n::t!("canvas-item-rotation-z"),
     ];
     for (axis, label) in axes.into_iter().enumerate() {
         let degrees = place.rotation[axis];
@@ -700,7 +700,7 @@ fn item_rows(
             readout,
             format!("{degrees:.1}"),
             |v| (v + TURN_RANGE) / (2. * TURN_RANGE),
-            move |this: &mut ScenePanel, f, cx| {
+            move |this: &mut CanvasPanel, f, cx| {
                 let id = setter.clone();
                 let degrees = f * 2. * TURN_RANGE - TURN_RANGE;
                 this.change_later(
@@ -732,7 +732,7 @@ fn item_rows(
     let scale_readout = format!("{:.2}", place.scale);
     rows = rows.child(if flat {
         setting_row(
-            rox_i18n::t!("scene-item-scale"),
+            rox_i18n::t!("canvas-item-scale"),
             None,
             inert_readout(scale_readout),
         )
@@ -745,7 +745,7 @@ fn item_rows(
             scale_readout,
             format!("{:.2}", place.scale),
             |v| (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN),
-            move |this: &mut ScenePanel, f, cx| {
+            move |this: &mut CanvasPanel, f, cx| {
                 let id = setter.clone();
                 this.change_later(
                     "scale",
@@ -761,7 +761,7 @@ fn item_rows(
         );
         bindable_row(
             panel,
-            rox_i18n::t!("scene-item-scale"),
+            rox_i18n::t!("canvas-item-scale"),
             None,
             format!("{id}.scale"),
             slider,
@@ -772,9 +772,9 @@ fn item_rows(
     if flat {
         // A shader is flat only because of what its program reads.
         let note = match item.content {
-            Content::Shader { .. } => rox_i18n::t!("scene-shader-flat-note"),
-            Content::Text { .. } => rox_i18n::t!("scene-text-flat-note"),
-            _ => rox_i18n::t!("scene-item-flat-note"),
+            Content::Shader { .. } => rox_i18n::t!("canvas-shader-flat-note"),
+            Content::Text { .. } => rox_i18n::t!("canvas-text-flat-note"),
+            _ => rox_i18n::t!("canvas-item-flat-note"),
         };
         rows = rows.child(
             div()
@@ -792,7 +792,7 @@ fn item_rows(
         format!("{:.0}%", item.opacity * 100.),
         format!("{:.0}", item.opacity * 100.),
         |v| v / 100.,
-        move |this: &mut ScenePanel, f, cx| {
+        move |this: &mut CanvasPanel, f, cx| {
             let id = opacity_id.clone();
             this.change_later(
                 "opacity",
@@ -808,7 +808,7 @@ fn item_rows(
     );
     rows = rows.child(bindable_row(
         panel,
-        rox_i18n::t!("scene-item-opacity"),
+        rox_i18n::t!("canvas-item-opacity"),
         None,
         format!("{id}.opacity"),
         opacity,
@@ -830,7 +830,7 @@ fn item_rows(
 fn command_choices() -> Arc<Vec<PickRow>> {
     static ROWS: Mutex<Option<(SharedString, Arc<Vec<PickRow>>)>> = Mutex::new(None);
 
-    let none = rox_i18n::t!("scene-item-on-click-none");
+    let none = rox_i18n::t!("canvas-item-on-click-none");
     let mut held = ROWS.lock().unwrap();
     if let Some((label, rows)) = &*held
         && *label == none
@@ -853,32 +853,32 @@ fn command_choices() -> Arc<Vec<PickRow>> {
 
 /// What a click on the item runs off design mode. A grid has no row: its
 /// panels own their input.
-fn command_row(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
+fn command_row(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
     // A saved id this build doesn't have reads as none, and a click on it
     // does nothing.
     let command = keymap::COMMANDS
         .iter()
         .find(|command| !item.action.is_empty() && command.id == item.action);
     let label = command.map_or_else(
-        || rox_i18n::t!("scene-item-on-click-none"),
+        || rox_i18n::t!("canvas-item-on-click-none"),
         |command| SharedString::from(command.label),
     );
     let current = command.map(|command| SharedString::from(command.id));
 
     let id = item.id.clone();
     let picker = search_picker(
-        "scene-item-action",
+        "canvas-item-action",
         command_choices(),
         label,
         current,
         rox_i18n::t!("button-editor-action-search"),
         rox_i18n::t!("button-editor-action-empty"),
-        move |this: &mut ScenePanel, picked: Option<String>, cx| {
+        move |this: &mut CanvasPanel, picked: Option<String>, cx| {
             let id = id.clone();
             this.change_later(
                 "item.action",
-                move |scene| {
-                    if let Some(item) = scene.find_mut(&id) {
+                move |canvas| {
+                    if let Some(item) = canvas.find_mut(&id) {
                         item.action = picked.unwrap_or_default();
                     }
                 },
@@ -889,26 +889,27 @@ fn command_row(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
     );
 
     setting_row(
-        rox_i18n::t!("scene-item-on-click"),
-        Some(rox_i18n::t!("scene-item-on-click.description")),
+        rox_i18n::t!("canvas-item-on-click"),
+        Some(rox_i18n::t!("canvas-item-on-click.description")),
         picker,
     )
     .into_any_element()
 }
 
 /// Depth, grouping and delete, as buttons.
-fn actions(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
+fn actions(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
     let me = cx.entity().downgrade();
-    let button = |label: SharedString,
-                  icon: &'static str,
-                  key: &'static str,
-                  f: fn(&mut ScenePanel, &mut Window, &mut Context<ScenePanel>)| {
-        let me = me.clone();
-        settings_ui::small_button(label, icon, false, move |_, window, cx| {
-            me.update(cx, |this, cx| f(this, window, cx)).ok();
-        })
-        .keyed(key)
-    };
+    let button =
+        |label: SharedString,
+         icon: &'static str,
+         key: &'static str,
+         f: fn(&mut CanvasPanel, &mut Window, &mut Context<CanvasPanel>)| {
+            let me = me.clone();
+            settings_ui::small_button(label, icon, false, move |_, window, cx| {
+                me.update(cx, |this, cx| f(this, window, cx)).ok();
+            })
+            .keyed(key)
+        };
 
     let is_group = matches!(item.content, Content::Group { .. });
 
@@ -918,42 +919,42 @@ fn actions(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
         .flex_wrap()
         .gap(tokens::SPACE_XS)
         .child(button(
-            rox_i18n::t!("scene-bring-forward"),
+            rox_i18n::t!("canvas-bring-forward"),
             icons::ARROW_UP,
-            "scene-forward",
+            "canvas-forward",
             |this, window, cx| this.step_depth(true, window, cx),
         ))
         .child(button(
-            rox_i18n::t!("scene-send-back"),
+            rox_i18n::t!("canvas-send-back"),
             icons::ARROW_DOWN,
-            "scene-back",
+            "canvas-back",
             |this, window, cx| this.step_depth(false, window, cx),
         ))
         .child(if is_group {
             button(
-                rox_i18n::t!("scene-ungroup"),
+                rox_i18n::t!("canvas-ungroup"),
                 icons::LAYERS,
-                "scene-ungroup",
-                ScenePanel::ungroup_selected,
+                "canvas-ungroup",
+                CanvasPanel::ungroup_selected,
             )
         } else {
             button(
-                rox_i18n::t!("scene-group"),
+                rox_i18n::t!("canvas-group"),
                 icons::LAYERS,
-                "scene-group",
-                ScenePanel::group_selected,
+                "canvas-group",
+                CanvasPanel::group_selected,
             )
         })
         .child(button(
-            rox_i18n::t!("scene-delete"),
+            rox_i18n::t!("canvas-delete"),
             icons::TRASH,
-            "scene-delete",
-            ScenePanel::delete_selected,
+            "canvas-delete",
+            CanvasPanel::delete_selected,
         ))
         .child(button(
-            rox_i18n::t!("scene-export-object"),
+            rox_i18n::t!("canvas-export-object"),
             icons::UPLOAD,
-            "scene-export-object",
+            "canvas-export-object",
             |this, window, cx| {
                 if let Some(id) = this.selected.clone() {
                     objects::open_export(this, &id, window, cx);
@@ -972,22 +973,22 @@ enum SwayAxis {
 /// Under a bound position or rotation row: how far a full signal carries
 /// the item on that axis.
 fn sway_row(
-    panel: &ScenePanel,
+    panel: &CanvasPanel,
     id: &str,
     sway: SwayAxis,
-    item: &SceneItem,
-    cx: &mut Context<ScenePanel>,
+    item: &CanvasItem,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let (field, value, description) = match sway {
         SwayAxis::Position(axis) => (
             format!("sway.{axis}:{id}"),
             item.sway.position[axis],
-            rox_i18n::t!("scene-item-sway.units"),
+            rox_i18n::t!("canvas-item-sway.units"),
         ),
         SwayAxis::Rotation(axis) => (
             format!("sway.r{axis}:{id}"),
             item.sway.rotation[axis],
-            rox_i18n::t!("scene-item-sway.degrees"),
+            rox_i18n::t!("canvas-item-sway.degrees"),
         ),
     };
 
@@ -997,8 +998,8 @@ fn sway_row(
         &field,
         value,
         false,
-        move |scene, v| {
-            if let Some(item) = scene.find_mut(&setter) {
+        move |canvas, v| {
+            if let Some(item) = canvas.find_mut(&setter) {
                 match sway {
                     SwayAxis::Position(axis) => item.sway.position[axis] = v,
                     SwayAxis::Rotation(axis) => item.sway.rotation[axis] = v,
@@ -1010,9 +1011,9 @@ fn sway_row(
 
     // Every sway row shares its label, so the id keeps their controls apart.
     div()
-        .id(SharedString::from(format!("scene-{field}")))
+        .id(SharedString::from(format!("canvas-{field}")))
         .child(settings_ui::nested(setting_row(
-            rox_i18n::t!("scene-item-sway"),
+            rox_i18n::t!("canvas-item-sway"),
             Some(description),
             amount,
         )))
@@ -1021,10 +1022,10 @@ fn sway_row(
 
 /// The content's own rows. A grid and a group have none.
 fn content_rows(
-    panel: &ScenePanel,
-    item: &SceneItem,
+    panel: &CanvasPanel,
+    item: &CanvasItem,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     match &item.content {
         Content::Image { asset, fit } => image_rows(panel, &item.id, asset, *fit, window, cx),
@@ -1041,17 +1042,17 @@ fn content_rows(
 }
 
 fn image_rows(
-    _panel: &ScenePanel,
+    _panel: &CanvasPanel,
     id: &str,
     asset: &str,
     fit: ImageFit,
     _window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let fits = [
-        (rox_i18n::t!("scene-image-fit-contain"), ImageFit::Contain),
-        (rox_i18n::t!("scene-image-fit-cover"), ImageFit::Cover),
-        (rox_i18n::t!("scene-image-fit-stretch"), ImageFit::Stretch),
+        (rox_i18n::t!("canvas-image-fit-contain"), ImageFit::Contain),
+        (rox_i18n::t!("canvas-image-fit-cover"), ImageFit::Cover),
+        (rox_i18n::t!("canvas-image-fit-stretch"), ImageFit::Stretch),
     ];
 
     let me = cx.entity().downgrade();
@@ -1067,7 +1068,7 @@ fn image_rows(
             let menu = PopupMenu::build(window, cx, {
                 let me = me.clone();
                 move |mut menu, _, _| {
-                    for (asset, file) in scene::image_assets() {
+                    for (asset, file) in canvas::image_assets() {
                         let me = me.clone();
                         let id = id.clone();
                         menu = menu.item(PopupMenuItem::new(SharedString::from(file)).on_click(
@@ -1076,11 +1077,11 @@ fn image_rows(
                                 let asset = asset.clone();
                                 me.update(cx, |this, cx| {
                                     this.change(
-                                        |scene| {
-                                            if let Some(SceneItem {
+                                        |canvas| {
+                                            if let Some(CanvasItem {
                                                 content: Content::Image { asset: held, .. },
                                                 ..
-                                            }) = scene.find_mut(&id)
+                                            }) = canvas.find_mut(&id)
                                             {
                                                 *held = asset;
                                             }
@@ -1100,26 +1101,26 @@ fn image_rows(
                 .ok();
         },
     )
-    .keyed("scene-image-asset");
+    .keyed("canvas-image-asset");
 
     let fit_id = id.to_string();
     div()
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(setting_row(rox_i18n::t!("scene-image-asset"), None, pick))
+        .child(setting_row(rox_i18n::t!("canvas-image-asset"), None, pick))
         .child(setting_row(
-            rox_i18n::t!("scene-image-fit"),
+            rox_i18n::t!("canvas-image-fit"),
             None,
             panel::choices_shared(
                 &fits,
                 fit,
-                move |this: &mut ScenePanel, picked, cx| {
+                move |this: &mut CanvasPanel, picked, cx| {
                     let id = fit_id.clone();
                     this.change_later(
                         "image.fit",
                         move |s| {
-                            if let Some(SceneItem {
+                            if let Some(CanvasItem {
                                 content: Content::Image { fit, .. },
                                 ..
                             }) = s.find_mut(&id)
@@ -1140,11 +1141,11 @@ fn image_rows(
 /// text puts the new text in the box. Only a change to the item does: a
 /// render can land between a keystroke and its event, and comparing against
 /// the box then would throw the keystroke away.
-fn sync_pattern(panel: &mut ScenePanel, window: &mut Window, cx: &mut Context<ScenePanel>) {
+fn sync_pattern(panel: &mut CanvasPanel, window: &mut Window, cx: &mut Context<CanvasPanel>) {
     let selected = panel
         .selected
         .as_ref()
-        .and_then(|id| panel.config.scene.find(id))
+        .and_then(|id| panel.config.canvas.find(id))
         .and_then(|item| match &item.content {
             Content::Text { text, .. } => Some((item.id.clone(), text.clone())),
             _ => None,
@@ -1171,7 +1172,7 @@ fn sync_pattern(panel: &mut ScenePanel, window: &mut Window, cx: &mut Context<Sc
     let events = cx.subscribe_in(
         &input,
         window,
-        move |this: &mut ScenePanel, input, event: &InputEvent, window, cx| {
+        move |this: &mut CanvasPanel, input, event: &InputEvent, window, cx| {
             if !matches!(event, InputEvent::Change) {
                 return;
             }
@@ -1184,7 +1185,7 @@ fn sync_pattern(panel: &mut ScenePanel, window: &mut Window, cx: &mut Context<Sc
             }
 
             // The box echoes what an undo put in it, which is no edit.
-            let same = this.config.scene.find(&target).is_some_and(
+            let same = this.config.canvas.find(&target).is_some_and(
                 |item| matches!(&item.content, Content::Text { text, .. } if *text == typed),
             );
             if same {
@@ -1194,11 +1195,11 @@ fn sync_pattern(panel: &mut ScenePanel, window: &mut Window, cx: &mut Context<Sc
             let target = target.clone();
             this.change_keyed(
                 Some("text.pattern"),
-                move |scene| {
-                    if let Some(SceneItem {
+                move |canvas| {
+                    if let Some(CanvasItem {
                         content: Content::Text { text, .. },
                         ..
-                    }) = scene.find_mut(&target)
+                    }) = canvas.find_mut(&target)
                     {
                         *text = typed;
                     }
@@ -1219,21 +1220,21 @@ fn sync_pattern(panel: &mut ScenePanel, window: &mut Window, cx: &mut Context<Sc
 
 /// The pattern, its font, size, color and alignment.
 fn text_rows(
-    panel: &ScenePanel,
+    panel: &CanvasPanel,
     id: &str,
     font: Option<String>,
     size: f32,
     color: &str,
     align: Align,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     fn edit_text(
         id: &str,
         f: impl Fn(&mut Option<String>, &mut f32, &mut String, &mut Align) + 'static,
-    ) -> impl FnOnce(&mut SceneState) + 'static {
+    ) -> impl FnOnce(&mut CanvasState) + 'static {
         let id = id.to_string();
-        move |scene| {
-            if let Some(SceneItem {
+        move |canvas| {
+            if let Some(CanvasItem {
                 content:
                     Content::Text {
                         font,
@@ -1243,7 +1244,7 @@ fn text_rows(
                         ..
                     },
                 ..
-            }) = scene.find_mut(&id)
+            }) = canvas.find_mut(&id)
             {
                 f(font, size, color, align);
             }
@@ -1257,7 +1258,7 @@ fn text_rows(
         div()
             .key_context("SearchInput")
             .child(panel::pattern_input(
-                "scene-text-pattern",
+                "canvas-text-pattern",
                 &field.input,
                 text::PLACEHOLDERS,
                 Vec::new(),
@@ -1268,9 +1269,9 @@ fn text_rows(
 
     let font_id = id.to_string();
     let font_row = panel::font_picker(
-        "scene-text-font",
+        "canvas-text-font",
         font,
-        move |this: &mut ScenePanel, family: Option<String>, cx| {
+        move |this: &mut CanvasPanel, family: Option<String>, cx| {
             this.change_later(
                 "text.font",
                 edit_text(&font_id, move |font, _, _, _| *font = family.clone()),
@@ -1286,7 +1287,7 @@ fn text_rows(
         &format!("text.size:{id}"),
         size,
         false,
-        move |scene, v| edit_text(&size_id, move |_, size, _, _| *size = v.max(1.))(scene),
+        move |canvas, v| edit_text(&size_id, move |_, size, _, _| *size = v.max(1.))(canvas),
         cx,
     );
 
@@ -1302,11 +1303,11 @@ fn text_rows(
     );
     let color_id = id.to_string();
     let color_row = panel::picker(
-        "scene-text-color",
+        "canvas-text-color",
         color.to_string(),
         roles,
         false,
-        move |this: &mut ScenePanel, role: String, cx| {
+        move |this: &mut CanvasPanel, role: String, cx| {
             this.change_later(
                 "text.color",
                 edit_text(&color_id, move |_, _, color, _| *color = role.clone()),
@@ -1324,7 +1325,7 @@ fn text_rows(
             (icons::ALIGN_RIGHT, Align::Right),
         ],
         align,
-        move |this: &mut ScenePanel, picked: Align, cx| {
+        move |this: &mut CanvasPanel, picked: Align, cx| {
             this.change_later(
                 "text.align",
                 edit_text(&align_id, move |_, _, _, align| *align = picked),
@@ -1339,16 +1340,20 @@ fn text_rows(
         .flex_col()
         .gap(tokens::SPACE_SM)
         .children(
-            pattern.map(|pattern| setting_block(rox_i18n::t!("scene-text"), None, None, pattern)),
+            pattern.map(|pattern| setting_block(rox_i18n::t!("canvas-text"), None, None, pattern)),
         )
-        .child(setting_row(rox_i18n::t!("scene-text-font"), None, font_row))
         .child(setting_row(
-            rox_i18n::t!("scene-text-size"),
+            rox_i18n::t!("canvas-text-font"),
+            None,
+            font_row,
+        ))
+        .child(setting_row(
+            rox_i18n::t!("canvas-text-size"),
             None,
             size_field,
         ))
         .child(setting_row(
-            rox_i18n::t!("scene-text-color"),
+            rox_i18n::t!("canvas-text-color"),
             None,
             color_row,
         ))
@@ -1358,13 +1363,13 @@ fn text_rows(
 
 /// The parts of a panel's Shader page, as the Shader panel composes them:
 /// the approval gate, the source picker, the switches, the routes and the
-/// slots. The gate is the shared one, so a shader that came in with a scene
+/// slots. The gate is the shared one, so a shader that came in with a canvas
 /// is read here before it runs.
 fn shader_rows(
-    panel: &ScenePanel,
-    item: &SceneItem,
+    panel: &CanvasPanel,
+    item: &CanvasItem,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let Some(shader) = shader_item::of(item) else {
         return div().into_any_element();
@@ -1379,7 +1384,7 @@ fn shader_rows(
 
     let pending = (!running.trim().is_empty() && !surface::approved(&running)).then(|| {
         panel_settings::pending_shader(
-            "scene-shader-pending",
+            "canvas-shader-pending",
             &running,
             shader.path.as_deref(),
             cx.listener(|this, _, _, cx| shader_item::approve(this, cx)),
@@ -1414,7 +1419,7 @@ fn shader_rows(
     let rows = &panel.inspector.shader;
     let fallback = surface::eject_name(&shader_item::label(item), &shader.source);
     let picked = ShaderSource {
-        id: "scene-shader",
+        id: "canvas-shader",
         name: shader.name.as_deref(),
         path: shader.path.as_deref(),
         resolved: resolved.as_deref(),
@@ -1438,14 +1443,14 @@ fn shader_rows(
     rows.routes.borrow_mut().sync(shader.routes.len());
     let routes_ui = rows.routes.borrow();
     let editor = RouteEditor {
-        id: "scene-shader-route",
+        id: "canvas-shader-route",
         hub: &hub,
         routes: &shader.routes,
         labels: &labels,
         value_edit: &panel.inspector.edit,
         ui: &routes_ui,
-        ui_mut: |this: &mut ScenePanel| this.inspector.shader.routes.get_mut(),
-        mutate: Arc::new(|this: &mut ScenePanel, edit, cx| {
+        ui_mut: |this: &mut CanvasPanel| this.inspector.shader.routes.get_mut(),
+        mutate: Arc::new(|this: &mut CanvasPanel, edit, cx| {
             shader_item::edit_selected(this, "shader.routes", |shader| edit(&mut shader.routes), cx)
         }),
     };
@@ -1459,7 +1464,7 @@ fn shader_rows(
         labels: &labels,
         value_edit: &panel.inspector.edit,
         scrubs: &rows.slots,
-        set: Arc::new(|this: &mut ScenePanel, slot, value, cx| {
+        set: Arc::new(|this: &mut CanvasPanel, slot, value, cx| {
             shader_item::set_manual(this, slot, value, cx)
         }),
     }
@@ -1485,7 +1490,7 @@ fn shader_rows(
             None,
             panel::toggle(
                 shader.enabled,
-                |this: &mut ScenePanel, on, cx| shader_item::set_enabled(this, on, cx),
+                |this: &mut CanvasPanel, on, cx| shader_item::set_enabled(this, on, cx),
                 cx,
             ),
         ))
@@ -1496,7 +1501,7 @@ fn shader_rows(
             None,
             panel::toggle(
                 shader.run_when_idle,
-                |this: &mut ScenePanel, on, cx| shader_item::set_idle(this, on, cx),
+                |this: &mut CanvasPanel, on, cx| shader_item::set_idle(this, on, cx),
                 cx,
             ),
         ))
@@ -1537,8 +1542,8 @@ fn inert_readout(text: String) -> AnyElement {
 fn anchor_picker(
     id: &str,
     current: Anchor,
-    viewport: rox_scene::Viewport,
-    cx: &mut Context<ScenePanel>,
+    viewport: rox_canvas::Viewport,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     const ORDER: [Anchor; 9] = [
         Anchor::TopLeft,
@@ -1562,7 +1567,7 @@ fn anchor_picker(
                 let lit = anchor == current;
 
                 div()
-                    .id(SharedString::from(format!("scene-anchor-{anchor:?}")))
+                    .id(SharedString::from(format!("canvas-anchor-{anchor:?}")))
                     .size(px(10.))
                     .rounded(px(2.))
                     .border_1()
@@ -1579,12 +1584,12 @@ fn anchor_picker(
                         cx.listener(move |this, _, window, cx| {
                             let id = id.clone();
                             this.change(
-                                |scene| {
-                                    let Some(parent) = edit::parent_frame(scene, &id, viewport)
+                                |canvas| {
+                                    let Some(parent) = edit::parent_frame(canvas, &id, viewport)
                                     else {
                                         return;
                                     };
-                                    if let Some(item) = scene.find_mut(&id) {
+                                    if let Some(item) = canvas.find_mut(&id) {
                                         item.place = edit::with_anchor(item, &parent, anchor);
                                     }
                                 },
@@ -1607,17 +1612,17 @@ fn anchor_picker(
 /// Width or height: the number in its unit, and the unit. A stage length
 /// reads as a percentage of the parent's box.
 fn length_row(
-    panel: &ScenePanel,
+    panel: &CanvasPanel,
     id: &str,
     axis: usize,
     length: Length,
-    viewport: rox_scene::Viewport,
-    cx: &mut Context<ScenePanel>,
+    viewport: rox_canvas::Viewport,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let label = if axis == 0 {
-        rox_i18n::t!("scene-item-width")
+        rox_i18n::t!("canvas-item-width")
     } else {
-        rox_i18n::t!("scene-item-height")
+        rox_i18n::t!("canvas-item-height")
     };
     let (value, stage) = match length {
         Length::Units(n) => (n, false),
@@ -1631,8 +1636,8 @@ fn length_row(
         &field,
         value,
         false,
-        move |scene, v| {
-            if let Some(item) = scene.find_mut(&setter_id) {
+        move |canvas, v| {
+            if let Some(item) = canvas.find_mut(&setter_id) {
                 item.place.size[axis] = match item.place.size[axis] {
                     Length::Stage(_) => Length::Stage((v / 100.).max(0.)),
                     Length::Units(_) => Length::Units(v.max(0.)),
@@ -1643,14 +1648,14 @@ fn length_row(
     );
 
     let units = [
-        (rox_i18n::t!("scene-length-units"), false),
-        (rox_i18n::t!("scene-length-percent"), true),
+        (rox_i18n::t!("canvas-length-units"), false),
+        (rox_i18n::t!("canvas-length-percent"), true),
     ];
     let unit_id = id.to_string();
     let unit = panel::choices_shared(
         &units,
         stage,
-        move |this: &mut ScenePanel, want: bool, cx| {
+        move |this: &mut CanvasPanel, want: bool, cx| {
             if want == stage {
                 return;
             }
@@ -1658,11 +1663,11 @@ fn length_row(
             let id = unit_id.clone();
             this.change_later(
                 "size.unit",
-                move |scene| {
-                    let Some(parent) = edit::parent_frame(scene, &id, viewport) else {
+                move |canvas| {
+                    let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
                         return;
                     };
-                    if let Some(item) = scene.find_mut(&id) {
+                    if let Some(item) = canvas.find_mut(&id) {
                         item.place.size[axis] =
                             edit::other_unit(item.place.size[axis], parent.size[axis]);
                     }
@@ -1679,12 +1684,12 @@ fn length_row(
 /// A number that turns into a field on a press: Enter applies it, leaving
 /// the field drops it.
 fn number(
-    panel: &ScenePanel,
+    panel: &CanvasPanel,
     field: &str,
     value: f32,
     whole: bool,
-    apply: impl Fn(&mut SceneState, f32) + 'static,
-    cx: &mut Context<ScenePanel>,
+    apply: impl Fn(&mut CanvasState, f32) + 'static,
+    cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     if let Some(input) = typing_input(panel, field) {
         return div()
@@ -1702,7 +1707,7 @@ fn number(
     let field = field.to_string();
 
     div()
-        .id(SharedString::from(format!("scene-number-{field}")))
+        .id(SharedString::from(format!("canvas-number-{field}")))
         .min_w(px(48.))
         .px(tokens::SPACE_XS)
         .rounded(tokens::RADIUS)
@@ -1720,11 +1725,11 @@ fn number(
                     this,
                     field.clone(),
                     text.clone(),
-                    Rc::new(move |scene: &mut SceneState, typed: &str| {
+                    Rc::new(move |canvas: &mut CanvasState, typed: &str| {
                         if let Some(v) = rox_panel_kit::parse_number(typed)
                             && v.is_finite()
                         {
-                            apply(scene, v);
+                            apply(canvas, v);
                         }
                     }),
                     window,
@@ -1735,26 +1740,26 @@ fn number(
         .into_any_element()
 }
 
-type Commit = Rc<dyn Fn(&mut SceneState, &str)>;
+type Commit = Rc<dyn Fn(&mut CanvasState, &str)>;
 
 fn begin_typing(
-    this: &mut ScenePanel,
+    this: &mut CanvasPanel,
     field: String,
     text: String,
     commit: Commit,
     window: &mut Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) {
     let input = cx.new(|cx| InputState::new(window, cx).default_value(text));
     let events = cx.subscribe_in(
         &input,
         window,
-        move |this: &mut ScenePanel, input, event: &InputEvent, window, cx| match event {
+        move |this: &mut CanvasPanel, input, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => {
                 let typed = input.read(cx).value().to_string();
                 let commit = commit.clone();
                 this.inspector.typing = None;
-                this.change(move |scene| commit(scene, &typed), window, cx);
+                this.change(move |canvas| commit(canvas, &typed), window, cx);
             }
             InputEvent::Blur => {
                 this.inspector.typing = None;
@@ -1782,7 +1787,7 @@ fn typing_field(input: &Entity<InputState>) -> AnyElement {
         .into_any_element()
 }
 
-fn typing_input(panel: &ScenePanel, field: &str) -> Option<Entity<InputState>> {
+fn typing_input(panel: &CanvasPanel, field: &str) -> Option<Entity<InputState>> {
     panel
         .inspector
         .typing
@@ -1811,13 +1816,16 @@ fn trimmed(value: f32) -> String {
 
 /// The Add menu's Objects list: each installed object, with Remove on its
 /// row, then Add File.
-pub(crate) fn objects_menu(window: &mut Window, cx: &mut Context<ScenePanel>) -> Entity<PopupMenu> {
+pub(crate) fn objects_menu(
+    window: &mut Window,
+    cx: &mut Context<CanvasPanel>,
+) -> Entity<PopupMenu> {
     let installed = objects::all();
     let me = cx.entity().downgrade();
 
     PopupMenu::build(window, cx, move |mut menu, _, _| {
         if installed.is_empty() {
-            menu = menu.item(PopupMenuItem::label(rox_i18n::t!("scene-objects-empty")));
+            menu = menu.item(PopupMenuItem::label(rox_i18n::t!("canvas-objects-empty")));
         }
 
         for (name, _) in &installed {
@@ -1835,7 +1843,7 @@ pub(crate) fn objects_menu(window: &mut Window, cx: &mut Context<ScenePanel>) ->
                 // click doesn't place what's being removed.
                 let remove = div()
                     .id(SharedString::from(format!(
-                        "scene-object-remove-{removing}"
+                        "canvas-object-remove-{removing}"
                     )))
                     .flex_none()
                     .p(px(2.))
@@ -1877,7 +1885,7 @@ pub(crate) fn objects_menu(window: &mut Window, cx: &mut Context<ScenePanel>) ->
 
         let me = me.clone();
         menu.separator().item(
-            PopupMenuItem::new(rox_i18n::t!("scene-add-file"))
+            PopupMenuItem::new(rox_i18n::t!("canvas-add-file"))
                 .icon(gpui_component::Icon::default().path(icons::FOLDER))
                 .on_click(move |_, window, cx| {
                     me.update(cx, |this, cx| this.add_object_file(window, cx))
@@ -1890,9 +1898,9 @@ pub(crate) fn objects_menu(window: &mut Window, cx: &mut Context<ScenePanel>) ->
 /// The export card or the place confirm, centered over the whole window on
 /// a scrim, the way a menu sits over it.
 pub(crate) fn object_dialog(
-    panel: &ScenePanel,
+    panel: &CanvasPanel,
     window: &Window,
-    cx: &mut Context<ScenePanel>,
+    cx: &mut Context<CanvasPanel>,
 ) -> Option<AnyElement> {
     let dialog = panel.object_dialog.as_ref()?;
     let size = window.bounds().size;
@@ -1913,7 +1921,7 @@ pub(crate) fn object_dialog(
         Dialog::Export { item, fields } => {
             let title = panel
                 .config
-                .scene
+                .canvas
                 .find(item)
                 .map(|found| {
                     if found.name.is_empty() {
@@ -1929,8 +1937,8 @@ pub(crate) fn object_dialog(
                 .flex()
                 .flex_col()
                 .gap(tokens::SPACE_SM)
-                .child(div().child(rox_i18n::t!("scene-object-export-title", name = title)))
-                .child(line(rox_i18n::t!("scene-object-export-hint")));
+                .child(div().child(rox_i18n::t!("canvas-object-export-title", name = title)))
+                .child(line(rox_i18n::t!("canvas-object-export-hint")));
             for ((label, _), input) in objects::EXPORT_FIELDS.iter().zip(fields) {
                 body = body.child(setting_row(
                     rox_i18n::t!(*label),
@@ -1955,7 +1963,7 @@ pub(crate) fn object_dialog(
                 .flex_col()
                 .gap(tokens::SPACE_SM)
                 .child(div().child(rox_i18n::t!(
-                    "scene-object-place-title",
+                    "canvas-object-place-title",
                     name = card.title.as_str()
                 )))
                 .children(card.byline.clone().map(line))
@@ -1963,20 +1971,20 @@ pub(crate) fn object_dialog(
                 .children(card.requires.clone().map(line))
                 .children(card.heavy.clone().map(line))
                 .children(card.weight.iter().cloned().map(line))
-                .child(line(rox_i18n::t!("scene-object-place-body")))
+                .child(line(rox_i18n::t!("canvas-object-place-body")))
                 .children(shaders.clone().map(line))
                 // A stranger's shaders are code, so the yes that runs them
                 // says so, and the yes that doesn't sits beside it.
                 .children(
                     shaders
                         .is_some()
-                        .then(|| line(rox_i18n::t!("scene-object-shaders-body"))),
+                        .then(|| line(rox_i18n::t!("canvas-object-shaders-body"))),
                 );
 
             let mut buttons = vec![
                 cancel,
                 settings_ui::dialog_button(
-                    rox_i18n::t!("scene-object-place"),
+                    rox_i18n::t!("canvas-object-place"),
                     shaders.is_none(),
                     cx.listener(|this, _, window, cx| {
                         objects::confirm_place(this, false, window, cx)
@@ -1985,7 +1993,7 @@ pub(crate) fn object_dialog(
             ];
             if shaders.is_some() {
                 buttons.push(settings_ui::dialog_button(
-                    rox_i18n::t!("scene-object-approve-place"),
+                    rox_i18n::t!("canvas-object-approve-place"),
                     true,
                     cx.listener(|this, _, window, cx| {
                         objects::confirm_place(this, true, window, cx)
@@ -2011,7 +2019,7 @@ pub(crate) fn object_dialog(
             // scrim would stop short of the window's top edge.
             anchored().position(gpui::point(px(0.), px(0.))).child(
                 div()
-                    .id("scene-object-dialog")
+                    .id("canvas-object-dialog")
                     .when_some(
                         match dialog {
                             Dialog::Place { focus, .. } => Some(focus),
@@ -2039,7 +2047,7 @@ pub(crate) fn object_dialog(
                         }
                     }))
                     .child(
-                        settings_ui::dialog_card("scene-object-dialog-body", body, footer)
+                        settings_ui::dialog_card("canvas-object-dialog-body", body, footer)
                             .w(px(width)),
                     ),
             ),

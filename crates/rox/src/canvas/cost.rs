@@ -1,4 +1,4 @@
-//! Weight (ADR 33): what a workspace, a scene or an object asks of the
+//! Weight (ADR 33): what a workspace, a canvas or an object asks of the
 //! renderer, counted from its saved JSON without building anything, and the
 //! lines a confirm or the inspector shows when a count is past what drew
 //! smoothly when it was measured. A warning never blocks anything.
@@ -9,14 +9,14 @@
 use std::collections::HashSet;
 
 use gpui::SharedString;
+use rox_canvas::{CanvasItem, CanvasState, Content, Cost};
 use rox_core::settings::roxo::ObjectBundle;
 use rox_core::settings::{self, PostShaderConfig, WorkspaceBundle};
-use rox_scene::{Content, Cost, SceneItem, SceneState};
 use rox_viz::signal::Route;
 use serde::Deserialize as _;
 use serde_json::{Value, json};
 
-use crate::panels::scene::PANEL_NAME;
+use crate::panels::canvas::PANEL_NAME;
 
 // Measured 2026-11-16 on a Ryzen 9 5950X with a Radeon RX 6800 XT, Vulkan
 // through RADV, release build, a 1920x1080 window in a headless sway, music
@@ -42,11 +42,11 @@ const SHADER_SURFACES: usize = 68;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Weight {
-    /// Summed over every scene in the dump. `depth` is the deepest scene in
-    /// a scene plus the groups at that level.
+    /// Summed over every canvas in the dump. `depth` is the deepest canvas in
+    /// a canvas plus the groups at that level.
     pub cost: Cost,
-    /// Panels, scenes and the window's own passes that wear a shader. A
-    /// scene's shader items are `cost.shaders`, not these.
+    /// Panels, canvases and the window's own passes that wear a shader. A
+    /// canvas's shader items are `cost.shaders`, not these.
     pub shader_surfaces: usize,
     /// Grid items a route moves, a routed group's grids included.
     pub moving_grids: usize,
@@ -90,26 +90,26 @@ pub(crate) fn heaviest(bundle: &WorkspaceBundle) -> Weight {
         .fold(weigh(&Value::Null, bundle), Weight::max)
 }
 
-/// An object's item, weighed as a scene holding only it and its routes.
+/// An object's item, weighed as a canvas holding only it and its routes.
 pub(crate) fn weigh_object(bundle: &ObjectBundle) -> Weight {
-    weigh_dump(&scene_node(json!({
+    weigh_dump(&canvas_node(json!({
         "items": [bundle.item],
         "routes": bundle.routes,
     })))
 }
 
-/// A scene panel's own config, nested scenes included.
-pub(crate) fn weigh_scene(config: Value) -> Weight {
-    weigh_dump(&scene_node(config))
+/// A canvas panel's own config, nested canvases included.
+pub(crate) fn weigh_canvas(config: Value) -> Weight {
+    weigh_dump(&canvas_node(config))
 }
 
-fn scene_node(config: Value) -> Value {
+fn canvas_node(config: Value) -> Value {
     json!({ "panel_name": PANEL_NAME, "info": { "panel": config } })
 }
 
 fn weigh_dump(dump: &Value) -> Weight {
     let mut tally = Tally::default();
-    find_scenes(dump, 0, &mut tally);
+    find_canvases(dump, 0, &mut tally);
 
     // The dump walker counts a shader item's source too, and those are
     // counted as shader items.
@@ -126,32 +126,32 @@ struct Tally {
     item_sources: usize,
 }
 
-/// Every scene panel in a dump, at the level the dump sits at, the way the
+/// Every canvas panel in a dump, at the level the dump sits at, the way the
 /// dump walkers recurse.
-fn find_scenes(value: &Value, level: usize, tally: &mut Tally) {
+fn find_canvases(value: &Value, level: usize, tally: &mut Tally) {
     match value {
         Value::Object(map) => {
             if map.get("panel_name").and_then(Value::as_str) == Some(PANEL_NAME) {
                 if let Some(config) = map.get("info").and_then(|info| info.get("panel")) {
-                    scene(config, level, tally);
+                    canvas(config, level, tally);
                 }
                 return;
             }
 
             map.values()
-                .for_each(|child| find_scenes(child, level, tally));
+                .for_each(|child| find_canvases(child, level, tally));
         }
 
         Value::Array(items) => items
             .iter()
-            .for_each(|item| find_scenes(item, level, tally)),
+            .for_each(|item| find_canvases(item, level, tally)),
 
         _ => {}
     }
 }
 
-fn scene(config: &Value, level: usize, tally: &mut Tally) {
-    let Ok(state) = SceneState::deserialize(config) else {
+fn canvas(config: &Value, level: usize, tally: &mut Tally) {
+    let Ok(state) = CanvasState::deserialize(config) else {
         return;
     };
     let routes = config
@@ -175,10 +175,10 @@ fn scene(config: &Value, level: usize, tally: &mut Tally) {
     items(&state.items, &routed, false, level, tally);
 }
 
-/// `level` counts the scenes and groups these items sit inside, so a scene
+/// `level` counts the canvases and groups these items sit inside, so a canvas
 /// in a grid here opens the next one, as it does when built.
 fn items(
-    items: &[SceneItem],
+    items: &[CanvasItem],
     routed: &HashSet<&str>,
     moved: bool,
     level: usize,
@@ -190,7 +190,7 @@ fn items(
         match &item.content {
             Content::Grid { dock } => {
                 tally.weight.moving_grids += usize::from(moved);
-                find_scenes(dock, level + 1, tally);
+                find_canvases(dock, level + 1, tally);
             }
 
             Content::Group { items: children } => {
@@ -210,7 +210,7 @@ fn items(
 /// The inspector's line: the counts always, over or not.
 pub(crate) fn counts(weight: &Weight) -> SharedString {
     rox_i18n::t!(
-        "scene-weight-counts",
+        "canvas-weight-counts",
         items = weight.cost.items as u64,
         grids = weight.cost.grids as u64,
         shaders = weight.cost.shaders as u64,
@@ -223,11 +223,11 @@ pub(crate) fn counts(weight: &Weight) -> SharedString {
 /// The lines to show, empty when nothing is over.
 pub(crate) fn warnings(weight: &Weight) -> Vec<SharedString> {
     let over = [
-        (weight.cost.grids, GRIDS, "scene-weight-many-grids"),
+        (weight.cost.grids, GRIDS, "canvas-weight-many-grids"),
         (
             weight.shader_surfaces,
             SHADER_SURFACES,
-            "scene-weight-many-shaders",
+            "canvas-weight-many-shaders",
         ),
     ];
 
@@ -249,8 +249,8 @@ mod tests {
         json!({ "version": 1, "center": { "panel_name": "StackPanel", "children": [] } })
     }
 
-    /// A dock holding one scene panel with these items and routes.
-    fn dock_with_scene(items: Value, routes: Value) -> Value {
+    /// A dock holding one canvas panel with these items and routes.
+    fn dock_with_canvas(items: Value, routes: Value) -> Value {
         json!({
             "version": 1,
             "center": {
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_with_no_scene_weighs_nothing() {
+    fn a_layout_with_no_canvas_weighs_nothing() {
         let dump = json!({
             "version": 1,
             "center": {
@@ -292,9 +292,9 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_inside_a_scene_is_counted_and_deepens() {
-        let inner = dock_with_scene(json!([grid("leaf", plain_dock())]), json!([]));
-        let dump = dock_with_scene(json!([grid("outer", inner)]), json!([]));
+    fn a_canvas_inside_a_canvas_is_counted_and_deepens() {
+        let inner = dock_with_canvas(json!([grid("leaf", plain_dock())]), json!([]));
+        let dump = dock_with_canvas(json!([grid("outer", inner)]), json!([]));
 
         let weight = weigh(&dump, &bare());
         assert_eq!(weight.cost.items, 2);
@@ -310,7 +310,7 @@ mod tests {
                 "kind": "text", "text": "a", "size": 12.0, "color": "text",
             } }] },
         });
-        let weight = weigh(&dock_with_scene(json!([group]), json!([])), &bare());
+        let weight = weigh(&dock_with_canvas(json!([group]), json!([])), &bare());
 
         assert_eq!(weight.cost.items, 2);
         assert_eq!(weight.cost.grids, 0);
@@ -326,7 +326,7 @@ mod tests {
         let items = json!([grid("a", plain_dock()), grid("b", plain_dock()), group]);
         let routes = json!([route("a.x", true), route("g.opacity", true)]);
 
-        let weight = weigh(&dock_with_scene(items, routes), &bare());
+        let weight = weigh(&dock_with_canvas(items, routes), &bare());
         assert_eq!(weight.cost.grids, 3);
         assert_eq!(
             weight.moving_grids, 2,
@@ -338,7 +338,7 @@ mod tests {
     fn a_disabled_route_moves_nothing() {
         let items = json!([grid("a", plain_dock())]);
         let weight = weigh(
-            &dock_with_scene(items, json!([route("a.x", false)])),
+            &dock_with_canvas(items, json!([route("a.x", false)])),
             &bare(),
         );
 
@@ -383,7 +383,7 @@ mod tests {
         });
 
         let weight = weigh(
-            &dock_with_scene(json!([shader, grid("p", inner)]), json!([])),
+            &dock_with_canvas(json!([shader, grid("p", inner)]), json!([])),
             &bundle,
         );
         assert_eq!(weight.cost.shaders, 1);
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn an_object_weighs_as_its_own_scene() {
+    fn an_object_weighs_as_its_own_canvas() {
         let item = json!({
             "id": "g",
             "content": { "kind": "group", "items": [grid("a", plain_dock())] },
@@ -416,8 +416,8 @@ mod tests {
 
     #[test]
     fn the_heaviest_layout_sets_each_count() {
-        let light = dock_with_scene(json!([grid("a", plain_dock())]), json!([]));
-        let heavy = dock_with_scene(
+        let light = dock_with_canvas(json!([grid("a", plain_dock())]), json!([]));
+        let heavy = dock_with_canvas(
             json!([grid("a", plain_dock()), grid("b", plain_dock())]),
             json!([]),
         );

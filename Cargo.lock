@@ -6938,6 +6938,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "rox-acoustic",
+ "rox-canvas",
  "rox-core",
  "rox-design",
  "rox-dock",
@@ -6952,7 +6953,6 @@ dependencies = [
  "rox-playback",
  "rox-plugins",
  "rox-romanize",
- "rox-scene",
  "rox-services",
  "rox-viz",
  "rust-embed",
@@ -6989,6 +6989,15 @@ dependencies = [
  "rox-viz",
  "sha2 0.10.9",
  "ureq",
+]
+
+[[package]]
+name = "rox-canvas"
+version = "2.0.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7282,15 +7291,6 @@ dependencies = [
  "sha2 0.10.9",
  "ureq",
  "zip",
-]
-
-[[package]]
-name = "rox-scene"
-version = "2.0.0"
-dependencies = [
- "log",
- "serde",
- "serde_json",
 ]
 
 [[package]]

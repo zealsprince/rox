@@ -5,7 +5,7 @@
 Proposal: rox grows a render target, a surface whose picture is drawn by a program
 outside rox. rox starts the program, sends it the signal pool's values and the input
 that reaches the surface, and paints the frames it sends back. A render target is a
-canvas item ([ADR 33](33-adr-scene-panel.md), as amended), so rox composites its own
+canvas item ([ADR 33](33-adr-canvas-panel.md), as amended), so rox composites its own
 items over and under it in painter's order, and one canvas can hold several. The program
 is called a renderer. It ships, is approved and is supervised the way a plugin is
 ([ADR 30](30-adr-plugins.md)), under a new capability. rox publishes the contract and a
@@ -28,7 +28,7 @@ touches the window. A target on a tilted item needs the pointer mapped back thro
 canvas projection first.
 
 Inward, the renderer sends frames. The path from a frame to the screen exists: a
-caller-owned texture on an item's quad (`rox/src/scene/texture.rs`), fed the way
+caller-owned texture on an item's quad (`rox/src/canvas/texture.rs`), fed the way
 Milkdrop's worker feeds its panel ([ADR 28](28-adr-milkdrop.md)). The plugin wire can't
 transport the frames. It's newline-delimited JSON with frames capped at 1 MiB
 (ADR 30, `rox-ipc/src/server.rs:21-22`), and one 1920x1080 RGBA frame is about 8 MB.

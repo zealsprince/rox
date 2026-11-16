@@ -2836,6 +2836,44 @@ mod tests {
         assert!(grid::usable(&layout()).is_some());
     }
 
+    #[test]
+    fn an_empty_grid_dump_still_builds_a_grid() {
+        // The dump of a grid whose last tab left, and a bare root with no
+        // group at all.
+        let kept = json!({
+            "version": 1,
+            "center": {
+                "panel_name": "StackPanel",
+                "children": [{
+                    "panel_name": "TabPanel",
+                    "children": [],
+                    "info": { "tabs": { "active_index": 0 } },
+                }],
+                "info": { "stack": { "sizes": [480.0], "axis": 1 } },
+            },
+        });
+        let bare = json!({
+            "version": 1,
+            "center": {
+                "panel_name": "StackPanel",
+                "children": [],
+                "info": { "stack": { "sizes": [], "axis": 1 } },
+            },
+        });
+
+        for dock in [kept, bare] {
+            assert!(grid::usable(&dock).is_some(), "{dock}");
+
+            let item = json!({ "id": "empty", "content": { "kind": "grid", "dock": dock } });
+            let state: SceneState =
+                serde_json::from_value(json!({ "items": [item] })).expect("parses");
+            let bodies = scene::build_bodies(&state.items, 0, &mut |_, dock, _| {
+                grid::usable(dock).map(|_| ())
+            });
+            assert!(matches!(bodies[0], Body::Grid(())), "{dock}");
+        }
+    }
+
     fn square(x: f32, y: f32, side: f32) -> [[f32; 2]; 4] {
         [[x, y], [x + side, y], [x + side, y + side], [x, y + side]]
     }

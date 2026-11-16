@@ -565,6 +565,16 @@ impl Render for StackPanel {
         let watched: Vec<&dyn Watched> = parent.iter().map(|p| p as &dyn Watched).collect();
         self.watch.sync(cx.entity_id(), &watched, cx);
 
+        // rox: the empty group a nested area keeps shows, so it can take a
+        // drop. Asked here, since its own check reads this split.
+        let lone = self.is_last_panel(cx);
+        let kept = |panel: &Arc<dyn PanelView>, cx: &App| {
+            lone && panel
+                .view()
+                .downcast::<TabPanel>()
+                .is_ok_and(|tabs| tabs.read(cx).empty_in_nested_area(cx))
+        };
+
         h_flex()
             .size_full()
             .overflow_hidden()
@@ -594,7 +604,7 @@ impl Render for StackPanel {
                                     .view()
                                     .cached(StyleRefinement::default().absolute().size_full()),
                             )
-                            .visible(panel.visible(cx))
+                            .visible(panel.visible(cx) || kept(&panel, cx))
                     })),
             )
     }

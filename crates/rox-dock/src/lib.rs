@@ -171,6 +171,20 @@ pub(crate) fn hosts_docks(panel: EntityId, cx: &App) -> bool {
         .is_some_and(|hosts| hosts.0.contains(&panel))
 }
 
+/// rox addition: the nested areas, by entity. A tab group asks here rather
+/// than reading its area, which is mid-update on some of the paths that
+/// empty a group (a release in a root band, a pop-out).
+#[derive(Default)]
+struct NestedAreas(HashSet<EntityId>);
+
+impl Global for NestedAreas {}
+
+/// Whether `area` is a dock nested in a panel's body.
+pub(crate) fn is_nested_area(area: EntityId, cx: &App) -> bool {
+    cx.try_global::<NestedAreas>()
+        .is_some_and(|areas| areas.0.contains(&area))
+}
+
 pub enum DockEvent {
     /// The layout of the dock has changed, subscribers this to save the layout.
     ///
@@ -774,9 +788,11 @@ impl DockArea {
     }
 
     /// rox addition: mark this area as a dock inside `host`'s body.
-    pub fn set_nested(&mut self, host: EntityId, cx: &mut App) {
+    pub fn set_nested(&mut self, host: EntityId, cx: &mut Context<Self>) {
         self.nested = Some(host);
         cx.default_global::<DockHosts>().0.insert(host);
+        let area = cx.entity_id();
+        cx.default_global::<NestedAreas>().0.insert(area);
     }
 
     pub fn is_nested(&self) -> bool {
@@ -896,6 +912,10 @@ impl DockArea {
             Placement::Bottom => stack.add_panel(new_tabs, None, weak_dock, window, cx),
             _ => {}
         });
+
+        // rox: a nested area's lone group stays when its last tab leaves, but
+        // here the tab only moved to a new group beside it.
+        source.update(cx, |tabs, cx| tabs.remove_self_if_empty(window, cx));
     }
 
     /// A release of the drag's own button no tab panel claimed as a drop:

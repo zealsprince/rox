@@ -50,7 +50,11 @@ pub(crate) fn restore(
     };
 
     let area = new_area(id, state, window, cx);
-    let center = {
+    let center = if dump.center.children.is_empty() {
+        // A root with no tab group has nowhere to take a drop, so it gets
+        // the empty group a new grid starts with.
+        empty_center(&area.downgrade(), window, cx).0
+    } else {
         // A scene panel the registry builds inside this dump reads its
         // level from here.
         let _nesting = Nesting::enter(level);

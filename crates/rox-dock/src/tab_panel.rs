@@ -542,8 +542,14 @@ impl TabPanel {
     }
 
     /// Check to remove self from the parent StackPanel, if there is no panel left
-    fn remove_self_if_empty(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn remove_self_if_empty(&self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.panels.is_empty() {
+            return;
+        }
+
+        // rox: a nested area keeps its last group, so a tab can be dropped
+        // back in.
+        if self.keeps_place(cx) {
             return;
         }
 
@@ -608,6 +614,18 @@ impl TabPanel {
         }
 
         self.panels.len() <= 1
+    }
+
+    /// rox addition: an empty group that is the last one in a nested area.
+    /// It stays, so the area keeps a place to drop a tab into.
+    pub(crate) fn keeps_place(&self, cx: &App) -> bool {
+        self.empty_in_nested_area(cx) && self.is_last_panel(cx)
+    }
+
+    /// rox addition: the half of [`Self::keeps_place`] that doesn't read the
+    /// parent split.
+    pub(crate) fn empty_in_nested_area(&self, cx: &App) -> bool {
+        self.panels.is_empty() && crate::is_nested_area(self.dock_area.entity_id(), cx)
     }
 
     /// Number of panels in the group. A panel can use this (with an observe
@@ -914,6 +932,12 @@ impl TabPanel {
         let Some(dock_area) = self.dock_area.upgrade() else {
             return div().into_any_element();
         };
+
+        // rox: the group a nested area keeps has no tabs to show; its body
+        // takes the drop.
+        if self.keeps_place(cx) {
+            return div().into_any_element();
+        }
 
         let left_dock_button = self.render_dock_toggle_button(DockPlacement::Left, window, cx);
         let bottom_dock_button = self.render_dock_toggle_button(DockPlacement::Bottom, window, cx);
@@ -1268,6 +1292,10 @@ impl TabPanel {
         }
 
         let Some(active_panel) = state.active_panel.as_ref() else {
+            // rox: the group a nested area keeps is all drop target.
+            if self.keeps_place(cx) {
+                return self.render_kept_place(state, cx);
+            }
             return Empty {}.into_any_element();
         };
 
@@ -1410,6 +1438,45 @@ impl TabPanel {
             .into_any_element()
     }
 
+    /// rox addition: the body of the group a nested area keeps. Nothing but
+    /// the drop target, lit while a drag is over it, so it draws nothing
+    /// otherwise.
+    fn render_kept_place(&self, state: &TabState, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let middle_over = DockArea::middle_drag_holder(cx).is_some_and(|dock| {
+            let dock = dock.read(cx);
+            dock.middle_drag.as_ref().is_some_and(|drag| {
+                dock.edge_placement(drag.position).is_none()
+                    && self.content_bounds.get().contains(&drag.position)
+            })
+        });
+        let content_bounds = self.content_bounds.clone();
+
+        // drag_over rather than the body's group_drag_over: a cached group
+        // repaints on the hover change it reports, and there is no drag-move
+        // placement here to do that.
+        v_flex()
+            .id("active-panel")
+            .flex_1()
+            .child(
+                canvas(
+                    move |bounds, _, _| content_bounds.set(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when(state.droppable, |this| {
+                this.on_mouse_up(MouseButton::Middle, cx.listener(Self::on_move_release))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_move_release))
+                    .drag_over::<DragPanel>(|this, _, _, cx| this.bg(cx.theme().drop_target))
+                    .on_drop(cx.listener(|this, drag: &DragPanel, window, cx| {
+                        this.on_drop(drag, None, true, window, cx)
+                    }))
+                    .when(middle_over, |this| this.bg(cx.theme().drop_target))
+            })
+            .into_any_element()
+    }
+
     /// The split direction for a pointer inside bounds. A central rectangle
     /// merges into the tabs (None). The top and bottom claim a band that hugs
     /// the real edge, capped so a tall panel doesn't hand its whole upper or
@@ -1526,6 +1593,11 @@ impl TabPanel {
             && (self.will_split_placement.is_none() || self.panels.len() == 1)
         {
             return;
+        }
+
+        // rox: an empty group has nothing to split beside, so a drop fills it.
+        if self.panels.is_empty() {
+            self.will_split_placement = None;
         }
 
         // Here is looks like remove_panel on a same item, but it difference.
@@ -2127,19 +2199,279 @@ mod tests {
         window: &mut Window,
         cx: &mut App,
     ) -> (Entity<DockArea>, Entity<TabPanel>) {
+        let (area, mut groups) = area_with(&[leaves], window, cx);
+        (area, groups.remove(0))
+    }
+
+    // An area whose root split holds one tab group per count, each with that
+    // many panels, and the groups.
+    fn area_with(
+        counts: &[usize],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (Entity<DockArea>, Vec<Entity<TabPanel>>) {
         let area = cx.new(|cx| DockArea::new("area", None, window, cx));
-        let panels = (0..leaves)
-            .map(|_| Arc::new(cx.new(|cx| Leaf(cx.focus_handle()))) as Arc<dyn PanelView>)
-            .collect();
         let weak = area.downgrade();
-        let tabs = DockItem::tabs(panels, &weak, window, cx);
-        let DockItem::Tabs { view, .. } = &tabs else {
-            unreachable!();
-        };
-        let group = view.clone();
-        let center = DockItem::split(Axis::Vertical, vec![tabs], &weak, window, cx);
+        let mut items = Vec::new();
+        let mut groups = Vec::new();
+
+        for &leaves in counts {
+            let panels = (0..leaves)
+                .map(|_| Arc::new(cx.new(|cx| Leaf(cx.focus_handle()))) as Arc<dyn PanelView>)
+                .collect();
+            let tabs = DockItem::tabs(panels, &weak, window, cx);
+            let DockItem::Tabs { view, .. } = &tabs else {
+                unreachable!();
+            };
+            groups.push(view.clone());
+            items.push(tabs);
+        }
+
+        let center = DockItem::split(Axis::Vertical, items, &weak, window, cx);
         area.update(cx, |area, cx| area.set_center(center, window, cx));
-        (area, group)
+        (area, groups)
+    }
+
+    // Mark `area` as nested in a panel's body, the way a scene's grid is.
+    fn nest(area: &Entity<DockArea>, cx: &mut App) {
+        let host = cx.new(|_| Host).entity_id();
+        area.update(cx, |area, cx| area.set_nested(host, cx));
+    }
+
+    // The children of an area's root split.
+    fn root_children(area: &Entity<DockArea>, cx: &App) -> Vec<Arc<dyn PanelView>> {
+        let DockItem::Split { view, .. } = area.read(cx).items() else {
+            unreachable!("the test areas have a split at the root");
+        };
+        view.read(cx).panels.to_vec()
+    }
+
+    fn holds(children: &[Arc<dyn PanelView>], group: &Entity<TabPanel>) -> bool {
+        children
+            .iter()
+            .any(|child| child.view().entity_id() == group.entity_id())
+    }
+
+    #[gpui::test]
+    fn a_nested_area_keeps_its_last_group_when_the_last_tab_leaves(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|_, _| Host);
+        let (_areas, grid, from, to) = window
+            .update(cx, |_, window, cx| {
+                let (grid, from) = area_of(1, window, cx);
+                nest(&grid, cx);
+                let (other, to) = area_of(1, window, cx);
+                ((grid.clone(), other), grid, from, to)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = from.read(cx).panels[0].clone();
+                let drag = DragPanel::new(panel, from.clone());
+                to.update(cx, |to, cx| to.on_drop(&drag, None, true, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                assert!(from.read(cx).panels.is_empty());
+                assert!(from.read(cx).keeps_place(cx));
+                assert!(holds(&root_children(&grid, cx), &from));
+                assert_eq!(to.read(cx).panels.len(), 2);
+
+                // The saved form: a root split holding one empty tab group.
+                let dump = grid.read(cx).dump(cx);
+                assert!(matches!(dump.center.info, PanelInfo::Stack { .. }));
+                assert_eq!(dump.center.children.len(), 1);
+                let group = &dump.center.children[0];
+                assert!(matches!(group.info, PanelInfo::Tabs { .. }));
+                assert!(group.children.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_tab_dropped_on_a_kept_group_fills_it_and_can_leave_again(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|_, _| Host);
+        let (_areas, grid, kept, other) = window
+            .update(cx, |_, window, cx| {
+                let (grid, kept) = area_of(0, window, cx);
+                nest(&grid, cx);
+                let (outside, other) = area_of(2, window, cx);
+                ((grid.clone(), outside), grid, kept, other)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        // A split preview left over from an earlier hover can't split an
+        // empty group: the tab fills it.
+        window
+            .update(cx, |_, window, cx| {
+                let panel = other.read(cx).panels[0].clone();
+                let drag = DragPanel::new(panel, other.clone());
+                kept.update(cx, |kept, cx| {
+                    kept.will_split_placement = Some(Placement::Left);
+                    kept.on_drop(&drag, None, true, window, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                assert_eq!(kept.read(cx).panels.len(), 1);
+                assert_eq!(root_children(&grid, cx).len(), 1);
+                assert!(holds(&root_children(&grid, cx), &kept));
+            })
+            .unwrap();
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = kept.read(cx).panels[0].clone();
+                let drag = DragPanel::new(panel, kept.clone());
+                other.update(cx, |other, cx| other.on_drop(&drag, None, true, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                assert!(kept.read(cx).keeps_place(cx));
+                assert!(holds(&root_children(&grid, cx), &kept));
+                assert_eq!(other.read(cx).panels.len(), 2);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_nested_area_drops_an_emptied_group_that_has_a_sibling(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|_, _| Host);
+        let (grid, groups) = window
+            .update(cx, |_, window, cx| {
+                let (grid, groups) = area_with(&[1, 1], window, cx);
+                nest(&grid, cx);
+                (grid, groups)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = groups[0].read(cx).panels[0].clone();
+                let drag = DragPanel::new(panel, groups[0].clone());
+                groups[1].update(cx, |to, cx| to.on_drop(&drag, None, true, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                let children = root_children(&grid, cx);
+                assert_eq!(children.len(), 1);
+                assert!(holds(&children, &groups[1]));
+                assert_eq!(groups[1].read(cx).panels.len(), 2);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_window_area_still_drops_its_group_when_the_last_tab_closes(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|_, _| Host);
+        let (area, group) = window
+            .update(cx, |_, window, cx| area_of(1, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = group.read(cx).panels[0].clone();
+                group.update(cx, |group, cx| group.remove_panel(panel, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                assert!(!group.read(cx).keeps_place(cx));
+                assert!(root_children(&area, cx).is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_nested_area_docking_its_last_tab_at_its_edge_keeps_one_group(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let window = cx.add_window(|_, _| Host);
+        let (grid, group) = window
+            .update(cx, |_, window, cx| {
+                let (grid, group) = area_of(1, window, cx);
+                nest(&grid, cx);
+                (grid, group)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = group.read(cx).panels[0].clone();
+                let chip = cx.new(|_| DragPanel::new(panel.clone(), group.clone()));
+                let drag = MiddleDrag {
+                    panel,
+                    source: group.downgrade(),
+                    chip,
+                    position: point(px(0.), px(0.)),
+                    button: MouseButton::Middle,
+                };
+                grid.update(cx, |grid, cx| {
+                    grid.dock_at_root(drag, Placement::Top, window, cx)
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                let children = root_children(&grid, cx);
+                assert_eq!(children.len(), 1);
+                assert!(!holds(&children, &group));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn an_empty_nested_dump_restores_to_a_group_that_keeps_its_place(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let window = cx.add_window(|_, _| Host);
+        let (_areas, restored) = window
+            .update(cx, |_, window, cx| {
+                let (saved, _) = area_of(0, window, cx);
+                nest(&saved, cx);
+                let dump = saved.read(cx).dump(cx);
+
+                let restored = cx.new(|cx| DockArea::new("restored", None, window, cx));
+                nest(&restored, cx);
+                let center = dump.center.to_item(restored.downgrade(), window, cx);
+                restored.update(cx, |area, cx| area.set_center(center, window, cx));
+                ((saved, restored.clone()), restored)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                let children = root_children(&restored, cx);
+                assert_eq!(children.len(), 1);
+                let group = children[0]
+                    .view()
+                    .downcast::<TabPanel>()
+                    .expect("the root holds a tab group");
+                assert!(group.read(cx).keeps_place(cx));
+            })
+            .unwrap();
     }
 
     #[gpui::test]

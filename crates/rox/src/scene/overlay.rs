@@ -34,9 +34,9 @@ use crate::keymap;
 use crate::objects::{self, Dialog};
 use crate::panels::controls;
 use crate::panels::scene::{self, ScenePanel};
-use crate::scene::edit;
 use crate::scene::shader::{self as shader_item, RowState};
 use crate::scene::text;
+use crate::scene::{cost, edit};
 
 const WIDTH: f32 = 340.;
 
@@ -65,6 +65,9 @@ pub(crate) struct Inspector {
     shader: RowState,
     /// The selected text item's pattern box.
     pattern: Option<PatternField>,
+    /// The weight line, dropped by every edit and worked out again on the
+    /// next render.
+    weighed: Option<Weighed>,
 }
 
 impl Inspector {
@@ -75,6 +78,15 @@ impl Inspector {
     pub(crate) fn value_edit(&self) -> &ValueEdit {
         &self.edit
     }
+
+    pub(crate) fn reweigh(&mut self) {
+        self.weighed = None;
+    }
+}
+
+struct Weighed {
+    counts: SharedString,
+    warnings: Vec<SharedString>,
 }
 
 struct Typing {
@@ -161,6 +173,7 @@ pub(crate) fn render(
         .text_color(palette::text());
 
     let height = (f32::from(panel_height(panel)) - 16.).max(120.);
+    let weight = weight(panel);
     let selected = panel
         .selected
         .as_ref()
@@ -177,6 +190,7 @@ pub(crate) fn render(
         .flex_1()
         .min_h_0()
         .child(tree(panel, cx))
+        .child(weight)
         .child(div().h(px(1.)).bg(palette::border()))
         .child(match &selected {
             Some(item) => item_rows(panel, item, window, cx),
@@ -300,6 +314,51 @@ fn tree(panel: &ScenePanel, cx: &mut Context<ScenePanel>) -> AnyElement {
         .gap(px(1.))
         .child(heading)
         .children(list)
+        .into_any_element()
+}
+
+/// The scene's counts under the tree, then a line for each count that's
+/// over. Grid docks are read as last saved, which every edit refreshes.
+fn weight(panel: &mut ScenePanel) -> AnyElement {
+    let weighed = panel.inspector.weighed.get_or_insert_with(|| {
+        let weight = serde_json::to_value(&panel.config)
+            .map(cost::weigh_scene)
+            .unwrap_or_default();
+        Weighed {
+            counts: cost::counts(&weight),
+            warnings: cost::warnings(&weight),
+        }
+    });
+
+    // The tone is a fixed yellow that washes out on a light theme, so it
+    // marks the line and the words keep the theme's own text color.
+    let warnings = weighed.warnings.iter().map(|line| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .text_color(palette::text())
+            .child(
+                svg()
+                    .path(icons::ALERT)
+                    .flex_none()
+                    .size(px(12.))
+                    .text_color(palette::tone_warn()),
+            )
+            .child(div().flex_1().min_w_0().child(line.clone()))
+    });
+
+    div()
+        .id("scene-weight")
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .px(tokens::SPACE_XS)
+        .text_xs()
+        .text_color(palette::text_muted())
+        .child(weighed.counts.clone())
+        .children(warnings)
         .into_any_element()
 }
 
@@ -1903,6 +1962,7 @@ pub(crate) fn object_dialog(
                 .children(card.description.clone().map(line))
                 .children(card.requires.clone().map(line))
                 .children(card.heavy.clone().map(line))
+                .children(card.weight.iter().cloned().map(line))
                 .child(line(rox_i18n::t!("scene-object-place-body")))
                 .children(shaders.clone().map(line))
                 // A stranger's shaders are code, so the yes that runs them

@@ -1326,6 +1326,11 @@ impl SettingsWindow {
                             .children(card.and_then(|card| card.description.clone()).map(line))
                             .children(card.and_then(|card| card.requires.clone()).map(line))
                             .children(card.and_then(|card| card.heavy.clone()).map(line))
+                            .children(
+                                card.into_iter()
+                                    .flat_map(|card| card.weight.iter().cloned())
+                                    .map(line),
+                            )
                             .children(plugin_lead.into_iter().map(line))
                             .child(line(body))
                             .children(plugin_lines.into_iter().map(line))

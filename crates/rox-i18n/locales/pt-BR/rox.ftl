@@ -4488,4 +4488,7 @@ scene-object-approve-place = Aprovar e colocar
 scene-object-place-failed = Não foi possível colocar { $name }
 scene-object-add-failed = Não foi possível adicionar { $file }
 scene-object-needs-scene = { $name } adicionado. Objetos vão numa cena, e este layout ainda não tem nenhuma.
+scene-weight-counts = Itens { $items }, grades { $grids }, itens de shader { $shaders }, shaders de painel { $surfaces }, grades em movimento { $moving }, aninhamento { $depth }
+scene-weight-many-grids = Itens de grade: { $count }, mais do que se desenha com fluidez
+scene-weight-many-shaders = Shaders de painéis e da janela: { $count }, mais do que se desenha com fluidez
 menu-layout-to-scene = Converter layout em cena

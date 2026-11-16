@@ -6730,6 +6730,7 @@ impl Workspace {
                     .children(bundle_card.description.clone().map(line))
                     .children(bundle_card.requires.clone().map(line))
                     .children(bundle_card.heavy.clone().map(line))
+                    .children(bundle_card.weight.iter().cloned().map(line))
                     .child(line(if *imported {
                         rox_i18n::t!("workspace-apply-imported-body")
                     } else {
@@ -7151,6 +7152,8 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::integrations::frames::frame_begins(window, cx);
+
         // The screen shader's hot reload and signal feed run off the render
         // loop; it keeps its own frame requests going while audio moves.
         self.drive_post_shader(window, cx);

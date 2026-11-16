@@ -423,6 +423,8 @@ pub struct ApplyCard {
     /// The unpacked size, said only past [`roxw::WARN_BYTES`]. A heavy look
     /// still applies.
     pub heavy: Option<SharedString>,
+    /// A line for each weight count the heaviest layout is over.
+    pub weight: Vec<SharedString>,
 }
 
 fn heavy_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
@@ -473,6 +475,7 @@ impl ApplyCard {
                 wears_shaders: false,
                 requires: None,
                 heavy: None,
+                weight: Vec::new(),
             },
         }
     }
@@ -499,6 +502,7 @@ impl ApplyCard {
             wears_shaders: wears_shaders(bundle),
             requires: requires_line(bundle),
             heavy: heavy_line(bundle),
+            weight: crate::scene::cost::warnings(&crate::scene::cost::heaviest(bundle)),
         }
     }
 

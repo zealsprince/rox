@@ -4528,4 +4528,7 @@ scene-object-approve-place = Approva e posiziona
 scene-object-place-failed = Impossibile posizionare { $name }
 scene-object-add-failed = Impossibile aggiungere { $file }
 scene-object-needs-scene = { $name } aggiunto. Gli oggetti vanno in una scena, e questo layout non ne ha ancora.
+scene-weight-counts = Elementi { $items }, griglie { $grids }, elementi shader { $shaders }, shader dei pannelli { $surfaces }, griglie in movimento { $moving }, annidamento { $depth }
+scene-weight-many-grids = Elementi griglia: { $count }, più di quanti se ne disegnano in modo fluido
+scene-weight-many-shaders = Shader di pannelli e finestra: { $count }, più di quanti se ne disegnano in modo fluido
 menu-layout-to-scene = Converti layout in scena

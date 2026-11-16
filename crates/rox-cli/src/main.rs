@@ -73,6 +73,8 @@ drive commands (the debug scope: work the UI without OS input tools):
   hover <x> <y>              move the mouse to a point
   scroll <x> <y> <dy> [dx]   scroll at a point, wheel lines, signed
   panels                     the frontmost workspace's dock tree
+  frames [ms]                time a workspace window's frames over a span
+                             (default 2000 ms): count, mean and worst cost
   milkdrop [op] [arg]        the Milkdrop panel by verb: status (default),
                              load <file>, lock on|off, rescan, next, prev,
                              frame <out.png> (the engine's own frame)
@@ -273,6 +275,14 @@ fn run(
         }
         "windows" => ("debug.windows".into(), json!({})),
         "panels" => ("debug.panels".into(), json!({})),
+        "frames" => {
+            let mut params = json!({});
+            if let Some(ms) = args.first() {
+                let ms: u64 = ms.parse().map_err(|_| format!("not a span in ms: {ms}"))?;
+                params["ms"] = json!(ms);
+            }
+            ("debug.frames".into(), params)
+        }
         "actions" => {
             let mut params = json!({});
             if let Some(filter) = args.first() {
@@ -442,6 +452,7 @@ fn run(
         "task-start" => print_task_started(&result),
         "task-stop" => println!("stopping at the next file"),
         "windows" => print_windows(&result),
+        "frames" => print_frames(&result),
         "actions" => print_actions(&result),
         "milkdrop" => print_milkdrop(&result),
         "workspace" => println!(
@@ -637,6 +648,21 @@ fn print_windows(result: &Value) {
             window["title"].as_str().unwrap_or("(untitled)"),
         );
     }
+}
+
+fn print_frames(result: &Value) {
+    let frames = result["frames"].as_u64().unwrap_or_default();
+    let span = result["span_ms"].as_f64().unwrap_or_default();
+    if frames == 0 {
+        println!("no frames drawn in {span:.0} ms");
+        return;
+    }
+
+    println!(
+        "{frames} frames in {span:.0} ms, mean {:.2} ms, worst {:.2} ms",
+        result["mean_ms"].as_f64().unwrap_or_default(),
+        result["worst_ms"].as_f64().unwrap_or_default(),
+    );
 }
 
 fn print_actions(result: &Value) {

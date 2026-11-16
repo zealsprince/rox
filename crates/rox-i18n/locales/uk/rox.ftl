@@ -4544,4 +4544,7 @@ scene-object-approve-place = Підтвердити й розмістити
 scene-object-place-failed = Не вдалося розмістити { $name }
 scene-object-add-failed = Не вдалося додати { $file }
 scene-object-needs-scene = { $name } додано. Об'єкти розміщують у сцені, а в цій розкладці її ще немає.
+scene-weight-counts = Елементи { $items }, сітки { $grids }, елементи-шейдери { $shaders }, шейдери панелей { $surfaces }, рухомі сітки { $moving }, вкладеність { $depth }
+scene-weight-many-grids = Елементи-сітки: { $count }, більше, ніж малюється плавно
+scene-weight-many-shaders = Шейдери панелей і вікна: { $count }, більше, ніж малюється плавно
 menu-layout-to-scene = Перетворити розкладку на сцену

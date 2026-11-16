@@ -8,6 +8,7 @@
 //! with no body here (video, model, or one that didn't build) is kept
 //! exactly as it was read and written back the same.
 
+pub(crate) mod cost;
 pub(crate) mod edit;
 pub(crate) mod grid;
 pub(crate) mod image;

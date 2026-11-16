@@ -73,6 +73,7 @@ did without a second round trip.
 | `debug.thumbs`                                             |                                               | the artwork service's counters: requests, starts, lands, refused, pending, entries |
 | `debug.workspace`                                          | `{"name": ".."}`                              | null; applies that workspace to the front window                         |
 | `debug.entities`                                           |                                               | `{"total": n, "by_type": [[name, count], ..]}`, live gpui entity counts  |
+| `debug.frames`                                             | `{"ms": 100..20000?, "window": id?}`          | after the span: `{"window", "frames", "span_ms", "mean_ms", "worst_ms"}`, what that workspace window drew |
 | `debug.device_lost`                                        |                                               | `{"faulted": true}`; raises the output's device-lost flag, as an unplug does |
 | `debug.windows`                                            |                                               | every open window: id, title, logical size, scale, and which is active   |
 | `debug.actions`                                            | `{"filter": ".."}`, optional                  | `{"actions": [..]}`, the dispatchable action names                       |
@@ -201,6 +202,14 @@ input tools are involved. Coordinates are window-local logical pixels, and every
 drive method takes an optional `window` id from `debug.windows`, defaulting to the
 active window.
 
+`debug.frames` times a workspace window's frames for a span, 2 seconds unless `ms`
+says otherwise, then answers. Without `window` it takes the first workspace window.
+A frame's cost runs from the top of the workspace's render to the end of the update
+that drew it, after gpui presents: main-thread time for layout, paint and the
+renderer's acquire and submit, plus its wait on the previous frame's GPU work. GPU
+time the main thread never waits on doesn't show. A window with nothing moving
+draws no frames, so give it something to animate first. One timing runs at a time.
+
 `subscribe` enrols the connection in pushed frames. They arrive on the same
 connection as `event.track`, `event.playback`, and `event.queue` objects with a
 `method` but no `id`, which is what tells a push apart from a response. A subscriber
@@ -285,6 +294,8 @@ drive commands (the debug scope: work the UI without OS input tools):
   hover <x> <y>              move the mouse to a point
   scroll <x> <y> <dy> [dx]   scroll at a point, wheel lines, signed
   panels                     the frontmost workspace's dock tree
+  frames [ms]                time a workspace window's frames over a span
+                             (default 2000 ms): count, mean and worst cost
 ```
 
 No rox listening exits 2 with a sentence on stderr; a refused method exits 1 with

@@ -562,6 +562,7 @@ impl ScenePanel {
 
         routes::sway_new(&before.routes, &self.config.routes, &mut self.config.scene);
         self.seen_routes = self.config.routes.clone();
+        self.inspector.reweigh();
         self.history
             .record(before, self.snapshot(), Some("routes"), Instant::now());
 
@@ -610,6 +611,7 @@ impl ScenePanel {
 
         edit(&mut self.config.scene);
         self.build(keep, window, cx);
+        self.inspector.reweigh();
 
         if let Some(id) = &self.selected
             && self.config.scene.find(id).is_none()

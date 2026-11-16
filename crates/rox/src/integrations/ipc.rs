@@ -6,7 +6,7 @@
 //! Surface, version 1: `transport.*`, `queue.*`, `library.*`, `tasks.*`,
 //! `plugins.*`, `workspace.import`, `ai.status`, and `event.*` pushes after
 //! `subscribe`. `debug.*` is the runtime test surface; its input half is the
-//! sibling `drive` module.
+//! sibling `drive` module and its frame timer is `frames`.
 
 use std::path::PathBuf;
 
@@ -117,6 +117,7 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
         "plugins.action" => return super::ipc_plugins::action(request, cx),
         "plugins.install" => return super::ipc_documents::install_plugin(request, cx),
         "workspace.import" => return super::ipc_documents::import_workspace(request, cx),
+        "debug.frames" => return super::frames::request(request, cx),
         _ => {}
     }
     let result = route(state, &request.method, &request.params, cx);

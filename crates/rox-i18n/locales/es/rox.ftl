@@ -4562,4 +4562,7 @@ scene-object-approve-place = Aprobar y colocar
 scene-object-place-failed = No se pudo colocar { $name }
 scene-object-add-failed = No se pudo añadir { $file }
 scene-object-needs-scene = { $name } añadido. Los objetos van en una escena, y esta disposición aún no tiene ninguna.
+scene-weight-counts = Elementos { $items }, cuadrículas { $grids }, elementos shader { $shaders }, shaders de panel { $surfaces }, cuadrículas en movimiento { $moving }, anidamiento { $depth }
+scene-weight-many-grids = Elementos de cuadrícula: { $count }, más de los que se dibujan con fluidez
+scene-weight-many-shaders = Shaders de paneles y de la ventana: { $count }, más de los que se dibujan con fluidez
 menu-layout-to-scene = Convertir disposición en escena

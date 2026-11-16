@@ -584,6 +584,7 @@ pub(crate) struct PlaceCard {
     pub requires: Option<SharedString>,
     /// The unpacked size, said only past [`roxo::WARN_BYTES`].
     pub heavy: Option<SharedString>,
+    pub weight: Vec<SharedString>,
     pub shaders: Vec<PendingShader>,
 }
 
@@ -645,6 +646,7 @@ impl PlaceCard {
                 let mb = unpacked as f64 / 1_000_000.0;
                 rox_i18n::t!("scene-object-heavy", size = format!("{mb:.0}"))
             }),
+            weight: crate::scene::cost::warnings(&crate::scene::cost::weigh_object(bundle)),
             shaders: workspaces::unapproved_shaders(&look),
         }
     }

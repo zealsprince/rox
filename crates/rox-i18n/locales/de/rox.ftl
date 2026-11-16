@@ -4466,4 +4466,7 @@ scene-object-approve-place = Freigeben und platzieren
 scene-object-place-failed = { $name } konnte nicht platziert werden
 scene-object-add-failed = { $file } konnte nicht hinzugefügt werden
 scene-object-needs-scene = { $name } hinzugefügt. Objekte gehören in eine Szene, und dieses Layout hat noch keine.
+scene-weight-counts = Elemente { $items }, Raster { $grids }, Shader-Elemente { $shaders }, Panel-Shader { $surfaces }, bewegte Raster { $moving }, Verschachtelung { $depth }
+scene-weight-many-grids = Raster-Elemente: { $count }, mehr als sich flüssig zeichnen lässt
+scene-weight-many-shaders = Panel- und Fenster-Shader: { $count }, mehr als sich flüssig zeichnen lässt
 menu-layout-to-scene = Layout in Szene umwandeln

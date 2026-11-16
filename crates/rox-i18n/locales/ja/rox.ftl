@@ -4334,4 +4334,7 @@ scene-object-approve-place = 承認して配置
 scene-object-place-failed = { $name } を配置できませんでした
 scene-object-add-failed = { $file } を追加できませんでした
 scene-object-needs-scene = { $name } を追加しました。オブジェクトはシーンに置くもので、このレイアウトにはまだシーンがありません。
+scene-weight-counts = アイテム { $items }、グリッド { $grids }、シェーダーアイテム { $shaders }、パネルシェーダー { $surfaces }、動くグリッド { $moving }、入れ子 { $depth }
+scene-weight-many-grids = グリッドアイテム: { $count }、滑らかに描画できる数を超えています
+scene-weight-many-shaders = パネルとウィンドウのシェーダー: { $count }、滑らかに描画できる数を超えています
 menu-layout-to-scene = レイアウトをシーンに変換

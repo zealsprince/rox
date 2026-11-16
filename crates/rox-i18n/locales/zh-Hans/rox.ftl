@@ -4333,4 +4333,7 @@ scene-object-approve-place = 批准并放置
 scene-object-place-failed = 无法放置 { $name }
 scene-object-add-failed = 无法添加 { $file }
 scene-object-needs-scene = 已添加 { $name }。对象需要放进场景，而这个布局还没有场景。
+scene-weight-counts = 项目 { $items }，网格 { $grids }，着色器项目 { $shaders }，面板着色器 { $surfaces }，移动的网格 { $moving }，嵌套 { $depth }
+scene-weight-many-grids = 网格项目：{ $count }，超出流畅绘制的数量
+scene-weight-many-shaders = 面板和窗口着色器：{ $count }，超出流畅绘制的数量
 menu-layout-to-scene = 将布局转换为场景

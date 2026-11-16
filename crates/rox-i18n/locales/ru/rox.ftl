@@ -4522,4 +4522,7 @@ scene-object-approve-place = Подтвердить и поместить
 scene-object-place-failed = Не удалось поместить { $name }
 scene-object-add-failed = Не удалось добавить { $file }
 scene-object-needs-scene = { $name } добавлен. Объекты помещаются в сцену, а в этом макете её пока нет.
+scene-weight-counts = Элементы { $items }, сетки { $grids }, элементы-шейдеры { $shaders }, шейдеры панелей { $surfaces }, движущиеся сетки { $moving }, вложенность { $depth }
+scene-weight-many-grids = Элементы-сетки: { $count }, больше, чем рисуется плавно
+scene-weight-many-shaders = Шейдеры панелей и окна: { $count }, больше, чем рисуется плавно
 menu-layout-to-scene = Преобразовать макет в сцену

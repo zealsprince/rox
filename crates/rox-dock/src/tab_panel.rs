@@ -1038,12 +1038,13 @@ impl TabPanel {
                                 MouseButton::Middle,
                                 cx.listener({
                                     let panel = panel.clone();
-                                    move |this, event: &MouseDownEvent, _, _| {
-                                        this.pending_middle_drag = Some((
+                                    move |this, event: &MouseDownEvent, _, cx| {
+                                        this.arm_move(
                                             event.position,
                                             panel.clone(),
                                             MouseButton::Middle,
-                                        ));
+                                            cx,
+                                        );
                                     }
                                 }),
                             )
@@ -1055,15 +1056,16 @@ impl TabPanel {
                                     MouseButton::Left,
                                     cx.listener({
                                         let panel = panel.clone();
-                                        move |this, event: &MouseDownEvent, _, _| {
+                                        move |this, event: &MouseDownEvent, _, cx| {
                                             if !event.modifiers.alt {
                                                 return;
                                             }
-                                            this.pending_middle_drag = Some((
+                                            this.arm_move(
                                                 event.position,
                                                 panel.clone(),
                                                 MouseButton::Left,
-                                            ));
+                                                cx,
+                                            );
                                         }
                                     }),
                                 )
@@ -1131,9 +1133,13 @@ impl TabPanel {
                             MouseButton::Middle,
                             cx.listener({
                                 let panel = panel.clone();
-                                move |this, event: &MouseDownEvent, _, _| {
-                                    this.pending_middle_drag =
-                                        Some((event.position, panel.clone(), MouseButton::Middle));
+                                move |this, event: &MouseDownEvent, _, cx| {
+                                    this.arm_move(
+                                        event.position,
+                                        panel.clone(),
+                                        MouseButton::Middle,
+                                        cx,
+                                    );
                                 }
                             }),
                         )
@@ -1150,11 +1156,12 @@ impl TabPanel {
                                 let dock_area = self.dock_area.clone();
                                 move |view, event: &MouseDownEvent, window, cx| {
                                     if event.modifiers.alt && (is_collapsed || !is_draggable) {
-                                        view.pending_middle_drag = Some((
+                                        view.arm_move(
                                             event.position,
                                             panel.clone(),
                                             MouseButton::Left,
-                                        ));
+                                            cx,
+                                        );
                                         return;
                                     }
                                     view.set_active_ix(ix, window, cx);
@@ -1379,8 +1386,7 @@ impl TabPanel {
                     MouseButton::Middle,
                     cx.listener(|this, event: &MouseDownEvent, _, cx| {
                         if let Some(panel) = this.active_panel(cx) {
-                            this.pending_middle_drag =
-                                Some((event.position, panel, MouseButton::Middle));
+                            this.arm_move(event.position, panel, MouseButton::Middle, cx);
                         }
                     }),
                 )
@@ -1396,8 +1402,7 @@ impl TabPanel {
                         }
                         cx.stop_propagation();
                         if let Some(panel) = this.active_panel(cx) {
-                            this.pending_middle_drag =
-                                Some((event.position, panel, MouseButton::Left));
+                            this.arm_move(event.position, panel, MouseButton::Left, cx);
                         }
                     },
                 ))
@@ -1530,6 +1535,67 @@ impl TabPanel {
             self.will_split_placement = new_placement;
             cx.notify();
         }
+    }
+
+    /// rox addition: arm a move. The render after this is what puts the
+    /// window-wide move listener up.
+    fn arm_move(
+        &mut self,
+        at: Point<Pixels>,
+        panel: Arc<dyn PanelView>,
+        button: MouseButton,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_middle_drag = Some((at, panel, button));
+        cx.notify();
+    }
+
+    /// rox addition: drop an armed move, and its listener with the next
+    /// render.
+    fn disarm_move(&mut self, cx: &mut Context<Self>) {
+        if self.pending_middle_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// An armed move turns into a drag once the pointer is past the threshold,
+    /// wherever it is by then.
+    fn armed_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((start, _, button)) = self.pending_middle_drag.as_ref() else {
+            return;
+        };
+        if event.pressed_button != Some(*button) {
+            self.disarm_move(cx);
+            return;
+        }
+        if (event.position - *start).magnitude() <= MIDDLE_DRAG_THRESHOLD {
+            return;
+        }
+        // Deliberately looser than draggable: a section's last panel
+        // (the lone center panel, say) may still move to another
+        // section. Dropping it on itself is a no-op, so this can't
+        // strand anything the built-in drag's guard protects.
+        if self.is_locked(cx) {
+            self.disarm_move(cx);
+            return;
+        }
+        let Some(dock) = self.dock_area.upgrade() else {
+            return;
+        };
+        let Some((_, panel, button)) = self.pending_middle_drag.take() else {
+            return;
+        };
+        let tabs = cx.entity();
+        let chip = cx.new(|_| DragPanel::new(panel.clone(), tabs.clone()));
+        let drag = MiddleDrag {
+            panel,
+            source: tabs.downgrade(),
+            chip,
+            position: event.position,
+            button,
+        };
+        dock.update(cx, |dock, cx| dock.start_middle_drag(drag, cx));
+        window.refresh();
     }
 
     /// A release over the panel body: if a hand-rolled drag is using the
@@ -1962,57 +2028,43 @@ impl Render for TabPanel {
             }))
             // An armed press (middle or Alt+Left, on a tab or the body)
             // becomes a panel move once the pointer travels past the
-            // threshold. Lives on the root so a fast pull off a small tab
-            // still catches.
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                let Some((start, _, button)) = this.pending_middle_drag.as_ref() else {
-                    return;
-                };
-                if event.pressed_button != Some(*button) {
-                    this.pending_middle_drag = None;
-                    return;
-                }
-                if (event.position - *start).magnitude() <= MIDDLE_DRAG_THRESHOLD {
-                    return;
-                }
-                // Deliberately looser than draggable: a section's last panel
-                // (the lone center panel, say) may still move to another
-                // section. Dropping it on itself is a no-op, so this can't
-                // strand anything the built-in drag's guard protects.
-                if this.is_locked(cx) {
-                    this.pending_middle_drag = None;
-                    return;
-                }
-                let Some(dock) = this.dock_area.upgrade() else {
-                    return;
-                };
-                let Some((_, panel, button)) = this.pending_middle_drag.take() else {
-                    return;
-                };
+            // threshold.
+            .on_mouse_move(cx.listener(Self::armed_move))
+            // rox: the same, window-wide, for as long as a move is armed.
+            // The root's handler only hears the pointer over this group, and
+            // a quick first pull off a short strip leaves it in one event.
+            .when(self.pending_middle_drag.is_some(), |this| {
                 let tabs = cx.entity();
-                let chip = cx.new(|_| DragPanel::new(panel.clone(), tabs.clone()));
-                let drag = MiddleDrag {
-                    panel,
-                    source: tabs.downgrade(),
-                    chip,
-                    position: event.position,
-                    button,
-                };
-                dock.update(cx, |dock, cx| dock.start_middle_drag(drag, cx));
-                window.refresh();
-            }))
+                this.child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, window, _| {
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, phase, window, cx| {
+                                    if !phase.bubble() {
+                                        return;
+                                    }
+                                    tabs.update(cx, |this, cx| this.armed_move(event, window, cx));
+                                },
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            })
             // Any unclaimed release of an arming button disarms; runs after
             // the tab and body handlers since bubble goes children first.
             .on_mouse_up(
                 MouseButton::Middle,
-                cx.listener(|this, _: &MouseUpEvent, _, _| {
-                    this.pending_middle_drag = None;
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.disarm_move(cx);
                 }),
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, _| {
-                    this.pending_middle_drag = None;
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.disarm_move(cx);
                 }),
             )
             .child(self.render_title_bar(&state, window, cx))

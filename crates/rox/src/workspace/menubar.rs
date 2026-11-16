@@ -91,6 +91,7 @@ impl Workspace {
             MenuAction::OpenQuickPlay => self.toggle_quick_play(window, cx),
             MenuAction::OpenConsole => crate::console_window::open(cx),
             MenuAction::OpenTasks => crate::tasks_window::open(cx),
+            MenuAction::OpenCatalog => crate::catalog_window::open(cx),
             MenuAction::OpenEqualizer => crate::eq_window::open(cx),
             MenuAction::RescanLibrary => self.rescan_library(cx),
             // The passes go through the same start prompt as everywhere else.

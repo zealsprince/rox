@@ -34,10 +34,10 @@ use crate::workspace::{
     ClearQueue, ClosePanelAction, CloseWindow, Cue, CueClear, CueNext, CuePrev, CycleLoop,
     CycleReplayGainMode, CycleShuffleMode, DecreaseFontSize, FillSortNames, FindDuplicates,
     FlattenEq, FocusSearch, ImportWorkspace, IncreaseFontSize, MeasureReplayGain, NewEmptyWindow,
-    NewWindow, NextBookmark, NextTrack, OpenAbout, OpenChat, OpenConsole, OpenDiscussions,
-    OpenEqualizer, OpenGoTo, OpenHealth, OpenPowerSearch, OpenPresetPicker, OpenQuickPlay,
-    OpenSettings, OpenSignals, OpenStats, OpenTasks, OpenWelcome, PlayRandom, PlaySimilar,
-    PrevBookmark, PreviousTrack, Quit, RandomMilkdropPreset, RenameTrack, ReportIssue,
+    NewWindow, NextBookmark, NextTrack, OpenAbout, OpenCatalog, OpenChat, OpenConsole,
+    OpenDiscussions, OpenEqualizer, OpenGoTo, OpenHealth, OpenPowerSearch, OpenPresetPicker,
+    OpenQuickPlay, OpenSettings, OpenSignals, OpenStats, OpenTasks, OpenWelcome, PlayRandom,
+    PlaySimilar, PrevBookmark, PreviousTrack, Quit, RandomMilkdropPreset, RenameTrack, ReportIssue,
     RescanLibrary, ResetFontSize, RomanizeLibrary, SaveLayout, SaveWorkspace, SleepOff,
     StepBackward, StepForward, StopPlayback, TagGenres, ToggleArtTheming, ToggleBackdropAllWindows,
     ToggleBackdropShader, ToggleBroadcast, ToggleCapture, ToggleContinuation, ToggleCrossfade,
@@ -897,6 +897,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             defaults::TASKS,
             OpenTasks,
             rox_i18n::t_static("keymap-open-tasks.description")
+        ),
+        command!(
+            "open_catalog",
+            rox_i18n::t_static("keymap-open-catalog"),
+            Group::Windows,
+            WORKSPACE,
+            &[],
+            OpenCatalog,
+            rox_i18n::t_static("keymap-open-catalog.description")
         ),
         command!(
             "open_equalizer",

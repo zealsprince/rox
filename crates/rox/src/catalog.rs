@@ -10,8 +10,6 @@
 //! index's sha256 proves a file is the one the index meant, fetched from the
 //! same origin as the file, so it proves nothing about the origin itself.
 
-#![cfg_attr(not(debug_assertions), allow(dead_code))]
-
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,10 +18,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use gpui::{App, Global, Task};
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use rox_core::settings::{self, WorkspaceBundle, roxo, roxw};
 use rox_net::download::{self, Progress};
-use rox_net::sources::catalog::{self as wire, Index, Kind, Origin, Summary};
+use rox_net::sources::catalog::{self as wire, Index, Kind, Origin, Record, Summary};
 use rox_panel_api::panel;
 use rox_panel_api::toast::Toast;
 use rox_plugins::package;
@@ -38,6 +37,7 @@ pub(crate) const ORIGIN: &str = "https://catalog.invalid";
 const INDEX_FILE: &str = "index.json";
 const INSTALLED_FILE: &str = "installed.json";
 const INCOMING: &str = "incoming";
+const PREVIEWS: &str = "previews";
 
 /// The compiled-in origin. Only a debug build reads an override, for a
 /// local test server; a release build has no other origin to reach.
@@ -67,14 +67,18 @@ pub(crate) fn load() -> Option<Index> {
 }
 
 fn read_capped(path: &Path, cap: u64) -> Option<String> {
-    let mut text = String::new();
+    String::from_utf8(read_bytes_capped(path, cap)?).ok()
+}
+
+fn read_bytes_capped(path: &Path, cap: u64) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
     std::fs::File::open(path)
         .ok()?
         .take(cap + 1)
-        .read_to_string(&mut text)
+        .read_to_end(&mut bytes)
         .ok()?;
 
-    (text.len() as u64 <= cap).then_some(text)
+    (bytes.len() as u64 <= cap).then_some(bytes)
 }
 
 /// Fetch, parse, then replace the cached copy. A failed fetch or an index
@@ -111,6 +115,55 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
 
     written.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+// ── Records and previews ──
+
+/// A package's record, fetched on the background executor.
+pub(crate) fn fetch_record(id: &str, cx: &App) -> Task<Result<Record, String>> {
+    let id = id.to_string();
+
+    cx.background_executor().spawn(async move {
+        let record = wire::fetch_record(&origin()?, &id)?;
+
+        // Only reached once the wire has checked the id is a slug.
+        for reason in &record.dropped {
+            log::warn!("catalog: record {id}: {reason}");
+        }
+
+        Ok(record)
+    })
+}
+
+/// A preview's bytes, from `catalog/previews/` or else fetched and kept
+/// there. Blocking. The bytes are only ever what the server called an image
+/// under the cap, still undecoded: decoding is the caller's, under its own
+/// pixel cap.
+pub(crate) fn preview(path: &str) -> Result<Vec<u8>, String> {
+    let url = origin()?.resolve(path)?;
+    let file = settings::catalog_dir()
+        .join(PREVIEWS)
+        .join(preview_name(&url));
+
+    if let Some(bytes) = read_bytes_capped(&file, wire::PREVIEW_MAX) {
+        return Ok(bytes);
+    }
+
+    let bytes = wire::fetch_preview(&origin()?, path)?;
+    if let Err(e) = write_atomic(&file, &bytes) {
+        log::warn!("catalog: keeping a preview: {e}");
+    }
+
+    Ok(bytes)
+}
+
+/// A hash of the URL, so nothing the index says ever names a file on disk.
+fn preview_name(url: &str) -> String {
+    Sha256::digest(url.as_bytes())
+        .iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // ── The record of installs ──
@@ -180,6 +233,15 @@ pub(crate) fn updates() -> Vec<Summary> {
     updates_in(&index, &read_installs().installed, still_there, CURRENT)
 }
 
+/// What came from the catalog and is still on disk. Reads a file, so it's
+/// for the background executor.
+pub(crate) fn installed() -> Vec<Installed> {
+    let mut installed = read_installs().installed;
+    installed.retain(|record| still_there(&record.file));
+
+    installed
+}
+
 fn updates_in(
     index: &Index,
     installed: &[Installed],
@@ -200,7 +262,7 @@ fn updates_in(
 
 /// `min_rox` against the running build. One that doesn't parse is refused,
 /// and its text isn't echoed.
-fn runs_here(min_rox: &str, current: &str) -> Result<(), String> {
+pub(crate) fn runs_here(min_rox: &str, current: &str) -> Result<(), String> {
     let need = Version::parse(min_rox)
         .map_err(|_| "this package's minimum rox version doesn't read".to_string())?;
     let have = Version::parse(current)
@@ -578,6 +640,18 @@ mod tests {
         // An update this build can't install isn't offered.
         let index = index(&[("ahead", NEW, &newer)]);
         assert!(updates_in(&index, &[installed("ahead", OLD)], |_| true, CURRENT).is_empty());
+    }
+
+    #[test]
+    fn a_preview_is_kept_under_a_name_rox_makes() {
+        let name = preview_name("https://catalog.example/v1/previews/../../a b.png");
+
+        assert_eq!(name.len(), 32);
+        assert!(name.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(
+            name,
+            preview_name("https://catalog.example/v1/previews/b.png")
+        );
     }
 
     #[test]

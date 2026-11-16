@@ -1438,6 +1438,7 @@ actions!(
     rox,
     [
         OpenSettings,
+        OpenCatalog,
         OpenStats,
         OpenHealth,
         OpenPowerSearch,
@@ -1698,6 +1699,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &NewWindow, cx| crate::open_workspace(cx));
     cx.on_action(|_: &OpenConsole, cx| crate::console_window::open(cx));
     cx.on_action(|_: &OpenTasks, cx| crate::tasks_window::open(cx));
+    cx.on_action(|_: &OpenCatalog, cx| crate::catalog_window::open(cx));
     cx.on_action(|_: &OpenEqualizer, cx| crate::eq_window::open(cx));
     cx.on_action(|_: &OpenPresetPicker, cx| {
         crate::milkdrop_picker::open(Box::new(crate::backdrop_visual::BackdropHost), cx)
@@ -2483,6 +2485,9 @@ pub(crate) enum MenuAction {
     Next,
     Previous,
     OpenSettings,
+    /// Open the catalog window, the workspaces, plugins and objects rox can
+    /// install.
+    OpenCatalog,
     OpenStats,
     /// Open the library health page, the tag-and-structure report beside
     /// the listening one.
@@ -2597,6 +2602,7 @@ impl MenuAction {
             MenuAction::OpenQuickPlay => "quick-play".into(),
             MenuAction::OpenConsole => "console".into(),
             MenuAction::OpenTasks => "tasks".into(),
+            MenuAction::OpenCatalog => "catalog".into(),
             MenuAction::OpenEqualizer => "equalizer".into(),
             MenuAction::RescanLibrary => "rescan-library".into(),
             MenuAction::MeasureReplayGain => "measure-replaygain".into(),
@@ -2655,6 +2661,7 @@ impl MenuAction {
             "quick-play" => MenuAction::OpenQuickPlay,
             "console" => MenuAction::OpenConsole,
             "tasks" => MenuAction::OpenTasks,
+            "catalog" => MenuAction::OpenCatalog,
             "equalizer" => MenuAction::OpenEqualizer,
             "rescan-library" => MenuAction::RescanLibrary,
             "measure-replaygain" => MenuAction::MeasureReplayGain,
@@ -2930,6 +2937,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "menu-settings",
                 icon: icons::SETTINGS,
                 action: MenuAction::OpenSettings,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-catalog",
+                icon: icons::GALLERY,
+                action: MenuAction::OpenCatalog,
             }),
             // The two instruments: windows you work while the music plays,
             // rather than preferences you set and close.
@@ -3442,6 +3454,7 @@ fn keymap_command(action: MenuAction) -> Option<&'static str> {
         MenuAction::OpenPowerSearch => "open_power_search",
         MenuAction::OpenQuickPlay => "open_quick_play",
         MenuAction::OpenTasks => "open_tasks",
+        MenuAction::OpenCatalog => "open_catalog",
         MenuAction::OpenEqualizer => "open_equalizer",
         MenuAction::RescanLibrary => "rescan_library",
         MenuAction::MeasureReplayGain => "measure_replaygain",

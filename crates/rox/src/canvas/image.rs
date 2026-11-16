@@ -276,13 +276,32 @@ fn load(id: &str) -> Result<Arc<RenderImage>, String> {
 /// BGRA, every frame of an animation and frame 0 of anything else, refused
 /// over the cap before the body is read.
 pub(crate) fn decode(bytes: &[u8]) -> Result<Arc<RenderImage>, String> {
-    let reader = || {
-        image::ImageReader::new(Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(|e| e.to_string())
-    };
+    let (format, width, height, limits) = head(bytes)?;
 
-    let head = reader()?;
+    if let Some(frames) = animation(bytes, format, limits.clone(), width, height)? {
+        return Ok(Arc::new(RenderImage::new(frames)));
+    }
+
+    still(bytes, limits)
+}
+
+/// [`decode`] held to frame 0, for a picture shown small, where an
+/// animation's frames would be memory spent on nothing.
+pub(crate) fn decode_still(bytes: &[u8]) -> Result<Arc<RenderImage>, String> {
+    let (_, _, _, limits) = head(bytes)?;
+
+    still(bytes, limits)
+}
+
+fn reader(bytes: &[u8]) -> Result<image::ImageReader<Cursor<&[u8]>>, String> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())
+}
+
+/// The format and size off the header alone, refused over the cap.
+fn head(bytes: &[u8]) -> Result<(Option<ImageFormat>, u32, u32, image::Limits), String> {
+    let head = reader(bytes)?;
     let format = head.format();
     let (width, height) = head.into_dimensions().map_err(|e| e.to_string())?;
     fits(width, height)?;
@@ -292,11 +311,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Arc<RenderImage>, String> {
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
 
-    if let Some(frames) = animation(bytes, format, limits.clone(), width, height)? {
-        return Ok(Arc::new(RenderImage::new(frames)));
-    }
+    Ok((format, width, height, limits))
+}
 
-    let mut reader = reader()?;
+fn still(bytes: &[u8], limits: image::Limits) -> Result<Arc<RenderImage>, String> {
+    let mut reader = reader(bytes)?;
     reader.limits(limits);
 
     let mut pixels = reader.decode().map_err(|e| e.to_string())?.into_rgba8();

@@ -11,6 +11,7 @@ mod bake_dialog;
 mod bookmark_dialog;
 mod canvas;
 mod catalog;
+mod catalog_window;
 mod cjk_fonts;
 mod composite;
 mod console_window;
@@ -504,6 +505,7 @@ fn main() {
         let open = (!launch.files.is_empty()).then_some((launch.mode, launch.files));
         open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
         documents::set_object_handler(documents::open_object);
+        documents::set_link_handler(catalog_window::open_link);
         documents::open(launch.documents, cx);
         // The macOS menu bar needs a workspace to act on. A no-op elsewhere.
         workspace::native_menu::rebuild(cx);

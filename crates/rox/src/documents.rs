@@ -88,7 +88,6 @@ pub(crate) fn set_object_handler(handler: fn(PathBuf, &mut App)) {
 
 /// Set once the catalog reads links. Until then a link is logged and
 /// dropped.
-#[allow(dead_code)]
 pub(crate) fn set_link_handler(handler: fn(&str, &mut App)) {
     let _ = LINK_HANDLER.set(handler);
 }

@@ -200,6 +200,15 @@ there. rox doesn't publish plugins for any service. It publishes
 the protocol in the [plugin guide](README_PLUGINS.md) and an example
 to copy in [`examples/plugins/tones`](examples/plugins/tones/).
 
+## Catalog
+
+Application > Catalog browses workspaces, plugins and objects that were reviewed before
+they were listed. Install downloads one, checks it against the size and checksum the
+catalog states, and hands it to the same path a file opened from disk takes, with the
+same confirm. Nothing applies, places or switches on until you say so. An install button
+on a web page is a `rox://install/<id>` link, which opens the catalog on that package and
+leaves pressing Install to you.
+
 ## Development
 
 With Nix:

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     AnyElement, Context, ElementId, Entity, Focusable, KeyContext, MouseButton, Render,
-    SharedString, Subscription, Window, div, prelude::*, px, svg,
+    SharedString, Subscription, Window, anchored, deferred, div, prelude::*, px, svg,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -31,6 +31,7 @@ use rox_panel_kit::{PickRow, search_picker};
 use rox_scene::{Align, Anchor, Content, Fit, ImageFit, Length, SceneItem, SceneState};
 
 use crate::keymap;
+use crate::objects::{self, Dialog};
 use crate::panels::controls;
 use crate::panels::scene::{self, ScenePanel};
 use crate::scene::edit;
@@ -890,6 +891,16 @@ fn actions(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
             "scene-delete",
             ScenePanel::delete_selected,
         ))
+        .child(button(
+            rox_i18n::t!("scene-export-object"),
+            icons::UPLOAD,
+            "scene-export-object",
+            |this, window, cx| {
+                if let Some(id) = this.selected.clone() {
+                    objects::open_export(this, &id, window, cx);
+                }
+            },
+        ))
         .into_any_element()
 }
 
@@ -1735,4 +1746,245 @@ fn trimmed(value: f32) -> String {
     } else {
         text.to_string()
     }
+}
+
+// ── Objects ──
+
+/// The Add menu's Objects list: each installed object, with Remove on its
+/// row, then Add File.
+pub(crate) fn objects_menu(window: &mut Window, cx: &mut Context<ScenePanel>) -> Entity<PopupMenu> {
+    let installed = objects::all();
+    let me = cx.entity().downgrade();
+
+    PopupMenu::build(window, cx, move |mut menu, _, _| {
+        if installed.is_empty() {
+            menu = menu.item(PopupMenuItem::label(rox_i18n::t!("scene-objects-empty")));
+        }
+
+        for (name, _) in &installed {
+            let label = SharedString::from(name.clone());
+            let removing = name.clone();
+            let placing = name.clone();
+            let gone = me.clone();
+            let offer = me.clone();
+
+            let row = PopupMenuItem::element(move |_, _| {
+                let removing = removing.clone();
+                let gone = gone.clone();
+
+                // Taken on the press, which stops there, so the row's own
+                // click doesn't place what's being removed.
+                let remove = div()
+                    .id(SharedString::from(format!(
+                        "scene-object-remove-{removing}"
+                    )))
+                    .flex_none()
+                    .p(px(2.))
+                    .rounded(tokens::RADIUS)
+                    .hover(|d| d.bg(palette::bg_control_hover()))
+                    .child(
+                        svg()
+                            .path(icons::TRASH)
+                            .size_3()
+                            .text_color(palette::text_muted()),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        if let Err(e) = objects::remove(&removing) {
+                            log::warn!("objects: removing {removing}: {e}");
+                        }
+                        gone.update(cx, |this, cx| this.close_menu(cx)).ok();
+                    });
+
+                div()
+                    .flex()
+                    .flex_1()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(div().flex_1().truncate().child(label.clone()))
+                    .child(remove)
+            })
+            .on_click(move |_, window, cx| {
+                offer
+                    .update(cx, |this, cx| {
+                        this.close_menu(cx);
+                        objects::offer(this, &placing, window, cx);
+                    })
+                    .ok();
+            });
+            menu = menu.item(row);
+        }
+
+        let me = me.clone();
+        menu.separator().item(
+            PopupMenuItem::new(rox_i18n::t!("scene-add-file"))
+                .icon(gpui_component::Icon::default().path(icons::FOLDER))
+                .on_click(move |_, window, cx| {
+                    me.update(cx, |this, cx| this.add_object_file(window, cx))
+                        .ok();
+                }),
+        )
+    })
+}
+
+/// The export card or the place confirm, centered over the whole window on
+/// a scrim, the way a menu sits over it.
+pub(crate) fn object_dialog(
+    panel: &ScenePanel,
+    window: &Window,
+    cx: &mut Context<ScenePanel>,
+) -> Option<AnyElement> {
+    let dialog = panel.object_dialog.as_ref()?;
+    let size = window.bounds().size;
+
+    let line = |text: SharedString| {
+        div()
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(text)
+    };
+    let cancel = settings_ui::dialog_button(
+        rox_i18n::t!("workspace-dialog-cancel"),
+        false,
+        cx.listener(|this, _, window, cx| this.close_object_dialog(window, cx)),
+    );
+
+    let (body, buttons, width) = match dialog {
+        Dialog::Export { item, fields } => {
+            let title = panel
+                .config
+                .scene
+                .find(item)
+                .map(|found| {
+                    if found.name.is_empty() {
+                        found.id.clone()
+                    } else {
+                        found.name.clone()
+                    }
+                })
+                .unwrap_or_default();
+
+            let mut body = div()
+                .key_context("SearchInput")
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_SM)
+                .child(div().child(rox_i18n::t!("scene-object-export-title", name = title)))
+                .child(line(rox_i18n::t!("scene-object-export-hint")));
+            for ((label, _), input) in objects::EXPORT_FIELDS.iter().zip(fields) {
+                body = body.child(setting_row(
+                    rox_i18n::t!(*label),
+                    None,
+                    Input::new(input).small().w(px(220.)),
+                ));
+            }
+
+            let export = settings_ui::dialog_button(
+                rox_i18n::t!("workspace-dialog-export"),
+                true,
+                cx.listener(|this, _, window, cx| objects::confirm_export(this, window, cx)),
+            );
+
+            (body, vec![cancel, export], 400.)
+        }
+
+        Dialog::Place { card, .. } => {
+            let shaders = card.shader_line();
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_SM)
+                .child(div().child(rox_i18n::t!(
+                    "scene-object-place-title",
+                    name = card.title.as_str()
+                )))
+                .children(card.byline.clone().map(line))
+                .children(card.description.clone().map(line))
+                .children(card.requires.clone().map(line))
+                .children(card.heavy.clone().map(line))
+                .child(line(rox_i18n::t!("scene-object-place-body")))
+                .children(shaders.clone().map(line))
+                // A stranger's shaders are code, so the yes that runs them
+                // says so, and the yes that doesn't sits beside it.
+                .children(
+                    shaders
+                        .is_some()
+                        .then(|| line(rox_i18n::t!("scene-object-shaders-body"))),
+                );
+
+            let mut buttons = vec![
+                cancel,
+                settings_ui::dialog_button(
+                    rox_i18n::t!("scene-object-place"),
+                    shaders.is_none(),
+                    cx.listener(|this, _, window, cx| {
+                        objects::confirm_place(this, false, window, cx)
+                    }),
+                ),
+            ];
+            if shaders.is_some() {
+                buttons.push(settings_ui::dialog_button(
+                    rox_i18n::t!("scene-object-approve-place"),
+                    true,
+                    cx.listener(|this, _, window, cx| {
+                        objects::confirm_place(this, true, window, cx)
+                    }),
+                ));
+            }
+
+            (body, buttons, 380.)
+        }
+    };
+
+    let footer = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .justify_end()
+        .gap(tokens::SPACE_SM)
+        .children(buttons);
+
+    Some(
+        deferred(
+            // Pinned to the window's corner: left at the panel's origin, the
+            // scrim would stop short of the window's top edge.
+            anchored().position(gpui::point(px(0.), px(0.))).child(
+                div()
+                    .id("scene-object-dialog")
+                    .when_some(
+                        match dialog {
+                            Dialog::Place { focus, .. } => Some(focus),
+                            Dialog::Export { .. } => None,
+                        },
+                        |d, focus| d.track_focus(focus),
+                    )
+                    .w(size.width)
+                    .h(size.height)
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(tokens::SPACE_MD)
+                    .bg(gpui::rgba(0x00000066))
+                    .text_sm()
+                    .text_color(palette::text())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.close_object_dialog(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        settings_ui::dialog_card("scene-object-dialog-body", body, footer)
+                            .w(px(width)),
+                    ),
+            ),
+        )
+        .with_priority(2)
+        .into_any_element(),
+    )
 }

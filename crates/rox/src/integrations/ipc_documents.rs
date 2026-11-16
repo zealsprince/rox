@@ -74,7 +74,7 @@ pub fn install_plugin(request: Request, cx: &mut App) {
 
 /// rox runs in its own working directory, so a relative path would name a
 /// different file from the one the caller meant.
-fn path_param(params: &Value) -> Result<PathBuf, RpcError> {
+pub(super) fn path_param(params: &Value) -> Result<PathBuf, RpcError> {
     let path = params
         .get("path")
         .and_then(Value::as_str)

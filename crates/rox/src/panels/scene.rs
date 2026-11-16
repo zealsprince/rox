@@ -26,10 +26,10 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, CursorStyle, DismissEvent, Div,
-    Entity, EntityId, EventEmitter, FocusHandle, Focusable, HitboxBehavior, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathPromptOptions, Pixels, Point,
-    Rgba, SharedString, Subscription, WeakEntity, Window, actions, anchored, canvas, deferred, div,
-    point, prelude::*, px,
+    Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, HitboxBehavior,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathPromptOptions,
+    Pixels, Point, Rgba, SharedString, Subscription, WeakEntity, Window, actions, anchored, canvas,
+    deferred, div, point, prelude::*, px,
 };
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -48,6 +48,7 @@ use serde_json::Value;
 
 use crate::composite;
 use crate::keymap;
+use crate::objects;
 use crate::scene::edit::{self, Edges, History};
 use crate::scene::grid::{self, Grid};
 use crate::scene::image::{self, Images};
@@ -341,6 +342,8 @@ pub struct ScenePanel {
     pressed: Option<String>,
     /// Whether the pointer is over an item that would run a command.
     pointing: Rc<Cell<bool>>,
+    /// The export card or the place confirm, over the whole window.
+    pub(crate) object_dialog: Option<objects::Dialog>,
     _player: Subscription,
     _player_view: Subscription,
     _library: Subscription,
@@ -421,6 +424,7 @@ impl ScenePanel {
             text_values: None,
             pressed: None,
             pointing: Rc::default(),
+            object_dialog: None,
             _player: player,
             _player_view: player_view,
             _library: library,
@@ -493,11 +497,34 @@ impl ScenePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.change_with_routes(key, |scene, _| edit(scene), window, cx);
+    }
+
+    /// [`change_keyed`](Self::change_keyed) for an edit that adds routes
+    /// with its items, so one undo step takes both back out.
+    pub(crate) fn change_routed(
+        &mut self,
+        edit: impl FnOnce(&mut SceneState, &mut Vec<Route>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_with_routes(None, edit, window, cx);
+    }
+
+    fn change_with_routes(
+        &mut self,
+        key: Option<&str>,
+        edit: impl FnOnce(&mut SceneState, &mut Vec<Route>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The edit sees every grid as it stands now, not as it was loaded.
         self.config = self.saved(cx);
         let before = self.snapshot();
 
-        self.rebuild_with(edit, window, cx);
+        let mut routes = std::mem::take(&mut self.config.routes);
+        self.rebuild_with(|scene| edit(scene, &mut routes), window, cx);
+        self.config.routes = routes;
         routes::prune(&mut self.config.routes, &self.config.scene);
         self.seen_routes = self.config.routes.clone();
 
@@ -684,7 +711,7 @@ impl ScenePanel {
     }
 
     /// The config with every live grid's dump folded in.
-    fn saved(&self, cx: &App) -> SceneConfig {
+    pub(crate) fn saved(&self, cx: &App) -> SceneConfig {
         let mut config = self.config.clone();
         scene::fold_dumps(&mut config.scene.items, &self.bodies, &|grid: &Grid| {
             grid::dump(grid, cx)
@@ -824,6 +851,7 @@ impl ScenePanel {
         let inspector = active.then(|| crate::scene::overlay::render(self, window, cx));
         let tab = (design && !active && self.near_edge.get()).then(|| self.edge_tab(cx));
         let menu = self.menu_overlay(window);
+        let dialog = crate::scene::overlay::object_dialog(self, window, cx);
 
         let scoped = design && self.focus.is_focused(window);
         let mut context = gpui::KeyContext::default();
@@ -878,6 +906,13 @@ impl ScenePanel {
                 cx.listener(|this, _: &NudgeDownFar, window, cx| this.nudge([0., 10.], window, cx)),
             )
             .on_action(cx.listener(|this, _: &StepOut, window, cx| this.step_out(window, cx)))
+            // A `.roxo` dropped on the stage goes in here. Anything else is
+            // left alone, as it was before the scene took drops.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                for path in paths.paths().iter().filter(|path| is_object_file(path)) {
+                    objects::offer_file(this, path, window, cx);
+                }
+            }))
             .child(watch)
             .children(layers)
             .children(clicks)
@@ -885,6 +920,7 @@ impl ScenePanel {
             .children(inspector)
             .children(tab)
             .children(menu)
+            .children(dialog)
     }
 
     pub(crate) fn viewport(&self) -> Viewport {
@@ -1176,6 +1212,19 @@ impl ScenePanel {
         self.selected = id;
         self.activate(window, cx);
         cx.notify();
+    }
+
+    /// Closes the object dialog and hands the keys back to the scene. Next
+    /// turn, because the button pressed to close it takes focus on the same
+    /// press, after this runs, and undo would go nowhere until a click.
+    pub(crate) fn close_object_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.object_dialog = None;
+        cx.notify();
+
+        cx.defer_in(window, |this, window, cx| {
+            window.focus(&this.focus);
+            cx.notify();
+        });
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1803,6 +1852,8 @@ impl ScenePanel {
             })
         };
 
+        let object_menu = crate::scene::overlay::objects_menu(window, cx);
+
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
             menu.item(
                 PopupMenuItem::new(rox_i18n::t!("scene-add-grid"))
@@ -1828,8 +1879,18 @@ impl ScenePanel {
                     .icon(Icon::default().path(icons::A_LARGE_SMALL))
                     .on_click(pick(NewItem::Text)),
             )
+            .separator()
+            .item(
+                PopupMenuItem::submenu(rox_i18n::t!("scene-add-objects"), object_menu)
+                    .icon(Icon::default().path(icons::BOOKMARK)),
+            )
         });
         self.open_menu(position, menu, window, cx);
+    }
+
+    pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        cx.notify();
     }
 
     /// Shows `menu` at `position` over everything, until it's dismissed.
@@ -1964,6 +2025,33 @@ impl ScenePanel {
                             .show(window, cx);
                     }
                 }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Installs a picked `.roxo`, then offers it to this scene.
+    pub(crate) fn add_object_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+
+            this.update_in(cx, |this, window, cx| {
+                objects::offer_file(this, &path, window, cx)
             })
             .ok();
         })
@@ -2396,6 +2484,12 @@ pub(crate) fn image_assets() -> Vec<(String, String)> {
         .collect()
 }
 
+fn is_object_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(rox_core::settings::roxo::EXT))
+}
+
 /// Copies a picked file into the store's staging folder. Only images, so
 /// a font or a clip can't come in through here.
 async fn stage_image(path: PathBuf) -> Result<assets::Staged, String> {
@@ -2635,6 +2729,9 @@ impl Render for ScenePanel {
         }
 
         self.absorb_route_edits(window, cx);
+        if self.focus.contains_focused(window, cx) {
+            objects::note_focused(cx.entity_id());
+        }
 
         let chrome = self.config.chrome.clone();
         let body = self.body(window, cx);

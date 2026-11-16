@@ -15,6 +15,7 @@ pub mod assets;
 pub mod layouts;
 pub mod live_look;
 pub mod panel_presets;
+pub mod roxo;
 pub mod roxw;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

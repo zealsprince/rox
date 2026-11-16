@@ -65,6 +65,7 @@ did without a second round trip.
 | `tasks.stop`                                               | `{"pass": ..}`                                | `{"stopping": true}`; the pass drops out at the next file               |
 | `workspace.import`                                         | `{"path": ".."}`                              | `{"name": ".."}`, the name it was stored under                          |
 | `plugins.install`                                          | `{"path": ".."}`                              | `{"id": ".."}`, the plugin it listed                                    |
+| `objects.install`                                          | `{"path": ".."}`                              | `{"name": ".."}`, the name it was stored under, placed nowhere          |
 | `ai.status`                                                |                                               | `{"enabled": bool, "mcp": bool}`, the toggles rox-mcp checks            |
 | `subscribe`                                                |                                               | the pushed frames start: `{"subscribed": true}`                          |
 | `debug.settings`                                           |                                               | the settings as saved                                                  |
@@ -269,6 +270,8 @@ commands:
   workspace import <file>    store a .roxw in the workspace list and offer
                              it for applying in the front window
   plugin install <file>      list a .roxp on the Plugins page, switched off
+  object install <file>      store a .roxo in the objects a scene's Add
+                             menu lists, placed nowhere
   raw <method> [json]        any method, params as one JSON argument
 
 drive commands (the debug scope: work the UI without OS input tools):

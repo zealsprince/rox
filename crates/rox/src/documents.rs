@@ -82,7 +82,6 @@ pub(crate) fn open_in(
 }
 
 /// Set once objects install. Until then an object is logged and dropped.
-#[allow(dead_code)]
 pub(crate) fn set_object_handler(handler: fn(PathBuf, &mut App)) {
     let _ = OBJECT_HANDLER.set(handler);
 }
@@ -92,6 +91,38 @@ pub(crate) fn set_object_handler(handler: fn(PathBuf, &mut App)) {
 #[allow(dead_code)]
 pub(crate) fn set_link_handler(handler: fn(&str, &mut App)) {
     let _ = LINK_HANDLER.set(handler);
+}
+
+/// The object handler: installed, then offered through the place confirm
+/// in the scene that last had focus in the front workspace. With no scene
+/// in the layout it stays installed, and a toast says it needs one.
+pub(crate) fn open_object(path: PathBuf, cx: &mut App) {
+    crate::workspace::with_front_workspace(cx, move |ws, window, cx| {
+        let name = match crate::objects::install(&path) {
+            Ok(name) => name,
+            Err(e) => {
+                log::warn!("documents: installing {}: {e}", path.display());
+                Toast::new(panel::Tone::Bad, e)
+                    .title(rox_i18n::t!(
+                        "scene-object-add-failed",
+                        file = file_name(&path)
+                    ))
+                    .show(window, cx);
+                return;
+            }
+        };
+
+        match crate::objects::scene_for(ws, cx) {
+            Some(scene) => scene.update(cx, |scene, cx| {
+                crate::objects::offer(scene, &name, window, cx)
+            }),
+            None => Toast::new(
+                panel::Tone::Info,
+                rox_i18n::t!("scene-object-needs-scene", name = name.as_str()),
+            )
+            .show(window, cx),
+        }
+    });
 }
 
 /// Install off the UI thread, the way the Plugins page does: the hash and

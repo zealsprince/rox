@@ -58,6 +58,8 @@ commands:
   workspace import <file>    store a .roxw in the workspace list and offer
                              it for applying in the front window
   plugin install <file>      list a .roxp on the Plugins page, switched off
+  object install <file>      store a .roxo in the objects a scene's Add
+                             menu lists, placed nowhere
   raw <method> [json]        any method, params as one JSON argument
 
 drive commands (the debug scope: work the UI without OS input tools):
@@ -378,6 +380,12 @@ fn run(
             }
             _ => return Err("plugin takes install <file>".into()),
         },
+        "object" => match args {
+            [verb, file] if verb == "install" => {
+                ("objects.install".into(), json!({ "path": absolute(file) }))
+            }
+            _ => return Err("object takes install <file>".into()),
+        },
         "watch" => return watch(client, as_json),
         "art" => {
             let path = args
@@ -443,6 +451,10 @@ fn run(
         "plugin" => println!(
             "installed {}, switched off",
             result["id"].as_str().unwrap_or_default()
+        ),
+        "object" => println!(
+            "installed as {}",
+            result["name"].as_str().unwrap_or_default()
         ),
         _ => println!(
             "{}",

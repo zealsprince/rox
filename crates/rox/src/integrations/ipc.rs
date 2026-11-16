@@ -126,6 +126,12 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
 fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     match method {
         "transport.status" => Ok(status(state, cx)),
+        // Stored, not placed: placing goes through a scene's confirm.
+        "objects.install" => {
+            let path = super::ipc_documents::path_param(params)?;
+            let name = crate::objects::install(&path).map_err(RpcError::app)?;
+            Ok(json!({ "name": name }))
+        }
         "transport.toggle" => {
             state.player.read(cx).toggle_pause();
             Ok(status(state, cx))

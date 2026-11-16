@@ -29,6 +29,7 @@ mod lastfm;
 mod lyrics;
 mod matching;
 mod milkdrop_picker;
+mod objects;
 mod panel_catalog;
 mod panel_presets;
 mod panel_settings;
@@ -497,6 +498,7 @@ fn main() {
         integrations::placement::start(cx);
         let open = (!launch.files.is_empty()).then_some((launch.mode, launch.files));
         open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
+        documents::set_object_handler(documents::open_object);
         documents::open(launch.documents, cx);
         // The macOS menu bar needs a workspace to act on. A no-op elsewhere.
         workspace::native_menu::rebuild(cx);

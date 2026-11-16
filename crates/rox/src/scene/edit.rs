@@ -220,11 +220,11 @@ pub(crate) fn moved(
     viewport: Viewport,
     start: [f32; 3],
     screen_delta: [f32; 2],
+    flat: bool,
 ) -> [f32; 3] {
     let mut at_start = item.clone();
     at_start.place.position = start;
 
-    let flat = is_flat(&item.content);
     let [du, dv] = unproject_delta(&at_start, parent, camera, viewport, flat, screen_delta);
 
     [start[0] + du, start[1] + dv, start[2]]
@@ -302,6 +302,7 @@ pub(crate) fn resized(
     edges: Edges,
     delta: [f32; 2],
     floor: [f32; 2],
+    flat: bool,
 ) -> Place {
     let [mut left, mut top, mut right, mut bottom] = start;
     if edges.left {
@@ -332,7 +333,6 @@ pub(crate) fn resized(
 
     // The new size moves the center about the anchor, so it's measured where
     // it landed and carried to the middle of the new box.
-    let flat = is_flat(&item.content);
     if let Some(projected) = project(
         &next,
         parent,
@@ -794,7 +794,15 @@ mod tests {
         let mut item = image("a", [0., 0., 0.], [200., 100.]);
         let before = center(&put(&item, &stage()));
 
-        item.place.position = moved(&item, &stage(), &camera(), VIEW, [0., 0., 0.], [40., -25.]);
+        item.place.position = moved(
+            &item,
+            &stage(),
+            &camera(),
+            VIEW,
+            [0., 0., 0.],
+            [40., -25.],
+            is_flat(&item.content),
+        );
         let after = center(&put(&item, &stage()));
 
         assert!(near(after[0] - before[0], 40.), "{before:?} {after:?}");
@@ -813,6 +821,7 @@ mod tests {
             VIEW,
             [0., 0., 0.],
             [30., 0.],
+            is_flat(&near_item.content),
         );
         let far_move = moved(
             &far_item,
@@ -821,6 +830,7 @@ mod tests {
             VIEW,
             [0., 0., -800.],
             [30., 0.],
+            is_flat(&far_item.content),
         );
 
         assert!(near(near_move[0], 30.));
@@ -871,6 +881,7 @@ mod tests {
             left,
             [-60., 0.],
             [10., 10.],
+            is_flat(&item.content),
         );
         let (origin, extent) = super::super::bbox(&put(&next, &stage()).corners);
 
@@ -908,6 +919,7 @@ mod tests {
             corner,
             [160., 20.],
             [10., 10.],
+            is_flat(&item.content),
         );
 
         match place.size[0] {
@@ -1169,6 +1181,7 @@ mod tests {
                 VIEW,
                 [0.; 3],
                 [step as f32 * 5., 0.],
+                is_flat(&start.items[0].content),
             );
         }
         undo.record(start.clone(), scene.clone(), None, Instant::now());

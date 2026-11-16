@@ -1673,6 +1673,62 @@ mod tests {
         assert!(unapproved_shaders(&WorkspaceBundle::default()).is_empty());
     }
 
+    #[test]
+    fn a_scenes_shader_item_is_reviewed_like_a_panels() {
+        use crate::panels::scene::{SceneConfig, state_of};
+        use rox_scene::{Content, SceneItem, SceneState};
+
+        let source = "// only on a scene's item";
+        let item = SceneItem {
+            id: "glow".into(),
+            content: Content::Shader {
+                shader: serde_json::to_value(shader::PanelShader {
+                    source: source.into(),
+                    ..shader::PanelShader::default()
+                })
+                .expect("serializes"),
+            },
+            ..SceneItem::default()
+        };
+        let config = SceneConfig {
+            scene: SceneState {
+                items: vec![item],
+                ..SceneState::default()
+            },
+            ..SceneConfig::default()
+        };
+        let dump = serde_json::json!({
+            "panel_name": "StackPanel",
+            "children": [serde_json::to_value(state_of(&config)).expect("serializes")],
+        });
+        let bundle = WorkspaceBundle {
+            layouts: vec![rox_core::settings::NamedLayout {
+                name: "staged".into(),
+                size: None,
+                dump,
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        let pending = unapproved_shaders(&bundle);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].source, source);
+        assert!(wears_shaders(&bundle));
+
+        // Without Shaders parks the item's shader, and the scene reads it back off.
+        let bare = without_shaders(&bundle);
+        let scene = &bare.layouts[0].dump["children"][0]["info"]["panel"];
+        let config: SceneConfig = serde_json::from_value(scene.clone()).expect("parses");
+        let parked = crate::scene::shader::of(&config.scene.items[0]).expect("a shader item");
+        assert!(!parked.enabled);
+        assert_eq!(parked.source, source);
+        assert!(!wears_shaders(&bare));
+
+        settings::note_approved(&shader::fingerprint(source));
+        assert!(unapproved_shaders(&bundle).is_empty());
+        settings::forget_approved(&shader::fingerprint(source));
+    }
+
     /// The with-or-without choice is about the look, not trust, so an agreed
     /// look still says it wears shaders.
     #[test]

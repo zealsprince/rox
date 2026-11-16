@@ -1060,6 +1060,29 @@ impl PanelSurface {
     /// Record the shader over the panel's body, after the body has painted.
     /// A source that won't compile keeps the last good one on screen.
     pub fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        self.paint_on(None, bounds, window, cx);
+    }
+
+    /// [`paint`](Self::paint) for a scene item: on the four corners when the
+    /// program can run as the in-scene primitive, flat over `bounds` when it
+    /// can't. Some(true) when it painted flat, None while nothing compiled.
+    pub fn paint_face(
+        &self,
+        corners: [gpui::Point<Pixels>; 4],
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<bool> {
+        self.paint_on(Some(corners), bounds, window, cx)
+    }
+
+    fn paint_on(
+        &self,
+        corners: Option<[gpui::Point<Pixels>; 4]>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<bool> {
         let panel = window.current_view();
         let window_id = window.window_handle().window_id().as_u64();
         let (source, last_good) = self.current(window_id, panel);
@@ -1094,9 +1117,7 @@ impl PanelSurface {
                 }
             }
         };
-        let Some(shader) = shader else {
-            return;
-        };
+        let shader = shader?;
         let (signals, live) = self.signals(window, cx);
         let mut meta = meta_slots(window, cx);
         // Only panel surfaces fill this; the Shader panel and backdrop read
@@ -1115,10 +1136,12 @@ impl PanelSurface {
         let screen = window
             .user_shader_caps(shader)
             .is_some_and(|caps| caps.screen_pass_only());
-        if screen {
-            window.paint_screen_shader(bounds, shader, panel.as_u64(), signals, meta);
-        } else {
-            window.paint_user_shader(bounds, shader, signals, meta);
+        match corners {
+            _ if screen => {
+                window.paint_screen_shader(bounds, shader, panel.as_u64(), signals, meta)
+            }
+            Some(corners) => window.paint_user_shader_quad(corners, shader, signals, meta),
+            None => window.paint_user_shader(bounds, shader, signals, meta),
         }
         // Docked panels render cached, so an animating shader must dirty its
         // panel every frame. Use `request_animation_frame`, which notifies
@@ -1127,6 +1150,8 @@ impl PanelSurface {
         if live || self.run_when_idle || (cursor && meta[6] > 0.0) {
             window.request_animation_frame();
         }
+
+        Some(screen)
     }
 
     /// The source to run this frame and the last one that compiled, with

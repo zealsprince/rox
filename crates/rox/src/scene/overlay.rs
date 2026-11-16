@@ -9,6 +9,7 @@
 //! function of its own below [`content_rows`].
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, ElementId, Entity, Focusable, KeyContext, MouseButton, Render,
@@ -19,12 +20,18 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::{self, ScrubState, ValueEdit, setting_block, setting_row};
+use rox_panel_api::panel::shader as surface;
+use rox_panel_api::panel::{
+    self, PanelSettings, ScrubState, Tone, ValueEdit, setting_block, setting_row,
+};
+use rox_panel_api::panel_settings::{self, ShaderSource};
+use rox_panel_api::signal_ui::{routes::RouteEditor, slots::SlotList};
 use rox_panel_kit::ui as settings_ui;
 use rox_scene::{Anchor, Content, Fit, ImageFit, Length, SceneItem, SceneState};
 
 use crate::panels::scene::{self, ScenePanel};
 use crate::scene::edit;
+use crate::scene::shader::{self as shader_item, RowState};
 
 const WIDTH: f32 = 320.;
 
@@ -40,6 +47,9 @@ const SCALE_MAX: f32 = 4.;
 const FOV_MAX: f32 = 120.;
 const PARALLAX_MAX: f32 = 200.;
 
+/// A compile message shows this many of its lines.
+const ERROR_LINES: usize = 6;
+
 #[derive(Default)]
 pub(crate) struct Inspector {
     left: bool,
@@ -47,6 +57,7 @@ pub(crate) struct Inspector {
     typing: Option<Typing>,
     edit: ValueEdit,
     scrubs: Scrubs,
+    shader: RowState,
 }
 
 impl Inspector {
@@ -413,6 +424,7 @@ fn kind_icon(content: &Content) -> &'static str {
         Content::Grid { .. } => icons::LAYOUT_GRID,
         Content::Group { .. } => icons::LAYERS,
         Content::Image { .. } => icons::IMAGE,
+        Content::Shader { .. } => icons::BLEND,
         _ => icons::SQUARE_DASHED,
     }
 }
@@ -519,7 +531,7 @@ fn item_rows(
     window: &mut Window,
     cx: &mut Context<ScenePanel>,
 ) -> AnyElement {
-    let flat = edit::is_flat(&item.content);
+    let flat = panel.is_flat(item, cx);
     let place = item.place;
     let id = item.id.clone();
     let scrubs = &panel.inspector.scrubs;
@@ -649,11 +661,17 @@ fn item_rows(
     });
 
     if flat {
+        // A shader is flat only because of what its program reads.
+        let note = if matches!(item.content, Content::Shader { .. }) {
+            rox_i18n::t!("scene-shader-flat-note")
+        } else {
+            rox_i18n::t!("scene-item-flat-note")
+        };
         rows = rows.child(
             div()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child(rox_i18n::t!("scene-item-flat-note")),
+                .child(note),
         );
     }
 
@@ -755,6 +773,7 @@ fn content_rows(
 ) -> AnyElement {
     match &item.content {
         Content::Image { asset, fit } => image_rows(panel, &item.id, asset, *fit, window, cx),
+        Content::Shader { .. } => shader_rows(panel, item, window, cx),
         _ => div().into_any_element(),
     }
 }
@@ -851,6 +870,165 @@ fn image_rows(
                 },
                 cx,
             ),
+        ))
+        .into_any_element()
+}
+
+/// The parts of a panel's Shader page, as the Shader panel composes them:
+/// the approval gate, the source picker, the switches, the routes and the
+/// slots. The gate is the shared one, so a shader that came in with a scene
+/// is read here before it runs.
+fn shader_rows(
+    panel: &ScenePanel,
+    item: &SceneItem,
+    window: &mut Window,
+    cx: &mut Context<ScenePanel>,
+) -> AnyElement {
+    let Some(shader) = shader_item::of(item) else {
+        return div().into_any_element();
+    };
+
+    // What runs, so a pool shader is read before it runs and its slot names
+    // show.
+    let resolved = surface::resolve_source(shader.name.as_deref(), &shader.source);
+    let running = resolved.clone().unwrap_or_default();
+    let labels = surface::slot_labels(&running);
+    let view = panel.shaders.get(&item.id).map(Entity::entity_id);
+
+    let pending = (!running.trim().is_empty() && !surface::approved(&running)).then(|| {
+        panel_settings::pending_shader(
+            "scene-shader-pending",
+            &running,
+            shader.path.as_deref(),
+            cx.listener(|this, _, _, cx| shader_item::approve(this, cx)),
+            cx.listener(|this, _, _, cx| shader_item::set_enabled(this, false, cx)),
+        )
+    });
+
+    // A compile message from before the switch went off is noise.
+    let error = (shader.enabled && shader.runnable())
+        .then(|| view.and_then(surface::error))
+        .flatten();
+    let banner = error.map(|error| {
+        if surface::unsupported(&error) {
+            panel::banner(
+                Tone::Bad,
+                surface::NO_PIPELINE_TITLE,
+                vec![surface::NO_PIPELINE_NOTE.into()],
+            )
+        } else {
+            panel::banner(
+                Tone::Bad,
+                rox_i18n::t!("shader-panel-compile-title"),
+                error
+                    .lines()
+                    .take(ERROR_LINES)
+                    .map(|line| SharedString::from(line.to_string()))
+                    .collect(),
+            )
+        }
+    });
+
+    let rows = &panel.inspector.shader;
+    let fallback = surface::eject_name(&shader_item::label(item), &shader.source);
+    let picked = ShaderSource {
+        id: "scene-shader",
+        name: shader.name.as_deref(),
+        path: shader.path.as_deref(),
+        resolved: resolved.as_deref(),
+        clear: Some(shader_item::clear),
+        // The item's whole body is the shader, as on the Shader panel.
+        overlays_only: false,
+        use_example: shader_item::use_example,
+        use_named: shader_item::use_named,
+        choose_file: shader_item::choose_file,
+        edit: shader_item::open_editor,
+        eject: shader_item::eject,
+        detach: shader_item::detach,
+        reload: shader_item::reload,
+        save: shader_item::save,
+        field: &mut rows.name.borrow_mut(),
+        fallback: &fallback,
+    }
+    .render(window, cx);
+
+    let hub = PanelSettings::state(panel).signals.clone();
+    rows.routes.borrow_mut().sync(shader.routes.len());
+    let routes_ui = rows.routes.borrow();
+    let editor = RouteEditor {
+        id: "scene-shader-route",
+        hub: &hub,
+        routes: &shader.routes,
+        labels: &labels,
+        value_edit: &panel.inspector.edit,
+        ui: &routes_ui,
+        ui_mut: |this: &mut ScenePanel| this.inspector.shader.routes.get_mut(),
+        mutate: Arc::new(|this: &mut ScenePanel, edit, cx| {
+            shader_item::edit_selected(this, "shader.routes", |shader| edit(&mut shader.routes), cx)
+        }),
+    };
+    let add = editor.add_button(cx);
+    let routes = editor.list(cx);
+
+    let slots = SlotList {
+        hub: &hub,
+        routes: &shader.routes,
+        manual: &shader.manual,
+        labels: &labels,
+        value_edit: &panel.inspector.edit,
+        scrubs: &rows.slots,
+        set: Arc::new(|this: &mut ScenePanel, slot, value, cx| {
+            shader_item::set_manual(this, slot, value, cx)
+        }),
+    }
+    .render(cx);
+
+    let gate = pending.map(|body| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_XS)
+            .child(section_label(rox_i18n::t!("panel-awaiting-approval")))
+            .child(body)
+    });
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .children(gate)
+        .child(section_label(rox_i18n::t!("panel-section-shader")))
+        .child(setting_row(
+            rox_i18n::t!("shader-panel-run-shader"),
+            None,
+            panel::toggle(
+                shader.enabled,
+                |this: &mut ScenePanel, on, cx| shader_item::set_enabled(this, on, cx),
+                cx,
+            ),
+        ))
+        .child(picked)
+        .children(banner)
+        .child(setting_row(
+            rox_i18n::t!("panel-run-when-idle"),
+            None,
+            panel::toggle(
+                shader.run_when_idle,
+                |this: &mut ScenePanel, on, cx| shader_item::set_idle(this, on, cx),
+                cx,
+            ),
+        ))
+        .child(setting_block(
+            rox_i18n::t!("panel-section-signals"),
+            None,
+            Some(add.into_any_element()),
+            routes,
+        ))
+        .child(setting_block(
+            rox_i18n::t!("panel-section-slots"),
+            None,
+            None,
+            slots,
         ))
         .into_any_element()
 }

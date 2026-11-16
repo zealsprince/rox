@@ -1,8 +1,9 @@
 //! The scene panel (ADR 33): a composite that places items in 3D space. Live
 //! UI goes in as grid items, each a dock tree of its own, so a scene holds
-//! real tab groups that drag, zoom and pop out like any other. Images take
-//! real perspective; grids stay flat to the screen and take their place and
-//! depth order from the projection.
+//! real tab groups that drag, zoom and pop out like any other. Images,
+//! textures and plain shaders take real perspective; grids, and shaders
+//! that can only run as a screen pass, stay flat to the screen and take
+//! their place and depth order from the projection.
 //!
 //! A scene is only ever a panel. The window's root stays the dock, and a
 //! full-window scene is a dock holding one scene panel. Its saved state is
@@ -49,6 +50,8 @@ use crate::scene::edit::{self, Edges, History};
 use crate::scene::grid::{self, Grid};
 use crate::scene::image::{self, Images};
 use crate::scene::overlay::Inspector;
+use crate::scene::shader::{self as shader_item, Shaders};
+use crate::scene::texture::{self, TextureView};
 use crate::scene::{self, Body, Placing};
 use crate::workspace::{LAYOUT_VERSION, Workspace};
 use rox_core::settings;
@@ -190,6 +193,9 @@ struct Gesture {
     viewport: Viewport,
     from: [f32; 2],
     start_box: [f32; 4],
+    /// Whether the item drew flat at the press, which a shader item decides
+    /// by what it runs, not by its content kind alone.
+    flat: bool,
     kind: GestureKind,
 }
 
@@ -213,6 +219,7 @@ pub(crate) enum NewItem {
     Grid,
     Group,
     Image(String),
+    Shader,
 }
 
 /// `shader` and `owner` are the dump walkers' keys everywhere, and the
@@ -289,6 +296,9 @@ pub struct ScenePanel {
     /// Scenes and groups this scene sits inside.
     level: usize,
     images: Images,
+    pub(crate) shaders: Shaders,
+    /// The texture items' views, by item id.
+    textures: HashMap<String, Entity<TextureView>>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Renders still owed after a resize.
     settle: Rc<Cell<u8>>,
@@ -330,6 +340,8 @@ impl ScenePanel {
             spare: HashMap::new(),
             level: scene::level_here(),
             images: Images::default(),
+            shaders: Shaders::default(),
+            textures: HashMap::new(),
             bounds: Rc::default(),
             settle: Rc::default(),
             pointer: Rc::default(),
@@ -350,10 +362,6 @@ impl ScenePanel {
         this
     }
 
-    /// `settings::set_design_mode` refreshes each window through
-    /// `window.update`, which can't reach the window the toggle was
-    /// dispatched in, and this panel renders cached. So the flip is checked
-    /// here.
     /// Every grid item's dock, groups included, in item order.
     pub fn grids(&self) -> Vec<Entity<DockArea>> {
         let mut out = Vec::new();
@@ -547,6 +555,26 @@ impl ScenePanel {
                 None => grid::restore(&item.id, dock, level, &state, window, cx),
             },
         );
+
+        // Views for items that are gone go with them. A texture is freed
+        // here, where the window is in hand.
+        let scene = &self.config.scene;
+        self.shaders.keep(scene);
+        self.textures.retain(|id, view| {
+            let kept = scene
+                .find(id)
+                .is_some_and(|item| texture::is_test(&item.content));
+            if !kept {
+                view.update(cx, |view, cx| view.release(window, cx));
+            }
+            kept
+        });
+    }
+
+    /// Whether the item sits square to the screen this frame. A shader item
+    /// answers from its last paint, so editing its source can flip it.
+    pub(crate) fn is_flat(&self, item: &SceneItem, cx: &App) -> bool {
+        shader_item::sits_flat(&item.content, self.shaders.painted_flat(&item.id, cx))
     }
 
     /// The config with every live grid's dump folded in.
@@ -583,6 +611,8 @@ impl ScenePanel {
         let mut draw = Draw {
             at: &at,
             images: &mut self.images,
+            shaders: &mut self.shaders,
+            textures: &mut self.textures,
             layers: Vec::new(),
             shapes: Vec::new(),
         };
@@ -598,6 +628,7 @@ impl ScenePanel {
         }
         let Draw { layers, shapes, .. } = draw;
         self.shapes = shapes;
+        self.images.wake_when_due(cx);
 
         // Bounds land a frame late, so a resize re-renders once they move.
         // gpui drops a notify made while the window draws, so it's deferred.
@@ -653,6 +684,9 @@ impl ScenePanel {
         .size_full();
 
         let active = design && self.is_active(cx);
+        if active {
+            shader_item::absorb_hot(self, cx);
+        }
         let chrome = design.then(|| self.chrome_layer(active, cx));
         let inspector = active.then(|| crate::scene::overlay::render(self, window, cx));
         let tab = (design && !active && self.near_edge.get()).then(|| self.edge_tab(cx));
@@ -742,6 +776,8 @@ impl ScenePanel {
 struct Draw<'a> {
     at: &'a Placing,
     images: &'a mut Images,
+    shaders: &'a mut Shaders,
+    textures: &'a mut HashMap<String, Entity<TextureView>>,
     layers: Vec<AnyElement>,
     shapes: Vec<Shape>,
 }
@@ -772,7 +808,12 @@ fn place(
             continue;
         }
 
-        let flat = edit::is_flat(&item.content);
+        let flat = shader_item::sits_flat(&item.content, draw.shaders.painted_flat(&item.id, cx));
+        let kind = if flat {
+            ShapeKind::Flat
+        } else {
+            ShapeKind::Perspective
+        };
         let shape = |corners, kind| Shape {
             id: item.id.clone(),
             groups: groups.to_vec(),
@@ -825,6 +866,8 @@ fn place(
                 let mut inner = Draw {
                     at,
                     images: &mut *draw.images,
+                    shaders: &mut *draw.shaders,
+                    textures: &mut *draw.textures,
                     layers: Vec::new(),
                     shapes: Vec::new(),
                 };
@@ -859,16 +902,46 @@ fn place(
                 });
             }
 
+            (Body::Shader, _) => {
+                let Some(projected) = projected() else {
+                    continue;
+                };
+                let element = scene::on_stage(&projected.corners, at.viewport)
+                    .then(|| shader_item::element(item, projected, at.design, draw.shaders, cx))
+                    .flatten();
+                layers.push(Layer {
+                    depth: projected.depth,
+                    elements: element.into_iter().collect(),
+                    shapes: vec![shape(projected.corners, kind)],
+                });
+            }
+
+            (Body::Unknown, content) if texture::is_test(content) => {
+                let Some(projected) = projected() else {
+                    continue;
+                };
+                let view = draw
+                    .textures
+                    .entry(item.id.clone())
+                    .or_insert_with(|| {
+                        cx.new(|cx| TextureView::new(texture::gradient(256, 256), cx))
+                    })
+                    .clone();
+                let seen = scene::on_stage(&projected.corners, at.viewport);
+                view.update(cx, |view, _| view.place(seen.then_some(projected)));
+
+                layers.push(Layer {
+                    depth: projected.depth,
+                    elements: vec![view.into_any_element()],
+                    shapes: vec![shape(projected.corners, kind)],
+                });
+            }
+
             // Kinds with no body yet still have a place, so the editor can
             // pick and move them.
             _ => {
                 let Some(projected) = projected() else {
                     continue;
-                };
-                let kind = if flat {
-                    ShapeKind::Flat
-                } else {
-                    ShapeKind::Perspective
                 };
                 layers.push(Layer {
                     depth: projected.depth,
@@ -1339,6 +1412,7 @@ impl ScenePanel {
             }
         };
 
+        let flat = self.is_flat(&item, cx);
         self.gesture = Some(Gesture {
             id: id.to_string(),
             before: self.config.scene.clone(),
@@ -1348,6 +1422,7 @@ impl ScenePanel {
             viewport,
             from: local,
             start_box: shape.edges(),
+            flat,
             kind,
         });
     }
@@ -1434,6 +1509,7 @@ impl ScenePanel {
                     g.viewport,
                     g.item.place.position,
                     delta,
+                    g.flat,
                 );
             }
 
@@ -1447,6 +1523,7 @@ impl ScenePanel {
                     *edges,
                     delta,
                     *floor,
+                    g.flat,
                 );
             }
 
@@ -1506,7 +1583,7 @@ impl ScenePanel {
         )
     }
 
-    /// Add Grid, Add Group and Add Image at `position`. `at` places the new
+    /// Add Grid, Group, Image and Shader at `position`. `at` places the new
     /// item where the press was; None puts it at the stage center.
     pub(crate) fn open_add_menu(
         &mut self,
@@ -1561,6 +1638,11 @@ impl ScenePanel {
                 PopupMenuItem::submenu(rox_i18n::t!("scene-add-image"), image_menu)
                     .icon(Icon::default().path(icons::IMAGE)),
             )
+            .item(
+                PopupMenuItem::new(rox_i18n::t!("scene-add-shader"))
+                    .icon(Icon::default().path(icons::BLEND))
+                    .on_click(pick(NewItem::Shader)),
+            )
         });
         self.open_menu(position, menu, window, cx);
     }
@@ -1603,6 +1685,14 @@ impl ScenePanel {
                 },
                 Some([400., 300.]),
             ),
+            NewItem::Shader => (
+                "shader",
+                Content::Shader {
+                    shader: serde_json::to_value(panel::PanelShader::default())
+                        .unwrap_or(Value::Null),
+                },
+                Some([400., 300.]),
+            ),
         };
 
         let id = self.config.scene.fresh_id(stem);
@@ -1635,7 +1725,8 @@ impl ScenePanel {
                     at[0] - (origin[0] + extent[0] / 2.),
                     at[1] - (origin[1] + extent[1] / 2.),
                 ];
-                item.place.position = edit::moved(&item, &stage, &camera, viewport, [0.; 3], shift);
+                item.place.position =
+                    edit::moved(&item, &stage, &camera, viewport, [0.; 3], shift, flat);
             }
         }
 
@@ -2091,9 +2182,13 @@ impl Panel for ScenePanel {
             .update(cx, |hosts, _| hosts.report(tab_panel));
     }
 
-    fn on_removed(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panel = None;
         self.images.clear(window);
+
+        for view in self.textures.values() {
+            view.update(cx, |view, cx| view.release(window, cx));
+        }
     }
 
     fn dropdown_menu(

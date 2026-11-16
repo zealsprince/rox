@@ -1,16 +1,19 @@
 //! The parts of a scene panel (ADR 33) below the panel itself: the live
-//! bodies kept beside a scene's saved items, the nesting cap, and the grid
-//! and image items. [`crate::panels::scene`] owns them and draws the result.
+//! bodies kept beside a scene's saved items, the nesting cap, and the grid,
+//! image, shader and texture items. [`crate::panels::scene`] owns them and
+//! draws the result.
 //!
 //! The saved items stay the source of truth. A body holds only what can't be
 //! saved, a grid's live dock area, so an item with no body here (text,
-//! shader, video, model, or one that didn't build) is kept exactly as it
-//! was read and written back the same.
+//! video, model, or one that didn't build) is kept exactly as it was read
+//! and written back the same.
 
 pub(crate) mod edit;
 pub(crate) mod grid;
 pub(crate) mod image;
 pub(crate) mod overlay;
+pub(crate) mod shader;
+pub(crate) mod texture;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -23,6 +26,7 @@ pub(crate) enum Body<G> {
     Grid(G),
     Group(Vec<Body<G>>),
     Image,
+    Shader,
     /// Built into nothing: a kind with no body yet, a grid whose dump
     /// didn't restore, or a container past the nesting cap.
     Unknown,
@@ -105,6 +109,8 @@ pub(crate) fn build_bodies<G>(
 
             Content::Image { .. } => Body::Image,
 
+            Content::Shader { .. } => Body::Shader,
+
             _ => Body::Unknown,
         })
         .collect()
@@ -186,6 +192,16 @@ pub(crate) fn bbox(corners: &[[f32; 2]; 4]) -> ([f32; 2], [f32; 2]) {
     }
 
     (min, [max[0] - min[0], max[1] - min[1]])
+}
+
+/// Whether any of the box around `corners` falls inside the viewport.
+pub(crate) fn on_stage(corners: &[[f32; 2]; 4], viewport: Viewport) -> bool {
+    let (origin, extent) = bbox(corners);
+
+    origin[0] < viewport.width
+        && origin[1] < viewport.height
+        && origin[0] + extent[0] > 0.
+        && origin[1] + extent[1] > 0.
 }
 
 #[cfg(test)]
@@ -317,6 +333,21 @@ mod tests {
         take_grids(&state.items, bodies, &mut spare);
         assert_eq!(spare["b"], ("b".to_string(), 2));
         assert_eq!(spare.len(), 2);
+    }
+
+    #[test]
+    fn only_a_box_over_the_viewport_is_on_stage() {
+        let viewport = Viewport {
+            width: 100.,
+            height: 50.,
+        };
+        let square = |x: f32, y: f32| [[x, y], [x + 10., y], [x + 10., y + 10.], [x, y + 10.]];
+
+        assert!(on_stage(&square(0., 0.), viewport));
+        assert!(on_stage(&square(-5., 45.), viewport));
+        assert!(!on_stage(&square(-10., 0.), viewport));
+        assert!(!on_stage(&square(100., 0.), viewport));
+        assert!(!on_stage(&square(20., 60.), viewport));
     }
 
     #[test]

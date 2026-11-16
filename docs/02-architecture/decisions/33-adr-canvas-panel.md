@@ -136,5 +136,5 @@ When an item's look or visibility follows player state, it does so the way a Cus
 Controls button's look does (`rox/src/panels/controls.rs`). The user picks a piece of
 state from a fixed table (`rox-panel-api/src/buttons.rs`, `STATES`), the state has a
 finite list of cases, and the user sets the item's look, or whether it shows, for each
-case from lists. Nothing is written as an expression. That's the direction for item
-interactivity. No canvas item follows state yet.
+case from lists. Nothing is written as an expression. A case can hide an item, fade it,
+give an image another image or give text another color, and nothing else.

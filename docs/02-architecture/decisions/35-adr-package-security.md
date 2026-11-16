@@ -84,6 +84,14 @@ user's permissions and its own network, unsandboxed, and the enable card says so
 was weighed there and lost. A package changes how a plugin arrives and nothing about how
 it runs, so this record leaves that call where it is.
 
+**Amended 2026-11-16: a place with nothing to review doesn't ask.** Andrew's product
+call. "Import, install and place store the thing, list what it holds and ask" holds for
+import and install as written. Placing an object asks only when there is something to
+review: a shader that isn't approved, a plugin it needs that isn't running, a size past
+the warning threshold, or a weight warning. An object with none of those is data and
+nothing else, and it is placed at once. Undo takes it back out. A confirm with nothing
+to review teaches people to click through the one that has something.
+
 Costs. Review is the only thing standing between a hostile plugin and a user who
 approves it. The enable card shows what a plugin declares, and nothing in rox checks
 what its code does. A compromised catalog origin isn't defended against while the index

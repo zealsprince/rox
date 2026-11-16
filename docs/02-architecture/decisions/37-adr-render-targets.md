@@ -122,10 +122,7 @@ declares about itself.
 
 - The frame channel. Shared memory with the wire announcing each frame is the
   candidate. Nothing is measured.
-- Where the capability goes in the manifest, and whether the Plugins page lists
-  renderers with plugins or apart from them. The user-facing nouns are "render target"
-  for the surface and "renderer" for the program, and the word "plugin" may not appear
-  at all.
+- Where the capability goes in the manifest.
 - Whether a render target is only a canvas item or also a panel of its own.
 - Parameters a renderer declares, shown as inspector rows and usable as route targets.
 - Verbs into rox through ADR 30's allowlist.
@@ -135,3 +132,10 @@ declares about itself.
   timeline signals can move or jump between cue points, with the clip a file the
   renderer brings or the user points it at, since a workspace carries no video
   ([ADR 31](31-adr-workspace-archives.md)).
+
+**Amended 2026-11-16: renderers are their own thing.** Andrew's product call. To the
+user there are plugins and there are renderers. A plugin brings music in. A renderer
+draws a render target. rox lists renderers apart from plugins and calls the surface a
+render target and the program a renderer. Underneath nothing differs from
+[ADR 30](30-adr-plugins.md): the same package, the same folder hash, the same approval
+gate and the same switch.

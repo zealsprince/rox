@@ -83,6 +83,15 @@ them. Anything else becomes a library track when someone plays, queues, or saves
 the plugin's panel. Browsing and searching the service happen in that panel. The
 library's search box never waits on a plugin.
 
+## Renderers
+
+A renderer is a program that draws the picture for a render target, a surface on a
+canvas. rox sends it the music's signals and the input that reaches the surface, and
+shows the frames it sends back. A renderer is installed, approved and switched on the way
+a plugin is, and rox lists it apart from plugins. It never runs code inside rox and never
+touches audio. A layout holding a render target works only where its renderer is
+installed.
+
 Sources aren't equal, and the product shows the difference:
 
 - **Full.** The source provides rox decodable audio (files a server serves, audio a

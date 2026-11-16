@@ -60,7 +60,6 @@ impl Weight {
                 items: self.cost.items.max(other.cost.items),
                 grids: self.cost.grids.max(other.cost.grids),
                 shaders: self.cost.shaders.max(other.cost.shaders),
-                textures: self.cost.textures.max(other.cost.textures),
                 depth: self.cost.depth.max(other.cost.depth),
             },
             shader_surfaces: self.shader_surfaces.max(other.shader_surfaces),
@@ -165,7 +164,6 @@ fn scene(config: &Value, level: usize, tally: &mut Tally) {
     sum.items += cost.items;
     sum.grids += cost.grids;
     sum.shaders += cost.shaders;
-    sum.textures += cost.textures;
     sum.depth = sum.depth.max(level + cost.depth);
 
     let routed: HashSet<&str> = routes

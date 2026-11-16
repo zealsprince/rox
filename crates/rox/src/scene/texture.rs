@@ -1,6 +1,6 @@
 //! The texture body (ADR 33): a caller-owned texture on a scene item's
-//! quad, through `paint_texture_quad`. It's the seam video and model items
-//! sit on: whatever produces their frames hands them over here as
+//! quad, through `paint_texture_quad`. It's the seam for frames drawn
+//! outside the scene: whatever produces them hands them over here as
 //! [`Frame`]s, the way Milkdrop hands its frames to the renderer.
 //!
 //! The texture belongs to one window's registry, so it's registered, fed and

@@ -466,7 +466,7 @@ fn renumber(
         .or_insert(fresh);
 
     match &mut item.content {
-        Content::Image { asset, .. } | Content::Video { asset } | Content::Model { asset } => {
+        Content::Image { asset, .. } => {
             if let Some(to) = assets.get(asset.as_str()) {
                 *asset = to.clone();
             }

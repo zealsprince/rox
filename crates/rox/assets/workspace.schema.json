@@ -467,16 +467,6 @@
           "description": "A TrueType or OpenType font.",
           "type": "string",
           "const": "font"
-        },
-        {
-          "description": "A video, played silent.",
-          "type": "string",
-          "const": "video"
-        },
-        {
-          "description": "A 3D model.",
-          "type": "string",
-          "const": "model"
         }
       ]
     },

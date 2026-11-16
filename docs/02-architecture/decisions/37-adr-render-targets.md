@@ -132,6 +132,6 @@ declares about itself.
 - What a hidden or idle window tells the renderer. Milkdrop's worker takes a pause
   command (`rox-milkdrop/src/worker.rs`), and a renderer needs the same.
 - The example renderer. One idea on record: media playback, a looping clip whose
-  timeline signals can move or jump between cue points, with the clip an `mp4` or
-  `webm` asset the workspace already holds
+  timeline signals can move or jump between cue points, with the clip a file the
+  renderer brings or the user points it at, since a workspace carries no video
   ([ADR 31](31-adr-workspace-archives.md)).

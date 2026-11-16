@@ -5,8 +5,8 @@
 //!
 //! The saved items stay the source of truth. A body holds only what can't be
 //! saved, a grid's live dock area or a text item's parsed line, so an item
-//! with no body here (video, model, or one that didn't build) is kept
-//! exactly as it was read and written back the same.
+//! with no body here (a kind this build doesn't know, or one that didn't
+//! build) is kept exactly as it was read and written back the same.
 
 pub(crate) mod cost;
 pub(crate) mod edit;

@@ -44,8 +44,6 @@ pub fn kind_for(file: &str) -> Option<AssetKind> {
             Some(AssetKind::Image)
         }
         "ttf" | "otf" => Some(AssetKind::Font),
-        "mp4" | "webm" => Some(AssetKind::Video),
-        "glb" => Some(AssetKind::Model),
         _ => None,
     }
 }
@@ -115,9 +113,10 @@ impl Drop for Staged {
 }
 
 /// An import's slow half, for a background thread. It streams `src` into a
-/// staging folder beside the store while hashing it, so a video is never
-/// held in memory, and it touches neither the table nor the live folder, so
-/// an apply or a sweep can run meanwhile. Past `max_bytes` it refuses.
+/// staging folder beside the store while hashing it, so a large file is
+/// never held in memory, and it touches neither the table nor the live
+/// folder, so an apply or a sweep can run meanwhile. Past `max_bytes` it
+/// refuses.
 pub fn stage(src: &Path, max_bytes: u64) -> Result<Staged, String> {
     stage_in(&data_dir().join("assets.import"), src, max_bytes)
 }
@@ -218,7 +217,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(Sha256::digest(bytes).as_slice())
 }
 
-/// Size and hash of a file on disk, streamed so a video isn't read whole.
+/// Size and hash of a file on disk, streamed so a large file isn't read whole.
 pub fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     let fail = |e: std::io::Error| format!("{}: {e}", path.display());
 
@@ -659,8 +658,9 @@ mod tests {
 
         assert!(import_in(&dir, &[], "run.sh", b"#!/bin/sh").is_err());
         assert_eq!(kind_for("Song.OTF"), Some(AssetKind::Font));
-        assert_eq!(kind_for("clip.webm"), Some(AssetKind::Video));
-        assert_eq!(kind_for("ship.glb"), Some(AssetKind::Model));
+        assert_eq!(kind_for("clip.mp4"), None);
+        assert_eq!(kind_for("clip.webm"), None);
+        assert_eq!(kind_for("ship.glb"), None);
         assert_eq!(kind_for("png"), None);
         assert_eq!(kind_for("Old Plate.TGA"), Some(AssetKind::Image));
         assert_eq!(kind_for("plate.bmp"), Some(AssetKind::Image));

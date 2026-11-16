@@ -259,19 +259,13 @@ pub enum Content {
     Shader {
         shader: Value,
     },
-    Video {
-        asset: String,
-    },
-    Model {
-        asset: String,
-    },
     /// A kind this build doesn't know, or a known kind whose body didn't
     /// parse. Serializes back to the value it was read from.
     #[serde(skip)]
     Unknown(Value),
 }
 
-const KINDS: [&str; 7] = ["grid", "group", "image", "text", "shader", "video", "model"];
+const KINDS: [&str; 5] = ["grid", "group", "image", "text", "shader"];
 
 impl Default for Content {
     fn default() -> Self {
@@ -283,9 +277,7 @@ impl Content {
     /// The asset this content names, if it names one.
     pub fn asset(&self) -> Option<&str> {
         match self {
-            Content::Image { asset, .. } | Content::Video { asset } | Content::Model { asset } => {
-                Some(asset.as_str()).filter(|a| !a.is_empty())
-            }
+            Content::Image { asset, .. } => Some(asset.as_str()).filter(|a| !a.is_empty()),
             _ => None,
         }
     }
@@ -382,8 +374,6 @@ pub struct Cost {
     pub items: usize,
     pub grids: usize,
     pub shaders: usize,
-    /// Video and model items: each holds a live texture.
-    pub textures: usize,
     /// The deepest group nesting: 0 with no groups, 1 for a group at the
     /// top level.
     pub depth: usize,
@@ -436,7 +426,6 @@ impl SceneState {
             match item.content {
                 Content::Grid { .. } => cost.grids += 1,
                 Content::Shader { .. } => cost.shaders += 1,
-                Content::Video { .. } | Content::Model { .. } => cost.textures += 1,
                 Content::Group { .. } => cost.depth = cost.depth.max(level + 1),
                 _ => {}
             }
@@ -584,16 +573,6 @@ mod tests {
                     },
                     ..SceneItem::default()
                 },
-                SceneItem {
-                    id: "clip".into(),
-                    content: Content::Video { asset: "v1".into() },
-                    ..SceneItem::default()
-                },
-                SceneItem {
-                    id: "mesh".into(),
-                    content: Content::Model { asset: "m1".into() },
-                    ..SceneItem::default()
-                },
             ],
             ..SceneState::default()
         };
@@ -611,7 +590,7 @@ mod tests {
     fn a_broken_item_costs_only_itself() {
         let scene: SceneState = serde_json::from_value(json!({
             "items": [
-                { "id": "a", "content": { "kind": "video", "asset": "v" } },
+                { "id": "a", "content": { "kind": "image", "asset": "v" } },
                 { "id": 7, "opacity": "loud" },
                 { "id": "b", "content": { "kind": "group", "items": [
                     { "id": "c" },
@@ -636,6 +615,21 @@ mod tests {
 
         assert!(matches!(item.content, Content::Unknown(_)));
         assert_eq!(serde_json::to_string(&item.content).unwrap(), raw);
+    }
+
+    #[test]
+    fn a_video_or_model_item_is_kept_as_saved_like_any_unknown_kind() {
+        for raw in [
+            r#"{"asset":"clip","kind":"video"}"#,
+            r#"{"asset":"ship","kind":"model"}"#,
+        ] {
+            let item: SceneItem =
+                serde_json::from_str(&format!(r#"{{"id":"x","content":{raw}}}"#)).unwrap();
+
+            assert!(matches!(item.content, Content::Unknown(_)), "{raw}");
+            assert_eq!(item.content.asset(), None);
+            assert_eq!(serde_json::to_string(&item.content).unwrap(), raw);
+        }
     }
 
     #[test]
@@ -765,20 +759,12 @@ mod tests {
             content: Content::Shader { shader: json!({}) },
             ..SceneItem::default()
         };
-        let video = SceneItem {
-            content: Content::Video { asset: "v".into() },
-            ..SceneItem::default()
-        };
-        let model = SceneItem {
-            content: Content::Model { asset: "m".into() },
-            ..SceneItem::default()
-        };
 
         let scene = SceneState {
             items: vec![
                 grid("a"),
                 shader.clone(),
-                group("g", vec![grid("b"), video, group("h", vec![shader, model])]),
+                group("g", vec![grid("b"), group("h", vec![shader])]),
             ],
             ..SceneState::default()
         };
@@ -786,10 +772,9 @@ mod tests {
         assert_eq!(
             scene.cost(),
             Cost {
-                items: 8,
+                items: 6,
                 grids: 2,
                 shaders: 2,
-                textures: 2,
                 depth: 2,
             }
         );
@@ -804,8 +789,9 @@ mod tests {
 
         assert_eq!(image.asset(), Some("a"));
         assert_eq!(
-            Content::Video {
-                asset: String::new()
+            Content::Image {
+                asset: String::new(),
+                fit: ImageFit::Contain,
             }
             .asset(),
             None

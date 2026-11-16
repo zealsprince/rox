@@ -352,9 +352,9 @@ holds a stage size and fit, a camera (vertical field of view, with 0 for orthogr
 and pointer parallax), and a list of items. Each item has an id that's unique across the
 whole scene, a place (an anchor on its parent's box, a position, a size in units or as a
 fraction of the parent, a rotation and a scale), visibility, a lock, an opacity, and its
-content. Grid, group and image content draw. Text, shader, video and model content, a
-kind this build doesn't know, and a known kind whose body doesn't parse are all kept as
-read and written back unchanged.
+content. Grid, group, image, text and shader content draw. A kind this build doesn't
+know and a known kind whose body doesn't parse are both kept as read and written back
+unchanged.
 
 `rox_scene` does the placing. An item's transform is its parent frame's times its own,
 and it turns and scales about its centre whatever its anchor. A point at depth `z`

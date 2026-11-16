@@ -1481,10 +1481,6 @@ pub enum AssetKind {
     Image,
     /// A TrueType or OpenType font.
     Font,
-    /// A video, played silent.
-    Video,
-    /// A 3D model.
-    Model,
 }
 
 /// One file the workspace carries.

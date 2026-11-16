@@ -74,7 +74,7 @@ impl Drop for AddingAssets {
 }
 
 /// The order the Assets section groups by, with each group's heading.
-const ASSET_GROUPS: [(AssetKind, &str, &str); 4] = [
+const ASSET_GROUPS: [(AssetKind, &str, &str); 2] = [
     (
         AssetKind::Image,
         icons::IMAGE,
@@ -84,16 +84,6 @@ const ASSET_GROUPS: [(AssetKind, &str, &str); 4] = [
         AssetKind::Font,
         icons::A_LARGE_SMALL,
         "settings-workspace-assets-kind-font",
-    ),
-    (
-        AssetKind::Video,
-        icons::PLAY,
-        "settings-workspace-assets-kind-video",
-    ),
-    (
-        AssetKind::Model,
-        icons::LAYERS,
-        "settings-workspace-assets-kind-model",
     ),
 ];
 
@@ -703,53 +693,42 @@ impl SettingsWindow {
             rox_i18n::t!("settings-workspace-section-assets"),
             Some(controls.into_any_element()),
             |rows| {
-                rows.custom(
-                    &["asset", "file", "image", "font", "video", "model"],
-                    || {
-                        let hint = |key: &'static str| {
+                rows.custom(&["asset", "file", "image", "font"], || {
+                    let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(rox_i18n::t!("settings-workspace-assets-hint")),
+                    );
+
+                    for (kind, icon, heading) in ASSET_GROUPS {
+                        let mut group: Vec<&Asset> =
+                            table.iter().filter(|asset| asset.kind == kind).collect();
+                        if group.is_empty() {
+                            continue;
+                        }
+                        group.sort_by(|a, b| a.file.cmp(&b.file));
+
+                        list = list.child(
                             div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(tokens::SPACE_XS)
+                                .pt(tokens::SPACE_XS)
                                 .text_xs()
                                 .text_color(palette::text_muted())
-                                .child(rox_i18n::t!(key))
-                        };
-                        let mut list = div()
-                            .flex()
-                            .flex_col()
-                            .gap(tokens::SPACE_XS)
-                            .child(hint("settings-workspace-assets-hint"))
-                            // Until video and models draw somewhere.
-                            .child(hint("settings-workspace-assets-hint-pending"));
-
-                        for (kind, icon, heading) in ASSET_GROUPS {
-                            let mut group: Vec<&Asset> =
-                                table.iter().filter(|asset| asset.kind == kind).collect();
-                            if group.is_empty() {
-                                continue;
-                            }
-                            group.sort_by(|a, b| a.file.cmp(&b.file));
-
-                            list = list.child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(tokens::SPACE_XS)
-                                    .pt(tokens::SPACE_XS)
-                                    .text_xs()
-                                    .text_color(palette::text_muted())
-                                    .child(
-                                        svg().path(icon).size_3().text_color(palette::text_muted()),
-                                    )
-                                    .child(rox_i18n::t!(heading)),
-                            );
-                            list = list.child(div().flex().flex_col().children(
+                                .child(svg().path(icon).size_3().text_color(palette::text_muted()))
+                                .child(rox_i18n::t!(heading)),
+                        );
+                        list =
+                            list.child(div().flex().flex_col().children(
                                 group.into_iter().map(|asset| self.asset_row(asset, cx)),
                             ));
-                        }
+                    }
 
-                        list.into_any_element()
-                    },
-                )
+                    list.into_any_element()
+                })
             },
         )
     }

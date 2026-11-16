@@ -20,6 +20,8 @@ pub struct CanvasState {
     pub version: u32,
     pub stage: Stage,
     pub camera: Camera,
+    #[serde(skip_serializing_if = "Idle::is_rest")]
+    pub idle: Idle,
     /// Lenient: a broken item costs only itself.
     #[serde(deserialize_with = "lenient_items")]
     pub items: Vec<CanvasItem>,
@@ -31,6 +33,7 @@ impl Default for CanvasState {
             version: CANVAS_VERSION,
             stage: Stage::default(),
             camera: Camera::default(),
+            idle: Idle::Rest,
             items: Vec::new(),
         }
     }
@@ -66,6 +69,23 @@ pub enum Fit {
     Contain,
     /// The stage scales to fill the panel.
     Cover,
+}
+
+/// What routed items do while playback isn't running.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Idle {
+    /// Each item at its own settings, as if no route reached it.
+    #[default]
+    Rest,
+    /// Each item where its routes last put it.
+    Hold,
+}
+
+impl Idle {
+    pub fn is_rest(&self) -> bool {
+        *self == Idle::Rest
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

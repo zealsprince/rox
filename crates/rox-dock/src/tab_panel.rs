@@ -617,8 +617,9 @@ impl TabPanel {
     }
 
     /// rox addition: an empty group that is the last one in a nested area.
-    /// It stays, so the area keeps a place to drop a tab into.
-    pub(crate) fn keeps_place(&self, cx: &App) -> bool {
+    /// It stays, so the area keeps a place to drop a tab into. Public so the
+    /// app can aim Add Panel at it.
+    pub fn keeps_place(&self, cx: &App) -> bool {
         self.empty_in_nested_area(cx) && self.is_last_panel(cx)
     }
 

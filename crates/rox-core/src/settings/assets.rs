@@ -185,8 +185,17 @@ pub fn refresh(files: &[String]) -> bool {
     true
 }
 
-/// Delete files the table doesn't name.
+/// Delete files the table doesn't name. It doesn't take the import's lock,
+/// since there is none: run it on the thread that imports and applies, at a
+/// moment neither is under way, or it can delete a file a moment before the
+/// table names it. Skipped when the live look didn't come from its file as
+/// written, since the table would then be the defaults' and name nothing.
 pub fn sweep() {
+    if !super::live_look::loaded_from_file() {
+        log::info!("assets: the live look didn't load from its file, not sweeping");
+        return;
+    }
+
     sweep_in(&dir(), &all());
 }
 

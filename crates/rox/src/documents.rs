@@ -93,9 +93,10 @@ pub(crate) fn set_link_handler(handler: fn(&str, &mut App)) {
     let _ = LINK_HANDLER.set(handler);
 }
 
-/// The object handler: installed, then offered through the place confirm
-/// in the canvas that last had focus in the front workspace. With no canvas
-/// in the layout it stays installed, and a toast says it needs one.
+/// The object handler: installed, then placed in the canvas that last had
+/// focus in the front workspace, through the place confirm when its card has
+/// something to review. With no canvas in the layout it stays installed, and
+/// a toast says it needs one.
 pub(crate) fn open_object(path: PathBuf, cx: &mut App) {
     crate::workspace::with_front_workspace(cx, move |ws, window, cx| {
         let name = match crate::objects::install(&path) {
@@ -113,8 +114,13 @@ pub(crate) fn open_object(path: PathBuf, cx: &mut App) {
         };
 
         match crate::objects::canvas_for(ws, cx) {
-            Some(canvas) => canvas.update(cx, |canvas, cx| {
-                crate::objects::offer(canvas, &name, window, cx)
+            // Outside this workspace update: a place with nothing to review
+            // edits the canvas at once, and that reaches back into the
+            // workspace, which gpui refuses while it's mid-update.
+            Some(canvas) => window.defer(cx, move |window, cx| {
+                canvas.update(cx, |canvas, cx| {
+                    crate::objects::offer(canvas, &name, window, cx)
+                })
             }),
             None => Toast::new(
                 panel::Tone::Info,

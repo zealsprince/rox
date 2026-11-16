@@ -493,6 +493,10 @@ fn main() {
         // Inline, not spawned: the update check below may start a download whose
         // staging this sweep must not race.
         startup::updater::clean_leftovers();
+        // Inline too, before any window or a queued launch can import or
+        // apply: those write the asset folder on this thread, and a sweep
+        // between a file landing and the table naming it would delete it.
+        rox_core::settings::assets::sweep();
         startup::updates::check_on_launch(cx);
         // On KWin the placement script loads while the first window maps.
         integrations::placement::start(cx);

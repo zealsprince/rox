@@ -15,7 +15,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Context, Entity, EntityId, FocusHandle, SharedString, Window};
+use gpui::{
+    App, AppContext as _, Context, Entity, EntityId, FocusHandle, Focusable as _, SharedString,
+    Window,
+};
 use gpui_component::input::InputState;
 use rox_canvas::{Anchor, CanvasItem, CanvasState, Content};
 use rox_core::settings::roxo::{self, ObjectBundle};
@@ -651,6 +654,16 @@ impl PlaceCard {
         }
     }
 
+    /// Whether the confirm has anything to say: code to approve, a plugin
+    /// that isn't running, or a size or weight warning. The card's byline
+    /// and description are only the author's words, so they don't count.
+    pub(crate) fn needs_review(&self) -> bool {
+        !self.shaders.is_empty()
+            || self.requires.is_some()
+            || self.heavy.is_some()
+            || !self.weight.is_empty()
+    }
+
     pub(crate) fn shader_line(&self) -> Option<SharedString> {
         if self.shaders.is_empty() {
             return None;
@@ -804,8 +817,9 @@ pub(crate) fn confirm_export(
     .detach();
 }
 
-/// Opens the place confirm for an installed object. A file that no longer
-/// reads, a newer one included, says why in a toast instead.
+/// Places an installed object, through the place confirm when its card has
+/// something to review and straight away when it doesn't. A file that no
+/// longer reads, a newer one included, says why in a toast instead.
 pub(crate) fn offer(
     canvas: &mut CanvasPanel,
     name: &str,
@@ -813,23 +827,35 @@ pub(crate) fn offer(
     cx: &mut Context<CanvasPanel>,
 ) {
     let bundle = path_in(&roxo::objects_dir(), name).and_then(|path| roxo::read_bundle(&path));
-    match bundle {
-        Ok(bundle) => {
-            let focus = cx.focus_handle();
-            focus.focus(window);
-            canvas.object_dialog = Some(Dialog::Place {
-                card: PlaceCard::of(name, &bundle),
-                focus,
-            });
-            cx.notify();
-        }
+    let bundle = match bundle {
+        Ok(bundle) => bundle,
         Err(e) => {
             log::warn!("objects: reading {name}: {e}");
             rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
                 .title(rox_i18n::t!("canvas-object-place-failed", name = name))
                 .show(window, cx);
+            return;
         }
+    };
+
+    let card = PlaceCard::of(name, &bundle);
+    if card.needs_review() {
+        let focus = cx.focus_handle();
+        focus.focus(window);
+        canvas.object_dialog = Some(Dialog::Place { card, focus });
+        cx.notify();
+        return;
     }
+
+    place_card(canvas, &card, window, cx);
+
+    // Next turn, for the same reason the confirm hands focus back late: the
+    // menu row or the window the place came from takes focus after this
+    // runs, and undo would go nowhere until a click.
+    cx.defer_in(window, |this, window, cx| {
+        window.focus(&this.focus_handle(cx));
+        cx.notify();
+    });
 }
 
 /// Install a file from outside, then offer it to `canvas`: a drop, or Add
@@ -871,6 +897,16 @@ pub(crate) fn confirm_place(
         card.approve_shaders();
     }
 
+    place_card(canvas, &card, window, cx);
+}
+
+/// [`place`], with a failure said in a toast.
+fn place_card(
+    canvas: &mut CanvasPanel,
+    card: &PlaceCard,
+    window: &mut Window,
+    cx: &mut Context<CanvasPanel>,
+) {
     if let Err(e) = place(canvas, &card.name, window, cx) {
         log::warn!("objects: placing {}: {e}", card.name);
         rox_panel_api::toast::Toast::new(rox_panel_api::panel::Tone::Bad, e)
@@ -895,9 +931,21 @@ pub(crate) fn note_focused(canvas: EntityId) {
     LAST_FOCUSED.set(Some(canvas));
 }
 
-/// Every canvas in the workspace's window, nested ones included: the one that
-/// last held focus, or else the first.
+/// Of every canvas in the workspace's window, nested ones included: the one
+/// that last held focus, or else the first.
 pub(crate) fn canvas_for(ws: &Workspace, cx: &App) -> Option<Entity<CanvasPanel>> {
+    let found = canvases(ws, cx);
+
+    let last = LAST_FOCUSED.get();
+    found
+        .iter()
+        .find(|canvas| Some(canvas.entity_id()) == last)
+        .or(found.first())
+        .cloned()
+}
+
+/// Every canvas in the workspace's window, nested ones included.
+pub(crate) fn canvases(ws: &Workspace, cx: &App) -> Vec<Entity<CanvasPanel>> {
     fn canvases(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Entity<CanvasPanel>>) {
         let view = node.view();
         if let Ok(stack) = view.clone().downcast::<StackPanel>() {
@@ -919,13 +967,7 @@ pub(crate) fn canvas_for(ws: &Workspace, cx: &App) -> Option<Entity<CanvasPanel>
     for dock in ws.docks(cx) {
         canvases(&dock.read(cx).items().view(), cx, &mut found);
     }
-
-    let last = LAST_FOCUSED.get();
     found
-        .iter()
-        .find(|canvas| Some(canvas.entity_id()) == last)
-        .or(found.first())
-        .cloned()
 }
 
 #[cfg(test)]
@@ -1224,6 +1266,64 @@ mod tests {
         assert!(path_in(&dir, ".hidden").is_err());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A card with its author's words filled in and nothing to review.
+    fn quiet_card() -> PlaceCard {
+        PlaceCard {
+            name: "Badge".to_string(),
+            title: "Badge".to_string(),
+            byline: Some("By someone".into()),
+            description: Some("A badge".into()),
+            requires: None,
+            heavy: None,
+            weight: Vec::new(),
+            shaders: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_object_with_nothing_to_review_places_without_the_confirm() {
+        assert!(!quiet_card().needs_review());
+    }
+
+    #[test]
+    fn an_unapproved_shader_brings_the_confirm() {
+        let card = PlaceCard {
+            shaders: vec![PendingShader {
+                label: "Glow".to_string(),
+                source: "fn fs_user() {}".to_string(),
+            }],
+            ..quiet_card()
+        };
+        assert!(card.needs_review());
+    }
+
+    #[test]
+    fn a_plugin_that_isnt_running_brings_the_confirm() {
+        let card = PlaceCard {
+            requires: Some("Needs a plugin".into()),
+            ..quiet_card()
+        };
+        assert!(card.needs_review());
+    }
+
+    #[test]
+    fn a_heavy_object_brings_the_confirm() {
+        let card = PlaceCard {
+            heavy: Some("Unpacks to 80 MB".into()),
+            ..quiet_card()
+        };
+        assert!(card.needs_review());
+    }
+
+    #[test]
+    fn a_weight_warning_brings_the_confirm() {
+        let card = PlaceCard {
+            weight: vec!["Grid items: 80".into()],
+            ..quiet_card()
+        };
+        assert!(card.needs_review());
     }
 
     /// The export without its save prompt, for driving a live run: lifts

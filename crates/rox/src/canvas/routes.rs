@@ -6,15 +6,23 @@
 //!
 //! Nothing here touches the saved items. The offsets live in one [`Live`]
 //! per routed item, built fresh each frame and handed to the projection.
+//! While playback isn't running a canvas's [`Idle`] setting decides what
+//! they are: none at all (Rest), or the last ones drawn (Hold).
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-use rox_canvas::{CanvasItem, CanvasState, Live};
+use rox_canvas::{CanvasItem, CanvasState, Idle, Live};
 use rox_panel_api::signal_ui::{self, RouteTargets};
 use rox_viz::signal::{Route, SignalHub};
 
 /// The properties a route can drive on every item, in display order.
 pub(crate) const PROPERTIES: [&str; 8] = ["opacity", "scale", "x", "y", "z", "rx", "ry", "rz"];
+
+/// How long routed items take to ease to their own settings when playback
+/// stops, and back when it starts. Close to how long a band signal at the
+/// default smoothing takes to fall most of the way once the feed goes quiet.
+const REST_EASE: Duration = Duration::from_millis(600);
 
 /// What a new position or rotation route starts its axis at when the sway
 /// there is zero, so a fresh binding visibly does something.
@@ -133,20 +141,215 @@ impl RouteTargets for Lives<'_> {
     }
 }
 
+/// Whether a target's span is a share of its item's sway: a position or
+/// rotation axis.
+pub(crate) fn sways(target: &str) -> bool {
+    split(target).is_some_and(|(_, property)| {
+        matches!(property, Property::Position(_) | Property::Rotation(_))
+    })
+}
+
 /// Whether any route is switched on, which is what keeps a canvas listening.
 pub(crate) fn running(routes: &[Route]) -> bool {
     routes.iter().any(|route| route.enabled)
 }
 
-/// Every routed item's offsets this frame.
-pub(crate) fn lives(
+/// Whether playback counts as running for a canvas's routes. Paused,
+/// stopped and nothing loaded all read as not playing. A played-out queue
+/// can still read as playing, so the end of the queue is checked too.
+pub(crate) fn playback_running(playing: bool, ended: bool) -> bool {
+    playing && !ended
+}
+
+/// Every routed item's offsets from these route outputs, eased `weight` of
+/// the way from its own settings.
+fn lives_from(
+    canvas: &CanvasState,
+    factors: &[(String, f32)],
+    weight: f32,
+) -> HashMap<String, Live> {
+    if weight <= 0. {
+        return HashMap::new();
+    }
+
+    let mut lives = Lives::new(canvas);
+    for (target, factor) in factors {
+        lives.apply(target, *factor);
+    }
+
+    if weight < 1. {
+        for live in lives.live.values_mut() {
+            *live = blend(&Live::default(), live, weight);
+        }
+    }
+    lives.live
+}
+
+/// `from` carried `weight` of the way to `to`.
+fn blend(from: &Live, to: &Live, weight: f32) -> Live {
+    let mix = |a: f32, b: f32| a + (b - a) * weight;
+
+    Live {
+        position: std::array::from_fn(|axis| mix(from.position[axis], to.position[axis])),
+        rotation: std::array::from_fn(|axis| mix(from.rotation[axis], to.rotation[axis])),
+        scale: mix(from.scale, to.scale),
+        opacity: mix(from.opacity, to.opacity),
+    }
+}
+
+/// Every pair of offsets eased `weight` of the way from `from` to `to`. An
+/// item missing from either side sits at its own settings there.
+fn blend_all(
+    from: &HashMap<String, Live>,
+    to: HashMap<String, Live>,
+    weight: f32,
+) -> HashMap<String, Live> {
+    let mut out = to;
+    for (id, live) in out.iter_mut() {
+        *live = blend(from.get(id).unwrap_or(&Live::default()), live, weight);
+    }
+    for (id, live) in from {
+        out.entry(id.clone())
+            .or_insert_with(|| blend(live, &Live::default(), weight));
+    }
+    out
+}
+
+/// What each route puts out this frame, by target. Reading them advances
+/// the hub.
+fn factors(routes: &[Route], hub: &SignalHub) -> Vec<(String, f32)> {
+    struct Collect(Vec<(String, f32)>);
+
+    impl RouteTargets for Collect {
+        fn targets(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+
+        fn apply(&mut self, id: &str, value: f32) {
+            self.0.push((id.to_string(), value));
+        }
+    }
+
+    let mut out = Collect(Vec::new());
+    signal_ui::apply_routes(routes, hub, &mut out);
+    out.0
+}
+
+/// A canvas's routes against playback across frames: the ease between
+/// routed and at rest, and what Hold keeps.
+#[derive(Default)]
+pub(crate) struct Motion {
+    /// Playback as the last frame saw it, none before the first.
+    running: Option<bool>,
+    /// When playback last started or stopped, and how much of the routes
+    /// showed at that moment.
+    edge: Option<(Instant, f32)>,
+    /// The offsets last drawn while playing. Empty until something plays,
+    /// so a held canvas starts at rest.
+    held: HashMap<String, Live>,
+}
+
+/// One frame's offsets, and whether the canvas needs another frame.
+pub(crate) struct Pose {
+    pub lives: HashMap<String, Live>,
+    pub more: bool,
+}
+
+impl Motion {
+    /// How much of the routes shows at `now`: 0 at rest, 1 playing.
+    fn weight(&self, now: Instant) -> f32 {
+        let target = if self.running == Some(true) { 1. } else { 0. };
+        let Some((at, from)) = self.edge else {
+            return target;
+        };
+
+        let t = now.saturating_duration_since(at).as_secs_f32() / REST_EASE.as_secs_f32();
+        if t >= 1. {
+            return target;
+        }
+
+        let eased = t * t * (3. - 2. * t);
+        from + (target - from) * eased
+    }
+
+    /// Starts an ease from wherever the last one stood when playback flips.
+    fn note(&mut self, running: bool, now: Instant) {
+        match self.running {
+            Some(was) if was != running => {
+                let weight = self.weight(now);
+                self.running = Some(running);
+                self.edge = Some((now, weight));
+            }
+            Some(_) => {}
+            None => self.running = Some(running),
+        }
+    }
+
+    /// Whether a player tick has anything to show: playback runs, or it
+    /// flipped since the last frame.
+    pub(crate) fn wants(&self, running: bool) -> bool {
+        running || self.running != Some(running)
+    }
+
+    /// Every routed item's offsets this frame. `live` gives the route
+    /// outputs and whether the signals are still moving, and is only called
+    /// when the frame needs them, since reading the hub advances it.
+    pub(crate) fn pose(
+        &mut self,
+        canvas: &CanvasState,
+        running: bool,
+        now: Instant,
+        live: impl FnOnce() -> (Vec<(String, f32)>, bool),
+    ) -> Pose {
+        self.note(running, now);
+
+        // Hold stops at once: the next start eases out of the held pose.
+        if !running && canvas.idle == Idle::Hold {
+            self.edge = None;
+            return Pose {
+                lives: self.held.clone(),
+                more: false,
+            };
+        }
+
+        let weight = self.weight(now);
+        let easing = self.edge.is_some() && weight != if running { 1. } else { 0. };
+        if !running && weight <= 0. {
+            return Pose {
+                lives: HashMap::new(),
+                more: false,
+            };
+        }
+
+        let (factors, moving) = live();
+        let lives = match canvas.idle {
+            Idle::Rest => lives_from(canvas, &factors, weight),
+            Idle::Hold => blend_all(&self.held, lives_from(canvas, &factors, 1.), weight),
+        };
+
+        if running {
+            self.held = lives.clone();
+        }
+
+        Pose {
+            more: easing || (running && moving),
+            lives,
+        }
+    }
+}
+
+/// [`Motion::pose`] against the hub.
+pub(crate) fn pose(
+    motion: &mut Motion,
     canvas: &CanvasState,
     routes: &[Route],
+    running: bool,
     hub: &SignalHub,
-) -> HashMap<String, Live> {
-    let mut lives = Lives::new(canvas);
-    signal_ui::apply_routes(routes, hub, &mut lives);
-    lives.live
+) -> Pose {
+    motion.pose(canvas, running, Instant::now(), || {
+        let factors = factors(routes, hub);
+        (factors, hub.live() || hub.settling())
+    })
 }
 
 /// The offsets for one item, none when no route reaches it.
@@ -394,5 +597,169 @@ mod tests {
         assert_eq!(a.position, [NEW_SWAY_UNITS, 0., 0.]);
         assert_eq!(a.rotation, [0., NEW_SWAY_DEGREES, 0.]);
         assert_eq!(canvas.find("b").expect("present").sway.position[0], 5.);
+    }
+
+    /// A logo with an opacity route at the default Quiet, silent, and a
+    /// position route halfway up its sway.
+    fn routed(idle: Idle) -> (CanvasState, Vec<(String, f32)>) {
+        let canvas = CanvasState {
+            idle,
+            ..canvas(vec![CanvasItem {
+                sway: Sway {
+                    position: [40., 0., 0.],
+                    ..Sway::default()
+                },
+                ..item("logo")
+            }])
+        };
+        let factors = vec![
+            ("logo.opacity".to_string(), 0.),
+            ("logo.x".to_string(), 0.5),
+        ];
+        (canvas, factors)
+    }
+
+    #[test]
+    fn at_rest_an_item_has_no_offsets_once_the_ease_is_done() {
+        let (canvas, factors) = routed(Idle::Rest);
+        let mut motion = Motion::default();
+        let start = Instant::now();
+
+        let playing = motion.pose(&canvas, true, start, || (factors.clone(), true));
+        assert_eq!(playing.lives["logo"].opacity, 0.);
+        assert_eq!(playing.lives["logo"].position[0], 20.);
+
+        // Partway: on its way back to its own settings, and asking for more.
+        let paused = start + Duration::from_millis(10);
+        motion.pose(&canvas, false, paused, || (factors.clone(), false));
+        let easing = motion.pose(&canvas, false, paused + REST_EASE / 2, || {
+            (factors.clone(), false)
+        });
+        let live = easing.lives["logo"];
+        assert!(live.opacity > 0. && live.opacity < 1.);
+        assert!(live.position[0] > 0. && live.position[0] < 20.);
+        assert!(easing.more);
+
+        let rested = motion.pose(&canvas, false, paused + REST_EASE, || {
+            panic!("a canvas at rest doesn't read the hub")
+        });
+        assert!(rested.lives.is_empty());
+        assert!(!rested.more);
+    }
+
+    #[test]
+    fn resuming_from_rest_eases_back_in() {
+        let (canvas, factors) = routed(Idle::Rest);
+        let mut motion = Motion::default();
+        let start = Instant::now();
+
+        motion.pose(&canvas, false, start, || (factors.clone(), false));
+        let resumed = start + Duration::from_millis(10);
+        motion.pose(&canvas, true, resumed, || (factors.clone(), true));
+
+        let halfway = motion.pose(&canvas, true, resumed + REST_EASE / 2, || {
+            (factors.clone(), true)
+        });
+        assert!(halfway.lives["logo"].position[0] < 20.);
+
+        let back = motion.pose(&canvas, true, resumed + REST_EASE, || {
+            (factors.clone(), true)
+        });
+        assert_eq!(back.lives["logo"].position[0], 20.);
+    }
+
+    #[test]
+    fn held_an_item_keeps_its_last_offsets_and_asks_for_no_frames() {
+        let (canvas, factors) = routed(Idle::Hold);
+        let mut motion = Motion::default();
+        let start = Instant::now();
+
+        let playing = motion.pose(&canvas, true, start, || (factors.clone(), true));
+        let held = motion.pose(&canvas, false, start + Duration::from_millis(10), || {
+            panic!("a held canvas doesn't read the hub")
+        });
+        assert_eq!(held.lives["logo"], playing.lives["logo"]);
+        assert!(!held.more);
+
+        let later = motion.pose(&canvas, false, start + REST_EASE * 10, || {
+            panic!("a held canvas doesn't read the hub")
+        });
+        assert_eq!(later.lives["logo"], playing.lives["logo"]);
+    }
+
+    #[test]
+    fn a_held_canvas_with_nothing_played_yet_starts_at_rest() {
+        let (canvas, _) = routed(Idle::Hold);
+        let held = Motion::default().pose(&canvas, false, Instant::now(), || {
+            panic!("a held canvas doesn't read the hub")
+        });
+        assert!(held.lives.is_empty());
+        assert!(!held.more);
+    }
+
+    #[test]
+    fn a_canvas_with_no_routes_is_unaffected() {
+        let canvas = canvas(vec![item("logo")]);
+        assert!(!running(&[]));
+
+        for idle in [Idle::Rest, Idle::Hold] {
+            let canvas = CanvasState {
+                idle,
+                ..canvas.clone()
+            };
+            let mut motion = Motion::default();
+            let start = Instant::now();
+
+            let playing = motion.pose(&canvas, true, start, || (Vec::new(), false));
+            assert!(playing.lives.is_empty());
+
+            let paused = start + Duration::from_millis(10);
+            let stopped = motion.pose(&canvas, false, paused, || (Vec::new(), false));
+            assert!(stopped.lives.is_empty());
+
+            let settled = motion.pose(&canvas, false, paused + REST_EASE, || (Vec::new(), false));
+            assert!(settled.lives.is_empty());
+            assert!(!settled.more);
+        }
+    }
+
+    #[test]
+    fn the_default_is_rest_and_isnt_written_to_the_saved_config() {
+        use crate::panels::canvas::CanvasConfig;
+
+        let config = CanvasConfig::default();
+        assert_eq!(config.canvas.idle, Idle::Rest);
+        let saved = serde_json::to_value(&config).expect("serializes");
+        assert!(saved.get("idle").is_none());
+
+        let read: CanvasConfig = serde_json::from_value(serde_json::json!({})).expect("parses");
+        assert_eq!(read.canvas.idle, Idle::Rest);
+
+        let mut held = config;
+        held.canvas.idle = Idle::Hold;
+        let saved = serde_json::to_value(&held).expect("serializes");
+        assert_eq!(saved["idle"], "hold");
+    }
+
+    #[test]
+    fn a_player_tick_redraws_only_while_playing_or_on_a_flip() {
+        let (canvas, factors) = routed(Idle::Rest);
+        let mut motion = Motion::default();
+        assert!(motion.wants(false));
+
+        motion.pose(&canvas, true, Instant::now(), || (factors.clone(), true));
+        assert!(motion.wants(true));
+        assert!(motion.wants(false));
+
+        motion.pose(&canvas, false, Instant::now(), || (factors.clone(), false));
+        assert!(!motion.wants(false));
+    }
+
+    #[test]
+    fn paused_stopped_and_a_played_out_queue_all_count_as_not_running() {
+        assert!(playback_running(true, false));
+        assert!(!playback_running(false, false));
+        assert!(!playback_running(true, true));
+        assert!(!playback_running(false, true));
     }
 }

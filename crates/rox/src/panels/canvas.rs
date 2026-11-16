@@ -40,7 +40,8 @@ use rox_canvas::{
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_dock::{
-    DockArea, DockAreaState, Panel, PanelEvent, PanelInfo, PanelState, PanelView, TabPanel,
+    DockArea, DockAreaState, Panel, PanelEvent, PanelInfo, PanelState, PanelView, StackPanel,
+    TabPanel,
 };
 use rox_viz::signal::{Route, SignalHub};
 use serde::{Deserialize, Serialize};
@@ -244,6 +245,41 @@ pub struct CanvasConfig {
     pub routes: Vec<Route>,
 }
 
+/// Where Add Panel goes in `ws`'s window when an emptied grid is the target:
+/// the grid item selected in the canvas whose inspector shows.
+pub(crate) fn selected_empty_grid(ws: &Workspace, cx: &App) -> Option<Entity<TabPanel>> {
+    let active = ACTIVE.get()?;
+    objects::canvases(ws, cx)
+        .into_iter()
+        .find(|canvas| canvas.entity_id() == active)?
+        .read(cx)
+        .selected_empty_group(cx)
+}
+
+/// Clears the lock on every panel in a dock dump. It walks the dump's own
+/// tree and stops at each panel's config, so a canvas in the layout keeps its
+/// items' locks and its grids' panels as they were.
+fn unlock(node: &mut Value) {
+    if node.get("panel_name").is_some() {
+        if let Some(config) = node
+            .pointer_mut("/info/panel")
+            .and_then(Value::as_object_mut)
+        {
+            config.remove("locked");
+        }
+        if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
+            children.iter_mut().for_each(unlock);
+        }
+        return;
+    }
+
+    match node {
+        Value::Object(map) => map.values_mut().for_each(unlock),
+        Value::Array(list) => list.iter_mut().for_each(unlock),
+        _ => {}
+    }
+}
+
 /// The dock state a canvas saves as: its config, with no children.
 pub(crate) fn state_of(config: &CanvasConfig) -> PanelState {
     PanelState {
@@ -254,9 +290,13 @@ pub(crate) fn state_of(config: &CanvasConfig) -> PanelState {
 }
 
 /// A layout as a canvas: one grid holding `dump` across the whole stage, the
-/// one panel in the one tab group of a fresh root. `dump` goes in untouched,
-/// so the window looks the same once it's applied.
-pub(crate) fn wrap_layout(dump: Value, version: usize) -> DockAreaState {
+/// one panel in the one tab group of a fresh root. The window looks the same
+/// once it's applied. Every panel's lock comes off, since a locked panel
+/// can't be dragged in or out of its group, and the grid is there to be
+/// rearranged.
+pub(crate) fn wrap_layout(mut dump: Value, version: usize) -> DockAreaState {
+    unlock(&mut dump);
+
     let grid = CanvasItem {
         id: "grid".to_string(),
         place: Place {
@@ -321,6 +361,7 @@ pub struct CanvasPanel {
     /// The routes as the history last saw them. The shared binding rows
     /// write `config.routes` directly, so a difference is an edit to record.
     seen_routes: Vec<Route>,
+    motion: routes::Motion,
     signal_ui: SignalUi,
     gesture: Option<Gesture>,
     /// Where the last press picked, and the chain of ids under it, so a
@@ -358,9 +399,13 @@ impl CanvasPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         // The player notifies on every pump tick while audio moves. Only a
-        // canvas with routes has anything to redraw for it.
-        let player = cx.observe(&state.player, |this: &mut Self, _, cx| {
-            if routes::running(&this.config.routes) {
+        // canvas with routes has anything to redraw for it, and only while
+        // playback runs or just changed: a played-out queue still ticks, and
+        // an ease asks for its own frames.
+        let player = cx.observe(&state.player, |this: &mut Self, player, cx| {
+            let player = player.read(cx);
+            let running = routes::playback_running(player.is_playing(), player.queue_ended());
+            if routes::running(&this.config.routes) && this.motion.wants(running) {
                 cx.notify();
             }
         });
@@ -413,6 +458,7 @@ impl CanvasPanel {
             selected: None,
             history: History::default(),
             seen_routes,
+            motion: routes::Motion::default(),
             signal_ui: SignalUi::default(),
             gesture: None,
             last_press: None,
@@ -742,20 +788,28 @@ impl CanvasPanel {
         let stage = Frame::stage(&self.config.canvas.stage, at.viewport);
 
         // Reading the hub advances it. A canvas with no routes doesn't, and
-        // asks for no frames.
-        let hub = self.state.signals.clone();
-        let routed = routes::running(&self.config.routes);
-        let lives = if routed {
-            routes::lives(&self.config.canvas, &self.config.routes, &hub)
+        // asks for no frames, and neither does one settled at rest or held.
+        let lives = if routes::running(&self.config.routes) {
+            let player = self.state.player.read(cx);
+            let running = routes::playback_running(player.is_playing(), player.queue_ended());
+            let pose = routes::pose(
+                &mut self.motion,
+                &self.config.canvas,
+                &self.config.routes,
+                running,
+                &self.state.signals,
+            );
+
+            // Every frame a routed grid moves, its dock lays out again at the
+            // new place. That's allowed, and it's the cost to count when
+            // weighing a canvas.
+            if pose.more {
+                window.request_animation_frame();
+            }
+            pose.lives
         } else {
             HashMap::new()
         };
-        // Every frame a routed grid moves, its dock lays out again at the new
-        // place. That's allowed, and it's the cost to count when weighing a
-        // canvas.
-        if routed && (hub.live() || hub.settling()) {
-            window.request_animation_frame();
-        }
 
         let values = if text::holds_text(&self.config.canvas) {
             self.text_values
@@ -1219,6 +1273,41 @@ impl CanvasPanel {
         self.selected = id;
         self.activate(window, cx);
         cx.notify();
+    }
+
+    /// The kept group of the grid item selected here, while that grid holds
+    /// no panel. Empty, the group draws nothing to click, so selecting its
+    /// item in design mode is how Add Panel is pointed at it.
+    fn selected_empty_group(&self, cx: &App) -> Option<Entity<TabPanel>> {
+        fn kept(node: &Arc<dyn PanelView>, cx: &App) -> Option<Entity<TabPanel>> {
+            let view = node.view();
+            if let Ok(tabs) = view.clone().downcast::<TabPanel>() {
+                return tabs.read(cx).keeps_place(cx).then_some(tabs);
+            }
+            let stack = view.downcast::<StackPanel>().ok()?;
+            stack
+                .read(cx)
+                .panels()
+                .iter()
+                .find_map(|child| kept(child, cx))
+        }
+
+        if !self.design {
+            return None;
+        }
+        let id = self.selected.as_deref()?;
+
+        let mut area = None;
+        canvas::each_grid(
+            &self.config.canvas.items,
+            &self.bodies,
+            &mut |item, grid| {
+                if item.id == id {
+                    area = Some(grid.area.clone());
+                }
+            },
+        );
+        kept(&area?.read(cx).items().view(), cx)
     }
 
     /// Closes the object dialog and hands the keys back to the canvas. Next
@@ -2585,6 +2674,15 @@ impl RouteHost for CanvasPanel {
     fn routes_mut(&mut self) -> &mut Vec<Route> {
         &mut self.config.routes
     }
+
+    fn span_lines(&self, target: &str) -> Option<(SharedString, SharedString)> {
+        routes::sways(target).then(|| {
+            (
+                rox_i18n::t!("canvas-route-sway-quiet"),
+                rox_i18n::t!("canvas-route-sway-loud"),
+            )
+        })
+    }
 }
 
 impl EventEmitter<PanelEvent> for CanvasPanel {}
@@ -2796,10 +2894,38 @@ mod tests {
         let item = &config.canvas.items[0];
         assert_eq!(item.place.anchor, Anchor::Center);
         assert_eq!(item.place.size, [Length::Stage(1.), Length::Stage(1.)]);
+        // Everything but the lock.
+        let mut unlocked = layout();
+        unlocked["center"]["children"][0]["children"][0]["info"]["panel"]
+            .as_object_mut()
+            .expect("a config")
+            .remove("locked");
         match &item.content {
-            Content::Grid { dock } => assert_eq!(dock, &layout()),
+            Content::Grid { dock } => assert_eq!(dock, &unlocked),
             _ => panic!("the one item is a grid"),
         }
+    }
+
+    #[test]
+    fn converting_unlocks_the_layouts_panels_and_nothing_inside_them() {
+        let mut dump = layout();
+        let library = &mut dump["center"]["children"][0]["children"][0]["info"]["panel"];
+        library["max_height"] = json!(24.0);
+        library["items"] = json!([{ "id": "logo", "locked": true }]);
+
+        let wrapped = serde_json::to_value(wrap_layout(dump, 1)).expect("serializes");
+        let info: PanelInfo =
+            serde_json::from_value(wrapped["center"]["children"][0]["children"][0]["info"].clone())
+                .expect("info parses");
+        let config: CanvasConfig = panel::config_from_info(&info);
+        let Content::Grid { dock } = &config.canvas.items[0].content else {
+            panic!("the one item is a grid");
+        };
+
+        let library = &dock["center"]["children"][0]["children"][0]["info"]["panel"];
+        assert!(library.get("locked").is_none());
+        assert_eq!(library["max_height"], 24.0);
+        assert_eq!(library["items"][0]["locked"], true);
     }
 
     #[test]

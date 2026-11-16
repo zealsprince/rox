@@ -24,11 +24,14 @@ struct Record {
     written: Vec<(u64, Instant)>,
     /// The newest text that parsed, read or written.
     good: Option<String>,
+    /// Whether the last read of the file parsed as it stood.
+    parsed: bool,
 }
 
 static RECORD: Mutex<Record> = Mutex::new(Record {
     written: Vec::new(),
     good: None,
+    parsed: false,
 });
 
 fn hash(text: &str) -> u64 {
@@ -65,11 +68,13 @@ impl Record {
     fn read(&mut self, text: &str, path: &Path) -> LookState {
         let e = match serde_json::from_str(text) {
             Ok(look) => {
+                self.parsed = true;
                 self.note_good(text);
                 return look;
             }
             Err(e) => e,
         };
+        self.parsed = false;
 
         match self.good.as_deref().map(serde_json::from_str::<LookState>) {
             Some(Ok(look)) => {
@@ -93,6 +98,13 @@ pub(crate) fn note_written(text: &str) {
     RECORD.lock().unwrap().note_written(text, Instant::now());
 }
 
+/// Whether the look last loaded is the file's own: it was there and parsed.
+/// A look from defaults, from the last good text or from a pre-split file
+/// isn't, and its asset table doesn't speak for the folder.
+pub fn loaded_from_file() -> bool {
+    RECORD.lock().unwrap().parsed
+}
+
 /// Whether `text` is what rox itself last put in the file.
 pub fn is_own_write(text: &str) -> bool {
     RECORD.lock().unwrap().is_own(text, Instant::now())
@@ -110,7 +122,10 @@ pub fn forget_own_writes() {
 pub(crate) fn load(path: &Path, legacy: &serde_json::Value) -> LookState {
     match std::fs::read_to_string(path) {
         Ok(text) => RECORD.lock().unwrap().read(&text, path),
-        Err(_) => LookState::from_legacy(legacy),
+        Err(_) => {
+            RECORD.lock().unwrap().parsed = false;
+            LookState::from_legacy(legacy)
+        }
     }
 }
 
@@ -122,6 +137,7 @@ mod tests {
         Record {
             written: Vec::new(),
             good: None,
+            parsed: false,
         }
     }
 
@@ -161,6 +177,19 @@ mod tests {
         let broken = record.read(r#"{"bundle":{"name":"Crit"#, path);
         assert_eq!(broken.bundle.name, "Critters");
         assert_eq!(broken.active_layout.as_deref(), Some("Main"));
+    }
+
+    #[test]
+    fn only_a_file_that_parsed_counts_as_loaded_from_it() {
+        let mut record = record();
+        let path = Path::new("workspace.json");
+
+        record.read(r#"{"bundle":{"name":"Critters"}}"#, path);
+        assert!(record.parsed);
+
+        // The last good look stands in, but its table isn't the file's.
+        record.read("{", path);
+        assert!(!record.parsed);
     }
 
     #[test]

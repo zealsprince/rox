@@ -18,7 +18,7 @@ use gpui::{
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use rox_canvas::{Align, Anchor, CanvasItem, CanvasState, Content, Fit, ImageFit, Length};
+use rox_canvas::{Align, Anchor, CanvasItem, CanvasState, Content, Fit, Idle, ImageFit, Length};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::shader as surface;
@@ -523,6 +523,10 @@ fn stage_rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyElement 
         (rox_i18n::t!("canvas-fit-contain"), Fit::Contain),
         (rox_i18n::t!("canvas-fit-cover"), Fit::Cover),
     ];
+    let idles = [
+        (rox_i18n::t!("canvas-idle-rest"), Idle::Rest),
+        (rox_i18n::t!("canvas-idle-hold"), Idle::Hold),
+    ];
 
     div()
         .flex()
@@ -597,6 +601,19 @@ fn stage_rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyElement 
                         move |s| s.camera.parallax = f * PARALLAX_MAX,
                         cx,
                     )
+                },
+                cx,
+            ),
+        ))
+        .child(section_label(rox_i18n::t!("canvas-signals")))
+        .child(setting_row(
+            rox_i18n::t!("canvas-idle"),
+            Some(rox_i18n::t!("canvas-idle.description")),
+            panel::choices_shared(
+                &idles,
+                canvas.idle,
+                |this: &mut CanvasPanel, idle, cx| {
+                    this.change_later("idle", move |s| s.idle = idle, cx)
                 },
                 cx,
             ),

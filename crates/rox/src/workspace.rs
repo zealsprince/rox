@@ -6187,12 +6187,32 @@ impl Workspace {
         });
     }
 
+    /// An emptied grid selected in a canvas takes the panel, wherever its
+    /// kind usually goes. Hands the panel back when no grid is the target.
+    fn add_to_selected_grid(
+        &self,
+        panel: Arc<dyn PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<dyn PanelView>> {
+        let Some(tabs) = crate::panels::canvas::selected_empty_grid(self, cx) else {
+            return Some(panel);
+        };
+
+        tabs.update(cx, |tabs, cx| tabs.add_panel(panel, window, cx));
+        None
+    }
+
     fn add_center(
         &mut self,
         panel: Arc<dyn PanelView>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(panel) = self.add_to_selected_grid(panel, window, cx) else {
+            return;
+        };
+
         // The dock's own add-to-center always targets the initial tabs item,
         // but drags and closes can empty that tab panel out of the tree.
         // Add to it while it still shows, otherwise to the newest live tab
@@ -6230,6 +6250,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(panel) = self.add_to_selected_grid(panel, window, cx) else {
+            return;
+        };
+
         let weak_dock = self.dock.downgrade();
         // The row removes itself from the tree when its last group closes,
         // so put it back at the bottom of the root stack first. A no-op
@@ -6255,6 +6279,10 @@ impl Workspace {
     /// reads as a strip rather than a tall tile, so it goes in sized to just
     /// its input row rather than splitting a center panel's height.
     fn add_top(&mut self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.add_to_selected_grid(panel, window, cx) else {
+            return;
+        };
+
         let weak_dock = self.dock.downgrade();
         let (_, tabs) = tabs_item(vec![panel], &weak_dock, window, cx);
         self.stack.update(cx, |stack, cx| {

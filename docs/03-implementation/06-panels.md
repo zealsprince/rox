@@ -344,7 +344,8 @@ in 3D space under its own camera. It docks, tabs and pops out like any panel, an
 window's root stays the dock: a full-window canvas is a dock holding one canvas panel in
 one tab group, which draws no tab chrome. The Workspace menu's Convert Layout to Canvas
 builds exactly that from the current layout. The whole dump becomes one grid that fills
-the stage, so the window looks the same afterwards.
+the stage, so the window looks the same afterwards. Its panels lose their locks on the
+way in, since a locked panel can't be dragged inside the grid.
 
 The saved shape is `CanvasConfig` (`crates/rox/src/panels/canvas.rs`): the panel chrome,
 a `rox_canvas::CanvasState` flattened beside it, and the canvas's signal routes. A canvas
@@ -374,7 +375,9 @@ image shows as a dashed outline with its asset id, only in design mode.
 A grid item is a dock tree of its own: one `DockArea` per item, built and gated the way
 the window's dock is (the layout version and a split at the root), with the middle-drag
 pop-out hook. Its tab groups are real tab groups, so they report into the workspace's
-`TabHosts`, and Add Panel and focus lookups reach them. Zoom covers only the grid it
+`TabHosts`, and Add Panel and focus lookups reach them. A grid emptied of its last
+panel keeps one empty tab group to drop onto. It draws nothing to click, so Add Panel
+reaches it while its grid item is selected in design mode. Zoom covers only the grid it
 happens in. Each grid's dump sits in its item's `dock` value inside the canvas's
 `info.panel`, never in `PanelState.children`: the dock's restore builds every child
 before handing a panel its state, so children there would be built twice. A dump that

@@ -86,6 +86,12 @@ pub trait SignalHost: 'static + Sized {
 
 pub trait RouteHost: SignalHost {
     fn routes_mut(&mut self) -> &mut Vec<Route>;
+
+    /// The Quiet and Loud lines for `target` where its span isn't a share
+    /// of the knob's own setting. None keeps the shared lines.
+    fn span_lines(&self, _target: &str) -> Option<(SharedString, SharedString)> {
+        None
+    }
 }
 
 /// Index-aligned with the host's route list.
@@ -952,6 +958,12 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     let known = pool.iter().any(|s| s.id == route.signal);
     let from = route.from.clamp(0.0, SPAN_OVER);
     let to = route.to.clamp(0.0, SPAN_OVER);
+    let (quiet_line, loud_line) = host.span_lines(&route.target).unwrap_or_else(|| {
+        (
+            rox_i18n::t!("route-quiet.description"),
+            rox_i18n::t!("route-loud.description"),
+        )
+    });
 
     let mut chips = div().flex().flex_row().flex_wrap().gap(px(1.));
     for signal in &pool {
@@ -1033,7 +1045,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     )
     .child(setting_row(
         rox_i18n::t!("route-quiet"),
-        Some(rox_i18n::t!("route-quiet.description")),
+        Some(quiet_line),
         panel::value_slider_edit_over(
             &scrubs.from,
             host.value_edit(),
@@ -1053,7 +1065,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     ))
     .child(setting_row(
         rox_i18n::t!("route-loud"),
-        Some(rox_i18n::t!("route-loud.description")),
+        Some(loud_line),
         panel::value_slider_edit_over(
             &scrubs.to,
             host.value_edit(),

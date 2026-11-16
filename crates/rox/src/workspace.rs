@@ -29,6 +29,7 @@ use gpui::rgba;
 use gpui_component::Icon;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::PopupMenu;
+use gpui_component::scroll::Scrollbar;
 
 use crate::composite;
 use crate::goto_dialog::GoTo;
@@ -3583,6 +3584,8 @@ pub struct Workspace {
     /// shifts the rest along by one, the same as [`Self::menu_surfaces`].
     /// Reset as each level closes, so a reopened list starts at its top.
     menu_scrolls: [ScrollHandle; 4],
+    /// The empty window's launcher list, for its scrollbar.
+    launcher_scroll: ScrollHandle,
     /// The popup off the menubar's status side, the sleep dropdown or the
     /// right-click button toggles, pinned where the press landed, with the
     /// dismiss subscription that clears it.
@@ -4263,6 +4266,7 @@ impl Workspace {
             menu_viewport_w: Pixels::ZERO,
             menu_viewport_h: Pixels::ZERO,
             menu_scrolls: std::array::from_fn(|_| ScrollHandle::new()),
+            launcher_scroll: ScrollHandle::new(),
             status_menu: None,
             pointer_down: false,
             alt_tap: menubar::AltTap::default(),
@@ -6343,10 +6347,29 @@ impl Workspace {
             // art. The same page surface the settings pages use: opaque at
             // full surface opacity, thinning with the rest.
             .bg(palette::bg_elevated())
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
+            // Centred while it fits. In a short window the column runs from
+            // the top and scrolls, since a centred column taller than the
+            // window paints up over the menubar.
+            .child(
+                div()
+                    .id("empty-launcher")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.launcher_scroll)
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_grow()
+                            .flex_shrink_0()
+                            .py(tokens::SPACE_MD)
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .child(self.launcher_column(cx)),
+                    ),
+            )
             // A way back to the welcome window's quick-start tiles, since
             // this launcher replaced it as the empty window's face.
             .child(
@@ -6367,167 +6390,176 @@ impl Workspace {
                         cx,
                     )),
             )
+            // The absolute wrapper gives the scrollbar its bounds.
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(Scrollbar::vertical(&self.launcher_scroll)),
+            )
+    }
+
+    /// The launcher's mark, catalog and help line, one centred column.
+    fn launcher_column(&mut self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(tokens::SPACE_MD)
+            .max_w(px(600.))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(tokens::SPACE_MD)
-                    .max_w(px(600.))
+                    .gap(tokens::SPACE_SM)
+                    .pb(tokens::SPACE_XS)
+                    .child(
+                        svg()
+                            .path(icons::LOGO)
+                            .size(px(40.))
+                            .text_color(palette::text()),
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .pb(tokens::SPACE_XS)
+                            .gap(px(2.))
                             .child(
-                                svg()
-                                    .path(icons::LOGO)
-                                    .size(px(40.))
-                                    .text_color(palette::text()),
+                                div()
+                                    .text_color(palette::text())
+                                    .child(rox_i18n::t!("workspace-launcher-title")),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_color(palette::text())
-                                            .child(rox_i18n::t!("workspace-launcher-title")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(palette::text_muted())
-                                            .child(rox_i18n::t!("workspace-launcher-hint")),
-                                    )
-                                    // The fallback notice: this window is
-                                    // empty because a layout wouldn't
-                                    // restore, not because the user asked.
-                                    // Accent rather than a status red: the
-                                    // app recovered, this is emphasis.
-                                    .when_some(self.layout_error.clone(), |d, message| {
-                                        d.child(
-                                            div()
-                                                .pt(tokens::SPACE_XS)
-                                                .text_xs()
-                                                .text_color(palette::accent())
-                                                .child(message),
-                                        )
-                                    }),
-                            ),
-                    )
-                    // The panel catalog: one titled section per group; the
-                    // bare center run reads under a plain "Panels".
-                    .children(catalog::sections().map(|section| {
-                        let tiles = section.panels.iter().map(|def| {
-                            launcher_tile(
-                                rox_i18n::t!(def.label),
-                                def.icon,
-                                catalog::supports_signals(def),
-                                cx.listener(move |this, _, window, cx| {
-                                    this.run(MenuAction::OpenPanel(def), window, cx);
-                                }),
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("workspace-launcher-hint")),
                             )
-                        });
-                        let group_label = section
-                            .group
-                            .map(|(label, _)| rox_i18n::t!(label))
-                            .unwrap_or_else(|| rox_i18n::t!("menu-panels"));
-                        launcher_section(group_label, tiles)
-                    }))
-                    // The running plugins after the catalog: one Plugins run
-                    // for those that are a single entry, and a section of its
-                    // own for each that branches.
-                    .children({
-                        let (single, branching): (Vec<_>, Vec<_>) = catalog::plugin_sections()
-                            .into_iter()
-                            .partition(|section| section.single());
-                        let mut sections = Vec::new();
-
-                        if !single.is_empty() {
-                            let tiles: Vec<Div> = single
-                                .into_iter()
-                                .filter_map(|section| {
-                                    let preset = section.presets.into_iter().next()?;
-                                    let (plugin, key) = (section.plugin, preset.name);
-                                    Some(launcher_tile(
-                                        section.label,
-                                        catalog::PLUGINS_ICON,
-                                        false,
-                                        cx.listener(move |this, _, window, cx| {
-                                            this.run_plugin_panel(
-                                                &plugin,
-                                                &key,
-                                                PanelTarget::Open,
-                                                window,
-                                                cx,
-                                            );
-                                        }),
-                                    ))
-                                })
-                                .collect();
-                            sections.push(launcher_section(
-                                rox_i18n::t!(catalog::PLUGINS_LABEL),
-                                tiles,
-                            ));
-                        }
-
-                        for section in branching {
-                            let plugin = section.plugin;
-                            let tiles: Vec<Div> = section
-                                .presets
-                                .into_iter()
-                                .map(|preset| {
-                                    let icon = panel_presets::icon_for(&preset);
-                                    let label = catalog::entry_label(&preset);
-                                    let (plugin, key) = (plugin.clone(), preset.name);
-                                    launcher_tile(
-                                        label,
-                                        icon,
-                                        false,
-                                        cx.listener(move |this, _, window, cx| {
-                                            this.run_plugin_panel(
-                                                &plugin,
-                                                &key,
-                                                PanelTarget::Open,
-                                                window,
-                                                cx,
-                                            );
-                                        }),
-                                    )
-                                })
-                                .collect();
-                            sections.push(launcher_section(section.label, tiles));
-                        }
-
-                        sections
-                    })
-                    // Under the whole catalog: the other way back to the
-                    // welcome window's quick-start, spelled out for anyone who
-                    // read past the panels without spotting the corner info.
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_XS)
-                            .pt(tokens::SPACE_XS)
-                            .text_xs()
-                            .text_color(palette::text_muted())
-                            .cursor_pointer()
-                            .hover(|d| d.text_color(palette::text()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    crate::startup::welcome_window::open(this.state.clone(), cx);
-                                }),
-                            )
-                            .child(rox_i18n::t!("workspace-launcher-need-help")),
+                            // The fallback notice: this window is
+                            // empty because a layout wouldn't
+                            // restore, not because the user asked.
+                            // Accent rather than a status red: the
+                            // app recovered, this is emphasis.
+                            .when_some(self.layout_error.clone(), |d, message| {
+                                d.child(
+                                    div()
+                                        .pt(tokens::SPACE_XS)
+                                        .text_xs()
+                                        .text_color(palette::accent())
+                                        .child(message),
+                                )
+                            }),
                     ),
+            )
+            // The panel catalog: one titled section per group; the
+            // bare center run reads under a plain "Panels".
+            .children(catalog::sections().map(|section| {
+                let tiles = section.panels.iter().map(|def| {
+                    launcher_tile(
+                        rox_i18n::t!(def.label),
+                        def.icon,
+                        catalog::supports_signals(def),
+                        cx.listener(move |this, _, window, cx| {
+                            this.run(MenuAction::OpenPanel(def), window, cx);
+                        }),
+                    )
+                });
+                let group_label = section
+                    .group
+                    .map(|(label, _)| rox_i18n::t!(label))
+                    .unwrap_or_else(|| rox_i18n::t!("menu-panels"));
+                launcher_section(group_label, tiles)
+            }))
+            // The running plugins after the catalog: one Plugins run
+            // for those that are a single entry, and a section of its
+            // own for each that branches.
+            .children({
+                let (single, branching): (Vec<_>, Vec<_>) = catalog::plugin_sections()
+                    .into_iter()
+                    .partition(|section| section.single());
+                let mut sections = Vec::new();
+
+                if !single.is_empty() {
+                    let tiles: Vec<Div> = single
+                        .into_iter()
+                        .filter_map(|section| {
+                            let preset = section.presets.into_iter().next()?;
+                            let (plugin, key) = (section.plugin, preset.name);
+                            Some(launcher_tile(
+                                section.label,
+                                catalog::PLUGINS_ICON,
+                                false,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.run_plugin_panel(
+                                        &plugin,
+                                        &key,
+                                        PanelTarget::Open,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            ))
+                        })
+                        .collect();
+                    sections.push(launcher_section(
+                        rox_i18n::t!(catalog::PLUGINS_LABEL),
+                        tiles,
+                    ));
+                }
+
+                for section in branching {
+                    let plugin = section.plugin;
+                    let tiles: Vec<Div> = section
+                        .presets
+                        .into_iter()
+                        .map(|preset| {
+                            let icon = panel_presets::icon_for(&preset);
+                            let label = catalog::entry_label(&preset);
+                            let (plugin, key) = (plugin.clone(), preset.name);
+                            launcher_tile(
+                                label,
+                                icon,
+                                false,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.run_plugin_panel(
+                                        &plugin,
+                                        &key,
+                                        PanelTarget::Open,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            )
+                        })
+                        .collect();
+                    sections.push(launcher_section(section.label, tiles));
+                }
+
+                sections
+            })
+            // Under the whole catalog: the other way back to the
+            // welcome window's quick-start, spelled out for anyone who
+            // read past the panels without spotting the corner info.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_XS)
+                    .pt(tokens::SPACE_XS)
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .cursor_pointer()
+                    .hover(|d| d.text_color(palette::text()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            crate::startup::welcome_window::open(this.state.clone(), cx);
+                        }),
+                    )
+                    .child(rox_i18n::t!("workspace-launcher-need-help")),
             )
     }
 

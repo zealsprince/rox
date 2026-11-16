@@ -233,11 +233,19 @@ fn queue_running_dry(upcoming: usize, loop_mode: LoopMode) -> bool {
 }
 
 /// Whether continuation should extend the session (ADR 17). A paused queue
-/// doesn't grow, so the launch restore stays put. An ended queue still reads
-/// as playing, which is how the appended batch wakes it. Stop-after stays
-/// armed after the stop, so this says no until it's cleared.
+/// doesn't grow, so the launch restore stays put. `playing` is the engine's
+/// flag, which an ended queue keeps up: that's how the appended batch wakes
+/// it. Stop-after stays armed after the stop, so this says no until it's
+/// cleared.
 fn continuation_wanted(playing: bool, stop_after: bool) -> bool {
     playing && !stop_after
+}
+
+/// Whether audio is moving. The engine leaves its play flag up over a
+/// played-out queue so an append starts at once, but nothing sounds and no
+/// clock moves, so every view and integration reads that as stopped.
+fn audible(playing: bool, ended: bool) -> bool {
+    playing && !ended
 }
 
 /// What every surface that offers Similar shuffle is gated on: an analyzed
@@ -1737,7 +1745,7 @@ impl Player {
     /// play-state edge, on a paused seek, or on a new queue revision. Queue
     /// commands are fire-and-forget, so the revision bumps after the
     /// enqueue's own notify, and without that wake a paused queue view lags
-    /// one edit. A settled pause notifies nobody.
+    /// one edit. A settled pause or a played-out queue notifies nobody.
     fn start_pump(&mut self, cx: &mut Context<Self>) {
         let mut was_playing = self.is_playing();
         let mut seen_rev = self.queue_rev();
@@ -1869,7 +1877,7 @@ impl Player {
         if mode == continuation::Mode::Off || self.continuing {
             return;
         }
-        if !continuation_wanted(self.is_playing(), self.stop_after) {
+        if !continuation_wanted(self.transport_playing(), self.stop_after) {
             return;
         }
         let Some(session) = self.session.as_ref() else {
@@ -1960,7 +1968,7 @@ impl Player {
         // Re-check the trigger: the query took long enough to pause or queue
         // an album in. A forced batch skips the dry-out, its queue is full on
         // purpose.
-        if !continuation_wanted(self.is_playing(), self.stop_after)
+        if !continuation_wanted(self.transport_playing(), self.stop_after)
             || (!force && !self.running_dry())
         {
             return;
@@ -3027,7 +3035,14 @@ impl Player {
         self.send(Cmd::Prev);
     }
 
+    /// False over a played-out queue: see [`audible`].
     pub fn is_playing(&self) -> bool {
+        audible(self.transport_playing(), self.queue_ended())
+    }
+
+    /// The engine's play flag alone, up over an ended queue. Only what has
+    /// to wake that queue (continuation) reads it.
+    fn transport_playing(&self) -> bool {
         self.session
             .as_ref()
             .map(|s| s.shared.playing.load(Ordering::Relaxed))
@@ -3305,7 +3320,7 @@ impl Player {
                 if similar_draw_now(
                     self.settings.session.continuation,
                     self.similar_order(),
-                    self.is_playing(),
+                    self.transport_playing(),
                     self.stop_after,
                 ) {
                     self.request_continuation(true, cx);
@@ -4313,6 +4328,14 @@ mod tests {
             "stop-after is armed, so the queue stays as it is"
         );
         assert!(!continuation_wanted(false, true));
+    }
+
+    #[test]
+    fn a_played_out_queue_is_not_playing() {
+        assert!(audible(true, false), "a track playing");
+        assert!(!audible(true, true), "the engine's flag is still up");
+        assert!(!audible(false, false), "a pause");
+        assert!(!audible(false, true), "an ended queue after stop-after");
     }
 
     #[test]

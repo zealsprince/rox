@@ -105,9 +105,11 @@ fn new_area(
     cx: &mut Context<ScenePanel>,
 ) -> Entity<DockArea> {
     let area = cx.new(|cx| DockArea::new(format!("scene-{id}"), Some(LAYOUT_VERSION), window, cx));
+    let scene = cx.entity_id();
 
     area.update(cx, |area, cx| {
         area.set_toggle_button_visible(false, cx);
+        area.set_nested(scene, cx);
 
         // A middle drag released outside the window pops the panel out, the
         // same as in the window's own dock.

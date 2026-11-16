@@ -152,23 +152,14 @@ fn type_text(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
 }
 
 /// A move first so hover state is right; `count` climbs `click_count`.
+/// `phase` "down" or "up" sends only that half, so a drag is a down, moves
+/// with `hover`'s `button`, and an up.
 fn click(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let position = position(params)?;
     let modifiers = modifiers(params);
-    let button = match params
-        .get("button")
-        .and_then(Value::as_str)
-        .unwrap_or("left")
-    {
-        "left" => MouseButton::Left,
-        "right" => MouseButton::Right,
-        "middle" => MouseButton::Middle,
-        other => {
-            return Err(RpcError::invalid_params(format!(
-                "unknown button {other:?}: left, right, or middle"
-            )));
-        }
-    };
+    let button = button(params)?.unwrap_or(MouseButton::Left);
+    let phase = params.get("phase").and_then(Value::as_str);
+    let pressed_button = (phase == Some("up")).then_some(button);
     let count = params
         .get("count")
         .and_then(Value::as_u64)
@@ -180,47 +171,53 @@ fn click(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
             window.dispatch_event(
                 PlatformInput::MouseMove(MouseMoveEvent {
                     position,
-                    pressed_button: None,
+                    pressed_button,
                     modifiers,
                 }),
                 cx,
             );
             for click_count in 1..=count {
-                window.dispatch_event(
-                    PlatformInput::MouseDown(MouseDownEvent {
-                        button,
-                        position,
-                        modifiers,
-                        click_count,
-                        first_mouse: false,
-                    }),
-                    cx,
-                );
-                window.dispatch_event(
-                    PlatformInput::MouseUp(MouseUpEvent {
-                        button,
-                        position,
-                        modifiers,
-                        click_count,
-                    }),
-                    cx,
-                );
+                if phase != Some("up") {
+                    window.dispatch_event(
+                        PlatformInput::MouseDown(MouseDownEvent {
+                            button,
+                            position,
+                            modifiers,
+                            click_count,
+                            first_mouse: false,
+                        }),
+                        cx,
+                    );
+                }
+                if phase != Some("down") {
+                    window.dispatch_event(
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            button,
+                            position,
+                            modifiers,
+                            click_count,
+                        }),
+                        cx,
+                    );
+                }
             }
         })
         .map_err(RpcError::app)?;
     Ok(Value::Null)
 }
 
+/// `button` moves with that button held, the middle of a drag.
 fn hover(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let position = position(params)?;
     let modifiers = modifiers(params);
+    let pressed_button = button(params)?;
     let window = target(params, cx)?;
     window
         .update(cx, |_, window, cx| {
             window.dispatch_event(
                 PlatformInput::MouseMove(MouseMoveEvent {
                     position,
-                    pressed_button: None,
+                    pressed_button,
                     modifiers,
                 }),
                 cx,
@@ -256,6 +253,18 @@ fn scroll(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
         })
         .map_err(RpcError::app)?;
     Ok(Value::Null)
+}
+
+fn button(params: &Value) -> Result<Option<MouseButton>, RpcError> {
+    match params.get("button").and_then(Value::as_str) {
+        None => Ok(None),
+        Some("left") => Ok(Some(MouseButton::Left)),
+        Some("right") => Ok(Some(MouseButton::Right)),
+        Some("middle") => Ok(Some(MouseButton::Middle)),
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "unknown button {other:?}: left, right, or middle"
+        ))),
+    }
 }
 
 fn position(params: &Value) -> Result<Point<Pixels>, RpcError> {

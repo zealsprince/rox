@@ -44,11 +44,13 @@ pub mod tab;
 use anyhow::Result;
 use gpui::{
     AnyElement, AnyView, App, AppContext, Axis, Bounds, Context, Edges, Entity, EntityId,
-    EventEmitter, InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Point, Render, SharedString, Styled, Subscription, WeakEntity,
-    Window, actions, anchored, canvas, deferred, div, point, prelude::FluentBuilder, px,
+    EventEmitter, Global, InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, Pixels, Point, Render, SharedString, Styled, Subscription,
+    WeakEntity, Window, actions, anchored, canvas, deferred, div, point, prelude::FluentBuilder,
+    px,
 };
 use gpui_component::{ActiveTheme, Placement};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -147,6 +149,28 @@ pub fn set_focus_visible(on: bool) {
     FOCUS_VISIBLE.store(on, Ordering::Relaxed);
 }
 
+/// rox addition: the area holding the app's one middle drag, so a tab group
+/// in another area (a grid inside a scene) can preview and take it. The area
+/// still owns the drag; a holder whose slot is empty holds nothing, so the
+/// name is never cleared.
+#[derive(Default)]
+struct MiddleDragHolder(Option<WeakEntity<DockArea>>);
+
+impl Global for MiddleDragHolder {}
+
+/// rox addition: the panels whose bodies hold nested dock areas, by entity.
+/// Their tab group hands every drag on the body to the areas inside.
+#[derive(Default)]
+struct DockHosts(HashSet<EntityId>);
+
+impl Global for DockHosts {}
+
+/// Whether `panel`'s body holds a nested dock area.
+pub(crate) fn hosts_docks(panel: EntityId, cx: &App) -> bool {
+    cx.try_global::<DockHosts>()
+        .is_some_and(|hosts| hosts.0.contains(&panel))
+}
+
 pub enum DockEvent {
     /// The layout of the dock has changed, subscribers this to save the layout.
     ///
@@ -197,6 +221,11 @@ pub struct DockArea {
     /// [`MiddleDrag`](tab_panel::MiddleDrag). Stored here because it spans
     /// tab panels: the source starts it, any panel can receive it.
     pub(crate) middle_drag: Option<MiddleDrag>,
+
+    /// rox addition: the panel this area sits inside, for an area nested in
+    /// a panel's body. A nested area keeps its edge bands to its own box and
+    /// lets its last panel move out.
+    nested: Option<EntityId>,
 
     /// What to do with a panel-move drag released outside the window; the
     /// app hooks this to pop the panel out into its own OS window. The
@@ -729,6 +758,7 @@ impl DockArea {
             locked: false,
             panel_style: PanelStyle::default(),
             middle_drag: None,
+            nested: None,
             middle_drag_out: None,
             _subscriptions: vec![],
         };
@@ -741,6 +771,52 @@ impl DockArea {
     /// Return the bounds of the dock area.
     pub fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
+    }
+
+    /// rox addition: mark this area as a dock inside `host`'s body.
+    pub fn set_nested(&mut self, host: EntityId, cx: &mut App) {
+        self.nested = Some(host);
+        cx.default_global::<DockHosts>().0.insert(host);
+    }
+
+    pub fn is_nested(&self) -> bool {
+        self.nested.is_some()
+    }
+
+    /// rox addition: the area holding the middle drag, if one started. Its
+    /// slot may be empty by now, so read it before trusting the drag.
+    pub(crate) fn middle_drag_holder(cx: &App) -> Option<Entity<DockArea>> {
+        cx.try_global::<MiddleDragHolder>()?.0.as_ref()?.upgrade()
+    }
+
+    /// rox addition: hold `drag` here and name this area as its holder.
+    pub(crate) fn start_middle_drag(&mut self, drag: MiddleDrag, cx: &mut Context<Self>) {
+        self.middle_drag = Some(drag);
+        let holder = cx.entity().downgrade();
+        cx.set_global(MiddleDragHolder(Some(holder)));
+    }
+
+    /// rox addition: take the drag `button` holds from whichever area has
+    /// it. When that's this area, its entity is mid-update and only `self`
+    /// can read the slot.
+    fn take_middle_drag(
+        &mut self,
+        button: MouseButton,
+        cx: &mut Context<Self>,
+    ) -> Option<MiddleDrag> {
+        let take = |slot: &mut Option<MiddleDrag>| {
+            if slot.as_ref().map(|drag| drag.button) != Some(button) {
+                return None;
+            }
+            slot.take()
+        };
+
+        let holder = Self::middle_drag_holder(cx)?;
+        if holder == cx.entity() {
+            return take(&mut self.middle_drag);
+        }
+
+        holder.update(cx, |holder, _| take(&mut holder.middle_drag))
     }
 
     /// Set what happens to a panel-move drag (middle or Alt+Left) released
@@ -763,6 +839,22 @@ impl DockArea {
         // side-by-side before the full-width root dock took over.
         let band = px(20.);
         let bounds = self.bounds;
+
+        // rox: a nested area shares the window with the areas around it, so
+        // it claims only the bands just inside its own top and bottom edges.
+        if self.nested.is_some() {
+            if !bounds.contains(&position) {
+                return None;
+            }
+            if position.y < bounds.top() + band {
+                return Some(Placement::Top);
+            }
+            if position.y > bounds.bottom() - band {
+                return Some(Placement::Bottom);
+            }
+            return None;
+        }
+
         if position.y < bounds.top() + band {
             Some(Placement::Top)
         } else if position.y > bounds.bottom() - band {
@@ -808,16 +900,54 @@ impl DockArea {
 
     /// A release of the drag's own button no tab panel claimed as a drop:
     /// cancel the drag. The other button's releases pass through untouched.
+    /// rox: whichever area holds it, since a drag can cross into this one.
     fn on_unclaimed_release(
         &mut self,
         event: &MouseUpEvent,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        if self.middle_drag.as_ref().map(|drag| drag.button) != Some(event.button) {
+        if self.take_middle_drag(event.button, cx).is_none() {
             return;
         }
-        self.middle_drag = None;
+        window.refresh();
+    }
+
+    /// rox addition: a release past the window's dock, over the menu bar, of
+    /// a drag a nested area holds. That area's overlay only claims its own
+    /// bands, so the root band above the dock is this area's to claim. A
+    /// release outside the window is the holder's pop-out.
+    fn on_foreign_release_out(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.nested.is_some() {
+            return;
+        }
+        if Self::middle_drag_holder(cx).is_none_or(|holder| holder == cx.entity()) {
+            return;
+        }
+
+        let win_size = window.viewport_size();
+        let position = event.position;
+        if position.x < px(0.)
+            || position.y < px(0.)
+            || position.x > win_size.width
+            || position.y > win_size.height
+        {
+            return;
+        }
+        let Some(placement) = self.edge_placement(position) else {
+            return;
+        };
+        let Some(drag) = self.take_middle_drag(event.button, cx) else {
+            return;
+        };
+
+        cx.stop_propagation();
+        self.dock_at_root(drag, placement, window, cx);
         window.refresh();
     }
 
@@ -1540,10 +1670,47 @@ impl DockArea {
             .map(|view| view.entity_id());
     }
 }
+/// The full-width preview strip for a root edge dock, in window coordinates.
+fn edge_strip(dock_bounds: Bounds<Pixels>, placement: Placement, cx: &App) -> gpui::Div {
+    let h = dock_bounds.size.height * 0.25;
+    div()
+        .absolute()
+        .left(dock_bounds.left())
+        .w(dock_bounds.size.width)
+        .bg(cx.theme().drop_target)
+        .map(|this| match placement {
+            Placement::Top => this.top(dock_bounds.top()).h(h),
+            _ => this.top(dock_bounds.bottom() - h).h(h),
+        })
+}
+
 impl EventEmitter<DockEvent> for DockArea {}
 impl Render for DockArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().clone();
+
+        // rox: a drag a nested area holds, over the menu bar, docks here on
+        // release (see on_foreign_release_out). Its overlay previews only its
+        // own bands, so this area draws the strip.
+        let win_size = window.viewport_size();
+        let foreign_edge = Self::middle_drag_holder(cx)
+            .filter(|holder| self.nested.is_none() && *holder != cx.entity())
+            .and_then(|holder| {
+                holder
+                    .read(cx)
+                    .middle_drag
+                    .as_ref()
+                    .map(|drag| drag.position)
+            })
+            .filter(|position| {
+                !self.bounds.contains(position)
+                    && position.x >= px(0.)
+                    && position.y >= px(0.)
+                    && position.x <= win_size.width
+                    && position.y <= win_size.height
+            })
+            .and_then(|position| self.edge_placement(position));
+        let dock_bounds = self.bounds;
 
         div()
             .id("dock-area")
@@ -1562,6 +1729,23 @@ impl Render for DockArea {
             // Runs after their handlers: bubble goes children first.
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_unclaimed_release))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_unclaimed_release))
+            .on_mouse_up_out(
+                MouseButton::Middle,
+                cx.listener(Self::on_foreign_release_out),
+            )
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_foreign_release_out))
+            .when_some(foreign_edge, |this, placement| {
+                this.child(
+                    deferred(anchored().position(point(px(0.), px(0.))).child(
+                        div().w(win_size.width).h(win_size.height).child(edge_strip(
+                            dock_bounds,
+                            placement,
+                            cx,
+                        )),
+                    ))
+                    .with_priority(1),
+                )
+            })
             // The middle-drag layer: a window-sized overlay tracks the
             // pointer everywhere (menu bar included), claims releases in
             // the root edge bands, hands releases outside the window to
@@ -1584,7 +1768,6 @@ impl Render for DockArea {
                 } else {
                     self.edge_placement(drag.position)
                 };
-                let dock_bounds = self.bounds;
                 this.child(
                     deferred(
                         // Anchored at the window origin: without an explicit
@@ -1658,18 +1841,7 @@ impl Render for DockArea {
                                 // The full-width preview strip for a root
                                 // edge dock.
                                 .when_some(edge_preview, |this, placement| {
-                                    let h = dock_bounds.size.height * 0.25;
-                                    this.child(
-                                        div()
-                                            .absolute()
-                                            .left(dock_bounds.left())
-                                            .w(dock_bounds.size.width)
-                                            .bg(cx.theme().drop_target)
-                                            .map(|this| match placement {
-                                                Placement::Top => this.top(dock_bounds.top()).h(h),
-                                                _ => this.top(dock_bounds.bottom() - h).h(h),
-                                            }),
-                                    )
+                                    this.child(edge_strip(dock_bounds, placement, cx))
                                 })
                                 .child(
                                     anchored()

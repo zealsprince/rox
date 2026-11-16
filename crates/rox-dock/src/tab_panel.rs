@@ -646,7 +646,14 @@ impl TabPanel {
     ///
     /// E.g. if the parent and self only have one panel, it is not draggable.
     fn draggable(&self, cx: &App) -> bool {
-        !self.is_locked(cx) && !self.is_last_panel(cx)
+        // rox: the last-panel guard keeps the window from being emptied. A
+        // nested area may empty: the scene keeps it as an item.
+        let nested = self
+            .dock_area
+            .upgrade()
+            .is_some_and(|dock| dock.read(cx).is_nested());
+
+        !self.is_locked(cx) && (nested || !self.is_last_panel(cx))
     }
 
     /// Return true if the tab panel is droppable.
@@ -1266,11 +1273,19 @@ impl TabPanel {
 
         let is_render_in_tabs = self.panels.len() > 1 && self.inner_padding(cx);
 
+        // rox: a body holding dock areas of its own (a scene's grids) hands
+        // every drag gesture to them. The innermost drop target already
+        // takes a drop, but this group's preview would cover theirs, its
+        // capture-phase Alt+Left would arm a move of the whole host, and a
+        // release between the inner areas would land here unpreviewed.
+        let droppable = state.droppable && !crate::hosts_docks(active_panel.view().entity_id(), cx);
+
         // A middle drag in flight with the pointer over this panel: the
         // placement its release would use, for the same split preview the
         // built-in drag gets. The root edge bands outrank the group, so
         // no preview here while one of them claims the pointer.
-        let middle_target = self.dock_area.upgrade().and_then(|dock| {
+        // rox: the drag may be held by another area, a grid's or the window's.
+        let middle_target = DockArea::middle_drag_holder(cx).and_then(|dock| {
             let dock = dock.read(cx);
             let drag = dock.middle_drag.as_ref()?;
             if dock.edge_placement(drag.position).is_some() {
@@ -1330,7 +1345,7 @@ impl TabPanel {
             // panel; the root's mouse-move handler starts the drag past the
             // threshold. Gated on droppable (= not locked) rather than
             // draggable, so a section's last panel can still move out.
-            .when(state.droppable, |this| {
+            .when(droppable, |this| {
                 this.on_mouse_down(
                     MouseButton::Middle,
                     cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -1358,7 +1373,7 @@ impl TabPanel {
                     },
                 ))
             })
-            .when(state.droppable, |this| {
+            .when(droppable, |this| {
                 this.on_drag_move(cx.listener(Self::on_panel_drag_move))
                     // A release of the drag's own button over this panel
                     // lands the drag here.
@@ -1458,7 +1473,8 @@ impl TabPanel {
         cx: &mut Context<Self>,
     ) {
         self.pending_middle_drag = None;
-        let Some(dock) = self.dock_area.upgrade() else {
+        // rox: the holder, which may be another area than this group's.
+        let Some(dock) = DockArea::middle_drag_holder(cx) else {
             return;
         };
         let Some(drag) = dock.update(cx, |dock, _| {
@@ -1532,6 +1548,10 @@ impl TabPanel {
             let _ = drag.tab_panel.update(cx, |view, cx| {
                 view.detach_panel(panel.clone(), window, cx);
                 view.remove_self_if_empty(window, cx);
+                // rox: the source may sit in another area, which hears of
+                // the move only from its own groups.
+                cx.emit(PanelEvent::LayoutChanged);
+                cx.notify();
             });
         }
 
@@ -1905,7 +1925,7 @@ impl Render for TabPanel {
                     position: event.position,
                     button,
                 };
-                dock.update(cx, |dock, _| dock.middle_drag = Some(drag));
+                dock.update(cx, |dock, cx| dock.start_middle_drag(drag, cx));
                 window.refresh();
             }))
             // Any unclaimed release of an arming button disarms; runs after
@@ -1989,7 +2009,8 @@ impl Render for TabPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, size};
+    use crate::{DockEvent, DockItem};
+    use gpui::{Axis, point, size};
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds {
@@ -2067,6 +2088,108 @@ mod tests {
         assert_eq!(
             TabPanel::placement_for(point(px(0.), px(0.)), bounds(0., 0., 400., 0.)),
             None
+        );
+    }
+
+    struct Leaf(FocusHandle);
+
+    impl EventEmitter<PanelEvent> for Leaf {}
+
+    impl Focusable for Leaf {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.0.clone()
+        }
+    }
+
+    impl Render for Leaf {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    impl Panel for Leaf {
+        fn panel_name(&self) -> &'static str {
+            "Leaf"
+        }
+    }
+
+    struct Host;
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    // An area of one tab group holding `leaves` panels, and that group.
+    fn area_of(
+        leaves: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (Entity<DockArea>, Entity<TabPanel>) {
+        let area = cx.new(|cx| DockArea::new("area", None, window, cx));
+        let panels = (0..leaves)
+            .map(|_| Arc::new(cx.new(|cx| Leaf(cx.focus_handle()))) as Arc<dyn PanelView>)
+            .collect();
+        let weak = area.downgrade();
+        let tabs = DockItem::tabs(panels, &weak, window, cx);
+        let DockItem::Tabs { view, .. } = &tabs else {
+            unreachable!();
+        };
+        let group = view.clone();
+        let center = DockItem::split(Axis::Vertical, vec![tabs], &weak, window, cx);
+        area.update(cx, |area, cx| area.set_center(center, window, cx));
+        (area, group)
+    }
+
+    #[gpui::test]
+    fn a_tab_dropped_into_another_area_is_reported_by_both(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+
+        let window = cx.add_window(|_, _| Host);
+        let seen: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        // The areas are held here: their groups only hold them weakly.
+        let (_areas, from, to, _subscriptions) = window
+            .update(cx, |_, window, cx| {
+                let (a, from) = area_of(2, window, cx);
+                let (b, to) = area_of(1, window, cx);
+                let subscriptions = [(&a, "a"), (&b, "b")].map(|(area, name)| {
+                    let seen = seen.clone();
+                    cx.subscribe(area, move |_, _, event: &DockEvent, _| {
+                        if matches!(event, DockEvent::LayoutChanged) {
+                            seen.borrow_mut().push(name);
+                        }
+                    })
+                });
+                ((a, b), from, to, subscriptions)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        seen.borrow_mut().clear();
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = from.read(cx).panels[1].clone();
+                let drag = DragPanel::new(panel, from.clone());
+                to.update(cx, |to, cx| to.on_drop(&drag, None, true, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                assert_eq!(from.read(cx).panels.len(), 1);
+                assert_eq!(to.read(cx).panels.len(), 2);
+            })
+            .unwrap();
+        let seen = seen.borrow();
+        assert!(
+            seen.contains(&"a"),
+            "the source area never reported: {seen:?}"
+        );
+        assert!(
+            seen.contains(&"b"),
+            "the target area never reported: {seen:?}"
         );
     }
 }

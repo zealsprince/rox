@@ -4563,6 +4563,7 @@ catalog-by = di { $author }
 catalog-installed = Installato
 catalog-install = Installa
 catalog-update = Aggiorna
+catalog-update-available = Aggiornamento disponibile
 catalog-cancel = Annulla
 catalog-downloading = { $done } di { $total }
 catalog-busy = Prima si installa { $name }

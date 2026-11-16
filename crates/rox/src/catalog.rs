@@ -10,10 +10,12 @@
 //! index's sha256 proves a file is the one the index meant, fetched from the
 //! same origin as the file, so it proves nothing about the origin itself.
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::time::{Duration, SystemTime};
 
 use gpui::{App, Global, Task};
 use semver::Version;
@@ -30,9 +32,7 @@ use rox_services::plugins as host;
 
 use crate::startup::updates::CURRENT;
 
-/// Not chosen yet. `.invalid` never resolves, so a build carrying this
-/// reaches no one.
-pub(crate) const ORIGIN: &str = "https://catalog.invalid";
+pub(crate) const ORIGIN: &str = "https://catalog.rox.music";
 
 const INDEX_FILE: &str = "index.json";
 const INSTALLED_FILE: &str = "installed.json";
@@ -110,6 +110,7 @@ pub(crate) fn refresh_now() -> Result<Index, String> {
     write_atomic(&index_path(), text.as_bytes())?;
     edit_installs(|installs| installs.checked_at = crate::startup::updates::now());
     note_updates();
+    prune_previews(&index);
 
     log::info!("catalog: {} packages", index.packages.len());
     Ok(index)
@@ -166,6 +167,12 @@ pub(crate) fn preview(path: &str) -> Result<Vec<u8>, String> {
         .join(preview_name(&url));
 
     if let Some(bytes) = read_bytes_capped(&file, wire::PREVIEW_MAX) {
+        // A read counts as use, so the prune keeps what the window shows.
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|kept| kept.set_modified(SystemTime::now()));
+
         return Ok(bytes);
     }
 
@@ -184,6 +191,73 @@ fn preview_name(url: &str) -> String {
         .take(16)
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// A record's extra previews aren't in the index, so recent use stands in.
+const PREVIEW_KEEP: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Blocking, for the background executor after a refresh. Only plain files
+/// directly in `catalog/previews/` with the cache's own name shape are ever
+/// removed: no symlink is followed and nothing is recursed into.
+fn prune_previews(index: &Index) {
+    let Ok(origin) = origin() else {
+        return;
+    };
+    let named: HashSet<String> = index
+        .packages
+        .iter()
+        .filter_map(|summary| summary.preview.as_deref())
+        .filter_map(|path| origin.resolve(path).ok())
+        .map(|url| preview_name(&url))
+        .collect();
+
+    let dir = settings::catalog_dir().join(PREVIEWS);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // DirEntry's type and metadata describe a symlink itself, not its target.
+        let plain = entry.file_type().is_ok_and(|kind| kind.is_file());
+        let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
+
+        if plain && stale_preview(&name, modified, &named, now) {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(e) => log::warn!("catalog: pruning a preview: {e}"),
+            }
+        }
+    }
+
+    if removed > 0 {
+        log::info!("catalog: pruned {removed} cached previews");
+    }
+}
+
+/// Kept: what the index names, and anything else read or fetched within
+/// [`PREVIEW_KEEP`]. A name the cache wouldn't make is never ours to remove.
+fn stale_preview(
+    name: &str,
+    modified: Option<SystemTime>,
+    named: &HashSet<String>,
+    now: SystemTime,
+) -> bool {
+    let ours = name.len() == 32
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !ours || named.contains(name) {
+        return false;
+    }
+
+    // A time that won't read or sits in the future counts as fresh.
+    modified
+        .and_then(|at| now.duration_since(at).ok())
+        .is_some_and(|age| age > PREVIEW_KEEP)
 }
 
 // ── The record of installs ──
@@ -853,6 +927,41 @@ mod tests {
             name,
             preview_name("https://catalog.example/v1/previews/b.png")
         );
+    }
+
+    #[test]
+    fn a_preview_is_pruned_only_when_unnamed_and_unused() {
+        let now = SystemTime::now();
+        let old = Some(now - PREVIEW_KEEP - Duration::from_secs(60));
+        let recent = Some(now - Duration::from_secs(60));
+
+        let named_one = preview_name("https://catalog.example/v1/previews/a.webp");
+        let unnamed = preview_name("https://catalog.example/v1/previews/gone.webp");
+        let named: HashSet<String> = [named_one.clone()].into();
+
+        // The index names it: kept however old.
+        assert!(!stale_preview(&named_one, old, &named, now));
+
+        // Unnamed: kept while recently used, removed once it isn't.
+        assert!(!stale_preview(&unnamed, recent, &named, now));
+        assert!(stale_preview(&unnamed, old, &named, now));
+
+        // A time that doesn't read, or one ahead of the clock, keeps it.
+        assert!(!stale_preview(&unnamed, None, &named, now));
+        let ahead = Some(now + Duration::from_secs(3600));
+        assert!(!stale_preview(&unnamed, ahead, &named, now));
+
+        // A name the cache wouldn't make is never removed.
+        for foreign in [
+            "notes.txt",
+            "index.json",
+            &format!("{unnamed}.json.tmp"),
+            &unnamed.to_uppercase(),
+            &unnamed[..31],
+            &format!("{unnamed}0"),
+        ] {
+            assert!(!stale_preview(foreign, old, &named, now), "{foreign}");
+        }
     }
 
     #[test]

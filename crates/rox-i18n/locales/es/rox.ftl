@@ -4597,6 +4597,7 @@ catalog-by = de { $author }
 catalog-installed = Instalado
 catalog-install = Instalar
 catalog-update = Actualizar
+catalog-update-available = Actualización disponible
 catalog-cancel = Cancelar
 catalog-downloading = { $done } de { $total }
 catalog-busy = Primero se instala { $name }

@@ -4369,6 +4369,7 @@ catalog-by = 作者 { $author }
 catalog-installed = インストール済み
 catalog-install = インストール
 catalog-update = 更新
+catalog-update-available = 更新あり
 catalog-cancel = キャンセル
 catalog-downloading = { $done } / { $total }
 catalog-busy = 先に { $name } をインストールしています

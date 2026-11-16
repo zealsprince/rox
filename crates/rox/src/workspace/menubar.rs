@@ -852,8 +852,10 @@ impl Workspace {
     fn menubar_fit_capture(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let view = cx.entity();
         canvas(
-            move |bounds, _, cx| {
-                view.update(cx, |this, cx| this.note_menubar_fit(bounds.origin.x, cx));
+            move |bounds, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.note_menubar_fit(bounds.origin.x, window, cx)
+                });
             },
             |_, _, _, _| {},
         )
@@ -864,7 +866,7 @@ impl Workspace {
 
     /// The unfolded width is remembered with some slack, so a resize can't
     /// flicker on the boundary.
-    fn note_menubar_fit(&mut self, end_x: Pixels, cx: &mut Context<Self>) {
+    fn note_menubar_fit(&mut self, end_x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bar) = self.menubar_bounds else {
             return;
         };
@@ -877,6 +879,10 @@ impl Workspace {
         if collapse != self.menubar_collapsed {
             self.menubar_collapsed = collapse;
             self.close_menus(cx);
+
+            // This runs in prepaint, where a notify schedules no frame, so
+            // the frame that draws the flip is asked for here.
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
         }
     }
 

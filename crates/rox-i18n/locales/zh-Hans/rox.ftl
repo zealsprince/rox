@@ -4368,6 +4368,7 @@ catalog-by = 作者 { $author }
 catalog-installed = 已安装
 catalog-install = 安装
 catalog-update = 更新
+catalog-update-available = 有可用更新
 catalog-cancel = 取消
 catalog-downloading = { $done } / { $total }
 catalog-busy = 正在先安装 { $name }

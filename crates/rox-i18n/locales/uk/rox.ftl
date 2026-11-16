@@ -4579,6 +4579,7 @@ catalog-by = від { $author }
 catalog-installed = Встановлено
 catalog-install = Встановити
 catalog-update = Оновити
+catalog-update-available = Доступне оновлення
 catalog-cancel = Скасувати
 catalog-downloading = { $done } з { $total }
 catalog-busy = Спершу встановлюється { $name }

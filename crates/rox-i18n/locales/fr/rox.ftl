@@ -4593,6 +4593,7 @@ catalog-by = par { $author }
 catalog-installed = Installé
 catalog-install = Installer
 catalog-update = Mettre à jour
+catalog-update-available = Mise à jour disponible
 catalog-cancel = Annuler
 catalog-downloading = { $done } sur { $total }
 catalog-busy = { $name } s'installe d'abord

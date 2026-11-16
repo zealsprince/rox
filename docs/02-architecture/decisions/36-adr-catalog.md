@@ -3,7 +3,7 @@
 **Status:** Decided 2026-11-15
 
 Proposal: rox reads a catalog of workspaces, plugins and objects from one origin,
-compiled into the app and reached over https. The catalog is a static JSON index plus a
+`https://catalog.rox.music`, compiled into the app. The catalog is a static JSON index plus a
 record per package, the package files and their previews. An entry gets into the index
 by review: a maintainer merges it, and the site's build computes each file's size and
 sha256 from the committed file, so no author supplies a hash. A published file never

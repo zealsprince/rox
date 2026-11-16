@@ -24,6 +24,10 @@ pub const INDEX_MAX: u64 = 4 << 20;
 pub const RECORD_MAX: u64 = 256 << 10;
 pub const PREVIEW_MAX: u64 = 2 << 20;
 
+/// The most a package's file may state. An entry or a version stating more
+/// is dropped before anything could download it.
+pub const PACKAGE_MAX: u64 = 256 << 20;
+
 /// What the contract gives an id. Path components longer than this aren't
 /// a slug anyone would type.
 const ID_MAX: usize = 64;
@@ -294,6 +298,12 @@ fn check_file(file: &str, bytes: u64, sha256: &str) -> Result<(), String> {
         return Err("its file is stated as empty".into());
     }
 
+    if bytes > PACKAGE_MAX {
+        return Err(format!(
+            "its file is stated as {bytes} bytes, over the {PACKAGE_MAX} byte ceiling"
+        ));
+    }
+
     if !is_sha256(sha256) {
         return Err("its sha256 isn't 64 lowercase hex characters".into());
     }
@@ -525,6 +535,39 @@ mod tests {
 
         assert_eq!(ids(&read), vec!["fine"]);
         assert_eq!(read.dropped.len(), 5);
+    }
+
+    #[test]
+    fn a_package_over_the_ceiling_costs_that_entry() {
+        let mut over = entry("huge", "workspace", "files/huge.roxw");
+        over["latest"]["bytes"] = (PACKAGE_MAX + 1).into();
+        let mut at = entry("big", "workspace", "files/big.roxw");
+        at["latest"]["bytes"] = PACKAGE_MAX.into();
+
+        let read = parse_index(&index(vec![
+            over,
+            at,
+            entry("fine", "workspace", "files/fine.roxw"),
+        ]))
+        .unwrap();
+
+        assert_eq!(ids(&read), vec!["big", "fine"]);
+        assert_eq!(read.dropped.len(), 1);
+        assert!(read.dropped[0].contains("ceiling"), "{:?}", read.dropped);
+
+        // A record's version is held to the same ceiling.
+        let text = serde_json::json!({
+            "id": "big",
+            "versions": [
+                { "version": "2", "file": "files/big-2.roxw", "bytes": PACKAGE_MAX + 1, "sha256": SHA, "min_rox": "2.0.0" },
+                { "version": "1", "file": "files/big-1.roxw", "bytes": PACKAGE_MAX, "sha256": SHA, "min_rox": "2.0.0" },
+            ],
+        })
+        .to_string();
+        let record = parse_record("big", &text).unwrap();
+        assert_eq!(record.versions.len(), 1);
+        assert_eq!(record.versions[0].version, "1");
+        assert_eq!(record.dropped.len(), 1);
     }
 
     #[test]

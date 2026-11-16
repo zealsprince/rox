@@ -119,17 +119,19 @@ pub(crate) fn open_link(link: &str, cx: &mut App) {
     open_on(Some(id.to_string()), false, cx);
 }
 
-/// `rox://install/<id>` and nothing else. The scheme folds case, as the OS
-/// may hand it over; the rest is exact, so a query, a fragment, another
-/// path or another action is no match. The id is the client's own slug
-/// rule, which is `[a-z0-9-]{1,64}` with no leading hyphen.
+/// `rox://install/<id>`, with one optional trailing slash, and nothing else.
+/// The scheme folds case, as the OS may hand it over; the rest is exact, so
+/// a query, a fragment, another path or another action is no match. The id
+/// is the client's own slug rule, which is `[a-z0-9-]{1,64}` with no
+/// leading hyphen.
 fn install_id(link: &str) -> Option<&str> {
     let scheme = link.get(..6)?;
     if !scheme.eq_ignore_ascii_case("rox://") {
         return None;
     }
 
-    let id = link[6..].strip_prefix("install/")?;
+    let rest = link[6..].strip_prefix("install/")?;
+    let id = rest.strip_suffix('/').unwrap_or(rest);
     is_slug(id).then_some(id)
 }
 
@@ -1231,8 +1233,14 @@ impl CatalogWindow {
                                     .text_color(palette::text_bright())
                                     .child(SharedString::from(entry.name.clone())),
                             )
-                            .when(listing.installed.contains(&entry.id), |d| {
-                                d.child(installed_mark())
+                            .map(|d| {
+                                if listing.updates.contains(&entry.id) {
+                                    d.child(update_mark())
+                                } else if listing.installed.contains(&entry.id) {
+                                    d.child(installed_mark())
+                                } else {
+                                    d
+                                }
                             }),
                     )
                     .when(!entry.author.is_empty(), |d| {
@@ -1581,7 +1589,7 @@ impl CatalogWindow {
     }
 }
 
-fn installed_mark() -> Div {
+fn row_mark(icon: &'static str, label: SharedString) -> Div {
     div()
         .flex_none()
         .flex()
@@ -1589,8 +1597,21 @@ fn installed_mark() -> Div {
         .gap(px(2.))
         .text_xs()
         .text_color(palette::accent())
-        .child(Icon::default().path(icons::CHECK).xsmall())
-        .child(rox_i18n::t!("catalog-installed"))
+        .child(Icon::default().path(icon).xsmall())
+        .child(label)
+}
+
+fn installed_mark() -> Div {
+    row_mark(icons::CHECK, rox_i18n::t!("catalog-installed"))
+}
+
+/// Filled like the menubar's update chips, so it reads as the same news.
+fn update_mark() -> Div {
+    row_mark(icons::ARROW_UP, rox_i18n::t!("catalog-update-available"))
+        .px(tokens::SPACE_XS)
+        .rounded_full()
+        .bg(palette::accent())
+        .text_color(palette::text_on_accent())
 }
 
 fn bar(fraction: f32) -> Div {
@@ -1745,12 +1766,33 @@ mod tests {
     }
 
     #[test]
+    fn a_link_with_one_trailing_slash_opens_on_its_id() {
+        assert_eq!(install_id("rox://install/aurora/"), Some("aurora"));
+        assert_eq!(install_id("ROX://install/tones-2/"), Some("tones-2"));
+    }
+
+    #[test]
+    fn a_link_with_more_after_the_slash_is_dropped() {
+        for link in [
+            "rox://install/aurora//",
+            "rox://install/aurora/x",
+            "rox://install/aurora/?",
+            "rox://install/aurora/#now",
+            "rox://install//",
+            "rox://install//aurora",
+        ] {
+            assert_eq!(install_id(link), None, "{link}");
+        }
+    }
+
+    #[test]
     fn a_link_with_a_query_is_dropped() {
         for link in [
             "rox://install/aurora?file=https://elsewhere.example/a.roxw",
             "rox://install/aurora?",
+            "rox://install/aurora?/",
             "rox://install/aurora#now",
-            "rox://install/aurora/",
+            "rox://install/aurora#/",
             "rox://install/aurora/files/x.roxw",
         ] {
             assert_eq!(install_id(link), None, "{link}");

@@ -224,7 +224,7 @@ of those the menubar's updates chip shows (the ones not dismissed), and `cancel`
 stops the install in flight. A `refresh` lands the way the launch check's does:
 an open catalog window reloads and the chip follows the new index. A debug build started with
 `ROX_CATALOG_ORIGIN=http://127.0.0.1:<port>` reads the catalog from a local static
-server instead of the compiled-in origin.
+server instead of the compiled-in `https://catalog.rox.music`.
 
 `subscribe` enrols the connection in pushed frames. They arrive on the same
 connection as `event.track`, `event.playback`, and `event.queue` objects with a

@@ -453,6 +453,7 @@ pub(crate) fn element(
     item: &SceneItem,
     parent: &Frame,
     at: &Placing,
+    live: &Live,
     images: &mut Images,
     cx: &mut Context<ScenePanel>,
 ) -> Option<(f32, AnyElement)> {
@@ -461,8 +462,8 @@ pub(crate) fn element(
     };
 
     // The item's own box, turned and scaled, is the frame the face sits in.
-    let live = Live::default();
-    let frame = child_frame(item, parent, &live);
+    // The face rides that frame, so it takes no offsets of its own.
+    let frame = child_frame(item, parent, live);
     let face_on = |face: [f32; 2]| {
         let face = SceneItem {
             place: Place {
@@ -479,7 +480,7 @@ pub(crate) fn element(
             at.viewport,
             at.pointer,
             false,
-            &live,
+            &Live::default(),
         )
     };
 

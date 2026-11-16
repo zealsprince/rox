@@ -666,7 +666,7 @@ pub fn nested(body: impl IntoElement) -> Div {
                 .rounded_full()
                 .bg(palette::alpha(palette::accent(), 0x55)),
         )
-        .child(div().flex_1().child(body))
+        .child(div().flex_1().min_w_0().child(body))
 }
 
 /// A control's focus handle, kept by the window under the control's own name.

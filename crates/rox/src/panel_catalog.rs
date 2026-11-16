@@ -661,7 +661,7 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
 /// Panels whose knobs the signal pool can drive, marked with the signal glyph
 /// in every menu. Joining takes [`rox_panel_api::signal_ui::RouteHost`] and
 /// [`rox_panel_api::signal_ui::bindable_row`].
-const SIGNAL_PANELS: &[&str] = &["particles", "shader"];
+const SIGNAL_PANELS: &[&str] = &["particles", "scene", "shader"];
 
 pub(crate) fn supports_signals(def: &PanelDef) -> bool {
     // Registry names, never labels: labels change per language.

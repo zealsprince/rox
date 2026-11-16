@@ -25,7 +25,7 @@ use rox_panel_api::panel::{
     self, PanelSettings, ScrubState, Tone, ValueEdit, setting_block, setting_row,
 };
 use rox_panel_api::panel_settings::{self, ShaderSource};
-use rox_panel_api::signal_ui::{routes::RouteEditor, slots::SlotList};
+use rox_panel_api::signal_ui::{self, bindable_row, routes::RouteEditor, slots::SlotList};
 use rox_panel_kit::ui as settings_ui;
 use rox_scene::{Anchor, Content, Fit, ImageFit, Length, SceneItem, SceneState};
 
@@ -33,7 +33,7 @@ use crate::panels::scene::{self, ScenePanel};
 use crate::scene::edit;
 use crate::scene::shader::{self as shader_item, RowState};
 
-const WIDTH: f32 = 320.;
+const WIDTH: f32 = 340.;
 
 /// Each level of the item tree steps in this far.
 const INDENT: f32 = 12.;
@@ -63,6 +63,10 @@ pub(crate) struct Inspector {
 impl Inspector {
     pub(crate) fn on_left(&self) -> bool {
         self.left
+    }
+
+    pub(crate) fn value_edit(&self) -> &ValueEdit {
+        &self.edit
     }
 }
 
@@ -109,6 +113,7 @@ pub(crate) fn render(
     window: &mut Window,
     cx: &mut Context<ScenePanel>,
 ) -> AnyElement {
+    signal_ui::sync(panel);
     let left = panel.inspector.left;
 
     // A press on one of these controls takes focus off the scene, so the
@@ -537,32 +542,14 @@ fn item_rows(
     let scrubs = &panel.inspector.scrubs;
     let viewport = panel.viewport();
 
-    // Setters for one field of the selected item, by id.
-    let on_item = |f: fn(&mut SceneItem, f32)| {
-        let id = id.clone();
-        move |scene: &mut SceneState, v: f32| {
-            if let Some(item) = scene.find_mut(&id) {
-                f(item, v);
-            }
-        }
+    let bound = |property: &str| {
+        let target = format!("{id}.{property}");
+        panel
+            .config
+            .routes
+            .iter()
+            .any(|route| route.target == target)
     };
-
-    let mut axis = |label: &str, ix: usize, f: fn(&mut SceneItem, f32)| {
-        div().flex_1().min_w_0().child(number(
-            panel,
-            &format!("{label}:{id}"),
-            place.position[ix],
-            false,
-            on_item(f),
-            cx,
-        ))
-    };
-    let position = div()
-        .flex()
-        .gap(tokens::SPACE_XS)
-        .child(axis("x", 0, |i, v| i.place.position[0] = v))
-        .child(axis("y", 1, |i, v| i.place.position[1] = v))
-        .child(axis("z", 2, |i, v| i.place.position[2] = v));
 
     let mut rows = div()
         .flex()
@@ -572,16 +559,48 @@ fn item_rows(
             rox_i18n::t!("scene-item-anchor"),
             None,
             anchor_picker(&id, place.anchor, viewport, cx),
-        ))
-        .child(setting_block(
-            rox_i18n::t!("scene-item-position"),
+        ));
+
+    let axes = [
+        rox_i18n::t!("scene-item-position-x"),
+        rox_i18n::t!("scene-item-position-y"),
+        rox_i18n::t!("scene-item-position-z"),
+    ];
+    for (axis, label) in axes.into_iter().enumerate() {
+        let property = ["x", "y", "z"][axis];
+        let setter = id.clone();
+        let value = number(
+            panel,
+            &format!("{property}:{id}"),
+            place.position[axis],
+            false,
+            move |scene, v| {
+                if let Some(item) = scene.find_mut(&setter) {
+                    item.place.position[axis] = v;
+                }
+            },
+            cx,
+        );
+
+        rows = rows.child(bindable_row(
+            panel,
+            label,
             None,
-            None,
-            position,
-        ))
+            format!("{id}.{property}"),
+            div().child(value),
+            cx,
+        ));
+        if bound(property) {
+            rows = rows.child(sway_row(panel, &id, SwayAxis::Position(axis), item, cx));
+        }
+    }
+
+    rows = rows
         .child(length_row(panel, &id, 0, place.size[0], viewport, cx))
         .child(length_row(panel, &id, 1, place.size[1], viewport, cx));
 
+    // A flat item stores its turn and scale and draws neither, so those rows
+    // stay inert and take no route.
     let axes = [
         rox_i18n::t!("scene-item-rotation-x"),
         rox_i18n::t!("scene-item-rotation-y"),
@@ -591,37 +610,47 @@ fn item_rows(
         let degrees = place.rotation[axis];
         let readout = format!("{}°", whole(degrees));
 
-        rows = rows.child(if flat {
-            setting_row(label, None, inert_readout(readout))
-        } else {
-            let id = id.clone();
-            setting_row(
-                label,
-                None,
-                panel::value_slider_edit(
-                    &scrubs.rotation[axis],
-                    &panel.inspector.edit,
-                    (degrees + TURN_RANGE) / (2. * TURN_RANGE),
-                    readout,
-                    format!("{degrees:.1}"),
-                    |v| (v + TURN_RANGE) / (2. * TURN_RANGE),
-                    move |this: &mut ScenePanel, f, cx| {
-                        let id = id.clone();
-                        let degrees = f * 2. * TURN_RANGE - TURN_RANGE;
-                        this.change_later(
-                            ["rotation.x", "rotation.y", "rotation.z"][axis],
-                            move |s| {
-                                if let Some(item) = s.find_mut(&id) {
-                                    item.place.rotation[axis] = degrees;
-                                }
-                            },
-                            cx,
-                        )
+        if flat {
+            rows = rows.child(setting_row(label, None, inert_readout(readout)));
+            continue;
+        }
+
+        let property = ["rx", "ry", "rz"][axis];
+        let setter = id.clone();
+        let slider = panel::value_slider_edit(
+            &scrubs.rotation[axis],
+            &panel.inspector.edit,
+            (degrees + TURN_RANGE) / (2. * TURN_RANGE),
+            readout,
+            format!("{degrees:.1}"),
+            |v| (v + TURN_RANGE) / (2. * TURN_RANGE),
+            move |this: &mut ScenePanel, f, cx| {
+                let id = setter.clone();
+                let degrees = f * 2. * TURN_RANGE - TURN_RANGE;
+                this.change_later(
+                    ["rotation.x", "rotation.y", "rotation.z"][axis],
+                    move |s| {
+                        if let Some(item) = s.find_mut(&id) {
+                            item.place.rotation[axis] = degrees;
+                        }
                     },
                     cx,
-                ),
-            )
-        });
+                )
+            },
+            cx,
+        );
+
+        rows = rows.child(bindable_row(
+            panel,
+            label,
+            None,
+            format!("{id}.{property}"),
+            slider,
+            cx,
+        ));
+        if bound(property) {
+            rows = rows.child(sway_row(panel, &id, SwayAxis::Rotation(axis), item, cx));
+        }
     }
 
     let scale_readout = format!("{:.2}", place.scale);
@@ -632,31 +661,35 @@ fn item_rows(
             inert_readout(scale_readout),
         )
     } else {
-        let id = id.clone();
-        setting_row(
+        let setter = id.clone();
+        let slider = panel::value_slider_edit(
+            &scrubs.scale,
+            &panel.inspector.edit,
+            (place.scale - SCALE_MIN) / (SCALE_MAX - SCALE_MIN),
+            scale_readout,
+            format!("{:.2}", place.scale),
+            |v| (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN),
+            move |this: &mut ScenePanel, f, cx| {
+                let id = setter.clone();
+                this.change_later(
+                    "scale",
+                    move |s| {
+                        if let Some(item) = s.find_mut(&id) {
+                            item.place.scale = SCALE_MIN + f * (SCALE_MAX - SCALE_MIN);
+                        }
+                    },
+                    cx,
+                )
+            },
+            cx,
+        );
+        bindable_row(
+            panel,
             rox_i18n::t!("scene-item-scale"),
             None,
-            panel::value_slider_edit(
-                &scrubs.scale,
-                &panel.inspector.edit,
-                (place.scale - SCALE_MIN) / (SCALE_MAX - SCALE_MIN),
-                scale_readout,
-                format!("{:.2}", place.scale),
-                |v| (v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN),
-                move |this: &mut ScenePanel, f, cx| {
-                    let id = id.clone();
-                    this.change_later(
-                        "scale",
-                        move |s| {
-                            if let Some(item) = s.find_mut(&id) {
-                                item.place.scale = SCALE_MIN + f * (SCALE_MAX - SCALE_MIN);
-                            }
-                        },
-                        cx,
-                    )
-                },
-                cx,
-            ),
+            format!("{id}.scale"),
+            slider,
+            cx,
         )
     });
 
@@ -676,30 +709,34 @@ fn item_rows(
     }
 
     let opacity_id = id.clone();
-    rows = rows.child(setting_row(
+    let opacity = panel::value_slider_edit(
+        &scrubs.opacity,
+        &panel.inspector.edit,
+        item.opacity,
+        format!("{:.0}%", item.opacity * 100.),
+        format!("{:.0}", item.opacity * 100.),
+        |v| v / 100.,
+        move |this: &mut ScenePanel, f, cx| {
+            let id = opacity_id.clone();
+            this.change_later(
+                "opacity",
+                move |s| {
+                    if let Some(item) = s.find_mut(&id) {
+                        item.opacity = f;
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    );
+    rows = rows.child(bindable_row(
+        panel,
         rox_i18n::t!("scene-item-opacity"),
         None,
-        panel::value_slider_edit(
-            &scrubs.opacity,
-            &panel.inspector.edit,
-            item.opacity,
-            format!("{:.0}%", item.opacity * 100.),
-            format!("{:.0}", item.opacity * 100.),
-            |v| v / 100.,
-            move |this: &mut ScenePanel, f, cx| {
-                let id = opacity_id.clone();
-                this.change_later(
-                    "opacity",
-                    move |s| {
-                        if let Some(item) = s.find_mut(&id) {
-                            item.opacity = f;
-                        }
-                    },
-                    cx,
-                )
-            },
-            cx,
-        ),
+        format!("{id}.opacity"),
+        opacity,
+        cx,
     ));
 
     rows.child(actions(item, cx))
@@ -761,6 +798,62 @@ fn actions(item: &SceneItem, cx: &mut Context<ScenePanel>) -> AnyElement {
             "scene-delete",
             ScenePanel::delete_selected,
         ))
+        .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+enum SwayAxis {
+    Position(usize),
+    Rotation(usize),
+}
+
+/// Under a bound position or rotation row: how far a full signal carries
+/// the item on that axis.
+fn sway_row(
+    panel: &ScenePanel,
+    id: &str,
+    sway: SwayAxis,
+    item: &SceneItem,
+    cx: &mut Context<ScenePanel>,
+) -> AnyElement {
+    let (field, value, description) = match sway {
+        SwayAxis::Position(axis) => (
+            format!("sway.{axis}:{id}"),
+            item.sway.position[axis],
+            rox_i18n::t!("scene-item-sway.units"),
+        ),
+        SwayAxis::Rotation(axis) => (
+            format!("sway.r{axis}:{id}"),
+            item.sway.rotation[axis],
+            rox_i18n::t!("scene-item-sway.degrees"),
+        ),
+    };
+
+    let setter = id.to_string();
+    let amount = number(
+        panel,
+        &field,
+        value,
+        false,
+        move |scene, v| {
+            if let Some(item) = scene.find_mut(&setter) {
+                match sway {
+                    SwayAxis::Position(axis) => item.sway.position[axis] = v,
+                    SwayAxis::Rotation(axis) => item.sway.rotation[axis] = v,
+                }
+            }
+        },
+        cx,
+    );
+
+    // Every sway row shares its label, so the id keeps their controls apart.
+    div()
+        .id(SharedString::from(format!("scene-{field}")))
+        .child(settings_ui::nested(setting_row(
+            rox_i18n::t!("scene-item-sway"),
+            Some(description),
+            amount,
+        )))
         .into_any_element()
 }
 

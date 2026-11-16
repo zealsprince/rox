@@ -41,7 +41,7 @@ use rox_scene::{
     Anchor, Camera, Content, Frame, ImageFit, Length, Live, Place, SceneItem, SceneState, Viewport,
     child_frame, inside, paint_order, project,
 };
-use rox_viz::signal::Route;
+use rox_viz::signal::{Route, SignalHub};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -50,6 +50,7 @@ use crate::scene::edit::{self, Edges, History};
 use crate::scene::grid::{self, Grid};
 use crate::scene::image::{self, Images};
 use crate::scene::overlay::Inspector;
+use crate::scene::routes::{self, Snapshot};
 use crate::scene::shader::{self as shader_item, Shaders};
 use crate::scene::texture::{self, TextureView};
 use crate::scene::{self, Body, Placing};
@@ -57,8 +58,9 @@ use crate::workspace::{LAYOUT_VERSION, Workspace};
 use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::palette;
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Tone};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Tone, ValueEdit};
 use rox_panel_api::panel_settings;
+use rox_panel_api::signal_ui::{RouteHost, SignalHost, SignalUi};
 use rox_panel_api::toast::Toast;
 use rox_panel_api::windows::WorkspaceWindows;
 
@@ -309,7 +311,11 @@ pub struct ScenePanel {
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
     pub(crate) selected: Option<String>,
-    history: History,
+    history: History<Snapshot>,
+    /// The routes as the history last saw them. The shared binding rows
+    /// write `config.routes` directly, so a difference is an edit to record.
+    seen_routes: Vec<Route>,
+    signal_ui: SignalUi,
     gesture: Option<Gesture>,
     /// Where the last press picked, and the chain of ids under it, so a
     /// second press on the same spot steps one group in.
@@ -322,6 +328,7 @@ pub struct ScenePanel {
     window: Option<AnyWindowHandle>,
     pub(crate) inspector: Inspector,
     menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    _player: Subscription,
 }
 
 impl ScenePanel {
@@ -332,6 +339,15 @@ impl ScenePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The player notifies on every pump tick while audio moves. Only a
+        // scene with routes has anything to redraw for it.
+        let player = cx.observe(&state.player, |this: &mut Self, _, cx| {
+            if routes::running(&this.config.routes) {
+                cx.notify();
+            }
+        });
+
+        let seen_routes = config.routes.clone();
         let mut this = ScenePanel {
             state,
             workspace,
@@ -350,6 +366,8 @@ impl ScenePanel {
             tab_panel: None,
             selected: None,
             history: History::default(),
+            seen_routes,
+            signal_ui: SignalUi::default(),
             gesture: None,
             last_press: None,
             shapes: Vec::new(),
@@ -357,6 +375,7 @@ impl ScenePanel {
             window: None,
             inspector: Inspector::default(),
             menu: None,
+            _player: player,
         };
         this.build(HashMap::new(), window, cx);
         this
@@ -428,11 +447,50 @@ impl ScenePanel {
     ) {
         // The edit sees every grid as it stands now, not as it was loaded.
         self.config = self.saved(cx);
-        let before = self.config.scene.clone();
+        let before = self.snapshot();
 
         self.rebuild_with(edit, window, cx);
+        routes::prune(&mut self.config.routes, &self.config.scene);
+        self.seen_routes = self.config.routes.clone();
+
         self.history
-            .record(before, self.config.scene.clone(), key, Instant::now());
+            .record(before, self.snapshot(), key, Instant::now());
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            scene: self.config.scene.clone(),
+            routes: self.config.routes.clone(),
+        }
+    }
+
+    /// Puts back a step from the history, routes and all.
+    fn restore_snapshot(&mut self, to: Snapshot, window: &mut Window, cx: &mut Context<Self>) {
+        self.config.routes = to.routes;
+        self.seen_routes = self.config.routes.clone();
+        self.rebuild_with(move |scene| *scene = to.scene, window, cx);
+    }
+
+    /// A route bound, tuned or dropped from the inspector since the last
+    /// render becomes an undo step and a save. A new position or rotation
+    /// route gets a sway on its axis in the same step.
+    fn absorb_route_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if routes::same(&self.config.routes, &self.seen_routes) {
+            return;
+        }
+
+        self.config = self.saved(cx);
+        let before = Snapshot {
+            scene: self.config.scene.clone(),
+            routes: std::mem::take(&mut self.seen_routes),
+        };
+
+        routes::sway_new(&before.routes, &self.config.routes, &mut self.config.scene);
+        self.seen_routes = self.config.routes.clone();
+        self.history
+            .record(before, self.snapshot(), Some("routes"), Instant::now());
+
+        cx.defer_in(window, |this, window, cx| this.save_soon(window, cx));
     }
 
     /// For controls whose callbacks aren't handed the window: the edit runs
@@ -493,7 +551,7 @@ impl ScenePanel {
         self.config = self.saved(cx);
 
         if let Some(state) = self.history.undo() {
-            self.rebuild_with(move |scene| *scene = state, window, cx);
+            self.restore_snapshot(state, window, cx);
         }
     }
 
@@ -502,7 +560,7 @@ impl ScenePanel {
         self.config = self.saved(cx);
 
         if let Some(state) = self.history.redo() {
-            self.rebuild_with(move |scene| *scene = state, window, cx);
+            self.restore_snapshot(state, window, cx);
         }
     }
 
@@ -606,10 +664,27 @@ impl ScenePanel {
         };
         let stage = Frame::stage(&self.config.scene.stage, at.viewport);
 
+        // Reading the hub advances it. A scene with no routes doesn't, and
+        // asks for no frames.
+        let hub = self.state.signals.clone();
+        let routed = routes::running(&self.config.routes);
+        let lives = if routed {
+            routes::lives(&self.config.scene, &self.config.routes, &hub)
+        } else {
+            HashMap::new()
+        };
+        // Every frame a routed grid moves, its dock lays out again at the new
+        // place. That's allowed, and it's the cost to count when weighing a
+        // scene.
+        if routed && (hub.live() || hub.settling()) {
+            window.request_animation_frame();
+        }
+
         // Before the first bounds land there's nothing to place against, and
         // a grid laid out at no size would lay its panels out at none.
         let mut draw = Draw {
             at: &at,
+            lives: &lives,
             images: &mut self.images,
             shaders: &mut self.shaders,
             textures: &mut self.textures,
@@ -775,6 +850,7 @@ impl ScenePanel {
 /// What one render collects while it places the tree.
 struct Draw<'a> {
     at: &'a Placing,
+    lives: &'a HashMap<String, Live>,
     images: &'a mut Images,
     shaders: &'a mut Shaders,
     textures: &'a mut HashMap<String, Entity<TextureView>>,
@@ -799,7 +875,6 @@ fn place(
     draw: &mut Draw,
     cx: &mut Context<ScenePanel>,
 ) {
-    let live = Live::default();
     let at = draw.at;
     let mut layers: Vec<Layer> = Vec::new();
 
@@ -807,6 +882,8 @@ fn place(
         if !item.visible {
             continue;
         }
+
+        let live = routes::live_for(draw.lives, item);
 
         let flat = shader_item::sits_flat(&item.content, draw.shaders.painted_flat(&item.id, cx));
         let kind = if flat {
@@ -865,6 +942,7 @@ fn place(
 
                 let mut inner = Draw {
                     at,
+                    lives: draw.lives,
                     images: &mut *draw.images,
                     shaders: &mut *draw.shaders,
                     textures: &mut *draw.textures,
@@ -891,7 +969,7 @@ fn place(
             }
 
             (Body::Image, _) => {
-                let element = image::element(item, parent, at, draw.images, cx);
+                let element = image::element(item, parent, at, &live, draw.images, cx);
                 let Some(projected) = projected() else {
                     continue;
                 };
@@ -1555,9 +1633,16 @@ impl ScenePanel {
             return;
         };
 
-        let after = self.saved(cx).scene;
-        self.history
-            .record(gesture.before, after, None, Instant::now());
+        let routes = self.config.routes.clone();
+        let before = Snapshot {
+            scene: gesture.before,
+            routes: routes.clone(),
+        };
+        let after = Snapshot {
+            scene: self.saved(cx).scene,
+            routes,
+        };
+        self.history.record(before, after, None, Instant::now());
 
         self.save_soon(window, cx);
         cx.notify();
@@ -2099,6 +2184,36 @@ impl PanelSettings for ScenePanel {
     }
 }
 
+/// The value edit is the inspector's, so a route slider and a place slider
+/// never type at once.
+impl SignalHost for ScenePanel {
+    fn hub(&self) -> &Arc<SignalHub> {
+        &self.state.signals
+    }
+
+    fn routes(&self) -> &[Route] {
+        &self.config.routes
+    }
+
+    fn signal_ui(&self) -> &SignalUi {
+        &self.signal_ui
+    }
+
+    fn signal_ui_mut(&mut self) -> &mut SignalUi {
+        &mut self.signal_ui
+    }
+
+    fn value_edit(&self) -> &ValueEdit {
+        self.inspector.value_edit()
+    }
+}
+
+impl RouteHost for ScenePanel {
+    fn routes_mut(&mut self) -> &mut Vec<Route> {
+        &mut self.config.routes
+    }
+}
+
 impl EventEmitter<PanelEvent> for ScenePanel {}
 
 impl Focusable for ScenePanel {
@@ -2248,6 +2363,8 @@ impl Render for ScenePanel {
                 self.menu = None;
             }
         }
+
+        self.absorb_route_edits(window, cx);
 
         let chrome = self.config.chrome.clone();
         let body = self.body(window, cx);

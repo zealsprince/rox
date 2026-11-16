@@ -41,9 +41,9 @@ pub(crate) fn is_flat(content: &Content) -> bool {
 // ── Undo ──
 
 #[derive(Clone)]
-struct Step {
-    before: SceneState,
-    after: SceneState,
+struct Step<T> {
+    before: T,
+    after: T,
     /// Set for edits that merge with the next one to the same field.
     key: Option<String>,
     at: Instant,
@@ -52,21 +52,23 @@ struct Step {
 /// The scene's history: whole item trees before and after each edit. Dock
 /// edits inside a grid stay out of it, because a live grid keeps its own
 /// tree across an undo and folds its dump back in on the next save.
-#[derive(Default)]
-pub(crate) struct History {
-    undos: Vec<Step>,
-    redos: Vec<Step>,
+pub(crate) struct History<T = SceneState> {
+    undos: Vec<Step<T>>,
+    redos: Vec<Step<T>>,
 }
 
-impl History {
+impl<T> Default for History<T> {
+    fn default() -> Self {
+        Self {
+            undos: Vec::new(),
+            redos: Vec::new(),
+        }
+    }
+}
+
+impl<T: Clone + PartialEq> History<T> {
     /// A new edit drops whatever was undone, the way every editor does.
-    pub(crate) fn record(
-        &mut self,
-        before: SceneState,
-        after: SceneState,
-        key: Option<&str>,
-        now: Instant,
-    ) {
+    pub(crate) fn record(&mut self, before: T, after: T, key: Option<&str>, now: Instant) {
         if before == after {
             return;
         }
@@ -95,7 +97,7 @@ impl History {
     }
 
     /// The tree to go back to.
-    pub(crate) fn undo(&mut self) -> Option<SceneState> {
+    pub(crate) fn undo(&mut self) -> Option<T> {
         let step = self.undos.pop()?;
         let before = step.before.clone();
         self.redos.push(step);
@@ -103,7 +105,7 @@ impl History {
     }
 
     /// The tree to go forward to.
-    pub(crate) fn redo(&mut self) -> Option<SceneState> {
+    pub(crate) fn redo(&mut self) -> Option<T> {
         let step = self.redos.pop()?;
         let after = step.after.clone();
         self.undos.push(step);

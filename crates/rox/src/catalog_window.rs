@@ -81,7 +81,27 @@ struct OpenCatalog {
 impl Global for OpenCatalog {}
 
 pub(crate) fn open(cx: &mut App) {
-    open_on(None, cx);
+    open_on(None, false, cx);
+}
+
+/// The updates chip: open on the Updates tab once the listing shows one.
+pub(crate) fn open_updates(cx: &mut App) {
+    open_on(None, true, cx);
+}
+
+/// A refresh or an install this window may not have started landed, so
+/// the listing reloads from the saved index and the record.
+pub(crate) fn refreshed(cx: &mut App) {
+    let Some(open) = cx.try_global::<OpenCatalog>() else {
+        return;
+    };
+    let (handle, view) = (open.window, open.view.clone());
+
+    let _ = handle.update(cx, |_, window, cx| {
+        if let Some(view) = view.upgrade() {
+            view.update(cx, |this, cx| this.reload(window, cx));
+        }
+    });
 }
 
 /// The link handler. Any web page can make one of these, so a link only
@@ -96,7 +116,7 @@ pub(crate) fn open_link(link: &str, cx: &mut App) {
         return;
     };
 
-    open_on(Some(id.to_string()), cx);
+    open_on(Some(id.to_string()), false, cx);
 }
 
 /// `rox://install/<id>` and nothing else. The scheme folds case, as the OS
@@ -115,11 +135,11 @@ fn install_id(link: &str) -> Option<&str> {
 
 /// Deferred: the opening action runs inside another window's update, and
 /// reading the front workspace for the tint mid-update would panic.
-fn open_on(select: Option<String>, cx: &mut App) {
-    cx.defer(move |cx| open_now(select, cx));
+fn open_on(select: Option<String>, updates: bool, cx: &mut App) {
+    cx.defer(move |cx| open_now(select, updates, cx));
 }
 
-fn open_now(select: Option<String>, cx: &mut App) {
+fn open_now(select: Option<String>, updates: bool, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenCatalog>() {
         let (handle, view) = (open.window, open.view.clone());
         let link = select.clone();
@@ -129,6 +149,9 @@ fn open_now(select: Option<String>, cx: &mut App) {
 
             if let (Some(id), Some(view)) = (link, view.upgrade()) {
                 view.update(cx, |this, cx| this.follow_link(id, window, cx));
+            }
+            if updates && let Some(view) = view.upgrade() {
+                view.update(cx, |this, cx| this.want_updates(cx));
             }
         });
         if raised.is_ok() {
@@ -145,7 +168,7 @@ fn open_now(select: Option<String>, cx: &mut App) {
         rox_i18n::t!("catalog-window-title"),
         bounds,
         Some(MIN_SIZE),
-        move |window, cx| cx.new(|cx| CatalogWindow::new(player, select, window, cx)),
+        move |window, cx| cx.new(|cx| CatalogWindow::new(player, select, updates, window, cx)),
     );
 }
 
@@ -493,6 +516,8 @@ struct CatalogWindow {
     selected: Option<String>,
     /// A link's id, waiting for an index to look it up in.
     link: Option<String>,
+    /// Opened from the updates chip, waiting for a listing with updates.
+    updates_wanted: bool,
     cards: HashMap<String, Card>,
     previews: HashMap<String, Shot>,
     queue: VecDeque<String>,
@@ -508,6 +533,7 @@ impl CatalogWindow {
     fn new(
         player: Option<EntityId>,
         link: Option<String>,
+        updates_wanted: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -545,6 +571,7 @@ impl CatalogWindow {
             matched: 0,
             selected: None,
             link,
+            updates_wanted,
             cards: HashMap::new(),
             previews: HashMap::new(),
             queue: VecDeque::new(),
@@ -649,12 +676,56 @@ impl CatalogWindow {
         cx: &mut Context<Self>,
     ) {
         self.listing = Some(listing);
+
+        if self.updates_wanted && self.tabs().contains(&Tab::Updates) {
+            self.updates_wanted = false;
+            self.tab = Tab::Updates;
+        } else if settled {
+            self.updates_wanted = false;
+        }
+
         if !self.tabs().contains(&self.tab) {
             self.tab = Tab::Workspaces;
         }
 
         self.refilter(cx);
         self.settle_link(settled, window, cx);
+    }
+
+    /// A refresh or an install landed. A refresh of this window's own that's
+    /// still out brings its own answer, so this stands down for it.
+    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.refreshing {
+            return;
+        }
+
+        cx.spawn_in(window, async move |this, cx| {
+            let saved = cx
+                .background_executor()
+                .spawn(async move { catalog::load().map(listing) })
+                .await;
+
+            this.update_in(cx, |this, window, cx| {
+                let Some(saved) = saved.filter(|_| !this.refreshing) else {
+                    return;
+                };
+
+                this.fresh = true;
+                this.failed = None;
+                this.take(saved, true, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn want_updates(&mut self, cx: &mut Context<Self>) {
+        self.updates_wanted = true;
+
+        if self.tabs().contains(&Tab::Updates) {
+            self.updates_wanted = false;
+            self.pick_tab(Tab::Updates, cx);
+        }
     }
 
     fn tabs(&self) -> Vec<Tab> {

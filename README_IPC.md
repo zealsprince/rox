@@ -74,7 +74,7 @@ did without a second round trip.
 | `debug.workspace`                                          | `{"name": ".."}`                              | null; applies that workspace to the front window                         |
 | `debug.entities`                                           |                                               | `{"total": n, "by_type": [[name, count], ..]}`, live gpui entity counts  |
 | `debug.frames`                                             | `{"ms": 100..20000?, "window": id?}`          | after the span: `{"window", "frames", "span_ms", "mean_ms", "worst_ms"}`, what that workspace window drew |
-| `debug.catalog`                                            | `{"refresh": true}`, `{"install": ".."}`, `{"updates": true}` or `{"cancel": true}` | debug builds only: `{"packages": [..], "dropped": [..]}`, `{"id", "kind", "sha256", "file"}`, `{"updates": [..]}` or `{"cancelled": id}` |
+| `debug.catalog`                                            | `{"refresh": true}`, `{"install": ".."}`, `{"updates": true}`, `{"chip": true}` or `{"cancel": true}` | debug builds only: `{"packages": [..], "dropped": [..]}`, `{"id", "kind", "sha256", "file"}`, `{"updates": [..]}`, `{"chip": n}` or `{"cancelled": id}` |
 | `debug.device_lost`                                        |                                               | `{"faulted": true}`; raises the output's device-lost flag, as an unplug does |
 | `debug.windows`                                            |                                               | every open window: id, title, logical size, scale, and which is active   |
 | `debug.actions`                                            | `{"filter": ".."}`, optional                  | `{"actions": [..]}`, the dispatchable action names                       |
@@ -219,8 +219,10 @@ downloads and verifies the file, then hands it to the same import or install tha
 file takes from disk, and answers the record it kept once the file is stored. It
 applies, places and switches on nothing: the apply confirm, the Plugins page or the
 place confirm opens in the front window, as it would for a double-click. `updates`
-lists the installed packages whose index hash has moved, and `cancel` stops the
-install in flight. A debug build started with
+lists the installed packages whose index hash has moved, `chip` answers how many
+of those the menubar's updates chip shows (the ones not dismissed), and `cancel`
+stops the install in flight. A `refresh` lands the way the launch check's does:
+an open catalog window reloads and the chip follows the new index. A debug build started with
 `ROX_CATALOG_ORIGIN=http://127.0.0.1:<port>` reads the catalog from a local static
 server instead of the compiled-in origin.
 

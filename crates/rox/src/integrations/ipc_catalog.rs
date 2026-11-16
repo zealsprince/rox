@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 
 use rox_ipc::{Request, RpcError};
 
-/// One of `{"refresh": true}`, `{"install": "<id>"}`, `{"updates": true}`
-/// or `{"cancel": true}`. Answers once the refresh or the install is done.
+/// One of `{"refresh": true}`, `{"install": "<id>"}`, `{"updates": true}`,
+/// `{"chip": true}` or `{"cancel": true}`. Answers once the refresh or the
+/// install is done.
 pub fn request(request: Request, cx: &mut App) {
     let (_, params, responder) = request.into_parts();
 
@@ -57,6 +58,10 @@ pub fn request(request: Request, cx: &mut App) {
         return;
     }
 
+    if params.get("chip").and_then(Value::as_bool) == Some(true) {
+        return responder.respond(Ok(json!({ "chip": crate::catalog::chip_count() })));
+    }
+
     if params.get("cancel").and_then(Value::as_bool) == Some(true) {
         let id = crate::catalog::running(cx).map(|(id, _)| id);
         crate::catalog::cancel(cx);
@@ -64,6 +69,6 @@ pub fn request(request: Request, cx: &mut App) {
     }
 
     responder.respond(Err(RpcError::invalid_params(
-        "takes {\"refresh\": true}, {\"install\": \"<id>\"}, {\"updates\": true} or {\"cancel\": true}",
+        "takes {\"refresh\": true}, {\"install\": \"<id>\"}, {\"updates\": true}, {\"chip\": true} or {\"cancel\": true}",
     )));
 }

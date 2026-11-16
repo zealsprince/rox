@@ -916,7 +916,7 @@ settings-appearance-theme-system = Системна
 
 ## Settings: application
 settings-application-check-updates = Перевіряти оновлення
-    .description = Шукати новіший випуск раз на день при запуску rox; вікно Про програму перевіряє зараз у будь-якому разі
+    .description = Раз на день при запуску rox шукати новіший випуск rox і новіші версії того, що встановлено з каталогу; вікно Про програму перевіряє зараз у будь-якому разі
 settings-application-prerelease-updates = Пропонувати кандидати у випуски
     .description = Пропонувати й кандидати у випуски, попередні збірки, що виходять перед випуском для перевірки; збірка-кандидат бачить наступну у будь-якому разі
 settings-application-download-updates = Завантажувати оновлення
@@ -4597,3 +4597,10 @@ catalog-homepage = Сайт
 catalog-notes = У цій версії
 catalog-link-unknown = У каталозі немає пакета { $id }
 catalog-link-too-new = Для { $name } потрібна новіша версія rox
+catalog-updates-chip = { $count ->
+    [one] { $count } оновлення каталогу
+    [few] { $count } оновлення каталогу
+    [many] { $count } оновлень каталогу
+   *[other] { $count } оновлення каталогу
+}
+catalog-updates-chip-tip = Новіші версії того, що встановлено з каталогу

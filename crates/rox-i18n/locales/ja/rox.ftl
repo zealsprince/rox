@@ -894,7 +894,7 @@ settings-appearance-theme-system = システム
 
 ## Settings: application
 settings-application-check-updates = 更新を確認
-    .description = rox の起動時に一日一度、新しいリリースを探す。バージョン情報のウィンドウはどちらにせよその場で確認する
+    .description = rox の起動時に一日一度、rox の新しいリリースと、カタログから入れたものの新しいバージョンを探す。バージョン情報のウィンドウはどちらにせよその場で確認する
 settings-application-prerelease-updates = リリース候補も含める
     .description = リリース前にテスト用として公開されるリリース候補も候補に入れる。候補版のビルドはどちらにせよ次の候補を見つける
 settings-application-download-updates = 更新をダウンロード
@@ -4387,3 +4387,7 @@ catalog-homepage = ホームページ
 catalog-notes = このバージョンの内容
 catalog-link-unknown = カタログに { $id } というパッケージはありません
 catalog-link-too-new = { $name } にはこれより新しい rox が必要です
+catalog-updates-chip = { $count ->
+   *[other] カタログの更新 { $count } 件
+}
+catalog-updates-chip-tip = カタログから入れたものの新しいバージョン

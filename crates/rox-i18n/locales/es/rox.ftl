@@ -913,7 +913,7 @@ settings-appearance-theme-system = Sistema
 
 ## Settings: application
 settings-application-check-updates = Buscar actualizaciones
-    .description = Busca una versión más nueva una vez al día cuando arranca rox; la ventana Acerca de comprueba al momento de todas formas
+    .description = Busca una versión más nueva de rox y de lo instalado desde el catálogo una vez al día cuando arranca rox; la ventana Acerca de comprueba al momento de todas formas
 settings-application-prerelease-updates = Incluir versiones candidatas
     .description = Ofrecer también las versiones candidatas, los adelantos publicados antes de una versión para probarla; una compilación candidata ve la siguiente de todas formas
 settings-application-download-updates = Descargar actualizaciones
@@ -4615,3 +4615,8 @@ catalog-homepage = Sitio web
 catalog-notes = En esta versión
 catalog-link-unknown = El catálogo no tiene ningún paquete llamado { $id }
 catalog-link-too-new = { $name } necesita un rox más nuevo que este
+catalog-updates-chip = { $count ->
+    [one] { $count } actualización del catálogo
+   *[other] { $count } actualizaciones del catálogo
+}
+catalog-updates-chip-tip = Versiones más nuevas de lo instalado desde el catálogo

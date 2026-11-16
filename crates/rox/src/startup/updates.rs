@@ -178,6 +178,7 @@ pub fn check_on_launch(cx: &mut gpui::App) {
     let settings = Settings::load();
     // Seed the chip even when no check is due.
     refresh_available(&settings);
+    check_catalog(&settings, cx);
     // A first launch hasn't been asked yet: the welcome window offers the
     // toggle, and the next launch honours the answer.
     if rox_core::settings::first_run() || !auto_check_due(&settings) {
@@ -208,6 +209,55 @@ pub fn check_on_launch(cx: &mut gpui::App) {
         cx.refresh().ok();
     })
     .detach();
+}
+
+/// The catalog half (ADR 36): the same switch and interval, on its own
+/// clock in `installed.json`, so neither check starves the other. It runs
+/// beside the app's check and never waits on it. A failed fetch is a log
+/// line and leaves the saved index, the clock and the chip as they were.
+/// Nothing installs from here.
+fn check_catalog(settings: &Settings, cx: &mut gpui::App) {
+    let first_run = rox_core::settings::first_run();
+    let switch = settings.check_updates;
+
+    let check = cx.background_executor().spawn(async move {
+        let (installed, checked_at) = crate::catalog::on_record();
+        let refreshed = catalog_check_due(first_run, switch, installed, checked_at, now())
+            && crate::catalog::refresh_now()
+                .inspect_err(|e| log::warn!("catalog check: {e}"))
+                .is_ok();
+
+        // Seeds the chip from the saved index when nothing was fetched.
+        if !refreshed {
+            crate::catalog::note_updates();
+        }
+
+        refreshed
+    });
+
+    cx.spawn(async move |cx| {
+        let refreshed = check.await;
+        cx.update(|cx| {
+            if refreshed {
+                crate::catalog::landed(cx);
+            } else {
+                cx.refresh_windows();
+            }
+        })
+        .ok();
+    })
+    .detach();
+}
+
+/// Nothing installed from the catalog means nothing to ask it about.
+fn catalog_check_due(
+    first_run: bool,
+    check_updates: bool,
+    installed: usize,
+    checked_at: u64,
+    now: u64,
+) -> bool {
+    !first_run && check_updates && installed > 0 && now.saturating_sub(checked_at) >= CHECK_INTERVAL
 }
 
 pub fn cache(release: &Release) -> UpdateCache {
@@ -287,6 +337,27 @@ mod tests {
     fn an_unparsed_version_never_crosses() {
         assert_eq!(crosses_major("nightly", "1.34.3"), None);
         assert_eq!(crosses_major("2.0.0", "dev"), None);
+    }
+
+    const DAY_AGO: u64 = 1_000_000 - CHECK_INTERVAL;
+
+    #[test]
+    fn the_catalog_is_not_asked_when_nothing_came_from_it() {
+        assert!(!catalog_check_due(false, true, 0, 0, 1_000_000));
+        assert!(!catalog_check_due(false, true, 0, DAY_AGO, 1_000_000));
+
+        assert!(catalog_check_due(false, true, 1, DAY_AGO, 1_000_000));
+    }
+
+    #[test]
+    fn the_catalog_follows_the_update_switch() {
+        // Off, or a first run that hasn't been asked: never.
+        assert!(!catalog_check_due(false, false, 3, 0, 1_000_000));
+        assert!(!catalog_check_due(true, true, 3, 0, 1_000_000));
+
+        // On: once the interval has passed on the catalog's own clock.
+        assert!(catalog_check_due(false, true, 3, 0, 1_000_000));
+        assert!(!catalog_check_due(false, true, 3, DAY_AGO + 1, 1_000_000));
     }
 
     fn listed(tag: &str, draft: bool, prerelease: bool) -> Api {

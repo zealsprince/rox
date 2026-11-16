@@ -914,7 +914,7 @@ settings-appearance-theme-system = Système
 
 ## Settings: application
 settings-application-check-updates = Rechercher les mises à jour
-    .description = Chercher une version plus récente une fois par jour au démarrage de rox ; la fenêtre À propos vérifie tout de suite dans les deux cas
+    .description = Chercher une version plus récente de rox et de ce qui a été installé depuis le catalogue une fois par jour au démarrage ; la fenêtre À propos vérifie tout de suite dans les deux cas
 settings-application-prerelease-updates = Inclure les versions candidates
     .description = Proposer aussi les versions candidates, les avant-premières publiées avant une version pour la tester ; une build candidate voit la suivante dans tous les cas
 settings-application-download-updates = Télécharger les mises à jour
@@ -4611,3 +4611,8 @@ catalog-homepage = Site web
 catalog-notes = Dans cette version
 catalog-link-unknown = Le catalogue n'a aucun paquet nommé { $id }
 catalog-link-too-new = { $name } nécessite un rox plus récent que celui-ci
+catalog-updates-chip = { $count ->
+    [one] { $count } mise à jour du catalogue
+   *[other] { $count } mises à jour du catalogue
+}
+catalog-updates-chip-tip = Des versions plus récentes de ce qui a été installé depuis le catalogue

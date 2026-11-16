@@ -13,7 +13,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use gpui::{App, Global, Task};
 use semver::Version;
@@ -84,10 +84,21 @@ fn read_bytes_capped(path: &Path, cap: u64) -> Option<Vec<u8>> {
 /// Fetch, parse, then replace the cached copy. A failed fetch or an index
 /// that doesn't read leaves the cache as it was.
 pub(crate) fn refresh(cx: &mut App) -> Task<Result<Index, String>> {
-    cx.background_executor().spawn(async move { refresh_now() })
+    let fetching = cx.background_executor().spawn(async move { refresh_now() });
+
+    cx.spawn(async move |cx| {
+        let fetched = fetching.await;
+        if fetched.is_ok() {
+            cx.update(landed).ok();
+        }
+
+        fetched
+    })
 }
 
-fn refresh_now() -> Result<Index, String> {
+/// [`refresh`]'s work, blocking, for a caller already on the background
+/// executor. The chip's count follows the new index.
+pub(crate) fn refresh_now() -> Result<Index, String> {
     let text = wire::fetch_index_text(&origin()?)?;
     let index = wire::parse_index(&text)?;
 
@@ -98,9 +109,18 @@ fn refresh_now() -> Result<Index, String> {
     // The exact bytes, so a later signature check reads what was served.
     write_atomic(&index_path(), text.as_bytes())?;
     edit_installs(|installs| installs.checked_at = crate::startup::updates::now());
+    note_updates();
 
     log::info!("catalog: {} packages", index.packages.len());
     Ok(index)
+}
+
+/// After a refresh or an install lands: an open catalog window reloads,
+/// and the menubar repaints, since the chip's static is outside gpui's
+/// reactivity.
+pub(crate) fn landed(cx: &mut App) {
+    crate::catalog_window::refreshed(cx);
+    cx.refresh_windows();
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -174,6 +194,17 @@ struct Installs {
     checked_at: u64,
     #[serde(default)]
     installed: Vec<Installed>,
+    /// Updates whose chip was closed, each by the hash it offered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dismissed: Vec<Offered>,
+}
+
+/// One update as the chip offers it. The hash is part of it, so a second
+/// update to a package whose first one was dismissed shows again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Offered {
+    pub id: String,
+    pub sha256: String,
 }
 
 /// One file installed from the catalog, by the sha256 it was verified
@@ -196,17 +227,21 @@ fn read_installs() -> Installs {
         .unwrap_or_default()
 }
 
-/// Records whose file is gone are dropped on every write.
+/// Records whose file is gone are dropped on every write. Nothing is
+/// written when nothing changed.
 fn edit_installs(edit: impl FnOnce(&mut Installs)) {
     let _held = INSTALLS.lock().unwrap_or_else(PoisonError::into_inner);
 
-    let mut installs = read_installs();
+    let read = read_installs();
+    let mut installs = read.clone();
     edit(&mut installs);
     installs
         .installed
         .retain(|record| still_there(&record.file));
 
-    settings::write_json(&installed_path(), &installs, "catalog installs");
+    if installs != read {
+        settings::write_json(&installed_path(), &installs, "catalog installs");
+    }
 }
 
 fn still_there(file: &str) -> bool {
@@ -240,6 +275,87 @@ pub(crate) fn installed() -> Vec<Installed> {
     installed.retain(|record| still_there(&record.file));
 
     installed
+}
+
+/// How many installs are on record, and when the catalog was last fetched,
+/// for the launch check to weigh. Reads a file, so it's for the background
+/// executor.
+pub(crate) fn on_record() -> (usize, u64) {
+    let installs = read_installs();
+    let installed = installs
+        .installed
+        .iter()
+        .filter(|record| still_there(&record.file))
+        .count();
+
+    (installed, installs.checked_at)
+}
+
+// ── The updates chip ──
+
+/// The updates the menubar chip announces: pending and not dismissed. A
+/// live static because the menubar reads it per frame. The Updates tab
+/// asks [`updates`] instead, so a dismissed chip never hides the tab.
+static CHIP: RwLock<Vec<Offered>> = RwLock::new(Vec::new());
+
+pub(crate) fn chip_count() -> usize {
+    CHIP.read().unwrap_or_else(PoisonError::into_inner).len()
+}
+
+/// Works the chip out again from the saved index and the record, and
+/// forgets dismissals that no longer match a pending update. Reads two
+/// files, so it's for the background executor; the caller repaints.
+pub(crate) fn note_updates() {
+    let index = load();
+
+    edit_installs(|installs| {
+        *CHIP.write().unwrap_or_else(PoisonError::into_inner) =
+            chip_in(installs, index.as_ref(), still_there, CURRENT);
+    });
+}
+
+fn chip_in(
+    installs: &mut Installs,
+    index: Option<&Index>,
+    exists: impl Fn(&str) -> bool,
+    current: &str,
+) -> Vec<Offered> {
+    let pending: Vec<Offered> = index
+        .map(|index| updates_in(index, &installs.installed, exists, current))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|summary| Offered {
+            id: summary.id,
+            sha256: summary.latest.sha256,
+        })
+        .collect();
+
+    installs
+        .dismissed
+        .retain(|offered| pending.contains(offered));
+
+    pending
+        .into_iter()
+        .filter(|offered| !installs.dismissed.contains(offered))
+        .collect()
+}
+
+/// Remembered in `installed.json`. The chip hides at once; the write runs
+/// on the background executor.
+pub(crate) fn dismiss_chip(cx: &mut App) {
+    let closed = std::mem::take(&mut *CHIP.write().unwrap_or_else(PoisonError::into_inner));
+
+    cx.background_executor()
+        .spawn(async move {
+            edit_installs(|installs| {
+                for offered in closed {
+                    if !installs.dismissed.contains(&offered) {
+                        installs.dismissed.push(offered);
+                    }
+                }
+            });
+        })
+        .detach();
 }
 
 fn updates_in(
@@ -369,6 +485,9 @@ fn start(
                     Ok((installed, stored)) => {
                         log::info!("catalog: installed {}", installed.id);
                         offer(stored, cx);
+                        // An update installed is one less for the chip and
+                        // the tab, wherever the install started.
+                        landed(cx);
                         Ok(installed)
                     }
                     Err(e) => {
@@ -431,7 +550,7 @@ fn fetch_and_store(id: &str, progress: &Progress) -> Result<(Installed, Stored),
     )?;
 
     let stored = store(summary, &file);
-    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_dir_all(&dir);
     let (stored, path) = stored?;
 
     let installed = Installed {
@@ -441,6 +560,7 @@ fn fetch_and_store(id: &str, progress: &Progress) -> Result<(Installed, Stored),
         file: relative(&path),
     };
     record(installed.clone());
+    note_updates();
 
     Ok((installed, stored))
 }
@@ -640,6 +760,87 @@ mod tests {
         // An update this build can't install isn't offered.
         let index = index(&[("ahead", NEW, &newer)]);
         assert!(updates_in(&index, &[installed("ahead", OLD)], |_| true, CURRENT).is_empty());
+    }
+
+    fn offered(id: &str, sha256: &str) -> Offered {
+        Offered {
+            id: id.to_string(),
+            sha256: sha256.to_string(),
+        }
+    }
+
+    const NEWER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_dismissed_update_stays_dismissed() {
+        let index = index(&[("aurora", NEW, "1.0.0")]);
+        let mut installs = Installs {
+            installed: vec![installed("aurora", OLD)],
+            ..Installs::default()
+        };
+
+        assert_eq!(
+            chip_in(&mut installs, Some(&index), |_| true, CURRENT),
+            vec![offered("aurora", NEW)]
+        );
+
+        // The same update, dismissed, stays gone however often it's asked.
+        installs.dismissed.push(offered("aurora", NEW));
+        for _ in 0..2 {
+            assert!(chip_in(&mut installs, Some(&index), |_| true, CURRENT).is_empty());
+            assert_eq!(installs.dismissed, vec![offered("aurora", NEW)]);
+        }
+
+        // The tab's list doesn't read the dismissals.
+        assert_eq!(
+            ids(&updates_in(&index, &installs.installed, |_| true, CURRENT)),
+            vec!["aurora"]
+        );
+    }
+
+    #[test]
+    fn a_new_update_brings_the_chip_back() {
+        let mut installs = Installs {
+            installed: vec![installed("aurora", OLD), installed("lamp", OLD)],
+            dismissed: vec![offered("aurora", NEW)],
+            ..Installs::default()
+        };
+
+        // Aurora moves again and lamp moves for the first time: both show,
+        // and the stale dismissal is forgotten.
+        let moved = index(&[("aurora", NEWER, "1.0.0"), ("lamp", NEW, "1.0.0")]);
+        assert_eq!(
+            chip_in(&mut installs, Some(&moved), |_| true, CURRENT),
+            vec![offered("aurora", NEWER), offered("lamp", NEW)]
+        );
+        assert!(installs.dismissed.is_empty());
+
+        // A dismissal for an update that was installed goes too.
+        let mut installs = Installs {
+            installed: vec![installed("aurora", NEW)],
+            dismissed: vec![offered("aurora", NEW)],
+            ..Installs::default()
+        };
+        let current = index(&[("aurora", NEW, "1.0.0")]);
+        assert!(chip_in(&mut installs, Some(&current), |_| true, CURRENT).is_empty());
+        assert!(installs.dismissed.is_empty());
+    }
+
+    #[test]
+    fn a_dismissal_is_kept_in_the_record() {
+        let installs = Installs {
+            checked_at: 7,
+            installed: vec![installed("aurora", OLD)],
+            dismissed: vec![offered("aurora", NEW)],
+        };
+
+        let text = serde_json::to_string(&installs).unwrap();
+        assert_eq!(serde_json::from_str::<Installs>(&text).unwrap(), installs);
+
+        // A record written before dismissals existed still reads.
+        let old: Installs = serde_json::from_str(r#"{"checked_at": 7, "installed": []}"#).unwrap();
+        assert!(old.dismissed.is_empty());
+        assert!(!serde_json::to_string(&old).unwrap().contains("dismissed"));
     }
 
     #[test]

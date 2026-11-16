@@ -894,7 +894,7 @@ settings-appearance-theme-system = 系统
 
 ## Settings: application
 settings-application-check-updates = 检查更新
-    .description = rox 启动时每天查一次有没有新版本；不管开不开，“关于”窗口都会当场检查
+    .description = rox 启动时每天查一次有没有新版本的 rox，以及从目录安装的内容有没有新版本；不管开不开，“关于”窗口都会当场检查
 settings-application-prerelease-updates = 包含候选版本
     .description = 也提供候选版本，也就是正式发布前放出来供测试的预览版；候选版本的构建不管开不开都会看到下一个
 settings-application-download-updates = 下载更新
@@ -4386,3 +4386,7 @@ catalog-homepage = 主页
 catalog-notes = 此版本内容
 catalog-link-unknown = 目录中没有名为 { $id } 的包
 catalog-link-too-new = { $name } 需要比这个更新的 rox
+catalog-updates-chip = { $count ->
+   *[other] { $count } 个目录更新
+}
+catalog-updates-chip-tip = 从目录安装的内容有了新版本

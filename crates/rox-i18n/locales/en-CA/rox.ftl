@@ -934,7 +934,7 @@ settings-appearance-theme-system = System
 ## Settings: application
 
 settings-application-check-updates = Check for Updates
-    .description = Look for a newer release once a day when rox starts; the About window checks now either way
+    .description = Once a day when rox starts, look for a newer rox and for newer versions of what you installed from the catalog; the About window checks now either way
 settings-application-prerelease-updates = Include Release Candidates
     .description = Offer release candidates, the previews published ahead of a release for testing; a candidate build always sees the next one either way
 settings-application-download-updates = Download Updates
@@ -4630,3 +4630,8 @@ catalog-homepage = Homepage
 catalog-notes = In this version
 catalog-link-unknown = The catalog has no package called { $id }
 catalog-link-too-new = { $name } needs a newer rox than this one
+catalog-updates-chip = { $count ->
+    [one] { $count } Catalog Update
+   *[other] { $count } Catalog Updates
+}
+catalog-updates-chip-tip = Newer versions of what you installed from the catalog

@@ -954,6 +954,10 @@ impl Workspace {
             .when_some(crate::startup::updates::available(), |d, version| {
                 d.child(self.update_chip(version, cx))
             })
+            .when_some(
+                Some(crate::catalog::chip_count()).filter(|&count| count > 0),
+                |d, count| d.child(self.catalog_chip(count)),
+            )
             .when(!status.is_empty(), |d| {
                 let library = self.state.library.clone();
                 let picked = self.state.selection.clone();
@@ -1177,49 +1181,28 @@ impl Workspace {
 
     fn update_chip(&self, version: String, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let dismiss_version = version.clone();
-        let chip = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_XS)
-            .px(tokens::SPACE_SM)
-            .py(px(2.))
-            .rounded_full()
-            .bg(palette::accent())
-            .text_xs()
-            .text_color(palette::text_on_accent())
-            .cursor_pointer()
-            .hover(|d| d.bg(palette::accent_hover()))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    crate::startup::about_window::open(this.state.clone(), cx);
-                }),
-            )
-            .child(rox_i18n::t!("menu-update-available"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
-                        cx.stop_propagation();
-                        crate::startup::updates::dismiss(dismiss_version.clone());
-                        cx.refresh_windows();
-                    })
-                    // The chip's text color doesn't reach the svg.
-                    .child(
-                        svg()
-                            .path(icons::CLOSE)
-                            .size(px(10.))
-                            .flex_none()
-                            .text_color(palette::text_on_accent()),
-                    ),
-            );
-        panel::Tip::keyed(
-            "update-chip",
-            rox_i18n::t!("about-version-available", version = version),
+
+        menubar_chip(
+            panel::Tip::keyed(
+                "update-chip",
+                rox_i18n::t!("about-version-available", version = version),
+            ),
+            rox_i18n::t!("menu-update-available"),
+            cx.listener(|this, _, _, cx| {
+                crate::startup::about_window::open(this.state.clone(), cx);
+            }),
+            move |_| crate::startup::updates::dismiss(dismiss_version.clone()),
         )
-        .apply(chip)
+    }
+
+    /// Opens the catalog on its Updates tab. Dismissing it leaves the tab.
+    fn catalog_chip(&self, count: usize) -> impl IntoElement + use<> {
+        menubar_chip(
+            panel::Tip::keyed("catalog-chip", rox_i18n::t!("catalog-updates-chip-tip")),
+            rox_i18n::t!("catalog-updates-chip", count = count as u64),
+            |_, _, cx| crate::catalog_window::open_updates(cx),
+            crate::catalog::dismiss_chip,
+        )
     }
 
     fn menu_surface_capture(
@@ -2229,6 +2212,51 @@ fn flyout_note(text: impl Into<SharedString>) -> Div {
         .py(tokens::SPACE_XS)
         .text_color(palette::text_muted())
         .child(text.into())
+}
+
+/// The accent pill the status side announces with: a click opens, the X
+/// dismisses and repaints. Every chip is this one, so they never fork.
+fn menubar_chip(
+    tip: panel::Tip,
+    label: SharedString,
+    open: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    dismiss: impl Fn(&mut App) + 'static,
+) -> Stateful<Div> {
+    let chip = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        .px(tokens::SPACE_SM)
+        .py(px(2.))
+        .rounded_full()
+        .bg(palette::accent())
+        .text_xs()
+        .text_color(palette::text_on_accent())
+        .cursor_pointer()
+        .hover(|d| d.bg(palette::accent_hover()))
+        .on_mouse_down(MouseButton::Left, open)
+        .child(label)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
+                    cx.stop_propagation();
+                    dismiss(cx);
+                    cx.refresh_windows();
+                })
+                // The chip's text color doesn't reach the svg.
+                .child(
+                    svg()
+                        .path(icons::CLOSE)
+                        .size(px(10.))
+                        .flex_none()
+                        .text_color(palette::text_on_accent()),
+                ),
+        );
+
+    tip.apply(chip)
 }
 
 /// The Alt tap tracker behind the menubar pin: two quick taps pin a hidden

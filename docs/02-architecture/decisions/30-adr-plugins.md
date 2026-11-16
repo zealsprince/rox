@@ -112,15 +112,15 @@ it:
 - `panels`: presets of core panel kinds, listed under the plugin's name. Nothing
   executes.
 
-Several things stay outside the set. UI code and node trees wait on [ADR
-24](24-adr-script-panels.md), which is Proposed and has its own gate. A plugin that
-returned a node tree would be a script panel with network reach, the fragility the scope
-doc's refusal exists for. Audio processing and engine hooks would put plugin code on the
-decode path the callback invariant protects ([ADR 19](19-adr-processing-chain.md)) or
-into the timeline the engine alone owns ([ADR 16](16-adr-play-queue.md)). A plugin
-hands the engine container bytes, and decode stays in core. Controlling playback
-somewhere else, which the scope doc's Tapped and Remote tiers need, isn't in the set
-either. It gets a capability when a real plugin needs one.
+Several things stay outside the set. The first is UI code and node trees. [ADR
+24](24-adr-script-panels.md) proposed node trees behind a gate of their own and is
+declined. A plugin that returned a node tree would be a script panel with network reach,
+the fragility the scope doc's refusal exists for. Audio processing and engine hooks
+would put plugin code on the decode path the callback invariant protects ([ADR
+19](19-adr-processing-chain.md)) or into the timeline the engine alone owns ([ADR
+16](16-adr-play-queue.md)). A plugin hands the engine container bytes, and decode stays
+in core. Controlling playback somewhere else, which the scope doc's Tapped and Remote
+tiers need, isn't in the set either. It gets a capability when a real plugin needs one.
 
 Verbs into rox are out for now because nothing needs one. Every source call is one rox
 makes into the plugin, so plugins never call back. When one does, it goes through a
@@ -299,8 +299,8 @@ missing. The field doesn't exist yet (`WorkspaceBundle`,
 build drops it silently, which costs that build only the warning.
 
 This narrows the scope doc's refusal of scripted UI extensions for presets only: a
-plugin can put entries on the menu, and every entry is data. ADR 24's script panels stay
-Proposed and separate, and plugin-supplied node trees wait on them.
+plugin can put entries on the menu, and every entry is data. ADR 24's script panels are
+declined, and plugin-supplied node trees stay out.
 
 **What the #8 prototype measured.** The prototype ran one external plugin, built on a
 downloader the user installs, through the real folder, manifest, version check and wire,
@@ -705,14 +705,15 @@ the plugins directory still loads. The trust identity stays the folder hash abov
 computed so a folder and the package made from it hash the same, and nothing runs before
 the user's switch. The manifest and `api` are unchanged.
 
-**Amendment proposed 2026-11-15, with [ADR 37](37-adr-render-targets.md): renderers.**
-The decision above names a visualizer as "the clearest case of what's out, since
-rendering is something rox does rather than something it fetches." ADR 37 would reverse
-that for one shape. A third capability lets a plugin act as a renderer: rox sends it
-signals and the input that reaches a render target, and it sends frames back for rox to
-paint. `source` and `panels` are unchanged. The rest of the line holds: nothing a
-renderer supplies executes in rox's process or joins the element tree, it never touches
-the engine or the ring, and it never connects to the control socket. A verb into rox,
-if a renderer gets one, goes through the typed allowlist this record already reserves.
-The folder hash, the approval gate and the one switch cover a renderer as they cover
-any plugin. None of this is in force unless ADR 37 is decided.
+**Amended 2026-11-16: renderers.** Andrew's product call, with [ADR
+37](37-adr-render-targets.md). This supersedes one sentence under "Plugins, where ADR 29
+said extensions" above: "A visualizer is the clearest case of what's out, since
+rendering is something rox does rather than something it fetches." A third capability
+lets a plugin act as a renderer: rox sends it signals and the input that reaches a
+render target, and it sends frames back for rox to paint. `source` and `panels` are
+unchanged. The rest of the record holds. Nothing a renderer supplies executes in rox's
+process or joins the element tree, it never touches the engine or the ring, and it never
+connects to the control socket. A verb into rox, if a renderer gets one, goes through
+the typed allowlist this record already reserves. The folder hash, the approval gate and
+the one switch cover a renderer as they cover any plugin. The capability set stays
+closed, and adding to it is still a product decision and an amendment here.

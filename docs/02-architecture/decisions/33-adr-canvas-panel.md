@@ -121,10 +121,20 @@ build doesn't know is (`rox-canvas/src/state.rs`, `Content::Unknown`). The calle
 texture on a quad stays (`rox/src/canvas/texture.rs`), with nothing feeding it.
 
 What those items would have shown comes through a render target or not at all:
-[ADR 37](37-adr-render-targets.md), Proposed, has a program outside rox draw the
-picture and rox paint its frames on a canvas item. If that record isn't decided, the
-canvas shows no video and no 3D, and a WGSL shader item is the furthest it reaches.
+[ADR 37](37-adr-render-targets.md) has a program outside rox draw the picture and rox
+paint its frames on a canvas item. Without a render target, the canvas shows no video
+and no 3D, and a WGSL shader item is the furthest it reaches.
 
 The alternative was a renderer in core, either patched into gpui's passes or run on a
 device of its own. ADR 37 weighs both. It lost because it's an engine: lighting,
 materials, mesh import and post effects, owned by a music player.
+
+**Amended 2026-11-16: item interactivity, with no language.** Andrew's product call,
+with [ADR 24](24-adr-script-panels.md) declined. A canvas has no language. This
+supersedes the line above that scripting inside a canvas "would take its own record".
+When an item's look or visibility follows player state, it does so the way a Custom
+Controls button's look does (`rox/src/panels/controls.rs`). The user picks a piece of
+state from a fixed table (`rox-panel-api/src/buttons.rs`, `STATES`), the state has a
+finite list of cases, and the user sets the item's look, or whether it shows, for each
+case from lists. Nothing is written as an expression. That's the direction for item
+interactivity. No canvas item follows state yet.

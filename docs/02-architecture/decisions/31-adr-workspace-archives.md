@@ -95,5 +95,5 @@ video or draw a model.
 A workspace carries no video and no model file. rox doesn't import one, store it, list it
 or export it. An archive's table entry for an `mp4`, `webm` or `glb` file gets what an
 entry for any kind rox doesn't read gets. A renderer that plays a clip brings its own
-file or is pointed at one by the user ([ADR 37](37-adr-render-targets.md), Proposed).
+file or is pointed at one by the user ([ADR 37](37-adr-render-targets.md)).
 Export size, the cost above, now comes from images and fonts alone.

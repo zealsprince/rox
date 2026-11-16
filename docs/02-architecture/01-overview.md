@@ -144,17 +144,17 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [21 - CUE subsongs](decisions/21-adr-cue-subsongs.md) | Cue tracks as ordinary rows under a subsong id, spans in a side table | Decided |
 | [22 - Control surface](decisions/22-adr-control-surface.md) | Machine interface on a local JSON-RPC socket, never a bundled web server | Decided |
 | [23 - Shader pipeline](decisions/23-adr-shader-pipeline.md) | Comment directives split one shader into a pass chain, assets in the bundle | Decided; assets as files added with 31 |
-| [24 - Script panels](decisions/24-adr-script-panels.md) | Rhai script panels returning a node tree, behind the shader approval gate | Proposed |
+| [24 - Script panels](decisions/24-adr-script-panels.md) | Rhai script panels returning a node tree, behind the shader approval gate | Declined |
 | [25 - Shader stacks](decisions/25-adr-shader-stacks.md) | Every shader surface holds an ordered stack, composed into one chain | Proposed |
 | [26 - Last.fm sessions](decisions/26-adr-lastfm-sessions.md) | One session per api key, so builds stop invalidating each other | Decided |
 | [27 - i18n](decisions/27-adr-i18n.md) | Fluent messages and ICU4X formatting behind one locale static, en-CA as source | Decided |
 | [28 - Milkdrop](decisions/28-adr-milkdrop.md) | MilkDrop presets through libprojectM, rendered off-thread and read back | Decided |
 | [29 - Source contract](decisions/29-adr-source-contract.md) | Sources as rows under a source id, in-process, trait and host deferred | Decided; plugin streams, rows by membership and picks kept out of the library added by its amendments, host taken up by 30 |
-| [30 - Plugins](decisions/30-adr-plugins.md) | Plugins as subprocesses bringing something external in, from a closed capability set, audio as bytes they serve | Decided; one switch opting in and Developer mode, then radio, fields and views, then actions, then chapters and lyrics, then favourites, then search criteria, then providers for the library, added by its amendments; packages added with 32; renderers proposed with 37 |
+| [30 - Plugins](decisions/30-adr-plugins.md) | Plugins as subprocesses bringing something external in, from a closed capability set, audio as bytes they serve | Decided; one switch opting in and Developer mode, then radio, fields and views, then actions, then chapters and lyrics, then favourites, then search criteria, then providers for the library, added by its amendments; packages added with 32; renderers added with 37 |
 | [31 - Workspace archives](decisions/31-adr-workspace-archives.md) | A workspace is a `.roxw` zip, its assets files named in a table | Decided; the video and model kinds withdrawn by its amendment |
 | [32 - Plugin packages](decisions/32-adr-plugin-packages.md) | Plugins shared as `.roxp` packages with the folder's hash, folders kept for authoring | Decided |
-| [33 - Canvas panel](decisions/33-adr-canvas-panel.md) | A composite panel placing grids, images, text and shaders in depth under one camera, live UI flat, groups and nesting | Decided; renamed Canvas, held to flat items, video and models withdrawn by its amendment |
+| [33 - Canvas panel](decisions/33-adr-canvas-panel.md) | A composite panel placing grids, images, text and shaders in depth under one camera, live UI flat, groups and nesting | Decided; renamed Canvas, held to flat items, video and models withdrawn, then item interactivity from a fixed state table with no language, by its amendments |
 | [34 - Objects](decisions/34-adr-objects.md) | A `.roxo` carries one canvas item and what it uses, merged in on placing | Decided |
 | [35 - Package security](decisions/35-adr-package-security.md) | One set of archive, decoder and network rules for every package and every way in | Decided |
 | [36 - Catalog](decisions/36-adr-catalog.md) | A reviewed static index on one origin, installs tracked by the hash rox verified | Decided |
-| [37 - Render targets](decisions/37-adr-render-targets.md) | A surface on a canvas showing frames a program outside rox draws, fed signals and input | Proposed |
+| [37 - Render targets](decisions/37-adr-render-targets.md) | A surface on a canvas showing frames a program outside rox draws, fed signals and input | Decided |

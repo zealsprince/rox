@@ -112,9 +112,12 @@ isn't welded to file paths.
 - **CD ripping.** Well served by other tools, and outside the core loop.
 - **Scripted theming or UI extensions.** Foobar's component ecosystem was its deepest
   magic and its biggest maintenance burden. The fragility came from scripted panels.
-  Plugins bring things in from outside rox, not behavior inside the UI: themes stay
-  tokens, layouts stay declarative artifacts. A plugin's panels are presets of panels
-  rox already ships, so nothing a plugin supplies executes in the UI.
+  rox has no scripting language. Plugins bring things in from outside rox, not behavior
+  inside the UI: themes stay tokens, layouts stay declarative artifacts. A plugin's
+  panels are presets of panels rox already ships, so nothing a plugin supplies executes
+  in the UI. A render target is a surface whose picture is drawn by a renderer, a
+  separate program the user installed and approved. rox shows the frames the renderer
+  sends, and none of its code runs inside rox.
 
 ## Constraints handed to architecture
 
@@ -143,7 +146,8 @@ Product owns these requirements. The structure behind them is the architect's ca
 - **Themes are tokens, layouts are shareable, nothing is scripted.** A theme is colors,
   fonts, spacing, and accent. A layout is a saved arrangement of panels and their
   configs. Both are artifacts a person can hand to someone else and have work. A layout
-  can hold canvases: a canvas is a panel that places other panels, images, text and shaders
+  holding a render target works only where its renderer is installed. A layout can hold
+  canvases: a canvas is a panel that places other panels, images, text and shaders
   in depth under one camera, and one canvas can fill the window. An item in a canvas has a
   place, its content, one command from rox's own list that a click runs, a line of text
   that can show what's playing, and signals that move it. None of those is code. No

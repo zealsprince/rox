@@ -11,10 +11,10 @@ them.
 
 **What counts as code.** Two things a package can carry are code: shader source, gated
 by [ADR 23](23-adr-shader-pipeline.md)'s approval, and a plugin's entry, gated by [ADR
-30](30-adr-plugins.md)'s switch. Scripts, if rox ever carries them, would be code too.
-Everything else is data, and data never gates. No package can switch its own code on.
-Import, install and place store the thing, list what it holds and ask. Approval stays
-where it is today, one gate and one habit, with no second dialog added anywhere.
+30](30-adr-plugins.md)'s switch. Everything else is data, and data never gates. No
+package can switch its own code on. Import, install and place store the thing, list what
+it holds and ask. Approval stays where it is today, one gate and one habit, with no
+second dialog added anywhere.
 
 **One way in.** A file dialog, a drop on the window, a double-click, a second launch, a
 control-socket verb and an install link all end in the same three paths, one each for

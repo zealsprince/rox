@@ -1,6 +1,6 @@
 # ADR 24: Script panels, and the scripting refusal narrows
 
-**Status:** Proposed
+**Status:** Declined 2026-11-16
 
 Proposal: rox grows a Script panel. A script is one Rhai text held in a named workspace
 pool that matches the shader pool field for field. The inline source is canonical and the
@@ -98,3 +98,12 @@ host, the snapshot builder, the node schema, and the renderer from nodes to
 elements; the panel registers like any other and starts behind the experimental
 gate. The signals binding UI comes free once the panel declares its parameters as
 source directives the way shaders declare slots.
+
+**Declined 2026-11-16.** Andrew's product call. rox doesn't do scripting: there's no
+reason for a language inside it. What people want from one is covered by declarative
+pieces, such as a Custom Controls button whose look follows player state, or a canvas
+item with routes, a command and a text pattern ([ADR 33](33-adr-canvas-panel.md)). Code
+that draws runs outside rox, as a renderer behind a render target ([ADR
+37](37-adr-render-targets.md)). The scope doc's refusal of scripted theming and UI
+extensions stands without a carve-out. The text above stays as the record of what was
+considered.

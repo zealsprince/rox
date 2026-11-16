@@ -1,8 +1,8 @@
 # ADR 37: A render target shows frames another program draws
 
-**Status:** Proposed 2026-11-15
+**Status:** Decided 2026-11-16; nothing built or planned yet
 
-Proposal: rox grows a render target, a surface whose picture is drawn by a program
+Decision: rox grows a render target, a surface whose picture is drawn by a program
 outside rox. rox starts the program, sends it the signal pool's values and the input
 that reaches the surface, and paints the frames it sends back. A render target is a
 canvas item ([ADR 33](33-adr-canvas-panel.md), as amended), so rox composites its own
@@ -39,9 +39,9 @@ targets never share a world. A rox item is wholly in front of a target or wholly
 it. The editor sees one opaque item, with no handles on anything the renderer draws.
 What a click inside the surface does is up to the renderer.
 
-**How the existing records hold.** This proposal reverses a line in ADR 30 and narrows
-a refusal in the scope doc. Both are product decisions, and neither text changes unless
-this record is decided.
+**How the existing records hold.** This record reverses a line in ADR 30 and narrows a
+refusal in the scope doc. Both are product decisions, and Andrew made them with this
+one.
 
 ADR 30 says a plugin "never changes how rox itself behaves", and gives the example: "A
 visualizer is the clearest case of what's out, since rendering is something rox does
@@ -49,8 +49,8 @@ rather than something it fetches." A renderer is that visualizer. The mechanism 
 ADR 30's line still holds: the picture is drawn in another process and arrives as
 pixels, the way a source's audio arrives as bytes. Nothing a renderer supplies executes
 in rox's process, joins the element tree or touches the engine. The capability set is
-closed and "adding a capability is a product decision", so this needs an amendment
-there, proposed alongside this record.
+closed and "adding a capability is a product decision", so ADR 30 has an amendment for
+it, decided with this record.
 
 The [scope doc](../../01-product/03-scope.md) puts "Scripted theming or UI extensions"
 out of scope, on the fragility of scripted panels, and promises that a layout is an
@@ -98,8 +98,8 @@ ABI, and a crash takes the audio engine with it. Zero-copy frames change neither
 A window of the renderer's own. It needs nothing from rox beyond the signals. It can't
 dock, tab or sit under rox's items, and those are the reasons to want a surface.
 
-Nothing. WGSL shader items stay the ceiling. Raymarching in a fragment shader reaches
-some 3D looks under the existing approval gate, whatever this record decides.
+Nothing. WGSL shader items stay the ceiling. Raymarching in a fragment shader still
+reaches some 3D looks under the existing approval gate.
 
 **Costs.** Every frame crosses the CPU twice, once out of the renderer's GPU and once
 into rox's, until the two share a GPU texture. Sharing one is a gpui patch on each

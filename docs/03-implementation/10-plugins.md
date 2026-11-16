@@ -941,8 +941,7 @@ restore. `WorkspaceBundle::from_settings` fills `requires` with the plugin ids f
 without its plugin; only a kind the binary doesn't have comes back as the dock's
 `InvalidPanel` stand-in (`PanelRegistry::build_panel`, `rox-dock/src/panel.rs`).
 
-Declarative panels with plugin-defined readouts and verbs, and ADR 24 node trees, are out
-of scope here.
+Declarative panels with plugin-defined readouts and verbs are out of scope here.
 
 ## Trust
 
@@ -1032,8 +1031,7 @@ didn't switch on, and shows what a plugin declared before any of it runs.
 
 ## What a plugin can't do
 
-- Run code in the UI or draw anything. UI from a plugin waits on
-  [ADR 24](../02-architecture/decisions/24-adr-script-panels.md), which is Proposed.
+- Run code in the UI or draw anything.
 - Process audio or hook the engine. A plugin hands over container bytes and decoding
   stays in rox, so nothing a plugin does reaches the decode thread's DSP or the output
   callback.

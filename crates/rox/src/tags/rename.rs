@@ -275,7 +275,7 @@ fn move_file(from: &Path, to: &Path, case_only: bool) -> Result<(), String> {
         Err(e) if cross_device(&e) => {
             let hop = hop_path(to);
             let copy = (|| -> std::io::Result<()> {
-                fs::copy(from, &hop)?;
+                rox_package::fresh::copy(from, &hop)?;
                 fs::File::open(&hop)?.sync_all()?;
                 fs::rename(&hop, to)
             })();

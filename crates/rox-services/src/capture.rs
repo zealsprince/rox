@@ -595,7 +595,8 @@ fn write(
     // Through a sibling temp file and a rename, so a watcher never indexes a
     // half-written capture as a truncated track.
     let part = path.with_extension(format!("{}.part", station.ext));
-    std::fs::write(&part, &take.bytes).map_err(|e| format!("writing {}: {e}", part.display()))?;
+    rox_package::fresh::write(&part, &take.bytes)
+        .map_err(|e| format!("writing {}: {e}", part.display()))?;
     std::fs::rename(&part, &path).map_err(|e| format!("naming {}: {e}", path.display()))?;
 
     // A mid-stream Ogg capture has no header pages for lofty to open, but it
@@ -625,7 +626,8 @@ fn save_cover(path: &Path, title: &IcyTitle) {
     // Temp file and rename, so a reader never caches a half-written picture.
     let cover = path.with_extension(ext);
     let part = cover.with_extension(format!("{ext}.part"));
-    let written = std::fs::write(&part, &bytes).and_then(|()| std::fs::rename(&part, &cover));
+    let written =
+        rox_package::fresh::write(&part, &bytes).and_then(|()| std::fs::rename(&part, &cover));
 
     match written {
         Ok(()) => log::debug!("capture: cover at {}", cover.display()),

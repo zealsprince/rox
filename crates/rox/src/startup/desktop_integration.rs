@@ -263,7 +263,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let tmp = path.with_file_name(format!("{name}.tmp"));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    rox_package::fresh::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
 
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);

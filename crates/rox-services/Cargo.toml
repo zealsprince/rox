@@ -13,6 +13,8 @@ rox-library = { path = "../rox-library" }
 rox-playback = { path = "../rox-playback" }
 rox-plugins = { path = "../rox-plugins" }
 rox-net = { path = "../rox-net" }
+# Staged writes go through its exclusive create (`fresh`).
+rox-package = { path = "../rox-package" }
 rox-viz = { path = "../rox-viz" }
 gpui = { workspace = true }
 # Cover blur for the backdrop and artist portrait thumbnails.

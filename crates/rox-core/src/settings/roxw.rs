@@ -165,7 +165,8 @@ pub fn write(archive: &Path, bundle: &WorkspaceBundle, assets_from: &Path) -> Re
     .map_err(|e| format!("{MANIFEST}: {e}"))?;
 
     let manifest = suffixed(archive, ".manifest");
-    std::fs::write(&manifest, text).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    rox_package::fresh::write(&manifest, text)
+        .map_err(|e| format!("{}: {e}", manifest.display()))?;
     files.push((MANIFEST.to_string(), manifest.clone()));
 
     let result = rox_package::pack(archive, &files);
@@ -337,7 +338,7 @@ fn place(unpacked: &Path, into: &Path) -> Result<(), String> {
     if unpacked.is_dir() {
         std::fs::rename(unpacked, into).map_err(fail)
     } else {
-        std::fs::create_dir_all(into).map_err(fail)
+        rox_package::fresh::dir(into).map_err(fail)
     }
 }
 
@@ -449,6 +450,38 @@ mod tests {
         );
         assert!(!suffixed(&into, ".unpack").exists());
         assert!(!suffixed(&archive, ".manifest").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_at_the_manifest_name_is_not_followed() {
+        let root = scratch("manifest-link");
+        let bundle = carrying(&root.join("live"), b"frame bytes");
+        let archive = root.join("framed.roxw");
+        let target = root.join("target");
+        std::fs::write(&target, b"not yours").unwrap();
+        std::os::unix::fs::symlink(&target, suffixed(&archive, ".manifest")).unwrap();
+
+        write(&archive, &bundle, &root.join("live")).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"not yours");
+        assert_eq!(read_bundle(&archive).unwrap().name, "Framed");
+        assert!(suffixed(&archive, ".manifest").symlink_metadata().is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_stale_manifest_file_is_replaced() {
+        let root = scratch("manifest-stale");
+        let bundle = carrying(&root.join("live"), b"frame bytes");
+        let archive = root.join("framed.roxw");
+        std::fs::write(suffixed(&archive, ".manifest"), b"{ half a manifest").unwrap();
+
+        write(&archive, &bundle, &root.join("live")).unwrap();
+        assert_eq!(read_bundle(&archive).unwrap().name, "Framed");
 
         let _ = std::fs::remove_dir_all(&root);
     }

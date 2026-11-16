@@ -50,6 +50,8 @@ rox-panel-api = { path = "../rox-panel-api" }
 # libprojectM (ADR 28); the binary runs one engine for the app-wide backdrop.
 rox-milkdrop = { path = "../rox-milkdrop" }
 rox-panel-kit = { path = "../rox-panel-kit" }
+# Staged writes go through its exclusive create (`fresh`).
+rox-package = { path = "../rox-package" }
 # The nine panels that call into the workspace stay in crate::panels.
 rox-panels = { path = "../rox-panels" }
 rox-playback = { path = "../rox-playback" }

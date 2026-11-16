@@ -298,7 +298,7 @@ fn stream(
 ) -> Result<(), String> {
     use std::io::Write;
     let mut part = std::io::BufWriter::new(
-        std::fs::File::create(part_path).map_err(|e| format!("{}: {e}", part_path.display()))?,
+        rox_package::fresh::file(part_path).map_err(|e| format!("{}: {e}", part_path.display()))?,
     );
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];

@@ -95,9 +95,7 @@ fn copy_in(archive: &Path, to: &Path) -> Result<(), String> {
     };
     let tmp = dir.join(format!(".{}.incoming", name.to_string_lossy()));
 
-    // A leftover is removed first: copy follows a symlink left in its place.
-    let _ = std::fs::remove_file(&tmp);
-    let copied = std::fs::copy(archive, &tmp)
+    let copied = rox_package::fresh::copy(archive, &tmp)
         .and_then(|_| std::fs::rename(&tmp, to))
         .map_err(fail);
     if copied.is_err() {

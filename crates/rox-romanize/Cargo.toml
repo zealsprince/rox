@@ -38,10 +38,12 @@ ureq = "2"
 # Unpacks the archive. Same version and the same one feature the Windows
 # updater takes, so on Windows this adds no crate to the build.
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
-# Where the download lands: `models/`, beside the acoustic weights. The one
-# sibling dependency, exactly the one rox-acoustic takes for the same
-# reason, and nothing in this crate reaches any further up.
+# Where the download lands: `models/`, beside the acoustic weights. The
+# same sibling rox-acoustic takes for the same reason.
 rox-core = { path = "../rox-core" }
+# The download's part file goes through its exclusive create (`fresh`). A
+# leaf, so nothing in this crate reaches further up than rox-core.
+rox-package = { path = "../rox-package" }
 # Saying so when a dictionary fails to load. Rare enough that the facade
 # costs nothing without a logger behind it.
 log = "0.4"

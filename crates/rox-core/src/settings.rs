@@ -302,7 +302,7 @@ fn write_json_noted<T: Serialize>(
     note(&text);
 
     let tmp = path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp, &text) {
+    if let Err(e) = rox_package::fresh::write(&tmp, &text) {
         log::warn!("{what}: writing {}: {e}", tmp.display());
         return false;
     }
@@ -3963,6 +3963,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_at_the_json_temp_name_is_not_followed() {
+        let dir = scratch("json-link");
+        let path = dir.join("settings.json");
+        let target = dir.join("target");
+        std::fs::write(&target, b"not yours").unwrap();
+        std::os::unix::fs::symlink(&target, path.with_extension("json.tmp")).unwrap();
+
+        assert!(write_json(&path, &serde_json::json!({ "a": 1 }), "test"));
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"not yours");
+        let back: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back, serde_json::json!({ "a": 1 }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_json_temp_file_is_replaced() {
+        let dir = scratch("json-stale");
+        let path = dir.join("settings.json");
+        std::fs::write(path.with_extension("json.tmp"), b"{ \"half\": ").unwrap();
+
+        assert!(write_json(&path, &serde_json::json!({ "a": 1 }), "test"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\n  \"a\": 1\n}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

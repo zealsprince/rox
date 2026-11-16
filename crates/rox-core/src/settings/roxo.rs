@@ -204,7 +204,8 @@ pub fn write(
     let text = serde_json::to_string_pretty(&bundle).map_err(|e| format!("{MANIFEST}: {e}"))?;
 
     let manifest = suffixed(archive, ".manifest");
-    std::fs::write(&manifest, text).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    rox_package::fresh::write(&manifest, text)
+        .map_err(|e| format!("{}: {e}", manifest.display()))?;
     packed.push((MANIFEST.to_string(), manifest.clone()));
 
     let result = rox_package::pack(archive, &packed);

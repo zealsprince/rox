@@ -322,7 +322,7 @@ pub(crate) fn write_file_in(dir: &Path, file: &str, bytes: &[u8]) -> Result<(), 
     ));
     let path = dir.join(file);
 
-    let result = std::fs::File::create(&tmp)
+    let result = rox_package::fresh::file(&tmp)
         .and_then(|mut out| {
             out.write_all(bytes)?;
             out.sync_all()
@@ -413,7 +413,7 @@ fn stage_in(staging: &Path, src: &Path, max_bytes: u64) -> Result<Staged, String
     };
 
     // From here a failure drops `staged`, which deletes the partial copy.
-    let mut out = std::fs::File::create(&staged.tmp).map_err(fail)?;
+    let mut out = rox_package::fresh::file(&staged.tmp).map_err(fail)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0; 256 * 1024];
     loop {

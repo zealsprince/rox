@@ -648,7 +648,6 @@ fn pack_in(path: &Path, bundle: &WorkspaceBundle, mut files: Files) -> Result<()
     }
 
     let staging = suffixed(path, ".files");
-    let _ = std::fs::remove_dir_all(&staging);
     let result =
         gather(&staging, &bundle, &files).and_then(|()| roxw::write(path, &bundle, &staging));
     let _ = std::fs::remove_dir_all(&staging);
@@ -659,7 +658,7 @@ fn pack_in(path: &Path, bundle: &WorkspaceBundle, mut files: Files) -> Result<()
 /// Each table file into `staging`, from the first source holding its bytes.
 fn gather(staging: &Path, bundle: &WorkspaceBundle, files: &Files) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("{}: {e}", staging.display());
-    std::fs::create_dir_all(staging).map_err(fail)?;
+    rox_package::fresh::dir(staging).map_err(fail)?;
 
     for asset in &bundle.assets {
         // The table can come from an imported file, so its names are
@@ -819,7 +818,7 @@ fn stage_in(staged: &Path, bundle: &WorkspaceBundle, origin: &Origin) -> Result<
         Origin::Saved(archive) => roxw::extract_assets(archive, bundle, staged),
         Origin::Shipped(stem) => {
             let fail = |e: std::io::Error| format!("{}: {e}", staged.display());
-            std::fs::create_dir_all(staged).map_err(fail)?;
+            rox_package::fresh::dir(staged).map_err(fail)?;
 
             for asset in &bundle.assets {
                 let bytes = shipped_asset(stem, asset)?;

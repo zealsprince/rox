@@ -172,7 +172,7 @@ fn stream(
     progress: &Progress,
 ) -> Result<(), String> {
     let mut out = std::io::BufWriter::new(
-        std::fs::File::create(part).map_err(|e| format!("{}: {e}", part.display()))?,
+        rox_package::fresh::file(part).map_err(|e| format!("{}: {e}", part.display()))?,
     );
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; CHUNK];

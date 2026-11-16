@@ -330,7 +330,7 @@ fn stream(
 ) -> Result<(), String> {
     use std::io::Write;
     let mut out = std::io::BufWriter::new(
-        std::fs::File::create(part).map_err(|e| format!("{}: {e}", part.display()))?,
+        rox_package::fresh::file(part).map_err(|e| format!("{}: {e}", part.display()))?,
     );
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
@@ -479,7 +479,7 @@ fn apply_appimage(archive: &Path, target: &Path) -> Result<(), String> {
 
     let staged = sibling(target, "new");
     remove_any(&staged);
-    std::fs::copy(archive, &staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+    rox_package::fresh::copy(archive, &staged).map_err(|e| format!("{}: {e}", staged.display()))?;
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("{}: {e}", staged.display()))?;
 
@@ -514,7 +514,7 @@ fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
             continue;
         }
         let mut out =
-            std::fs::File::create(staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+            rox_package::fresh::file(staged).map_err(|e| format!("{}: {e}", staged.display()))?;
         std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
         out.sync_all().map_err(|e| e.to_string())?;
         std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
@@ -533,7 +533,7 @@ fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
         Err(_) => return Ok(false),
     };
     let mut out =
-        std::fs::File::create(staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+        rox_package::fresh::file(staged).map_err(|e| format!("{}: {e}", staged.display()))?;
     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
     out.sync_all().map_err(|e| e.to_string())?;
     Ok(true)

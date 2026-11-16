@@ -708,7 +708,7 @@ fn install_into(archive: &Path, plugins: &Path) -> Result<String, String> {
 
     // Not `.roxp`, so a scan mid-copy passes over it.
     let tmp = plugins.join(format!("{id}.{}.tmp", package::EXT));
-    let copied = std::fs::copy(archive, &tmp)
+    let copied = rox_package::fresh::copy(archive, &tmp)
         .and_then(|_| std::fs::rename(&tmp, &target))
         .map_err(|e| format!("{}: {e}", target.display()));
     if copied.is_err() {

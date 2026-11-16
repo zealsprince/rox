@@ -130,7 +130,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
 
     let tmp = path.with_extension("json.tmp");
-    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    let written = rox_package::fresh::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -630,8 +630,7 @@ fn fetch_and_store(
 
     // Only one install runs, so anything here is a leftover.
     let dir = incoming_dir();
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    rox_package::fresh::dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
 
     // The name is rox's own. Nothing from the index names a file on disk.
     let n = NEXT.fetch_add(1, Ordering::Relaxed);

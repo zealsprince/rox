@@ -8,6 +8,8 @@ license.workspace = true
 # The Last.fm and AcoustID lookups read the settings override before falling
 # back to the build's own key.
 rox-core = { path = "../rox-core" }
+# A download's part file goes through its exclusive create (`fresh`).
+rox-package = { path = "../rox-package" }
 # Every outbound request rides one shared blocking agent, and the Last.fm
 # signature is md5 over the sorted parameters.
 ureq = "2"

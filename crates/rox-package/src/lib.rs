@@ -7,6 +7,9 @@
 //! Names are checked on the raw bytes the archive stores, sizes are counted
 //! on the bytes actually read, and an unpack lands in a fresh folder that is
 //! renamed into place only once every entry is out.
+//!
+//! It also holds [`fresh`], the exclusive create every staged write in rox
+//! goes through, since this is the lowest crate those writes share.
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -15,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
+
+pub mod fresh;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -92,9 +97,7 @@ pub fn unpack(
         return Err(format!("{} already exists", dest.display()));
     }
 
-    // A leftover from an unpack that died part way through.
     let incoming = suffixed(dest, ".incoming");
-    let _ = std::fs::remove_dir_all(&incoming);
 
     let result = extract(&mut zip, size, limits, exec, keep, entries, &incoming).and_then(|kept| {
         std::fs::rename(&incoming, dest)
@@ -221,7 +224,8 @@ fn extract<R: Read + Seek>(
     entries: Vec<(usize, Entry)>,
     incoming: &Path,
 ) -> Result<Vec<Entry>, String> {
-    std::fs::create_dir_all(incoming).map_err(|e| format!("{}: {e}", incoming.display()))?;
+    // Replaces a leftover from an unpack that died part way through.
+    fresh::dir(incoming).map_err(|e| format!("{}: {e}", incoming.display()))?;
 
     let budget = budget(size, limits);
     let mut total: u64 = 0;
@@ -286,7 +290,7 @@ fn extract<R: Read + Seek>(
 fn write_archive(tmp: &Path, files: &[&(String, PathBuf)]) -> Result<(), String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", tmp.display());
 
-    let sink = File::create(tmp).map_err(|e| fail(&e))?;
+    let sink = fresh::file(tmp).map_err(|e| fail(&e))?;
     let mut zip = ZipWriter::new(BufWriter::new(sink));
 
     for (name, source) in files {
@@ -502,6 +506,51 @@ mod tests {
             assert_eq!(std::fs::read(dest.join(rel)).unwrap(), bytes, "{rel}");
         }
         assert!(!suffixed(&dest, ".incoming").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_at_the_pack_temp_name_is_not_followed() {
+        let scratch = Scratch::new("packlink");
+        let target = scratch.write("target", b"not yours");
+        let archive = scratch.path("a.zip");
+        std::os::unix::fs::symlink(&target, suffixed(&archive, ".tmp")).unwrap();
+
+        let source = scratch.write("src/a.txt", b"alpha");
+        pack(&archive, &[("a.txt".into(), source)]).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"not yours");
+        assert_eq!(read(&archive, "a.txt", 64).unwrap(), b"alpha");
+        assert!(suffixed(&archive, ".tmp").symlink_metadata().is_err());
+    }
+
+    #[test]
+    fn a_stale_pack_temp_file_is_replaced() {
+        let scratch = Scratch::new("packstale");
+        let archive = scratch.path("a.zip");
+        scratch.write("a.zip.tmp", &[0xff; 4096]);
+
+        let source = scratch.write("src/a.txt", b"alpha");
+        pack(&archive, &[("a.txt".into(), source)]).unwrap();
+
+        assert_eq!(read(&archive, "a.txt", 64).unwrap(), b"alpha");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_at_the_unpack_stage_is_not_followed() {
+        let scratch = Scratch::new("unpacklink");
+        let archive = scratch.pack("a.zip", &[("workspace.json", b"{}")]);
+        let elsewhere = scratch.path("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let dest = scratch.path("out");
+        std::os::unix::fs::symlink(&elsewhere, suffixed(&dest, ".incoming")).unwrap();
+
+        unpack(&archive, &dest, &roomy(), false, &everything).unwrap();
+
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert_eq!(std::fs::read(dest.join("workspace.json")).unwrap(), b"{}");
+        assert!(!dest.symlink_metadata().unwrap().file_type().is_symlink());
     }
 
     #[test]

@@ -389,10 +389,11 @@ playback stays as it is. The preview is editor state and never saved.
 The states are read once per render, and the playing track's marks only while an item
 follows the favourite, through the same mark cache Custom Controls holds. The canvas
 watches what Custom Controls watches (the player, the scrobbler, the presence service,
-the EQ and the library's mark events) and redraws only when a followed state's case
-moves, since the player notifies on every pump tick. A command run from a click looks at
-the cases again once its flip has landed. A canvas where nothing follows a state reads
-none of it and redraws for none of it. A case's image is an asset in the store like the
+the EQ and the library's mark events) plus the library itself, whose watch switch
+notifies without an event. It redraws only when a followed state's case moves, since the
+player notifies on every pump tick. A command run from a click looks at the cases again
+once its flip has landed. A canvas where nothing follows a state reads none of it and
+redraws for none of it. A case's image is an asset in the store like the
 item's own: an object exports it with the item, and placing rewrites it to the store's id.
 
 A grid item is a dock tree of its own: one `DockArea` per item, built and gated the way

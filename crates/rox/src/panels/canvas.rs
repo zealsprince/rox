@@ -401,7 +401,7 @@ pub struct CanvasPanel {
     _player: Subscription,
     _player_view: Subscription,
     _library: Subscription,
-    _states: [Subscription; 4],
+    _states: [Subscription; 5],
 }
 
 impl CanvasPanel {
@@ -475,6 +475,10 @@ impl CanvasPanel {
                 this.recheck_states(window, cx)
             }),
             cx.observe_global_in::<EqChanged>(window, |this: &mut Self, window, cx| {
+                this.recheck_states(window, cx)
+            }),
+            // The watch switch notifies without an event.
+            cx.observe_in(&state.library, window, |this: &mut Self, _, window, cx| {
                 this.recheck_states(window, cx)
             }),
         ];

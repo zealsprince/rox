@@ -3392,7 +3392,7 @@ impl LibraryPanel {
         }
         let Some(def) = column_def(&key) else { return };
         let current = self.column_label(&key, cx).unwrap_or_default();
-        let title = SharedString::from(format!("rox - rename {}", def.label));
+        let title = rox_i18n::t!("library-column-rename-window-title", column = def.label);
         let bounds = gpui::Bounds::centered(None, gpui::size(px(380.), px(205.)), cx);
         let state = self.state.clone();
         let panel = cx.weak_entity();

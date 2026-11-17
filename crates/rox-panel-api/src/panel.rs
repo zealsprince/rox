@@ -59,10 +59,10 @@ pub use rox_panel_kit::{
     glide_step, glide_step_axis, glide_target, glide_target_at, glide_target_axis, icon_choices,
     icon_control, icon_control_sized, icon_toggles, items, justify, justify_v, language_picker,
     letter_initial, letter_rail, mode_list, paint_slider, panel_nav_context, pattern_input, picker,
-    scrub_on_paint, setting_block, setting_row, setting_row_dyn, title_text, toggle, toggle_face,
-    toggle_locked, tracking_rows, type_ahead_context, type_ahead_fade, type_ahead_grow,
-    type_ahead_hit, type_ahead_live, type_ahead_overlay, type_ahead_scan, valign_rows,
-    value_slider_edit, value_slider_edit_over, value_slider_edit_sized, window_body,
+    scrub_on_paint, setting_block, setting_row, setting_row_dyn, setting_row_wrap, title_text,
+    toggle, toggle_face, toggle_locked, tracking_rows, type_ahead_context, type_ahead_fade,
+    type_ahead_grow, type_ahead_hit, type_ahead_live, type_ahead_overlay, type_ahead_scan,
+    valign_rows, value_slider_edit, value_slider_edit_over, value_slider_edit_sized, window_body,
     workspace_body,
 };
 

@@ -105,12 +105,15 @@ route-create-signal = Create New Signal
 ## Panel settings window
 
 panel-settings = Panel Settings
+panel-settings-window-title = rox - { $panel } settings
 panel-menu-label = Panel
 panel-save-as-preset = Save As Preset
+panel-save-preset-window-title = rox - save { $panel } as preset
 panel-rename = Rename
 panel-rename-name = Name
 panel-rename-note = Shown as the panel's tab; empty goes back to the built-in name
 panel-rename-hint-after = to rename
+panel-rename-window-title = rox - rename { $panel }
 panel-was-closed = The panel was closed
 panel-reset = Reset
 panel-inverse = Inverse
@@ -686,6 +689,7 @@ library-column-rename = Rename...
 library-column-rename-reset = Reset Name
 library-column-rename-name = Header
 library-column-rename-note = Shown in place of the built-in header; empty goes back to it, and a single space leaves the header blank
+library-column-rename-window-title = rox - rename { $column }
 library-sort-on-click = Click to Sort
     .description = Sort by clicking anywhere in a header instead of on its icon; reordering a column then takes Alt and a drag
 library-group-search-results = Group Search Results
@@ -813,6 +817,7 @@ grid-preset-new-arrivals = New Arrivals
 
 ## Settings: sidebar pages
 
+settings-window-title = rox - Settings
 settings-page-appearance = Appearance
 settings-page-application = Application
 settings-page-audio = Audio

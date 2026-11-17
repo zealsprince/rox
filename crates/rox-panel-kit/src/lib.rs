@@ -546,6 +546,59 @@ pub fn setting_row_dyn(
         })
 }
 
+/// Like [`setting_row`], except a control that doesn't fit beside the label
+/// drops to its own line, right-aligned, and can shrink to the row so a
+/// wrapping control wraps inside it. Where it fits, it draws exactly like
+/// [`setting_row`]. For narrow hosts, where a long label in some languages
+/// pushed the control off the edge.
+pub fn setting_row_wrap(
+    label: impl Into<SharedString>,
+    description: Option<SharedString>,
+    control: impl IntoElement,
+) -> Div {
+    let label = label.into();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap_y(px(2.))
+                // A margin rather than a column gap: taffy counts the gap
+                // against a wrapped line too, which pulls every control in.
+                // Narrower than setting_row's gap, since the control sits
+                // flush right either way and the canvas inspector's English
+                // rows already run a couple of pixels over at that gap.
+                .child(div().mr(tokens::SPACE_SM).child(label.clone()))
+                // Grows into whatever the label leaves, so the slot has a
+                // definite width: a content-sized slot collapses a wrapping
+                // control to its narrowest.
+                .child(
+                    div()
+                        .id(ElementId::Name(label))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .flex_grow()
+                        .flex_shrink()
+                        .min_w_0()
+                        .child(control),
+                ),
+        )
+        .when_some(description, |d, description| {
+            d.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(description),
+            )
+        })
+}
+
 /// Like [`setting_row`] with the control full width below. Wrapping controls
 /// need this: an inline slot is content-sized and collapses a wrap container.
 pub fn setting_block(

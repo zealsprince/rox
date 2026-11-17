@@ -26,7 +26,7 @@ use gpui_component::{Disableable as _, Icon, Sizable as _};
 
 use rox_viz::signal::{AGGREGATE_RATE_MAX, Route, Signal, SignalHub, Source};
 
-use crate::panel::{self, ScrubState, ValueEdit, setting_row, toggle};
+use crate::panel::{self, ScrubState, ValueEdit, toggle};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
@@ -622,7 +622,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(setting_row(
+        .child(panel::setting_row_wrap(
             rox_i18n::t!("signal-source"),
             Some(rox_i18n::t!("signal-source.description")),
             panel::choices_shared(
@@ -668,11 +668,17 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     cx.notify();
                 },
                 cx,
-            ),
+            )
+            // Five kinds outrun a narrow host in the longer languages, so the
+            // chips wrap rather than run off the edge.
+            .flex_shrink()
+            .flex_wrap()
+            .justify_end()
+            .gap_y(px(1.)),
         ))
         .when(!spectral, |d| aggregate_rows(d, host, id, cx))
         .when(spectral && kind != SourceKind::Level, |d| {
-            d.child(setting_row(
+            d.child(panel::setting_row_wrap(
                 rox_i18n::t!("signal-low-bound"),
                 None,
                 panel::value_slider_edit(
@@ -702,7 +708,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     cx,
                 ),
             ))
-            .child(setting_row(
+            .child(panel::setting_row_wrap(
                 rox_i18n::t!("signal-high-bound"),
                 None,
                 panel::value_slider_edit(
@@ -734,7 +740,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
             ))
         })
         .when(spectral, |d| {
-            d.child(setting_row(
+            d.child(panel::setting_row_wrap(
                 rox_i18n::t!("signal-response"),
                 Some(if matches!(kind, SourceKind::Onset | SourceKind::Trigger) {
                     rox_i18n::t!("signal-response-pulse")
@@ -762,7 +768,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     cx,
                 ),
             ))
-            .child(setting_row(
+            .child(panel::setting_row_wrap(
                 rox_i18n::t!("signal-threshold"),
                 Some(if kind == SourceKind::Trigger {
                     rox_i18n::t!("signal-threshold-trigger")
@@ -871,7 +877,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
             .into_any_element()
     };
 
-    col.child(setting_row(
+    col.child(panel::setting_row_wrap(
         rox_i18n::t!("signal-adds-up"),
         Some(rox_i18n::t!("signal-adds-up.description")),
         picker,
@@ -892,7 +898,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
                 .child(rox_i18n::t!("signal-aggregate-unpicked")),
         )
     })
-    .child(setting_row(
+    .child(panel::setting_row_wrap(
         rox_i18n::t!("signal-rate"),
         Some(rox_i18n::t!("signal-rate.description")),
         panel::value_slider_edit_over(
@@ -919,7 +925,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
             cx,
         ),
     ))
-    .child(setting_row(
+    .child(panel::setting_row_wrap(
         rox_i18n::t!("signal-reset-on-track"),
         Some(rox_i18n::t!("signal-reset-on-track.description")),
         toggle(
@@ -931,7 +937,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
             cx,
         ),
     ))
-    .child(setting_row(
+    .child(panel::setting_row_wrap(
         rox_i18n::t!("signal-flush"),
         Some(rox_i18n::t!("signal-flush.description")),
         settings_ui::small_button(
@@ -1043,7 +1049,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             .text_color(palette::text_faint())
             .child(rox_i18n::t!("route-range-note")),
     )
-    .child(setting_row(
+    .child(panel::setting_row_wrap(
         rox_i18n::t!("route-quiet"),
         Some(quiet_line),
         panel::value_slider_edit_over(
@@ -1063,7 +1069,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             cx,
         ),
     ))
-    .child(setting_row(
+    .child(panel::setting_row_wrap(
         rox_i18n::t!("route-loud"),
         Some(loud_line),
         panel::value_slider_edit_over(
@@ -1176,7 +1182,7 @@ pub fn bindable_row<P: RouteHost>(
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(panel::setting_row(label, description, control));
+        .child(panel::setting_row_wrap(label, description, control));
     if open && let Some(index) = bound {
         let header = settings_ui::block_header(
             div()

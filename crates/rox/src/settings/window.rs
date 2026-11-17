@@ -142,7 +142,7 @@ pub fn open(
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Settings",
+        rox_i18n::t!("settings-window-title"),
         bounds,
         Some(settings_ui::MIN_SIZE),
         move |window, cx| {

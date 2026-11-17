@@ -165,10 +165,10 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = SharedString::from(format!(
-        "rox - {} settings",
-        panel::display_name(panel.read(cx).panel_name())
-    ));
+    let title = rox_i18n::t!(
+        "panel-settings-window-title",
+        panel = panel::display_name(panel.read(cx).panel_name())
+    );
     // Floored at MIN_SIZE so a stale small frame never opens under the minimum.
     let min = settings_ui::MIN_SIZE;
     let (width, height) = settings::Settings::load()
@@ -722,10 +722,10 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = SharedString::from(format!(
-        "rox - rename {}",
-        panel::display_name(panel.read(cx).panel_name())
-    ));
+    let title = rox_i18n::t!(
+        "panel-rename-window-title",
+        panel = panel::display_name(panel.read(cx).panel_name())
+    );
     let bounds = Bounds::centered(None, size(px(380.), px(195.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
@@ -885,10 +885,10 @@ fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = SharedString::from(format!(
-        "rox - save {} as preset",
-        panel::display_name(panel.read(cx).panel_name())
-    ));
+    let title = rox_i18n::t!(
+        "panel-save-preset-window-title",
+        panel = panel::display_name(panel.read(cx).panel_name())
+    );
     let bounds = Bounds::centered(None, size(px(420.), px(300.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {

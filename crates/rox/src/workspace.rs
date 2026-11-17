@@ -186,9 +186,7 @@ pub(crate) fn apply_decorations(cx: &mut App) {
         // Every window repaints, not just the renegotiated ones: the settings
         // window's Appearance toggle reads the flag live and would show stale
         // otherwise.
-        for window in cx.windows() {
-            window.update(cx, |_, window, _| window.refresh()).ok();
-        }
+        cx.refresh_windows();
     });
 }
 
@@ -202,16 +200,11 @@ fn workspace_handles(cx: &mut App) -> Vec<AnyWindowHandle> {
         .collect()
 }
 
-/// Repaint every open window, deferred. The caller is usually mid-update
-/// inside one of them (a settings row, a menu action), and a refresh
-/// dispatched into the window already on the update stack is dropped, so
-/// the window that asked would be the one left stale.
+/// Repaint every open window. As an effect, not through each window's
+/// handle: the caller is usually mid-update inside one of them, and that
+/// window's handle can't be reached until the update ends.
 pub(crate) fn refresh_all_windows(cx: &mut App) {
-    cx.defer(|cx| {
-        for window in cx.windows() {
-            window.update(cx, |_, window, _| window.refresh()).ok();
-        }
-    });
+    cx.refresh_windows();
 }
 
 /// Push the live resize-border flag at every open window, the decorations
@@ -467,9 +460,7 @@ pub(crate) fn note_backdrop_shader_error(message: String) {
 /// read at render time: the Backdrop section writes its config through
 /// here so the shader follows the knobs live, child windows included.
 pub(crate) fn refresh_backdrop(cx: &mut App) {
-    for handle in cx.windows() {
-        handle.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// The look's backdrop shader to edit. Absent reads as default with All
@@ -564,6 +555,8 @@ pub(crate) fn mini_showing(window: &Window, cx: &App) -> bool {
 pub(crate) fn set_backdrop_all_windows(on: bool, cx: &mut App) {
     rox_design::palette::set_backdrop_all_windows(on, cx);
     Settings::update(move |s| s.look.bundle.appearance.backdrop_all_windows = on);
+    // The palette repaints by handle, which misses a window mid-update.
+    cx.refresh_windows();
 }
 
 /// Whether this window is one of the open workspaces, which always get
@@ -688,9 +681,7 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
         }
         // Repaint everything so the settings window's error readout and the
         // shaded windows come up in the same frame.
-        for window in cx.windows() {
-            window.update(cx, |_, window, _| window.refresh()).ok();
-        }
+        cx.refresh_windows();
     });
 }
 
@@ -2210,16 +2201,9 @@ fn set_font_size(size: f32, cx: &mut App) {
     let size = size.clamp(palette::FONT_SIZE_MIN, palette::FONT_SIZE_MAX);
     palette::set_app_font_size(size, cx);
     Settings::update(move |s| s.app_font_size = size);
-    // The setter's repaint loop gets to every window but the one dispatching
-    // this action: we're mid-update inside it, so its re-entrant refresh is
-    // dropped and the resize would wait until the next input event. Defer a
-    // second pass that runs once this update has finished, so the focused
-    // window wakes now too.
-    cx.defer(|cx| {
-        for window in cx.windows() {
-            window.update(cx, |_, window, _| window.refresh()).ok();
-        }
-    });
+    // The palette's own repaint goes through each window's handle, which
+    // can't reach the window dispatching this action mid-update.
+    cx.refresh_windows();
 }
 
 /// Teach the dock's registry to rebuild every panel type from a layout

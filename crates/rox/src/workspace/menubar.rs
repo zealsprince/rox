@@ -156,6 +156,7 @@ impl Workspace {
                 Settings::update(move |s| s.quit_to_tray = on);
                 tray::sync(cx);
                 native_menu::rebuild(cx);
+                cx.refresh_windows();
             }
             MenuAction::CloseWindow => {
                 // Deferred: the teardown dumps every panel, this workspace included, and a

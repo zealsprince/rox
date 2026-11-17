@@ -96,7 +96,5 @@ pub fn set_slider_look(look: SliderLook, cx: &mut App) {
         SLIDER_ROUNDING_MAX
     };
     *SLIDER.write().unwrap() = SliderLook { rounding, ..look };
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }

@@ -883,9 +883,7 @@ pub fn set_theme(theme: Theme, cx: &mut App) {
 /// static is outside gpui's reactivity.
 pub fn set_language(language: Option<&str>, cx: &mut App) {
     rox_i18n::set_locale(language);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 fn resolve_theme(theme: Theme) -> palette::Mode {
@@ -948,9 +946,7 @@ pub fn rating_style() -> RatingStyle {
 /// other live-flag setters below follow the same pattern.
 pub fn set_rating_style(style: RatingStyle, cx: &mut App) {
     RATING_NUMERIC.store(style == RatingStyle::Numeric, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static RATING_DOTS: AtomicBool = AtomicBool::new(false);
@@ -961,9 +957,7 @@ pub fn rating_dots() -> bool {
 
 pub fn set_rating_dots(on: bool, cx: &mut App) {
     RATING_DOTS.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static HIDE_MENUBAR: AtomicBool = AtomicBool::new(false);
@@ -974,9 +968,7 @@ pub fn hide_menubar() -> bool {
 
 pub fn set_hide_menubar(on: bool, cx: &mut App) {
     HIDE_MENUBAR.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// Which of the menubar's status-side buttons draw.
@@ -1030,9 +1022,7 @@ pub fn menubar_buttons() -> MenubarButtons {
 
 pub fn set_menubar_buttons(buttons: MenubarButtons, cx: &mut App) {
     MENUBAR_BUTTONS.store(buttons.to_bits(), Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// No repaint in the setter: flipping it reloads the projection, which
@@ -1055,9 +1045,7 @@ pub fn show_readings() -> bool {
 
 pub fn set_show_readings(on: bool, cx: &mut App) {
     SHOW_READINGS.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// Child windows only follow this with [`bare_child_windows`] on.
@@ -1177,9 +1165,7 @@ pub fn seams() -> bool {
 
 pub fn set_seams(on: bool, cx: &mut App) {
     rox_dock::resizable::set_seams(on);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 pub fn design_mode() -> bool {
@@ -1200,9 +1186,7 @@ pub fn resize_lock() -> bool {
 
 pub fn set_resize_lock(on: bool, cx: &mut App) {
     rox_dock::set_resize_lock(on);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static QUIT_TO_TRAY: AtomicBool = AtomicBool::new(false);
@@ -1224,9 +1208,7 @@ pub fn experimental() -> bool {
 
 pub fn set_experimental(on: bool, cx: &mut App) {
     EXPERIMENTAL.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static PLUGINS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -1237,9 +1219,7 @@ pub fn plugins_enabled() -> bool {
 
 pub fn set_plugins_enabled(on: bool, cx: &mut App) {
     PLUGINS_ENABLED.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static PLUGIN_FAVOURITES: AtomicBool = AtomicBool::new(false);
@@ -1250,9 +1230,7 @@ pub fn plugin_favourites() -> bool {
 
 pub fn set_plugin_favourites(on: bool, cx: &mut App) {
     PLUGIN_FAVOURITES.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static UNKNOWN_PLUGIN: RwLock<Option<String>> = RwLock::new(None);
@@ -1285,9 +1263,7 @@ pub fn acoustic_analysis() -> bool {
 
 pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
     ACOUSTIC_ANALYSIS.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 static TEMPO_ANALYSIS: AtomicBool = AtomicBool::new(false);
@@ -1298,9 +1274,7 @@ pub fn tempo_analysis() -> bool {
 
 pub fn set_tempo_analysis(on: bool, cx: &mut App) {
     TEMPO_ANALYSIS.store(on, Ordering::Relaxed);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// What the library's Gain column draws. The engine levels by the player's
@@ -1324,9 +1298,7 @@ pub fn set_gain_mode(mode: GainModeSetting, cx: &mut App) {
         },
         Ordering::Relaxed,
     );
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// Whether the model in use has vectors, as opposed to the switch merely
@@ -1342,9 +1314,7 @@ pub fn set_acoustic_described(described: bool, cx: &mut App) {
     if ACOUSTIC_DESCRIBED.swap(described, Ordering::Relaxed) == described {
         return;
     }
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// None follows the platform default.
@@ -1356,9 +1326,7 @@ pub fn app_font() -> Option<SharedString> {
 
 pub fn set_app_font(font: Option<String>, cx: &mut App) {
     *APP_FONT.write().unwrap() = font.map(SharedString::from);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 pub const DEFAULT_CROSSFADE_SECS: f32 = 4.0;
@@ -1446,9 +1414,7 @@ pub fn app_frame() -> Frame {
 
 pub fn set_app_frame(frame: Frame, cx: &mut App) {
     *FRAME.write().unwrap() = frame.clamped();
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }
 
 /// How the quick-play modal draws its result list.

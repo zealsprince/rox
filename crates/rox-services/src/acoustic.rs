@@ -91,7 +91,5 @@ pub fn acoustic_ml_source() -> Source {
 /// pick made by a newer build. Persisting is the caller's.
 pub fn set_acoustic_model(id: &str, cx: &mut App) {
     *ACOUSTIC_MODEL.write().unwrap() = resolve_acoustic(id);
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    cx.refresh_windows();
 }

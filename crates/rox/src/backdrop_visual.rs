@@ -491,14 +491,9 @@ pub(crate) fn note_playing(player: gpui::EntityId, playing: bool) -> bool {
     visual.playing.insert(player, playing) != Some(playing)
 }
 
-/// Restarts a parked paint, which otherwise sustains itself. Deferred: the
-/// callers are mid-update.
+/// Restarts a parked paint, which otherwise sustains itself.
 pub(crate) fn wake(cx: &mut App) {
-    cx.defer(|cx| {
-        for handle in cx.windows() {
-            handle.update(cx, |_, window, _| window.refresh()).ok();
-        }
-    });
+    cx.refresh_windows();
 }
 
 /// The canvas over the blurred cover. `allowed` is the backdrop gate; losing

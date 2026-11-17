@@ -2161,15 +2161,17 @@ pub(crate) fn objects_menu(
             menu = menu.item(PopupMenuItem::label(rox_i18n::t!("canvas-objects-empty")));
         }
 
-        for (name, _) in &installed {
+        for (name, file) in &installed {
             let label = SharedString::from(name.clone());
             let removing = name.clone();
+            let file = file.clone();
             let placing = name.clone();
             let gone = me.clone();
             let offer = me.clone();
 
             let row = PopupMenuItem::element(move |_, _| {
                 let removing = removing.clone();
+                let file = file.clone();
                 let gone = gone.clone();
 
                 // Taken on the press, which stops there, so the row's own
@@ -2190,8 +2192,9 @@ pub(crate) fn objects_menu(
                     )
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
-                        if let Err(e) = objects::remove(&removing) {
-                            log::warn!("objects: removing {removing}: {e}");
+                        match objects::remove(&removing) {
+                            Ok(()) => crate::catalog::forget(&file, cx),
+                            Err(e) => log::warn!("objects: removing {removing}: {e}"),
                         }
                         gone.update(cx, |this, cx| this.close_menu(cx)).ok();
                     });

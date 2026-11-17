@@ -1835,7 +1835,9 @@ impl SettingsWindow {
     }
 
     fn delete_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
-        crate::workspaces::remove(name);
+        let removed = crate::workspaces::remove(name);
+        crate::catalog::forget(&removed, cx);
+
         if self
             .workspace_card
             .as_ref()

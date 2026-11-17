@@ -211,26 +211,27 @@ renderer's acquire and submit, plus its wait on the previous frame's GPU work. G
 time the main thread never waits on doesn't show. A window with nothing moving
 draws no frames, so give it something to animate first. One timing runs at a time.
 
-`debug.catalog` drives the catalog client, and exists in debug builds only: a
-release build has neither the method nor the origin override below. `refresh`
-fetches the index and answers its packages, with a reason for every entry it refused
-under `dropped`. `install` takes a package id from the cached index, downloads and
-verifies the file, then hands it to the same import or install that file takes from
-disk, and answers the record it kept once the file is stored. It applies, places and
-switches on nothing: the apply confirm, the Plugins page or the place confirm opens
-in the front window, as it would for a double-click. An update of an object stores
-it and places nothing. With `"replace": true`, an update of a workspace or an object
-does what the catalog window's Replace does: the new file goes over the one the
-record names and keeps its name. A record naming anything but a plain file in that
-kind's folder keeps both instead, and the log says why. Without it, an update keeps
-both, as Keep Both does. `updates` lists the installed packages whose index hash has
-moved, with `asks` true where the window offers Replace and Keep Both. `chip`
-answers how many of those the menubar's updates chip shows (the ones not dismissed),
-and `cancel` stops the install in flight. A `refresh` lands the way the launch
-check's does: an open catalog window reloads and the chip follows the new index. A
-debug build started with `ROX_CATALOG_ORIGIN=http://127.0.0.1:<port>` reads the
-catalog from a local static server instead of the compiled-in
-`https://catalog.rox.music`.
+`debug.catalog` drives the catalog client, and exists in debug builds only: a release
+build has neither the method nor the origin override below. `refresh` fetches the
+index and answers its packages, with a reason for every entry it refused under
+`dropped`. `install` takes a package id from the cached index, downloads and verifies
+the file, then hands it to the same import or install that file takes from disk, and
+answers the record it kept once the file is stored. It applies and switches on
+nothing: the apply confirm, the Plugins page or an object's place follows in the front
+window, as it would for a double-click, so an object with nothing to review is placed
+at once and one with something to review shows the place confirm. An update of an
+object is offered the same way, as a new copy. With `"replace": true`, an update of a
+workspace or an object does what the catalog window's Replace does: the new file goes
+over the one the record names and keeps its name. A record naming anything but a plain
+file in that kind's folder keeps both instead, and the log says why. Without it, an
+update keeps both, as Keep Both does. `updates` lists the packages on record whose
+index hash has moved, including one whose file was deleted by hand, with `asks` true
+where the window offers Replace and Keep Both. `chip` answers how many of those the
+menubar's updates chip shows (the ones not dismissed), and `cancel` stops the install
+in flight. A `refresh` lands the way the launch check's does: an open catalog window
+reloads and the chip follows the new index. A debug build started with
+`ROX_CATALOG_ORIGIN=http://127.0.0.1:<port>` reads the catalog from a local static
+server instead of the compiled-in `https://catalog.rox.music`.
 
 `subscribe` enrols the connection in pushed frames. They arrive on the same
 connection as `event.track`, `event.playback`, and `event.queue` objects with a

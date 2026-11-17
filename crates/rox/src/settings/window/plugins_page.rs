@@ -718,6 +718,11 @@ impl SettingsWindow {
 
     pub(super) fn remove_plugin(&mut self, id: String, cx: &mut Context<Self>) {
         let removing = host::remove(&id, cx);
+        crate::catalog::forget(
+            &settings::plugins_dir().join(format!("{id}.{}", package::EXT)),
+            cx,
+        );
+
         self.plugin_page
             .inputs
             .retain(|(plugin, _), _| *plugin != id);

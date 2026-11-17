@@ -745,17 +745,20 @@ fn was_own_write(path: &Path) -> bool {
 }
 
 /// A missing file is a success: the list can be one external delete stale.
-pub fn remove(name: &str) {
-    remove_in(&settings::workspaces_dir(), name);
+/// Answers the file it removed.
+pub fn remove(name: &str) -> PathBuf {
+    remove_in(&settings::workspaces_dir(), name)
 }
 
-fn remove_in(dir: &Path, name: &str) {
+fn remove_in(dir: &Path, name: &str) -> PathBuf {
     let path = file_of_in(dir, name);
     if let Err(e) = std::fs::remove_file(&path)
         && e.kind() != std::io::ErrorKind::NotFound
     {
         log::warn!("workspace: deleting {}: {e}", path.display());
     }
+
+    path
 }
 
 /// Only the migration calls this. It tells a replay (a crash before the

@@ -4,9 +4,10 @@
 //! The wire is [`rox_net::sources::catalog`] and [`rox_net::download`]. This
 //! draws nothing.
 //!
-//! An install applies nothing, places nothing and switches nothing on. It
-//! ends in the confirm or the Plugins page the same file opened from disk
-//! ends in, and nothing the catalog serves can skip one (ADR 35). The
+//! An install applies nothing and switches nothing on. It ends where the
+//! same file opened from disk ends: the apply confirm, the Plugins page, or
+//! the place an object with nothing to review gets without asking, and
+//! nothing the catalog serves can skip a confirm (ADR 35). The
 //! index's sha256 proves a file is the one the index meant, fetched from the
 //! same origin as the file, so it proves nothing about the origin itself.
 
@@ -301,25 +302,23 @@ fn read_installs() -> Installs {
         .unwrap_or_default()
 }
 
-/// Records whose file is gone are dropped on every write. Nothing is
-/// written when nothing changed.
+/// Nothing is written when nothing changed. A record whose file is gone
+/// stays: only rox's own remove forgets one ([`forget`]).
 fn edit_installs(edit: impl FnOnce(&mut Installs)) {
     let _held = INSTALLS.lock().unwrap_or_else(PoisonError::into_inner);
 
     let read = read_installs();
     let mut installs = read.clone();
     edit(&mut installs);
-    installs
-        .installed
-        .retain(|record| still_there(&record.file));
 
     if installs != read {
         settings::write_json(&installed_path(), &installs, "catalog installs");
     }
 }
 
-fn still_there(file: &str) -> bool {
-    settings::data_dir().join(file).is_file()
+/// Whether the file a record names is still there. Reads the disk.
+pub(crate) fn on_disk(record: &Installed) -> bool {
+    settings::data_dir().join(&record.file).is_file()
 }
 
 fn record(installed: Installed) {
@@ -339,30 +338,44 @@ pub(crate) fn updates() -> Vec<Summary> {
         return Vec::new();
     };
 
-    updates_in(&index, &read_installs().installed, still_there, CURRENT)
+    updates_in(&index, &read_installs().installed, CURRENT)
 }
 
-/// What came from the catalog and is still on disk. Reads a file, so it's
-/// for the background executor.
+/// Everything on record as installed from the catalog, with its file still
+/// there or not. Reads a file, so it's for the background executor.
 pub(crate) fn installed() -> Vec<Installed> {
-    let mut installed = read_installs().installed;
-    installed.retain(|record| still_there(&record.file));
-
-    installed
+    read_installs().installed
 }
 
 /// How many installs are on record, and when the catalog was last fetched,
-/// for the launch check to weigh. Reads a file, so it's for the background
-/// executor.
+/// for the launch check to weigh. A record whose file was deleted counts,
+/// since its card still offers updates. Reads a file, so it's for the
+/// background executor.
 pub(crate) fn on_record() -> (usize, u64) {
     let installs = read_installs();
-    let installed = installs
-        .installed
-        .iter()
-        .filter(|record| still_there(&record.file))
-        .count();
 
-    (installed, installs.checked_at)
+    (installs.installed.len(), installs.checked_at)
+}
+
+/// rox's own remove of a stored file, which is the user telling rox, so the
+/// record naming it goes. The chip and an open catalog window follow.
+pub(crate) fn forget(path: &Path, cx: &mut App) {
+    let file = relative(path);
+
+    let forgetting = cx.background_executor().spawn(async move {
+        edit_installs(|installs| forget_in(installs, &file));
+        note_updates();
+    });
+
+    cx.spawn(async move |cx| {
+        forgetting.await;
+        cx.update(landed).ok();
+    })
+    .detach();
+}
+
+fn forget_in(installs: &mut Installs, file: &str) {
+    installs.installed.retain(|record| record.file != file);
 }
 
 // ── The updates chip ──
@@ -384,18 +397,13 @@ pub(crate) fn note_updates() {
 
     edit_installs(|installs| {
         *CHIP.write().unwrap_or_else(PoisonError::into_inner) =
-            chip_in(installs, index.as_ref(), still_there, CURRENT);
+            chip_in(installs, index.as_ref(), CURRENT);
     });
 }
 
-fn chip_in(
-    installs: &mut Installs,
-    index: Option<&Index>,
-    exists: impl Fn(&str) -> bool,
-    current: &str,
-) -> Vec<Offered> {
+fn chip_in(installs: &mut Installs, index: Option<&Index>, current: &str) -> Vec<Offered> {
     let pending: Vec<Offered> = index
-        .map(|index| updates_in(index, &installs.installed, exists, current))
+        .map(|index| updates_in(index, &installs.installed, current))
         .unwrap_or_default()
         .into_iter()
         .map(|summary| Offered {
@@ -432,15 +440,11 @@ pub(crate) fn dismiss_chip(cx: &mut App) {
         .detach();
 }
 
-fn updates_in(
-    index: &Index,
-    installed: &[Installed],
-    exists: impl Fn(&str) -> bool,
-    current: &str,
-) -> Vec<Summary> {
+/// A record whose file was deleted is still one: its update stores a fresh
+/// copy.
+fn updates_in(index: &Index, installed: &[Installed], current: &str) -> Vec<Summary> {
     installed
         .iter()
-        .filter(|record| exists(&record.file))
         .filter_map(|record| {
             let summary = index.get(&record.id)?;
             let moved = summary.latest.sha256 != record.sha256;
@@ -493,12 +497,8 @@ pub(crate) fn cancel(cx: &mut App) {
 enum Stored {
     Workspace(Box<WorkspaceBundle>),
     Plugin(String),
-    /// `place` is false for an update, which would otherwise drop another
-    /// copy onto the canvas every time.
-    Object {
-        name: String,
-        place: bool,
-    },
+    /// Offered to a canvas whether it's a first install or an update.
+    Object(String),
 }
 
 /// What an Update does with the file an earlier install of a workspace or
@@ -661,7 +661,7 @@ fn fetch_and_store(
         _ => None,
     };
 
-    let stored = store(summary, &file, into.as_deref(), earlier.is_some());
+    let stored = store(summary, &file, into.as_deref());
     let _ = std::fs::remove_dir_all(&dir);
     let (stored, path) = stored?;
 
@@ -679,12 +679,7 @@ fn fetch_and_store(
 
 /// The disk path's store step for each kind, and where it put the file.
 /// `into` is a recorded file that passed [`replaceable`], for a Replace.
-fn store(
-    summary: &Summary,
-    file: &Path,
-    into: Option<&Path>,
-    update: bool,
-) -> Result<(Stored, PathBuf), String> {
+fn store(summary: &Summary, file: &Path, into: Option<&Path>) -> Result<(Stored, PathBuf), String> {
     match summary.kind {
         Kind::Workspace => {
             if let Some(into) = into {
@@ -718,19 +713,17 @@ fn store(
         }
 
         Kind::Object => {
-            let place = !update;
-
             if let Some(into) = into {
                 let name = crate::objects::replace(file, into)?;
                 log::info!("catalog: replaced {}", into.display());
 
-                return Ok((Stored::Object { name, place }, into.to_path_buf()));
+                return Ok((Stored::Object(name), into.to_path_buf()));
             }
 
             let name = crate::objects::install(file)?;
             let path = roxo::objects_dir().join(format!("{name}.{}", roxo::EXT));
 
-            Ok((Stored::Object { name, place }, path))
+            Ok((Stored::Object(name), path))
         }
 
         Kind::Unknown => Err("that kind of package doesn't install".into()),
@@ -829,8 +822,9 @@ fn relative_in(data: &Path, path: &Path) -> String {
 }
 
 /// What a file opened from disk shows next, in the front window: the apply
-/// confirm, the Plugins page with the new row off, or the place confirm. An
-/// object's update is stored and offered nowhere.
+/// confirm, the Plugins page with the new row off, or an object's place. An
+/// object's update is offered like its first install, and the copies
+/// already placed are the canvas's own items, which stay as they are.
 fn offer(stored: Stored, cx: &mut App) {
     match stored {
         Stored::Workspace(bundle) => {
@@ -851,10 +845,7 @@ fn offer(stored: Stored, cx: &mut App) {
             });
         }
 
-        // Copies already placed are the canvas's own items and stay as they are.
-        Stored::Object { place: false, .. } => {}
-
-        Stored::Object { name, place: true } => {
+        Stored::Object(name) => {
             crate::workspace::with_front_workspace(cx, move |ws, window, cx| {
                 match crate::objects::canvas_for(ws, cx) {
                     // Outside this workspace update: a place with nothing to
@@ -943,22 +934,49 @@ mod tests {
             installed("gone-from-index", OLD),
         ];
 
+        assert_eq!(ids(&updates_in(&index, &records, CURRENT)), vec!["moved"]);
+    }
+
+    #[test]
+    fn a_deleted_file_with_a_newer_hash_is_still_an_update() {
+        // The records name files no test creates: nothing here reads the disk.
+        let index = index(&[("kept", NEW, "1.0.0"), ("deleted", NEW, "1.0.0")]);
+        let records = [installed("kept", OLD), installed("deleted", OLD)];
+
         assert_eq!(
-            ids(&updates_in(&index, &records, |_| true, CURRENT)),
-            vec!["moved"]
+            ids(&updates_in(&index, &records, CURRENT)),
+            vec!["kept", "deleted"]
         );
     }
 
     #[test]
-    fn a_missing_file_drops_its_record() {
-        let index = index(&[("kept", NEW, "1.0.0"), ("deleted", NEW, "1.0.0")]);
-        let records = [installed("kept", OLD), installed("deleted", OLD)];
+    fn a_deleted_file_counts_on_the_chip_like_the_updates_tab() {
+        let index = index(&[("deleted", NEW, "1.0.0"), ("same", OLD, "1.0.0")]);
+        let mut installs = Installs {
+            installed: vec![installed("deleted", OLD), installed("same", OLD)],
+            ..Installs::default()
+        };
 
-        let exists = |file: &str| file != "workspaces/deleted.roxw";
         assert_eq!(
-            ids(&updates_in(&index, &records, exists, CURRENT)),
-            vec!["kept"]
+            chip_in(&mut installs, Some(&index), CURRENT),
+            vec![offered("deleted", NEW)]
         );
+        assert_eq!(installs.installed.len(), 2);
+    }
+
+    #[test]
+    fn rox_removing_a_file_forgets_only_its_record() {
+        let mut installs = Installs {
+            installed: vec![installed("look", OLD), installed("other", OLD)],
+            ..Installs::default()
+        };
+
+        forget_in(&mut installs, "workspaces/look.roxw");
+        assert_eq!(installs.installed, vec![installed("other", OLD)]);
+
+        // A path no record names forgets nothing.
+        forget_in(&mut installs, "workspaces/look.roxw");
+        assert_eq!(installs.installed.len(), 1);
     }
 
     #[test]
@@ -977,7 +995,7 @@ mod tests {
 
         // An update this build can't install isn't offered.
         let index = index(&[("ahead", NEW, &newer)]);
-        assert!(updates_in(&index, &[installed("ahead", OLD)], |_| true, CURRENT).is_empty());
+        assert!(updates_in(&index, &[installed("ahead", OLD)], CURRENT).is_empty());
     }
 
     fn offered(id: &str, sha256: &str) -> Offered {
@@ -998,20 +1016,20 @@ mod tests {
         };
 
         assert_eq!(
-            chip_in(&mut installs, Some(&index), |_| true, CURRENT),
+            chip_in(&mut installs, Some(&index), CURRENT),
             vec![offered("aurora", NEW)]
         );
 
         // The same update, dismissed, stays gone however often it's asked.
         installs.dismissed.push(offered("aurora", NEW));
         for _ in 0..2 {
-            assert!(chip_in(&mut installs, Some(&index), |_| true, CURRENT).is_empty());
+            assert!(chip_in(&mut installs, Some(&index), CURRENT).is_empty());
             assert_eq!(installs.dismissed, vec![offered("aurora", NEW)]);
         }
 
         // The tab's list doesn't read the dismissals.
         assert_eq!(
-            ids(&updates_in(&index, &installs.installed, |_| true, CURRENT)),
+            ids(&updates_in(&index, &installs.installed, CURRENT)),
             vec!["aurora"]
         );
     }
@@ -1028,7 +1046,7 @@ mod tests {
         // and the stale dismissal is forgotten.
         let moved = index(&[("aurora", NEWER, "1.0.0"), ("lamp", NEW, "1.0.0")]);
         assert_eq!(
-            chip_in(&mut installs, Some(&moved), |_| true, CURRENT),
+            chip_in(&mut installs, Some(&moved), CURRENT),
             vec![offered("aurora", NEWER), offered("lamp", NEW)]
         );
         assert!(installs.dismissed.is_empty());
@@ -1040,7 +1058,7 @@ mod tests {
             ..Installs::default()
         };
         let current = index(&[("aurora", NEW, "1.0.0")]);
-        assert!(chip_in(&mut installs, Some(&current), |_| true, CURRENT).is_empty());
+        assert!(chip_in(&mut installs, Some(&current), CURRENT).is_empty());
         assert!(installs.dismissed.is_empty());
     }
 

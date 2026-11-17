@@ -293,6 +293,8 @@ struct Listing {
     /// Left out because this build is too old for them, with their names,
     /// so a link to one can say why it shows nothing.
     too_new: HashMap<String, String>,
+    /// On record with its file still there. A record whose file was deleted
+    /// shows Update when the index moved, and Install when it didn't.
     installed: HashSet<String>,
     updates: HashSet<String>,
     /// Updates whose Update asks Replace or Keep Both.
@@ -315,6 +317,7 @@ fn listing(index: Index) -> Listing {
 
     listing.installed = catalog::installed()
         .into_iter()
+        .filter(catalog::on_disk)
         .map(|installed| installed.id)
         .collect();
     let updates = catalog::updates();
@@ -498,7 +501,7 @@ enum Outcome {
     Failed(SharedString),
     /// Installed with no workspace window up, so there was no confirm to show.
     Quiet,
-    /// An object's update, stored and placed nowhere.
+    /// An object's update, stored and offered to a canvas like an install.
     ObjectUpdated,
 }
 
@@ -966,10 +969,8 @@ impl CatalogWindow {
                         }
                         this.refilter(cx);
 
-                        if object_update {
-                            this.outcome = Some((id, Outcome::ObjectUpdated));
-                        } else if quiet {
-                            this.outcome = Some((id, Outcome::Quiet));
+                        if let Some(said) = settled(object_update, quiet) {
+                            this.outcome = Some((id, said));
                         }
                     }
 
@@ -1671,6 +1672,18 @@ impl CatalogWindow {
     }
 }
 
+/// The line a card keeps after an install lands. With no workspace window
+/// up, nothing was offered anywhere, an object's update included.
+fn settled(object_update: bool, quiet: bool) -> Option<Outcome> {
+    if quiet {
+        Some(Outcome::Quiet)
+    } else if object_update {
+        Some(Outcome::ObjectUpdated)
+    } else {
+        None
+    }
+}
+
 fn row_mark(icon: &'static str, label: SharedString) -> Div {
     div()
         .flex_none()
@@ -1778,6 +1791,18 @@ impl Render for CatalogWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_object_update_says_it_was_offered_like_an_install() {
+        assert!(matches!(settled(true, false), Some(Outcome::ObjectUpdated)));
+
+        // A first install says nothing: its confirm or its place is the answer.
+        assert!(settled(false, false).is_none());
+
+        // With no window up nothing was offered, so neither line claims it was.
+        assert!(matches!(settled(true, true), Some(Outcome::Quiet)));
+        assert!(matches!(settled(false, true), Some(Outcome::Quiet)));
+    }
 
     fn summary(id: &str, kind: &str, fields: serde_json::Value) -> Summary {
         let mut value = serde_json::json!({

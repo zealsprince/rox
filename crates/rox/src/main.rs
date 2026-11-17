@@ -431,14 +431,15 @@ fn main() {
         rox_panel_kit::ui::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
+        let settings = Settings::load();
+        // Before keymap::init, which fixes every command label in the locale
+        // active at that moment, and before the first window title renders.
+        set_language(settings.language.as_deref(), cx);
         // After the widget library's init, whose bindings it snapshots as the bottom layer.
         keymap::init(cx);
-        let settings = Settings::load();
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
         seed_os_appearance(cx);
         set_theme(settings.theme, cx);
-        // Before the first window title renders.
-        set_language(settings.language.as_deref(), cx);
         palette::set_scalars(
             settings.look.bundle.appearance.surface_opacity,
             settings.look.bundle.appearance.backdrop_strength,

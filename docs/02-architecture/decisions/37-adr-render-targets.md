@@ -1,6 +1,6 @@
 # ADR 37: A render target shows frames another program draws
 
-**Status:** Decided 2026-11-16; nothing built or planned yet
+**Status:** Decided 2026-11-16; nothing built yet
 
 Decision: rox grows a render target, a surface whose picture is drawn by a program
 outside rox. rox starts the program, sends it the signal pool's values and the input
@@ -120,8 +120,6 @@ declares about itself.
 
 **Open.**
 
-- The frame channel. Shared memory with the wire announcing each frame is the
-  candidate. Nothing is measured.
 - Where the capability goes in the manifest.
 - Whether a render target is only a canvas item or also a panel of its own.
 - Parameters a renderer declares, shown as inspector rows and usable as route targets.
@@ -139,3 +137,45 @@ draws a render target. rox lists renderers apart from plugins and calls the surf
 render target and the program a renderer. Underneath nothing differs from
 [ADR 30](30-adr-plugins.md): the same package, the same folder hash, the same approval
 gate and the same switch.
+
+**Amended 2026-11-23: two ways in for frames, and receivers.** Andrew's product call,
+after the frame channel was measured. A render target takes frames two ways, and
+neither is exclusive.
+
+The first is shared memory, and it is rox's own channel. rox makes a block of memory,
+seals it against resizing, maps it read-only and hands it to the renderer, which writes
+pixels into one of two slots and says so with a short line on its standard output. Any
+language can do that on every platform with no library, which is what makes it the way
+in for a third party. It is built first. Measured on Linux at 1920x1080 and 60 frames a
+second, it costs rox 0.66 ms of UI thread a frame for the upload, beside 0.53 ms for
+Milkdrop's, and 0.77 ms off the UI thread for the copy. The cost grows with pixels: 2.66
+ms of UI thread at 3840x2160, and about 0.8 ms more for each further 1920x1080 target. A
+pipe carrying whole frames was measured too and lost at every size.
+
+The second is a GPU texture the two programs share, so a frame never reaches the CPU.
+It is the fast way at high resolutions and with several targets, and it is added per
+platform after the first. On Windows and macOS it is Spout and Syphon, the frameworks
+creative tools already send through. On Linux it is a dmabuf.
+
+This supersedes two sentences under Costs. "Every frame crosses the CPU twice"
+understates the shared-memory channel: rox itself copies each frame twice, and the
+second copy is on the UI thread. "Sharing one is a gpui patch on each backend" leaves
+out Linux, where blade can't import a dmabuf as it stands and would have to be vendored
+and patched as well. A shared texture also brings a hazard the CPU channel doesn't: if
+rox's GPU work waits on a fence the renderer controls, a renderer can stall it. The
+renderer has to finish its GPU work before it says a frame is ready.
+
+Three rules for the shared-memory channel join the size check this record already
+asks for. rox makes and seals the mapping and never maps one a renderer made, since a
+renderer that shrinks the file would crash rox's next read. rox caps how often a
+renderer may announce a frame, since a flood costs a core. And rox shares no lock with
+the renderer, so one that dies mid-frame leaves nothing held.
+
+The announce line is the renderer speaking first, which [ADR 30](30-adr-plugins.md)'s
+wire doesn't allow a plugin. A renderer doesn't use that wire. It has a small protocol
+of its own and answers no requests.
+
+A render target has two kinds of source. A renderer is a package rox starts and
+supervises, over either channel. A receiver is a render target pointed at a Spout or
+Syphon sender by name: rox starts nothing, and there is nothing to install or approve,
+because nothing of the sender's runs under rox. Receivers arrive with the GPU way.

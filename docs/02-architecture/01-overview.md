@@ -154,7 +154,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [31 - Workspace archives](decisions/31-adr-workspace-archives.md) | A workspace is a `.roxw` zip, its assets files named in a table | Decided; the video and model kinds withdrawn by its amendment |
 | [32 - Plugin packages](decisions/32-adr-plugin-packages.md) | Plugins shared as `.roxp` packages with the folder's hash, folders kept for authoring | Decided |
 | [33 - Canvas panel](decisions/33-adr-canvas-panel.md) | A composite panel placing grids, images, text and shaders in depth under one camera, live UI flat, groups and nesting | Decided; renamed Canvas, held to flat items, video and models withdrawn, then item interactivity from a fixed state table with no language, by its amendments |
-| [34 - Objects](decisions/34-adr-objects.md) | A `.roxo` carries one canvas item and what it uses, merged in on placing | Decided |
+| [34 - Objects](decisions/34-adr-objects.md) | A `.roxo` carries one canvas item and what it uses, merged in on placing | Decided; an install from outside, a drop or the catalog offers a place, by its amendment |
 | [35 - Package security](decisions/35-adr-package-security.md) | One set of archive, decoder and network rules for every package and every way in | Decided; a place with nothing to review doesn't ask, by its amendment |
 | [36 - Catalog](decisions/36-adr-catalog.md) | A reviewed static index on one origin, installs tracked by the hash rox verified | Decided |
-| [37 - Render targets](decisions/37-adr-render-targets.md) | A surface on a canvas showing frames a program outside rox draws, fed signals and input | Decided |
+| [37 - Render targets](decisions/37-adr-render-targets.md) | A surface on a canvas showing frames a program outside rox draws, fed signals and input | Decided; renderers named apart from plugins, then two frame channels and receivers, by its amendments |

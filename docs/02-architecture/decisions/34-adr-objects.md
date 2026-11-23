@@ -47,3 +47,12 @@ rewritten on the way in, which means every reference inside the object has to be
 and changed, and a placed object's shader and signal names can differ from the ones its
 author saw. Script associations aren't part of an object, since scripts aren't part of a
 canvas.
+
+**Amended 2026-11-23: an install from outside offers a place.** Andrew's product call.
+This supersedes "Installing an object copies it into an `objects/` folder in the data
+directory and places nothing." `roxctl object install` and the socket's
+`objects.install` still only store the object. An object opened from outside rox,
+dropped on a canvas, or installed or updated from the catalog ([ADR
+36](36-adr-catalog.md)) is stored and then offered to the canvas that last had focus. An
+offer with nothing to review places at once, as [ADR 35](35-adr-package-security.md)'s
+amendment records.

@@ -62,6 +62,18 @@ fn target(params: &Value, cx: &mut App) -> Result<gpui::AnyWindowHandle, RpcErro
         .ok_or_else(|| RpcError::app("no window open"))
 }
 
+/// [`target`] for input a person only gives in the window they're in. A
+/// compositor with no keyboard on its seat never activates a window, and the
+/// frontmost-workspace lookups behind the app-wide actions would then stay on
+/// whichever opened last, so this notes the window as in front the way
+/// activation does.
+fn target_in_front(params: &Value, cx: &mut App) -> Result<gpui::AnyWindowHandle, RpcError> {
+    let window = target(params, cx)?;
+    rox_panel_api::windows::note_activated(window, cx);
+
+    Ok(window)
+}
+
 /// Registration only says the name builds, not that anything is bound.
 fn actions(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let filter = params
@@ -87,7 +99,7 @@ fn action(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let action = cx
         .build_action(name, data)
         .map_err(|err| RpcError::app(format!("can't build {name}: {err}")))?;
-    let window = target(params, cx)?;
+    let window = target_in_front(params, cx)?;
     window
         .update(cx, |_, window, cx| window.dispatch_action(action, cx))
         .map_err(RpcError::app)?;
@@ -109,7 +121,7 @@ fn key(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     if strokes.is_empty() {
         return Err(RpcError::invalid_params("key takes at least one keystroke"));
     }
-    let window = target(params, cx)?;
+    let window = target_in_front(params, cx)?;
     let handled = window
         .update(cx, |_, window, cx| {
             strokes
@@ -128,7 +140,7 @@ fn type_text(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
         .get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::invalid_params("type takes {\"text\": \"..\", \"window\"?}"))?;
-    let window = target(params, cx)?;
+    let window = target_in_front(params, cx)?;
     window
         .update(cx, |_, window, cx| {
             for ch in text.chars() {
@@ -165,7 +177,7 @@ fn click(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .clamp(1, 3) as usize;
-    let window = target(params, cx)?;
+    let window = target_in_front(params, cx)?;
     window
         .update(cx, |_, window, cx| {
             window.dispatch_event(

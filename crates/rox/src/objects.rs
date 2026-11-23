@@ -587,6 +587,7 @@ pub(crate) fn place(
     let id = item.id.clone();
     canvas.change_routed(
         move |canvas, all| {
+            item.place.position = edit::cascaded(&canvas.items, &item.place);
             canvas.items.push(item);
             all.extend(routes);
         },

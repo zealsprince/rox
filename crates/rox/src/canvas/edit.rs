@@ -25,6 +25,10 @@ pub(crate) const TURN_SNAP: f32 = 15.;
 /// in that direction, in pixels of depth.
 const DEPTH_STEP: f32 = 10.;
 
+/// How far a new item steps down and right off one already standing where
+/// it would go, in the parent's units.
+pub(crate) const CASCADE_STEP: f32 = 24.;
+
 /// Steps kept for undo. Each holds two whole item trees, dock dumps included.
 const MAX_UNDOS: usize = 200;
 
@@ -466,6 +470,33 @@ pub(crate) fn z_for_depth(item: &CanvasItem, parent: &Frame, current: f32, targe
     item.place.position[2] + (target - current) / along
 }
 
+// ── Placing ──
+
+/// Where a new item with `place` goes among `siblings`: its position, stepped
+/// down and right by [`CASCADE_STEP`] for as long as a sibling of the same
+/// size on the same anchor already stands there, the way a design tool
+/// cascades a duplicate. A copy over an identical one reads as a single item.
+/// Size counts so a new item over a converted window's full-stage grid stays
+/// centred.
+pub(crate) fn cascaded(siblings: &[CanvasItem], place: &Place) -> [f32; 3] {
+    let taken = |spot: [f32; 3]| {
+        siblings.iter().any(|item| {
+            item.place.anchor == place.anchor
+                && item.place.size == place.size
+                && (item.place.position[0] - spot[0]).abs() < 0.5
+                && (item.place.position[1] - spot[1]).abs() < 0.5
+        })
+    };
+
+    let mut spot = place.position;
+    while taken(spot) {
+        spot[0] += CASCADE_STEP;
+        spot[1] += CASCADE_STEP;
+    }
+
+    spot
+}
+
 // ── Groups ──
 
 /// Wraps `id` in a new group at its place, with the item at the group's
@@ -752,6 +783,66 @@ mod tests {
             },
             ..CanvasItem::default()
         }
+    }
+
+    /// A new 100 by 100 item at the stage centre.
+    fn new_at_centre() -> Place {
+        image("new", [0.; 3], [100., 100.]).place
+    }
+
+    #[test]
+    fn a_first_item_takes_the_spot_it_was_given() {
+        let others = [image("a", [200., 0., 0.], [100., 100.])];
+        assert_eq!(cascaded(&others, &new_at_centre()), [0.; 3]);
+        assert_eq!(cascaded(&[], &new_at_centre()), [0.; 3]);
+    }
+
+    #[test]
+    fn each_new_copy_steps_down_and_right_past_the_ones_already_there() {
+        let step = CASCADE_STEP;
+        let mut siblings = Vec::new();
+
+        let mut spots = Vec::new();
+        for n in 0..4 {
+            let spot = cascaded(&siblings, &new_at_centre());
+            spots.push(spot);
+            siblings.push(image(&format!("copy{n}"), spot, [100., 100.]));
+        }
+
+        assert_eq!(
+            spots,
+            [
+                [0., 0., 0.],
+                [step, step, 0.],
+                [2. * step, 2. * step, 0.],
+                [3. * step, 3. * step, 0.],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gap_in_the_cascade_is_filled_first() {
+        let siblings = [image("b", [CASCADE_STEP, CASCADE_STEP, 0.], [100., 100.])];
+        assert_eq!(cascaded(&siblings, &new_at_centre()), [0.; 3]);
+    }
+
+    #[test]
+    fn an_item_of_another_size_or_on_another_anchor_leaves_the_spot_free() {
+        let full = grid("grid", [0.; 3], [Length::Stage(1.), Length::Stage(1.)]);
+        assert_eq!(cascaded(&[full], &new_at_centre()), [0.; 3]);
+
+        let mut corner = image("corner", [0.; 3], [100., 100.]);
+        corner.place.anchor = Anchor::TopLeft;
+        assert_eq!(cascaded(&[corner], &new_at_centre()), [0.; 3]);
+    }
+
+    #[test]
+    fn a_copy_at_another_depth_still_covers_the_spot_on_screen() {
+        let deeper = image("deeper", [0., 0., 300.], [100., 100.]);
+        assert_eq!(
+            cascaded(&[deeper], &new_at_centre()),
+            [CASCADE_STEP, CASCADE_STEP, 0.]
+        );
     }
 
     fn put(item: &CanvasItem, parent: &Frame) -> Projected {

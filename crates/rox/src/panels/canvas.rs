@@ -2226,7 +2226,19 @@ impl CanvasPanel {
             }
         }
 
-        self.change(move |canvas| canvas.items.push(item), window, cx);
+        // A press is where the user pointed. The stage center cascades, so a
+        // second add there doesn't land exactly over the first.
+        let cascade = at.is_none();
+        self.change(
+            move |canvas| {
+                if cascade {
+                    item.place.position = edit::cascaded(&canvas.items, &item.place);
+                }
+                canvas.items.push(item);
+            },
+            window,
+            cx,
+        );
         self.select(Some(id), window, cx);
     }
 

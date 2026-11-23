@@ -11,6 +11,8 @@ rox-milkdrop-sys = { path = "../rox-milkdrop-sys" }
 # The AudioFeed the worker pulls PCM from, the same one the spectrum panel
 # reads. This crate reaches no higher than that (ADR 28).
 rox-viz = { path = "../rox-viz" }
+# The thumbnail part file goes through its exclusive create (`fresh`).
+rox-package = { path = "../rox-package" }
 # The headless GL context. projectM needs a current context and a load proc,
 # not a window, and glutin is the one crate in the ecosystem that will hand
 # out a surfaceless context on EGL, CGL and WGL behind one API. Default

@@ -767,7 +767,7 @@ fn commit_inner(
         Vec::new()
     };
 
-    fs::copy(path, tmp).map_err(|e| format!("copy for write: {e}"))?;
+    rox_package::fresh::copy(path, tmp).map_err(|e| format!("copy for write: {e}"))?;
     write_tags(tmp, kind, changes, rescue, pictures)?;
 
     verify_fields(tmp, kind, changes)?;
@@ -2783,6 +2783,28 @@ mod tests {
         assert!(commit(&path, &[set(Field::Title, "Nope")]).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(!tmp_path(&path).exists(), "the clone must be unlinked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_planted_at_the_clone_name_is_replaced_and_the_write_still_lands() {
+        let dir = scratch("planted-clone");
+        let path = mp3_file(&dir, "track.mp3");
+        let decoy = dir.join("decoy");
+        fs::write(&decoy, b"not yours").unwrap();
+        std::os::unix::fs::symlink(&decoy, tmp_path(&path)).unwrap();
+
+        commit(&path, &[set(Field::Title, "Landed")]).unwrap();
+
+        assert_eq!(fs::read(&decoy).unwrap(), b"not yours");
+        assert_eq!(
+            value_of(&read(&path).unwrap(), &Field::Title).as_deref(),
+            Some("Landed")
+        );
+        assert!(
+            tmp_path(&path).symlink_metadata().is_err(),
+            "no clone or link is left behind"
+        );
     }
 
     #[test]

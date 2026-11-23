@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# The one exception to this crate taking no sibling crates. The tag writer's
+# clone and the lyrics temp file sit beside music files, and `fresh` creates
+# them so a symlink planted at that name is replaced, never written through.
+# rox-package is a leaf with no rox deps of its own, so nothing reaches up.
+rox-package = { path = "../rox-package" }
 # Durable store per ADR 5: bundled SQLite, WAL.
 rusqlite = { version = "0.34", features = ["bundled"] }
 # Parallel projection load, sort-index builds, and search scans.

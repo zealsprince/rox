@@ -3527,6 +3527,25 @@ fn seed_scrobbling(settings: &mut Settings, core: &serde_json::Value) {
     }
 }
 
+/// Whether a migration backup still has to be written. The first one is the
+/// user's original, so a real entry there is never overwritten. A symlink,
+/// dangling or not, is no backup of ours: `fresh` replaces it rather than
+/// writing through it.
+fn backup_wanted(backup: &Path) -> bool {
+    match std::fs::symlink_metadata(backup) {
+        Ok(meta) => meta.file_type().is_symlink(),
+        Err(_) => true,
+    }
+}
+
+fn back_up_presplit(backup: &Path, raw: &str) {
+    if backup_wanted(backup)
+        && let Err(e) = rox_package::fresh::write(backup, raw)
+    {
+        log::warn!("settings: backing up to {}: {e}", backup.display());
+    }
+}
+
 /// [`Settings::drain_v1_look`] against a given asset folder and shard. The
 /// shard is backed up before anything changes, and a failed write leaves the
 /// look as it was read.
@@ -3542,9 +3561,9 @@ fn drain_v1_look_in(look: &mut LookState, assets_dir: &Path, shard: &Path, annou
     }
 
     let backup = shard.with_extension("json.bak-v1");
-    if !backup.exists()
+    if backup_wanted(&backup)
         && shard.exists()
-        && let Err(e) = std::fs::copy(shard, &backup)
+        && let Err(e) = rox_package::fresh::copy(shard, &backup)
     {
         log::warn!("settings: backing up to {}: {e}", backup.display());
         return false;
@@ -3768,12 +3787,7 @@ impl Settings {
         if DONE.swap(true, Ordering::Relaxed) {
             return;
         }
-        let backup = settings_path().with_extension("json.bak-presplit");
-        if !backup.exists()
-            && let Err(e) = std::fs::write(&backup, raw)
-        {
-            log::warn!("settings: backing up to {}: {e}", backup.display());
-        }
+        back_up_presplit(&settings_path().with_extension("json.bak-presplit"), raw);
         let saved: Vec<WorkspaceBundle> = value
             .get("workspaces")
             .cloned()
@@ -6199,6 +6213,79 @@ mod tests {
         assert!(!drain_v1_look_in(&mut again, &assets_dir, &shard, false));
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), v1);
         assert_eq!(again.bundle.assets, look.bundle.assets);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_a_backup_name_is_replaced_and_never_written_through() {
+        let dir = std::env::temp_dir().join(format!("rox-backup-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let backup = dir.join("settings.json.bak-presplit");
+        let target = dir.join("not-yet");
+        std::os::unix::fs::symlink(&target, &backup).unwrap();
+
+        back_up_presplit(&backup, "original");
+
+        assert!(!target.exists(), "the link's target is never created");
+        assert!(!backup.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_existing_backup_is_the_original_and_is_never_overwritten() {
+        let dir = std::env::temp_dir().join(format!("rox-backup-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let backup = dir.join("settings.json.bak-presplit");
+        std::fs::write(&backup, "first").unwrap();
+
+        back_up_presplit(&backup, "second");
+
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "first");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_v1_look_backs_up_past_a_dangling_link_at_the_backup_name() {
+        let dir = std::env::temp_dir().join(format!("rox-drain-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shard = dir.join("workspace.json");
+        let backup = dir.join("workspace.json.bak-v1");
+        let target = dir.join("not-yet");
+        std::os::unix::fs::symlink(&target, &backup).unwrap();
+
+        let v1 = serde_json::json!({
+            "bundle": {
+                "version": 1,
+                "shaders": [{
+                    "name": "Serpent",
+                    "source": "// @asset plate: plate.png",
+                    "assets": [{ "file": "plate.png", "data": BASE64.encode(b"plate") }],
+                }],
+            },
+        })
+        .to_string();
+        std::fs::write(&shard, &v1).unwrap();
+
+        let mut look: LookState = serde_json::from_str(&v1).unwrap();
+        assert!(drain_v1_look_in(
+            &mut look,
+            &dir.join("assets"),
+            &shard,
+            false
+        ));
+
+        assert!(!target.exists(), "the link's target is never created");
+        assert!(!backup.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), v1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

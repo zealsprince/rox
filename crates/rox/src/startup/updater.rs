@@ -21,9 +21,11 @@
 //!
 //! ## Why a failed download can't hurt
 //!
-//! Everything before the swap happens in the OS temp dir, and the swap only
-//! runs after the checksum matches. The only writes in the install folder
-//! are renames, and the Windows dance rolls back if its second rename fails.
+//! Everything before the swap happens in rox's own data dir, never the shared
+//! temp dir, where another local user could make the folder first and swap
+//! the archive after its checksum passes. The swap only runs after the
+//! checksum matches. The only writes in the install folder are renames, and
+//! the Windows dance rolls back if its second rename fails.
 //! [`clean_leftovers`] sweeps the remains at the next launch.
 
 use std::path::{Path, PathBuf};
@@ -71,7 +73,18 @@ fn platform_for(_appimage: Option<&Path>) -> Option<&'static str> {
 const SUMS: &str = "SHA256SUMS.txt";
 
 fn work_dir() -> PathBuf {
-    std::env::temp_dir().join("rox-update")
+    work_dir_in(&rox_core::settings::data_dir())
+}
+
+/// Only the download lands here. Each build is staged beside its install
+/// target, so no rename ever crosses from this folder to the install.
+fn work_dir_in(data_dir: &Path) -> PathBuf {
+    data_dir.join("update")
+}
+
+/// Where 1.x staged its download.
+fn legacy_work_dir(temp_dir: &Path) -> PathBuf {
+    temp_dir.join("rox-update")
 }
 
 /// One global slot: at most one download per run.
@@ -186,10 +199,11 @@ pub fn begin(release: &Release) -> Option<impl FnOnce() + Send + 'static + use<>
     })
 }
 
-/// Sweep the temp dir and the `.old`/`.new` rename-aside remains. Called at
-/// launch.
+/// Sweep the work dir, the one 1.x left in the temp dir, and the `.old`/`.new`
+/// rename-aside remains. Called at launch.
 pub fn clean_leftovers() {
-    let _ = std::fs::remove_dir_all(work_dir());
+    remove_any(&work_dir());
+    sweep_legacy(&legacy_work_dir(&std::env::temp_dir()));
     if let Ok(target) = install_target() {
         remove_any(&sibling(&target, "new"));
         remove_any(&sibling(&target, "old"));
@@ -243,7 +257,7 @@ fn fetch_verified(release: &Release, progress: &Progress) -> Result<PathBuf, Str
     })?;
 
     let dir = work_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    rox_package::fresh::dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let archive = dir.join(&name);
     download(&asset.url, asset.bytes, &expected, &archive, progress)?;
     Ok(archive)
@@ -399,6 +413,29 @@ fn bundle_root() -> Option<PathBuf> {
 fn sibling(target: &Path, suffix: &str) -> PathBuf {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     target.with_file_name(format!("{name}.{suffix}"))
+}
+
+/// A link goes as a link. On Linux the temp dir is shared, so a folder
+/// another user owns there is theirs and stays.
+fn sweep_legacy(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        // SAFETY: geteuid takes nothing and can't fail.
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return;
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = meta;
+
+    remove_any(path);
 }
 
 fn remove_any(path: &Path) {
@@ -647,6 +684,43 @@ mod tests {
             sibling(Path::new("/Applications/rox.app"), "old"),
             Path::new("/Applications/rox.app.old")
         );
+    }
+
+    #[test]
+    fn the_download_is_staged_in_the_data_dir_and_never_the_temp_dir() {
+        let data = Path::new("/home/me/.local/share/rox");
+        let temp = Path::new("/tmp");
+
+        assert_eq!(
+            work_dir_in(data),
+            Path::new("/home/me/.local/share/rox/update")
+        );
+        assert!(!work_dir_in(data).starts_with(temp));
+        assert_eq!(legacy_work_dir(temp), Path::new("/tmp/rox-update"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_old_temp_dir_staging_is_swept_and_a_link_there_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("rox-legacy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let old = legacy_work_dir(&dir);
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("rox-v1.9.0-linux-x86_64.tar.gz"), b"left over").unwrap();
+        sweep_legacy(&old);
+        assert!(old.symlink_metadata().is_err(), "a 1.x leftover is gone");
+
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("keep"), b"not yours").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &old).unwrap();
+        sweep_legacy(&old);
+        assert!(old.symlink_metadata().is_err(), "the link itself goes");
+        assert_eq!(std::fs::read(elsewhere.join("keep")).unwrap(), b"not yours");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -241,7 +241,7 @@ fn save_file(file: &Path, text: &str, make_dir: bool) -> Result<(), String> {
     }
     // Clone and rename, so a crash never truncates the sheet.
     let tmp = writer::tmp_path(file);
-    fs::write(&tmp, text).map_err(|e| format!("write lyrics file: {e}"))?;
+    rox_package::fresh::write(&tmp, text).map_err(|e| format!("write lyrics file: {e}"))?;
     fs::rename(&tmp, file).map_err(|e| format!("rename lyrics file: {e}"))
 }
 
@@ -827,6 +827,33 @@ mod tests {
         assert!(load(&track, Some(&dir)).is_none());
         set_marked_none(&track, &dir, false).unwrap();
         assert!(load(&track, Some(&dir)).is_some());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_planted_at_the_sheet_temp_name_is_replaced_and_the_save_still_lands() {
+        let dir = std::env::temp_dir().join(format!("rox-lyrics-planted-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let side = dir.join("track.lrc");
+        let decoy = dir.join("decoy");
+        fs::write(&decoy, b"not yours").unwrap();
+        std::os::unix::fs::symlink(&decoy, writer::tmp_path(&side)).unwrap();
+
+        let track = Subject::File(dir.join("track.flac"));
+        save(
+            &track,
+            &Source::Sidecar(side.clone()),
+            "[00:01.00]words",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&decoy).unwrap(), b"not yours");
+        assert_eq!(fs::read_to_string(&side).unwrap(), "[00:01.00]words");
+        assert!(writer::tmp_path(&side).symlink_metadata().is_err());
 
         let _ = fs::remove_dir_all(&dir);
     }

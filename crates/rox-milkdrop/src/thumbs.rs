@@ -472,7 +472,7 @@ pub fn encode_png(frame: &crate::Frame) -> Result<Vec<u8>, String> {
 fn write_png(path: &Path, frame: &crate::Frame) -> Result<(), String> {
     let bytes = encode_png(frame)?;
     let tmp = path.with_extension("png.part");
-    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    rox_package::fresh::write(&tmp, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
@@ -492,6 +492,28 @@ mod tests {
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
         let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
         assert_eq!(decoded.as_raw(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_planted_at_the_part_name_is_replaced_and_the_thumb_still_lands() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("thumb.png");
+        let decoy = dir.path().join("decoy");
+        std::fs::write(&decoy, b"not yours").unwrap();
+        std::os::unix::fs::symlink(&decoy, path.with_extension("png.part")).unwrap();
+        let frame = crate::Frame {
+            width: 1,
+            height: 1,
+            rgba8: Arc::new(vec![1, 2, 3, 255]),
+            seq: 1,
+        };
+
+        write_png(&path, &frame).unwrap();
+
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"not yours");
+        assert_eq!(&std::fs::read(&path).unwrap()[..4], b"\x89PNG");
+        assert!(path.with_extension("png.part").symlink_metadata().is_err());
     }
 
     #[test]

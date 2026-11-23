@@ -342,11 +342,12 @@ pub struct LyricsPanel {
 
 impl LyricsPanel {
     pub fn new(state: AppState, config: LyricsConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
-            if this.tick_wakes(cx) {
-                cx.notify();
-            }
-        });
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |this: &mut Self, _, cx| {
+                if this.tick_wakes(cx) {
+                    cx.notify();
+                }
+            });
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, _: &SelectionEvent, cx| {

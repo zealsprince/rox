@@ -320,9 +320,10 @@ impl Scrobbler {
         radio: &Entity<Radio>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
-            this.tick(&player, cx);
-        });
+        let _player_changed =
+            crate::player::observe_clock(player, cx, |this: &mut Self, player, cx| {
+                this.tick(&player, cx);
+            });
         // Every path that moves a heart ends in a playlist change, so diffing
         // the set catches all of them.
         let _library_changed = cx.subscribe(

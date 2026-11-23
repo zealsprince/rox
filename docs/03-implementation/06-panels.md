@@ -391,7 +391,7 @@ follows the favourite, through the same mark cache Custom Controls holds. The ca
 watches what Custom Controls watches (the player, the scrobbler, the presence service,
 the EQ and the library's mark events) plus the library itself, whose watch switch
 notifies without an event. It redraws only when a followed state's case moves, since the
-player notifies on every pump tick. A command run from a click looks at the cases again
+player notifies on every command and state change. A command run from a click looks at the cases again
 once its flip has landed. A canvas where nothing follows a state reads none of it and
 redraws for none of it. A case's image is an asset in the store like the
 item's own: an object exports it with the item, and placing rewrites it to the store's id.

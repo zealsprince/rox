@@ -362,17 +362,18 @@ struct StripKey {
 
 impl SeekStripPanel {
     pub fn new(state: AppState, config: SeekConfig, cx: &mut Context<Self>) -> Self {
-        // The pump notifies every tick, but on a track the strip only changes
+        // The clock ticks every pump tick, but on a track the strip only changes
         // with a clock second or a playhead step. A station's marks walk with
         // the broadcast, so it takes every tick.
         let mut shown = None;
-        let _player_changed = cx.observe(&state.player, move |this: &mut Self, player, cx| {
-            let now = this.strip_key(player.read(cx));
-            if now.is_none() || now != shown {
-                shown = now;
-                cx.notify();
-            }
-        });
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, move |this: &mut Self, player, cx| {
+                let now = this.strip_key(player.read(cx));
+                if now.is_none() || now != shown {
+                    shown = now;
+                    cx.notify();
+                }
+            });
         // A bookmark edit anywhere drops the cached marks.
         let _library_changed = cx.subscribe(
             &state.library,

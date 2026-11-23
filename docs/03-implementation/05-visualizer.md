@@ -131,7 +131,9 @@ the whole-file decodes below, the waveform precompute among them, leave the UI t
 Two clocks drive redraws, so the panel animates while playing and settles cleanly when
 it stops:
 
-- **Playing**: the pump drains the tap and notifies, which repaints on the next frame.
+- **Playing**: the pump drains the tap and ticks the player's clock, which the panel
+  observes through `observe_clock`, so it repaints on the next frame. The player itself
+  notifies only on state changes, so a window with nothing moving draws nothing.
   `step` reads the feed's `written` counter moving as fresh audio.
 - **Not playing but still moving**: `body` calls `request_animation_frame()` while
   `bars.alive`, so the decay and the falling caps finish animating after audio stops

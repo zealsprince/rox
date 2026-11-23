@@ -684,7 +684,8 @@ pub struct OscilloscopePanel {
 
 impl OscilloscopePanel {
     pub fn new(state: AppState, config: OscilloscopeConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         OscilloscopePanel {
             config,
             feed: state.player.read(cx).feed(),

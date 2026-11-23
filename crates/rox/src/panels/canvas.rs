@@ -412,17 +412,20 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // The player notifies on every pump tick while audio moves. Only a
-        // canvas with routes has anything to redraw for it, and only while
-        // playback runs or just changed: a played-out queue still ticks, and
-        // an ease asks for its own frames.
-        let player = cx.observe(&state.player, |this: &mut Self, player, cx| {
-            let player = player.read(cx);
-            let running = routes::playback_running(player.is_playing(), player.queue_ended());
-            if routes::running(&this.config.routes) && this.motion.wants(running) {
-                cx.notify();
-            }
-        });
+        // The clock ticks every pump tick while audio moves. Only a canvas
+        // with routes has anything to redraw for it, and only while playback
+        // runs or just changed: an ease asks for its own frames.
+        let player = rox_services::player::observe_clock(
+            &state.player,
+            cx,
+            |this: &mut Self, player, cx| {
+                let player = player.read(cx);
+                let running = routes::playback_running(player.is_playing(), player.queue_ended());
+                if routes::running(&this.config.routes) && this.motion.wants(running) {
+                    cx.notify();
+                }
+            },
+        );
 
         // `observe_view`'s compare, inlined so the change also drops the held
         // text values. A canvas with no text doesn't redraw for it.
@@ -460,7 +463,7 @@ impl CanvasPanel {
         );
 
         // What Custom Controls watches, for the states an item follows. The
-        // player notifies on every pump tick, so each of these redraws only
+        // player notifies on every command, so each of these redraws only
         // when a followed state's case moved.
         let followed = [
             cx.observe_in(&state.player, window, |this: &mut Self, _, window, cx| {

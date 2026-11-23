@@ -750,8 +750,8 @@ impl SourceBrowserPanel {
             },
         );
 
-        // The pump notifies every tick; only the playing and opening keys
-        // matter here.
+        // A command notifies the player too; only the playing and opening
+        // keys matter here.
         let _player_changed = cx.observe(&state.player, |this: &mut Self, player, cx| {
             let player = player.read(cx);
             let playing = player.now_playing().map(|now| now.key);

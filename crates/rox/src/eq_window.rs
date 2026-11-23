@@ -226,9 +226,9 @@ impl EqWindow {
             true
         });
         // Or the play/pause face goes stale when a track ends on its own.
-        let _player_changed = state
-            .as_ref()
-            .map(|state| cx.observe(&state.player, |_, _, cx| cx.notify()));
+        let _player_changed = state.as_ref().map(|state| {
+            rox_services::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify())
+        });
         let preset_name =
             cx.new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("eq-preset-name")));
         let _name_changed = cx.subscribe_in(
@@ -1359,7 +1359,7 @@ impl Render for EqWindow {
         }
         self.active = active;
         // Frame polling only for the falling bars after playback stops; while audio
-        // moves, the player observe already re-renders per pump tick.
+        // moves, the clock observe already re-renders per pump tick.
         let playing = self
             .state
             .as_ref()

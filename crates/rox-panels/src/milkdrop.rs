@@ -480,7 +480,8 @@ pub struct MilkdropPanel {
 
 impl MilkdropPanel {
     pub fn new(state: AppState, mut config: MilkdropConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         // gpui doesn't unwind its entities when the app loop returns, so without
         // this the worker is still rendering while glibc runs Mesa's exit
         // handlers: a segfault inside the driver. The hang-up happens here and

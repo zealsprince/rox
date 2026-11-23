@@ -255,9 +255,10 @@ impl Capture {
         rox_playback::icy::tee_to(sink(tx));
         apply();
 
-        let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
-            this.tick(&player, cx);
-        });
+        let _player_changed =
+            crate::player::observe_clock(player, cx, |this: &mut Self, player, cx| {
+                this.tick(&player, cx);
+            });
 
         Capture {
             events,

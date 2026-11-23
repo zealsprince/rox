@@ -212,9 +212,11 @@ impl MediaSession {
             let events = keys.events();
             let mut session = MediaSession {
                 keys,
-                _player: cx.observe(&state.player, |this: &mut MediaSession, _, cx| {
-                    this.publish(cx)
-                }),
+                _player: rox_services::player::observe_clock(
+                    &state.player,
+                    cx,
+                    |this: &mut MediaSession, _, cx| this.publish(cx),
+                ),
                 _events: cx.spawn(async move |this, cx| {
                     while let Ok(cmd) = events.recv().await {
                         let applied = this.update(cx, |this, cx| {

@@ -108,7 +108,8 @@ impl NowPlayingArt {
         thumbs: &Entity<Thumbs>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let _player_changed = cx.observe(&player, |this: &mut Self, _, cx| this.sync(cx));
+        let _player_changed =
+            crate::player::observe_clock(&player, cx, |this: &mut Self, _, cx| this.sync(cx));
         let _title_changed = cx.subscribe(radio, |this: &mut Self, _, event: &TitleChanged, cx| {
             this.on_title(&event.title, cx);
         });

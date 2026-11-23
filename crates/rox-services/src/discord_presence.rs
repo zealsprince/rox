@@ -271,9 +271,10 @@ impl DiscordPresence {
             })
             .detach();
 
-        let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
-            this.tick(&player, cx);
-        });
+        let _player_changed =
+            crate::player::observe_clock(player, cx, |this: &mut Self, player, cx| {
+                this.tick(&player, cx);
+            });
 
         info!("Discord Rich Presence initialized");
 

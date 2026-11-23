@@ -110,9 +110,9 @@ impl SignalsWindow {
             });
             true
         });
-        let _player_changed = state
-            .as_ref()
-            .map(|state| cx.observe(&state.player, |_, _, cx| cx.notify()));
+        let _player_changed = state.as_ref().map(|state| {
+            rox_services::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify())
+        });
         let hub = state
             .as_ref()
             .map(|state| state.signals.clone())
@@ -215,7 +215,7 @@ impl SignalsWindow {
     }
 
     /// Reading the values advances the hub, which throttles itself. While audio
-    /// plays the player observe re-renders per pump tick, so frames are only
+    /// plays the clock observe re-renders per pump tick, so frames are only
     /// requested for the decay after playback stops, which outlives
     /// [`SignalHub::live`].
     fn step(&self, cx: &mut Context<Self>) -> bool {

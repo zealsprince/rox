@@ -473,6 +473,7 @@ pub struct ControlsPanel {
     _player_changed: Subscription,
     _scrobbler_changed: Subscription,
     _discord_changed: Subscription,
+    _eq_changed: Subscription,
     _library_changed: Subscription,
 }
 
@@ -487,6 +488,8 @@ impl ControlsPanel {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         let _scrobbler_changed = cx.observe(&state.scrobbler, |_, _, cx| cx.notify());
         let _discord_changed = cx.observe(&state.discord, |_, _, cx| cx.notify());
+        // The EQ state reads atomics, so nothing on the player moves with it.
+        let _eq_changed = rox_services::player::observe_eq(cx);
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, library, event: &LibraryEvent, cx| {
@@ -507,6 +510,7 @@ impl ControlsPanel {
             _player_changed,
             _scrobbler_changed,
             _discord_changed,
+            _eq_changed,
             _library_changed,
         }
     }

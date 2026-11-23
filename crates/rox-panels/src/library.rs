@@ -2072,8 +2072,8 @@ pub struct LibraryPanel {
     selection_ids: Vec<i64>,
     /// A failed play, shown until the catalog updates.
     error: Option<SharedString>,
-    /// The change detector. The player notifies every pump tick, so everything
-    /// up to this compare stays cheap.
+    /// The change detector. The player notifies on every command too, so
+    /// everything up to this compare stays cheap.
     playing_key: Option<TrackKey>,
     opening_key: Option<TrackKey>,
     type_ahead: String,

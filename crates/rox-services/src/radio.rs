@@ -92,9 +92,10 @@ impl Radio {
         thumbs: &Entity<Thumbs>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
-            this.tick(&player, cx);
-        });
+        let _player_changed =
+            crate::player::observe_clock(player, cx, |this: &mut Self, player, cx| {
+                this.tick(&player, cx);
+            });
 
         Radio {
             live: Live::default(),

@@ -121,7 +121,10 @@ impl LyricsEdit {
         });
         let line = target.label();
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-        let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| this.tick(cx));
+        let _player_changed =
+            rox_services::player::observe_clock(&state.player, cx, |this: &mut Self, _, cx| {
+                this.tick(cx)
+            });
         let _input_changed = cx.subscribe(&input, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.reindex(cx);

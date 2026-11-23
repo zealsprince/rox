@@ -1498,8 +1498,8 @@ fn follow(player: Entity<Player>, cx: &mut App) {
     let mut since = Instant::now();
     let mut opened = false;
 
-    // The pump notifies every tick while playing, so this sees the window open.
-    cx.observe(&player, move |player, cx| {
+    // The clock ticks every pump tick while playing, so this sees the window open.
+    crate::player::observe_clock_app(&player, cx, move |player, cx| {
         let player = player.read(cx);
         let now = player.now_playing();
 
@@ -1533,8 +1533,7 @@ fn follow(player: Entity<Player>, cx: &mut App) {
         for stream in worth_preopening(player.upcoming_locators(PREOPEN_AHEAD), left) {
             preopen(stream, cx);
         }
-    })
-    .detach();
+    });
 
     // A paused player notifies nothing, so the sweep has its own clock.
     cx.spawn(async move |cx| {

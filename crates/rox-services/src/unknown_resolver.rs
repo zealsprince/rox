@@ -191,13 +191,13 @@ pub(crate) fn next_step(
 }
 
 /// Searches each placeholder as it comes up, and hands the Unknown row over
-/// once its found track plays. The pump notifies every tick while playing,
-/// so this is gated on the queue, the playing entry, a held Next and the
+/// once its found track plays. The clock ticks every pump tick while
+/// playing, so this is gated on the queue, the playing entry, a held Next and the
 /// plugin table moving.
 pub fn follow(library: Entity<Library>, player: Entity<Player>, cx: &mut App) {
     let mut seen = None;
 
-    cx.observe(&player, move |player, cx| {
+    crate::player::observe_clock_app(&player, cx, move |player, cx| {
         // Nothing runs before the first apply, so every search would miss.
         // The apply moves the generation, which brings this back round.
         if !plugins::applied() {
@@ -235,8 +235,7 @@ pub fn follow(library: Entity<Library>, player: Entity<Player>, cx: &mut App) {
         for job in jobs {
             search(&library, &player, job, cx);
         }
-    })
-    .detach();
+    });
 }
 
 fn search(library: &Entity<Library>, player: &Entity<Player>, job: Job, cx: &mut App) {

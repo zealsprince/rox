@@ -50,7 +50,8 @@ impl GoTo {
                 _ => {}
             },
         );
-        let _player = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player =
+            rox_services::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         window.focus(&input.read(cx).focus_handle(cx));
         GoTo {
             state,

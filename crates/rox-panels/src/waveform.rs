@@ -792,7 +792,8 @@ pub struct WaveformPanel {
 
 impl WaveformPanel {
     pub fn new(state: AppState, config: WaveformConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {

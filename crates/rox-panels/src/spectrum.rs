@@ -1155,7 +1155,8 @@ pub struct SpectrumPanel {
 
 impl SpectrumPanel {
     pub fn new(state: AppState, config: SpectrumConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         SpectrumPanel {
             config,
             feed: state.player.read(cx).feed(),

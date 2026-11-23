@@ -1042,7 +1042,8 @@ pub struct ParticlesPanel {
 
 impl ParticlesPanel {
     pub fn new(state: AppState, mut config: ParticlesConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         assign_emitter_ids(&mut config.emitters);
         ParticlesPanel {
             config,

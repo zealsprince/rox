@@ -99,24 +99,26 @@ impl StationsPanel {
         );
         // Clocks read in whole seconds, so a playing station doesn't repaint the
         // list every tick.
-        let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
-            let player = this.state.player.read(cx);
-            let playing = player.now_playing().map(|now| now.key);
-            let clock_secs = player
-                .now_playing()
-                .map(|now| now.position_secs as u64)
-                .unwrap_or(0);
-            let rev = player.title_rev().unwrap_or(0);
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |this: &mut Self, _, cx| {
+                let player = this.state.player.read(cx);
+                let playing = player.now_playing().map(|now| now.key);
+                let clock_secs = player
+                    .now_playing()
+                    .map(|now| now.position_secs as u64)
+                    .unwrap_or(0);
+                let rev = player.title_rev().unwrap_or(0);
 
-            if this.playing == playing && this.clock_secs == clock_secs && this.seen_rev == rev {
-                return;
-            }
+                if this.playing == playing && this.clock_secs == clock_secs && this.seen_rev == rev
+                {
+                    return;
+                }
 
-            this.playing = playing;
-            this.clock_secs = clock_secs;
-            this.seen_rev = rev;
-            cx.notify();
-        });
+                this.playing = playing;
+                this.clock_secs = clock_secs;
+                this.seen_rev = rev;
+                cx.notify();
+            });
 
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
 

@@ -3675,9 +3675,9 @@ pub struct Workspace {
     /// leave the station's name in the title bar all evening.
     titled_live_rev: Option<u64>,
     _layout_changed: Subscription,
-    /// The player pump notifies every tick while a session runs; the
-    /// title refresh hangs off it and bails on the path compare.
+    /// The title refresh hangs off the player and bails on the path compare.
     _player_changed: Subscription,
+    _clock_ticked: Subscription,
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
@@ -4126,14 +4126,6 @@ impl Workspace {
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
             this.publish_tray(cx);
-            // The shader's frame loop is in render and sustains itself
-            // through frame requests, but only render can start it. Nothing
-            // else re-renders the workspace on a resume, so a parked shader
-            // would sit frozen until a track change; while one is running,
-            // the pump's tick re-arms it.
-            if this.post_shader.as_ref().is_some_and(|d| d.active) {
-                cx.notify();
-            }
             // The native Play/Pause row is baked in, so it has to be rebuilt
             // when the player flips. Read here and handed over, since the
             // rebuild can't reach back through this workspace mid-update.
@@ -4149,6 +4141,18 @@ impl Workspace {
                 crate::backdrop_visual::wake(cx);
             }
         });
+        // The shader's frame loop is in render and sustains itself through
+        // frame requests, but only render can start it. Nothing else
+        // re-renders the workspace on a resume, so a parked shader would sit
+        // frozen until a track change; while one is running, the clock's
+        // tick re-arms it. Only then: a workspace that redraws per tick
+        // redraws the whole window.
+        let _clock_ticked =
+            rox_services::player::observe_clock(&state.player, cx, |this, _, cx| {
+                if this.post_shader.as_ref().is_some_and(|d| d.active) {
+                    cx.notify();
+                }
+            });
         let _history_changed = cx.subscribe(&state.history, |this, _, event: &HistoryEvent, cx| {
             let HistoryEvent::Recorded { track_id, claimed } = *event;
             this.state.library.update(cx, |library, cx| {
@@ -4285,6 +4289,7 @@ impl Workspace {
             titled_live_rev: None,
             _layout_changed,
             _player_changed,
+            _clock_ticked,
             _library_changed,
             _selection_changed,
             _history_changed,

@@ -5,13 +5,15 @@
 //! drawing. The player renders nothing itself; the transport panels are the
 //! UI over this state.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
+use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Subscription, Task};
 
 use rox_core::QUEUE_CAP;
 use rox_core::settings::{
@@ -748,6 +750,43 @@ fn sleep_step(now: Instant, sleep: Option<Instant>, stop_after: bool) -> SleepSt
     }
 }
 
+/// What the pump diffs each tick. The entry tells a handover between two
+/// queued copies of one track apart, which the key alone can't. Library rows
+/// draw the track being opened.
+#[derive(Clone, PartialEq)]
+struct PumpKey {
+    view: PlayerView,
+    entry: Option<u64>,
+    opening: Option<TrackKey>,
+    rev: Option<u64>,
+}
+
+/// Who a pump tick wakes.
+#[derive(Debug, PartialEq)]
+enum Wake {
+    Player,
+    Clock,
+    Nobody,
+}
+
+/// A state change wakes the player, and its observers through it, clock
+/// watchers included. Moving audio or a paused seek wakes only the clock.
+fn pump_wake(changed: bool, playing: bool, paused_moved: bool) -> Wake {
+    if changed {
+        Wake::Player
+    } else if playing || paused_moved {
+        Wake::Clock
+    } else {
+        Wake::Nobody
+    }
+}
+
+/// The position clock's entity. It holds nothing: it exists to be notified
+/// every pump tick while audio moves, apart from the player, because gpui
+/// redraws every window whose last frame read an entity that notifies, and
+/// most windows read the player.
+pub struct Clock;
+
 /// The player's discrete state for the controls and info panels. Leaves out
 /// the position clock so a gated panel doesn't wake every tick; anything a
 /// panel draws from the player belongs here so the gate sees it change. See
@@ -939,10 +978,13 @@ pub struct Player {
     /// panel that started it would pick.
     unknown_source: Option<String>,
     placeholders: Placeholders,
+    /// Notified on position ticks, so the player itself only notifies on
+    /// state changes. See [`observe_clock`].
+    clock: Entity<Clock>,
 }
 
 impl Player {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         let settings = Settings::load();
         // Off isn't a strategy to toggle back to, so arm the default.
         let last_continuation = match settings.session.continuation {
@@ -975,6 +1017,21 @@ impl Player {
             song_start: None,
             unknown_source: None,
             placeholders: Placeholders::default(),
+            clock: cx.new(|_| Clock),
+        }
+    }
+
+    /// What the pump compares to decide whether a tick is a state change.
+    /// The sleep countdown is cut to the whole minutes the menubar shows,
+    /// or an armed timer would wake every player observer once a second.
+    fn pump_key(&self, entry: Option<u64>) -> PumpKey {
+        let mut view = self.view();
+        view.sleep_remaining_secs = view.sleep_remaining_secs.map(|secs| secs.div_ceil(60));
+        PumpKey {
+            view,
+            entry,
+            opening: self.opening(),
+            rev: self.queue_rev(),
         }
     }
 
@@ -1741,14 +1798,15 @@ impl Player {
 
     /// Drain the tap on a timer instead of a render pass. The timer ticks all
     /// session so the audio views keep feeding and a resume (flipped on the
-    /// audio thread) is noticed. It only notifies while audio moves, on a
-    /// play-state edge, on a paused seek, or on a new queue revision. Queue
-    /// commands are fire-and-forget, so the revision bumps after the
+    /// audio thread) is noticed. The player itself notifies only when
+    /// [`PumpKey`] moves: a play-state edge, a track or entry change, a new
+    /// queue revision, or anything else a panel draws from [`PlayerView`].
+    /// Queue commands are fire-and-forget, so the revision bumps after the
     /// enqueue's own notify, and without that wake a paused queue view lags
-    /// one edit. A settled pause or a played-out queue notifies nobody.
+    /// one edit. The [`Clock`] ticks every pump tick while audio moves and on
+    /// a paused seek. A settled pause or a played-out queue notifies nobody.
     fn start_pump(&mut self, cx: &mut Context<Self>) {
-        let mut was_playing = self.is_playing();
-        let mut seen_rev = self.queue_rev();
+        let mut seen = self.pump_key(self.playing_entry());
         let mut seen_pos = self.paused_key();
         self.pump = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -1774,7 +1832,8 @@ impl Player {
                     this.drain_tap();
                     // Lets the signal hub see a song change without holding
                     // the player.
-                    this.feed.set_track(this.playing_entry());
+                    let entry = this.playing_entry();
+                    this.feed.set_track(entry);
                     this.tick_sleep(cx);
                     // Continuation (ADR 17). A no-op on nearly every tick.
                     this.continue_if_dry(cx);
@@ -1784,16 +1843,17 @@ impl Player {
                     this.reseed_on_boundary(cx);
                     this.track_song_start();
                     this.take_refusal(cx);
-                    let playing = this.is_playing();
-                    let rev = this.queue_rev();
+                    let key = this.pump_key(entry);
+                    let playing = key.view.playing;
                     // A paused seek moves the clock without moving audio or the
                     // revision, so compare the resolved position while paused.
                     let pos = if playing { None } else { this.paused_key() };
-                    if playing || playing != was_playing || rev != seen_rev || pos != seen_pos {
-                        cx.notify();
+                    match pump_wake(key != seen, playing, pos != seen_pos) {
+                        Wake::Player => cx.notify(),
+                        Wake::Clock => this.clock.update(cx, |_, cx| cx.notify()),
+                        Wake::Nobody => {}
                     }
-                    was_playing = playing;
-                    seen_rev = rev;
+                    seen = key;
                     seen_pos = pos;
                     true
                 });
@@ -3987,8 +4047,63 @@ fn persist_convolver_soon(cx: &mut App) {
     .detach();
 }
 
+/// Observe the player and its clock: every state change plus every pump
+/// tick while audio moves. For views that draw position or audio, and
+/// anything that has to see the clock run (scrobbling, the ICY title drain).
+/// Views that only show state observe the player, which doesn't notify on
+/// position.
+pub fn observe_clock<V: 'static>(
+    player: &Entity<Player>,
+    cx: &mut Context<V>,
+    on_tick: impl FnMut(&mut V, Entity<Player>, &mut Context<V>) + 'static,
+) -> Subscription {
+    let on_tick = Rc::new(RefCell::new(on_tick));
+    let clock = player.read(cx).clock.clone();
+
+    let changed = {
+        let on_tick = on_tick.clone();
+        cx.observe(player, move |this, player, cx| {
+            (on_tick.borrow_mut())(this, player, cx)
+        })
+    };
+
+    let weak = player.downgrade();
+    let ticked = cx.observe(&clock, move |this, _, cx| {
+        if let Some(player) = weak.upgrade() {
+            (on_tick.borrow_mut())(this, player, cx);
+        }
+    });
+
+    Subscription::join(changed, ticked)
+}
+
+/// [`observe_clock`] for a watcher that isn't an entity. Detached, like the
+/// app-level observers that use it.
+pub fn observe_clock_app(
+    player: &Entity<Player>,
+    cx: &mut App,
+    on_tick: impl FnMut(Entity<Player>, &mut App) + 'static,
+) {
+    let on_tick = Rc::new(RefCell::new(on_tick));
+    let clock = player.read(cx).clock.clone();
+
+    {
+        let on_tick = on_tick.clone();
+        cx.observe(player, move |player, cx| (on_tick.borrow_mut())(player, cx))
+            .detach();
+    }
+
+    let weak = player.downgrade();
+    cx.observe(&clock, move |_, cx| {
+        if let Some(player) = weak.upgrade() {
+            (on_tick.borrow_mut())(player, cx);
+        }
+    })
+    .detach();
+}
+
 /// Observe the player, waking only when its discrete state changes. Views
-/// that draw the clock observe the player directly.
+/// that draw the clock use [`observe_clock`].
 pub fn observe_view<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) -> Subscription {
     let mut last = player.read(cx).view();
     cx.observe(player, move |_, player, cx| {
@@ -4001,10 +4116,11 @@ pub fn observe_view<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) ->
 }
 
 /// [`observe_view`] for the output state. Its own subscription because only
-/// the settings window draws it and the compare costs a lock.
+/// the settings window draws it and the compare costs a lock. On the clock:
+/// the negotiated stream lands from the audio side without a state change.
 pub fn observe_output<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) -> Subscription {
     let mut last = player.read(cx).output_status();
-    cx.observe(player, move |_, player, cx| {
+    observe_clock(player, cx, move |_, player, cx| {
         let now = player.read(cx).output_status();
         if now != last {
             last = now;
@@ -4328,6 +4444,15 @@ mod tests {
             "stop-after is armed, so the queue stays as it is"
         );
         assert!(!continuation_wanted(false, true));
+    }
+
+    #[test]
+    fn only_a_state_change_wakes_the_player() {
+        assert_eq!(pump_wake(true, true, false), Wake::Player, "a handover");
+        assert_eq!(pump_wake(true, false, false), Wake::Player, "a pause");
+        assert_eq!(pump_wake(false, true, false), Wake::Clock, "audio moving");
+        assert_eq!(pump_wake(false, false, true), Wake::Clock, "a paused seek");
+        assert_eq!(pump_wake(false, false, false), Wake::Nobody, "paused");
     }
 
     #[test]

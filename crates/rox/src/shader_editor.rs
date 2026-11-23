@@ -205,7 +205,7 @@ impl ShaderEditor {
             cx.observe(&state.now_art, |_, _, cx| cx.notify()),
             // The meters move with the music, and this window pumps its own
             // frames.
-            cx.observe(&state.player, |_, _, cx| cx.notify()),
+            rox_services::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify()),
         ];
         subscriptions.shrink_to_fit();
         let hub = state.signals.clone();

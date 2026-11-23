@@ -65,13 +65,14 @@ impl OutputPanel {
         // `player::observe_output` watches only the first, and a failed open
         // leaves the status at None.
         let mut last = watched(state.player.read(cx));
-        let _output_changed = cx.observe(&state.player, move |_, player, cx| {
-            let now = watched(player.read(cx));
-            if now != last {
-                last = now;
-                cx.notify();
-            }
-        });
+        let _output_changed =
+            crate::player::observe_clock(&state.player, cx, move |_, player, cx| {
+                let now = watched(player.read(cx));
+                if now != last {
+                    last = now;
+                    cx.notify();
+                }
+            });
         OutputPanel {
             state,
             config,

@@ -13,7 +13,7 @@ use super::*;
 #[cfg(target_os = "macos")]
 static MENU_PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Rebuilds only on a flip; the player notifies every pump tick.
+/// Rebuilds only on a flip; the player notifies on every state change.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_playback(playing: bool, cx: &mut App) {
     if MENU_PLAYING.swap(playing, std::sync::atomic::Ordering::Relaxed) != playing {

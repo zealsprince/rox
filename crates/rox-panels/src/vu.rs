@@ -534,7 +534,8 @@ pub struct VuPanel {
 
 impl VuPanel {
     pub fn new(state: AppState, config: VuConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _player_changed =
+            crate::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify());
         VuPanel {
             config,
             feed: state.player.read(cx).feed(),

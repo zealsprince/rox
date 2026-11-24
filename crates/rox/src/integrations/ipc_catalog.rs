@@ -43,6 +43,7 @@ pub fn request(request: Request, cx: &mut App) {
         cx.spawn(async move |_| {
             let answer = installing
                 .await
+                .map_err(|e| e.to_string())
                 .and_then(|installed| serde_json::to_value(installed).map_err(|e| e.to_string()));
             responder.respond(answer.map_err(RpcError::app));
         })

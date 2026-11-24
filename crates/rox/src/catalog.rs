@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use rox_core::settings::{self, WorkspaceBundle, roxo, roxw};
-use rox_net::download::{self, Progress};
+use rox_net::download::{self, Failure, Progress};
 use rox_net::sources::catalog::{self as wire, Index, Kind, Origin, Record, Summary};
 use rox_panel_api::panel;
 use rox_panel_api::toast::Toast;
@@ -40,15 +40,66 @@ const INSTALLED_FILE: &str = "installed.json";
 const INCOMING: &str = "incoming";
 const PREVIEWS: &str = "previews";
 
+/// Why a refresh, a record or an install failed. This module draws nothing,
+/// so the window words each cause through its own keys; `Display` is the
+/// English line the log and the socket keep.
+#[derive(Debug)]
+pub(crate) enum Problem {
+    /// The wire's own cause.
+    Net(Failure),
+    /// No refresh has saved an index yet.
+    NoIndex,
+    NoSuchPackage(String),
+    /// The package needs a newer rox than this one.
+    TooNew {
+        need: Version,
+        have: Version,
+    },
+    /// Another install is still running.
+    Busy(String),
+    /// The download isn't a package the store step reads. The detail is the
+    /// store step's own and stays English.
+    Package(String),
+    /// The install ended without an answer.
+    Interrupted(&'static str),
+    /// Technical and rare: a file on this machine, an id that isn't one.
+    Other(String),
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Problem::Net(failure) => write!(f, "{failure}"),
+            Problem::NoIndex => write!(f, "there's no catalog index yet"),
+            Problem::NoSuchPackage(id) => write!(f, "the catalog has no package {id}"),
+            Problem::TooNew { need, have } => {
+                write!(
+                    f,
+                    "this package needs rox {need} or newer, and this is {have}"
+                )
+            }
+            Problem::Busy(id) => write!(f, "{id} is still installing"),
+            Problem::Package(detail) | Problem::Other(detail) => write!(f, "{detail}"),
+            Problem::Interrupted(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+impl From<Failure> for Problem {
+    fn from(failure: Failure) -> Self {
+        Problem::Net(failure)
+    }
+}
+
 /// The compiled-in origin. Only a debug build reads an override, for a
 /// local test server; a release build has no other origin to reach.
-fn origin() -> Result<Origin, String> {
+fn origin() -> Result<Origin, Problem> {
     #[cfg(debug_assertions)]
     if let Ok(text) = std::env::var("ROX_CATALOG_ORIGIN") {
-        return Origin::new(&text);
+        return Origin::new(&text).map_err(Problem::Other);
     }
 
-    Origin::new(ORIGIN)
+    Origin::new(ORIGIN).map_err(Problem::Other)
 }
 
 fn index_path() -> PathBuf {
@@ -84,7 +135,7 @@ fn read_bytes_capped(path: &Path, cap: u64) -> Option<Vec<u8>> {
 
 /// Fetch, parse, then replace the cached copy. A failed fetch or an index
 /// that doesn't read leaves the cache as it was.
-pub(crate) fn refresh(cx: &mut App) -> Task<Result<Index, String>> {
+pub(crate) fn refresh(cx: &mut App) -> Task<Result<Index, Problem>> {
     let fetching = cx.background_executor().spawn(async move { refresh_now() });
 
     cx.spawn(async move |cx| {
@@ -99,16 +150,16 @@ pub(crate) fn refresh(cx: &mut App) -> Task<Result<Index, String>> {
 
 /// [`refresh`]'s work, blocking, for a caller already on the background
 /// executor. The chip's count follows the new index.
-pub(crate) fn refresh_now() -> Result<Index, String> {
+pub(crate) fn refresh_now() -> Result<Index, Problem> {
     let text = wire::fetch_index_text(&origin()?)?;
-    let index = wire::parse_index(&text)?;
+    let index = wire::parse_index(&text).map_err(Failure::Unreadable)?;
 
     for reason in &index.dropped {
         log::warn!("catalog: index {reason}");
     }
 
     // The exact bytes, so a later signature check reads what was served.
-    write_atomic(&index_path(), text.as_bytes())?;
+    write_atomic(&index_path(), text.as_bytes()).map_err(Problem::Other)?;
     edit_installs(|installs| installs.checked_at = crate::startup::updates::now());
     note_updates();
     prune_previews(&index);
@@ -142,7 +193,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 // ── Records and previews ──
 
 /// A package's record, fetched on the background executor.
-pub(crate) fn fetch_record(id: &str, cx: &App) -> Task<Result<Record, String>> {
+pub(crate) fn fetch_record(id: &str, cx: &App) -> Task<Result<Record, Problem>> {
     let id = id.to_string();
 
     cx.background_executor().spawn(async move {
@@ -162,7 +213,8 @@ pub(crate) fn fetch_record(id: &str, cx: &App) -> Task<Result<Record, String>> {
 /// under the cap, still undecoded: decoding is the caller's, under its own
 /// pixel cap.
 pub(crate) fn preview(path: &str) -> Result<Vec<u8>, String> {
-    let url = origin()?.resolve(path)?;
+    let origin = origin().map_err(|e| e.to_string())?;
+    let url = origin.resolve(path)?;
     let file = settings::catalog_dir()
         .join(PREVIEWS)
         .join(preview_name(&url));
@@ -177,7 +229,7 @@ pub(crate) fn preview(path: &str) -> Result<Vec<u8>, String> {
         return Ok(bytes);
     }
 
-    let bytes = wire::fetch_preview(&origin()?, path)?;
+    let bytes = wire::fetch_preview(&origin, path).map_err(|e| e.to_string())?;
     if let Err(e) = write_atomic(&file, &bytes) {
         log::warn!("catalog: keeping a preview: {e}");
     }
@@ -456,16 +508,15 @@ fn updates_in(index: &Index, installed: &[Installed], current: &str) -> Vec<Summ
 
 /// `min_rox` against the running build. One that doesn't parse is refused,
 /// and its text isn't echoed.
-pub(crate) fn runs_here(min_rox: &str, current: &str) -> Result<(), String> {
-    let need = Version::parse(min_rox)
-        .map_err(|_| "this package's minimum rox version doesn't read".to_string())?;
+pub(crate) fn runs_here(min_rox: &str, current: &str) -> Result<(), Problem> {
+    let need = Version::parse(min_rox).map_err(|_| {
+        Problem::Other("this package's minimum rox version doesn't read".to_string())
+    })?;
     let have = Version::parse(current)
-        .map_err(|_| format!("this build's version {current} doesn't read"))?;
+        .map_err(|_| Problem::Other(format!("this build's version {current} doesn't read")))?;
 
     if need > have {
-        return Err(format!(
-            "this package needs rox {need} or newer, and this is {have}"
-        ));
+        return Err(Problem::TooNew { need, have });
     }
 
     Ok(())
@@ -516,13 +567,13 @@ pub(crate) enum Choice {
 /// Download, verify, then the import or install a file from disk takes,
 /// ending in its confirm. One runs at a time. It runs detached, so dropping
 /// the answer doesn't stop it; [`cancel`] does, and quitting does.
-pub(crate) fn install(id: &str, choice: Choice, cx: &mut App) -> Task<Result<Installed, String>> {
+pub(crate) fn install(id: &str, choice: Choice, cx: &mut App) -> Task<Result<Installed, Problem>> {
     match start(id, choice, cx) {
         Ok(answer) => cx.background_executor().spawn(async move {
             answer
                 .recv()
                 .await
-                .unwrap_or_else(|_| Err("the install was dropped".into()))
+                .unwrap_or_else(|_| Err(Problem::Interrupted("the install was dropped")))
         }),
         Err(e) => Task::ready(Err(e)),
     }
@@ -532,15 +583,15 @@ fn start(
     id: &str,
     choice: Choice,
     cx: &mut App,
-) -> Result<async_channel::Receiver<Result<Installed, String>>, String> {
+) -> Result<async_channel::Receiver<Result<Installed, Problem>>, Problem> {
     // The id may come from a link or a script: checked before it's looked
     // up, logged or put in a path.
     if !wire::is_slug(id) {
-        return Err("that isn't a catalog id".into());
+        return Err(Problem::Other("that isn't a catalog id".into()));
     }
 
     if let Some((other, _)) = running(cx) {
-        return Err(format!("{other} is still installing"));
+        return Err(Problem::Busy(other));
     }
 
     let progress = Arc::new(Progress::new());
@@ -588,7 +639,7 @@ fn start(
                     }
                 }
             })
-            .unwrap_or_else(|_| Err("rox closed during the install".into()));
+            .unwrap_or_else(|_| Err(Problem::Interrupted("rox closed during the install")));
 
         let _ = tx.send(outcome).await;
     })
@@ -612,25 +663,31 @@ fn fetch_and_store(
     id: &str,
     choice: Choice,
     progress: &Progress,
-) -> Result<(Installed, Stored), String> {
-    let index = load().ok_or("there's no catalog index yet")?;
+) -> Result<(Installed, Stored), Problem> {
+    let index = load().ok_or(Problem::NoIndex)?;
     let summary = index
         .get(id)
-        .ok_or_else(|| format!("the catalog has no package {id}"))?;
+        .ok_or_else(|| Problem::NoSuchPackage(id.to_string()))?;
     runs_here(&summary.latest.min_rox, CURRENT)?;
 
-    let url = origin()?.resolve(&summary.latest.file)?;
+    let url = origin()?
+        .resolve(&summary.latest.file)
+        .map_err(Problem::Other)?;
 
     let ext = match summary.kind {
         Kind::Workspace => roxw::EXT,
         Kind::Plugin => package::EXT,
         Kind::Object => roxo::EXT,
-        Kind::Unknown => return Err("that kind of package doesn't install".into()),
+        Kind::Unknown => {
+            return Err(Problem::Package(
+                "that kind of package doesn't install".into(),
+            ));
+        }
     };
 
     // Only one install runs, so anything here is a leftover.
     let dir = incoming_dir();
-    rox_package::fresh::dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    rox_package::fresh::dir(&dir).map_err(|e| Problem::Other(format!("{}: {e}", dir.display())))?;
 
     // The name is rox's own. Nothing from the index names a file on disk.
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -663,7 +720,7 @@ fn fetch_and_store(
 
     let stored = store(summary, &file, into.as_deref());
     let _ = std::fs::remove_dir_all(&dir);
-    let (stored, path) = stored?;
+    let (stored, path) = stored.map_err(Problem::Package)?;
 
     let installed = Installed {
         id: summary.id.clone(),
@@ -984,6 +1041,8 @@ mod tests {
         let newer = newer_than_this_build();
 
         let e = runs_here(&newer, CURRENT).unwrap_err();
+        assert!(matches!(e, Problem::TooNew { .. }), "{e}");
+        let e = e.to_string();
         assert!(e.contains(&newer) && e.contains(CURRENT), "{e}");
 
         assert!(runs_here(CURRENT, CURRENT).is_ok());
@@ -991,7 +1050,7 @@ mod tests {
 
         // A minimum that doesn't read is refused, and not echoed.
         let e = runs_here("2.0\nforged log line", CURRENT).unwrap_err();
-        assert!(!e.contains("forged"), "{e}");
+        assert!(!e.to_string().contains("forged"), "{e}");
 
         // An update this build can't install isn't offered.
         let index = index(&[("ahead", NEW, &newer)]);

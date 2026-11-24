@@ -432,6 +432,45 @@ fn line(text: &str, max: usize) -> String {
     )
 }
 
+/// A failure as a person reads it, in their language. Only what's open-ended
+/// (a parser's complaint, an OS error, a path) stays English, as detail. The
+/// log keeps the English `Display`.
+fn why(problem: &catalog::Problem) -> SharedString {
+    use catalog::Problem;
+    use rox_net::download::Failure;
+
+    let detail = |text: &str| line(text, REASON_MAX);
+    match problem {
+        Problem::Net(failure) => match failure {
+            Failure::NoConnection => rox_i18n::t!("catalog-why-no-connection"),
+            Failure::TimedOut => rox_i18n::t!("catalog-why-timed-out"),
+            Failure::Refused(status) => {
+                rox_i18n::t!("catalog-why-refused", status = u64::from(*status))
+            }
+            Failure::Redirected(_) => rox_i18n::t!("catalog-why-redirected"),
+            Failure::OverCap(_) => rox_i18n::t!("catalog-why-too-large"),
+            Failure::SizeOffered { .. } | Failure::RanPast(_) | Failure::Short { .. } => {
+                rox_i18n::t!("catalog-why-wrong-size")
+            }
+            Failure::WrongChecksum { .. } => rox_i18n::t!("catalog-why-wrong-checksum"),
+            Failure::Cancelled => rox_i18n::t!("catalog-why-cancelled"),
+            Failure::Unreadable(text) => {
+                rox_i18n::t!("catalog-why-unreadable", detail = detail(text))
+            }
+            Failure::BadChecksum | Failure::Other(_) => detail(&failure.to_string()).into(),
+        },
+        Problem::NoIndex => rox_i18n::t!("catalog-why-no-index"),
+        Problem::NoSuchPackage(id) => rox_i18n::t!("catalog-why-no-package", id = id.clone()),
+        Problem::TooNew { need, .. } => {
+            rox_i18n::t!("catalog-why-too-new", version = need.to_string())
+        }
+        Problem::Busy(_) => rox_i18n::t!("catalog-why-busy"),
+        Problem::Package(text) => rox_i18n::t!("catalog-why-not-package", detail = detail(text)),
+        Problem::Interrupted(_) => rox_i18n::t!("catalog-why-interrupted"),
+        Problem::Other(text) => detail(text).into(),
+    }
+}
+
 /// Several lines with their breaks kept: each line made plain, runs of
 /// blank lines kept to one, capped in lines and in characters.
 fn block(text: &str, max: usize, max_lines: usize) -> String {
@@ -665,7 +704,7 @@ impl CatalogWindow {
                     }
                     Err(reason) => {
                         log::warn!("catalog: refreshing: {reason}");
-                        this.failed = Some(line(&reason, REASON_MAX).into());
+                        this.failed = Some(why(&reason));
                         this.settle_link(true, window, cx);
                     }
                 }
@@ -869,7 +908,7 @@ impl CatalogWindow {
                         log::warn!("catalog: record {id}: {reason}");
                         Card::Failed(rox_i18n::t!(
                             "catalog-record-failed",
-                            reason = line(&reason, REASON_MAX)
+                            reason = why(&reason).to_string()
                         ))
                     }
                 };
@@ -982,7 +1021,7 @@ impl CatalogWindow {
                     // Every failure on a Replace lands before the old file is
                     // touched, so the line can say it's unchanged.
                     Err(reason) => {
-                        let reason = line(&reason, REASON_MAX);
+                        let reason = why(&reason).to_string();
                         let said = match choice {
                             catalog::Choice::Replace => {
                                 rox_i18n::t!("catalog-replace-failed", reason = reason)

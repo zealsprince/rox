@@ -240,7 +240,10 @@ fn install_plugins(window: &mut Window, cx: &mut App) {
                             rox_i18n::t!("settings-plugins-installed", name = name),
                         )
                     }
-                    Err(e) => Toast::new(panel::Tone::Bad, e).title(file_name(&path)),
+                    Err(e) => Toast::new(panel::Tone::Bad, e).title(rox_i18n::t!(
+                        "settings-plugins-install-failed",
+                        file = file_name(&path)
+                    )),
                 };
                 toast.post(origin, cx);
             })
@@ -801,7 +804,8 @@ impl SettingsWindow {
                     panel::Tone::Good,
                     rox_i18n::t!("settings-plugins-packed", path = path.display().to_string()),
                 ),
-                Err(e) => Toast::new(panel::Tone::Bad, e).title(name),
+                Err(e) => Toast::new(panel::Tone::Bad, e)
+                    .title(rox_i18n::t!("settings-plugins-pack-failed", name = name)),
             };
             cx.update(|cx| toast.post(origin, cx)).ok();
         })

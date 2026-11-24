@@ -167,7 +167,10 @@ fn install_plugin(path: PathBuf, origin: AnyWindowHandle, cx: &mut App) {
                 }
                 Err(e) => {
                     log::warn!("documents: installing {}: {e}", path.display());
-                    Toast::new(panel::Tone::Bad, e).title(file_name(&path))
+                    Toast::new(panel::Tone::Bad, e).title(rox_i18n::t!(
+                        "settings-plugins-install-failed",
+                        file = file_name(&path)
+                    ))
                 }
             };
             toast.post(origin, cx);

@@ -16,8 +16,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::download::{HTTPS_ONLY, is_sha256, refuse_redirect, stated_length};
-use crate::providers::{USER_AGENT, net_reason};
+use crate::download::{Failure, HTTPS_ONLY, is_sha256, refuse_redirect, stated_length};
+use crate::providers::USER_AGENT;
 
 /// Placeholders from the catalog contract, to tune once a real index exists.
 pub const INDEX_MAX: u64 = 4 << 20;
@@ -369,18 +369,21 @@ fn agent() -> &'static ureq::Agent {
     })
 }
 
-fn get(url: &str, cap: u64) -> Result<(String, Vec<u8>), String> {
-    let response = agent().get(url).call().map_err(|e| net_reason(&e))?;
+fn get(url: &str, cap: u64) -> Result<(String, Vec<u8>), Failure> {
+    let response = agent()
+        .get(url)
+        .call()
+        .map_err(|e| Failure::from_ureq(&e))?;
     read_capped(response, cap)
 }
 
 /// The body and its content type, refused past `cap` without reading more
 /// than one byte over it. ureq's own string limit isn't the guard.
-fn read_capped(response: ureq::Response, cap: u64) -> Result<(String, Vec<u8>), String> {
+fn read_capped(response: ureq::Response, cap: u64) -> Result<(String, Vec<u8>), Failure> {
     refuse_redirect(&response)?;
 
     if stated_length(&response).is_some_and(|stated| stated > cap) {
-        return Err(format!("the catalog's answer is over its {cap} byte cap"));
+        return Err(Failure::OverCap(cap));
     }
 
     let content_type = response.content_type().to_string();
@@ -389,45 +392,53 @@ fn read_capped(response: ureq::Response, cap: u64) -> Result<(String, Vec<u8>), 
         .into_reader()
         .take(cap + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::from_io(&e))?;
     if bytes.len() as u64 > cap {
-        return Err(format!("the catalog's answer is over its {cap} byte cap"));
+        return Err(Failure::OverCap(cap));
     }
 
     Ok((content_type, bytes))
 }
 
-fn text((_, bytes): (String, Vec<u8>)) -> Result<String, String> {
-    String::from_utf8(bytes).map_err(|_| "the catalog's answer isn't UTF-8".to_string())
+fn text((_, bytes): (String, Vec<u8>)) -> Result<String, Failure> {
+    String::from_utf8(bytes)
+        .map_err(|_| Failure::Unreadable("the catalog's answer isn't UTF-8".into()))
+}
+
+/// A path the catalog named that isn't one rox fetches.
+fn resolved(origin: &Origin, path: &str) -> Result<String, Failure> {
+    origin.resolve(path).map_err(Failure::Other)
 }
 
 /// The index exactly as served, for a cache that keeps its bytes.
-pub fn fetch_index_text(origin: &Origin) -> Result<String, String> {
-    text(get(&origin.resolve("index.json")?, INDEX_MAX)?)
+pub fn fetch_index_text(origin: &Origin) -> Result<String, Failure> {
+    text(get(&resolved(origin, "index.json")?, INDEX_MAX)?)
 }
 
-pub fn fetch_index(origin: &Origin) -> Result<Index, String> {
-    parse_index(&fetch_index_text(origin)?)
+pub fn fetch_index(origin: &Origin) -> Result<Index, Failure> {
+    parse_index(&fetch_index_text(origin)?).map_err(Failure::Unreadable)
 }
 
-pub fn fetch_record(origin: &Origin, id: &str) -> Result<Record, String> {
+pub fn fetch_record(origin: &Origin, id: &str) -> Result<Record, Failure> {
     if !is_slug(id) {
-        return Err("that isn't a catalog id".into());
+        return Err(Failure::Other("that isn't a catalog id".into()));
     }
 
-    let url = origin.resolve(&format!("packages/{id}.json"))?;
-    parse_record(id, &text(get(&url, RECORD_MAX)?)?)
+    let url = resolved(origin, &format!("packages/{id}.json"))?;
+    parse_record(id, &text(get(&url, RECORD_MAX)?)?).map_err(Failure::Unreadable)
 }
 
 /// A preview's bytes, only when the server calls them an image. Decoding
 /// them is the caller's, under its own pixel cap.
-pub fn fetch_preview(origin: &Origin, path: &str) -> Result<Vec<u8>, String> {
-    image(get(&origin.resolve(path)?, PREVIEW_MAX)?)
+pub fn fetch_preview(origin: &Origin, path: &str) -> Result<Vec<u8>, Failure> {
+    image(get(&resolved(origin, path)?, PREVIEW_MAX)?)
 }
 
-fn image((content_type, bytes): (String, Vec<u8>)) -> Result<Vec<u8>, String> {
+fn image((content_type, bytes): (String, Vec<u8>)) -> Result<Vec<u8>, Failure> {
     if !content_type.starts_with("image/") {
-        return Err("the catalog served a preview that isn't an image".into());
+        return Err(Failure::Unreadable(
+            "the catalog served a preview that isn't an image".into(),
+        ));
     }
 
     Ok(bytes)
@@ -684,7 +695,7 @@ mod tests {
         // Refused on the stated length, and on the count when there is none.
         for served in [canned::ok(&body), canned::open_ended(&body)] {
             let e = read_capped(canned::answer(&served), INDEX_MAX).unwrap_err();
-            assert!(e.contains("cap"), "{e}");
+            assert_eq!(e, Failure::OverCap(INDEX_MAX));
         }
 
         let fits = " ".repeat(INDEX_MAX as usize);
@@ -698,7 +709,7 @@ mod tests {
             INDEX_MAX,
         )
         .unwrap_err();
-        assert!(e.contains("redirect"), "{e}");
+        assert!(matches!(e, Failure::Redirected(_)), "{e}");
 
         assert!(format!("{:?}", agent()).contains("redirects: 0"));
     }

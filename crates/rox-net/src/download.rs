@@ -15,9 +15,147 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::providers::{USER_AGENT, net_reason};
+use crate::providers::USER_AGENT;
 
 const CHUNK: usize = 64 * 1024;
+
+/// Why a catalog fetch or a package download failed. rox-net has no strings
+/// for a person to read: the window words each cause in its own language, and
+/// `Display` is the English line the log keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// DNS, a refused connect, or a connection that dropped.
+    NoConnection,
+    /// The connect or a read ran out of time.
+    TimedOut,
+    /// The server answered with an error status.
+    Refused(u16),
+    /// The server answered with a redirect, which nothing here follows.
+    Redirected(u16),
+    /// The answer ran past the cap it's read under.
+    OverCap(u64),
+    /// The server stated a length other than the expected size.
+    SizeOffered {
+        claimed: u64,
+        expected: u64,
+    },
+    /// The body ran past the expected size.
+    RanPast(u64),
+    /// The body ended before the expected size.
+    Short {
+        done: u64,
+        expected: u64,
+    },
+    WrongChecksum {
+        found: String,
+        expected: String,
+    },
+    /// The caller's checksum isn't one.
+    BadChecksum,
+    Cancelled,
+    /// What came back doesn't read as what was asked for. The detail is a
+    /// parser's and stays English.
+    Unreadable(String),
+    /// Anything else: a file on this machine, a path the catalog named. The
+    /// detail is technical and stays English.
+    Other(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::NoConnection => write!(f, "no connection"),
+
+            Failure::TimedOut => write!(f, "timed out"),
+
+            Failure::Refused(status) => write!(f, "service returned {status}"),
+
+            Failure::Redirected(status) => write!(
+                f,
+                "the server redirected ({status}), and rox follows no redirect here"
+            ),
+
+            Failure::OverCap(cap) => write!(f, "the catalog's answer is over its {cap} byte cap"),
+
+            Failure::SizeOffered { claimed, expected } => write!(
+                f,
+                "the server offered {claimed} bytes where {expected} were expected"
+            ),
+
+            Failure::RanPast(expected) => write!(
+                f,
+                "the download ran past the {expected} bytes it was meant to be"
+            ),
+
+            Failure::Short { done, expected } => {
+                write!(f, "the download stopped at {done} of {expected} bytes")
+            }
+
+            Failure::WrongChecksum { found, expected } => write!(
+                f,
+                "the download's checksum is {found}, not the {expected} it was meant to be"
+            ),
+
+            Failure::BadChecksum => {
+                write!(f, "the expected checksum isn't 64 lowercase hex characters")
+            }
+
+            Failure::Cancelled => write!(f, "cancelled"),
+
+            Failure::Unreadable(detail) | Failure::Other(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl Failure {
+    /// A request that never got an answer, or got an error status.
+    pub(crate) fn from_ureq(e: &ureq::Error) -> Failure {
+        let transport = match e {
+            ureq::Error::Status(status, _) => return Failure::Refused(*status),
+            ureq::Error::Transport(transport) => transport,
+        };
+
+        if let Some(io) = io_source(transport) {
+            return Failure::from_io(io);
+        }
+
+        match transport.kind() {
+            ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Io => {
+                Failure::NoConnection
+            }
+            other => Failure::Other(other.to_string()),
+        }
+    }
+
+    /// A read that failed partway, or the io error under a transport one.
+    pub(crate) fn from_io(e: &std::io::Error) -> Failure {
+        use std::io::ErrorKind;
+
+        match e.kind() {
+            // ureq reports a read timeout as WouldBlock on some platforms.
+            ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut,
+            ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::BrokenPipe
+            | ErrorKind::UnexpectedEof => Failure::NoConnection,
+            _ => Failure::Other(e.to_string()),
+        }
+    }
+}
+
+fn io_source(transport: &ureq::Transport) -> Option<&std::io::Error> {
+    let mut source = std::error::Error::source(transport);
+    while let Some(e) = source {
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            return Some(io);
+        }
+        source = e.source();
+    }
+
+    None
+}
 
 /// Written by the download, read by whatever shows it. Cancelling takes the
 /// part file with it.
@@ -90,12 +228,15 @@ pub fn to_file(
     bytes: u64,
     sha256: &str,
     progress: &Progress,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     if !is_sha256(sha256) {
-        return Err("the expected checksum isn't 64 lowercase hex characters".into());
+        return Err(Failure::BadChecksum);
     }
 
-    let response = agent().get(url).call().map_err(|e| net_reason(&e))?;
+    let response = agent()
+        .get(url)
+        .call()
+        .map_err(|e| Failure::from_ureq(&e))?;
     save(response, dest, bytes, sha256, progress)
 }
 
@@ -106,7 +247,7 @@ fn save(
     bytes: u64,
     sha256: &str,
     progress: &Progress,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     progress.total.store(bytes, Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
 
@@ -116,15 +257,15 @@ fn save(
     if let Some(claimed) = stated_length(&response)
         && claimed != bytes
     {
-        return Err(format!(
-            "the server offered {claimed} bytes where {bytes} were expected"
-        ));
+        return Err(Failure::SizeOffered {
+            claimed,
+            expected: bytes,
+        });
     }
 
     let part = part_path(dest);
-    let outcome = stream(response.into_reader(), &part, bytes, sha256, progress).and_then(|()| {
-        std::fs::rename(&part, dest).map_err(|e| format!("{}: {e}", dest.display()))
-    });
+    let outcome = stream(response.into_reader(), &part, bytes, sha256, progress)
+        .and_then(|()| std::fs::rename(&part, dest).map_err(|e| local(dest, &e)));
 
     if outcome.is_err() {
         let _ = std::fs::remove_file(&part);
@@ -135,16 +276,14 @@ fn save(
 
 /// With redirects off, ureq hands a 3xx back as an answer rather than an
 /// error, so this is the line that refuses one.
-pub(crate) fn refuse_redirect(response: &ureq::Response) -> Result<(), String> {
+pub(crate) fn refuse_redirect(response: &ureq::Response) -> Result<(), Failure> {
     let status = response.status();
     if (300..400).contains(&status) {
-        return Err(format!(
-            "the server redirected ({status}), and rox follows no redirect here"
-        ));
+        return Err(Failure::Redirected(status));
     }
 
     if !(200..300).contains(&status) {
-        return Err(format!("service returned {status}"));
+        return Err(Failure::Refused(status));
     }
 
     Ok(())
@@ -170,20 +309,19 @@ fn stream(
     bytes: u64,
     sha256: &str,
     progress: &Progress,
-) -> Result<(), String> {
-    let mut out = std::io::BufWriter::new(
-        rox_package::fresh::file(part).map_err(|e| format!("{}: {e}", part.display()))?,
-    );
+) -> Result<(), Failure> {
+    let mut out =
+        std::io::BufWriter::new(rox_package::fresh::file(part).map_err(|e| local(part, &e))?);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; CHUNK];
     let mut done: u64 = 0;
 
     loop {
         if progress.stopping() {
-            return Err("cancelled".into());
+            return Err(Failure::Cancelled);
         }
 
-        let read = body.read(&mut buffer).map_err(|e| e.to_string())?;
+        let read = body.read(&mut buffer).map_err(|e| Failure::from_io(&e))?;
         if read == 0 {
             break;
         }
@@ -192,32 +330,38 @@ fn stream(
         // put one byte past the stated size on disk.
         done += read as u64;
         if done > bytes {
-            return Err(format!(
-                "the download ran past the {bytes} bytes it was meant to be"
-            ));
+            return Err(Failure::RanPast(bytes));
         }
 
         hasher.update(&buffer[..read]);
         out.write_all(&buffer[..read])
-            .map_err(|e| format!("{}: {e}", part.display()))?;
+            .map_err(|e| local(part, &e))?;
         progress.done.store(done, Ordering::Relaxed);
     }
 
-    out.flush()
-        .map_err(|e| format!("{}: {e}", part.display()))?;
+    out.flush().map_err(|e| local(part, &e))?;
 
     if done != bytes {
-        return Err(format!("the download stopped at {done} of {bytes} bytes"));
+        return Err(Failure::Short {
+            done,
+            expected: bytes,
+        });
     }
 
     let digest = hex(&hasher.finalize());
     if digest != sha256 {
-        return Err(format!(
-            "the download's checksum is {digest}, not the {sha256} it was meant to be"
-        ));
+        return Err(Failure::WrongChecksum {
+            found: digest,
+            expected: sha256.to_string(),
+        });
     }
 
     Ok(())
+}
+
+/// A file on this machine: its path and the OS's own words.
+fn local(path: &Path, e: &std::io::Error) -> Failure {
+    Failure::Other(format!("{}: {e}", path.display()))
 }
 
 pub fn is_sha256(text: &str) -> bool {
@@ -328,7 +472,8 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(e.contains("checksum"), "{e}");
+        assert!(matches!(e, Failure::WrongChecksum { .. }), "{e}");
+        assert!(e.to_string().contains("checksum"), "{e}");
         assert!(listed(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -351,7 +496,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(e.contains("ran past"), "{e}");
+        assert_eq!(e, Failure::RanPast(100));
         assert!(listed(&dir).is_empty());
         assert!(progress.done() <= 100);
 
@@ -365,7 +510,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(e.contains("offered"), "{e}");
+        assert!(
+            matches!(e, Failure::SizeOffered { expected: 100, .. }),
+            "{e}"
+        );
         assert!(listed(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -384,7 +532,14 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(e.contains("stopped at 4 of 64"), "{e}");
+        assert_eq!(
+            e,
+            Failure::Short {
+                done: 4,
+                expected: 64
+            }
+        );
+        assert!(e.to_string().contains("stopped at 4 of 64"), "{e}");
         assert!(listed(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -403,7 +558,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(e.contains("redirect"), "{e}");
+        assert!(matches!(e, Failure::Redirected(_)), "{e}");
         assert!(listed(&dir).is_empty());
 
         // The refusal above is only reached because the agent hands a 3xx
@@ -429,7 +584,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(e, "cancelled");
+        assert_eq!(e, Failure::Cancelled);
         assert!(listed(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -449,6 +604,28 @@ mod tests {
             "nope",
             &Progress::new(),
         );
-        assert!(e.unwrap_err().contains("checksum"));
+        assert_eq!(e.unwrap_err(), Failure::BadChecksum);
+    }
+
+    #[test]
+    fn a_failed_read_names_its_cause() {
+        use std::io::{Error, ErrorKind};
+
+        assert_eq!(
+            Failure::from_io(&Error::new(ErrorKind::TimedOut, "slow")),
+            Failure::TimedOut
+        );
+        assert_eq!(
+            Failure::from_io(&Error::new(ErrorKind::WouldBlock, "slow")),
+            Failure::TimedOut
+        );
+        assert_eq!(
+            Failure::from_io(&Error::from(ErrorKind::ConnectionReset)),
+            Failure::NoConnection
+        );
+        assert!(matches!(
+            Failure::from_io(&Error::other("disk full")),
+            Failure::Other(_)
+        ));
     }
 }

@@ -384,6 +384,8 @@ struct Shared {
     copies: AtomicU64,
     /// Copies thrown away because the renderer wrote the slot under them.
     torn: AtomicU64,
+    /// Lines read off the renderer's stdout, every session's.
+    lines: AtomicU64,
 }
 
 struct State {
@@ -527,6 +529,7 @@ impl Source {
             wake: Condvar::new(),
             copies: AtomicU64::new(0),
             torn: AtomicU64::new(0),
+            lines: AtomicU64::new(0),
         });
 
         if let Ok(mut live) = LIVE.lock() {
@@ -543,6 +546,7 @@ impl Source {
             tag: tag.to_string(),
             pool: Pool::default(),
             published: 0,
+            tally: Tally::default(),
         };
         let thread = std::thread::Builder::new()
             .name(format!("target-{tag}"))
@@ -704,6 +708,20 @@ struct Supervisor {
     /// Frames published across every session, so a restarted renderer's
     /// first frame is new to the texture.
     published: u64,
+    /// What the current session's copies came to, for its closing log line.
+    tally: Tally,
+}
+
+/// One session's copies by outcome. A renderer author's only view of why
+/// frames don't show, so it goes to the log once, when the session ends.
+#[derive(Default)]
+struct Tally {
+    copied: u64,
+    torn: u64,
+    empty: u64,
+    size: u64,
+    /// The stdout line count when the session began.
+    lines_from: u64,
 }
 
 enum Job {
@@ -777,6 +795,10 @@ impl Supervisor {
             };
 
             session += 1;
+            self.tally = Tally {
+                lines_from: self.shared.lines.load(Ordering::Relaxed),
+                ..Tally::default()
+            };
             {
                 let mut state = self.shared.lock();
                 state.session = session;
@@ -807,6 +829,7 @@ impl Supervisor {
             drop(run);
             self.join_reader(session, reader.ok());
             drop(mapping);
+            self.log_tally();
 
             match exit {
                 Exit::Stop => return,
@@ -1063,16 +1086,26 @@ impl Supervisor {
         let read = mapping.copy_slot(slot, buffer);
 
         let seq = match read {
-            rox_frames::Read::Whole { seq, .. } => seq,
+            rox_frames::Read::Whole { seq, .. } => {
+                self.tally.copied += 1;
+                seq
+            }
 
             // Mid-write when the copy began, or rewritten under it.
             rox_frames::Read::Torn | rox_frames::Read::Refused(Refusal::Writing) => {
                 self.shared.torn.fetch_add(1, Ordering::Relaxed);
+                self.tally.torn += 1;
                 return Copied::Torn;
             }
 
             rox_frames::Read::Refused(why) => {
-                log::debug!("render target {}: slot {slot} refused: {why:?}", self.tag);
+                match why {
+                    Refusal::Empty => self.tally.empty += 1,
+                    Refusal::Size { .. } => self.tally.size += 1,
+                    // Writing counts as torn above, and the reader passes
+                    // on only slots 0 and 1.
+                    Refusal::Writing | Refusal::NoSuchSlot(_) => {}
+                }
                 return Copied::Refused;
             }
         };
@@ -1099,6 +1132,22 @@ impl Supervisor {
         (self.notify)();
 
         Copied::Shown
+    }
+
+    fn log_tally(&self) {
+        let tally = &self.tally;
+        let lines = self.shared.lines.load(Ordering::Relaxed) - tally.lines_from;
+        let refused = tally.empty + tally.size;
+
+        log::info!(
+            "render target {}: session ended, {} frames copied, {} torn, {refused} refused \
+             ({} unwritten, {} wrong size), {lines} lines read",
+            self.tag,
+            tally.copied,
+            tally.torn,
+            tally.empty,
+            tally.size,
+        );
     }
 
     fn join_reader(&self, session: u64, reader: Option<JoinHandle<()>>) {
@@ -1413,6 +1462,7 @@ fn read(shared: Arc<Shared>, session: u64, stdout: Box<dyn Read + Send>, limits:
             }
         }
 
+        shared.lines.fetch_add(1, Ordering::Relaxed);
         if rate.note(Instant::now()) {
             break End::Flood;
         }
@@ -1829,6 +1879,12 @@ impl Targets {
             }
             kept
         });
+    }
+
+    /// Every target stops without its window, which took the textures with
+    /// it.
+    pub(crate) fn stop_all(&mut self) {
+        self.shown.clear();
     }
 
     /// Every target stops: the canvas left its window.

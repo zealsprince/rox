@@ -14,6 +14,12 @@ Internet Archive's freely licensed netlabel releases and uses every optional par
 protocol. [`examples/plugins/lyrics-folder`](examples/plugins/lyrics-folder/) is no source
 at all: it answers lyrics for any track in the library from a folder of `.lrc` files.
 
+A package can be a renderer instead: a program that draws the picture in a render target
+on a canvas, fed the music's signals. It installs and switches on the way a plugin does
+and lists under Renderers on the same page, but it speaks a wire of its own.
+[The renderer guide](docs/03-implementation/11-renderers.md) covers it, and
+[`examples/renderers`](examples/renderers/) has two to copy.
+
 This guide covers plugin API version 1, the only one the host supports.
 
 ## Installing one

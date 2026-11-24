@@ -300,7 +300,8 @@ fn launch(folder: &Loaded, handle: Lent, width: u32, height: u32) -> Result<Laun
     command.env("ROX_FRAMES_FD", "3");
 
     let lent = Extra::Handle(handle);
-    let (mut process, pipes) = process::spawn_with(&folder.id, command, &folder.dir, lent)?;
+    let (mut process, pipes) =
+        process::spawn_with("renderer", &folder.id, command, &folder.dir, lent)?;
     let mut stdin = pipes.stdin;
 
     let hello = json!({

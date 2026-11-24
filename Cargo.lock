@@ -7105,7 +7105,6 @@ dependencies = [
  "async-channel 2.5.0",
  "dirs 5.0.1",
  "interprocess",
- "log",
  "serde",
  "serde_json",
 ]

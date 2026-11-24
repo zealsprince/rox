@@ -2794,7 +2794,7 @@ tags-repair-count = { $count ->
    *[other] { $count } files
 }
 tags-repair-count-so-far = { $count } so far
-tags-repair-label-scope = scope
+tags-repair-label-scope = Scope
 tags-repair-no-affected = No affected files found.
 tags-repair-no-folder = No folder to scan; add one to the library or pick one.
 tags-repair-pick-folder = Pick a folder...
@@ -2834,10 +2834,10 @@ convert-dialog-custom-label = Custom
 convert-dialog-custom-menu-item = Custom...
 convert-dialog-custom-note = Arguments split on spaces, so no quoting; embedded art isn't copied for custom formats
 convert-dialog-format-not-ready = The typed format hasn't passed ffmpeg yet
-convert-dialog-label-extension = extension
-convert-dialog-label-format = format
-convert-dialog-label-into = into
-convert-dialog-label-named = named
+convert-dialog-label-extension = Extension
+convert-dialog-label-format = Format
+convert-dialog-label-into = Into
+convert-dialog-label-named = Named
 convert-dialog-mirror = Mirror the library's folders
 convert-dialog-nothing-to-convert = Nothing to convert: every row is skipped
 convert-dialog-pattern-help = / makes a folder, the format sets the extension

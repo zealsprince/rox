@@ -11,8 +11,6 @@ serde_json = "1"
 # Carries requests from the connection threads to the app's drain without a
 # poll, the same channel the single-instance guard and the media keys ride.
 async-channel = "2"
-# The accept loop and connection threads log through the app's backend.
-log = "0.4"
 # The runtime dir the socket lives in, same anchor the single-instance
 # guard uses.
 dirs = "5"

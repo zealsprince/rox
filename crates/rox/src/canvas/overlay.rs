@@ -900,11 +900,9 @@ fn command_choices() -> Arc<Vec<PickRow>> {
 /// What a click on the item runs off design mode. A grid has no row: its
 /// panels own their input.
 fn command_row(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
-    // A saved id this build doesn't have reads as none, and a click on it
+    // A saved id this build can't run reads as none, and a click on it
     // does nothing.
-    let command = keymap::COMMANDS
-        .iter()
-        .find(|command| !item.action.is_empty() && command.id == item.action);
+    let command = keymap::global_commands().find(|command| command.id == item.action);
     let label = command.map_or_else(
         || rox_i18n::t!("canvas-item-on-click-none"),
         |command| command.label(),

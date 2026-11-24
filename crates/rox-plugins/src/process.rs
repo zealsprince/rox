@@ -63,11 +63,13 @@ pub enum Extra<'a> {
 /// PATH replaced by the plugin's search path, so what it runs resolves the
 /// way the Plugins page reported it, plus three variables for Python.
 pub fn spawn(id: &str, command: Command, dir: &Path) -> Result<(Process, Pipes), String> {
-    spawn_with(id, command, dir, Extra::None)
+    spawn_with("plugin", id, command, dir, Extra::None)
 }
 
-/// [`spawn`], lending the child one more handle.
+/// [`spawn`], lending the child one more handle. `kind` leads the child's
+/// log lines, its stderr included: `plugin` or `renderer`.
 pub fn spawn_with(
+    kind: &'static str,
     id: &str,
     mut command: Command,
     dir: &Path,
@@ -114,7 +116,7 @@ pub fn spawn_with(
     let job = match job::Job::adopt(&child) {
         Ok(job) => Some(job),
         Err(e) => {
-            log::warn!("plugin {id}: no job object, its children may outlive it: {e}");
+            log::warn!("{kind} {id}: no job object, its children may outlive it: {e}");
             None
         }
     };
@@ -142,12 +144,12 @@ pub fn spawn_with(
         return Err("could not attach to the plugin's pipes".into());
     };
 
-    let tag = id.to_string();
+    let tag = format!("{kind} {id}");
     let drained = std::thread::Builder::new()
-        .name(format!("plugin-{id}-stderr"))
+        .name(format!("{kind}-{id}-stderr"))
         .spawn(move || drain_stderr(&tag, stderr));
     if let Err(e) = drained {
-        log::warn!("plugin {id}: stderr goes unread: {e}");
+        log::warn!("{kind} {id}: stderr goes unread: {e}");
     }
 
     let process = Process {
@@ -282,7 +284,8 @@ pub fn never_block(_stdin: &ChildStdin) -> io::Result<()> {
     Ok(())
 }
 
-fn drain_stderr(id: &str, stderr: impl Read) {
+/// `tag` is the child's kind and id, as its lines lead with them.
+fn drain_stderr(tag: &str, stderr: impl Read) {
     let mut reader = BufReader::new(stderr);
     let mut line = Vec::new();
 
@@ -294,7 +297,7 @@ fn drain_stderr(id: &str, stderr: impl Read) {
                 let text = String::from_utf8_lossy(&line);
                 let text = text.trim_end();
                 if !text.is_empty() {
-                    log::info!("plugin {id}: {text}");
+                    log::info!("{tag}: {text}");
                 }
             }
         }
@@ -578,7 +581,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.arg("-c").arg(script);
         let (mut process, pipes) =
-            spawn_with(tag, command, &dir, Extra::Handle(file.as_fd())).unwrap();
+            spawn_with("renderer", tag, command, &dir, Extra::Handle(file.as_fd())).unwrap();
         assert_eq!(process.handle(), None, "Unix names no handle: it's fd 3");
 
         let mut out = String::new();

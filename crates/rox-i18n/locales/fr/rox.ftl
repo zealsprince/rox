@@ -2802,7 +2802,7 @@ tags-repair-count = { $count ->
    *[other] { $count } fichiers
 }
 tags-repair-count-so-far = { $count } jusqu'ici
-tags-repair-label-scope = portée
+tags-repair-label-scope = Portée
 tags-repair-no-affected = Aucun fichier concerné trouvé.
 tags-repair-no-folder = Aucun dossier à analyser ; ajoutes-en un à la bibliothèque ou choisis-en un.
 tags-repair-pick-folder = Choisir un dossier...
@@ -2844,10 +2844,10 @@ convert-dialog-custom-label = Personnalisé
 convert-dialog-custom-menu-item = Personnalisé...
 convert-dialog-custom-note = Les arguments se coupent aux espaces, donc pas de guillemets ; les pochettes intégrées ne sont pas copiées pour les formats personnalisés
 convert-dialog-format-not-ready = Le format saisi n'est pas encore passé par ffmpeg
-convert-dialog-label-extension = extension
-convert-dialog-label-format = format
-convert-dialog-label-into = dans
-convert-dialog-label-named = nommé
+convert-dialog-label-extension = Extension
+convert-dialog-label-format = Format
+convert-dialog-label-into = Dans
+convert-dialog-label-named = Nommé
 convert-dialog-mirror = Refléter les dossiers de la bibliothèque
 convert-dialog-nothing-to-convert = Rien à convertir : chaque ligne est ignorée
 convert-dialog-pattern-help = / crée un dossier, le format fixe l'extension

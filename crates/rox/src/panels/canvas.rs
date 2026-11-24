@@ -59,7 +59,6 @@ use crate::canvas::target::{self, Pointer, Status as TargetStatus, Targets};
 use crate::canvas::text::{self, Values};
 use crate::canvas::texture::{self, TextureView};
 use crate::canvas::{self, Body, Placing};
-use crate::composite;
 use crate::keymap;
 use crate::objects;
 use crate::panels::controls;
@@ -410,6 +409,7 @@ pub struct CanvasPanel {
     _player_view: Subscription,
     _library: Subscription,
     _states: [Subscription; 5],
+    _window_closed: Subscription,
 }
 
 impl CanvasPanel {
@@ -494,6 +494,11 @@ impl CanvasPanel {
             }),
         ];
 
+        let me = cx.entity().downgrade();
+        let window_closed = cx.on_window_closed(move |cx| {
+            me.update(cx, |this, cx| this.window_closed(cx)).ok();
+        });
+
         let seen_routes = config.routes.clone();
         let mut this = CanvasPanel {
             state,
@@ -535,9 +540,27 @@ impl CanvasPanel {
             _player_view: player_view,
             _library: library,
             _states: followed,
+            _window_closed: window_closed,
         };
         this.build(HashMap::new(), window, cx);
         this
+    }
+
+    /// A pop-out closed by the compositor never calls `on_removed`, and the
+    /// dock can keep a restored canvas alive past it, so the renderers stop
+    /// here once the window the canvas last drew in is gone.
+    fn window_closed(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.window else {
+            return;
+        };
+
+        // Docked back, the canvas is in a tab group and draws again there.
+        if self.tab_panel.is_some() || cx.windows().contains(&handle) {
+            return;
+        }
+
+        self.menu = None;
+        self.targets.stop_all();
     }
 
     /// Every grid item's dock, groups included, in item order.
@@ -561,26 +584,6 @@ impl CanvasPanel {
             })
         });
         out
-    }
-
-    /// A new grid item holding `panel`, placed at the stage center.
-    pub fn add_panel(
-        &mut self,
-        panel: Arc<dyn PanelView>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let id = self.config.canvas.fresh_id("grid");
-        let grid = grid::holding(&id, panel, &self.state, window, cx);
-        let dock = grid::dump(&grid, cx).unwrap_or(Value::Null);
-        self.spare.insert(id.clone(), grid);
-
-        let item = CanvasItem {
-            id,
-            content: Content::Grid { dock },
-            ..CanvasItem::default()
-        };
-        self.change(move |canvas| canvas.items.push(item), window, cx);
     }
 
     /// The one path every edit takes: applies it, records undo, asks the
@@ -1077,6 +1080,14 @@ impl CanvasPanel {
                 cx.listener(|this, _: &NudgeDownFar, window, cx| this.nudge([0., 10.], window, cx)),
             )
             .on_action(cx.listener(|this, _: &StepOut, window, cx| this.step_out(window, cx)))
+            .when(!design, |d| {
+                d.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        this.open_panel_menu(event, window, cx)
+                    }),
+                )
+            })
             // A `.roxo` dropped on the stage goes in here. Anything else is
             // left alone, as it was before the canvas took drops.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -2108,8 +2119,8 @@ impl CanvasPanel {
     }
 
     /// Add Grid, Group, Image, Shader, Text and, with a renderer installed,
-    /// Render Target at `position`. `at` places the new item where the press
-    /// was; None puts it at the stage center.
+    /// Render Target at `position`, then the panel menu. `at` places the new
+    /// item where the press was; None puts it at the stage center.
     pub(crate) fn open_add_menu(
         &mut self,
         position: Point<Pixels>,
@@ -2165,7 +2176,8 @@ impl CanvasPanel {
             })
         });
 
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+        let (panel, tab_panel, state) = (cx.entity(), self.tab_panel.clone(), self.state.clone());
+        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
             let menu = menu
                 .item(
                     PopupMenuItem::new(rox_i18n::t!("canvas-add-grid"))
@@ -2200,12 +2212,34 @@ impl CanvasPanel {
                 None => menu,
             };
 
-            menu.separator().item(
+            let menu = menu.separator().item(
                 PopupMenuItem::submenu(rox_i18n::t!("canvas-add-objects"), object_menu)
                     .icon(Icon::default().path(icons::BOOKMARK)),
-            )
+            );
+            panel_tail(menu, &panel, tab_panel, state, window, cx)
         });
         self.open_menu(position, menu, window, cx);
+    }
+
+    /// Off design mode a right-click opens the panel menu, except over a
+    /// grid, whose panels serve their own, or a render target, whose
+    /// renderer gets the press.
+    fn open_panel_menu(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let local = local_point(event.position, self.bounds.get().origin);
+        if matches!(self.hit_at(local), Hit::Grid | Hit::Target { .. }) {
+            return;
+        }
+
+        let (panel, tab_panel, state) = (cx.entity(), self.tab_panel.clone(), self.state.clone());
+        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+            panel_tail(menu, &panel, tab_panel, state, window, cx)
+        });
+        self.open_menu(event.position, menu, window, cx);
     }
 
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
@@ -2625,9 +2659,10 @@ fn scroll_lines(delta: ScrollDelta) -> [f32; 2] {
     }
 }
 
-/// A grid's command is ignored: its panels own their input.
+/// A grid's command is ignored: its panels own their input. An id this
+/// build can't run counts as none, so it claims no click.
 fn commands(item: &CanvasItem) -> bool {
-    !item.action.is_empty() && !matches!(item.content, Content::Grid { .. })
+    keymap::dispatches(&item.action) && !matches!(item.content, Content::Grid { .. })
 }
 
 fn has_commands(canvas: &CanvasState) -> bool {
@@ -3142,6 +3177,7 @@ impl Panel for CanvasPanel {
         cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel.clone());
+        self.menu = None;
         self.state
             .tab_hosts
             .update(cx, |hosts, _| hosts.report(tab_panel));
@@ -3149,6 +3185,12 @@ impl Panel for CanvasPanel {
 
     fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panel = None;
+
+        // Pop Out and Dock Back run from this menu, and a new window draws
+        // the canvas before the click returns: a menu still held here would
+        // render mid update.
+        self.menu = None;
+
         self.images.clear(window);
         self.targets.clear(window, cx);
 
@@ -3163,40 +3205,31 @@ impl Panel for CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let weak = cx.entity().downgrade();
-        let state = self.state.clone();
-        let workspace = self.workspace.clone();
-        let add = PopupMenu::build(window, cx, move |menu, window, cx| {
-            let weak = weak.clone();
-            composite::pick_items(
-                menu,
-                state.clone(),
-                workspace.clone(),
-                window,
-                cx,
-                move |panel, window, cx| {
-                    if let Some(this) = weak.upgrade() {
-                        this.update(cx, |this, cx| this.add_panel(panel, window, cx));
-                    }
-                },
-            )
-        });
-
-        let menu = menu.item(
-            PopupMenuItem::submenu(rox_i18n::t!("composite-add-panel"), add)
-                .icon(Icon::default().path(icons::PLUS)),
-        );
-        let menu =
-            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
-        panel::popout_item(
+        panel_tail(
             menu,
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
             window,
+            cx,
         )
     }
+}
+
+/// The canvas's panel menu, which its own right-click menus end with: the
+/// canvas owns its right-click, so this is the only way to Dock Back from a
+/// pop-out. It reads nothing of the canvas, so it builds mid update.
+fn panel_tail(
+    menu: PopupMenu,
+    panel: &Entity<CanvasPanel>,
+    tab_panel: Option<WeakEntity<TabPanel>>,
+    state: AppState,
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let menu = panel_settings::rename_item(menu, panel, tab_panel.clone(), window, cx);
+    let menu = panel_settings::settings_item(menu, panel, cx);
+    panel::popout_item(menu, panel, tab_panel, state, window)
 }
 
 impl Render for CanvasPanel {
@@ -3454,8 +3487,8 @@ mod tests {
     #[test]
     fn a_click_goes_to_the_front_item() {
         let canvas = canvas_of(json!([
-            picture("back", "stop"),
-            picture("front", "play_pause")
+            picture("back", "stop_playback"),
+            picture("front", "toggle_playback")
         ]));
         let shapes = [
             shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
@@ -3464,17 +3497,20 @@ mod tests {
 
         assert_eq!(
             hit(&shapes, &canvas, [75., 75.]),
-            command("front", "play_pause")
+            command("front", "toggle_playback")
         );
-        assert_eq!(hit(&shapes, &canvas, [10., 10.]), command("back", "stop"));
+        assert_eq!(
+            hit(&shapes, &canvas, [10., 10.]),
+            command("back", "stop_playback")
+        );
         assert_eq!(hit(&shapes, &canvas, [300., 300.]), Hit::Nothing);
     }
 
     #[test]
     fn a_grid_stops_the_walk() {
         let canvas = canvas_of(json!([
-            picture("back", "play_pause"),
-            { "id": "grid", "action": "stop", "content": { "kind": "grid", "dock": null } },
+            picture("back", "toggle_playback"),
+            { "id": "grid", "action": "stop_playback", "content": { "kind": "grid", "dock": null } },
         ]));
         let shapes = [
             shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
@@ -3484,10 +3520,10 @@ mod tests {
         assert_eq!(hit(&shapes, &canvas, [30., 30.]), Hit::Grid);
         assert_eq!(
             hit(&shapes, &canvas, [90., 90.]),
-            command("back", "play_pause")
+            command("back", "toggle_playback")
         );
         assert!(!has_commands(&canvas_of(json!([
-            { "id": "grid", "action": "stop", "content": { "kind": "grid", "dock": null } },
+            { "id": "grid", "action": "stop_playback", "content": { "kind": "grid", "dock": null } },
         ]))));
     }
 
@@ -3523,7 +3559,7 @@ mod tests {
         let canvas = canvas_of(json!([{
             "id": "group",
             "action": "next_track",
-            "content": { "kind": "group", "items": [picture("a", "stop"), picture("b", "")] },
+            "content": { "kind": "group", "items": [picture("a", "stop_playback"), picture("b", "")] },
         }]));
         let shapes = [
             shape("a", &["group"], square(0., 0., 50.), ShapeKind::Perspective),
@@ -3531,7 +3567,10 @@ mod tests {
             shape("group", &[], square(0., 0., 110.), ShapeKind::Group),
         ];
 
-        assert_eq!(hit(&shapes, &canvas, [10., 10.]), command("a", "stop"));
+        assert_eq!(
+            hit(&shapes, &canvas, [10., 10.]),
+            command("a", "stop_playback")
+        );
         assert_eq!(
             hit(&shapes, &canvas, [70., 10.]),
             command("group", "next_track")
@@ -3543,8 +3582,8 @@ mod tests {
     #[test]
     fn an_invisible_item_is_passed_through() {
         let mut canvas = canvas_of(json!([
-            picture("back", "stop"),
-            picture("front", "play_pause")
+            picture("back", "stop_playback"),
+            picture("front", "toggle_playback")
         ]));
         if let Some(front) = canvas.find_mut("front") {
             front.visible = false;
@@ -3554,19 +3593,22 @@ mod tests {
             shape("front", &[], square(0., 0., 100.), ShapeKind::Perspective),
         ];
 
-        assert_eq!(hit(&shapes, &canvas, [50., 50.]), command("back", "stop"));
+        assert_eq!(
+            hit(&shapes, &canvas, [50., 50.]),
+            command("back", "stop_playback")
+        );
     }
 
     #[test]
     fn an_item_hidden_by_its_case_is_passed_through() {
         let canvas = canvas_of(json!([
-            picture("back", "stop"),
+            picture("back", "stop_playback"),
             {
                 "id": "group",
                 "action": "next_track",
                 "state": "player.mute",
                 "cases": [{ "when": "unmuted", "visible": false }],
-                "content": { "kind": "group", "items": [picture("child", "play_pause")] },
+                "content": { "kind": "group", "items": [picture("child", "toggle_playback")] },
             },
         ]));
         let mut shapes = [
@@ -3578,14 +3620,17 @@ mod tests {
         // Shown, the group's child takes the click with its own command.
         assert_eq!(
             hit(&shapes, &canvas, [50., 50.]),
-            command("child", "play_pause")
+            command("child", "toggle_playback")
         );
 
         // Hidden by the group's case, the ghosts pass the click through.
         for shape in &mut shapes[1..] {
             shape.hidden = true;
         }
-        assert_eq!(hit(&shapes, &canvas, [50., 50.]), command("back", "stop"));
+        assert_eq!(
+            hit(&shapes, &canvas, [50., 50.]),
+            command("back", "stop_playback")
+        );
     }
 
     fn render_target(id: &str, action: &str) -> Value {
@@ -3607,7 +3652,7 @@ mod tests {
     fn a_target_with_a_command_keeps_the_click() {
         let canvas = canvas_of(json!([
             render_target("plain", ""),
-            render_target("commanded", "play_pause"),
+            render_target("commanded", "toggle_playback"),
             {
                 "id": "group",
                 "action": "next_track",
@@ -3637,7 +3682,7 @@ mod tests {
         );
         assert_eq!(
             hit(&shapes, &canvas, [250., 50.]),
-            command("commanded", "play_pause")
+            command("commanded", "toggle_playback")
         );
         assert_eq!(
             hit(&shapes, &canvas, [450., 50.]),
@@ -3652,6 +3697,56 @@ mod tests {
             panic!("the target is under the point");
         };
         assert!(at[0] < 0.05 && (at[1] - 0.5).abs() < 0.01, "{at:?}");
+    }
+
+    #[test]
+    fn an_unknown_command_claims_no_click() {
+        let canvas = canvas_of(json!([
+            render_target("target", "not_a_command"),
+            picture("picture", "not_a_command"),
+            {
+                "id": "group",
+                "action": "not_a_command",
+                "content": { "kind": "group", "items": [picture("inner", "next_track")] },
+            },
+        ]));
+        let shapes = [
+            shape("target", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape(
+                "picture",
+                &[],
+                square(200., 0., 100.),
+                ShapeKind::Perspective,
+            ),
+            shape(
+                "inner",
+                &["group"],
+                square(400., 0., 100.),
+                ShapeKind::Perspective,
+            ),
+            shape("group", &[], square(400., 0., 100.), ShapeKind::Group),
+        ];
+
+        assert_eq!(
+            hit(&shapes, &canvas, [50., 50.]),
+            on_target("target", [0.5, 0.5]),
+            "the target gets the pointer"
+        );
+        assert_eq!(hit(&shapes, &canvas, [250., 50.]), Hit::Nothing);
+        assert_eq!(
+            hit(&shapes, &canvas, [450., 50.]),
+            command("inner", "next_track"),
+        );
+        assert!(!has_commands(&canvas_of(json!([picture(
+            "a",
+            "not_a_command"
+        )]))));
+
+        // A command handled on a panel can't run from a click either.
+        assert!(!has_commands(&canvas_of(json!([picture(
+            "a",
+            "canvas_undo"
+        )]))));
     }
 
     #[test]

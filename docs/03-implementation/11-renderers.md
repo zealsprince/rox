@@ -37,8 +37,8 @@ windows-sys 0.61 (0.61.2) on Windows.
 4. Add a Canvas panel: an empty window offers one, and the Panels menu lists it under
    Arrangement. With Panels > Design Mode on, right-click empty stage, or press the plus
    in the canvas inspector's header, and pick Add Render Target > Bars (`open_add_menu`,
-   `rox/src/panels/canvas.rs:2113`). The new target draws at 1280 by 720 pixels on a
-   640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`, `canvas.rs:2936-2937`).
+   `rox/src/panels/canvas.rs:2124`). The new target draws at 1280 by 720 pixels on a
+   640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`, `canvas.rs:2971-2972`).
    The inspector's Resolution row changes the pixel size, and Status says whether the
    renderer runs.
 5. Leave design mode and play something. Bars draws a bar for each signal in the pool
@@ -104,7 +104,7 @@ A renderer gets no settings from rox: nothing in `hello` comes from `config_sche
 
 A renderer runs one process per render target. Two targets naming the same renderer are
 two processes. A target's `owner` is `plugin:<id>` (`renderer_id`,
-`rox/src/canvas/target.rs:1607`), and the canvas starts its renderer the first time it
+`rox/src/canvas/target.rs:1657`), and the canvas starts its renderer the first time it
 draws the item. The start goes through the gate on a thread of the target's own: Enable
 Plugins on, the package approved for its current hash, switched on, and not stopped by
 exits (`start`, `rox-services/src/renderers.rs:237`). rox never starts a renderer at
@@ -113,7 +113,7 @@ launch, only when a target asks.
 The process starts in the package's folder (for a `.roxp`, rox's unpacked copy under
 `plugin-cache`) with rox's environment, PATH replaced by the plugin search path, and
 `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1` and `PYTHONUTF8=1`
-(`spawn_with`, `rox-plugins/src/process.rs:70`). On top of those:
+(`spawn_with`, `rox-plugins/src/process.rs:71`). On top of those:
 
 | Variable | Value |
 |---|---|
@@ -122,24 +122,26 @@ The process starts in the package's folder (for a `.roxp`, rox's unpacked copy u
 | `ROX_FRAMES_FD` | `3`, on Unix only |
 
 On Unix the renderer leads its own process group, gets the mapping as fd 3, and every
-fd past 3 is marked to close at exec (`lend` and `inherit_only`, `process.rs:179-207`).
+fd past 3 is marked to close at exec (`lend` and `inherit_only`, `process.rs:181-209`).
 rox writes `hello` as soon as the process runs. A renderer that can't be spawned, or
 whose `hello` can't be written, counts as an exit (`launch`, `renderers.rs:289`).
 
-A target pauses its renderer when nothing shows it. When the canvas skips the item (it's
-hidden, a state takes it off the stage outside design mode, or its quad is off the
-stage), rox sends `{"pause":true}` straight away (`hold`, `target.rs:579`). When the
-canvas isn't drawn at all, as with a hidden window or a tab behind another, a frame left
-untaken for 500 ms pauses it (`LIMITS.idle`, `target.rs:104`). Shown again, it gets
-`{"pause":false}`. While paused rox sends nothing else, drops what it had queued, and
-reads nothing from the renderer's stdout. A renderer that keeps announcing frames fills
-that pipe and blocks in its own write. rox looks for an exit once a second while it's
-paused.
+A target pauses its renderer when nothing shows it. On a canvas that draws, a target
+item the canvas skips is paused straight away with `{"pause":true}` (`hold`,
+`target.rs:583`): one that's hidden, one a state takes off the stage outside design
+mode, and one with a corner behind the camera or its quad off the stage. A target inside
+a group that's hidden, or that a state takes off the stage, isn't paused that way. It
+waits, as a target does when its canvas isn't drawn at all, as with a hidden window or a
+tab behind another: a frame left untaken for 500 ms pauses it (`LIMITS.idle`,
+`target.rs:104`). Shown again, it gets `{"pause":false}`. While paused rox sends nothing
+else, drops what it had queued, and reads nothing from the renderer's stdout. A renderer
+that keeps announcing frames fills that pipe and blocks in its own write. rox looks for
+an exit once a second while it's paused.
 
 An exit rox didn't ask for leaves the last frame showing, and rox starts the renderer
 again after 0, 1, 2 and 4 seconds for the first to fourth exit inside ten minutes. The
 fifth stops it (`BACKOFF` and `CRASH_WINDOW`, `rox-plugins/src/host.rs:26-34`; `due`
-and `note_exit`, `renderers.rs:370-378`). A stopped target draws empty, with a dashed
+and `note_exit`, `renderers.rs:371-379`). A stopped target draws empty, with a dashed
 box and the renderer's name in design mode, until the user presses Start Again under
 its Status, or switches the renderer off and on. A failed start, a flood of stdout
 lines and a run of refused frames each count as an exit. A restarted renderer gets
@@ -149,11 +151,11 @@ rox stops a session in two ways:
 
 - Deleting the item, changing its resolution and closing the canvas close the
   renderer's stdin, wait up to 200 ms for it to exit, then kill its process group
-  (`Session::stop` and `GRACE`, `renderers.rs:38` and `:348`). A new resolution is a new
+  (`Session::stop` and `GRACE`, `renderers.rs:38` and `:349`). A new resolution is a new
   session with a new mapping.
 - Switching the renderer off, removing it, a change to its files and turning Enable
-  Plugins off kill it at once (`enforce`, `renderers.rs:414`). So does quitting rox
-  (`stop_all`, `:449`).
+  Plugins off kill it at once (`enforce`, `renderers.rs:415`). So does quitting rox
+  (`stop_all`, `:450`).
 
 Kill is `SIGKILL` to the process group on Unix. A renderer has no shutdown to answer
 and nothing to save. Exiting when stdin closes is all rox asks.
@@ -228,7 +230,7 @@ When an announce arrives, rox reads the slot's counter. It throws the frame away
 when the counter is odd, or when it moved by the time the copy finished. It refuses the
 frame when the counter is 0 or the slot's width and height aren't the target's. A whole
 frame is shown only if its counter is higher than the last one shown in this session,
-so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs:1054`). The frame
+so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs:1077`). The frame
 number in the announce line isn't checked: rox goes by the counter.
 
 rox copies a slot only once the canvas has taken the frame before it, and only the
@@ -252,7 +254,7 @@ run past a pipe's atomic write size, and rox finishes a line it wrote in part be
 starts the next. Read each line as JSON. Key order and number spelling aren't part of
 the contract, and a line or key a renderer doesn't know should be skipped.
 
-These are every line rox writes (`target.rs:1175-1290`):
+These are every line rox writes (`target.rs:1224-1339`):
 
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
@@ -268,18 +270,18 @@ mapping's handle value on Windows and 0 elsewhere.
 `pool` names the canvas's signals by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
 30-120 Hz`, `onset 30-120 Hz`, `trigger 30-120 Hz`, `level`, or `total of <id>`
-(`wire_name`, `target.rs:1202`). It comes once the session runs and the canvas draws, and
+(`wire_name`, `target.rs:1251`). It comes once the session runs and the canvas draws, and
 again whenever the pool changes. An empty pool is `{"pool":[]}`.
 
 `signals` holds each pool signal's value in pool order, from 0 to 1, to 4 decimals, the
-value routes read (`signals_line`, `target.rs:1219`). `time` is the playing position in
+value routes read (`signals_line`, `target.rs:1268`). `time` is the playing position in
 seconds, to 3 decimals, and 0 with nothing playing. A line goes with each frame the
 canvas paints, while music plays and for as long after it stops as the signals take to
 settle. After that none come until music plays again. The canvas paints when a renderer
 publishes a frame, so a renderer that stops drawing stops getting signals. A reading
 rox hasn't sent yet is replaced by a newer one.
 
-`pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1255`):
+`pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1304`):
 
 | `kind` | Fields |
 |---|---|
@@ -291,10 +293,10 @@ rox hasn't sent yet is replaced by a newer one.
 `x` and `y` run from 0 to 1 across the surface from its top-left, to 4 decimals, mapped
 back through the item's tilt the way it's drawn. rox sends them only outside design
 mode, and only while the target is the front item under the pointer with no On Click
-command on it or on a group around it (`hit`, `rox/src/panels/canvas.rs:2566`). Moves
+command rox can run on it or on a group around it (`hit`, `rox/src/panels/canvas.rs:2600`). Moves
 go at most every 8 ms with the newest position. At most 64 events wait for a renderer
 that's behind: moves are dropped first, then scrolls, then leaves, and presses last
-(`Outbox`, `target.rs:1296`). `leave` comes when the pointer goes to another item or off
+(`Outbox`, `target.rs:1345`). `leave` comes when the pointer goes to another item or off
 the canvas, and when design mode comes on, and it ends any press. An `up` can come with
 no `down` before it, from a press that started elsewhere.
 
@@ -309,10 +311,10 @@ decimal digits, a space, the slot `0` or `1`, and `\n`. A line is at most 64 byt
 newline included, and `\r\n` is refused (`ANNOUNCE_MAX` and `parse_announce`,
 `rox-frames/src/lib.rs:34-81`). Any other line, or a longer one, is dropped without a
 log line, and still counts toward the flood rule below. Of the lines waiting when rox
-reads, only the newest announce is acted on (`read`, `target.rs:1386`).
+reads, only the newest announce is acted on (`read`, `target.rs:1435`).
 
-stderr goes to rox's log a line at a time as `plugin <id>: <line>`, cut at 4 KiB
-(`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:285`).
+stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 KiB
+(`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:288`).
 
 ## Limits
 
@@ -320,7 +322,7 @@ stderr goes to rox's log a line at a time as `plugin <id>: <line>`, cut at 4 KiB
 |---|---|---|
 | Resolution | 16 to 3840 by 16 to 2160 pixels, 1280 by 720 for a new target | `WIDTHS`, `HEIGHTS`, `renderers.rs:33`; `WIDTH`, `HEIGHT`, `layout.rs:24-26` |
 | An announce line | 64 bytes, newline included | `ANNOUNCE_MAX`, `lib.rs:34` |
-| stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS`, `target.rs:104`; `Rate`, `:1450` |
+| stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS`, `target.rs:104`; `Rate`, `:1500` |
 | Refused frames | 60 in a row stop the renderer | `LIMITS.refused_run` |
 | An untaken frame | 500 ms, then the renderer is paused | `LIMITS.idle` |
 | Restarts | 0, 1, 2, 4 s; the fifth exit in ten minutes stops it | `BACKOFF`, `host.rs:26` |
@@ -343,7 +345,7 @@ anything about another item, and its wire has no way to call into rox. It runs w
 user's permissions, unsandboxed, as a plugin does, and the card says so.
 
 A workspace or an object with a render target lists the renderer in `requires`, the way
-it lists a plugin, and never includes it (`named_renderers`, `target.rs:1618`).
+it lists a plugin, and never includes it (`named_renderers`, `target.rs:1668`).
 
 ## Platforms
 
@@ -357,7 +359,7 @@ keep a renderer from shrinking it (`open` and `seal`, `rox-frames/src/map/unix.r
 
 On Windows the design is an unnamed section backed by the page file, duplicated into
 the renderer with map read and map write rights only (`CHILD_ACCESS`,
-`rox-frames/src/map.rs:35`; `lend`, `rox-plugins/src/process.rs:468`). There's no
+`rox-frames/src/map.rs:35`; `lend`, `rox-plugins/src/process.rs:471`). There's no
 `ROX_FRAMES_FD`. The section's handle value in the renderer is `hello`'s `handle`, which
 a renderer maps with `MapViewOfFile` for the block's whole length. rox's pipe to a
 renderer's stdin is blocking there, so the lines go through a writer thread that holds
@@ -383,13 +385,20 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | `render target <id>: stopped after repeated exits` | The fifth exit |
 | `render target <id>: stopped by rox` | A switch-off or a quit |
 | `renderer <id>: stopped, no longer switched on` | The gate closed on a running session |
+| `render target <id>: session ended, <n> frames copied, <n> torn, <n> refused (<n> unwritten, <n> wrong size), <n> lines read` | A session ended, for any reason, and what its frames came to |
 
 The inspector's Status row words the same states for the user, with the gate's reason
-when it refused. rox logs a renderer it stops, not each frame it drops. A target that
-stays blank while Status says Running usually means frames refused or torn one at a
-time: check that `seq` goes `2n + 1` then `2n + 2`, that the slot's size words match
-`ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`, that the slot in the line is `n % 2`, and
-that the line is flushed.
+when it refused. rox writes no line for a frame it drops, only a count in the line each
+session ends with (`log_tally`, `target.rs:1137`). Frames copied are whole frames read
+out of a slot. Torn ones had an odd counter, or one that moved during the copy.
+Unwritten ones were announced while the slot's counter was still 0, and wrong size ones
+had size words other than `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`. Lines read counts
+every line rox read from the renderer's stdout, announce or not. Only 60 refusals in a
+row stop a renderer, and a torn frame never does, so a target that stays blank while
+Status says Running shows up here: check that `seq` goes `2n + 1` then `2n + 2`, that
+the slot's size words are right, that the slot in the line is `n % 2`, and that the line
+is flushed. Lines read far above frames copied is a renderer announcing faster than the
+screen takes frames, which costs it nothing, or writing lines that aren't announces.
 
 A native renderer's package has to be on a filesystem that lets programs run, and for
 a `.roxp` that's rox's data directory, where the unpacked copy goes. On one mounted

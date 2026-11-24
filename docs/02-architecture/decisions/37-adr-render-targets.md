@@ -1,6 +1,6 @@
 # ADR 37: A render target shows frames another program draws
 
-**Status:** Decided 2026-11-16; nothing built yet
+**Status:** Decided 2026-11-16; the shared-memory channel is built, with renderer packages, the target item and its editor, signals, the pointer, two examples and [the guide](../../03-implementation/11-renderers.md). The shared GPU texture and receivers aren't built.
 
 Decision: rox grows a render target, a surface whose picture is drawn by a program
 outside rox. rox starts the program, sends it the signal pool's values and the input

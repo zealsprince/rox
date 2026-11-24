@@ -196,6 +196,11 @@ pub fn global_commands() -> impl Iterator<Item = &'static Command> {
         .filter(|command| command.reach == Reach::Global)
 }
 
+/// Whether [`dispatch`] would run `id`.
+pub fn dispatches(id: &str) -> bool {
+    global_commands().any(|command| command.id == id)
+}
+
 fn narrowed(scope: Option<&'static str>) -> bool {
     scope == PLAYBACK || scope == SEEK
 }

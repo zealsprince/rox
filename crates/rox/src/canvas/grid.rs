@@ -65,22 +65,6 @@ pub(crate) fn restore(
     Some(watch(area, window, cx))
 }
 
-/// One tab group holding `panel`.
-pub(crate) fn holding(
-    id: &str,
-    panel: Arc<dyn PanelView>,
-    state: &AppState,
-    window: &mut Window,
-    cx: &mut Context<CanvasPanel>,
-) -> Grid {
-    let area = new_area(id, state, window, cx);
-    let (center, tabs) = empty_center(&area.downgrade(), window, cx);
-    area.update(cx, |area, cx| area.set_center(center, window, cx));
-    tabs.update(cx, |tabs, cx| tabs.add_panel(panel, window, cx));
-
-    watch(area, window, cx)
-}
-
 /// Re-render every split in a grid's tree.
 pub(crate) fn refresh_splits(area: &Entity<DockArea>, cx: &mut App) {
     fn walk(node: &Arc<dyn PanelView>, cx: &mut App) {

@@ -998,7 +998,9 @@ impl SettingsWindow {
         for id in missing {
             rows.push(self.plugin_row(id, None, cx).into_any_element());
         }
-        let empty = rows.is_empty();
+        // A renderer is installed the same way, so the line would mislead
+        // beside a filled Renderers section.
+        let empty = rows.is_empty() && renderer_rows.is_empty();
         let table = div().flex().flex_col().children(rows).when(empty, |d| {
             d.child(
                 div()

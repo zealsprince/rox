@@ -206,11 +206,12 @@ A native entry names a binary per platform, keyed `<os>-<arch>` from Rust's own 
 }
 ```
 
-A script entry runs `<interpreter> <path>`. `python3` tries `python3`, then `python`,
-then on Windows `py -3`; `node` tries `node`; any other name is looked up on PATH as
-written, trying Windows' executable extensions after the bare name (`aliases` and
-`on_path`, `manifest.rs:219-282`). The entry path is resolved inside the plugin folder
-and has to be a plain relative path to a file that exists (`inside`, `manifest.rs:200-215`).
+A script entry runs `<interpreter> <path>`. `python3` tries the `py -3` launcher first
+on Windows, then `python3`, then `python`; `node` tries `node`; any other name is looked
+up on PATH as written, trying Windows' executable extensions after the bare name
+(`aliases` and `on_path`, `manifest.rs:612` and `:763`). The entry path is resolved
+inside the plugin folder and has to be a plain relative path to a file that exists
+(`inside`, `manifest.rs:521`).
 
 The Plugins page draws `config_schema.properties` as rows: `string`, `string` with
 `"format": "password"` (a masked field), `number`, `integer`, `boolean`, and any property

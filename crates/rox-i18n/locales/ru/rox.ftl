@@ -2729,7 +2729,7 @@ tags-repair-count = { $count ->
    *[other] { $count } файла
 }
 tags-repair-count-so-far = пока { $count }
-tags-repair-label-scope = область
+tags-repair-label-scope = Область
 tags-repair-no-affected = Затронутых файлов не найдено.
 tags-repair-no-folder = Нет папки для сканирования; добавьте её в медиатеку или выберите вручную.
 tags-repair-pick-folder = Выбрать папку...
@@ -2770,10 +2770,10 @@ convert-dialog-custom-label = Свой
 convert-dialog-custom-menu-item = Свой...
 convert-dialog-custom-note = Аргументы делятся по пробелам, кавычек нет; встроенные обложки для своих форматов не копируются
 convert-dialog-format-not-ready = Набранный формат ещё не прошёл через ffmpeg
-convert-dialog-label-extension = расширение
-convert-dialog-label-format = формат
-convert-dialog-label-into = в
-convert-dialog-label-named = с именем
+convert-dialog-label-extension = Расширение
+convert-dialog-label-format = Формат
+convert-dialog-label-into = В
+convert-dialog-label-named = С именем
 convert-dialog-mirror = Повторить структуру папок медиатеки
 convert-dialog-nothing-to-convert = Преобразовывать нечего: все строки пропущены
 convert-dialog-pattern-help = / создаёт папку, расширение задаёт формат

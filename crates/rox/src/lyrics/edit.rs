@@ -45,8 +45,15 @@ const SAVE_CHORD: &str = "cmd-enter";
 #[cfg(not(target_os = "macos"))]
 const SAVE_CHORD: &str = "ctrl-enter";
 
+/// Also bound on the input: the sheet is a multi-line input, which binds the
+/// same chord to a newline, and the focused element's bindings win. At the
+/// same depth the later binding wins, and the keymap lays this one down after
+/// the component library's.
 pub fn bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new(SAVE_CHORD, Save, Some(CONTEXT))]
+    vec![
+        KeyBinding::new(SAVE_CHORD, Save, Some(CONTEXT)),
+        KeyBinding::new(SAVE_CHORD, Save, Some(&format!("{CONTEXT} > Input"))),
+    ]
 }
 
 #[derive(Default)]

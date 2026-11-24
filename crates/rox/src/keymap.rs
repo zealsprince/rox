@@ -1725,9 +1725,9 @@ fn key_label(key: &str) -> String {
 mod tests {
     use super::*;
 
-    use gpui::{TestAppContext, actions};
+    use gpui::{KeyContext, TestAppContext, actions};
 
-    actions!(keymap_test, [LibraryKey, StrayKey]);
+    actions!(keymap_test, [LibraryKey, StrayKey, InputNewline]);
 
     fn position(cx: &App, action: &dyn Action) -> Option<usize> {
         cx.key_bindings()
@@ -1768,6 +1768,44 @@ mod tests {
                 .filter(|binding| binding.action().partial_eq(&StrayKey))
                 .count();
             assert_eq!(strays, 1, "a second rebuild adopted the stray again");
+        });
+    }
+
+    /// The lyrics sheet and the shader source are multi-line inputs, which bind
+    /// the save chord to a newline. From inside the input the editor's action
+    /// has to win, or the footer's chord types a line break.
+    #[gpui::test]
+    fn a_multi_line_editor_takes_its_chord_from_its_input(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.bind_keys([KeyBinding::new(
+                "secondary-enter",
+                InputNewline,
+                Some("Input"),
+            )]);
+            seed(cx);
+            rebuild(&BTreeMap::new(), cx);
+
+            let chord = Keystroke::parse("secondary-enter").unwrap();
+            let editors: [(&str, &dyn Action); 2] = [
+                ("SearchInput LyricsEdit", &crate::lyrics::edit::Save),
+                ("ShaderEditor", &crate::shader_editor::Apply),
+            ];
+            for (window, wants) in editors {
+                let stack = [
+                    KeyContext::parse(window).unwrap(),
+                    KeyContext::parse("Input").unwrap(),
+                ];
+                let (bindings, _) = cx
+                    .key_bindings()
+                    .borrow()
+                    .bindings_for_input(std::slice::from_ref(&chord), &stack);
+
+                let first = bindings.first().expect("the chord is bound");
+                assert!(
+                    first.action().partial_eq(wants),
+                    "{window}: the input's newline won the chord"
+                );
+            }
         });
     }
 

@@ -1,0 +1,26 @@
+[package]
+name = "rox-frames"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# The renderer's side of the mapping. rox itself never turns this on, so
+# its own build carries no way to map a frame block writable.
+writer = []
+
+# memfd_create, the seals, shm_open and mmap. The same line the plugin host
+# and playback already take.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The section and its views, and DuplicateHandle into the renderer.
+# CreateFileMappingW sits behind `Win32_Security` for its attributes
+# argument, which is always null here.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

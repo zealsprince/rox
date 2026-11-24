@@ -7066,6 +7066,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rox-frames"
+version = "2.0.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rox-i18n"
 version = "2.0.0"
 dependencies = [

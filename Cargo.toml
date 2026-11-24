@@ -22,6 +22,7 @@ members = [
     "crates/rox-plugins",
     "crates/rox-romanize",
     "crates/rox-canvas",
+    "crates/rox-frames",
     "crates/rox-services",
     "crates/rox-viz",
 ]

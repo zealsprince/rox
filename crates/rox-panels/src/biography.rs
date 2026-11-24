@@ -1711,7 +1711,11 @@ impl BiographyPanel {
         } else {
             // Escaped so the article can't format itself. Keyed by artist so
             // the view's selection doesn't carry over.
-            let markdown = bio_markdown(&info.bio, info.links.as_deref().unwrap_or(&[]));
+            let markdown = bio_markdown(
+                &info.bio,
+                info.links.as_deref().unwrap_or(&[]),
+                bio_link_opens,
+            );
             content = content.child(
                 div()
                     .mt(tokens::SPACE_XS)
@@ -1773,14 +1777,22 @@ impl BiographyPanel {
                 Some(plugin) => rox_i18n::t!("biography-from-plugin", plugin = plugin.as_str()),
                 None => rox_i18n::t!("biography-from-lastfm"),
             };
+            // The provider names the link, so only a plain https one opens.
+            let opens = rox_core::desktop::plain_https(&url);
             content = content.child(
                 div().mt(tokens::SPACE_XS).text_xs().child(
                     div()
                         .text_color(palette::text_faint())
-                        .hover(|d| d.text_color(palette::text_muted()))
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            rox_core::desktop::open_url(cx, "biography: open source link", &url)
+                        .when(opens, |d| {
+                            d.hover(|d| d.text_color(palette::text_muted()))
+                                .cursor_pointer()
+                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                    rox_core::desktop::open_url(
+                                        cx,
+                                        "biography: open source link",
+                                        &url,
+                                    )
+                                })
                         })
                         .child(byline),
                 ),
@@ -2082,7 +2094,22 @@ impl BiographyPanel {
     }
 }
 
-fn bio_markdown(bio: &str, links: &[BioLink]) -> String {
+/// Whether a biography link is written as one. The text view opens a link
+/// straight through the platform, past `rox_core::desktop`, so a link it
+/// shouldn't open can't be written at all: one the browser shouldn't get,
+/// and every one while automated runs refuse links. Those draw as plain text.
+fn bio_link_opens(url: &str) -> bool {
+    if rox_core::desktop::native_dialogs_refused() {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| log::warn!("native link refused: biography: its links draw as text"));
+
+        return false;
+    }
+
+    rox_core::desktop::plain_https(url)
+}
+
+fn bio_markdown(bio: &str, links: &[BioLink], opens: impl Fn(&str) -> bool) -> String {
     fn escape(text: &str, out: &mut String) {
         for ch in text.chars() {
             if matches!(
@@ -2104,11 +2131,25 @@ fn bio_markdown(bio: &str, links: &[BioLink]) -> String {
                     | '>'
                     | '|'
                     | '~'
-            ) {
+            ) || autolinks(ch, out)
+            {
                 out.push('\\');
             }
             out.push(ch);
         }
+    }
+
+    // The text view parses GFM, which makes a link of bare `https://..`,
+    // `www.` and `name@host` text, past the check every written link takes.
+    // An escaped colon, at or `www` dot reads the same and links nothing.
+    fn autolinks(ch: char, out: &str) -> bool {
+        let www = || {
+            out.len() >= 3
+                && out.is_char_boundary(out.len() - 3)
+                && out[out.len() - 3..].eq_ignore_ascii_case("www")
+        };
+
+        matches!(ch, ':' | '@') || (ch == '.' && www())
     }
     let mut out = String::with_capacity(bio.len() + links.len() * 64);
     let mut at = 0;
@@ -2122,18 +2163,22 @@ fn bio_markdown(bio: &str, links: &[BioLink]) -> String {
         if link.start < at {
             continue;
         }
+
+        // A target with a space or a paren would end the link early.
+        let url = link
+            .url
+            .replace(' ', "%20")
+            .replace('(', "%28")
+            .replace(')', "%29");
+        if !opens(&url) {
+            continue;
+        }
+
         escape(&bio[at..link.start], &mut out);
         out.push('[');
         escape(&bio[link.start..link.end], &mut out);
         out.push_str("](");
-        // A target with a space or a paren would end the link early.
-        out.push_str(
-            &link
-                .url
-                .replace(' ', "%20")
-                .replace('(', "%28")
-                .replace(')', "%29"),
-        );
+        out.push_str(&url);
         out.push(')');
         at = link.end;
     }
@@ -2442,6 +2487,29 @@ mod tests {
     }
 
     #[test]
+    fn a_link_that_doesnt_open_is_written_as_its_text() {
+        let bio = "Wiki, File";
+        let links = vec![
+            BioLink {
+                start: 0,
+                end: 4,
+                url: "https://x/w".into(),
+            },
+            BioLink {
+                start: 6,
+                end: 10,
+                url: "file:///etc/hostname".into(),
+            },
+        ];
+
+        assert_eq!(
+            bio_markdown(bio, &links, rox_core::desktop::plain_https),
+            "[Wiki](https://x/w), File"
+        );
+        assert_eq!(bio_markdown(bio, &links, |_| false), "Wiki, File");
+    }
+
+    #[test]
     fn bio_markdown_escapes_text_and_writes_links() {
         let bio = "Formed with Other in 1993. *Not* a list:\n\n1. one";
         let links = vec![BioLink {
@@ -2450,10 +2518,14 @@ mod tests {
             url: "https://x/Other (band)".into(),
         }];
         assert_eq!(
-            bio_markdown(bio, &links),
-            "Formed with [Other](https://x/Other%20%28band%29) in 1993. \\*Not\\* a list:\n\n1. one"
+            bio_markdown(bio, &links, |_| true),
+            "Formed with [Other](https://x/Other%20%28band%29) in 1993. \\*Not\\* a list\\:\n\n1. one"
         );
-        assert_eq!(bio_markdown("a [b]", &[]), "a \\[b\\]");
+        assert_eq!(bio_markdown("a [b]", &[], |_| true), "a \\[b\\]");
+        assert_eq!(
+            bio_markdown("see https://x.y, www.x.y or me@x.y", &[], |_| true),
+            "see https\\://x.y, www\\.x.y or me\\@x.y"
+        );
     }
 
     #[test]

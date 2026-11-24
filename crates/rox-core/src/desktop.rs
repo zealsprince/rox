@@ -116,6 +116,42 @@ pub fn open_url(cx: &App, what: &str, url: &str) {
     cx.open_url(url);
 }
 
+/// Whether a link from outside rox (an enrichment provider, a plugin) is one
+/// rox hands to the browser: `https://` to a plain ASCII host with an optional
+/// port. Refused: any other scheme (`file:`, `javascript:`, a custom handler),
+/// credentials before the host, an IP literal in brackets, and a space, a
+/// control character or anything non-ASCII anywhere in the link. The OS opens
+/// whatever it's given, so this check is the only one.
+pub fn plain_https(url: &str) -> bool {
+    if url.len() > LINK_MAX || !url.bytes().all(|b| b.is_ascii_graphic()) {
+        return false;
+    }
+
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+
+    let plain_host = !host.is_empty()
+        && !host.starts_with(['.', '-'])
+        && !host.ends_with(['.', '-'])
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let plain_port = port.is_none_or(|port| {
+        (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit())
+    });
+
+    plain_host && plain_port
+}
+
+/// Past this a link is refused rather than handed on.
+const LINK_MAX: usize = 2048;
+
 /// `cx.reveal_path`: the file manager, at the path.
 pub fn reveal_path(cx: &App, what: &str, path: &Path) {
     if refuse("reveal", what) {
@@ -154,6 +190,38 @@ mod tests {
             Some("native dialog refused: library: add folder")
         );
         assert_eq!(refusal(false, "dialog", "library: add folder"), None);
+    }
+
+    #[test]
+    fn only_a_plain_https_link_is_handed_on() {
+        for good in [
+            "https://www.last.fm/music/Other",
+            "https://en.wikipedia.org/wiki/Other_%28band%29",
+            "https://host:8443/a?b=c#d",
+        ] {
+            assert!(plain_https(good), "{good}");
+        }
+
+        for bad in [
+            "http://www.last.fm/music/Other",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "JAVASCRIPT:alert(1)",
+            "https://user:pass@host/",
+            "https://[::1]/",
+            "https:///path",
+            "https://-host/",
+            "https://host:99999999/",
+            "https://host/a b",
+            "https://h\u{f6}st/",
+            "steam://run/1",
+            "",
+        ] {
+            assert!(!plain_https(bad), "{bad}");
+        }
+
+        let long = format!("https://host/{}", "a".repeat(LINK_MAX));
+        assert!(!plain_https(&long));
     }
 
     fn poll_once<F: Future + Unpin>(mut future: F) -> Poll<F::Output> {

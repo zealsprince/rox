@@ -1,0 +1,15 @@
+[package]
+name = "plasma"
+version = "1.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# Its own workspace, so rox's build never compiles it and its lockfile stays
+# its own.
+[workspace]
+
+[dependencies]
+# The renderer's side of the frame mapping. rox's own build leaves `writer`
+# off.
+rox-frames = { path = "../../../crates/rox-frames", features = ["writer"] }

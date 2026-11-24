@@ -1,0 +1,24 @@
+{
+  "id": "plasma",
+  "name": "Plasma",
+  "version": "1.0.0",
+  "api": 1,
+  "entry": {
+    "native": {
+      "linux-x86_64": "plasma",
+      "linux-aarch64": "plasma",
+      "macos-x86_64": "plasma",
+      "macos-aarch64": "plasma",
+      "windows-x86_64": "plasma.exe"
+    }
+  },
+  "meta": {
+    "author": "rox",
+    "description": "An example renderer in Rust. It draws a plasma that the music's signals speed up, the playing position tints and a ring under the pointer lights.",
+    "website": "https://github.com/zealsprince/rox",
+    "license": "AGPL-3.0-only"
+  },
+  "capabilities": {
+    "renderer": { "label": "Plasma" }
+  }
+}

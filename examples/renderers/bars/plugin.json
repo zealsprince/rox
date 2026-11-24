@@ -1,0 +1,18 @@
+{
+  "id": "bars",
+  "name": "Bars",
+  "version": "1.0.0",
+  "api": 1,
+  "entry": {
+    "script": { "path": "bars.py", "interpreter": "python3" }
+  },
+  "meta": {
+    "author": "rox",
+    "description": "An example renderer in Python's standard library. It draws a bar for each signal, a stripe for the playing position and a dot under the pointer.",
+    "website": "https://github.com/zealsprince/rox",
+    "license": "AGPL-3.0-only"
+  },
+  "capabilities": {
+    "renderer": { "label": "Bars" }
+  }
+}

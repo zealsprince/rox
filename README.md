@@ -198,7 +198,9 @@ and plays it through a program the plugin supplies. A plugin is a `.roxp` file y
 install from the Plugins settings page, and nothing in it runs until you switch it on
 there. rox doesn't publish plugins for any service. It publishes
 the protocol in the [plugin guide](README_PLUGINS.md) and an example
-to copy in [`examples/plugins/tones`](examples/plugins/tones/).
+to copy in [`examples/plugins/tones`](examples/plugins/tones/). A renderer is packaged the
+same way and draws a render target on a canvas, and
+[11-renderers.md](docs/03-implementation/11-renderers.md) says how to write one.
 
 ## Catalog
 

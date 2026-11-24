@@ -500,6 +500,31 @@ plugin, with the protocol and an example to copy. It's also at
 https://github.com/zealsprince/rox/blob/main/README_PLUGINS.md
 
 
+Renderers
+---------
+
+A renderer is a program that draws the picture in a render target, an
+item on a canvas. It installs, approves and switches on the way a plugin
+does, and lists under Renderers on the Plugins page.
+
+To show one:
+
+  1. With Enable Plugins on, press Install on the Plugins page and pick
+     the renderer's .roxp file, or drop it into the plugins folder.
+  2. Switch it on under Renderers. The card says it gets the music's
+     signals and the pointer while it's over the render target.
+  3. On a canvas with Panels > Design Mode on, right-click empty stage
+     and pick Add Render Target, then the renderer.
+
+A renderer runs only while a render target shows it, and pauses while
+nothing does. One that quits five times in ten minutes stops until you
+press Start Again under the target's Status in the canvas inspector, or
+switch it off and on.
+
+How to write one, with two examples to copy, is in the source at
+https://github.com/zealsprince/rox/blob/main/docs/03-implementation/11-renderers.md
+
+
 License
 -------
 

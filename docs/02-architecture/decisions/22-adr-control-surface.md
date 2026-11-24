@@ -120,3 +120,16 @@ look the way an edit to the active saved workspace used to. Saving turns the liv
 into a `.roxw`. A saved archive isn't edited in place, and one replaced on disk by
 another tool still re-applies when it's the active workspace. The manifest inside an
 archive carries `$schema` pointing at the schema of the release that wrote it.
+
+**Amended 2026-11-23: preferences and file paths over the socket.** Andrew's product call.
+The socket reads and sets preferences from a fixed table of keys, `settings.list`,
+`settings.get` and `settings.set`, and each set goes through the setting's own setter, so
+the app follows the way it does for the switch in Settings. Credentials, where data
+lives, the output device, the update channel and every approval gate are not in the
+table. Verbs that take a path stand in for a picker or a save prompt and call the same
+function the UI calls once a path is picked. An export refuses a path that already
+exists, because a socket call has nobody to confirm an overwrite with. No verb approves,
+enables, applies or places anything, and the MCP server exposes none of it.
+`ROX_NO_NATIVE_DIALOGS` makes rox refuse native pickers, browser links and file-manager
+reveals, for automated runs, where a picker raised through the desktop portal would land
+on the real screen.

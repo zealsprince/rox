@@ -160,9 +160,25 @@ what its command did without a second round trip:
                          plays them.
   library.now_playing    The playing track's full tags; null while
                          nothing plays.
+  library.track          {"key": "..", "include": [..]?, "limit": 1..50?};
+                         the track's row, plus each section asked for.
+  library.history        {"key": ".."?, "limit": 1..500?, "before": ..?};
+                         listens newest first and a next cursor.
   library.artwork        {"path": ".."} returns {"mime", "data_base64"}.
   library.rescan         Scan the library folders again; {"started": true},
                          or an error while busy or without folders.
+  library.folders        Each library folder with its track, album and
+                         byte counts and whether it's reachable.
+  library.add_folder     {"path": ".."}; added, scanned and watched as a
+                         picked folder is. A folder already covered by
+                         one in the list is rescanned instead.
+  library.remove_folder  {"path": ".."}, as library.folders spells it;
+                         its tracks leave the library, the files stay.
+  settings.list          Every setting these verbs reach, with its type,
+                         its allowed values or range, and the saved value.
+  settings.get           {"key": ".."} returns {"key", "value"}.
+  settings.set           {"key": "..", "value": ..}; written and applied
+                         the way the setting's own switch does it.
   tasks.status           The analysis passes (acoustic, ReplayGain, tempo,
                          sort names, romanize): switch state, tracks to
                          do, progress while one runs. plugin_jobs lists
@@ -177,6 +193,13 @@ what its command did without a second round trip:
                          answers {"name"}, the name it was stored under.
                          The front window offers it in the apply confirm,
                          and nothing changes until that's answered.
+  workspace.save         {"name": ".."}; the live look saved under a name
+                         no workspace holds yet.
+  workspace.export       {"name": "..", "path": ".."}; a saved or shipped
+                         workspace written as a .roxw.
+  assets.import          {"path": ".."}; an image or a font added to the
+                         live workspace, answers {"id", "file", "kind",
+                         "bytes"}.
   plugins.list           The running plugins, each with its source and the
                          actions it declares.
   plugins.browse         {"source", "node"?, "view"?, "cursor"?}; one page
@@ -190,6 +213,12 @@ what its command did without a second round trip:
                          answers its message or a job number.
   plugins.install        {"path": ".."}, an absolute path to a .roxp;
                          answers {"id"}. The plugin lists switched off.
+  plugins.pack           {"id": "..", "path": ".."}; an installed plugin
+                         folder written as a .roxp.
+  objects.install        {"path": ".."}, an absolute path to a .roxo;
+                         answers {"name"}, stored and placed nowhere.
+  objects.export         {"item": "..", "path": "..", "name"?, ..}; a
+                         canvas item written as a .roxo.
   ai.status              {"enabled", "mcp", "plugins"}, the toggles
                          rox-mcp checks.
   debug.*                Diagnostics for working on rox itself; the
@@ -229,6 +258,14 @@ its menus make, so a plugin can't tell a socket client was behind one.
 They answer while plugins are on, whatever the MCP switches say.
 plugins.install is the exception: it only copies a file in, and works
 with plugins off.
+
+The path-taking verbs stand in for a file picker or a save prompt, and
+each ends in the function the window runs once it has a path. Paths are
+absolute. workspace.export, objects.export and plugins.pack refuse a
+path that already exists, since the save prompt asks before it replaces
+a file and a socket call has no one to ask. None of them applies, places,
+approves or switches anything on. settings.set leaves out accounts, where
+data lives, the audio device, the update channel and every approval gate.
 
 The surface is local, never a network port. Auth is filesystem
 permissions: the Unix socket is created user-only (0600), and the Windows

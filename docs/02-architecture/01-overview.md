@@ -142,7 +142,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Decided; zero-latency convolution added by its amendment |
 | [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, accounts, and global panel presets each in a file of their own | Decided; saved workspaces as archives added with 31 |
 | [21 - CUE subsongs](decisions/21-adr-cue-subsongs.md) | Cue tracks as ordinary rows under a subsong id, spans in a side table | Decided |
-| [22 - Control surface](decisions/22-adr-control-surface.md) | Machine interface on a local JSON-RPC socket, never a bundled web server | Decided |
+| [22 - Control surface](decisions/22-adr-control-surface.md) | Machine interface on a local JSON-RPC socket, never a bundled web server | Decided; plugins over the socket, the live look as the edited file, then preferences and file paths over the socket, by its amendments |
 | [23 - Shader pipeline](decisions/23-adr-shader-pipeline.md) | Comment directives split one shader into a pass chain, assets in the bundle | Decided; assets as files added with 31 |
 | [24 - Script panels](decisions/24-adr-script-panels.md) | Rhai script panels returning a node tree, behind the shader approval gate | Declined |
 | [25 - Shader stacks](decisions/25-adr-shader-stacks.md) | Every shader surface holds an ordered stack, composed into one chain | Proposed |

@@ -6996,7 +6996,7 @@ impl Workspace {
                     }))
                     .children(bundle_card.byline.clone().map(line))
                     .children(bundle_card.description.clone().map(line))
-                    .children(bundle_card.requires.clone().map(line))
+                    .children(bundle_card.requires.iter().cloned().map(line))
                     .children(bundle_card.heavy.clone().map(line))
                     .children(bundle_card.weight.iter().cloned().map(line))
                     .child(line(if *imported {

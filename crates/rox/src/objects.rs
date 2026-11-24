@@ -609,7 +609,8 @@ pub(crate) struct PlaceCard {
     pub title: String,
     pub byline: Option<SharedString>,
     pub description: Option<SharedString>,
-    pub requires: Option<SharedString>,
+    /// What it uses that won't run here: plugins, then renderers.
+    pub requires: Vec<SharedString>,
     /// The unpacked size, said only past [`roxo::WARN_BYTES`].
     pub heavy: Option<SharedString>,
     pub weight: Vec<SharedString>,
@@ -643,12 +644,8 @@ impl PlaceCard {
             );
         }
 
-        let missing: Vec<&str> = bundle
-            .requires
-            .iter()
-            .filter(|id| !rox_services::plugins::is_running(id))
-            .map(String::as_str)
-            .collect();
+        let mut renderers = BTreeSet::new();
+        crate::canvas::target::named_renderers(&bundle.item, &mut renderers);
 
         let unpacked = bundle.unpacked();
 
@@ -662,13 +659,12 @@ impl PlaceCard {
             byline: (!byline.is_empty()).then(|| byline.join(", ").into()),
             description: (!meta.description.trim().is_empty())
                 .then(|| meta.description.trim().to_string().into()),
-            requires: (!missing.is_empty()).then(|| {
-                rox_i18n::t!(
-                    "workspace-requires-missing",
-                    count = missing.len() as u64,
-                    plugins = missing.join(", ")
-                )
-            }),
+            requires: workspaces::requires_lines(
+                &bundle.requires,
+                &renderers,
+                &|id| rox_services::plugins::is_running(id),
+                &workspaces::renderer_ready,
+            ),
             heavy: (unpacked > roxo::WARN_BYTES).then(|| {
                 // Decimal, since the string says MB.
                 let mb = unpacked as f64 / 1_000_000.0;
@@ -684,7 +680,7 @@ impl PlaceCard {
     /// and description are only the author's words, so they don't count.
     pub(crate) fn needs_review(&self) -> bool {
         !self.shaders.is_empty()
-            || self.requires.is_some()
+            || !self.requires.is_empty()
             || self.heavy.is_some()
             || !self.weight.is_empty()
     }
@@ -1390,7 +1386,7 @@ mod tests {
             title: "Badge".to_string(),
             byline: Some("By someone".into()),
             description: Some("A badge".into()),
-            requires: None,
+            requires: Vec::new(),
             heavy: None,
             weight: Vec::new(),
             shaders: Vec::new(),
@@ -1417,10 +1413,78 @@ mod tests {
     #[test]
     fn a_plugin_that_isnt_running_brings_the_confirm() {
         let card = PlaceCard {
-            requires: Some("Needs a plugin".into()),
+            requires: vec!["Needs a plugin".into()],
             ..quiet_card()
         };
         assert!(card.needs_review());
+    }
+
+    fn target(id: &str, owner: &str) -> serde_json::Value {
+        json!({
+            "id": id,
+            "content": { "kind": "target", "owner": owner, "width": 1280, "height": 720 },
+        })
+    }
+
+    /// A group holding a render target and a plugin's panel in a grid.
+    fn target_stage() -> CanvasState {
+        let dock = json!({ "version": 1, "center": {
+            "panel_name": "plugin-panel", "children": [],
+            "info": { "panel": { "owner": "plugin:tones" } },
+        } });
+        canvas(json!([group(
+            "show",
+            json!([
+                target("bars", "plugin:bars"),
+                { "id": "grid", "content": { "kind": "grid", "dock": dock } },
+            ])
+        )]))
+    }
+
+    #[test]
+    fn export_names_the_renderer_a_target_needs() {
+        let out = lifted(&target_stage(), &[], &[], "show");
+        assert_eq!(out.bundle.requires, ["bars", "tones"]);
+
+        let mut renderers = BTreeSet::new();
+        crate::canvas::target::named_renderers(&out.bundle.item, &mut renderers);
+        assert_eq!(renderers.into_iter().collect::<Vec<_>>(), ["bars"]);
+    }
+
+    #[test]
+    fn a_place_missing_its_renderer_needs_review() {
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let bundle = lifted(&target_stage(), &[], &[], "show").bundle;
+        let mut renderers = BTreeSet::new();
+        crate::canvas::target::named_renderers(&bundle.item, &mut renderers);
+
+        // The plugin runs and the renderer isn't installed.
+        let lines = workspaces::requires_lines(&bundle.requires, &renderers, &|_| true, &|_| false);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("renderer") && lines[0].contains("bars"),
+            "{}",
+            lines[0]
+        );
+        assert!(!lines[0].contains("plugin"), "{}", lines[0]);
+
+        let card = PlaceCard {
+            requires: lines,
+            ..quiet_card()
+        };
+        assert!(card.needs_review());
+
+        // A renderer never has a plugin host, so it isn't asked whether one
+        // runs. Ready, it's left out even where no plugin runs at all.
+        let ready = workspaces::requires_lines(&bundle.requires, &renderers, &|_| false, &|_| true);
+        assert_eq!(
+            ready,
+            [rox_i18n::t!(
+                "workspace-requires-missing",
+                count = 1u64,
+                plugins = "tones"
+            )]
+        );
     }
 
     #[test]

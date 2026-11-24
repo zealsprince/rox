@@ -1259,6 +1259,13 @@ impl SettingsWindow {
             Pending::RemovePlugin(id) => (
                 rox_i18n::t!("settings-plugins-remove-title", name = self.plugin_name(id)),
                 match self.plugin_folder_present(id) {
+                    // A renderer has no tracks or collections to lose.
+                    true if self.plugin_is_renderer(id) && self.plugin_is_package(id) => {
+                        rox_i18n::t!("settings-plugins-remove-renderer-package-body")
+                    }
+                    true if self.plugin_is_renderer(id) => {
+                        rox_i18n::t!("settings-plugins-remove-renderer-body")
+                    }
                     true if self.plugin_is_package(id) => {
                         rox_i18n::t!("settings-plugins-remove-package-body")
                     }
@@ -1315,7 +1322,12 @@ impl SettingsWindow {
                             .child(div().child(title))
                             .children(card.and_then(|card| card.byline.clone()).map(line))
                             .children(card.and_then(|card| card.description.clone()).map(line))
-                            .children(card.and_then(|card| card.requires.clone()).map(line))
+                            .children(
+                                card.map(|card| card.requires.clone())
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(line),
+                            )
                             .children(card.and_then(|card| card.heavy.clone()).map(line))
                             .children(
                                 card.into_iter()

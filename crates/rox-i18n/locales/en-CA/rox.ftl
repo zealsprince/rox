@@ -1547,6 +1547,16 @@ settings-plugins-remove-title = Remove "{ $name }"?
 settings-plugins-remove-body = Its tracks, synced collections and settings go. Its folder stays in the plugins folder, so delete it there to stop it showing here.
 settings-plugins-remove-body-missing = Its tracks, synced collections and settings go. It's already gone from the plugins folder, so it won't show here again.
 settings-plugins-remove-package-body = Its tracks, synced collections and settings go, and so does its .roxp file. The files it saved in its data folder stay.
+settings-plugins-renderers = Renderers
+settings-plugins-renderers-intro = A renderer is a program that draws the picture in a render target on a canvas. It runs only while it's switched on and a render target shows it
+settings-plugins-card-renderer = Draws { $label } in render targets on a canvas.
+settings-plugins-card-renderer-signals = Gets the music's signals.
+settings-plugins-card-renderer-pointer = Gets the pointer while it's over the render target.
+settings-plugins-card-unchanged-renderer = The manifest is the same as last time. Other files in the renderer changed.
+settings-plugins-renderer-failed-title = This renderer can't run
+settings-plugins-renderer-developer = Developer mode: until rox quits, a change to this renderer's folder is approved on its own. A change to what its manifest declares still switches it off
+settings-plugins-remove-renderer-body = Its settings go, and render targets that use it draw nothing. Its folder stays in the plugins folder, so delete it there to stop it showing here.
+settings-plugins-remove-renderer-package-body = Its settings and its .roxp file go, and render targets that use it draw nothing.
 
 ## Settings: providers
 
@@ -1861,6 +1871,10 @@ workspace-apply-shader-count = { $count ->
 workspace-requires-missing = { $count ->
     [one] Uses a plugin that isn't running: { $plugins }
    *[other] Uses { $count } plugins that aren't running: { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+    [one] Uses a renderer that isn't installed or switched on: { $renderers }
+   *[other] Uses { $count } renderers that aren't installed or switched on: { $renderers }
 }
 workspace-apply-shaders-approve-body = Approving lets them run on this machine. Applying without them leaves the look bare, with the shaders still in its pool.
 workspace-apply-shaders-plain-body = Applying without them leaves the look bare, with the shaders still in its pool.
@@ -4806,6 +4820,31 @@ canvas-case-show = Show
 canvas-case-same-image = Same image
 canvas-case-same-color = Same color
 canvas-case-preview = Preview this case on the canvas
+canvas-add-target = Add Render Target
+canvas-target-renderer = Renderer
+canvas-target-renderer-none = None picked
+canvas-target-not-installed = { $id }, not installed
+canvas-target-resolution = Resolution
+canvas-target-pixels-wide = Width in Pixels
+canvas-target-pixels-high = Height in Pixels
+canvas-target-status = Status
+canvas-target-starting = Starting
+canvas-target-retrying = Couldn't start, trying again: { $error }
+canvas-target-running = Running
+canvas-target-paused = Paused while it's hidden or off the stage
+canvas-target-stopped = Stopped
+canvas-target-refused-missing = Stopped: no renderer with this id is installed
+canvas-target-refused-broken = Stopped: the renderer doesn't load. The Plugins page says why
+canvas-target-refused-not-renderer = Stopped: the package with this id isn't a renderer
+canvas-target-refused-plugins-off = Stopped: Enable Plugins is off on the Plugins page
+canvas-target-refused-not-approved = Stopped: it's new or changed on disk. Switching it on from the Plugins page approves it
+canvas-target-refused-off = Stopped: it's switched off on the Plugins page
+canvas-target-refused-stopped = Stopped after it quit five times in ten minutes
+canvas-target-refused-size = Stopped: a renderer draws from { $min_width } by { $min_height } up to { $max_width } by { $max_height } pixels
+canvas-target-refused-start = Stopped: it couldn't start. { $error }
+canvas-target-start-again = Start Again
+canvas-weight-targets = Render targets { $count }, { $megapixels } megapixels
+canvas-weight-heavy-targets = Render targets: { $megapixels } megapixels, more than draws smoothly
 menu-layout-to-canvas = Convert Layout to Canvas
 
 ## Catalog

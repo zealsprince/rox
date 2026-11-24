@@ -1473,6 +1473,16 @@ settings-plugins-remove-title = 移除“{ $name }”？
 settings-plugins-remove-body = 它的曲目、已同步的收藏和设置都会删除。它的文件夹留在插件文件夹里，要让它不再出现在这里，请在那里删除。
 settings-plugins-remove-body-missing = 它的曲目、已同步的收藏和设置都会删除。它已经不在插件文件夹里，所以不会再出现在这里。
 settings-plugins-remove-package-body = 它的曲目、已同步的收藏和设置都会删除，它的 .roxp 文件也会删除。它保存在数据文件夹里的文件会保留。
+settings-plugins-renderers = 渲染器
+settings-plugins-renderers-intro = 渲染器是在画布上的渲染目标里绘制画面的程序。只有在打开、并且有渲染目标显示它时才运行
+settings-plugins-card-renderer = 在画布上的渲染目标里绘制 { $label }。
+settings-plugins-card-renderer-signals = 接收音乐的信号。
+settings-plugins-card-renderer-pointer = 指针在渲染目标上方时接收指针。
+settings-plugins-card-unchanged-renderer = 清单和上次相同，是渲染器里的其他文件变了。
+settings-plugins-renderer-failed-title = 此渲染器无法运行
+settings-plugins-renderer-developer = 开发者模式：在退出 rox 之前，这个渲染器文件夹里的改动会自动获批。清单声明的内容有改动时，仍会关闭它
+settings-plugins-remove-renderer-body = 它的设置会删除，用它的渲染目标什么都不画。它的文件夹留在插件文件夹里，要让它不再出现在这里，请在那里删除。
+settings-plugins-remove-renderer-package-body = 它的设置和 .roxp 文件都会删除，用它的渲染目标什么都不画。
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1771,6 +1781,9 @@ workspace-apply-shader-count = { $count ->
 }
 workspace-requires-missing = { $count ->
    *[other] 使用了未运行的插件：{ $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+   *[other] 使用了未安装或未打开的渲染器：{ $renderers }
 }
 workspace-apply-shaders-approve-body = 批准之后它们就能在这台机器上运行。不带它们应用，这套外观会是光秃秃的，着色器仍留在它的池子里。
 workspace-apply-shaders-plain-body = 不带它们应用，这套外观会是光秃秃的，着色器仍留在它的池子里。
@@ -4551,6 +4564,31 @@ canvas-case-show = 显示
 canvas-case-same-image = 相同图片
 canvas-case-same-color = 相同颜色
 canvas-case-preview = 在画布上预览这种情况
+canvas-add-target = 添加渲染目标
+canvas-target-renderer = 渲染器
+canvas-target-renderer-none = 未选择
+canvas-target-not-installed = { $id }（未安装）
+canvas-target-resolution = 分辨率
+canvas-target-pixels-wide = 宽度（像素）
+canvas-target-pixels-high = 高度（像素）
+canvas-target-status = 状态
+canvas-target-starting = 正在启动
+canvas-target-retrying = 没能启动，稍后再试：{ $error }
+canvas-target-running = 正在运行
+canvas-target-paused = 隐藏或在舞台外时暂停
+canvas-target-stopped = 已停止
+canvas-target-refused-missing = 已停止：没有安装这个 ID 的渲染器
+canvas-target-refused-broken = 已停止：渲染器无法加载。插件页面会说明原因
+canvas-target-refused-not-renderer = 已停止：这个 ID 的包不是渲染器
+canvas-target-refused-plugins-off = 已停止：插件页面上的“启用插件”已关闭
+canvas-target-refused-not-approved = 已停止：它是新的，或在磁盘上有改动。在插件页面打开它即可批准
+canvas-target-refused-off = 已停止：它在插件页面上已关闭
+canvas-target-refused-stopped = 十分钟内退出五次，已停止
+canvas-target-refused-size = 已停止：渲染器能画的范围是 { $min_width } x { $min_height } 到 { $max_width } x { $max_height } 像素
+canvas-target-refused-start = 已停止：没能启动。{ $error }
+canvas-target-start-again = 再次启动
+canvas-weight-targets = 渲染目标 { $count }，{ $megapixels } 百万像素
+canvas-weight-heavy-targets = 渲染目标：{ $megapixels } 百万像素，超出流畅绘制的量
 menu-layout-to-canvas = 将布局转换为画布
 
 ## Catalog

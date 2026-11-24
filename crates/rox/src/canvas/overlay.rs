@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, ElementId, Entity, Focusable, KeyContext, MouseButton, Render,
+    AnyElement, Context, Div, ElementId, Entity, Focusable, KeyContext, MouseButton, Render,
     SharedString, Subscription, Window, anchored, deferred, div, prelude::*, px, svg,
 };
 use gpui_component::Sizable as _;
@@ -77,6 +77,10 @@ pub(crate) struct Inspector {
     preview: Option<(String, String)>,
     /// The case opacity sliders, by case id.
     case_scrubs: RefCell<HashMap<String, ScrubState>>,
+    /// The renderer picker's rows, as of a plugin host generation. Reading
+    /// the list goes to disk, and a running target redraws the inspector
+    /// with every frame it shows.
+    renderers: Option<(u64, Vec<(String, String)>)>,
 }
 
 impl Inspector {
@@ -195,6 +199,22 @@ pub(crate) fn render(
         .as_ref()
         .and_then(|id| panel.config.canvas.find(id))
         .cloned();
+
+    if selected
+        .as_ref()
+        .is_some_and(|item| matches!(item.content, Content::Target { .. }))
+    {
+        let generation = rox_services::plugins::generation();
+        if panel
+            .inspector
+            .renderers
+            .as_ref()
+            .is_none_or(|(seen, _)| *seen != generation)
+        {
+            let rows = canvas::target_choices(&rox_services::renderers::all());
+            panel.inspector.renderers = Some((generation, rows));
+        }
+    }
 
     let body = div()
         .id("canvas-inspector-body")
@@ -343,6 +363,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
         Weighed { weight }
     });
     let counts = cost::counts(&weighed.weight);
+    let targets = cost::target_counts(&weighed.weight);
     let lines = cost::warnings(&weighed.weight);
 
     // The tone is a fixed yellow that washes out on a light theme, so it
@@ -373,6 +394,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
         .text_xs()
         .text_color(palette::text_muted())
         .child(counts)
+        .children(targets)
         .children(warnings)
         .into_any_element()
 }
@@ -521,6 +543,7 @@ fn kind_icon(content: &Content) -> &'static str {
         Content::Image { .. } => icons::IMAGE,
         Content::Shader { .. } => icons::BLEND,
         Content::Text { .. } => icons::A_LARGE_SMALL,
+        Content::Target { .. } => icons::APP_WINDOW,
         _ => icons::SQUARE_DASHED,
     }
 }
@@ -1353,6 +1376,12 @@ fn content_rows(
             align,
             ..
         } => text_rows(panel, &item.id, font.clone(), *size, color, *align, cx),
+        Content::Target {
+            owner,
+            width,
+            height,
+            ..
+        } => target_rows(panel, item, owner, [*width, *height], cx),
         _ => div().into_any_element(),
     }
 }
@@ -1451,6 +1480,234 @@ fn image_rows(
             ),
         ))
         .into_any_element()
+}
+
+/// The resolution chips, width by height.
+const TARGET_PRESETS: [(&str, [u32; 2]); 3] = [
+    ("720p", [1280, 720]),
+    ("1080p", [1920, 1080]),
+    ("4K", [3840, 2160]),
+];
+
+/// A render target's renderer, its resolution and how its session stands.
+/// A new renderer or size is a new session, which the canvas starts when it
+/// sees the edit.
+fn target_rows(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    owner: &str,
+    size: [u32; 2],
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    fn edit_target(
+        id: &str,
+        f: impl Fn(&mut String, &mut u32, &mut u32) + 'static,
+    ) -> impl FnOnce(&mut CanvasState) + 'static {
+        let id = id.to_string();
+        move |canvas| {
+            if let Some(CanvasItem {
+                content:
+                    Content::Target {
+                        owner,
+                        width,
+                        height,
+                        ..
+                    },
+                ..
+            }) = canvas.find_mut(&id)
+            {
+                f(owner, width, height);
+            }
+        }
+    }
+
+    // A saved renderer this machine doesn't have stays picked, by its id.
+    let mut choices: Vec<(String, SharedString)> = panel
+        .inspector
+        .renderers
+        .as_ref()
+        .map(|(_, rows)| {
+            rows.iter()
+                .map(|(owner, label)| (owner.clone(), SharedString::from(label.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !choices.iter().any(|(listed, _)| listed == owner) {
+        let shown = match crate::canvas::target::renderer_id(owner) {
+            Some(id) => rox_i18n::t!("canvas-target-not-installed", id = id),
+            None => rox_i18n::t!("canvas-target-renderer-none"),
+        };
+        choices.insert(0, (owner.to_string(), shown));
+    }
+
+    let owner_id = item.id.clone();
+    let renderer = panel::picker(
+        "canvas-target-renderer",
+        owner.to_string(),
+        choices,
+        false,
+        move |this: &mut CanvasPanel, picked: String, cx| {
+            this.change_later(
+                "target.owner",
+                edit_target(&owner_id, move |owner, _, _| *owner = picked.clone()),
+                cx,
+            )
+        },
+        cx,
+    );
+
+    let ranges = [
+        rox_services::renderers::WIDTHS,
+        rox_services::renderers::HEIGHTS,
+    ];
+    let labels = [
+        rox_i18n::t!("canvas-target-pixels-wide"),
+        rox_i18n::t!("canvas-target-pixels-high"),
+    ];
+    let fields: Vec<Div> = labels
+        .into_iter()
+        .enumerate()
+        .map(|(axis, label)| {
+            let setter = item.id.clone();
+            let range = ranges[axis].clone();
+            let value = number(
+                panel,
+                &format!("target.size{axis}:{}", item.id),
+                size[axis] as f32,
+                true,
+                move |canvas, v| {
+                    let pixels = (v.round().max(0.) as u32).clamp(*range.start(), *range.end());
+                    edit_target(&setter, move |_, width, height| match axis {
+                        0 => *width = pixels,
+                        _ => *height = pixels,
+                    })(canvas)
+                },
+                cx,
+            );
+            setting_row(label, None, value)
+        })
+        .collect();
+
+    let presets: Vec<(SharedString, [u32; 2])> = TARGET_PRESETS
+        .iter()
+        .map(|(label, size)| (SharedString::from(*label), *size))
+        .collect();
+    let preset_id = item.id.clone();
+    let chips = panel::choices_shared(
+        &presets,
+        size,
+        move |this: &mut CanvasPanel, [w, h]: [u32; 2], cx| {
+            this.change_later(
+                "target.size",
+                edit_target(&preset_id, move |_, width, height| {
+                    *width = w;
+                    *height = h;
+                }),
+                cx,
+            )
+        },
+        cx,
+    );
+
+    let resolution = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .children(fields);
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .child(setting_row(
+            rox_i18n::t!("canvas-target-renderer"),
+            None,
+            renderer,
+        ))
+        .child(setting_block(
+            rox_i18n::t!("canvas-target-resolution"),
+            None,
+            Some(chips.into_any_element()),
+            resolution,
+        ))
+        .children(target_status(panel, item, cx))
+        .into_any_element()
+}
+
+/// The session's line, read from what the target holds. It moves when the
+/// supervisor wakes the canvas, never on a timer.
+fn target_status(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    cx: &mut Context<CanvasPanel>,
+) -> Option<AnyElement> {
+    use crate::canvas::target::Status;
+    use rox_services::renderers::Refused;
+
+    let status = panel.target_status(item)?;
+
+    let words = match &status {
+        Status::Starting(None) => rox_i18n::t!("canvas-target-starting"),
+        Status::Starting(Some(why)) => {
+            rox_i18n::t!("canvas-target-retrying", error = why.as_str())
+        }
+        Status::Running => rox_i18n::t!("canvas-target-running"),
+        Status::Paused => rox_i18n::t!("canvas-target-paused"),
+        Status::Stopped(None) => rox_i18n::t!("canvas-target-stopped"),
+        Status::Stopped(Some(refused)) => match refused {
+            Refused::Missing => rox_i18n::t!("canvas-target-refused-missing"),
+            Refused::Broken(_) => rox_i18n::t!("canvas-target-refused-broken"),
+            Refused::NotRenderer => rox_i18n::t!("canvas-target-refused-not-renderer"),
+            Refused::PluginsOff => rox_i18n::t!("canvas-target-refused-plugins-off"),
+            Refused::NotApproved => rox_i18n::t!("canvas-target-refused-not-approved"),
+            Refused::Off => rox_i18n::t!("canvas-target-refused-off"),
+            Refused::Stopped => rox_i18n::t!("canvas-target-refused-stopped"),
+            Refused::Size => rox_i18n::t!(
+                "canvas-target-refused-size",
+                min_width = *rox_services::renderers::WIDTHS.start() as u64,
+                min_height = *rox_services::renderers::HEIGHTS.start() as u64,
+                max_width = *rox_services::renderers::WIDTHS.end() as u64,
+                max_height = *rox_services::renderers::HEIGHTS.end() as u64
+            ),
+            Refused::Start(why) => {
+                rox_i18n::t!("canvas-target-refused-start", error = why.as_str())
+            }
+        },
+    };
+
+    // Only a stop the user can lift from here gets the button. The gate's
+    // refusals are lifted on the Plugins page, where the approving is.
+    let again = matches!(
+        status,
+        Status::Stopped(None | Some(Refused::Stopped | Refused::Start(_)))
+    )
+    .then(|| {
+        let id = item.id.clone();
+        settings_ui::small_button(
+            rox_i18n::t!("canvas-target-start-again"),
+            icons::REFRESH_CW,
+            false,
+            cx.listener(move |this, _, _, cx| {
+                this.start_target_again(&id);
+                cx.notify();
+            }),
+        )
+        .keyed("canvas-target-start-again")
+        .into_any_element()
+    });
+
+    Some(
+        setting_block(
+            rox_i18n::t!("canvas-target-status"),
+            None,
+            again,
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(words),
+        )
+        .into_any_element(),
+    )
 }
 
 /// The palette roles a text color picks from. A hex color typed into the
@@ -2294,7 +2551,7 @@ pub(crate) fn object_dialog(
                 )))
                 .children(card.byline.clone().map(line))
                 .children(card.description.clone().map(line))
-                .children(card.requires.clone().map(line))
+                .children(card.requires.iter().cloned().map(line))
                 .children(card.heavy.clone().map(line))
                 .children(card.weight.iter().cloned().map(line))
                 .child(line(rox_i18n::t!("canvas-object-place-body")))

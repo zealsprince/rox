@@ -1502,6 +1502,16 @@ settings-plugins-remove-title = Rimuovere "{ $name }"?
 settings-plugins-remove-body = Se ne vanno i suoi brani, le raccolte sincronizzate e le impostazioni. La sua cartella resta nella cartella dei plugin; cancellala lì perché non compaia più qui.
 settings-plugins-remove-body-missing = Se ne vanno i suoi brani, le raccolte sincronizzate e le impostazioni. Non è già più nella cartella dei plugin, quindi non comparirà più qui.
 settings-plugins-remove-package-body = Se ne vanno i suoi brani, le raccolte sincronizzate e le impostazioni, e il suo file .roxp viene cancellato. I file che ha salvato nella sua cartella dei dati restano.
+settings-plugins-renderers = Renderer
+settings-plugins-renderers-intro = Un renderer è un programma che disegna l'immagine di un target di rendering su una tela. Gira solo mentre è attivo e un target di rendering lo mostra
+settings-plugins-card-renderer = Disegna { $label } nei target di rendering di una tela.
+settings-plugins-card-renderer-signals = Riceve i segnali della musica.
+settings-plugins-card-renderer-pointer = Riceve il puntatore mentre è sopra il target di rendering.
+settings-plugins-card-unchanged-renderer = Il manifesto è lo stesso dell'ultima volta. Sono cambiati altri file del renderer.
+settings-plugins-renderer-failed-title = Questo renderer non può girare
+settings-plugins-renderer-developer = Modalità sviluppatore: finché rox resta aperto, una modifica alla cartella di questo renderer viene approvata da sola. Una modifica a ciò che dichiara il suo manifest lo spegne comunque
+settings-plugins-remove-renderer-body = Se ne vanno le sue impostazioni, e i target di rendering che lo usano non disegnano più nulla. La sua cartella resta nella cartella dei plugin; cancellala lì perché non compaia più qui.
+settings-plugins-remove-renderer-package-body = Se ne vanno le sue impostazioni e il suo file .roxp, e i target di rendering che lo usano non disegnano più nulla.
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1805,6 +1815,10 @@ workspace-apply-shader-count = { $count ->
 workspace-requires-missing = { $count ->
     [one] Usa un plugin non in esecuzione: { $plugins }
    *[other] Usa { $count } plugin non in esecuzione: { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+    [one] Usa un renderer non installato o non attivo: { $renderers }
+   *[other] Usa { $count } renderer non installati o non attivi: { $renderers }
 }
 workspace-apply-shaders-approve-body = Approvarli li lascia girare su questa macchina. Applicarlo senza di loro lascia il look spoglio, con gli shader comunque nel suo pool.
 workspace-apply-shaders-plain-body = Applicarlo senza di loro lascia il look spoglio, con gli shader comunque nel suo pool.
@@ -4751,6 +4765,31 @@ canvas-case-show = Mostra
 canvas-case-same-image = Stessa immagine
 canvas-case-same-color = Stesso colore
 canvas-case-preview = Mostra questo caso sulla tela
+canvas-add-target = Aggiungi target di rendering
+canvas-target-renderer = Renderer
+canvas-target-renderer-none = Nessuno scelto
+canvas-target-not-installed = { $id }, non installato
+canvas-target-resolution = Risoluzione
+canvas-target-pixels-wide = Larghezza in pixel
+canvas-target-pixels-high = Altezza in pixel
+canvas-target-status = Stato
+canvas-target-starting = In avvio
+canvas-target-retrying = Non è partito, nuovo tentativo in arrivo: { $error }
+canvas-target-running = In esecuzione
+canvas-target-paused = In pausa finché è nascosto o fuori dal palco
+canvas-target-stopped = Fermato
+canvas-target-refused-missing = Fermato: nessun renderer con questo id è installato
+canvas-target-refused-broken = Fermato: il renderer non si carica. La pagina Plugin dice perché
+canvas-target-refused-not-renderer = Fermato: il pacchetto con questo id non è un renderer
+canvas-target-refused-plugins-off = Fermato: Attiva i plugin è spento nella pagina Plugin
+canvas-target-refused-not-approved = Fermato: è nuovo o è cambiato sul disco. Attivarlo dalla pagina Plugin lo approva
+canvas-target-refused-off = Fermato: è spento nella pagina Plugin
+canvas-target-refused-stopped = Fermato dopo essersi chiuso cinque volte in dieci minuti
+canvas-target-refused-size = Fermato: un renderer disegna da { $min_width } per { $min_height } fino a { $max_width } per { $max_height } pixel
+canvas-target-refused-start = Fermato: non è riuscito a partire. { $error }
+canvas-target-start-again = Riavvia
+canvas-weight-targets = Target di rendering { $count }, { $megapixels } megapixel
+canvas-weight-heavy-targets = Target di rendering: { $megapixels } megapixel, più di quanti se ne disegnano in modo fluido
 menu-layout-to-canvas = Converti layout in tela
 
 ## Catalog

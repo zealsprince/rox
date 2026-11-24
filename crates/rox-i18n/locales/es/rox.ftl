@@ -1518,6 +1518,16 @@ settings-plugins-remove-title = ¿Quitar "{ $name }"?
 settings-plugins-remove-body = Se van sus pistas, colecciones sincronizadas y ajustes. Su carpeta se queda en la carpeta de plugins; bórrala allí para que deje de aparecer aquí.
 settings-plugins-remove-body-missing = Se van sus pistas, colecciones sincronizadas y ajustes. Ya no está en la carpeta de plugins, así que no volverá a aparecer aquí.
 settings-plugins-remove-package-body = Se van sus pistas, colecciones sincronizadas y ajustes, y se borra su archivo .roxp. Los archivos que guardó en su carpeta de datos se quedan.
+settings-plugins-renderers = Renderizadores
+settings-plugins-renderers-intro = Un renderizador es un programa que dibuja la imagen de un destino de render en un lienzo. Solo se ejecuta mientras está activado y un destino de render lo muestra
+settings-plugins-card-renderer = Dibuja { $label } en destinos de render de un lienzo.
+settings-plugins-card-renderer-signals = Recibe las señales de la música.
+settings-plugins-card-renderer-pointer = Recibe el puntero mientras está sobre el destino de render.
+settings-plugins-card-unchanged-renderer = El manifiesto es el mismo que la última vez. Cambiaron otros archivos del renderizador.
+settings-plugins-renderer-failed-title = Este renderizador no puede ejecutarse
+settings-plugins-renderer-developer = Modo desarrollador: hasta que cierres rox, un cambio en la carpeta de este renderizador se aprueba solo. Un cambio en lo que declara su manifiesto lo sigue desactivando
+settings-plugins-remove-renderer-body = Se van sus ajustes, y los destinos de render que lo usan no dibujan nada. Su carpeta se queda en la carpeta de plugins; bórrala allí para que deje de aparecer aquí.
+settings-plugins-remove-renderer-package-body = Se van sus ajustes y su archivo .roxp, y los destinos de render que lo usan no dibujan nada.
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1821,6 +1831,10 @@ workspace-apply-shader-count = { $count ->
 workspace-requires-missing = { $count ->
     [one] Usa un plugin que no está en marcha: { $plugins }
    *[other] Usa { $count } plugins que no están en marcha: { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+    [one] Usa un renderizador que no está instalado o activado: { $renderers }
+   *[other] Usa { $count } renderizadores que no están instalados o activados: { $renderers }
 }
 workspace-apply-shaders-approve-body = Aprobarlos les deja correr en esta máquina. Aplicarlo sin ellos deja el aspecto desnudo, con los shaders todavía en su conjunto.
 workspace-apply-shaders-plain-body = Aplicarlo sin ellos deja el aspecto desnudo, con los shaders todavía en su conjunto.
@@ -4785,6 +4799,31 @@ canvas-case-show = Mostrar
 canvas-case-same-image = La misma imagen
 canvas-case-same-color = El mismo color
 canvas-case-preview = Ver este caso en el lienzo
+canvas-add-target = Añadir destino de render
+canvas-target-renderer = Renderizador
+canvas-target-renderer-none = Ninguno elegido
+canvas-target-not-installed = { $id }, no instalado
+canvas-target-resolution = Resolución
+canvas-target-pixels-wide = Ancho en píxeles
+canvas-target-pixels-high = Alto en píxeles
+canvas-target-status = Estado
+canvas-target-starting = Arrancando
+canvas-target-retrying = No pudo arrancar, se vuelve a intentar: { $error }
+canvas-target-running = En marcha
+canvas-target-paused = En pausa mientras está oculto o fuera del escenario
+canvas-target-stopped = Detenido
+canvas-target-refused-missing = Detenido: no hay ningún renderizador instalado con este id
+canvas-target-refused-broken = Detenido: el renderizador no carga. La página Plugins dice por qué
+canvas-target-refused-not-renderer = Detenido: el paquete con este id no es un renderizador
+canvas-target-refused-plugins-off = Detenido: Activar plugins está desactivado en la página Plugins
+canvas-target-refused-not-approved = Detenido: es nuevo o cambió en el disco. Activarlo desde la página Plugins lo aprueba
+canvas-target-refused-off = Detenido: está desactivado en la página Plugins
+canvas-target-refused-stopped = Detenido tras cerrarse cinco veces en diez minutos
+canvas-target-refused-size = Detenido: un renderizador dibuja desde { $min_width } por { $min_height } hasta { $max_width } por { $max_height } píxeles
+canvas-target-refused-start = Detenido: no pudo arrancar. { $error }
+canvas-target-start-again = Volver a arrancar
+canvas-weight-targets = Destinos de render { $count }, { $megapixels } megapíxeles
+canvas-weight-heavy-targets = Destinos de render: { $megapixels } megapíxeles, más de los que se dibujan con fluidez
 menu-layout-to-canvas = Convertir disposición en lienzo
 
 ## Catalog

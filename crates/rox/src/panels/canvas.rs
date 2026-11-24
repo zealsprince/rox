@@ -54,7 +54,7 @@ use crate::canvas::overlay::Inspector;
 use crate::canvas::routes::{self, Snapshot};
 use crate::canvas::shader::{self as shader_item, Shaders};
 use crate::canvas::states::{self, Cases};
-use crate::canvas::target::Targets;
+use crate::canvas::target::{Status as TargetStatus, Targets};
 use crate::canvas::text::{self, Values};
 use crate::canvas::texture::{self, TextureView};
 use crate::canvas::{self, Body, Placing};
@@ -238,6 +238,8 @@ pub(crate) enum NewItem {
     Image(String),
     Shader,
     Text,
+    /// A render target, by the owner it saves.
+    Target(String),
 }
 
 /// `shader` and `owner` are the dump walkers' keys everywhere, and the
@@ -766,6 +768,15 @@ impl CanvasPanel {
 
     pub(crate) fn images_mut(&mut self) -> &mut Images {
         &mut self.images
+    }
+
+    /// A target item's status line, as its session last left it.
+    pub(crate) fn target_status(&self, item: &CanvasItem) -> Option<TargetStatus> {
+        self.targets.status(item)
+    }
+
+    pub(crate) fn start_target_again(&mut self, id: &str) {
+        self.targets.start_again(id);
     }
 
     /// Ask the workspace for its debounced layout save. Only from the
@@ -2081,8 +2092,9 @@ impl CanvasPanel {
         )
     }
 
-    /// Add Grid, Group, Image, Shader and Text at `position`. `at` places the new
-    /// item where the press was; None puts it at the stage center.
+    /// Add Grid, Group, Image, Shader, Text and, with a renderer installed,
+    /// Render Target at `position`. `at` places the new item where the press
+    /// was; None puts it at the stage center.
     pub(crate) fn open_add_menu(
         &mut self,
         position: Point<Pixels>,
@@ -2123,33 +2135,57 @@ impl CanvasPanel {
 
         let object_menu = crate::canvas::overlay::objects_menu(window, cx);
 
+        // Read once per opening: the list is the gate's, read off disk.
+        let renderers = target_choices(&rox_services::renderers::all());
+        let target_menu = (!renderers.is_empty()).then(|| {
+            let pick = pick.clone();
+            PopupMenu::build(window, cx, move |mut menu, _, _| {
+                for (owner, label) in renderers {
+                    menu = menu.item(
+                        PopupMenuItem::new(SharedString::from(label))
+                            .on_click(pick(NewItem::Target(owner))),
+                    );
+                }
+                menu
+            })
+        });
+
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.item(
-                PopupMenuItem::new(rox_i18n::t!("canvas-add-grid"))
-                    .icon(Icon::default().path(icons::LAYOUT_GRID))
-                    .on_click(pick(NewItem::Grid)),
-            )
-            .item(
-                PopupMenuItem::new(rox_i18n::t!("canvas-add-group"))
-                    .icon(Icon::default().path(icons::LAYERS))
-                    .on_click(pick(NewItem::Group)),
-            )
-            .item(
-                PopupMenuItem::submenu(rox_i18n::t!("canvas-add-image"), image_menu)
-                    .icon(Icon::default().path(icons::IMAGE)),
-            )
-            .item(
-                PopupMenuItem::new(rox_i18n::t!("canvas-add-shader"))
-                    .icon(Icon::default().path(icons::BLEND))
-                    .on_click(pick(NewItem::Shader)),
-            )
-            .item(
-                PopupMenuItem::new(rox_i18n::t!("canvas-add-text"))
-                    .icon(Icon::default().path(icons::A_LARGE_SMALL))
-                    .on_click(pick(NewItem::Text)),
-            )
-            .separator()
-            .item(
+            let menu = menu
+                .item(
+                    PopupMenuItem::new(rox_i18n::t!("canvas-add-grid"))
+                        .icon(Icon::default().path(icons::LAYOUT_GRID))
+                        .on_click(pick(NewItem::Grid)),
+                )
+                .item(
+                    PopupMenuItem::new(rox_i18n::t!("canvas-add-group"))
+                        .icon(Icon::default().path(icons::LAYERS))
+                        .on_click(pick(NewItem::Group)),
+                )
+                .item(
+                    PopupMenuItem::submenu(rox_i18n::t!("canvas-add-image"), image_menu)
+                        .icon(Icon::default().path(icons::IMAGE)),
+                )
+                .item(
+                    PopupMenuItem::new(rox_i18n::t!("canvas-add-shader"))
+                        .icon(Icon::default().path(icons::BLEND))
+                        .on_click(pick(NewItem::Shader)),
+                )
+                .item(
+                    PopupMenuItem::new(rox_i18n::t!("canvas-add-text"))
+                        .icon(Icon::default().path(icons::A_LARGE_SMALL))
+                        .on_click(pick(NewItem::Text)),
+                );
+
+            let menu = match target_menu {
+                Some(targets) => menu.item(
+                    PopupMenuItem::submenu(rox_i18n::t!("canvas-add-target"), targets)
+                        .icon(Icon::default().path(icons::APP_WINDOW)),
+                ),
+                None => menu,
+            };
+
+            menu.separator().item(
                 PopupMenuItem::submenu(rox_i18n::t!("canvas-add-objects"), object_menu)
                     .icon(Icon::default().path(icons::BOOKMARK)),
             )
@@ -2218,6 +2254,16 @@ impl CanvasPanel {
                     align: rox_canvas::Align::Center,
                 },
                 Some([480., 64.]),
+            ),
+            NewItem::Target(owner) => (
+                "target",
+                Content::Target {
+                    owner,
+                    width: TARGET_PIXELS[0],
+                    height: TARGET_PIXELS[1],
+                    config: Value::Null,
+                },
+                Some(TARGET_UNITS),
             ),
         };
 
@@ -2773,6 +2819,28 @@ fn paint_turn_handles(shape: &Shape, origin: Point<Pixels>, window: &mut Window)
     }
 }
 
+/// A new render target's resolution, and its size on the stage.
+const TARGET_PIXELS: [u32; 2] = [1280, 720];
+const TARGET_UNITS: [f32; 2] = [640., 360.];
+
+/// Add Render Target's list: each installed renderer's owner and label. An
+/// empty list hides the row.
+pub(crate) fn target_choices(
+    renderers: &[rox_services::renderers::Renderer],
+) -> Vec<(String, String)> {
+    renderers
+        .iter()
+        .map(|renderer| {
+            let label = if renderer.label.trim().is_empty() {
+                renderer.name.clone()
+            } else {
+                renderer.label.clone()
+            };
+            (crate::canvas::target::owner_of(&renderer.id), label)
+        })
+        .collect()
+}
+
 /// The image assets in the store, id and file, for the Add Image list.
 pub(crate) fn image_assets() -> Vec<(String, String)> {
     assets::all()
@@ -3069,6 +3137,34 @@ mod tests {
                 "info": { "stack": { "sizes": [480.0], "axis": 1 } },
             },
         })
+    }
+
+    #[test]
+    fn the_add_row_hides_with_no_renderer_installed() {
+        assert!(target_choices(&[]).is_empty());
+
+        let bars = rox_services::renderers::Renderer {
+            id: "bars".into(),
+            name: "Bars Deluxe".into(),
+            label: "Bars".into(),
+            approved: false,
+            enabled: false,
+        };
+        let unlabelled = rox_services::renderers::Renderer {
+            id: "waves".into(),
+            name: "Waves".into(),
+            label: " ".into(),
+            ..bars.clone()
+        };
+
+        assert_eq!(
+            target_choices(&[bars, unlabelled]),
+            [
+                ("plugin:bars".to_string(), "Bars".to_string()),
+                ("plugin:waves".to_string(), "Waves".to_string()),
+            ],
+            "listed whether or not it's switched on, under the owner a target saves"
+        );
     }
 
     #[test]

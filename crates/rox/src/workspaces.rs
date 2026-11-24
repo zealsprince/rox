@@ -419,7 +419,7 @@ pub struct ApplyCard {
     /// Splits the dialog's yes in two, every time. See [`wears_shaders`].
     pub wears_shaders: bool,
     /// The plugins the look's panels came from that aren't running here.
-    pub requires: Option<SharedString>,
+    pub requires: Vec<SharedString>,
     /// The unpacked size, said only past [`roxw::WARN_BYTES`]. A heavy look
     /// still applies.
     pub heavy: Option<SharedString>,
@@ -443,22 +443,67 @@ fn heavy_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
 
 /// Informational: the look applies either way, and its plugin panels restore
 /// with their rows hidden until the plugin runs again.
-fn requires_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
-    let missing: Vec<&str> = bundle
-        .requires
-        .iter()
-        .filter(|id| !rox_services::plugins::is_running(id))
-        .map(String::as_str)
-        .collect();
-    if missing.is_empty() {
-        return None;
+fn requires_line(bundle: &WorkspaceBundle) -> Vec<SharedString> {
+    let mut renderers = BTreeSet::new();
+    for layout in &bundle.layouts {
+        crate::canvas::target::named_renderers(&layout.dump, &mut renderers);
     }
 
-    Some(rox_i18n::t!(
-        "workspace-requires-missing",
-        count = missing.len() as u64,
-        plugins = missing.join(", ")
-    ))
+    requires_lines(
+        &bundle.requires,
+        &renderers,
+        &|id| rox_services::plugins::is_running(id),
+        &renderer_ready,
+    )
+}
+
+/// Whether renderer `id` would run here once a render target shows it. One
+/// stopped after its exits is installed and switched on, so it doesn't count.
+pub(crate) fn renderer_ready(id: &str) -> bool {
+    use rox_services::renderers::{self, Refused};
+
+    matches!(renderers::refusal(id), None | Some(Refused::Stopped))
+}
+
+/// What a look or an object uses that won't run here, a line for plugins and
+/// one for renderers. A renderer never has a plugin host, so it's told apart
+/// by the render targets that name it, and asked about through its gate.
+pub(crate) fn requires_lines(
+    requires: &[String],
+    renderers: &BTreeSet<String>,
+    plugin_running: &dyn Fn(&str) -> bool,
+    renderer_ready: &dyn Fn(&str) -> bool,
+) -> Vec<SharedString> {
+    let (renderer_ids, plugin_ids): (Vec<&String>, Vec<&String>) =
+        requires.iter().partition(|id| renderers.contains(*id));
+
+    let plugins: Vec<&str> = plugin_ids
+        .into_iter()
+        .filter(|id| !plugin_running(id))
+        .map(String::as_str)
+        .collect();
+    let renderers: Vec<&str> = renderer_ids
+        .into_iter()
+        .filter(|id| !renderer_ready(id))
+        .map(String::as_str)
+        .collect();
+
+    let mut lines = Vec::new();
+    if !plugins.is_empty() {
+        lines.push(rox_i18n::t!(
+            "workspace-requires-missing",
+            count = plugins.len() as u64,
+            plugins = plugins.join(", ")
+        ));
+    }
+    if !renderers.is_empty() {
+        lines.push(rox_i18n::t!(
+            "workspace-requires-missing-renderers",
+            count = renderers.len() as u64,
+            renderers = renderers.join(", ")
+        ));
+    }
+    lines
 }
 
 impl ApplyCard {
@@ -473,7 +518,7 @@ impl ApplyCard {
                 shaders: Vec::new(),
                 screen_shader: None,
                 wears_shaders: false,
-                requires: None,
+                requires: Vec::new(),
                 heavy: None,
                 weight: Vec::new(),
             },

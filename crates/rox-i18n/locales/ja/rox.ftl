@@ -1473,6 +1473,16 @@ settings-plugins-remove-title = "{ $name }" を削除しますか?
 settings-plugins-remove-body = 曲、同期中のコレクション、設定が消えます。フォルダーはプラグインフォルダーに残るので、ここに表示されないようにするにはそちらで削除してください。
 settings-plugins-remove-body-missing = 曲、同期中のコレクション、設定が消えます。プラグインはすでにプラグインフォルダーにないので、ここにはもう表示されません。
 settings-plugins-remove-package-body = 曲、同期中のコレクション、設定が消え、.roxp ファイルも削除されます。プラグインがデータフォルダーに保存したファイルは残ります。
+settings-plugins-renderers = レンダラー
+settings-plugins-renderers-intro = レンダラーは、キャンバス上のレンダーターゲットの絵を描くプログラムです。オンになっていて、レンダーターゲットが表示している間だけ動きます
+settings-plugins-card-renderer = キャンバス上のレンダーターゲットに { $label } を描きます。
+settings-plugins-card-renderer-signals = 音楽のシグナルを受け取ります。
+settings-plugins-card-renderer-pointer = ポインターがレンダーターゲットの上にある間、ポインターを受け取ります。
+settings-plugins-card-unchanged-renderer = マニフェストは前回と同じです。レンダラー内のほかのファイルが変わりました。
+settings-plugins-renderer-failed-title = このレンダラーは動かせません
+settings-plugins-renderer-developer = 開発者モード: rox を終了するまで、このレンダラーのフォルダーの変更は自動で承認される。マニフェストの宣言内容が変わった場合は、これまでどおりオフになる
+settings-plugins-remove-renderer-body = 設定が消え、これを使うレンダーターゲットは何も描かなくなります。フォルダーはプラグインフォルダーに残るので、ここに表示されないようにするにはそちらで削除してください。
+settings-plugins-remove-renderer-package-body = 設定と .roxp ファイルが消え、これを使うレンダーターゲットは何も描かなくなります。
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1771,6 +1781,9 @@ workspace-apply-shader-count = { $count ->
 }
 workspace-requires-missing = { $count ->
    *[other] 動いていないプラグインを使います: { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+   *[other] インストールされていないか、オンになっていないレンダラーを使います: { $renderers }
 }
 workspace-apply-shaders-approve-body = 承認するとこのマシンで動くようになります。承認せずに適用すると見た目は素のままで、シェーダーはプールに残ります。
 workspace-apply-shaders-plain-body = 承認せずに適用すると見た目は素のままで、シェーダーはプールに残ります。
@@ -4552,6 +4565,31 @@ canvas-case-show = 表示
 canvas-case-same-image = 同じ画像
 canvas-case-same-color = 同じ色
 canvas-case-preview = このケースをキャンバスでプレビュー
+canvas-add-target = レンダーターゲットを追加
+canvas-target-renderer = レンダラー
+canvas-target-renderer-none = 未選択
+canvas-target-not-installed = { $id }（未インストール）
+canvas-target-resolution = 解像度
+canvas-target-pixels-wide = 幅（ピクセル）
+canvas-target-pixels-high = 高さ（ピクセル）
+canvas-target-status = 状態
+canvas-target-starting = 起動中
+canvas-target-retrying = 起動できませんでした。もう一度試します: { $error }
+canvas-target-running = 動作中
+canvas-target-paused = 隠れているかステージの外にある間は一時停止
+canvas-target-stopped = 停止
+canvas-target-refused-missing = 停止: この ID のレンダラーはインストールされていません
+canvas-target-refused-broken = 停止: レンダラーを読み込めません。理由はプラグインのページにあります
+canvas-target-refused-not-renderer = 停止: この ID のパッケージはレンダラーではありません
+canvas-target-refused-plugins-off = 停止: プラグインのページで「プラグインを有効にする」がオフです
+canvas-target-refused-not-approved = 停止: 新しいか、ディスク上で変わりました。プラグインのページでオンにすると承認されます
+canvas-target-refused-off = 停止: プラグインのページでオフになっています
+canvas-target-refused-stopped = 10 分間に 5 回終了したため停止
+canvas-target-refused-size = 停止: レンダラーが描けるのは { $min_width } x { $min_height } から { $max_width } x { $max_height } ピクセルまでです
+canvas-target-refused-start = 停止: 起動できませんでした。{ $error }
+canvas-target-start-again = もう一度起動
+canvas-weight-targets = レンダーターゲット { $count }、{ $megapixels } メガピクセル
+canvas-weight-heavy-targets = レンダーターゲット: { $megapixels } メガピクセル、滑らかに描画できる量を超えています
 menu-layout-to-canvas = レイアウトをキャンバスに変換
 
 ## Catalog

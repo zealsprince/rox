@@ -1530,6 +1530,16 @@ settings-plugins-remove-title = Retirer « { $name } » ?
 settings-plugins-remove-body = Ses morceaux, ses collections synchronisées et ses réglages disparaissent. Son dossier reste dans le dossier des plugins ; supprimez-le là-bas pour qu'il n'apparaisse plus ici.
 settings-plugins-remove-body-missing = Ses morceaux, ses collections synchronisées et ses réglages disparaissent. Il n'est déjà plus dans le dossier des plugins, il n'apparaîtra donc plus ici.
 settings-plugins-remove-package-body = Ses morceaux, ses collections synchronisées et ses réglages disparaissent, et son fichier .roxp est supprimé. Les fichiers qu'il a enregistrés dans son dossier de données restent.
+settings-plugins-renderers = Moteurs de rendu
+settings-plugins-renderers-intro = Un moteur de rendu est un programme qui dessine l'image d'une cible de rendu sur un canevas. Il ne tourne que s'il est activé et qu'une cible de rendu l'affiche
+settings-plugins-card-renderer = Dessine { $label } dans les cibles de rendu d'un canevas.
+settings-plugins-card-renderer-signals = Reçoit les signaux de la musique.
+settings-plugins-card-renderer-pointer = Reçoit le pointeur tant qu'il survole la cible de rendu.
+settings-plugins-card-unchanged-renderer = Le manifeste est le même que la dernière fois. D'autres fichiers du moteur de rendu ont changé.
+settings-plugins-renderer-failed-title = Ce moteur de rendu ne peut pas s'exécuter
+settings-plugins-renderer-developer = Mode développeur : jusqu'à ce que vous quittiez rox, une modification du dossier de ce moteur de rendu est approuvée d'elle-même. Une modification de ce que déclare son manifeste le désactive toujours
+settings-plugins-remove-renderer-body = Ses réglages disparaissent, et les cibles de rendu qui l'utilisent ne dessinent plus rien. Son dossier reste dans le dossier des plugins ; supprimez-le là-bas pour qu'il n'apparaisse plus ici.
+settings-plugins-remove-renderer-package-body = Ses réglages et son fichier .roxp disparaissent, et les cibles de rendu qui l'utilisent ne dessinent plus rien.
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1833,6 +1843,10 @@ workspace-apply-shader-count = { $count ->
 workspace-requires-missing = { $count ->
     [one] Utilise un plugin qui ne tourne pas : { $plugins }
    *[other] Utilise { $count } plugins qui ne tournent pas : { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+    [one] Utilise un moteur de rendu qui n'est pas installé ou activé : { $renderers }
+   *[other] Utilise { $count } moteurs de rendu qui ne sont pas installés ou activés : { $renderers }
 }
 workspace-apply-shaders-approve-body = Les approuver les laisse tourner sur cette machine. L'appliquer sans eux laisse l'habillage nu, avec les shaders toujours dans l'espace de travail.
 workspace-apply-shaders-plain-body = L'appliquer sans eux laisse l'habillage nu, avec les shaders toujours dans l'espace de travail.
@@ -4781,6 +4795,31 @@ canvas-case-show = Afficher
 canvas-case-same-image = Même image
 canvas-case-same-color = Même couleur
 canvas-case-preview = Voir ce cas sur le canevas
+canvas-add-target = Ajouter une cible de rendu
+canvas-target-renderer = Moteur de rendu
+canvas-target-renderer-none = Aucun choisi
+canvas-target-not-installed = { $id }, non installé
+canvas-target-resolution = Résolution
+canvas-target-pixels-wide = Largeur en pixels
+canvas-target-pixels-high = Hauteur en pixels
+canvas-target-status = État
+canvas-target-starting = Démarrage
+canvas-target-retrying = Démarrage impossible, nouvel essai à venir : { $error }
+canvas-target-running = En marche
+canvas-target-paused = En pause tant qu'elle est masquée ou hors du plateau
+canvas-target-stopped = Arrêtée
+canvas-target-refused-missing = Arrêtée : aucun moteur de rendu avec cet identifiant n'est installé
+canvas-target-refused-broken = Arrêtée : le moteur de rendu ne se charge pas. La page Plugins indique pourquoi
+canvas-target-refused-not-renderer = Arrêtée : le paquet avec cet identifiant n'est pas un moteur de rendu
+canvas-target-refused-plugins-off = Arrêtée : Activer les plugins est désactivé sur la page Plugins
+canvas-target-refused-not-approved = Arrêtée : il est nouveau ou a changé sur le disque. L'activer depuis la page Plugins l'approuve
+canvas-target-refused-off = Arrêtée : il est désactivé sur la page Plugins
+canvas-target-refused-stopped = Arrêtée après qu'il s'est fermé cinq fois en dix minutes
+canvas-target-refused-size = Arrêtée : un moteur de rendu dessine de { $min_width } sur { $min_height } jusqu'à { $max_width } sur { $max_height } pixels
+canvas-target-refused-start = Arrêtée : il n'a pas pu démarrer. { $error }
+canvas-target-start-again = Relancer
+canvas-weight-targets = Cibles de rendu { $count }, { $megapixels } mégapixels
+canvas-weight-heavy-targets = Cibles de rendu : { $megapixels } mégapixels, plus que ce qui s'affiche de façon fluide
 menu-layout-to-canvas = Convertir la disposition en canevas
 
 ## Catalog

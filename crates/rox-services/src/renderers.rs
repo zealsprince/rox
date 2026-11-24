@@ -167,6 +167,32 @@ fn check<'a>(
     Ok(folder)
 }
 
+/// Why [`start`] would turn renderer `id` away now, read through the same
+/// gate and exit count without starting anything. None when it would run.
+pub fn refusal(id: &str) -> Option<Refused> {
+    let folders = crate::plugins::loaded();
+    let records = Settings::load().accounts.plugins;
+    let gate = check(
+        id,
+        &folders,
+        &records,
+        &settings::plugin_approved,
+        crate::plugins::allowed(),
+    );
+
+    match gate {
+        Err(refused) => Some(refused),
+        Ok(_) if due(id).is_none() => Some(Refused::Stopped),
+        Ok(_) => None,
+    }
+}
+
+/// Forgets renderer `id`'s exits, as switching it off and on does. A render
+/// target's Start Again, which approves and switches on nothing.
+pub fn forgive(id: &str) {
+    forget_exits(&|kept| kept != id);
+}
+
 /// One run of a renderer. Dropping it stops the renderer.
 pub struct Session {
     id: String,
@@ -612,5 +638,18 @@ mod tests {
         // next switch on starts it fresh. Other tests' ids pass untouched.
         forget_exits(&|kept| passes(kept, &off));
         assert_eq!(due(id), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn start_again_forgets_only_its_own_exits() {
+        let (mine, other) = ("renderers-test-mine", "renderers-test-other");
+        for _ in 0..5 {
+            note_exit(mine);
+            note_exit(other);
+        }
+
+        forgive(mine);
+        assert_eq!(due(mine), Some(Duration::ZERO));
+        assert_eq!(due(other), None, "another renderer's count stands");
     }
 }

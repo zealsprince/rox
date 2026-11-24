@@ -17,9 +17,11 @@
 //! and per session a reader thread on its stdout. A frame is copied only
 //! once the canvas has taken the last one, and published with a wake to
 //! the canvas, which never asks for frames on its own. A target the canvas
-//! doesn't draw pauses its renderer, so a hidden one costs nothing.
+//! doesn't draw pauses its renderer, so a hidden one costs nothing. The
+//! supervisor also keeps the target's status and its last refusal for the
+//! inspector, and wakes the canvas only when one of them moves.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -125,6 +127,14 @@ trait Host: Send + 'static {
 
     /// The renderer's display name.
     fn name(&self) -> Option<String>;
+
+    /// Why it wouldn't start now, for a target rox stopped from outside.
+    fn refusal(&self) -> Option<Refused> {
+        None
+    }
+
+    /// Forgets its exits: the user pressed Start Again.
+    fn forgive(&self) {}
 }
 
 /// A renderer package started through the gate.
@@ -166,6 +176,14 @@ impl Host for Renderer {
             .into_iter()
             .find(|renderer| renderer.id == self.id)
             .map(|renderer| renderer.name)
+    }
+
+    fn refusal(&self) -> Option<Refused> {
+        renderers::refusal(&self.id)
+    }
+
+    fn forgive(&self) {
+        renderers::forgive(&self.id);
     }
 }
 
@@ -248,8 +266,13 @@ struct State {
     ended: Option<End>,
     /// The last session whose reader has returned.
     read_done: u64,
-    /// Try starting again: the renderers' switches moved.
+    /// Try starting again: the renderers' switches moved, or Start Again.
     retry: bool,
+    /// Start Again was pressed, so the exit count goes before the retry.
+    forgive: bool,
+    phase: Phase,
+    /// The last refusal, kept for the status line until a session starts.
+    refused: Option<Refused>,
     /// The target is gone.
     stop: bool,
     name: Option<String>,
@@ -259,6 +282,29 @@ impl State {
     fn paused(&self) -> bool {
         self.held || self.idle
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Not started yet, or waiting out the restart schedule.
+    Starting,
+    Running,
+    /// Waiting for the switches to move or Start Again.
+    Resting,
+}
+
+/// What a target's status line says, read from its state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Status {
+    /// Not started yet, or waiting to start again, with the reason the last
+    /// start failed if it did.
+    Starting(Option<String>),
+    Running,
+    /// Running, and paused because the canvas doesn't draw it.
+    Paused,
+    /// Not running until something changes. None when rox stopped it and
+    /// the gate would let it run now.
+    Stopped(Option<Refused>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,6 +376,9 @@ impl Source {
                 ended: None,
                 read_done: 0,
                 retry: false,
+                forgive: false,
+                phase: Phase::Starting,
+                refused: None,
                 stop: false,
                 name: None,
             }),
@@ -398,6 +447,31 @@ impl Source {
 
     fn name(&self) -> Option<String> {
         self.shared.lock().name.clone()
+    }
+
+    fn status(&self) -> Status {
+        let state = self.shared.lock();
+
+        match state.phase {
+            Phase::Starting => Status::Starting(match &state.refused {
+                Some(Refused::Start(why)) => Some(why.clone()),
+                _ => None,
+            }),
+            Phase::Running if state.paused() => Status::Paused,
+            Phase::Running => Status::Running,
+            Phase::Resting => Status::Stopped(state.refused.clone()),
+        }
+    }
+
+    /// Clears the exit count and tries again. The gate still decides, so
+    /// this never runs what it refuses.
+    fn start_again(&self) {
+        {
+            let mut state = self.shared.lock();
+            state.retry = true;
+            state.forgive = true;
+        }
+        self.shared.wake.notify_all();
     }
 
     /// Asks the supervisor to wind down. Joining is the caller's.
@@ -473,19 +547,27 @@ impl Supervisor {
 
         loop {
             let name = self.host.name();
-            {
+            let forgive = {
                 let mut state = self.shared.lock();
                 if state.stop {
                     return;
                 }
                 state.retry = false;
                 state.name = name;
+                std::mem::take(&mut state.forgive)
+            };
+            if forgive {
+                self.host.forgive();
             }
 
             let mapping = match Mapping::create(self.spec) {
                 Ok(mapping) => mapping,
                 Err(e) => {
                     log::warn!("render target {}: no frame mapping: {e}", self.tag);
+                    self.set(
+                        Phase::Resting,
+                        Some(Refused::Start(format!("no frame mapping: {e}"))),
+                    );
                     if !self.rest() {
                         return;
                     }
@@ -501,6 +583,7 @@ impl Supervisor {
                 Err(Refused::Start(why)) => {
                     log::info!("render target {}: didn't start: {why}", self.tag);
                     drop(mapping);
+                    self.set(Phase::Starting, Some(Refused::Start(why)));
                     if !self.after_exit() {
                         return;
                     }
@@ -510,6 +593,7 @@ impl Supervisor {
                 Err(refused) => {
                     log::info!("render target {}: not started: {refused}", self.tag);
                     drop(mapping);
+                    self.set(Phase::Resting, Some(refused));
                     self.clear();
                     if !self.rest() {
                         return;
@@ -525,6 +609,7 @@ impl Supervisor {
                 state.ended = None;
                 state.pending = None;
             }
+            self.set(Phase::Running, None);
 
             let reader = {
                 let shared = self.shared.clone();
@@ -556,6 +641,7 @@ impl Supervisor {
                 Exit::Closed if ours => {
                     log::info!("render target {}: stopped by rox", self.tag);
                     self.shared.lock().retry = false;
+                    self.set(Phase::Resting, self.host.refusal());
                     self.clear();
                     if !self.rest() {
                         return;
@@ -590,12 +676,37 @@ impl Supervisor {
     /// rests empty once the renderer is stopped. False when the target goes.
     fn after_exit(&mut self) -> bool {
         match self.host.due() {
-            Some(wait) => self.sleep(wait),
+            Some(wait) => {
+                // A failed start keeps its reason on show through the wait.
+                let failed = match &self.shared.lock().refused {
+                    Some(Refused::Start(why)) => Some(Refused::Start(why.clone())),
+                    _ => None,
+                };
+                self.set(Phase::Starting, failed);
+                self.sleep(wait)
+            }
             None => {
                 log::info!("render target {}: stopped after repeated exits", self.tag);
+                self.set(Phase::Resting, Some(Refused::Stopped));
                 self.clear();
                 self.rest()
             }
+        }
+    }
+
+    /// Moves the status line, and wakes the canvas only when it moved, so a
+    /// target resting or retrying costs the canvas no frames.
+    fn set(&self, phase: Phase, refused: Option<Refused>) {
+        let moved = {
+            let mut state = self.shared.lock();
+            let moved = state.phase != phase || state.refused != refused;
+            state.phase = phase;
+            state.refused = refused;
+            moved
+        };
+
+        if moved {
+            (self.notify)();
         }
     }
 
@@ -1003,6 +1114,14 @@ impl Target {
     pub(crate) fn name(&self) -> Option<String> {
         self.source.name()
     }
+
+    pub(crate) fn status(&self) -> Status {
+        self.source.status()
+    }
+
+    pub(crate) fn start_again(&self) {
+        self.source.start_again();
+    }
 }
 
 impl Drop for Target {
@@ -1034,8 +1153,39 @@ pub(crate) fn renderers_moved(_cx: &mut App) {
 }
 
 /// The renderer an owner names, if it names one.
-fn renderer_id(owner: &str) -> Option<&str> {
+pub(crate) fn renderer_id(owner: &str) -> Option<&str> {
     owner.strip_prefix(OWNER_PREFIX).filter(|id| !id.is_empty())
+}
+
+/// The owner a target saves for renderer `id`.
+pub(crate) fn owner_of(id: &str) -> String {
+    format!("{OWNER_PREFIX}{id}")
+}
+
+/// Every renderer a render target anywhere in `value` names, by id: an item,
+/// an object's item or a whole layout dump.
+pub(crate) fn named_renderers(value: &serde_json::Value, out: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let target = map.get("kind").and_then(serde_json::Value::as_str) == Some("target");
+            if target
+                && let Some(id) = map
+                    .get("owner")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(renderer_id)
+            {
+                out.insert(id.to_string());
+            }
+
+            map.values().for_each(|child| named_renderers(child, out));
+        }
+
+        serde_json::Value::Array(items) => {
+            items.iter().for_each(|child| named_renderers(child, out));
+        }
+
+        _ => {}
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1139,6 +1289,27 @@ impl Targets {
         });
 
         Some(view.into_any_element())
+    }
+
+    /// The status line for a target item. None when its owner names no
+    /// renderer. One the canvas hasn't drawn yet has no session, and reads as
+    /// paused until it's drawn.
+    pub(crate) fn status(&self, item: &CanvasItem) -> Option<Status> {
+        let key = key_of(&item.content)?;
+        renderer_id(&key.owner)?;
+
+        let target = self
+            .shown
+            .get(&item.id)
+            .filter(|shown| shown.key == key)
+            .and_then(|shown| shown.target.as_ref());
+        Some(target.map_or(Status::Paused, Target::status))
+    }
+
+    pub(crate) fn start_again(&self, id: &str) {
+        if let Some(target) = self.shown.get(id).and_then(|shown| shown.target.as_ref()) {
+            target.start_again();
+        }
     }
 
     /// The canvas skipped the item this frame.
@@ -1267,10 +1438,17 @@ mod tests {
         sessions: mpsc::Sender<Fake>,
         exits: Arc<AtomicUsize>,
         due: Arc<Mutex<Option<Duration>>>,
+        /// What the gate says, None to let it start.
+        refuse: Arc<Mutex<Option<Refused>>>,
+        forgiven: Arc<AtomicUsize>,
     }
 
     impl Host for FakeHost {
         fn start(&mut self, mapping: &Mapping) -> Result<Started, Refused> {
+            if let Some(refused) = self.refuse.lock().unwrap().clone() {
+                return Err(refused);
+            }
+
             // SAFETY: the only writer for this mapping.
             let writer = unsafe { Writer::open(mapping.child_handle(), *mapping.spec()) }.unwrap();
             let (stdout_r, stdout_w) = std::io::pipe().unwrap();
@@ -1303,6 +1481,11 @@ mod tests {
         fn name(&self) -> Option<String> {
             Some("Fake".into())
         }
+
+        fn forgive(&self) {
+            self.forgiven.fetch_add(1, Ordering::SeqCst);
+            *self.due.lock().unwrap() = Some(Duration::ZERO);
+        }
     }
 
     fn lines_of(pipe: PipeReader) -> mpsc::Receiver<String> {
@@ -1326,11 +1509,17 @@ mod tests {
 
     impl Rig {
         fn new(limits: Limits) -> Rig {
+            Rig::refusing(limits, None)
+        }
+
+        fn refusing(limits: Limits, refused: Option<Refused>) -> Rig {
             let (tx, sessions) = mpsc::channel();
             let host = FakeHost {
                 sessions: tx,
                 exits: Arc::default(),
                 due: Arc::new(Mutex::new(Some(Duration::ZERO))),
+                refuse: Arc::new(Mutex::new(refused)),
+                forgiven: Arc::default(),
             };
             let spec = Spec::new(SIZE.0, SIZE.1).unwrap();
             let source = Source::spawn(
@@ -1632,6 +1821,87 @@ mod tests {
             assert!(!rate.note(at(ms)), "{ms}");
         }
         assert!(rate.note(at(1003)));
+    }
+
+    #[test]
+    fn the_status_line_follows_the_session() {
+        let rig = Rig::new(slow());
+        let status = || rig.source.status();
+        let fake = rig.session();
+
+        until("running", || status() == Status::Running);
+
+        rig.source.hold();
+        assert_eq!(status(), Status::Paused, "held this frame");
+        rig.source.take();
+        assert_eq!(status(), Status::Running);
+
+        // The fifth exit: stopped until Start Again.
+        *rig.host.due.lock().unwrap() = None;
+        fake.exit();
+        until("stopped", || {
+            status() == Status::Stopped(Some(Refused::Stopped))
+        });
+
+        rig.source.start_again();
+        let _again = rig.session();
+        until("running again", || status() == Status::Running);
+        assert_eq!(rig.host.forgiven.load(Ordering::SeqCst), 1);
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_refusal_stays_on_the_status_line_until_it_starts() {
+        let rig = Rig::refusing(slow(), Some(Refused::NotApproved));
+        let status = || rig.source.status();
+
+        until("the refusal", || {
+            status() == Status::Stopped(Some(Refused::NotApproved))
+        });
+        assert!(rig.sessions.try_recv().is_err());
+
+        // Approved on the Plugins page, and the switches moved.
+        *rig.host.refuse.lock().unwrap() = None;
+        rig.source.shared.lock().retry = true;
+        rig.source.shared.wake.notify_all();
+
+        let _fake = rig.session();
+        until("running", || status() == Status::Running);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_failed_start_says_why_while_it_waits() {
+        let rig = Rig::refusing(slow(), Some(Refused::Start("no python3".into())));
+        *rig.host.due.lock().unwrap() = Some(Duration::from_secs(60));
+
+        until("the reason", || {
+            rig.source.status() == Status::Starting(Some("no python3".into()))
+        });
+        rig.finish();
+    }
+
+    #[test]
+    fn a_dump_names_the_renderers_its_targets_use() {
+        let dump = serde_json::json!({
+            "items": [
+                { "id": "a", "content": { "kind": "target", "owner": "plugin:bars" } },
+                { "id": "g", "content": { "kind": "group", "items": [
+                    { "id": "b", "content": { "kind": "target", "owner": "plugin:waves" } },
+                ] } },
+                { "id": "p", "panel_name": "plugin-panel", "owner": "plugin:tones" },
+                { "id": "c", "content": { "kind": "target", "owner": "" } },
+            ],
+        });
+
+        let mut named = BTreeSet::new();
+        named_renderers(&dump, &mut named);
+        assert_eq!(
+            named.into_iter().collect::<Vec<_>>(),
+            ["bars", "waves"],
+            "a plugin panel's owner is a plugin"
+        );
     }
 
     #[test]

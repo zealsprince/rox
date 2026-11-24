@@ -1495,6 +1495,16 @@ settings-plugins-remove-title = Remover "{ $name }"?
 settings-plugins-remove-body = Suas faixas, coleções sincronizadas e configurações vão embora. A pasta fica na pasta de plugins; apague-a lá para que ele deixe de aparecer aqui.
 settings-plugins-remove-body-missing = Suas faixas, coleções sincronizadas e configurações vão embora. Ele já não está na pasta de plugins, então não volta a aparecer aqui.
 settings-plugins-remove-package-body = Suas faixas, coleções sincronizadas e configurações vão embora, e o arquivo .roxp dele é apagado. Os arquivos que ele salvou na pasta de dados ficam.
+settings-plugins-renderers = Renderizadores
+settings-plugins-renderers-intro = Um renderizador é um programa que desenha a imagem de um alvo de renderização num canvas. Ele só roda enquanto está ligado e um alvo de renderização o mostra
+settings-plugins-card-renderer = Desenha { $label } em alvos de renderização num canvas.
+settings-plugins-card-renderer-signals = Recebe os sinais da música.
+settings-plugins-card-renderer-pointer = Recebe o ponteiro enquanto ele está sobre o alvo de renderização.
+settings-plugins-card-unchanged-renderer = O manifesto é o mesmo da última vez. Outros arquivos do renderizador mudaram.
+settings-plugins-renderer-failed-title = Este renderizador não consegue rodar
+settings-plugins-renderer-developer = Modo desenvolvedor: até você fechar o rox, uma mudança na pasta deste renderizador é aprovada sozinha. Uma mudança no que o manifesto declara ainda o desliga
+settings-plugins-remove-renderer-body = As configurações dele vão embora, e os alvos de renderização que o usam não desenham nada. A pasta fica na pasta de plugins; apague-a lá para que ele deixe de aparecer aqui.
+settings-plugins-remove-renderer-package-body = As configurações e o arquivo .roxp dele vão embora, e os alvos de renderização que o usam não desenham nada.
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1799,6 +1809,10 @@ workspace-apply-shader-count = { $count ->
 workspace-requires-missing = { $count ->
     [one] Usa um plugin que não está rodando: { $plugins }
    *[other] Usa { $count } plugins que não estão rodando: { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+    [one] Usa um renderizador que não está instalado ou ligado: { $renderers }
+   *[other] Usa { $count } renderizadores que não estão instalados ou ligados: { $renderers }
 }
 workspace-apply-shaders-approve-body = Aprovar deixa que eles rodem nesta máquina. Aplicar sem eles deixa o visual pelado, com os shaders ainda no conjunto dele.
 workspace-apply-shaders-plain-body = Aplicar sem eles deixa o visual pelado, com os shaders ainda no conjunto dele.
@@ -4711,6 +4725,31 @@ canvas-case-show = Mostrar
 canvas-case-same-image = Mesma imagem
 canvas-case-same-color = Mesma cor
 canvas-case-preview = Ver este caso no canvas
+canvas-add-target = Adicionar alvo de renderização
+canvas-target-renderer = Renderizador
+canvas-target-renderer-none = Nenhum escolhido
+canvas-target-not-installed = { $id }, não instalado
+canvas-target-resolution = Resolução
+canvas-target-pixels-wide = Largura em pixels
+canvas-target-pixels-high = Altura em pixels
+canvas-target-status = Estado
+canvas-target-starting = Iniciando
+canvas-target-retrying = Não conseguiu iniciar, vai tentar de novo: { $error }
+canvas-target-running = Rodando
+canvas-target-paused = Pausado enquanto está oculto ou fora do palco
+canvas-target-stopped = Parado
+canvas-target-refused-missing = Parado: nenhum renderizador com este id está instalado
+canvas-target-refused-broken = Parado: o renderizador não carrega. A página Plugins diz por quê
+canvas-target-refused-not-renderer = Parado: o pacote com este id não é um renderizador
+canvas-target-refused-plugins-off = Parado: Ativar plugins está desligado na página Plugins
+canvas-target-refused-not-approved = Parado: ele é novo ou mudou no disco. Ligá-lo na página Plugins o aprova
+canvas-target-refused-off = Parado: ele está desligado na página Plugins
+canvas-target-refused-stopped = Parado depois de fechar cinco vezes em dez minutos
+canvas-target-refused-size = Parado: um renderizador desenha de { $min_width } por { $min_height } até { $max_width } por { $max_height } pixels
+canvas-target-refused-start = Parado: ele não conseguiu iniciar. { $error }
+canvas-target-start-again = Iniciar de novo
+canvas-weight-targets = Alvos de renderização { $count }, { $megapixels } megapixels
+canvas-weight-heavy-targets = Alvos de renderização: { $megapixels } megapixels, mais do que se desenha com fluidez
 menu-layout-to-canvas = Converter layout em canvas
 
 ## Catalog

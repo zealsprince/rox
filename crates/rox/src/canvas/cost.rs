@@ -40,6 +40,21 @@ use crate::panels::canvas::PANEL_NAME;
 const GRIDS: usize = 70;
 const SHADER_SURFACES: usize = 68;
 
+// Render targets, measured 2026-11-24 on the same Ryzen 9 5950X and its Navi
+// 21 Radeon (amdgpu), release build, the same headless sway at 1920x1080,
+// design mode off. Each target ran the Python test renderer at 60 fps, and its
+// frames kept the canvas drawing. Mean `debug.frames` ms, the mean of three
+// to six runs of 3 s each:
+//
+//   megapixels        2.1   8.3   15.9  16.6  17.3  20.2  22.5  24.9  33.2
+//   targets           1     1     3     2     3     3     3     3     4
+//   mean ms           1.3   3.0   7.4   6.1   12.4  8.8   13.8  17.5  29.5
+//
+// The renderers' own copies share the machine's memory with rox, which is why
+// 17.3 reads above 20.2. The threshold is read between 16.6 and 17.3, where
+// the mean first crosses 8.3 ms.
+const TARGET_PIXELS: u64 = 16_800_000;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Weight {
     /// Summed over every canvas in the dump. `depth` is the deepest canvas in
@@ -167,6 +182,8 @@ fn canvas(config: &Value, level: usize, tally: &mut Tally) {
     sum.grids += cost.grids;
     sum.shaders += cost.shaders;
     sum.depth = sum.depth.max(level + cost.depth);
+    sum.targets += cost.targets;
+    sum.target_pixels = sum.target_pixels.saturating_add(cost.target_pixels);
 
     let routed: HashSet<&str> = routes
         .iter()
@@ -222,6 +239,19 @@ pub(crate) fn counts(weight: &Weight) -> SharedString {
     )
 }
 
+/// The render targets' line under the counts, for a canvas that has any.
+pub(crate) fn target_counts(weight: &Weight) -> Option<SharedString> {
+    if weight.cost.targets == 0 {
+        return None;
+    }
+
+    Some(rox_i18n::t!(
+        "canvas-weight-targets",
+        count = weight.cost.targets as u64,
+        megapixels = megapixels(weight.cost.target_pixels)
+    ))
+}
+
 /// The lines to show, empty when nothing is over.
 pub(crate) fn warnings(weight: &Weight) -> Vec<SharedString> {
     let over = [
@@ -233,10 +263,24 @@ pub(crate) fn warnings(weight: &Weight) -> Vec<SharedString> {
         ),
     ];
 
-    over.into_iter()
+    let mut lines: Vec<SharedString> = over
+        .into_iter()
         .filter(|(count, threshold, _)| count >= threshold)
         .map(|(count, _, key)| rox_i18n::t!(key, count = count as u64))
-        .collect()
+        .collect();
+
+    if weight.cost.target_pixels >= TARGET_PIXELS {
+        lines.push(rox_i18n::t!(
+            "canvas-weight-heavy-targets",
+            megapixels = megapixels(weight.cost.target_pixels)
+        ));
+    }
+
+    lines
+}
+
+fn megapixels(pixels: u64) -> String {
+    rox_i18n::format::format_float(pixels as f64 / 1_000_000., 1)
 }
 
 #[cfg(test)]
@@ -414,6 +458,46 @@ mod tests {
         assert_eq!(weight.cost.items, 2);
         assert_eq!(weight.moving_grids, 1);
         assert_eq!(weight.cost.depth, 1);
+    }
+
+    fn target(id: &str, width: u32, height: u32) -> Value {
+        json!({
+            "id": id,
+            "content": { "kind": "target", "owner": "plugin:bars", "width": width, "height": height },
+        })
+    }
+
+    #[test]
+    fn a_target_adds_its_megapixels() {
+        let inner = dock_with_canvas(json!([target("deep", 3840, 2160)]), json!([]));
+        let group = json!({
+            "id": "g",
+            "content": { "kind": "group", "items": [target("b", 1280, 720)] },
+        });
+        let items = json!([target("a", 1920, 1080), group, grid("nest", inner)]);
+
+        let weight = weigh(&dock_with_canvas(items, json!([])), &bare());
+        assert_eq!(
+            weight.cost.targets, 3,
+            "in a group and in a nested canvas too"
+        );
+        assert_eq!(
+            weight.cost.target_pixels,
+            1920 * 1080 + 1280 * 720 + 3840 * 2160
+        );
+
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let line = target_counts(&weight).expect("a line for a canvas with targets");
+        assert!(line.contains("11.3"), "{line}");
+        assert_eq!(target_counts(&Weight::default()), None);
+        assert!(warnings(&weight).is_empty(), "under the threshold");
+
+        // Two 4K targets drew under half a frame, three didn't.
+        let mut heavy = weight;
+        heavy.cost.target_pixels = 2 * 3840 * 2160;
+        assert!(warnings(&heavy).is_empty());
+        heavy.cost.target_pixels = 3 * 3840 * 2160;
+        assert_eq!(warnings(&heavy).len(), 1);
     }
 
     #[test]

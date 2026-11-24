@@ -1501,6 +1501,16 @@ settings-plugins-remove-title = Прибрати «{ $name }»?
 settings-plugins-remove-body = Його треки, синхронізовані колекції та налаштування зникають. Тека лишається в теці плагінів; видаліть її там, щоб він більше тут не з'являвся.
 settings-plugins-remove-body-missing = Його треки, синхронізовані колекції та налаштування зникають. Його вже немає в теці плагінів, тож тут він більше не з'явиться.
 settings-plugins-remove-package-body = Його треки, синхронізовані колекції та налаштування зникають, а його файл .roxp видаляється. Файли, які він зберіг у своїй теці даних, лишаються.
+settings-plugins-renderers = Рендерери
+settings-plugins-renderers-intro = Рендерер це програма, яка малює картинку в цілі рендеру на полотні. Він працює, лише доки ввімкнений і ціль рендеру його показує
+settings-plugins-card-renderer = Малює { $label } у цілях рендеру на полотні.
+settings-plugins-card-renderer-signals = Отримує сигнали музики.
+settings-plugins-card-renderer-pointer = Отримує вказівник, доки той над ціллю рендеру.
+settings-plugins-card-unchanged-renderer = Маніфест той самий, що й минулого разу. Змінилися інші файли рендерера.
+settings-plugins-renderer-failed-title = Цей рендерер не може працювати
+settings-plugins-renderer-developer = Режим розробника: доки rox не закрито, зміна в теці цього рендерера схвалюється сама. Зміна того, що оголошує його маніфест, і далі вимикає його
+settings-plugins-remove-renderer-body = Його налаштування зникають, а цілі рендеру, які його використовують, нічого не малюють. Тека лишається в теці плагінів; видаліть її там, щоб він більше тут не з'являвся.
+settings-plugins-remove-renderer-package-body = Його налаштування та файл .roxp зникають, а цілі рендеру, які його використовують, нічого не малюють.
 
 ## Settings: providers
 settings-providers-acoustid = AcoustID
@@ -1810,6 +1820,12 @@ workspace-requires-missing = { $count ->
     [few] Використовує { $count } плагіни, які не запущено: { $plugins }
     [many] Використовує { $count } плагінів, які не запущено: { $plugins }
    *[other] Використовує { $count } плагіна, які не запущено: { $plugins }
+}
+workspace-requires-missing-renderers = { $count ->
+    [one] Використовує { $count } рендерер, який не встановлено або не ввімкнено: { $renderers }
+    [few] Використовує { $count } рендерери, які не встановлено або не ввімкнено: { $renderers }
+    [many] Використовує { $count } рендерерів, які не встановлено або не ввімкнено: { $renderers }
+   *[other] Використовує { $count } рендерера, які не встановлено або не ввімкнено: { $renderers }
 }
 workspace-apply-shaders-approve-body = Підтвердження дозволяє їм працювати на цій машині. Застосування без них лишає вигляд голим, а шейдери - в його пулі.
 workspace-apply-shaders-plain-body = Застосування без них лишає вигляд голим, а шейдери - в його пулі.
@@ -4768,6 +4784,31 @@ canvas-case-show = Показувати
 canvas-case-same-image = Те саме зображення
 canvas-case-same-color = Той самий колір
 canvas-case-preview = Показати цей випадок на полотні
+canvas-add-target = Додати ціль рендеру
+canvas-target-renderer = Рендерер
+canvas-target-renderer-none = Не вибрано
+canvas-target-not-installed = { $id }, не встановлено
+canvas-target-resolution = Роздільність
+canvas-target-pixels-wide = Ширина в пікселях
+canvas-target-pixels-high = Висота в пікселях
+canvas-target-status = Стан
+canvas-target-starting = Запускається
+canvas-target-retrying = Не запустився, буде нова спроба: { $error }
+canvas-target-running = Працює
+canvas-target-paused = На паузі, доки прихований або поза майданчиком
+canvas-target-stopped = Зупинено
+canvas-target-refused-missing = Зупинено: рендерер із таким id не встановлено
+canvas-target-refused-broken = Зупинено: рендерер не завантажується. Причину вказано на сторінці «Плагіни»
+canvas-target-refused-not-renderer = Зупинено: пакет із таким id не рендерер
+canvas-target-refused-plugins-off = Зупинено: «Увімкнути плагіни» вимкнено на сторінці «Плагіни»
+canvas-target-refused-not-approved = Зупинено: він новий або змінився на диску. Увімкніть його на сторінці «Плагіни», щоб схвалити
+canvas-target-refused-off = Зупинено: його вимкнено на сторінці «Плагіни»
+canvas-target-refused-stopped = Зупинено: закрився п'ять разів за десять хвилин
+canvas-target-refused-size = Зупинено: рендерер малює від { $min_width } на { $min_height } до { $max_width } на { $max_height } пікселів
+canvas-target-refused-start = Зупинено: не зміг запуститися. { $error }
+canvas-target-start-again = Запустити знову
+canvas-weight-targets = Цілі рендеру { $count }, { $megapixels } Мп
+canvas-weight-heavy-targets = Цілі рендеру: { $megapixels } Мп, більше, ніж малюється плавно
 menu-layout-to-canvas = Перетворити розкладку на полотно
 
 ## Catalog

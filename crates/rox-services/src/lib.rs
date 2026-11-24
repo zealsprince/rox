@@ -30,6 +30,7 @@ pub mod portraits;
 pub mod radio;
 pub mod radio_art;
 pub mod release_facts;
+pub mod renderers;
 pub mod selection;
 pub mod sources;
 pub mod sources_registry;

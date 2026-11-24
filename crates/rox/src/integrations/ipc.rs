@@ -126,6 +126,9 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
         // Debug builds only, like the origin override it drives.
         #[cfg(debug_assertions)]
         "debug.catalog" => return super::ipc_catalog::request(request, cx),
+        // Debug builds only, until a render target starts renderers itself.
+        #[cfg(all(debug_assertions, target_os = "linux"))]
+        "debug.renderer" => return super::ipc_renderer::request(request, cx),
         _ => {}
     }
     let result = route(state, &request.method, &request.params, cx);

@@ -15,6 +15,10 @@
 //! A `.roxp` installs by landing in the plugins folder, and runs from the
 //! copy the scan unpacks (ADR 32). Installing only lists it: the switch is
 //! still the one approval.
+//!
+//! A renderer (ADR 37) is listed, approved and switched here like any
+//! package, and never gets a host: [`crate::renderers`] runs it, and only
+//! while a render target shows it.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -36,7 +40,7 @@ use rox_library::store;
 use rox_net::providers::{LyricsCandidate, MetadataCandidate, TrackQuery};
 use rox_playback::continuation::{self, Pick};
 use rox_playback::plugin::{Opened, ReadAt};
-use rox_plugins::manifest::{ProviderDomain, SourceCap};
+use rox_plugins::manifest::{Manifest, ProviderDomain, SourceCap};
 use rox_plugins::{
     Host, HostConfig, Loaded, Options, Origin, Status, Stream, loader, package, wire,
 };
@@ -390,6 +394,8 @@ pub fn start(library: Entity<Library>, player: Entity<Player>, cx: &mut App) {
             .unwrap_or_default();
 
         cx.background_executor().spawn(async move {
+            crate::renderers::stop_all();
+
             for host in hosts {
                 host.hang_up_now("rox quit");
             }
@@ -504,12 +510,8 @@ pub fn apply(cx: &mut App) {
         .filter(|record| record.enabled && !changed.contains(&record.id))
         .filter_map(|record| {
             let folder = folder(&record.id)?;
-            let declares = folder
-                .manifest
-                .as_ref()
-                .is_some_and(|m| m.capabilities.source.is_some() || m.capabilities.providers.any());
 
-            (folder.runs() && declares).then(|| (source_of(&record.id), (folder.clone(), record)))
+            hosts(folder).then(|| (source_of(&record.id), (folder.clone(), record)))
         })
         .collect();
 
@@ -540,12 +542,29 @@ pub fn apply(cx: &mut App) {
         library.update(cx, |library, cx| library.reload_projection(cx));
     }
 
+    crate::renderers::enforce(cx);
+
     FIRST_APPLY.open();
     bump();
 
     if let Some(hook) = AFTER_APPLY.get() {
         hook(cx);
     }
+}
+
+/// Whether a folder gets a plugin host once it's switched on and approved:
+/// it loads and answers the plugin wire as a source or a provider. A
+/// renderer never does. It runs only while a render target shows it.
+fn hosts(folder: &Loaded) -> bool {
+    folder.runs()
+        && folder.manifest.as_ref().is_some_and(|m| {
+            !m.is_renderer() && (m.capabilities.source.is_some() || m.capabilities.providers.any())
+        })
+}
+
+/// Whether the folder is a renderer, which the Plugins page lists apart.
+pub fn is_renderer(folder: &Loaded) -> bool {
+    folder.manifest.as_ref().is_some_and(|m| m.is_renderer())
 }
 
 /// The app's hook for state that follows which plugins run, since apply
@@ -808,12 +827,12 @@ fn record_approval(folder: &Loaded) {
     let id = folder.id.clone();
     let hash = folder.hash.clone();
     let document = folder.document.clone();
-    let label = manifest
-        .capabilities
-        .source
-        .as_ref()
-        .map(|cap| cap.label.clone())
-        .unwrap_or_default();
+    let caps = &manifest.capabilities;
+    let label = match (&caps.source, &caps.renderer) {
+        (Some(cap), _) => cap.label.clone(),
+        (None, Some(cap)) => cap.label.clone(),
+        (None, None) => String::new(),
+    };
     Settings::update(move |s| {
         let records = &mut s.accounts.plugins;
         let at = match records.iter().position(|record| record.id == id) {
@@ -991,6 +1010,7 @@ pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
     // The write below reloads the projection, so apply needn't.
     live_moved();
     bump();
+    crate::renderers::enforce(cx);
 
     let removed = write(library, cx, move |db_path| {
         // Stopped before the delete, so a sync in flight can't land rows
@@ -1033,6 +1053,23 @@ fn remove_package(archive: &Path, copies: &Path) {
             "plugins: leaving {} for the next scan: {e}",
             copies.display()
         );
+    }
+}
+
+/// What a package is handed while it runs, beyond what every plugin gets,
+/// for the enable card to list. The card words each one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grant {
+    /// A renderer gets the signal pool's values every route reads.
+    MusicSignals,
+    /// A renderer gets the pointer while it's over its surface.
+    Pointer,
+}
+
+pub fn grants(manifest: &Manifest) -> Vec<Grant> {
+    match manifest.is_renderer() {
+        true => vec![Grant::MusicSignals, Grant::Pointer],
+        false => Vec::new(),
     }
 }
 
@@ -3207,6 +3244,56 @@ mod tests {
     fn a_plugin_that_isnt_loaded_declares_nothing() {
         assert!(!declares_scrobble("plugin:never-loaded"));
         assert!(!declares_scrobble("subsonic:abc"));
+    }
+
+    fn folder_of(id: &str, caps: Value) -> Loaded {
+        let document = json!({
+            "id": id,
+            "name": id,
+            "version": "1",
+            "api": 1,
+            "entry": { "script": { "path": "run.sh", "interpreter": "sh" } },
+            "capabilities": caps,
+        });
+
+        Loaded {
+            id: id.into(),
+            dir: PathBuf::from(id),
+            origin: Origin::Folder,
+            manifest: Some(rox_plugins::manifest::parse(&document.to_string()).unwrap()),
+            document,
+            hash: format!("{id}-hash"),
+            programs: Vec::new(),
+            error: None,
+            icon: None,
+            action_icons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_renderer_is_not_started_with_the_plugins() {
+        let renderer = folder_of("bars", json!({ "renderer": { "label": "Bars" } }));
+        let source = folder_of("tones", json!({ "source": { "label": "Tones" } }));
+        let provider = folder_of("words", json!({ "providers": { "lyrics": true } }));
+
+        assert!(!hosts(&renderer), "a renderer gets no host");
+        assert!(hosts(&source) && hosts(&provider));
+
+        assert!(is_renderer(&renderer));
+        assert!(!is_renderer(&source) && !is_renderer(&provider));
+
+        let manifest = renderer.manifest.as_ref().unwrap();
+        assert_eq!(grants(manifest), [Grant::MusicSignals, Grant::Pointer]);
+        assert!(grants(source.manifest.as_ref().unwrap()).is_empty());
+
+        // A plugin that turns into a renderer shows as both on the card.
+        assert_eq!(
+            changes(&source.document, &renderer.document),
+            [
+                Change::CapabilityAdded("renderer".into()),
+                Change::CapabilityRemoved("source".into()),
+            ]
+        );
     }
 
     fn manifest(caps: Value, programs: Value, entry: &str) -> Value {

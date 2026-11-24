@@ -85,6 +85,21 @@ pub struct Capabilities {
     pub panels: Vec<DeclaredPanel>,
     /// Answers `provider.*` for any track in the library, not just its own.
     pub providers: ProvidersCap,
+    /// Draws a render target (ADR 37). A package that declares it declares
+    /// nothing else, and never runs as a plugin.
+    pub renderer: Option<RendererCap>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct RendererCap {
+    /// What rox lists the renderer as.
+    pub label: String,
+}
+
+impl Manifest {
+    pub fn is_renderer(&self) -> bool {
+        self.capabilities.renderer.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -303,10 +318,44 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
             SUPPORTED_API.end()
         ));
     }
+    check_renderer(&manifest)?;
     check_panels(&manifest)?;
     check_actions(&manifest)?;
 
     Ok(manifest)
+}
+
+/// One package, one job. A renderer that was also a source or a provider
+/// would get a host, and with it the plugin wire, which a renderer never
+/// speaks.
+fn check_renderer(manifest: &Manifest) -> Result<(), String> {
+    let Some(renderer) = &manifest.capabilities.renderer else {
+        return Ok(());
+    };
+
+    if renderer.label.trim().is_empty() {
+        return Err(format!("{FILE}: the renderer has no label"));
+    }
+
+    let caps = &manifest.capabilities;
+    let also: Vec<&str> = [
+        ("source", caps.source.is_some()),
+        ("panels", !caps.panels.is_empty()),
+        ("providers", caps.providers.any()),
+    ]
+    .into_iter()
+    .filter(|(_, declared)| *declared)
+    .map(|(name, _)| name)
+    .collect();
+
+    if !also.is_empty() {
+        return Err(format!(
+            "{FILE}: a renderer declares nothing else, and this one declares {}",
+            also.join(", ")
+        ));
+    }
+
+    Ok(())
 }
 
 fn check_actions(manifest: &Manifest) -> Result<(), String> {
@@ -1392,6 +1441,75 @@ mod tests {
             parse(&text).is_ok(),
             "the app skips it; the plugin still runs"
         );
+    }
+
+    fn renderer_manifest(capabilities: &str) -> String {
+        script_manifest("").replace(
+            r#""capabilities": { "source": { "label": "Tones", "scrobble": false } }"#,
+            &format!(r#""capabilities": {capabilities}"#),
+        )
+    }
+
+    #[test]
+    fn a_renderer_package_parses() {
+        let manifest = parse(&renderer_manifest(r#"{ "renderer": { "label": "Bars" } }"#))
+            .expect("a renderer alone is valid");
+
+        assert!(manifest.is_renderer());
+        assert_eq!(
+            manifest.capabilities.renderer,
+            Some(RendererCap {
+                label: "Bars".into()
+            })
+        );
+        assert_eq!(manifest.capabilities.source, None);
+
+        let blank = parse(&renderer_manifest(r#"{ "renderer": { "label": " " } }"#)).unwrap_err();
+        assert!(blank.contains("no label"), "{blank}");
+    }
+
+    #[test]
+    fn a_renderer_that_is_also_a_source_is_refused() {
+        let cases = [
+            (
+                r#"{ "renderer": { "label": "Bars" }, "source": { "label": "Tones" } }"#,
+                "source",
+            ),
+            (
+                r#"{ "renderer": { "label": "Bars" }, "providers": { "lyrics": true } }"#,
+                "providers",
+            ),
+            (
+                r#"{ "renderer": { "label": "Bars" }, "panels": [{ "name": "Scope", "preset": { "panel_name": "oscilloscope", "info": { "panel": {} } } }] }"#,
+                "panels",
+            ),
+        ];
+
+        for (capabilities, named) in cases {
+            let err = parse(&renderer_manifest(capabilities)).unwrap_err();
+            assert!(
+                err.contains("a renderer declares nothing else") && err.contains(named),
+                "{capabilities}: {err}"
+            );
+        }
+
+        let declared_off =
+            r#"{ "renderer": { "label": "Bars" }, "providers": { "lyrics": false } }"#;
+        assert!(
+            parse(&renderer_manifest(declared_off)).is_ok(),
+            "a provider block that offers nothing offers nothing"
+        );
+    }
+
+    #[test]
+    fn an_older_shape_without_the_capability_still_parses() {
+        let manifest = parse(&script_manifest("")).unwrap();
+        assert!(!manifest.is_renderer());
+        assert_eq!(manifest.capabilities.renderer, None);
+        assert!(manifest.capabilities.source.is_some());
+
+        let bare = parse(&with_entry(r#"{ "native": { "linux-x86_64": "bin/a" } }"#)).unwrap();
+        assert!(!bare.is_renderer(), "no capabilities at all is no renderer");
     }
 
     #[test]

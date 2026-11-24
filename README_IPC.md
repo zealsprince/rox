@@ -86,6 +86,7 @@ did without a second round trip.
 | `debug.entities`                                           |                                               | `{"total": n, "by_type": [[name, count], ..]}`, live gpui entity counts  |
 | `debug.frames`                                             | `{"ms": 100..20000?, "window": id?}`          | after the span: `{"window", "frames", "span_ms", "mean_ms", "worst_ms"}`, what that workspace window drew |
 | `debug.catalog`                                            | `{"refresh": true}`, `{"install": "..", "replace"?: bool}`, `{"updates": true}`, `{"chip": true}` or `{"cancel": true}` | debug builds only: `{"packages": [..], "dropped": [..]}`, `{"id", "kind", "sha256", "file"}`, `{"updates": [{"id", "sha256", "asks"}]}`, `{"chip": n}` or `{"cancelled": id}` |
+| `debug.renderer`                                           | `{"list": true}`, `{"start": "..", "width"?, "height"?}`, `{"stop": ".."}` or `{"status": ".."}` | Linux debug builds only: `{"renderers": [..]}`, `{"id", "pid", "width", "height"}`, `{"stopped": n}` or `{"running": [pid, ..], "due_ms": n}` |
 | `debug.device_lost`                                        |                                               | `{"faulted": true}`; raises the output's device-lost flag, as an unplug does |
 | `debug.windows`                                            |                                               | every open window: id, title, logical size, scale, and which is active   |
 | `debug.actions`                                            | `{"filter": ".."}`, optional                  | `{"actions": [..]}`, the dispatchable action names                       |
@@ -283,6 +284,18 @@ in flight. A `refresh` lands the way the launch check's does: an open catalog wi
 reloads and the chip follows the new index. A debug build started with
 `ROX_CATALOG_ORIGIN=http://127.0.0.1:<port>` reads the catalog from a local static
 server instead of the compiled-in `https://catalog.rox.music`.
+
+`debug.renderer` starts a renderer the way a render target will, and exists in Linux
+debug builds only: a release build has no such method. It approves and switches on
+nothing. `start` goes through the same check a render target's start does, so a
+renderer that isn't approved, is switched off, or has stopped after repeated exits is
+refused with the reason, and a package that isn't a renderer is refused too. The
+renderer gets a stand-in for the frame mapping, an anonymous file nothing reads, and
+`width` and `height` default to 640 by 360. The verb holds the session until `stop`
+closes the renderer's stdin, or the renderer exits on its own, which counts toward
+the five exits that stop it. `list` answers every renderer package with whether it's
+approved and switched on. `status` answers the pids still running and `due_ms`, how
+long until it may start again, null once it has stopped.
 
 `subscribe` enrols the connection in pushed frames. They arrive on the same
 connection as `event.track`, `event.playback`, and `event.queue` objects with a

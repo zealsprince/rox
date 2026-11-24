@@ -25,6 +25,8 @@ pub struct Process {
     child: Child,
     #[cfg(windows)]
     job: Option<job::Job>,
+    /// The extra handle's value inside the child, on Windows only.
+    handle: Option<u64>,
 }
 
 pub struct Pipes {
@@ -32,11 +34,37 @@ pub struct Pipes {
     pub stdout: ChildStdout,
 }
 
+/// A handle rox lends a child, borrowed for the spawn.
+#[cfg(unix)]
+pub type Lent<'a> = std::os::fd::BorrowedFd<'a>;
+#[cfg(windows)]
+pub type Lent<'a> = std::os::windows::io::BorrowedHandle<'a>;
+
+/// What a child gets beside its three pipes.
+pub enum Extra<'a> {
+    /// Nothing, which is what a plugin gets.
+    None,
+    /// One handle: fd 3 on Unix, with every other fd closed at exec. On
+    /// Windows a copy is made in the child once it runs, and
+    /// [`Process::handle`] says its value.
+    Handle(Lent<'a>),
+}
+
 /// Starts `command` in the plugin folder with its pipes attached. The
 /// plugin inherits rox's environment (HOME for its programs' caches) with
 /// PATH replaced by the plugin's search path, so what it runs resolves the
 /// way the Plugins page reported it, plus three variables for Python.
-pub fn spawn(id: &str, mut command: Command, dir: &Path) -> Result<(Process, Pipes), String> {
+pub fn spawn(id: &str, command: Command, dir: &Path) -> Result<(Process, Pipes), String> {
+    spawn_with(id, command, dir, Extra::None)
+}
+
+/// [`spawn`], lending the child one more handle.
+pub fn spawn_with(
+    id: &str,
+    mut command: Command,
+    dir: &Path,
+    extra: Extra,
+) -> Result<(Process, Pipes), String> {
     command
         .current_dir(dir)
         .stdin(Stdio::piped())
@@ -63,6 +91,13 @@ pub fn spawn(id: &str, mut command: Command, dir: &Path) -> Result<(Process, Pip
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // Held until the spawn returns: the child dups it onto fd 3.
+    #[cfg(unix)]
+    let _lent = match &extra {
+        Extra::None => None,
+        Extra::Handle(fd) => Some(unix::lend(&mut command, *fd)?),
+    };
+
     let mut child = command
         .spawn()
         .map_err(|e| format!("could not start: {e}"))?;
@@ -75,6 +110,22 @@ pub fn spawn(id: &str, mut command: Command, dir: &Path) -> Result<(Process, Pip
             None
         }
     };
+
+    #[cfg(windows)]
+    let handle = match &extra {
+        Extra::None => None,
+        Extra::Handle(lent) => match job::lend(&child, *lent) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                drop(job);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("could not hand over the handle: {e}"));
+            }
+        },
+    };
+    #[cfg(unix)]
+    let handle = None;
 
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -95,9 +146,104 @@ pub fn spawn(id: &str, mut command: Command, dir: &Path) -> Result<(Process, Pip
         child,
         #[cfg(windows)]
         job,
+        handle,
     };
 
     Ok((process, Pipes { stdin, stdout }))
+}
+
+#[cfg(unix)]
+mod unix {
+    use std::io;
+    use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+
+    /// The fd a lent handle arrives as.
+    pub const FD: RawFd = 3;
+
+    /// Sets the child up to get `fd` as fd 3 and nothing past it. Answers a
+    /// copy of `fd` numbered above 3, to keep open until the spawn returns.
+    ///
+    /// The copy is what the child dups from. A handle that already sits at
+    /// fd 3 would otherwise be the target of its own dup, and one at 0 to 2
+    /// is overwritten by the pipes before `pre_exec` runs.
+    pub fn lend(command: &mut Command, fd: BorrowedFd) -> Result<OwnedFd, String> {
+        // SAFETY: fcntl on a borrowed open fd; the result is a fresh fd this
+        // function owns.
+        let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, FD + 1) };
+        if copy < 0 {
+            return Err(format!(
+                "could not copy the handle: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: `copy` was just opened and nothing else holds it.
+        let copy = unsafe { OwnedFd::from_raw_fd(copy) };
+
+        let source = copy.as_raw_fd();
+        let limit = open_max();
+
+        // SAFETY: the closure runs in the forked child before exec and only
+        // makes async-signal-safe calls: dup2, fcntl and close_range.
+        unsafe {
+            command.pre_exec(move || inherit_only(source, limit));
+        }
+
+        Ok(copy)
+    }
+
+    /// rox holds its database, sockets and audio devices open, and a library
+    /// rox links may open an fd without close-on-exec. Everything past fd 3
+    /// is marked so it closes at exec, the lent handle's copy included.
+    fn inherit_only(source: RawFd, limit: RawFd) -> io::Result<()> {
+        // SAFETY: plain fd calls in the child; see `lend`.
+        unsafe {
+            // dup2 leaves the new fd without close-on-exec.
+            if libc::dup2(source, FD) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let marked = libc::syscall(
+                    libc::SYS_close_range,
+                    (FD + 1) as libc::c_uint,
+                    libc::c_uint::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC,
+                );
+                if marked == 0 {
+                    return Ok(());
+                }
+            }
+
+            // Kernels before 5.11, and every other Unix.
+            for fd in FD + 1..limit {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The highest fd number the walk in [`inherit_only`] tries, read here
+    /// since getrlimit isn't on the async-signal-safe list.
+    fn open_max() -> RawFd {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+
+        // SAFETY: getrlimit writes the struct it's handed.
+        let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+        match read {
+            0 => limit.rlim_cur.min(1 << 20) as RawFd,
+            _ => 1024,
+        }
+    }
 }
 
 fn drain_stderr(id: &str, stderr: impl Read) {
@@ -171,6 +317,12 @@ pub fn read_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, cap: usize) -> io
 impl Process {
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// The lent handle's value in the child on Windows. None on Unix, where
+    /// it is always fd 3, and when nothing was lent.
+    pub fn handle(&self) -> Option<u64> {
+        self.handle
     }
 
     pub fn exited(&mut self) -> Option<ExitStatus> {
@@ -274,6 +426,34 @@ mod job {
         }
     }
 
+    /// Copies `lent` into the running child and answers the copy's value
+    /// there. Nothing is inheritable: the copy lands in that one process.
+    pub fn lend(child: &Child, lent: std::os::windows::io::BorrowedHandle) -> Result<u64, String> {
+        use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let mut copy: HANDLE = std::ptr::null_mut();
+
+        // SAFETY: both process handles are live for the call, `lent` is a
+        // borrowed open handle, and `copy` is written by the call.
+        let done = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                lent.as_raw_handle() as HANDLE,
+                child.as_raw_handle() as HANDLE,
+                &mut copy,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if done == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+
+        Ok(copy as usize as u64)
+    }
+
     impl Drop for Job {
         fn drop(&mut self) {
             // SAFETY: the handle came from CreateJobObjectW and is closed once.
@@ -346,5 +526,89 @@ mod tests {
 
         let first = std::env::split_paths(lines[2]).next();
         assert_eq!(first, Some(dir.join("bin")), "{out}");
+    }
+
+    /// Runs `script` under `sh` with `file` lent, and answers its stdout.
+    #[cfg(unix)]
+    fn lend_to(tag: &str, file: &std::fs::File, script: &str) -> String {
+        use std::os::fd::AsFd;
+
+        let dir =
+            std::env::temp_dir().join(format!("rox-plugins-lend-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        let (mut process, pipes) =
+            spawn_with(tag, command, &dir, Extra::Handle(file.as_fd())).unwrap();
+        assert_eq!(process.handle(), None, "Unix names no handle: it's fd 3");
+
+        let mut out = String::new();
+        let mut stdout = pipes.stdout;
+        stdout.read_to_string(&mut out).unwrap();
+        process.wait_for(Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        out
+    }
+
+    #[cfg(unix)]
+    fn scratch_file(tag: &str, text: &str) -> (std::path::PathBuf, std::fs::File) {
+        let path = std::env::temp_dir().join(format!("rox-plugins-{tag}-{}", std::process::id()));
+        std::fs::write(&path, text).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+
+        (path, file)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_extra_handle_arrives_as_fd_three() {
+        let (path, file) = scratch_file("fd-three", "the frames\n");
+
+        let out = lend_to("fd-three", &file, "cat <&3");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(out, "the frames\n");
+
+        // Lent, not given: rox's own fd still reads.
+        use std::io::{Seek, SeekFrom};
+        let mut file = file;
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut again = String::new();
+        file.read_to_string(&mut again).unwrap();
+        assert_eq!(again, "the frames\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_other_fd_is_inherited() {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        // What rox holds that a careless library might have opened: an fd
+        // without close-on-exec, as a C dependency's open(2) leaves it. Put
+        // well above 3, where the lent handle's dup2 can't hide it.
+        let (path, file) = scratch_file("no-leak", "secret\n");
+        // SAFETY: F_DUPFD makes a fresh fd, close-on-exec clear, owned here.
+        let held = unsafe {
+            let raw = libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 64);
+            assert!(raw >= 64);
+            OwnedFd::from_raw_fd(raw)
+        };
+        let raw = held.as_raw_fd();
+        let (lent_path, lent) = scratch_file("no-leak-lent", "frames\n");
+
+        let top = raw.max(lent.as_raw_fd()) + 16;
+        let script = format!(
+            r#"n=0; while [ $n -le {top} ]; do [ -e /dev/fd/$n ] && printf '%s ' $n; n=$((n+1)); done"#
+        );
+        let out = lend_to("no-leak", &lent, &script);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&lent_path);
+
+        let open: Vec<i32> = out.split_whitespace().map(|n| n.parse().unwrap()).collect();
+        // Seeing 3 is what shows the probe finds an open fd at all.
+        assert_eq!(open, [0, 1, 2, 3], "the child holds {out:?}; {raw} leaked");
+
+        drop(held);
     }
 }

@@ -30,7 +30,8 @@ pub const BACKOFF: [Duration; 4] = [
     Duration::from_secs(4),
 ];
 
-const CRASH_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// How far back [`BACKOFF`] counts exits.
+pub const CRASH_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 pub const STOPPED_AFTER_CRASHES: &str = "Stopped after repeated crashes";
 

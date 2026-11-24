@@ -251,7 +251,7 @@ fn command_label(id: &str) -> SharedString {
     keymap::COMMANDS
         .iter()
         .find(|command| command.id == id)
-        .map(|command| SharedString::from(command.label))
+        .map(|command| SharedString::from(command.label()))
         .unwrap_or_else(|| SharedString::from(id.to_owned()))
 }
 
@@ -357,7 +357,7 @@ fn command_rows() -> Arc<Vec<PickRow>> {
 /// The id goes in the search terms so a command is findable by its settings
 /// key.
 fn command_row(command: &'static keymap::Command) -> PickRow {
-    let label = command.label.to_lowercase();
+    let label = command.label().to_lowercase();
 
     let mut terms: Vec<SharedString> = vec![command.id.to_lowercase().into()];
     terms.extend(
@@ -368,7 +368,7 @@ fn command_row(command: &'static keymap::Command) -> PickRow {
     terms.push(label.into());
 
     PickRow {
-        label: SharedString::from(command.label),
+        label: SharedString::from(command.label()),
         value: Some(SharedString::from(command.id)),
         terms,
         icon: Some(SharedString::from(command.group.icon())),

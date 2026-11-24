@@ -587,9 +587,13 @@ impl TagRepair {
             .gap(tokens::SPACE_SM)
             .when(self.scanning, |d| {
                 let label = if self.scan_total > 0 {
-                    format!("Scanning {}/{}...", self.scan_done, self.scan_total)
+                    rox_i18n::t!(
+                        "tags-repair-scanning-progress",
+                        done = self.scan_done as u64,
+                        total = self.scan_total as u64
+                    )
                 } else {
-                    "Scanning...".to_string()
+                    rox_i18n::t!("duplicates-scanning")
                 };
                 d.child(
                     div()
@@ -604,7 +608,10 @@ impl TagRepair {
                 )
             })
             .child(small_button(
-                if self.scanned { "Rescan" } else { "Scan" },
+                match self.scanned {
+                    true => rox_i18n::t!("settings-common-rescan"),
+                    false => rox_i18n::t!("settings-common-scan"),
+                },
                 icons::SEARCH,
                 busy,
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
@@ -648,9 +655,9 @@ impl TagRepair {
                 .into_any_element()
         } else {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to repair".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-after-repair")),
             ])
             .text_xs()
             .into_any_element()

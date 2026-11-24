@@ -319,6 +319,9 @@ pub struct SourceBrowserConfig {
     pub source: String,
     /// The source's home listed under the roots rather than as a node there.
     pub home: bool,
+    /// The line a plugin puts over its pages. One asking for setup, or
+    /// standing alone on an empty page, shows either way.
+    pub notice: bool,
 }
 
 impl Default for SourceBrowserConfig {
@@ -327,6 +330,7 @@ impl Default for SourceBrowserConfig {
             chrome: PanelChrome::default(),
             source: String::new(),
             home: true,
+            notice: true,
         }
     }
 }
@@ -2075,7 +2079,11 @@ impl SourceBrowserPanel {
             .failure
             .clone()
             .map(|(headline, reason)| panel::banner(Tone::Bad, headline, vec![reason.into()]));
-        let notice = self.listing.notice.as_ref().map(notice_banner);
+        let notice = self.shown_notice().map(|notice| {
+            let hide = self.hideable(notice).then(|| self.hide_notice_button(cx));
+
+            notice_banner(notice, hide)
+        });
 
         let view = div()
             .flex_1()
@@ -3736,9 +3744,42 @@ impl SourceBrowserPanel {
         panel::banner(Tone::Warn, headline, Vec::new()).child(open_plugins_button())
     }
 
+    /// Only a plugin's remark over a page that lists something can be put
+    /// away. A setup notice is the way to the setting it needs, and a notice
+    /// on a page with nothing else is all that says why it's empty: the
+    /// library page's own, or a plugin's sign-in prompt.
+    fn hideable(&self, notice: &Notice) -> bool {
+        !notice.setup && !self.listing.place.library && !self.listing.entries.is_empty()
+    }
+
+    fn shown_notice(&self) -> Option<&Notice> {
+        self.listing
+            .notice
+            .as_ref()
+            .filter(|notice| self.config.notice || !self.hideable(notice))
+    }
+
+    /// Flips the panel's own setting, which is also the way back.
+    fn hide_notice_button(&self, cx: &mut Context<Self>) -> SmallButton {
+        let this = cx.entity().downgrade();
+
+        crate::settings::ui::small_button(
+            rox_i18n::t!("source-browser-hide-notice"),
+            icons::CLOSE,
+            false,
+            move |_, _, cx| {
+                this.update(cx, |this, cx| {
+                    this.config.notice = false;
+                    cx.notify();
+                })
+                .ok();
+            },
+        )
+    }
+
     /// Blank while a notice already says why the place is empty.
     fn empty_state(&self) -> Div {
-        let text = match self.listing.loading() || self.listing.notice.is_some() {
+        let text = match self.listing.loading() || self.shown_notice().is_some() {
             true => SharedString::default(),
             false => rox_i18n::t!("source-browser-empty"),
         };
@@ -4268,6 +4309,18 @@ impl PanelSettings for SourceBrowserPanel {
                     cx,
                 ),
             )
+            .keyed(
+                "source-browser-show-notice",
+                &["notice", "banner", "message"],
+                panel::toggle(
+                    self.config.notice,
+                    |this: &mut Self, on, cx| {
+                        this.config.notice = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            )
         }))
     }
 }
@@ -4483,7 +4536,7 @@ fn fmt_count(n: f64) -> String {
     }
 }
 
-fn open_plugins_button() -> impl IntoElement {
+fn open_plugins_button() -> SmallButton {
     crate::settings::ui::small_button(
         rox_i18n::t!("source-browser-open-plugins"),
         icons::PLUG,
@@ -4493,7 +4546,7 @@ fn open_plugins_button() -> impl IntoElement {
 }
 
 /// Opens in the browser. The label is the plugin's own, like the notice's text.
-fn open_link_button(link: NoticeLink) -> impl IntoElement {
+fn open_link_button(link: NoticeLink) -> SmallButton {
     let label: SharedString = match link.label.trim().is_empty() {
         true => rox_i18n::t!("source-browser-open-link"),
         false => link.label.into(),
@@ -4505,18 +4558,33 @@ fn open_link_button(link: NoticeLink) -> impl IntoElement {
 }
 
 /// A setup notice offers the settings it's asking for, and a linked one the
-/// page it names.
-fn notice_banner(notice: &Notice) -> Div {
+/// page it names. A lone button runs the banner's width like any other
+/// banner's, and several share one row of it.
+fn notice_banner(notice: &Notice, hide: Option<SmallButton>) -> Div {
     let tone = match notice.setup {
         true => Tone::Warn,
         false => Tone::Info,
     };
+    let banner = panel::banner(tone, notice.text.clone(), Vec::new());
 
-    panel::banner(tone, notice.text.clone(), Vec::new())
-        .when(notice.setup, |banner| banner.child(open_plugins_button()))
-        .when_some(notice.link.clone(), |banner, link| {
-            banner.child(open_link_button(link))
-        })
+    let mut buttons: Vec<SmallButton> = Vec::new();
+    if notice.setup {
+        buttons.push(open_plugins_button());
+    }
+    buttons.extend(notice.link.clone().map(open_link_button));
+    buttons.extend(hide);
+
+    if buttons.len() < 2 {
+        return banner.children(buttons);
+    }
+
+    banner.child(
+        div()
+            .flex()
+            .flex_row()
+            .gap(tokens::SPACE_XS)
+            .children(buttons.into_iter().map(|button| button.flex_1())),
+    )
 }
 
 #[cfg(test)]

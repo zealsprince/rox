@@ -172,7 +172,7 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
     let paths: Vec<&String> = albums.iter().flat_map(|a| &a.paths).collect();
     let picked = rox_core::pace::sample_indices(paths.len(), rox_core::pace::PROBE_TRACKS);
     if picked.is_empty() {
-        return Err("there's nothing left to measure".into());
+        return Err(rox_i18n::t!("job-nothing-to-measure").to_string());
     }
 
     let started = Instant::now();
@@ -191,7 +191,7 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
     }
     if measured == 0 {
         return Err(if last_err.is_empty() {
-            "nothing decodable".into()
+            rox_i18n::t!("job-nothing-decodable").to_string()
         } else {
             last_err
         });

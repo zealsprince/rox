@@ -75,7 +75,7 @@ impl SettingsWindow {
         let chords = keymap::chords(command, &self.keymap);
         // `custom` matches keywords only, so the label, description and chords
         // (typed and printed) go in by hand.
-        let mut keywords: Vec<String> = vec![command.label.into(), command.description.into()];
+        let mut keywords: Vec<String> = vec![command.label().into(), command.description().into()];
         keywords.extend(chords.iter().map(|chord| chord.to_string()));
         keywords.extend(chords.iter().map(|chord| keymap::display(chord)));
         keywords.push("shortcut".into());
@@ -101,8 +101,8 @@ impl SettingsWindow {
                 .flex_col()
                 .gap(tokens::SPACE_XS)
                 .child(panel::setting_row(
-                    command.label,
-                    Some(command.description.into()),
+                    command.label(),
+                    Some(command.description().into()),
                     control,
                 ));
             for (chord, other) in clashes {

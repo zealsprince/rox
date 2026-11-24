@@ -41,21 +41,26 @@ enum Sink {
 
 /// Rating and lyrics stay out: a release lookup doesn't return them. Nor do
 /// title and album sort, since MusicBrainz only has sort names for artists.
+/// The name is a message key.
 type Pull = fn(&MetadataCandidate) -> String;
 const FIELDS: &[(Field, &str, Pull)] = &[
-    (Field::Title, "Title", |c| c.title.clone()),
-    (Field::Artist, "Artist", |c| c.artist.clone()),
-    (Field::ArtistSort, "Artist Sort", |c| c.artist_sort.clone()),
-    (Field::AlbumArtist, "Album Artist", |c| {
+    (Field::Title, "info-item-title", |c| c.title.clone()),
+    (Field::Artist, "filter-field-artist", |c| c.artist.clone()),
+    (Field::ArtistSort, "columns-artist-sort", |c| {
+        c.artist_sort.clone()
+    }),
+    (Field::AlbumArtist, "filter-field-album-artist", |c| {
         c.album_artist.clone()
     }),
-    (Field::AlbumArtistSort, "Album Artist Sort", |c| {
+    (Field::AlbumArtistSort, "columns-album-artist-sort", |c| {
         c.album_artist_sort.clone()
     }),
-    (Field::Album, "Album", |c| c.album.clone()),
-    (Field::Year, "Year", |c| c.year.clone()),
-    (Field::TrackNo, "Track", |c| c.track_no.clone()),
-    (Field::DiscNo, "Disc", |c| c.disc_no.clone()),
+    (Field::Album, "filter-field-album", |c| c.album.clone()),
+    (Field::Year, "filter-field-year", |c| c.year.clone()),
+    (Field::TrackNo, "metadata-field-track", |c| {
+        c.track_no.clone()
+    }),
+    (Field::DiscNo, "metadata-field-disc", |c| c.disc_no.clone()),
 ];
 
 const DEFAULT_SIZE: (f32, f32) = (760., 560.);
@@ -539,7 +544,7 @@ impl TagMatch {
                         .w(px(84.))
                         .flex_none()
                         .text_color(palette::text_muted())
-                        .child(*label),
+                        .child(rox_i18n::translate(label, None)),
                 )
                 .child(
                     div()
@@ -715,7 +720,7 @@ impl TagMatch {
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...".into(),
+                Phase::Searching => rox_i18n::t!("tags-matcher-searching"),
                 _ => rox_i18n::t!("tags-matcher-blocked-no-match"),
             });
         }
@@ -760,7 +765,7 @@ impl TagMatch {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Apply",
+                        rox_i18n::t!("settings-common-apply"),
                         icons::CHECK,
                         !can_apply,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),

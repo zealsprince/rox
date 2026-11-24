@@ -45,6 +45,11 @@ pub fn match_duplicates(projection: &Projection) -> Vec<GroupSpec> {
     let mut keyed: Vec<(u64, u32)> = (0..projection.db_id.len())
         .into_par_iter()
         .filter(|&i| {
+            // Never match a tombstone: a rescanned or retagged track leaves its old
+            // row behind, and that row would list the file as a copy of itself.
+            if projection.is_dead(i as u32) {
+                return false;
+            }
             // Never match an unparsed file (duration zero, name from its stem): two
             // songs named alike would cluster and auto-select could trash one.
             if projection.duration_ms[i] == 0 {
@@ -204,6 +209,27 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);
         assert!(groups[0].same_album);
+    }
+
+    /// A patched projection keeps the row it replaced, and one file must
+    /// never show as two copies: auto-select would check the only one.
+    #[test]
+    fn a_removed_row_is_not_a_copy() {
+        let mut p = projection(&[
+            track("/a/song.mp3", "Song", "Artist", "Album", 200_000),
+            track("/b/song.mp3", "Song", "Artist", "Album", 200_800),
+        ]);
+        let index: HashMap<i64, u32> = p
+            .db_id
+            .iter()
+            .enumerate()
+            .map(|(row, &id)| (id, row as u32))
+            .collect();
+
+        let gone = p.db_id[1];
+        p.remove_ids(&[gone], &index);
+
+        assert!(match_duplicates(&p).is_empty());
     }
 
     #[test]

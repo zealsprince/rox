@@ -1077,9 +1077,9 @@ impl Render for QuickPlay {
                 .justify_center()
                 .text_color(palette::text_muted())
                 .child(if self.query.is_empty() {
-                    "The library is empty"
+                    rox_i18n::t!("grid-library-empty")
                 } else {
-                    "No matches"
+                    rox_i18n::t!("picker-no-matches")
                 })
                 .into_any_element()
         } else {

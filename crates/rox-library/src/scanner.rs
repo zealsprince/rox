@@ -621,7 +621,11 @@ fn process_cue(
     CueOutcome::Indexed(cue_rows(image, claim, &image_tags, size, mtime))
 }
 
-/// The sheet wins on album-level fields; the image's tags fill gaps.
+/// A disc image has one set of tags for every track on it, so the sheet
+/// leads and the image's tags fill gaps. A file the sheet gives a single
+/// track is a rip already cut and tagged per song: there the tags lead and
+/// the sheet fills gaps, so a ripper's "Unknown Artist" can't beat a tag
+/// someone wrote.
 fn cue_rows(
     image: &Path,
     claim: &Claim,
@@ -631,6 +635,26 @@ fn cue_rows(
 ) -> Vec<TrackRow> {
     let path = image.to_string_lossy().into_owned();
     let cue_path = claim.cue_path.to_string_lossy().into_owned();
+    let tags_lead = claim.tracks.len() == 1;
+
+    // An untagged file's title is its file name, which mustn't outrank the
+    // sheet's.
+    let tagged_title = match image_tags.title == filename_title(image) {
+        true => "",
+        false => image_tags.title.as_str(),
+    };
+    let pick = |sheet: &str, tag: &str| {
+        let (first, second) = match tags_lead {
+            true => (tag, sheet),
+            false => (sheet, tag),
+        };
+
+        match first.is_empty() {
+            true => second.to_string(),
+            false => first.to_string(),
+        }
+    };
+
     claim
         .tracks
         .iter()
@@ -641,22 +665,36 @@ fn cue_rows(
                 .span
                 .len_ms()
                 .unwrap_or_else(|| image_tags.duration_ms.saturating_sub(track.span.start_ms));
-            let artist = track.performer.clone();
-            let title = if track.title.is_empty() {
-                image_tags.title.clone()
-            } else {
-                track.title.clone()
+
+            // The parser already handed a bare track the sheet's PERFORMER, so an
+            // empty one means the sheet names nobody.
+            let artist = pick(&track.performer, &image_tags.artist);
+            let title = match pick(&track.title, tagged_title) {
+                title if title.is_empty() => image_tags.title.clone(),
+                title => title,
             };
-            let album_artist = if claim.album_artist.is_empty() {
-                artist.clone()
-            } else {
+            let album_artist = if tags_lead && !image_tags.album_artist.is_empty() {
+                image_tags.album_artist.clone()
+            } else if !claim.album_artist.is_empty() {
                 claim.album_artist.clone()
-            };
-            let album = if claim.album.is_empty() {
-                image_tags.album.clone()
+            } else if track.performer.is_empty() {
+                image_tags.album_artist.clone()
             } else {
-                claim.album.clone()
+                artist.clone()
             };
+            let album = pick(&claim.album, &image_tags.album);
+
+            // A sheet's REM DATE is a bare year, so the month and day only come
+            // with the image's own date.
+            let dated_by_tags = match tags_lead {
+                true => image_tags.year != 0,
+                false => claim.year == 0,
+            };
+            let (year, month, day) = match dated_by_tags {
+                true => (image_tags.year, image_tags.month, image_tags.day),
+                false => (claim.year, 0, 0),
+            };
+
             // A subsong carries the image's sort name only where it kept the image's
             // value.
             let inherit = |value: &str, image_value: &str, image_sort: &str| {
@@ -683,21 +721,11 @@ fn cue_rows(
                 album_artist,
                 artist,
                 album,
-                genre: if claim.genre.is_empty() {
-                    image_tags.genre.clone()
-                } else {
-                    claim.genre.clone()
-                },
+                genre: pick(&claim.genre, &image_tags.genre),
                 comment: image_tags.comment.clone(),
-                year: if claim.year == 0 {
-                    image_tags.year
-                } else {
-                    claim.year
-                },
-                // A sheet's REM DATE is a bare year, so the parts only come
-                // from the image when the sheet has no say.
-                month: if claim.year == 0 { image_tags.month } else { 0 },
-                day: if claim.year == 0 { image_tags.day } else { 0 },
+                year,
+                month,
+                day,
                 // The sheet knows nothing about discs.
                 disc_no: image_tags.disc_no,
                 track_no: track.number,
@@ -706,17 +734,26 @@ fn cue_rows(
                 bitrate_kbps: image_tags.bitrate_kbps,
                 sample_rate_hz: image_tags.sample_rate_hz,
                 bit_depth: image_tags.bit_depth,
-                rating: 0,
-                // Album gain only: the image's track gain is the whole disc's.
-                replay_gain: crate::replaygain::ReplayGain {
-                    track_db: None,
-                    track_peak: None,
-                    album_db: image_tags.replay_gain.album_db,
-                    album_peak: image_tags.replay_gain.album_peak,
+                // An image's rating, track gain and tempo describe the whole disc, so
+                // only a file that is one track keeps them. A subsong without a
+                // tempo goes to the analysis pass instead.
+                rating: match tags_lead {
+                    true => image_tags.rating,
+                    false => 0,
                 },
-                // No tempo: the image's number describes the whole disc. Each subsong goes
-                // to the analysis pass instead.
-                bpm: None,
+                replay_gain: match tags_lead {
+                    true => image_tags.replay_gain,
+                    false => crate::replaygain::ReplayGain {
+                        track_db: None,
+                        track_peak: None,
+                        album_db: image_tags.replay_gain.album_db,
+                        album_peak: image_tags.replay_gain.album_peak,
+                    },
+                },
+                bpm: match tags_lead {
+                    true => image_tags.bpm,
+                    false => None,
+                },
                 cue: Some(crate::CueSlice {
                     cue_path: cue_path.clone(),
                     span: track.span,
@@ -859,7 +896,10 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.month = date.month;
         row.day = date.day;
         row.disc_no = tag.disk().unwrap_or(0) as u16;
-        row.track_no = tag.track().unwrap_or(0) as u16;
+        row.track_no = tag
+            .track()
+            .or_else(|| number_before_slash(tag.get_string(lofty::tag::ItemKey::TrackNumber)?))
+            .unwrap_or(0) as u16;
         row.bpm = crate::tempo::read(tag);
     }
     // Read across every tag: mp3gain writes to an APEv2 tag beside an ID3v2
@@ -873,6 +913,14 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
     }
     row.rating = rating.unwrap_or(0);
     Some(row)
+}
+
+/// RIFF INFO has one field for the track and no total, so taggers write
+/// "1/13" into it, which lofty's accessor won't parse.
+fn number_before_slash(text: &str) -> Option<u32> {
+    let (number, _) = text.split_once('/')?;
+
+    number.trim().parse().ok()
 }
 
 /// First tag holding each key wins, per key, primary first. Only ReplayGain
@@ -2018,6 +2066,148 @@ FILE "disc.wav" WAVE
                 "Stray Sheep".to_string()
             )
         );
+    }
+
+    #[test]
+    fn a_sheet_naming_no_performer_keeps_the_images_artists() {
+        let image = fallback_row(Path::new("/music/01.wav"));
+        let image_tags = TrackRow {
+            artist: "toe feat. Toki Asako".into(),
+            artist_sort: "toe".into(),
+            album_artist: "toe".into(),
+            album_artist_sort: "toe".into(),
+            ..image
+        };
+        let claim = Claim {
+            cue_path: PathBuf::from("/music/album.cue"),
+            cue_mtime: 0,
+            album: String::new(),
+            album_artist: String::new(),
+            genre: String::new(),
+            year: 0,
+            tracks: vec![crate::cue::CueTrack {
+                number: 1,
+                title: String::new(),
+                performer: String::new(),
+                span: crate::cue::Span {
+                    start_ms: 0,
+                    end_ms: None,
+                },
+            }],
+        };
+
+        let rows = cue_rows(Path::new("/music/01.wav"), &claim, &image_tags, 0, 0);
+        assert_eq!(rows[0].artist, "toe feat. Toki Asako");
+        assert_eq!(rows[0].artist_sort, "toe");
+        assert_eq!(rows[0].album_artist, "toe");
+        assert_eq!(rows[0].album_artist_sort, "toe");
+    }
+
+    #[test]
+    fn a_file_the_sheet_gives_one_track_keeps_its_own_tags() {
+        let image = fallback_row(Path::new("/music/01.wav"));
+        let image_tags = TrackRow {
+            title: "反逆する風景".into(),
+            artist: "toe".into(),
+            album_artist: "toe".into(),
+            album: "the book about my idle plot on a vague anxiety".into(),
+            year: 2005,
+            month: 8,
+            day: 31,
+            rating: 80,
+            bpm: Some(92.0),
+            replay_gain: crate::replaygain::ReplayGain {
+                track_db: Some(-6.5),
+                ..Default::default()
+            },
+            ..image
+        };
+        let claim = Claim {
+            cue_path: PathBuf::from("/music/album.cue"),
+            cue_mtime: 0,
+            album: "Unknown Title".into(),
+            album_artist: "Unknown Artist".into(),
+            genre: "Post-Rock".into(),
+            year: 1999,
+            tracks: vec![crate::cue::CueTrack {
+                number: 1,
+                title: "Track01".into(),
+                performer: "Unknown Artist".into(),
+                span: crate::cue::Span {
+                    start_ms: 0,
+                    end_ms: None,
+                },
+            }],
+        };
+
+        let rows = cue_rows(Path::new("/music/01.wav"), &claim, &image_tags, 0, 0);
+        let row = &rows[0];
+        assert_eq!(row.title, "反逆する風景");
+        assert_eq!(row.artist, "toe");
+        assert_eq!(row.album_artist, "toe");
+        assert_eq!(row.album, "the book about my idle plot on a vague anxiety");
+        assert_eq!((row.year, row.month, row.day), (2005, 8, 31));
+        assert_eq!(row.genre, "Post-Rock", "the sheet fills what no tag names");
+        assert_eq!(row.rating, 80);
+        assert_eq!(row.bpm, Some(92.0));
+        assert_eq!(row.replay_gain.track_db, Some(-6.5));
+    }
+
+    #[test]
+    fn an_untagged_file_takes_the_sheets_title_over_its_file_name() {
+        let image_tags = fallback_row(Path::new("/music/01.wav"));
+        let claim = Claim {
+            cue_path: PathBuf::from("/music/album.cue"),
+            cue_mtime: 0,
+            album: String::new(),
+            album_artist: String::new(),
+            genre: String::new(),
+            year: 0,
+            tracks: vec![crate::cue::CueTrack {
+                number: 1,
+                title: "One".into(),
+                performer: String::new(),
+                span: crate::cue::Span {
+                    start_ms: 0,
+                    end_ms: None,
+                },
+            }],
+        };
+
+        let rows = cue_rows(Path::new("/music/01.wav"), &claim, &image_tags, 0, 0);
+        assert_eq!(rows[0].title, "One");
+    }
+
+    #[test]
+    fn a_riff_track_number_reads_past_its_total() {
+        let dir = std::env::temp_dir().join("rox-scanner-riff-track");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut wav = pcm_wav(44100, 16, 2, 1);
+        let mut info = b"INFO".to_vec();
+        for (id, text) in [(b"INAM", "One"), (b"IPRT", "1/13")] {
+            let mut value = text.as_bytes().to_vec();
+            value.push(0);
+            info.extend_from_slice(id);
+            info.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            info.extend_from_slice(&value);
+            if value.len() % 2 == 1 {
+                info.push(0);
+            }
+        }
+        wav.extend_from_slice(b"LIST");
+        wav.extend_from_slice(&(info.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&info);
+        let riff_len = (wav.len() - 8) as u32;
+        wav[4..8].copy_from_slice(&riff_len.to_le_bytes());
+        let path = dir.join("01.wav");
+        std::fs::write(&path, &wav).unwrap();
+
+        let row = read_one(&path).expect("the file reads");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(row.title, "One");
+        assert_eq!(row.track_no, 1);
     }
 
     /// One second of a 440 Hz tone.

@@ -409,13 +409,13 @@ impl LyricsEdit {
                 .into_any_element(),
             None => {
                 let mut segs = vec![
-                    Seg::Text("Press".into()),
+                    Seg::Text(rox_i18n::t!("hint-press")),
                     Seg::Key(settings_ui::chord("Enter")),
-                    Seg::Text("to save".into()),
+                    Seg::Text(rox_i18n::t!("hint-after-save")),
                 ];
                 if position.is_some() {
                     segs.push(Seg::Text(rox_i18n::t!("lyrics-edit-hint-or")));
-                    segs.push(Seg::Key("Shift+Enter".into()));
+                    segs.push(Seg::Key(crate::keymap::display("shift-enter").into()));
                     segs.push(Seg::Text(rox_i18n::t!("lyrics-edit-hint-after-stamp")));
                 }
                 kbd_line(segs).text_xs().into_any_element()
@@ -449,7 +449,7 @@ impl LyricsEdit {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Save",
+                        rox_i18n::t!("settings-common-save"),
                         icons::CHECK,
                         !ready,
                         cx.listener(|this, _, window, cx| this.save(window, cx)),

@@ -423,7 +423,7 @@ impl LyricsMatch {
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...".into(),
+                Phase::Searching => rox_i18n::t!("tags-matcher-searching"),
                 _ => rox_i18n::t!("lyrics-matcher-blocked-no-match"),
             });
         }
@@ -465,7 +465,7 @@ impl LyricsMatch {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Apply",
+                        rox_i18n::t!("settings-common-apply"),
                         icons::CHECK,
                         !can_apply,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
@@ -507,9 +507,11 @@ impl Render for LyricsMatch {
         });
 
         let content = match &self.phase {
-            Phase::Searching => note("Searching..."),
+            Phase::Searching => note(rox_i18n::t!("tags-matcher-searching")),
             Phase::Failed(e) => crate::console_window::notice(e.clone()),
-            Phase::Ready(found) if found.is_empty() => note("No matches found"),
+            Phase::Ready(found) if found.is_empty() => {
+                note(rox_i18n::t!("tags-matcher-no-matches"))
+            }
             Phase::Ready(found) => div()
                 .flex()
                 .flex_row()

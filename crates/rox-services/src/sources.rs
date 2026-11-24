@@ -464,7 +464,7 @@ pub fn ping(index: usize, cx: &App) -> Task<Result<ServerInfo, String>> {
     let server = server(index);
 
     cx.background_executor().spawn(async move {
-        let server = server.ok_or_else(|| "no server configured".to_string())?;
+        let server = server.ok_or_else(|| rox_i18n::t!("sources-error-no-server").to_string())?;
 
         server.ping()
     })
@@ -478,11 +478,11 @@ pub fn sync(
     cx: &mut App,
 ) -> Task<Result<SyncOutcome, String>> {
     let Some(server) = server(index) else {
-        return Task::ready(Err("no server configured".to_string()));
+        return Task::ready(Err(rox_i18n::t!("sources-error-no-server").to_string()));
     };
 
     if PROGRESS.running.swap(true, Ordering::SeqCst) {
-        return Task::ready(Err("a sync is already running".to_string()));
+        return Task::ready(Err(rox_i18n::t!("sources-error-sync-running").to_string()));
     }
 
     PROGRESS.done.store(0, Ordering::Relaxed);

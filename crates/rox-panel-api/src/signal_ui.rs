@@ -430,7 +430,7 @@ fn remove_signal<P: SignalHost>(host: &mut P, id: u64, cx: &mut Context<P>) {
 pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
     let pool = host.hub().pool();
     let add = settings_ui::small_button(
-        "Add Signal",
+        rox_i18n::t!("signal-add"),
         icons::PLUS,
         false,
         cx.listener(|this: &mut P, _, _, cx| {
@@ -459,7 +459,7 @@ pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
         list = list.child(signal_block(host, signal.id, cx));
     }
     div().flex().flex_col().gap(SECTION_GAP).child(section(
-        "Signals",
+        rox_i18n::t!("panel-section-signals"),
         Some(add.into_any_element()),
         list,
     ))

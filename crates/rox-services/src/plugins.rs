@@ -2234,7 +2234,7 @@ pub fn play_similar(
         tracks.extend(batch.into_iter().filter(|t| listed.insert(t.key.clone())));
 
         if tracks.is_empty() {
-            return Err("the radio came back empty".to_string());
+            return Err(rox_i18n::t!("plugin-radio-empty").to_string());
         }
 
         let picked = cx
@@ -2413,9 +2413,12 @@ fn fetch_collection(
         }
     }
 
-    Err(format!(
-        "{collection} is still paging after {MAX_SYNC_PAGES} pages"
-    ))
+    Err(rox_i18n::t!(
+        "plugin-sync-still-paging",
+        collection = collection.to_string(),
+        pages = MAX_SYNC_PAGES.to_string()
+    )
+    .to_string())
 }
 
 /// Sync one collection into the library: the whole membership in one write,

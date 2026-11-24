@@ -169,6 +169,12 @@ pub const STATES: &[StateSpec] = &[
                 icon: icons::RADIO,
                 color: "text",
             },
+            StateCase {
+                id: "albums",
+                label_key: "button-state-shuffle-albums",
+                icon: icons::DISC,
+                color: "text",
+            },
         ],
     },
     StateSpec {
@@ -921,6 +927,7 @@ fn read_shuffle(live: &Live) -> &'static str {
     match live.player.shuffle_mode() {
         ShuffleMode::Random => "random",
         ShuffleMode::Similar => "similar",
+        ShuffleMode::Albums => "albums",
     }
 }
 

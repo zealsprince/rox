@@ -175,22 +175,23 @@ impl SettingsWindow {
                         .as_ref()
                         .is_some_and(|local| local.id == id);
                 let description = if known {
-                    format!(
-                        "{}, {} values a track. Clearing gives the space back, and having the \
-                         descriptions again means a whole pass over the library",
-                        self.label_for(
-                            &id,
-                            rox_i18n::t_static("settings-storage-model-fallback-this")
-                        ),
-                        entry.dim
+                    rox_i18n::t!(
+                        "settings-storage-vectors-known",
+                        model = self
+                            .label_for(
+                                &id,
+                                rox_i18n::t_static("settings-storage-model-fallback-this")
+                            )
+                            .to_string(),
+                        dim = entry.dim.to_string()
                     )
+                    .to_string()
                 } else {
-                    format!(
-                        "{} values a track. Nothing in this build writes this model, so these \
-                         are left over from one that was renamed or dropped, and clearing them \
-                         costs the library nothing it uses",
-                        entry.dim
+                    rox_i18n::t!(
+                        "settings-storage-vectors-orphaned",
+                        dim = entry.dim.to_string()
                     )
+                    .to_string()
                 };
                 let control = div()
                     .flex()

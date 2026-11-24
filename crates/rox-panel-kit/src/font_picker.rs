@@ -34,8 +34,8 @@ where
         families(cx),
         label,
         current.map(SharedString::from),
-        "Search fonts".into(),
-        "No matches".into(),
+        rox_i18n::t!("picker-search-fonts"),
+        rox_i18n::t!("picker-no-matches"),
         apply,
         cx,
     )

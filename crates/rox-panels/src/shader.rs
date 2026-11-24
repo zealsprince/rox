@@ -540,8 +540,8 @@ impl ShaderPanel {
         if surface::unsupported(&error) {
             return note(
                 vec![
-                    format!("{}.", surface::NO_PIPELINE_TITLE),
-                    surface::NO_PIPELINE_NOTE.to_string(),
+                    format!("{}.", surface::no_pipeline_title()),
+                    surface::no_pipeline_note().to_string(),
                 ],
                 vec![NoteAction::Inspect],
             );
@@ -652,8 +652,8 @@ impl ShaderPanel {
         let error_banner = error.map(|error| match surface::unsupported(&error) {
             true => panel::banner(
                 panel::Tone::Bad,
-                surface::NO_PIPELINE_TITLE,
-                vec![surface::NO_PIPELINE_NOTE.into()],
+                surface::no_pipeline_title(),
+                vec![surface::no_pipeline_note()],
             ),
             false => panel::banner(
                 panel::Tone::Bad,
@@ -725,11 +725,7 @@ impl ShaderPanel {
                 .row_dyn(
                     &["shader", "idle", "pause", "freeze", "silent"],
                     rox_i18n::t!("panel-run-when-idle"),
-                    Some(
-                        "Keep drawing while the audio is silent. Off, the shader parks where it \
-                         stands and the panel costs nothing"
-                            .into(),
-                    ),
+                    Some(rox_i18n::t!("shader-run-when-idle-description")),
                     toggle(
                         run_when_idle,
                         |this: &mut Self, on, cx| {

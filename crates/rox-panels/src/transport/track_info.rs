@@ -68,8 +68,8 @@ pub enum InfoPiece {
     Art,
     /// A flexible gap; a row holds as many as the layout needs.
     Spacer,
-    /// A spacer with a hairline across its gap.
-    Divider,
+    /// A rule between its neighbours, drawn as its [`DividerStyle`].
+    Divider(DividerStyle),
     Break,
 }
 
@@ -238,9 +238,18 @@ const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
     panel::ArrangeSpec {
         key: "head-piece-divider",
         icon: Some(icons::MINUS),
-        value: InfoPiece::Divider,
+        value: InfoPiece::Divider(DividerStyle::Stretch),
         repeats: true,
-        variants: &[],
+        variants: &[
+            panel::ArrangeVariant {
+                key: "track-info-divider-stretch",
+                value: InfoPiece::Divider(DividerStyle::Stretch),
+            },
+            panel::ArrangeVariant {
+                key: "track-info-divider-bar",
+                value: InfoPiece::Divider(DividerStyle::Bar),
+            },
+        ],
     },
 ];
 
@@ -502,6 +511,17 @@ pub enum ScrobbleStyle {
     Badge,
     /// The activity mark, the word, then the count.
     LabelledBadge,
+}
+
+/// How a divider draws, picked per piece.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DividerStyle {
+    /// A spacer with a hairline across its gap, pushing its neighbours apart.
+    #[default]
+    Stretch,
+    /// A short upright rule that takes no more room than itself.
+    Bar,
 }
 
 const MARQUEE_SPEED_MIN: f32 = 10.0;
@@ -792,7 +812,7 @@ fn row_bits(
             | InfoPiece::Rating
             | InfoPiece::Art
             | InfoPiece::Spacer
-            | InfoPiece::Divider => {
+            | InfoPiece::Divider(_) => {
                 if !run.is_empty() {
                     bits.push(RowBit::Run(std::mem::take(&mut run)));
                 }
@@ -1549,7 +1569,10 @@ impl TrackInfoPanel {
         // column's speller.
         let label = format!(
             "{}{} kHz {}",
-            if exclusive { "Exclusive " } else { "" },
+            match exclusive {
+                true => format!("{} ", rox_i18n::t!("output-mode-exclusive")),
+                false => String::new(),
+            },
             group_head::khz(negotiated.sample_rate),
             negotiated.format
         );
@@ -1801,7 +1824,7 @@ impl TrackInfoPanel {
         // The end-of-queue note trails the first row's last run, where
         // the single line has always worn it.
         if ended && let Some((_, bits)) = plans.first_mut() {
-            let note = ("(queue finished)".to_string(), true);
+            let note = (rox_i18n::t!("track-info-queue-finished").to_string(), true);
             match bits.last_mut() {
                 Some(RowBit::Run(run)) => run.push(note),
                 _ => bits.push(RowBit::Run(vec![note])),
@@ -1975,8 +1998,18 @@ impl TrackInfoPanel {
                     RowBit::Fixed(InfoPiece::Spacer) => {
                         row = row.child(div().flex_1());
                     }
-                    RowBit::Fixed(InfoPiece::Divider) => {
+                    RowBit::Fixed(InfoPiece::Divider(DividerStyle::Stretch)) => {
                         row = row.child(div().flex_1().h(px(1.)).bg(palette::border()));
+                    }
+                    RowBit::Fixed(InfoPiece::Divider(DividerStyle::Bar)) => {
+                        // Sized with the row's text, like the glyphs.
+                        row = row.child(
+                            div()
+                                .flex_none()
+                                .w(px(1.))
+                                .h(palette::scaled_px(13.) * scale)
+                                .bg(palette::border()),
+                        );
                     }
                     RowBit::Glyph(path) => {
                         // Muted and sized with the text, so it reads as byline rather than a
@@ -2227,8 +2260,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        CountText, InfoPiece, MarqueeScroll, Motion, PieceTexts, RowBit, ScrobbleStyle,
-        TrackInfoConfig, editor_rows, icons, row_bits,
+        CountText, DividerStyle, InfoPiece, MarqueeScroll, Motion, PieceTexts, RowBit,
+        ScrobbleStyle, TrackInfoConfig, editor_rows, icons, row_bits,
     };
     use crate::panel::Align;
 
@@ -2346,6 +2379,35 @@ mod tests {
         // The dedup keeps the first copy of the track count, on its own variant.
         let back: TrackInfoConfig = serde_json::from_value(saved).unwrap();
         assert!(back.items == vec![InfoPiece::ArtistScrobbles(ScrobbleStyle::Badge), TRACK_TEXT]);
+    }
+
+    #[test]
+    fn a_divider_saves_bare_until_it_leaves_its_default() {
+        let config = TrackInfoConfig {
+            items: vec![
+                InfoPiece::Artist,
+                InfoPiece::Divider(DividerStyle::Stretch),
+                InfoPiece::Title,
+                InfoPiece::Divider(DividerStyle::Bar),
+                InfoPiece::Album,
+            ],
+            ..TrackInfoConfig::default()
+        };
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            saved["items"],
+            serde_json::json!([
+                "artist",
+                "divider",
+                "title",
+                { "item": "divider", "variant": "bar" },
+                "album",
+            ])
+        );
+
+        // Both stay: a divider repeats, whatever its variant.
+        let back: TrackInfoConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.items == config.items);
     }
 
     #[test]

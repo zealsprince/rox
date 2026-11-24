@@ -122,9 +122,9 @@ impl PlaylistNameWindow {
     fn footer(&self, savable: bool, cx: &mut Context<Self>) -> Div {
         let hint = if savable {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-after-save")),
             ])
             .text_xs()
             .into_any_element()
@@ -154,7 +154,7 @@ impl PlaylistNameWindow {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Save",
+                        rox_i18n::t!("settings-common-save"),
                         icons::CHECK,
                         !savable,
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),

@@ -776,7 +776,9 @@ and, when rox knows, shows that in its own words with an Open Plugins button ins
 the error (`unavailable_banner`, `rox-panels/src/source_browser.rs`). It asks again once
 `plugins::answers` says the source is back, checked on each draw and each library
 reload. A page's `notice` shows as a banner over the list, Info or, for `setup`, Warn
-with the same button (`notice_banner`).
+with the same button (`notice_banner`). An Info one over a page with entries carries a
+Hide button that turns the panel's Show the Source's Notice setting off (`hideable`,
+`shown_notice`).
 
 A plugin's rows show only while it's switched on and its folder is loaded
 (`live_ids`, `rox-services/src/sources.rs:228-232`). A switched-off plugin's rows are

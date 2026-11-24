@@ -516,14 +516,8 @@ impl ShaderEditor {
             Check::Unsupported => div()
                 .flex()
                 .flex_col()
-                .child(line(
-                    palette::tone_warn(),
-                    surface::NO_PIPELINE_TITLE.into(),
-                ))
-                .child(line(
-                    palette::text_muted(),
-                    surface::NO_PIPELINE_NOTE.into(),
-                )),
+                .child(line(palette::tone_warn(), surface::no_pipeline_title()))
+                .child(line(palette::text_muted(), surface::no_pipeline_note())),
             // naga's lines stay left-aligned: the caret points at a column.
             Check::Err(error) => div()
                 .flex()

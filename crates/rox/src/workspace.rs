@@ -56,8 +56,9 @@ use rox_core::settings::{
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::openers::{PresetApply, Rebuilt};
-use rox_panel_api::panel::{self, AppState, TabHosts};
+use rox_panel_api::panel::{self, AppState, TabHosts, Tone};
 use rox_panel_api::query::shared_query::SharedQuery;
+use rox_panel_api::toast::Toast;
 use rox_panel_api::track_ui::track_drag::PlayDrag;
 use rox_panel_kit::ui::{Seg, chord, kbd_line};
 use rox_panels::art::{ArtConfig, ArtPanel};
@@ -383,8 +384,9 @@ fn start_capture(player: &Entity<Player>, library: &Entity<Library>, cx: &mut Ap
 /// been approved yet. Shown in the settings page's readout beside the compile
 /// errors, since from where the user sits it's the same question: why is
 /// nothing painting?
-const UNAPPROVED_POST_SHADER: &str =
-    "this shader arrived with a workspace and hasn't been approved on this machine";
+fn unapproved_post_shader() -> String {
+    rox_i18n::t!("shader-unapproved-workspace").to_string()
+}
 
 /// The WGSL the screen shader actually runs and where it came from,
 /// resolved the way a panel surface resolves its own.
@@ -416,7 +418,7 @@ pub(crate) fn post_shader_program(
     // gate reads it as approved for the same reason.
     let gated = |source: String| match panel::shader::approved(&source) {
         true => Ok((!source.trim().is_empty()).then_some(source)),
-        false => Err(UNAPPROVED_POST_SHADER.to_string()),
+        false => Err(unapproved_post_shader()),
     };
     if let Some(name) = config.name.as_deref() {
         return match settings::shader_pool_get(name) {
@@ -1489,6 +1491,7 @@ actions!(
         CycleReplayGainMode,
         ToggleFavourite,
         RenameTrack,
+        TrashSelection,
         AbortScan,
         ToggleSeams,
         ToggleReadings,
@@ -1873,21 +1876,22 @@ pub fn init(cx: &mut App) {
         });
     });
 
-    // Step the order shuffle sorts by. Same gate as the draw: the shuffle
-    // button drops its menu entirely while Similar has nothing to sort by,
-    // and a cycle with one reachable mode is a cycle with nowhere to go.
+    // Step the order shuffle sorts by. Similar sits the round out while it
+    // has nothing to sort by, the way the shuffle button's menu leaves it
+    // off: the player would read it as Random and the step would look stuck.
     cx.on_action(|_: &CycleShuffleMode, cx| {
-        if !settings::similarity_ready() {
-            return;
-        }
-
         with_front_workspace(cx, |ws, _, cx| {
             ws.state.player.update(cx, |player, cx| {
-                let modes = ShuffleMode::ALL;
+                let similar = rox_services::player::similar_ready();
+                let modes: Vec<ShuffleMode> = ShuffleMode::ALL
+                    .into_iter()
+                    .filter(|mode| similar || *mode != ShuffleMode::Similar)
+                    .collect();
                 let at = modes
                     .iter()
                     .position(|mode| *mode == player.shuffle_mode())
                     .unwrap_or(0);
+
                 player.set_shuffle_mode(modes[(at + 1) % modes.len()], cx);
             });
         });
@@ -1973,6 +1977,15 @@ pub fn init(cx: &mut App) {
             };
 
             crate::tags::title::open(ws.state.clone(), id, cx);
+        });
+    });
+
+    // The last pick in any panel, like the rename, and only ever as far as
+    // the confirm.
+    cx.on_action(|_: &TrashSelection, cx| {
+        with_front_workspace(cx, |ws, window, cx| {
+            let ids = ws.state.selection.read(cx).tracks().to_vec();
+            ws.confirm_trash(ws.state.clone(), ids, window, cx);
         });
     });
 
@@ -2670,6 +2683,14 @@ pub(crate) fn with_front_workspace(
         let _ = handle.update(cx, |_, window, cx| {
             workspace.update(cx, |ws, cx| f(ws, window, cx));
         });
+    });
+}
+
+/// Move to Trash from a track menu. The ask goes up in the front workspace,
+/// since a popped-out panel's window has no dialog of its own.
+pub(crate) fn trash_tracks(state: AppState, ids: Vec<i64>, cx: &mut App) {
+    with_front_workspace(cx, move |ws, window, cx| {
+        ws.confirm_trash(state, ids, window, cx)
     });
 }
 
@@ -3448,6 +3469,12 @@ enum LayoutDialog {
         panel: Arc<dyn PanelView>,
         tabs: WeakEntity<TabPanel>,
         name: SharedString,
+    },
+    /// Moving tracks' files to the OS trash. Holds the paths as they resolved
+    /// when the dialog opened, so the yes moves what the count named.
+    ConfirmTrash {
+        library: Entity<rox_services::catalog::Library>,
+        files: Vec<PathBuf>,
     },
 }
 
@@ -5362,6 +5389,102 @@ impl Workspace {
         self.close_layout_dialog(window, cx);
     }
 
+    /// Ask before moving these tracks' files to the OS trash. A selection
+    /// holding anything but files of their own (a cue track, a plugin's or a
+    /// server's song) is refused whole rather than trimmed, so the count in
+    /// the ask is the selection the user made.
+    pub(crate) fn confirm_trash(
+        &mut self,
+        state: AppState,
+        ids: Vec<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+
+        if !panel::trashable(&state, &ids, cx) {
+            // `post` would update this window again from inside its own update.
+            Toast::new(Tone::Info, rox_i18n::t!("workspace-trash-not-files")).show(window, cx);
+            return;
+        }
+
+        let Ok(mut files) = state.library.read(cx).paths_for(&ids) else {
+            return;
+        };
+        files.sort();
+        files.dedup();
+        if files.is_empty() {
+            return;
+        }
+
+        self.layout_dialog = Some(LayoutDialog::ConfirmTrash {
+            library: state.library.clone(),
+            files,
+        });
+        window.activate_window();
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    /// Move the files the confirm named. Always the OS trash, never an
+    /// unlink: a wrong click has to be something the user can take back.
+    fn trash_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(LayoutDialog::ConfirmTrash { library, files }) = self.layout_dialog.take() else {
+            return;
+        };
+        self.close_layout_dialog(window, cx);
+
+        let origin = window.window_handle();
+        let total = files.len();
+        cx.spawn(async move |_, cx| {
+            let (trashed, first_error) = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut trashed = Vec::new();
+                    let mut first_error = None;
+
+                    for path in files {
+                        match trash::delete(&path) {
+                            Ok(()) => trashed.push(path),
+
+                            Err(e) => {
+                                log::warn!("trash {}: {e}", path.display());
+                                first_error.get_or_insert_with(|| {
+                                    crate::duplicates::trash_failure(&path, &e)
+                                });
+                            }
+                        }
+                    }
+
+                    (trashed, first_error)
+                })
+                .await;
+
+            cx.update(|cx| {
+                let moved = trashed.len();
+                library.update(cx, |library, cx| library.remove_files(trashed, cx));
+
+                match first_error {
+                    None => Toast::new(
+                        Tone::Good,
+                        rox_i18n::t!("workspace-trash-done", count = moved as u64),
+                    ),
+
+                    Some(error) => Toast::new(Tone::Bad, error).title(rox_i18n::t!(
+                        "workspace-trash-failed",
+                        failed = (total - moved) as u64,
+                        count = total as u64
+                    )),
+                }
+                .post(origin, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Enter and Escape while a dialog is up, and whether the key was the
     /// dialog's. Taken in the capture phase: the dialog occludes the window,
     /// so nothing under it should be seeing keys at all, and a focused search
@@ -5403,6 +5526,7 @@ impl Workspace {
             OverwriteWorkspace,
             ApplyWorkspace,
             CloseLocked,
+            Trash,
         }
         let yes = match dialog {
             LayoutDialog::Save(_) | LayoutDialog::SaveWorkspace(_) => None,
@@ -5413,6 +5537,7 @@ impl Workspace {
                 (!card.splits_apply()).then_some(Yes::ApplyWorkspace)
             }
             LayoutDialog::ConfirmCloseLocked { .. } => Some(Yes::CloseLocked),
+            LayoutDialog::ConfirmTrash { .. } => Some(Yes::Trash),
         };
         match yes {
             Some(Yes::Overwrite) => self.overwrite_confirmed(window, cx),
@@ -5422,6 +5547,7 @@ impl Workspace {
                 self.apply_workspace_confirmed(ApplyShaders::Skip, window, cx)
             }
             Some(Yes::CloseLocked) => self.close_locked_confirmed(window, cx),
+            Some(Yes::Trash) => self.trash_confirmed(window, cx),
             None => return false,
         }
         true
@@ -6579,6 +6705,34 @@ impl Workspace {
                             cx.listener(|this, _, window, cx| {
                                 this.close_locked_confirmed(window, cx)
                             }),
+                        )),
+                ),
+            LayoutDialog::ConfirmTrash { files, .. } => card
+                .child(div().child(rox_i18n::t!(
+                    "workspace-trash-title",
+                    count = files.len() as u64
+                )))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(rox_i18n::t!("workspace-trash-body")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(tokens::SPACE_SM)
+                        .child(dialog_button(
+                            rox_i18n::t!("workspace-dialog-cancel"),
+                            false,
+                            cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
+                        ))
+                        .child(dialog_button(
+                            rox_i18n::t!("workspace-dialog-trash"),
+                            true,
+                            cx.listener(|this, _, window, cx| this.trash_confirmed(window, cx)),
                         )),
                 ),
         };

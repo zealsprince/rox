@@ -775,17 +775,16 @@ pub enum ShuffleMode {
     Random,
     /// Nearest first by acoustic vector to the track playing when engaged.
     Similar,
+    /// Albums in random order, each in its own track order (ADR 17).
+    Albums,
 }
 
 impl ShuffleMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            ShuffleMode::Random => "Random",
-            ShuffleMode::Similar => "Similar",
-        }
-    }
-
-    pub const ALL: [ShuffleMode; 2] = [ShuffleMode::Random, ShuffleMode::Similar];
+    pub const ALL: [ShuffleMode; 3] = [
+        ShuffleMode::Random,
+        ShuffleMode::Similar,
+        ShuffleMode::Albums,
+    ];
 }
 
 /// Which user palette renders; System follows the OS live. Bundles hold no
@@ -5556,6 +5555,9 @@ mod tests {
         let session: SessionState =
             serde_json::from_value(serde_json::json!({ "shuffle_mode": "similar" })).unwrap();
         assert_eq!(session.shuffle_mode, ShuffleMode::Similar);
+        let session: SessionState =
+            serde_json::from_value(serde_json::json!({ "shuffle_mode": "albums" })).unwrap();
+        assert_eq!(session.shuffle_mode, ShuffleMode::Albums);
         let session: SessionState =
             serde_json::from_value(serde_json::json!({ "shuffle_mode": 7 })).unwrap();
         assert_eq!(session.shuffle_mode, ShuffleMode::Random);

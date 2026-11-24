@@ -40,7 +40,8 @@ use crate::workspace::{
     ToggleExclusiveOutput, ToggleFavourite, ToggleMenubar, ToggleMilkdropBackdrop,
     ToggleMilkdropHardCuts, ToggleMilkdropLock, ToggleMini, ToggleMute, TogglePostShader,
     ToggleQuitToTray, ToggleReadings, ToggleResizeLock, ToggleScrobbling, ToggleSeams,
-    ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders, VolumeDown, VolumeUp,
+    ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders, TrashSelection, VolumeDown,
+    VolumeUp,
 };
 
 /// Workspace-wide except while the search box, a type-ahead phrase, the
@@ -118,8 +119,10 @@ pub enum Reach {
 pub struct Command {
     /// The settings key. Never rename it: that silently resets everyone's rebinds.
     pub id: &'static str,
-    pub label: &'static str,
-    pub description: &'static str,
+    /// Resolved on every read, never stored: this table is built before the
+    /// saved language is applied, and the language can change while it lives.
+    label: fn() -> &'static str,
+    description: fn() -> &'static str,
     pub group: Group,
     /// `None` is everywhere, including the settings window and popped-out panels.
     pub context: Option<&'static str>,
@@ -133,6 +136,14 @@ pub struct Command {
 }
 
 impl Command {
+    pub fn label(&self) -> &'static str {
+        (self.label)()
+    }
+
+    pub fn description(&self) -> &'static str {
+        (self.description)()
+    }
+
     /// None for a chord that doesn't parse, so one bad hand edit doesn't block the rest.
     fn binding(&self, chord: &str) -> Option<KeyBinding> {
         parses(chord).then(|| (self.build)(chord, self.scope(chord)))
@@ -197,8 +208,8 @@ macro_rules! command {
     ($id:literal, $label:expr, $group:expr, $ctx:expr, $keys:expr, $action:expr, $desc:expr, $reach:expr) => {
         Command {
             id: $id,
-            label: $label,
-            description: $desc,
+            label: || $label,
+            description: || $desc,
             group: $group,
             context: $ctx,
             defaults: $keys,
@@ -293,8 +304,7 @@ mod defaults {
     pub const THEME: &[&str] = &["ctrl-shift-t"];
 }
 
-/// Page order within each group. A `LazyLock` because the labels resolve
-/// through the locale bundles; iterate with `.iter()`, since deref coercion
+/// Page order within each group. Iterate with `.iter()`, since deref coercion
 /// doesn't reach `IntoIterator`.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     vec![
@@ -690,6 +700,17 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             &["f2"],
             RenameTrack,
             rox_i18n::t_static("keymap-rename-track.description")
+        ),
+        // Unbound: a file shouldn't be a stray keypress from the trash, even
+        // with the confirm in between.
+        command!(
+            "trash_selection",
+            rox_i18n::t_static("keymap-trash-selection"),
+            Group::Library,
+            PLAYBACK,
+            &[],
+            TrashSelection,
+            rox_i18n::t_static("keymap-trash-selection.description")
         ),
         // Library operations ship unbound except health and power search: an
         // afternoon-long pass shouldn't be reachable by accident.
@@ -1303,7 +1324,7 @@ pub fn clash(
                 .iter()
                 .any(|held| held == chord && overlaps(other.scope(held), scope))
         })
-        .map(|other| other.label)
+        .map(|other| other.label())
 }
 
 struct Layers {
@@ -1518,7 +1539,7 @@ fn display_keystroke(keystroke: &Keystroke) -> String {
 fn key_label(key: &str) -> String {
     match key {
         "escape" => rox_i18n::t!("keymap-key-esc").to_string(),
-        "enter" => "Enter".to_string(),
+        "enter" => rox_i18n::t!("hint-key-enter").to_string(),
         "backspace" => rox_i18n::t!("keymap-key-backspace").to_string(),
         "delete" => rox_i18n::t!("keymap-key-delete").to_string(),
         "space" => rox_i18n::t!("keymap-key-space").to_string(),
@@ -1606,6 +1627,19 @@ mod tests {
         "stamp_line",
     ];
 
+    /// The table is built once, before the saved language is applied, and
+    /// outlives every later change of it.
+    #[test]
+    fn labels_follow_the_language() {
+        let rescan = command("rescan_library").expect("the keymap has it");
+
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        assert_eq!(rescan.label(), "Rescan Library");
+
+        rox_i18n::pin_thread_locale("de");
+        assert_eq!(rescan.label(), "Bibliothek neu einlesen");
+    }
+
     /// A Global command handled on a panel gives a button that silently does nothing.
     #[test]
     fn every_command_declares_a_reach() {
@@ -1669,7 +1703,7 @@ mod tests {
                     clash(command, chord, &overrides),
                     None,
                     "{} shares {chord} with another command",
-                    command.label
+                    command.label()
                 );
             }
         }
@@ -1752,7 +1786,7 @@ mod tests {
         let overrides = BTreeMap::new();
         assert_eq!(
             clash(seek, focus.defaults[0], &overrides),
-            Some(focus.label),
+            Some(focus.label()),
             "a modified playback chord binds where Focus Search lives"
         );
         assert_eq!(

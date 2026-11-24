@@ -258,7 +258,7 @@ pub fn dictionary_installed() -> bool {
 /// character, kanji a Viterbi lattice per title.
 pub fn measure_pace(sample: Vec<Item>) -> Result<f32, String> {
     if sample.is_empty() {
-        return Err("nothing left to romanize".to_string());
+        return Err(rox_i18n::t!("job-nothing-to-romanize").to_string());
     }
     let ja = load_dictionary(&sample);
     let started = std::time::Instant::now();

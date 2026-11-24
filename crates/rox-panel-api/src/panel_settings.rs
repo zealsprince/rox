@@ -165,10 +165,10 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = SharedString::from(format!(
-        "rox - {} settings",
-        panel::display_name(panel.read(cx).panel_name())
-    ));
+    let title = rox_i18n::t!(
+        "panel-settings-window-title",
+        name = panel::display_name(panel.read(cx).panel_name()).to_string()
+    );
     // Floored at MIN_SIZE so a stale small frame never opens under the minimum.
     let min = settings_ui::MIN_SIZE;
     let (width, height) = settings::Settings::load()
@@ -283,12 +283,12 @@ pub fn pending_shader(
                 .gap(px(2.))
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child(
-                    "This shader arrived inside a layout or a workspace. It doesn't run \
-                     until you've read it and approved it on this machine.",
-                )
+                .child(rox_i18n::t!("shader-confirm-arrived"))
                 .child(origin)
-                .child(format!("Hash {}", shader::fingerprint(source))),
+                .child(rox_i18n::t!(
+                    "shader-confirm-hash",
+                    hash = shader::fingerprint(source).to_string()
+                )),
         )
         .child(listing)
         .child(
@@ -722,10 +722,10 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = SharedString::from(format!(
-        "rox - rename {}",
-        panel::display_name(panel.read(cx).panel_name())
-    ));
+    let title = rox_i18n::t!(
+        "panel-rename-window-title",
+        name = panel::display_name(panel.read(cx).panel_name()).to_string()
+    );
     let bounds = Bounds::centered(None, size(px(380.), px(195.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
@@ -885,10 +885,10 @@ fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = SharedString::from(format!(
-        "rox - save {} as preset",
-        panel::display_name(panel.read(cx).panel_name())
-    ));
+    let title = rox_i18n::t!(
+        "preset-save-window-title",
+        name = panel::display_name(panel.read(cx).panel_name()).to_string()
+    );
     let bounds = Bounds::centered(None, size(px(420.), px(300.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
@@ -2875,12 +2875,12 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_XS)
-                            .child(div().text_xs().text_color(palette::text_muted()).child(
-                                "Overrides recolor just this panel and hold still under song \
-                                 theming; a link follows another app color instead, moving \
-                                 with the theme. Reset a swatch or clear its hex field to \
-                                 follow the app palette again",
-                            ))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("panel-colors-note")),
+                            )
                             .child(grid)
                             .into_any_element()
                     },

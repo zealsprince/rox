@@ -433,9 +433,9 @@ impl WelcomeWindow {
                         .child(line(rox_i18n::t!("welcome-tour-intro")))
                         .child(div().text_color(palette::text_faint()).child(kbd_line([
                             Seg::Text(rox_i18n::t!("welcome-step-hint-before")),
-                            Seg::Key("Left".into()),
+                            Seg::Key(crate::keymap::display("left").into()),
                             Seg::Text(rox_i18n::t!("welcome-and")),
-                            Seg::Key("Right".into()),
+                            Seg::Key(crate::keymap::display("right").into()),
                             Seg::Text(rox_i18n::t!("welcome-step-hint-after")),
                         ]))),
                 )
@@ -469,15 +469,15 @@ impl WelcomeWindow {
                             .child(kbd_line([
                                 Seg::Key(chord("P")),
                                 Seg::Text(rox_i18n::t!("welcome-quickplay-before")),
-                                Seg::Key("Enter".into()),
+                                Seg::Key(crate::keymap::display("enter").into()),
                                 Seg::Text(rox_i18n::t!("welcome-quickplay-after")),
                             ]))
                             .child(kbd_line([
-                                Seg::Key("Space".into()),
+                                Seg::Key(crate::keymap::display("space").into()),
                                 Seg::Text(rox_i18n::t!("welcome-playback-before")),
-                                Seg::Key("Left".into()),
+                                Seg::Key(crate::keymap::display("left").into()),
                                 Seg::Text(rox_i18n::t!("welcome-and")),
-                                Seg::Key("Right".into()),
+                                Seg::Key(crate::keymap::display("right").into()),
                                 Seg::Text(rox_i18n::t!("welcome-playback-after")),
                             ])),
                     ),
@@ -517,7 +517,7 @@ impl WelcomeWindow {
                                 Seg::Text(rox_i18n::t!("welcome-rearrange-before")),
                                 Seg::Key(rox_i18n::t!("welcome-key-middle-mouse")),
                                 Seg::Text(rox_i18n::t!("welcome-or")),
-                                Seg::Key("Alt".into()),
+                                Seg::Key(rox_i18n::t!("keymap-mod-alt")),
                                 Seg::Text("+".into()),
                                 Seg::Key(rox_i18n::t!("welcome-key-left-click")),
                                 Seg::Text(rox_i18n::t!("welcome-rearrange-after")),
@@ -529,9 +529,9 @@ impl WelcomeWindow {
                         rox_i18n::t!("welcome-card-menubar-title"),
                         kbd_line([
                             Seg::Text(rox_i18n::t!("welcome-menubar-before")),
-                            Seg::Key("Alt".into()),
+                            Seg::Key(rox_i18n::t!("keymap-mod-alt")),
                             Seg::Text(rox_i18n::t!("welcome-menubar-mid")),
-                            Seg::Key("Alt".into()),
+                            Seg::Key(rox_i18n::t!("keymap-mod-alt")),
                             Seg::Text(rox_i18n::t!("welcome-menubar-after")),
                         ]),
                     ),

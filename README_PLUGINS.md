@@ -382,6 +382,10 @@ the plugin's settings are. rox shows the notice from a place's first page and ig
 on later ones. The text is the plugin's own and isn't translated, like the rest of what
 it sends.
 
+The user can hide an `info` notice that sits above entries, per panel. A `setup` notice
+always shows, and so does any notice on a page with no entries, so say what the user has
+to do with one of those.
+
 A notice can also carry a `link`, which puts a button on it that opens a web page in
 the browser, like a sign-in page the user has to visit:
 

@@ -120,7 +120,7 @@ const LABEL_MIN_W: f32 = 84.;
 /// Sized so "Album Artist Sort" holds one line.
 fn label_column_w(rows: &[usize]) -> f32 {
     rows.iter()
-        .map(|i| title_case(FIELDS[*i].1).chars().count() as f32 * LABEL_CHAR_W)
+        .map(|i| field_name(FIELDS[*i].1).chars().count() as f32 * LABEL_CHAR_W)
         .fold(LABEL_MIN_W, f32::max)
         .ceil()
 }
@@ -172,6 +172,32 @@ fn title_case(label: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// A field's name in the active language. FIELDS keeps lowercase English
+/// keys, which the column sets, saved layouts and tests match on, so the
+/// translation happens here. A tag the table doesn't know is title-cased.
+fn field_name(key: &str) -> SharedString {
+    let message = match key {
+        "file" => "metadata-field-file",
+        "title" => "info-item-title",
+        "title sort" => "columns-title-sort",
+        "artist" => "filter-field-artist",
+        "artist sort" => "columns-artist-sort",
+        "album artist" => "filter-field-album-artist",
+        "album artist sort" => "columns-album-artist-sort",
+        "album" => "filter-field-album",
+        "album sort" => "columns-album-sort",
+        "genre" => "filter-field-genre",
+        "year" => "filter-field-year",
+        "track" => "metadata-field-track",
+        "disc" => "metadata-field-disc",
+        "comment" => "metadata-field-comment",
+        "rating" => "info-item-rating",
+        _ => return title_case(key).into(),
+    };
+
+    rox_i18n::t!(message)
 }
 
 fn column_keys() -> impl Iterator<Item = &'static str> {
@@ -1169,7 +1195,7 @@ impl TagEditor {
         if !on {
             let name: SharedString = match key.strip_prefix(TAG_PREFIX) {
                 Some(tag) => one_line(tag).into(),
-                None => title_case(&key).into(),
+                None => field_name(&key),
             };
             let width = match canonical_ix(&key) {
                 Some(canon) => default_widths()[canon],
@@ -1939,7 +1965,7 @@ impl TagEditor {
                                 .child(
                                     div()
                                         .text_color(palette::text_muted())
-                                        .child(SharedString::from(title_case(label))),
+                                        .child(field_name(label)),
                                 )
                                 .child(SharedString::from(value.clone()))
                         }))
@@ -2017,7 +2043,7 @@ impl TagEditor {
                             )),
                     )
                     .child(settings_ui::small_button(
-                        "Apply",
+                        rox_i18n::t!("settings-common-apply"),
                         icons::ARROW_DOWN,
                         self.saving || self.baselines.is_none() || hits == 0,
                         cx.listener(|this, _, window, cx| this.apply_guesses(window, cx)),
@@ -2689,7 +2715,7 @@ impl TagEditor {
                 .items_center()
                 .gap(tokens::SPACE_XS)
                 .text_xs()
-                .text_color(palette::tone_warn())
+                .text_color(palette::text_muted())
                 .child(Spinner::new().with_size(Size::Small))
                 .child(label)
                 .into_any_element()
@@ -2715,9 +2741,9 @@ impl TagEditor {
                     .child(reason)
                     .into_any_element(),
                 None => kbd_line([
-                    Seg::Text("Press".into()),
-                    Seg::Key("Enter".into()),
-                    Seg::Text("to save".into()),
+                    Seg::Text(rox_i18n::t!("hint-press")),
+                    Seg::Key(rox_i18n::t!("hint-key-enter")),
+                    Seg::Text(rox_i18n::t!("hint-after-save")),
                 ])
                 .text_xs()
                 .into_any_element(),
@@ -2742,7 +2768,7 @@ impl TagEditor {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Save",
+                        rox_i18n::t!("settings-common-save"),
                         icons::CHECK,
                         !self.savable(),
                         cx.listener(|this, _, window, cx| this.save(window, cx)),
@@ -2836,9 +2862,7 @@ impl TagEditor {
                         .w(label_w)
                         .flex_none()
                         .text_color(palette::text_muted())
-                        // FIELDS keeps lowercase literals, which the column sets and tests match
-                        // on.
-                        .child(SharedString::from(title_case(label))),
+                        .child(field_name(label)),
                 )
                 .child(div().flex_1().min_w_0().child(field))
                 .when(clearable, |d| {
@@ -2941,7 +2965,7 @@ fn grid_columns(
             .unwrap_or(defaults[i])
     };
     let fixed = column_keys().enumerate().map(|(i, key)| {
-        Column::new(key, title_case(key))
+        Column::new(key, field_name(key))
             .width(px(width(i)))
             .sortable()
     });
@@ -3080,7 +3104,7 @@ impl TableDelegate for CellGrid {
                 for key in column_keys() {
                     let editor = editor.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(title_case(key))
+                        PopupMenuItem::new(field_name(key))
                             .checked(shown.contains(key))
                             .on_click(move |_, _, cx| {
                                 editor
@@ -3275,7 +3299,7 @@ fn build_additional(
                 let size = if agreed {
                     one_line(&values[0].display())
                 } else {
-                    "Multiple values".to_owned()
+                    rox_i18n::t!("tags-editor-multiple-values").to_string()
                 };
                 return AdditionalRow {
                     key,
@@ -3292,7 +3316,10 @@ fn build_additional(
             let (value, placeholder) = if agreed {
                 (values[0].display(), "")
             } else {
-                (String::new(), "Multiple values")
+                (
+                    String::new(),
+                    rox_i18n::t_static("tags-editor-multiple-values"),
+                )
             };
             let input = cx.new(|cx| {
                 InputState::new(window, cx)

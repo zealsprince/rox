@@ -344,7 +344,7 @@ impl Session {
         keys: Vec<TrackKey>,
         volume: f32,
         loop_mode: LoopMode,
-        shuffle: Option<bool>,
+        shuffle: Option<Cmd>,
         stop_after: bool,
         paused_at: Option<f64>,
         crossfade: (f32, bool),
@@ -361,8 +361,8 @@ impl Session {
         let _ = tx.send(Cmd::SetLoop(loop_mode));
         // A restore passes None: its saved order is already shuffled, and
         // re-sending would reshuffle the unplayed tail.
-        if let Some(on) = shuffle {
-            let _ = tx.send(Cmd::SetShuffle(on));
+        if let Some(shuffle) = shuffle {
+            let _ = tx.send(shuffle);
         }
         if stop_after {
             let _ = tx.send(Cmd::SetStopAfter(true));
@@ -1663,10 +1663,10 @@ impl Player {
         self.skip_reseed = SkipReseed::Idle;
         self.song_start = None;
         self.session = None;
-        let shuffle = if preserve_order {
-            None
-        } else {
-            Some(self.settings.session.shuffle)
+        let shuffle = match (preserve_order, self.settings.session.shuffle) {
+            (true, _) => None,
+            (false, false) => Some(Cmd::SetShuffle(false)),
+            (false, true) => Some(self.shuffle_cmd()),
         };
         match Session::start(
             StartQueue {
@@ -2032,11 +2032,13 @@ impl Player {
 
     fn queue_order(&self) -> continuation::Order {
         if !self.settings.session.shuffle {
-            continuation::Order::Browse
-        } else if self.shuffle_mode() == ShuffleMode::Similar {
-            continuation::Order::Similar
-        } else {
-            continuation::Order::Random
+            return continuation::Order::Browse;
+        }
+
+        match self.shuffle_mode() {
+            ShuffleMode::Similar => continuation::Order::Similar,
+            ShuffleMode::Albums => continuation::Order::Albums,
+            ShuffleMode::Random => continuation::Order::Random,
         }
     }
 
@@ -2265,7 +2267,7 @@ impl Player {
         }
 
         self.stop(cx);
-        self.error = Some("audio output: device lost".into());
+        self.error = Some(rox_i18n::t!("player-error-device-lost").to_string().into());
         cx.notify();
 
         false
@@ -3295,9 +3297,19 @@ impl Player {
         cx.notify();
     }
 
+    /// What turns shuffle on in the engine for the order in force. Similar
+    /// starts from a flat shuffle and ranks its tail afterwards.
+    fn shuffle_cmd(&self) -> Cmd {
+        match self.shuffle_mode() {
+            ShuffleMode::Albums => Cmd::ShuffleGroups,
+            ShuffleMode::Random | ShuffleMode::Similar => Cmd::SetShuffle(true),
+        }
+    }
+
     fn apply_shuffle_order(&mut self, cx: &mut Context<Self>) {
         match self.shuffle_mode() {
             ShuffleMode::Random => self.send(Cmd::SetShuffle(true)),
+            ShuffleMode::Albums => self.send(Cmd::ShuffleGroups),
             ShuffleMode::Similar => {
                 self.order_tail_by_similarity(1, None, false, cx);
                 // Sorting what's queued isn't radio: draw a batch now, and the

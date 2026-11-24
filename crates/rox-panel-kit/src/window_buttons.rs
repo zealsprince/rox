@@ -23,13 +23,13 @@ pub fn maximize(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
 }
 
 pub fn maximize_tip(window: &Window) -> &'static str {
-    if !cfg!(target_os = "macos") {
-        "Maximize"
+    rox_i18n::t_static(if !cfg!(target_os = "macos") {
+        "window-controls-maximize"
     } else if window.is_fullscreen() {
-        "Exit Fullscreen"
+        "window-controls-exit-fullscreen"
     } else {
-        "Fullscreen, or Option-click to zoom"
-    }
+        "window-controls-fullscreen-tip"
+    })
 }
 
 /// Brackets rather than shrink arrows inside fullscreen: the mini toggle,

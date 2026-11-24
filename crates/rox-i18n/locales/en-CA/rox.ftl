@@ -215,6 +215,10 @@ preset-save-replaces-global = Replaces the global preset already called { $name 
 
 hint-press = Press
 hint-key-enter = Enter
+hint-after-save = to save
+hint-after-apply = to apply
+hint-after-convert = to convert
+hint-after-repair = to repair
 
 ## Settings: language
 
@@ -361,6 +365,7 @@ panel-pop-out = Pop Out
 panel-close = Close
 panel-duplicate = Duplicate
 panel-reveal-in-browser = Reveal in File Browser
+panel-move-to-trash = Move to Trash...
 panel-play-next = Play Next
 panel-add-to-queue = Add to Queue
 panel-add-to-playlist = Add to Playlist
@@ -471,6 +476,7 @@ button-state-repeat-one = Track
 button-state-shuffle = Shuffle Order
 button-state-shuffle-random = Random
 button-state-shuffle-similar = Similar
+button-state-shuffle-albums = Albums
 button-state-shuffling = Shuffle
 button-state-shuffling-on = On
 button-state-shuffling-off = Off
@@ -1345,6 +1351,8 @@ settings-playback-shuffle-random = Random
     .description = The shuffle everyone means by the word. What's coming plays in no particular order
 settings-playback-shuffle-similar = Similar
     .description = Nearest first by sound. What's coming is sorted by how much it resembles the track that was playing when you turned it on, and re-sorted on every skip. A plugin's tracks keep coming from its radio instead. Needs the library described on the Library page, or a plugin with a radio
+settings-playback-shuffle-albums = Albums
+    .description = Albums in no particular order, each one played through in its own track order. The album that's playing finishes first, and a queue that runs dry refills a whole album at a time
 settings-playback-unrated-dots = Unrated Dots
     .description = Mark unfilled star slots with a faint dot instead of leaving them empty
 
@@ -1591,6 +1599,8 @@ settings-common-copy = Copy
 settings-common-database = Database
 settings-common-delete = Delete
 settings-common-done = Done
+settings-common-save = Save
+settings-common-apply = Apply
 settings-common-download = Download
 settings-common-program-folders = Program Folders
     .description = Folders searched for programs before PATH, separated like PATH. Add Homebrew's folder here if programs you installed with it show as missing
@@ -1747,6 +1757,18 @@ workspace-mini-tip-back = Back to the full layout
 workspace-mini-tip-shrink = Shrink to the mini player
 workspace-overwrite-body = This replaces the saved workspace with the current look.
 workspace-panel-locked-close-body = This panel is pinned in place. Closing it takes it out of the layout.
+workspace-trash-title = { $count ->
+    [one] Move 1 file to the trash?
+   *[other] Move { $count } files to the trash?
+}
+workspace-trash-body = Trashed files leave the library and their folders, and stay in the system trash until it's emptied.
+workspace-dialog-trash = Move to Trash
+workspace-trash-done = { $count ->
+    [one] Moved 1 file to the trash
+   *[other] Moved { $count } files to the trash
+}
+workspace-trash-failed = { $failed } of { $count } couldn't be moved to the trash
+workspace-trash-not-files = Only tracks that are a file of their own can go to the trash
 workspace-save-current = Save Current
 workspace-screen-shader-hint-before = Turn it off any time with
 workspace-workspace-restore-failed = The workspace's layout couldn't be restored, so this window starts empty.
@@ -2325,7 +2347,7 @@ keymap-toggle-mute = Mute
 keymap-toggle-shuffle = Toggle Shuffle
     .description = Turn shuffle on or off for the queue
 keymap-cycle-shuffle-mode = Cycle Shuffle Order
-    .description = Step the order shuffle sorts by, random or nearest by sound
+    .description = Step the order shuffle sorts by: random, nearest by sound, or album by album
 keymap-cycle-loop = Cycle Loop
     .description = Step loop from off to all to one and back around
 keymap-toggle-stop-after = Stop After
@@ -2340,6 +2362,8 @@ keymap-toggle-favourite = Toggle Favourite
     .description = Favourite the playing track, or take the mark back off it
 keymap-rename-track = Rename Track
     .description = Edit the title of the track last picked in any list
+keymap-trash-selection = Move Selection to Trash
+    .description = Ask to move the files of the tracks last picked in any list to the system trash
 keymap-volume-up = Volume Up
     .description = Raise the volume one notch
 keymap-volume-down = Volume Down
@@ -2675,8 +2699,14 @@ duplicates-copy-count = { $count ->
 duplicates-different-albums = different albums
 duplicates-filter-placeholder = Filter by title, artist, or folder
 duplicates-groups-summary = { $groups ->
-    [one] { $groups } group, { $extras } extra copies
-   *[other] { $groups } groups, { $extras } extra copies
+    [one] 1 group, { $extras ->
+        [one] { $extras } extra copy
+       *[other] { $extras } extra copies
+    }
+   *[other] { $groups } groups, { $extras ->
+        [one] { $extras } extra copy
+       *[other] { $extras } extra copies
+    }
 }
 duplicates-library-loading = The library is still loading; try again shortly.
 duplicates-no-duplicates = No duplicates found.
@@ -3954,7 +3984,9 @@ playback-random-tip-similar = Play a track like this one
 playback-seek-back-tip = Back 10 seconds
 playback-seek-forward-tip = Forward 10 seconds
 playback-shuffle-off = Shuffle off
-playback-shuffle-on = Shuffle on, { $order } order
+playback-shuffle-random = Shuffle on, random order
+playback-shuffle-similar = Shuffle on, similar order
+playback-shuffle-albums = Shuffle on, album order
 playback-stop-after-armed = Stop after this track, armed
 playback-stop-after-tip = Stop after this track
 playback-stop-tip = Stop and unload the track
@@ -3993,6 +4025,8 @@ track-info-track-scrobbles = Track scrobbles: { $count }
 track-info-scrobble-style-text = Text
 track-info-scrobble-style-badge = Badge
 track-info-scrobble-style-labelled = Labelled badge
+track-info-divider-stretch = Stretch
+track-info-divider-bar = Bar
 track-info-badge-artist = Artist
 track-info-badge-track = Track
 track-info-row-size = Row { $number } Size
@@ -4398,6 +4432,9 @@ source-browser-search = Search
 source-browser-home = Home
 source-browser-show-home = Show the Home Page
     .description = Lists the source's home page under its collections and other places, so it opens without a click. Off, it's one more place on the list.
+source-browser-show-notice = Show the Source's Notice
+    .description = The line a plugin puts over its pages to say something about them. Off hides it. A notice asking for a setting, or one on a page with nothing else, shows either way.
+source-browser-hide-notice = Hide
 source-browser-results = Results for { $query }
 source-browser-empty = Nothing here
 source-browser-pick = Choose a Source
@@ -4443,3 +4480,84 @@ source-browser-members = { $count ->
 }
 source-browser-play = Play
 source-browser-play-count = Play { $count } Tracks
+lastfm-import-blocked-running = An import is already running
+lastfm-import-blocked-no-key = This build has no API key to ask with
+lastfm-import-blocked-no-account = Connect a Last.fm account first
+tags-repair-scanning-progress = Scanning { $done }/{ $total }...
+settings-common-scan = Scan
+menubar-rescan-tip = Rescan the library folders
+menubar-stop-scan-tip = Stop the scan
+menu-native-hide = Hide { $what }
+menu-native-show = Show { $what }
+menu-native-turn-off = Turn Off { $what }
+menu-native-turn-on = Turn On { $what }
+shader-unapproved-workspace = This shader arrived with a workspace and hasn't been approved on this machine
+settings-window-title = rox - Settings
+track-info-queue-finished = (queue finished)
+expr-problem-stray = unexpected character
+expr-problem-unknown = unknown name
+expr-problem-arity = wrong number of arguments
+expr-problem-unclosed = unclosed bracket
+expr-problem-ended = expression ends early
+expr-problem-trailing = leftover text
+expr-problem-too-deep = nested too deep
+expr-problem-too-long = too long
+picker-search-fonts = Search fonts
+picker-search-icons = Search icons
+window-controls-exit-fullscreen = Exit Fullscreen
+window-controls-fullscreen-tip = Fullscreen, or Option-click to zoom
+panel-settings-window-title = rox - { $name } settings
+panel-rename-window-title = rox - rename { $name }
+preset-save-window-title = rox - save { $name } as preset
+shader-confirm-hash = Hash { $hash }
+shader-confirm-arrived = This shader arrived inside a layout or a workspace. It doesn't run until you've read it and approved it on this machine.
+panel-colors-note = Overrides recolor just this panel and hold still under song theming; a link follows another app color instead, moving with the theme. Reset a swatch or clear its hex field to follow the app palette again
+signal-routes-none = Nothing routed: every slot reads zero until a route feeds it a signal. A shader can name its slots with `// @slot 0: bass` comments and the names show up here.
+signal-routes-full = All sixteen slots are routed. Point one somewhere else or delete it to add another.
+shader-no-pipeline-note = This build renders through a backend with no shader pipeline. Shaders ride blade's render pipelines, so every source gets turned down whatever it says.
+shader-no-pipeline-title = Shaders don't run on this build
+shader-run-when-idle-description = Keep drawing while the audio is silent. Off, the shader parks where it stands and the panel costs nothing
+library-busy-loading = loading library...
+library-busy-scanning = scanning...
+library-busy-removing = removing...
+library-busy-refreshing = refreshing...
+library-busy-syncing = syncing...
+library-busy-stopping = stopping...
+library-busy-clearing-vectors = clearing vectors...
+library-busy-clearing-tempos = clearing tempos...
+library-busy-clearing-listens = clearing listens...
+library-busy-scanning-progress = scanning { $done }/{ $total }
+library-status-indexed = { $count } indexed
+library-status-unchanged = { $count } unchanged
+library-status-untagged = { $count } untagged
+library-status-removed = { $count } removed
+library-status-unreachable = { $count ->
+    [one] { $count } folder unreachable
+   *[other] { $count } folders unreachable
+}
+library-status-stopped-early = stopped early
+library-status-updated = { $count } updated
+library-status-renamed = { $count } renamed
+player-error-device-lost = audio output: device lost
+sources-error-no-server = no server configured
+sources-error-sync-running = a sync is already running
+lastfm-auth-needs-key = enter an api key and secret first
+plugin-radio-empty = the radio came back empty
+job-nothing-to-measure = there's nothing left to measure
+job-nothing-decodable = nothing decodable
+job-nothing-to-romanize = nothing left to romanize
+discord-unknown-track = Unknown Track
+discord-unknown-artist = Unknown Artist
+discord-button-lastfm = View on Last.fm
+discord-button-youtube = Search on YouTube
+settings-library-acoustic-extractor-installed = Built-in needs no download and describes timbre and rhythm. { $model } hears more, and is the model the ML Models page is offering. Switching re-describes the library under the new one
+settings-library-acoustic-extractor-none = Built-in needs no download and describes timbre and rhythm. No model is installed, so there's nothing to switch to yet: download { $model }, or pick a weights file of your own, on the ML Models page
+settings-audio-replaygain-coverage-none = None of the { $total } tracks scanned have a ReplayGain to level by. Measure Missing analyzes them and saves the numbers
+settings-audio-replaygain-coverage-some = { $covered } of { $total } scanned tracks have a gain to level by, { $measured } of them measured by rox. The other { $missing } play at the untagged setting
+settings-library-watch-over-limit = Off: this library spans { $dirs } folders and each needs one Linux file watch, more than the { $limit } the app will take from the system's shared budget. Rescan by hand to fold in changes
+settings-storage-vectors-known = { $model }, { $dim } values a track. Clearing gives the space back, and having the descriptions again means a whole pass over the library
+settings-storage-vectors-orphaned = { $dim } values a track. Nothing in this build writes this model, so these are left over from one that was renamed or dropped, and clearing them costs the library nothing it uses
+settings-mlmodels-custom-description = { $path }. { $dim } values per track, stored under { $id }, so its vectors never mix with the catalog's
+cover-editor-slot-artist = Artist
+shader-read-error = reading { $path }: { $error }
+plugin-sync-still-paging = { $collection } is still paging after { $pages } pages

@@ -901,11 +901,14 @@ pub fn unsupported(error: &str) -> bool {
 
 /// Shown instead of a bare "unsupported", which sends people hunting
 /// through WGSL that's fine.
-pub const NO_PIPELINE_NOTE: &str = "This build renders through a backend with no shader pipeline. Shaders ride \
-     blade's render pipelines, so every source gets turned down whatever it says.";
+pub fn no_pipeline_note() -> gpui::SharedString {
+    rox_i18n::t!("shader-no-pipeline-note")
+}
 
 /// No full stop: it's a banner headline first.
-pub const NO_PIPELINE_TITLE: &str = "Shaders don't run on this build";
+pub fn no_pipeline_title() -> gpui::SharedString {
+    rox_i18n::t!("shader-no-pipeline-title")
+}
 
 /// The last compile message per panel, for its settings window's readout.
 static ERRORS: LazyLock<RwLock<HashMap<EntityId, String>>> =

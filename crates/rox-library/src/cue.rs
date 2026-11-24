@@ -302,12 +302,13 @@ enum TrackState {
 }
 
 /// A track with no INDEX, or before any FILE, has no span and is dropped.
-fn flush_track(state: &mut TrackState, file: &mut Option<CueFile>) {
+/// Answers whether the track landed.
+fn flush_track(state: &mut TrackState, file: &mut Option<CueFile>) -> bool {
     let TrackState::Audio(pending) = std::mem::replace(state, TrackState::Album) else {
-        return;
+        return false;
     };
     let (Some(start_ms), Some(file)) = (pending.index01.or(pending.index00), file.as_mut()) else {
-        return;
+        return false;
     };
     file.tracks.push(CueTrack {
         number: pending.number,
@@ -318,6 +319,33 @@ fn flush_track(state: &mut TrackState, file: &mut Option<CueFile>) {
             end_ms: None,
         },
     });
+
+    true
+}
+
+/// A track that crossed a FILE line still waiting on its INDEX 01, as the
+/// row its INDEX 00 would have made in the file it left.
+struct Held {
+    file: usize,
+    track: CueTrack,
+}
+
+/// Ends the track being read. One that crossed into a file which never
+/// indexed it goes back to the pregap it left.
+fn end_track(
+    state: &mut TrackState,
+    current: &mut Option<CueFile>,
+    held: &mut Option<Held>,
+    files: &mut [CueFile],
+) {
+    let landed = flush_track(state, current);
+
+    if let Some(held) = held.take()
+        && !landed
+        && let Some(file) = files.get_mut(held.file)
+    {
+        file.tracks.push(held.track);
+    }
 }
 
 /// None when nothing playable came out. Unknown commands are skipped, not
@@ -327,6 +355,7 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
     let mut sheet = CueSheet::default();
     let mut current: Option<CueFile> = None;
     let mut state = TrackState::Album;
+    let mut held: Option<Held> = None;
 
     for line in text.lines() {
         let Some((command, rest)) = split_token(line) else {
@@ -334,10 +363,36 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
         };
         match command.to_ascii_uppercase().as_str() {
             "FILE" => {
-                flush_track(&mut state, &mut current);
-                if let Some(done) = current.take() {
-                    sheet.files.push(done);
+                // EAC's gaps-appended layout declares a track under the file
+                // holding its pregap and gives INDEX 01 under the next FILE,
+                // where the song starts. Such a track waits for that index.
+                let waiting =
+                    matches!(&state, TrackState::Audio(pending) if pending.index01.is_none());
+                if !waiting {
+                    end_track(&mut state, &mut current, &mut held, &mut sheet.files);
                 }
+
+                let ended = current.take().map(|done| {
+                    sheet.files.push(done);
+                    sheet.files.len() - 1
+                });
+                if let TrackState::Audio(pending) = &mut state
+                    && let (Some(start_ms), Some(file)) = (pending.index00.take(), ended)
+                {
+                    held = Some(Held {
+                        file,
+                        track: CueTrack {
+                            number: pending.number,
+                            title: pending.title.clone(),
+                            performer: pending.performer.clone(),
+                            span: Span {
+                                start_ms,
+                                end_ms: None,
+                            },
+                        },
+                    });
+                }
+
                 // The WAVE/MP3/BINARY word is ignored: sheets lie, the decoder knows.
                 if let Some((path, _)) = read_arg(rest) {
                     current = Some(CueFile {
@@ -347,7 +402,7 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
                 }
             }
             "TRACK" => {
-                flush_track(&mut state, &mut current);
+                end_track(&mut state, &mut current, &mut held, &mut sheet.files);
                 let number = read_arg(rest).and_then(|(n, tail)| {
                     let kind = read_arg(tail).map(|(k, _)| k).unwrap_or_default();
                     n.parse::<u16>()
@@ -410,7 +465,7 @@ pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
         }
     }
 
-    flush_track(&mut state, &mut current);
+    end_track(&mut state, &mut current, &mut held, &mut sheet.files);
     if let Some(done) = current.take() {
         sheet.files.push(done);
     }
@@ -558,6 +613,52 @@ FILE "Urban Hymns.flac" WAVE
                     TRACK 02 AUDIO\nINDEX 00 01:00:00\n";
         let sheet = parse(text.as_bytes()).expect("sheet parses");
         assert_eq!(sheet.files[0].tracks[1].span.start_ms, 60_000);
+    }
+
+    /// EAC's "Multiple WAV files with gaps (noncompliant)" sheet.
+    #[test]
+    fn a_track_indexed_in_the_next_file_belongs_to_that_file() {
+        let text = "PERFORMER \"toe\"\n\
+                    FILE \"01.wav\" WAVE\n\
+                    TRACK 01 AUDIO\nTITLE \"One\"\nINDEX 01 00:00:00\n\
+                    TRACK 02 AUDIO\nTITLE \"Two\"\nINDEX 00 00:39:10\n\
+                    FILE \"02.wav\" WAVE\n\
+                    INDEX 01 00:00:00\n\
+                    TRACK 03 AUDIO\nTITLE \"Three\"\nINDEX 00 03:20:11\n\
+                    FILE \"03.wav\" WAVE\n\
+                    INDEX 01 00:00:00\n";
+        let sheet = parse(text.as_bytes()).expect("sheet parses");
+
+        let whole = Span {
+            start_ms: 0,
+            end_ms: None,
+        };
+        let cut: Vec<String> = sheet
+            .files
+            .iter()
+            .flat_map(|file| {
+                file.tracks.iter().map(|t| {
+                    assert_eq!(t.span, whole, "{} starts its own file", t.title);
+                    format!("{} {} {}", file.path, t.number, t.title)
+                })
+            })
+            .collect();
+        assert_eq!(cut, ["01.wav 1 One", "02.wav 2 Two", "03.wav 3 Three"]);
+    }
+
+    #[test]
+    fn a_pregap_the_next_file_never_indexes_stays_where_it_was() {
+        let text = "FILE \"a.flac\" WAVE\n\
+                    TRACK 01 AUDIO\nINDEX 01 00:00:00\n\
+                    TRACK 02 AUDIO\nINDEX 00 01:00:00\n\
+                    FILE \"b.flac\" WAVE\n\
+                    TRACK 03 AUDIO\nINDEX 01 00:00:00\n";
+        let sheet = parse(text.as_bytes()).expect("sheet parses");
+
+        let numbers = |file: &CueFile| file.tracks.iter().map(|t| t.number).collect::<Vec<_>>();
+        assert_eq!(numbers(&sheet.files[0]), [1, 2]);
+        assert_eq!(sheet.files[0].tracks[1].span.start_ms, 60_000);
+        assert_eq!(numbers(&sheet.files[1]), [3]);
     }
 
     #[test]

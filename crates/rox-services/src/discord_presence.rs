@@ -111,7 +111,7 @@ impl PresenceSample {
             now.path()
                 .and_then(|path| path.file_name())
                 .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Unknown Track".into())
+                .unwrap_or_else(|| rox_i18n::t!("discord-unknown-track").to_string())
         };
         let number = |n: u16| if n == 0 { String::new() } else { n.to_string() };
         let station = player
@@ -123,7 +123,7 @@ impl PresenceSample {
         let Some(meta) = meta else {
             return Some(PresenceSample {
                 title: file_name(),
-                artist: "Unknown Artist".into(),
+                artist: rox_i18n::t!("discord-unknown-artist").to_string(),
                 album: String::new(),
                 album_artist: String::new(),
                 genre: String::new(),
@@ -147,7 +147,7 @@ impl PresenceSample {
                 meta.title
             },
             artist: if meta.artist.is_empty() {
-                "Unknown Artist".into()
+                rox_i18n::t!("discord-unknown-artist").to_string()
             } else {
                 meta.artist
             },
@@ -542,9 +542,12 @@ impl DiscordPresence {
                         let image_key = cover_url.as_deref().unwrap_or("app_icon");
 
                         let (small_key, small_text) = if state.is_playing {
-                            ("play", "Playing")
+                            ("play", rox_i18n::t!("source-playing").to_string())
                         } else {
-                            ("pause", "Paused")
+                            (
+                                "pause",
+                                rox_i18n::t!("button-state-playback-paused").to_string(),
+                            )
                         };
 
                         let mut assets = Assets::new()
@@ -572,12 +575,14 @@ impl DiscordPresence {
                             url_encode(&state.title)
                         );
                         let has_meta = !state.artist.is_empty() || !state.title.is_empty();
+                        let lastfm_label = rox_i18n::t!("discord-button-lastfm").to_string();
+                        let youtube_label = rox_i18n::t!("discord-button-youtube").to_string();
 
                         if state.show_lastfm_button && has_meta {
-                            buttons.push(Button::new("View on Last.fm", &lastfm_url));
+                            buttons.push(Button::new(lastfm_label.as_str(), &lastfm_url));
                         }
                         if state.show_youtube_button && has_meta {
-                            buttons.push(Button::new("Search on YouTube", &youtube_url));
+                            buttons.push(Button::new(youtube_label.as_str(), &youtube_url));
                         }
 
                         if !buttons.is_empty() {

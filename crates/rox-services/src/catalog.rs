@@ -497,7 +497,7 @@ impl Library {
             return;
         };
         scan.cancel.store(true, Ordering::Relaxed);
-        self.busy = Some("stopping...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-stopping"));
         cx.notify();
     }
 
@@ -666,7 +666,7 @@ impl Library {
         if self.busy.is_some() {
             return;
         }
-        self.busy = Some("clearing vectors...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-clearing-vectors"));
         let db_path = self.db_path.clone();
         let model = model.to_owned();
         cx.spawn(async move |this, cx| {
@@ -703,7 +703,7 @@ impl Library {
         if self.busy.is_some() {
             return;
         }
-        self.busy = Some("clearing tempos...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-clearing-tempos"));
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let cleared = cx
@@ -736,7 +736,7 @@ impl Library {
         if self.busy.is_some() {
             return;
         }
-        self.busy = Some("clearing listens...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-clearing-listens"));
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let cleared = cx
@@ -1932,12 +1932,12 @@ impl Library {
             return;
         }
         self.busy = Some(match &refresh {
-            Refresh::Load => "loading library...".into(),
-            Refresh::Scan(_) => "scanning...".into(),
-            Refresh::Remove(_) => "removing...".into(),
-            Refresh::Reindex(_) => "refreshing...".into(),
-            Refresh::Prune(_) => "removing...".into(),
-            Refresh::Watch { .. } => "syncing...".into(),
+            Refresh::Load => rox_i18n::t!("library-busy-loading"),
+            Refresh::Scan(_) => rox_i18n::t!("library-busy-scanning"),
+            Refresh::Remove(_) => rox_i18n::t!("library-busy-removing"),
+            Refresh::Reindex(_) => rox_i18n::t!("library-busy-refreshing"),
+            Refresh::Prune(_) => rox_i18n::t!("library-busy-removing"),
+            Refresh::Watch { .. } => rox_i18n::t!("library-busy-syncing"),
         });
         let progress = Arc::new(ScanProgress::default());
         if matches!(refresh, Refresh::Scan(_)) {
@@ -2082,7 +2082,11 @@ impl Library {
                     // A pending stop owns the badge.
                     if total > 0 && !progress.cancel.load(Ordering::Relaxed) {
                         let scanned = progress.scanned.load(Ordering::Relaxed);
-                        this.busy = Some(format!("scanning {scanned}/{total}").into());
+                        this.busy = Some(rox_i18n::t!(
+                            "library-busy-scanning-progress",
+                            done = scanned as u64,
+                            total = total as u64
+                        ));
                         this.status = progress.current.lock().unwrap().clone().into();
                         cx.notify();
                     }
@@ -2552,38 +2556,36 @@ fn status_line(
 ) -> String {
     // Zero counts stay out, so the line fits the menubar.
     let mut parts = Vec::new();
-    let count = |n: usize| rox_i18n::format::format_int(n as i64);
+    let part = |key: &str, n: usize| rox_i18n::t!(key, count = n as u64).to_string();
     if let Some(s) = summary {
         if s.indexed > 0 {
-            parts.push(format!("{} indexed", count(s.indexed)));
+            parts.push(part("library-status-indexed", s.indexed));
         }
         if s.unchanged > 0 {
-            parts.push(format!("{} unchanged", count(s.unchanged)));
+            parts.push(part("library-status-unchanged", s.unchanged));
         }
         if s.untagged > 0 {
-            parts.push(format!("{} untagged", count(s.untagged)));
+            parts.push(part("library-status-untagged", s.untagged));
         }
         if s.removed > 0 {
-            parts.push(format!("{} removed", count(s.removed)));
+            parts.push(part("library-status-removed", s.removed));
         }
-        match s.unreachable {
-            0 => {}
-            1 => parts.push("1 folder unreachable".into()),
-            n => parts.push(format!("{} folders unreachable", count(n))),
+        if s.unreachable > 0 {
+            parts.push(part("library-status-unreachable", s.unreachable));
         }
         if s.aborted {
-            parts.push("stopped early".into());
+            parts.push(rox_i18n::t!("library-status-stopped-early").to_string());
         }
     }
     if let Some(w) = watch {
         if w.updated > 0 {
-            parts.push(format!("{} updated", count(w.updated)));
+            parts.push(part("library-status-updated", w.updated));
         }
         if w.removed > 0 {
-            parts.push(format!("{} removed", count(w.removed)));
+            parts.push(part("library-status-removed", w.removed));
         }
         if w.renamed > 0 {
-            parts.push(format!("{} renamed", count(w.renamed)));
+            parts.push(part("library-status-renamed", w.renamed));
         }
     }
     let tracks = rox_i18n::t!("status-count-tracks", count = total as u64);

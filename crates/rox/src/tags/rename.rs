@@ -738,9 +738,9 @@ impl RenameFiles {
                 .into_any_element()
         } else {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to apply".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-after-apply")),
             ])
             .text_xs()
             .into_any_element()
@@ -765,7 +765,7 @@ impl RenameFiles {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Apply",
+                        rox_i18n::t!("settings-common-apply"),
                         icons::CHECK,
                         self.applying || movable == 0,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),

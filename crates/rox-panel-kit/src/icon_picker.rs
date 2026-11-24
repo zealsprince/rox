@@ -48,8 +48,8 @@ where
         rows,
         label,
         current,
-        "Search icons".into(),
-        "No matches".into(),
+        rox_i18n::t!("picker-search-icons"),
+        rox_i18n::t!("picker-no-matches"),
         move |this, value, cx| {
             if let Some(value) = value {
                 apply(this, value.into(), cx);

@@ -515,7 +515,7 @@ impl Scrobbler {
 
     pub fn begin_auth(&mut self, cx: &mut Context<Self>) {
         if self.api_key().is_empty() || self.api_secret().is_empty() {
-            self.phase = AuthPhase::Failed("enter an api key and secret first".into());
+            self.phase = AuthPhase::Failed(rox_i18n::t!("lastfm-auth-needs-key").to_string());
             cx.notify();
             return;
         }

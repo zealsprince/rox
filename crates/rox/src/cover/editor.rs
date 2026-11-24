@@ -38,7 +38,7 @@ fn slot_label(kind: PicKind) -> SharedString {
         PicKind::Front => rox_i18n::t!("cover-editor-slot-front"),
         PicKind::Back => rox_i18n::t!("cover-editor-slot-back"),
         PicKind::Media => rox_i18n::t!("cover-editor-slot-media"),
-        PicKind::Artist => "Artist".into(),
+        PicKind::Artist => rox_i18n::t!("cover-editor-slot-artist"),
     }
 }
 
@@ -604,32 +604,34 @@ impl CoverEditor {
     }
 
     fn footer(&self, cx: &mut Context<Self>) -> Div {
-        let reason: Option<SharedString> = if let Some(error) = self.error.clone() {
-            Some(error)
+        // Only an error is a warning; saving and reading are progress.
+        let reason: Option<(SharedString, gpui::Rgba)> = if let Some(error) = self.error.clone() {
+            Some((error, palette::tone_warn()))
         } else if self.saving {
-            Some({
-                let at = (self.save_done + 1).min(self.save_total);
+            let at = (self.save_done + 1).min(self.save_total);
+            Some((
                 rox_i18n::t!(
                     "cover-editor-saving-progress",
                     done = at as u64,
                     total = self.save_total as u64
-                )
-            })
+                ),
+                palette::text_muted(),
+            ))
         } else if self.baselines.is_none() {
-            Some(rox_i18n::t!("cover-editor-reading"))
+            Some((rox_i18n::t!("cover-editor-reading"), palette::text_muted()))
         } else {
             None
         };
         let hint = match reason {
-            Some(reason) => div()
+            Some((reason, color)) => div()
                 .text_xs()
-                .text_color(palette::tone_warn())
+                .text_color(color)
                 .child(reason)
                 .into_any_element(),
             None => kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-after-save")),
             ])
             .text_xs()
             .into_any_element(),
@@ -653,7 +655,7 @@ impl CoverEditor {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Save",
+                        rox_i18n::t!("settings-common-save"),
                         icons::CHECK,
                         self.saving || self.baselines.is_none(),
                         cx.listener(|this, _, window, cx| this.save(window, cx)),

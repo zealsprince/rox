@@ -387,7 +387,7 @@ impl CoverMatch {
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref l) if !l.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...".into(),
+                Phase::Searching => rox_i18n::t!("tags-matcher-searching"),
                 _ => rox_i18n::t!("cover-matcher-blocked-no-cover"),
             });
         }
@@ -466,7 +466,7 @@ impl Render for CoverMatch {
         };
 
         let content = match &self.phase {
-            Phase::Searching => note("Searching...").into_any_element(),
+            Phase::Searching => note(rox_i18n::t!("tags-matcher-searching")).into_any_element(),
             Phase::Failed(e) => crate::console_window::notice(e.clone()).into_any_element(),
             Phase::Ready(loaded) if loaded.is_empty() => {
                 note(rox_i18n::t!("cover-matcher-no-covers")).into_any_element()

@@ -793,9 +793,9 @@ impl ConvertDialog {
                 .child(line)
                 .into_any_element(),
             None => kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to convert".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-after-convert")),
             ])
             .text_xs()
             .into_any_element(),

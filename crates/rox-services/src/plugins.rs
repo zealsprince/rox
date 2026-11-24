@@ -732,9 +732,17 @@ fn other_package(plugins: &Path, target: &Path, id: &str) -> Option<String> {
         .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
 }
 
-/// A folder plugin, packed for its author.
+/// A folder plugin, packed for its author. Blocking.
+///
+/// A folder copied in since the last scan is looked for afresh: with plugins
+/// off nothing watches the folder, and a socket client has no Rescan button.
+/// Packing runs nothing, so the fresh read leaves the listed set alone.
 pub fn pack(id: &str, out: &Path) -> Result<(), String> {
-    let folders = loaded();
+    let mut folders = loaded();
+    if !folders.iter().any(|folder| folder.id == id) {
+        folders = scan(&settings::plugins_dir());
+    }
+
     let folder = folders
         .iter()
         .find(|folder| folder.id == id)

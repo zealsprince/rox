@@ -751,8 +751,19 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str) -> Scratch {
-            let dir = std::env::temp_dir()
-                .join(format!("rox-plugins-manifest-{tag}-{}", std::process::id()));
+            Scratch::under(&std::env::temp_dir(), tag)
+        }
+
+        /// For the scripts a test runs. Beside the test binary, which ran
+        /// from there, since the temp dir may be mounted noexec.
+        #[cfg(unix)]
+        fn runnable(tag: &str) -> Scratch {
+            let exe = std::env::current_exe().unwrap();
+            Scratch::under(exe.parent().unwrap(), tag)
+        }
+
+        fn under(base: &std::path::Path, tag: &str) -> Scratch {
+            let dir = base.join(format!("rox-plugins-manifest-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
 
@@ -1239,7 +1250,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_probe_wants_a_clean_python_3() {
-        let scratch = Scratch::new("real-probe");
+        let scratch = Scratch::runnable("real-probe");
         let two = script(&scratch, "two/python", "echo 'Python 2.7.18' >&2");
         let failing = script(&scratch, "failing/python", "echo 'Python 3.12.1'; exit 1");
         let three = script(&scratch, "three/python", "echo 'Python 3.12.1'");
@@ -1278,7 +1289,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_forgotten_probe_asks_again() {
-        let scratch = Scratch::new("forget-probe");
+        let scratch = Scratch::runnable("forget-probe");
         let python = script(&scratch, "python3", "echo 'Python 2.7.18' >&2");
         assert!(!probed(&python, &[]));
 

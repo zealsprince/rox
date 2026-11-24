@@ -363,11 +363,22 @@ mod tests {
     use std::io::BufReader;
     use std::os::unix::net::UnixStream;
 
+    /// Where a test binds, through the same choice rox makes for its own
+    /// socket, so a temp dir too deep for a socket path moves to a short one.
+    fn scratch_socket(name: &str) -> std::path::PathBuf {
+        let path = crate::socket_in(
+            &std::env::temp_dir(),
+            &format!("rox-ipc-test-{name}-{}.sock", std::process::id()),
+        );
+        crate::ensure_socket_dir(&path);
+        let _ = std::fs::remove_file(&path);
+
+        path
+    }
+
     /// Answers `echo` with its params and refuses everything else.
     fn serve(name: &str) -> (std::path::PathBuf, Events) {
-        let path =
-            std::env::temp_dir().join(format!("rox-ipc-test-{name}-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let path = scratch_socket(name);
         let server = Server::bind(&path).expect("bind scratch socket");
         let (requests, events, _cleanup) = server.spawn();
         std::thread::spawn(move || {
@@ -512,8 +523,7 @@ mod tests {
     #[test]
     fn socket_is_user_only() {
         use std::os::unix::fs::PermissionsExt as _;
-        let path = std::env::temp_dir().join(format!("rox-ipc-perm-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let path = scratch_socket("perm");
         let server = Server::bind(&path).expect("bind scratch socket");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);

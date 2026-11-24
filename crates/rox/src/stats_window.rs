@@ -417,11 +417,15 @@ impl StatsWindow {
                 .items_center()
                 .justify_center()
                 .track_focus(&self.dialog_focus)
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                // Clearing is destructive, so Enter backs out the way Escape
+                // does. A focused button keeps its own Enter.
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.modifiers.modified() {
                         return;
                     }
-                    if event.keystroke.key == "escape" {
+                    let enter =
+                        event.keystroke.key == "enter" && this.dialog_focus.is_focused(window);
+                    if event.keystroke.key == "escape" || enter {
                         this.clearing = false;
                         cx.stop_propagation();
                         cx.notify();
@@ -455,7 +459,7 @@ impl StatsWindow {
                                 .gap(tokens::SPACE_SM)
                                 .child(dialog_button(
                                     rox_i18n::t!("settings-common-cancel"),
-                                    false,
+                                    true,
                                     cx.listener(|this, _, _, cx| {
                                         this.clearing = false;
                                         cx.notify();
@@ -476,7 +480,7 @@ impl StatsWindow {
                                     } else {
                                         rox_i18n::t!("settings-confirm-clear")
                                     },
-                                    true,
+                                    false,
                                     cx.listener(|this, _, _, cx| {
                                         this.clear_listens(listens::Clear::Everything, cx)
                                     }),

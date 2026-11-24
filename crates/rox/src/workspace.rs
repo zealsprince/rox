@@ -3527,6 +3527,25 @@ enum LayoutDialog {
     },
 }
 
+impl LayoutDialog {
+    /// Whether the yes destroys or replaces something saved. Such a confirm
+    /// defaults to Cancel: Enter backs out, Cancel wears the accent, and the
+    /// yes takes a click.
+    fn destructive(&self) -> bool {
+        match self {
+            LayoutDialog::ConfirmOverwrite(_)
+            | LayoutDialog::ConfirmOverwriteWorkspace(_)
+            | LayoutDialog::ConfirmTrash { .. } => true,
+
+            LayoutDialog::Save(_)
+            | LayoutDialog::ConfirmApply(_)
+            | LayoutDialog::SaveWorkspace(_)
+            | LayoutDialog::ConfirmApplyWorkspace { .. }
+            | LayoutDialog::ConfirmCloseLocked { .. } => false,
+        }
+    }
+}
+
 /// How a workspace window opens, which the menubar's Window entries pick.
 pub enum WorkspaceStart {
     /// Launch and plain New Window: restore the saved working layout, and
@@ -5759,6 +5778,7 @@ impl Workspace {
     /// exception, since the input commits on its own Enter, and so is an apply
     /// that splits its yes in two: choosing between running a look's shaders
     /// and leaving them out is the whole question there, so it gets a click.
+    /// On a destructive confirm Enter cancels.
     fn dialog_key(
         &mut self,
         event: &KeyDownEvent,
@@ -5782,36 +5802,33 @@ impl Workspace {
         if event.keystroke.key != "enter" || !self.dialog_focus.is_focused(window) {
             return false;
         }
+
+        if dialog.destructive() {
+            self.close_layout_dialog(window, cx);
+            return true;
+        }
+
         /// Which button Enter presses. Named rather than called straight off
         /// the dialog so the borrow above ends before the yes takes `self`.
         enum Yes {
-            Overwrite,
             Apply,
-            OverwriteWorkspace,
             ApplyWorkspace,
             CloseLocked,
-            Trash,
         }
         let yes = match dialog {
-            LayoutDialog::Save(_) | LayoutDialog::SaveWorkspace(_) => None,
-            LayoutDialog::ConfirmOverwrite(_) => Some(Yes::Overwrite),
             LayoutDialog::ConfirmApply(_) => Some(Yes::Apply),
-            LayoutDialog::ConfirmOverwriteWorkspace(_) => Some(Yes::OverwriteWorkspace),
             LayoutDialog::ConfirmApplyWorkspace { card, .. } => {
                 (!card.splits_apply()).then_some(Yes::ApplyWorkspace)
             }
             LayoutDialog::ConfirmCloseLocked { .. } => Some(Yes::CloseLocked),
-            LayoutDialog::ConfirmTrash { .. } => Some(Yes::Trash),
+            _ => None,
         };
         match yes {
-            Some(Yes::Overwrite) => self.overwrite_confirmed(window, cx),
             Some(Yes::Apply) => self.apply_confirmed(window, cx),
-            Some(Yes::OverwriteWorkspace) => self.overwrite_workspace_confirmed(window, cx),
             Some(Yes::ApplyWorkspace) => {
                 self.apply_workspace_confirmed(ApplyShaders::Skip, window, cx)
             }
             Some(Yes::CloseLocked) => self.close_locked_confirmed(window, cx),
-            Some(Yes::Trash) => self.trash_confirmed(window, cx),
             None => return false,
         }
         true
@@ -6743,6 +6760,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let dialog = self.layout_dialog.as_ref()?;
+        let destructive = dialog.destructive();
         // The dialog holds the keyboard while it's up, unless the focus has
         // already moved inside it, which Tab walking its buttons does. The
         // two dialogs with a name field are left alone: the field takes
@@ -6809,12 +6827,12 @@ impl Workspace {
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
                             rox_i18n::t!("workspace-dialog-cancel"),
-                            false,
+                            destructive,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
                             rox_i18n::t!("workspace-dialog-overwrite"),
-                            true,
+                            !destructive,
                             cx.listener(|this, _, window, cx| this.overwrite_confirmed(window, cx)),
                         )),
                 ),
@@ -6888,12 +6906,12 @@ impl Workspace {
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
                             rox_i18n::t!("workspace-dialog-cancel"),
-                            false,
+                            destructive,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
                             rox_i18n::t!("workspace-dialog-overwrite"),
-                            true,
+                            !destructive,
                             cx.listener(|this, _, window, cx| {
                                 this.overwrite_workspace_confirmed(window, cx)
                             }),
@@ -7065,12 +7083,12 @@ impl Workspace {
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
                             rox_i18n::t!("workspace-dialog-cancel"),
-                            false,
+                            destructive,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
                             rox_i18n::t!("workspace-dialog-trash"),
-                            true,
+                            !destructive,
                             cx.listener(|this, _, window, cx| this.trash_confirmed(window, cx)),
                         )),
                 ),
@@ -7970,6 +7988,17 @@ mod tests {
         let once = v.clone();
         denoise_f32(&mut v);
         assert_eq!(v, once);
+    }
+
+    /// Overwrites and the trash default to Cancel; an apply keeps Enter as
+    /// yes.
+    #[test]
+    fn destructive_layout_dialogs() {
+        use super::LayoutDialog;
+
+        assert!(LayoutDialog::ConfirmOverwrite("a".into()).destructive());
+        assert!(LayoutDialog::ConfirmOverwriteWorkspace("a".into()).destructive());
+        assert!(!LayoutDialog::ConfirmApply("a".into()).destructive());
     }
 }
 

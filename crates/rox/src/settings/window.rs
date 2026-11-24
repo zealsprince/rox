@@ -237,6 +237,25 @@ enum Pending {
     RemovePlugin(String),
 }
 
+impl Pending {
+    /// Whether the yes deletes or replaces something. Such a confirm defaults
+    /// to Cancel: Enter backs out, Cancel wears the accent, and the yes takes
+    /// a click.
+    fn destructive(&self) -> bool {
+        match self {
+            Pending::OverwritePreset(_)
+            | Pending::OverwriteWorkspace(_)
+            | Pending::ClearEmbeddings(_)
+            | Pending::ClearMeasuredBpm
+            | Pending::ClearListens
+            | Pending::RemoveSubsonic(_)
+            | Pending::RemovePlugin(_) => true,
+
+            Pending::ApplyWorkspace { .. } | Pending::EnablePlugin(_) => false,
+        }
+    }
+}
+
 struct SettingsWindow {
     page: Page,
     search: Entity<SearchBox>,
@@ -1779,5 +1798,24 @@ mod tests {
             .find(|&&(_, label, _)| label == "settings-page-shader")
             .expect("a Shader page");
         assert_eq!(entry.2, icons::BLEND);
+    }
+
+    /// The match in `destructive` is exhaustive, so a new variant has to
+    /// pick a side; this pins the ones that delete or replace.
+    #[test]
+    fn destructive_confirms() {
+        use super::Pending;
+
+        for pending in [
+            Pending::OverwritePreset("a".into()),
+            Pending::OverwriteWorkspace("a".into()),
+            Pending::ClearEmbeddings("m".into()),
+            Pending::ClearMeasuredBpm,
+            Pending::ClearListens,
+            Pending::RemoveSubsonic(1),
+            Pending::RemovePlugin("p".into()),
+        ] {
+            assert!(pending.destructive());
+        }
     }
 }

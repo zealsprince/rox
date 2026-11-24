@@ -1109,7 +1109,8 @@ impl SettingsWindow {
         self.storage.as_ref().map(|s| s.listens).unwrap_or_default()
     }
 
-    /// Escape backs out; Enter takes the yes except where it splits.
+    /// Escape backs out. Enter takes the yes, except where it splits and on a
+    /// destructive confirm, where it backs out too.
     fn confirm_key(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -1131,6 +1132,12 @@ impl SettingsWindow {
             // Only while the dialog itself holds focus: Enter on a focused
             // Cancel must not mean yes.
             "enter" if self.dialog_focus.is_focused(window) => {
+                if pending.destructive() {
+                    self.pending = None;
+                    cx.notify();
+                    return true;
+                }
+
                 if self.splits_yes(pending) {
                     return false;
                 }
@@ -1165,6 +1172,7 @@ impl SettingsWindow {
         let plugin_lead = plugin.map(|card| card.lead.clone()).unwrap_or_default();
         let plugin_lines = plugin.map(|card| card.lines.clone()).unwrap_or_default();
         let split = self.splits_yes(self.pending.as_ref()?);
+        let destructive = self.pending.as_ref()?.destructive();
         // The shader list and the hotkey line need the room.
         let width = if split || screen.is_some() || plugin.is_some() {
             380.
@@ -1349,7 +1357,7 @@ impl SettingsWindow {
                             .gap(tokens::SPACE_SM)
                             .child(dialog_button(
                                 rox_i18n::t!("workspace-dialog-cancel"),
-                                false,
+                                destructive,
                                 cx.listener(|this, _, _, cx| {
                                     this.pending = None;
                                     cx.notify();
@@ -1357,7 +1365,7 @@ impl SettingsWindow {
                             ))
                             .child(dialog_button(
                                 confirm,
-                                !split,
+                                !split && !destructive,
                                 cx.listener(|this, _, window, cx| {
                                     this.confirm_pending(Yes::First, window, cx)
                                 }),
@@ -1365,7 +1373,7 @@ impl SettingsWindow {
                             .children(second.map(|label| {
                                 dialog_button(
                                     label,
-                                    true,
+                                    !destructive,
                                     cx.listener(|this, _, window, cx| {
                                         this.confirm_pending(Yes::Second, window, cx)
                                     }),

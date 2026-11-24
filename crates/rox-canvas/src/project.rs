@@ -186,6 +186,84 @@ pub fn inside(corners: &[[f32; 2]; 4], point: [f32; 2]) -> bool {
     !(left && right)
 }
 
+/// Where `point` falls across a quad as the unit square: 0, 0 at the first
+/// corner and 1, 1 at the third, so a tilted item maps the way it's drawn.
+/// The inverse of the unit square onto the quad, after Heckbert. A point off
+/// the quad maps outside 0 to 1. None for a degenerate quad, or a point past
+/// its horizon.
+pub fn unit_point(corners: &[[f32; 2]; 4], point: [f32; 2]) -> Option<[f32; 2]> {
+    // Moved to the first corner and scaled to the quad's reach, so the
+    // degeneracy checks hold the same at any place and size.
+    let origin = corners[0].map(f64::from);
+    let reach = corners
+        .iter()
+        .flat_map(|c| [f64::from(c[0]) - origin[0], f64::from(c[1]) - origin[1]])
+        .fold(0., |reach: f64, d| reach.max(d.abs()));
+    if !reach.is_finite() || reach <= 0. {
+        return None;
+    }
+    let local = |p: [f32; 2]| {
+        [
+            (f64::from(p[0]) - origin[0]) / reach,
+            (f64::from(p[1]) - origin[1]) / reach,
+        ]
+    };
+
+    let inverse = invert(square_to_quad(corners.map(local))?)?;
+    let [x, y] = local(point);
+    let w = inverse[2][0] * x + inverse[2][1] * y + inverse[2][2];
+    if w <= DEGENERATE {
+        return None;
+    }
+
+    let u = (inverse[0][0] * x + inverse[0][1] * y + inverse[0][2]) / w;
+    let v = (inverse[1][0] * x + inverse[1][1] * y + inverse[1][2]) / w;
+    Some([u as f32, v as f32])
+}
+
+/// Below this a quad scaled to unit reach has no area.
+const DEGENERATE: f64 = 1e-9;
+
+/// The unit square onto a quad, (u, v, 1) to (x, y, w).
+fn square_to_quad([p0, p1, p2, p3]: [[f64; 2]; 4]) -> Option<[[f64; 3]; 3]> {
+    let sx = p0[0] - p1[0] + p2[0] - p3[0];
+    let sy = p0[1] - p1[1] + p2[1] - p3[1];
+
+    let (g, h) = if sx.abs() < DEGENERATE && sy.abs() < DEGENERATE {
+        (0., 0.)
+    } else {
+        let (dx1, dx2) = (p1[0] - p2[0], p3[0] - p2[0]);
+        let (dy1, dy2) = (p1[1] - p2[1], p3[1] - p2[1]);
+        let den = dx1 * dy2 - dx2 * dy1;
+        if den.abs() < DEGENERATE {
+            return None;
+        }
+        ((sx * dy2 - dx2 * sy) / den, (dx1 * sy - sx * dy1) / den)
+    };
+
+    Some([
+        [p1[0] - p0[0] + g * p1[0], p3[0] - p0[0] + h * p3[0], p0[0]],
+        [p1[1] - p0[1] + g * p1[1], p3[1] - p0[1] + h * p3[1], p0[1]],
+        [g, h, 1.],
+    ])
+}
+
+fn invert(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let minor =
+        |r0: usize, c0: usize, r1: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+    let adjugate = [
+        [minor(1, 1, 2, 2), -minor(0, 1, 2, 2), minor(0, 1, 1, 2)],
+        [-minor(1, 0, 2, 2), minor(0, 0, 2, 2), -minor(0, 0, 1, 2)],
+        [minor(1, 0, 2, 1), -minor(0, 0, 2, 1), minor(0, 0, 1, 1)],
+    ];
+
+    let det = m[0][0] * adjugate[0][0] + m[0][1] * adjugate[1][0] + m[0][2] * adjugate[2][0];
+    if det.abs() < DEGENERATE {
+        return None;
+    }
+    Some(adjugate.map(|row| row.map(|v| v / det)))
+}
+
 /// The move in the parent's units that shifts the item by `screen_delta`
 /// pixels at its depth.
 pub fn unproject_delta(
@@ -813,6 +891,82 @@ mod tests {
         assert!(inside(&diamond, [0., 0.]));
         assert!(inside(&diamond, [5., 5.]));
         assert!(!inside(&diamond, [8., 8.]));
+    }
+
+    /// An item turned on y and projected, so its quad is a real trapezoid.
+    fn tilted_quad() -> [[f32; 2]; 4] {
+        let mut tilted = item(Anchor::Center, [0., 0., 0.], [400., 240.]);
+        tilted.place.rotation = [0., 35., 0.];
+        put(&tilted, &stage_frame(), &Camera::default(), false).corners
+    }
+
+    fn near_point(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
+    }
+
+    #[test]
+    fn the_corners_map_to_the_unit_square() {
+        let quad = tilted_quad();
+        let square = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
+
+        for (corner, unit) in quad.iter().zip(square) {
+            let mapped = unit_point(&quad, *corner).expect("a real quad");
+            assert!(near_point(mapped, unit), "{corner:?} -> {mapped:?}");
+        }
+
+        // Flat, it's a plain scale.
+        let flat = [[100., 50.], [300., 50.], [300., 150.], [100., 150.]];
+        let mapped = unit_point(&flat, [150., 125.]).expect("a real quad");
+        assert!(near_point(mapped, [0.25, 0.75]), "{mapped:?}");
+    }
+
+    #[test]
+    fn a_tilted_quads_centre_maps_inside() {
+        let quad = tilted_quad();
+        assert!(
+            (quad[1][1] - quad[2][1]).abs() > (quad[0][1] - quad[3][1]).abs() + 1.
+                || (quad[0][1] - quad[3][1]).abs() > (quad[1][1] - quad[2][1]).abs() + 1.,
+            "the tilt foreshortens one side: {quad:?}"
+        );
+
+        // The diagonals cross at the item's own centre, which perspective
+        // keeps off the quad's average of corners.
+        let [a, b, c, d] = quad;
+        let (r, s) = ([c[0] - a[0], c[1] - a[1]], [d[0] - b[0], d[1] - b[1]]);
+        let t = ((b[0] - a[0]) * s[1] - (b[1] - a[1]) * s[0]) / (r[0] * s[1] - r[1] * s[0]);
+        let crossing = [a[0] + t * r[0], a[1] + t * r[1]];
+
+        let mapped = unit_point(&quad, crossing).expect("a real quad");
+        assert!(near_point(mapped, [0.5, 0.5]), "{mapped:?}");
+        assert!(inside(&quad, crossing));
+    }
+
+    #[test]
+    fn a_point_outside_maps_outside() {
+        let quad = tilted_quad();
+        let [x, y] = center(quad);
+        let width = quad[1][0] - quad[0][0];
+
+        for point in [[x + width, y], [x - width, y], [x, y + 1000.]] {
+            assert!(!inside(&quad, point));
+            let [u, v] = unit_point(&quad, point).unwrap_or([f32::NAN; 2]);
+            assert!(
+                !(0. ..=1.).contains(&u) || !(0. ..=1.).contains(&v),
+                "{point:?} -> {u}, {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flat_line_of_corners_maps_nowhere() {
+        let line = [[0., 0.], [10., 0.], [20., 0.], [30., 0.]];
+        assert_eq!(unit_point(&line, [5., 0.]), None);
+
+        let folded = [[0., 0.], [10., 10.], [20., 20.], [10., 10.]];
+        assert_eq!(unit_point(&folded, [5., 5.]), None);
+
+        let point = [[4., 4.]; 4];
+        assert_eq!(unit_point(&point, [4., 4.]), None);
     }
 
     #[test]

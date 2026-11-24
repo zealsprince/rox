@@ -27,15 +27,16 @@ use std::time::Instant;
 use gpui::{
     AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, CursorStyle, DismissEvent, Div,
     Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, HitboxBehavior,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathPromptOptions,
-    Pixels, Point, Rgba, SharedString, Subscription, WeakEntity, Window, actions, anchored, canvas,
-    deferred, div, point, prelude::*, px,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, PathBuilder,
+    PathPromptOptions, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString,
+    Subscription, WeakEntity, Window, actions, anchored, canvas, deferred, div, point, prelude::*,
+    px,
 };
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_canvas::{
     Anchor, Camera, CanvasItem, CanvasState, Content, Frame, ImageFit, Length, Live, Place,
-    Viewport, child_frame, inside, paint_order, project,
+    Viewport, child_frame, inside, paint_order, project, unit_point,
 };
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
@@ -54,7 +55,7 @@ use crate::canvas::overlay::Inspector;
 use crate::canvas::routes::{self, Snapshot};
 use crate::canvas::shader::{self as shader_item, Shaders};
 use crate::canvas::states::{self, Cases};
-use crate::canvas::target::{Status as TargetStatus, Targets};
+use crate::canvas::target::{self, Pointer, Status as TargetStatus, Targets};
 use crate::canvas::text::{self, Values};
 use crate::canvas::texture::{self, TextureView};
 use crate::canvas::{self, Body, Placing};
@@ -396,6 +397,8 @@ pub struct CanvasPanel {
     pressed: Option<String>,
     /// Whether the pointer is over an item that would run a command.
     pointing: Rc<Cell<bool>>,
+    /// The render target the pointer is over, off design mode.
+    hovered: Option<String>,
     /// The export card or the place confirm, over the whole window.
     pub(crate) object_dialog: Option<objects::Dialog>,
     /// The playing track's marks, resolved only while an item follows the
@@ -524,6 +527,7 @@ impl CanvasPanel {
             text_values: None,
             pressed: None,
             pointing: Rc::default(),
+            hovered: None,
             object_dialog: None,
             marks: MarkCache::default(),
             cases: Cases::new(),
@@ -892,6 +896,15 @@ impl CanvasPanel {
             HashMap::new()
         };
 
+        // Every render target drawn this frame is sent the same reading.
+        // It rides on frames the canvas draws anyway and asks for none.
+        if target::holds_targets(&self.config.canvas) {
+            let player = self.state.player.read(cx);
+            let running = routes::playback_running(player.is_playing(), player.queue_ended());
+            let time = || player.now_playing().map_or(0., |now| now.position_secs);
+            self.targets.read(&self.state.signals, running, time);
+        }
+
         let values = if text::holds_text(&self.config.canvas) {
             self.text_values
                 .get_or_insert_with(|| Rc::new(text::now_playing(&self.state, cx)))
@@ -1003,7 +1016,9 @@ impl CanvasPanel {
             shader_item::absorb_hot(self, cx);
         }
         let chrome = design.then(|| self.chrome_layer(active, cx));
-        let clicks = (!design && has_commands(&self.config.canvas)).then(|| self.click_layer(cx));
+        let canvas = &self.config.canvas;
+        let clicks = (!design && (has_commands(canvas) || target::holds_targets(canvas)))
+            .then(|| self.click_layer(cx));
         let inspector = active.then(|| crate::canvas::overlay::render(self, window, cx));
         let tab = (design && !active && self.near_edge.get()).then(|| self.edge_tab(cx));
         let menu = self.menu_overlay(window);
@@ -2539,6 +2554,9 @@ pub(crate) enum Hit {
     /// The item whose command runs: the one clicked, or the nearest group
     /// around it that has one.
     Command { id: String, action: String },
+    /// A render target with no command over it, and where on its surface,
+    /// 0 to 1 from its top-left.
+    Target { id: String, at: [f32; 2] },
     /// Nothing commanded, so the click goes on to whatever is behind.
     Nothing,
 }
@@ -2560,16 +2578,51 @@ pub(crate) fn hit(shapes: &[Shape], canvas: &CanvasState, point: [f32; 2]) -> Hi
         return Hit::Grid;
     }
 
-    front
+    let commanded = front
         .chain()
         .iter()
         .rev()
         .filter_map(|id| canvas.find(id))
-        .find(|item| commands(item))
-        .map_or(Hit::Nothing, |item| Hit::Command {
+        .find(|item| commands(item));
+    if let Some(item) = commanded {
+        return Hit::Command {
             id: item.id.clone(),
             action: item.action.clone(),
-        })
+        };
+    }
+
+    // A target's renderer gets the pointer only where nothing else claims
+    // it: it's the front item and no command covers it.
+    let target = canvas
+        .find(&front.id)
+        .is_some_and(|item| matches!(item.content, Content::Target { .. }));
+    match unit_point(&front.corners, point) {
+        Some([x, y]) if target => Hit::Target {
+            id: front.id.clone(),
+            at: [x.clamp(0., 1.), y.clamp(0., 1.)],
+        },
+        _ => Hit::Nothing,
+    }
+}
+
+/// A button's name on the renderer wire.
+fn button_name(button: MouseButton) -> &'static str {
+    match button {
+        MouseButton::Left => "left",
+        MouseButton::Right => "right",
+        MouseButton::Middle => "middle",
+        MouseButton::Navigate(NavigationDirection::Back) => "back",
+        MouseButton::Navigate(NavigationDirection::Forward) => "forward",
+    }
+}
+
+/// A wheel's travel in lines, at the 20 pixels a line the other wheel
+/// handlers use.
+fn scroll_lines(delta: ScrollDelta) -> [f32; 2] {
+    match delta {
+        ScrollDelta::Lines(lines) => [lines.x, lines.y],
+        ScrollDelta::Pixels(pixels) => [f32::from(pixels.x) / 20., f32::from(pixels.y) / 20.],
+    }
 }
 
 /// A grid's command is ignored: its panels own their input.
@@ -2584,8 +2637,9 @@ fn has_commands(canvas: &CanvasState) -> bool {
 }
 
 impl CanvasPanel {
-    /// Over every item, off design mode, in a canvas that has a command
-    /// somewhere. It hit tests against what the last render placed.
+    /// Over every item, off design mode, in a canvas that has a command or
+    /// a render target somewhere. It hit tests against what the last render
+    /// placed, and hands a target the pointer only where [`hit`] says so.
     fn click_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let me = cx.entity().downgrade();
         let me_id = cx.entity_id();
@@ -2607,12 +2661,14 @@ impl CanvasPanel {
 
                     // Only a crossing re-renders, for the cursor.
                     let local = local_point(event.position, bounds.origin);
-                    let over = hover.is_hovered(window)
-                        && moving
-                            .update(cx, |this, _| {
-                                matches!(this.hit_at(local), Hit::Command { .. })
-                            })
-                            .unwrap_or(false);
+                    let hovered = hover.is_hovered(window);
+                    let over = moving
+                        .update(cx, |this, _| {
+                            let hit = this.hit_over(hovered, local);
+                            this.point_at(&hit, Pointer::Move);
+                            matches!(hit, Hit::Command { .. })
+                        })
+                        .unwrap_or(false);
                     if over != pointing.get() {
                         pointing.set(over);
                         cx.notify(me_id);
@@ -2621,16 +2677,20 @@ impl CanvasPanel {
 
                 let (hover, down) = (hitbox.clone(), me.clone());
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if !phase.bubble()
-                        || event.button != MouseButton::Left
-                        || !hover.is_hovered(window)
-                    {
+                    if !phase.bubble() || !hover.is_hovered(window) {
                         return;
                     }
 
                     let local = local_point(event.position, bounds.origin);
+                    let button = event.button;
                     down.update(cx, |this, cx| {
-                        this.pressed = match this.hit_at(local) {
+                        let hit = this.hit_at(local);
+                        this.point_at(&hit, |at| Pointer::Down(at, button_name(button)));
+                        if button != MouseButton::Left {
+                            return;
+                        }
+
+                        this.pressed = match hit {
                             Hit::Command { id, .. } => {
                                 cx.stop_propagation();
                                 Some(id)
@@ -2641,15 +2701,38 @@ impl CanvasPanel {
                     .ok();
                 });
 
+                let (hover, wheel) = (hitbox.clone(), me.clone());
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                    if !phase.bubble() || !hover.is_hovered(window) {
+                        return;
+                    }
+
+                    let local = local_point(event.position, bounds.origin);
+                    let lines = scroll_lines(event.delta);
+                    wheel
+                        .update(cx, |this, _| {
+                            let hit = this.hit_at(local);
+                            this.point_at(&hit, |at| Pointer::Scroll(at, lines));
+                        })
+                        .ok();
+                });
+
                 let up = me.clone();
                 window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.bubble() || event.button != MouseButton::Left {
+                    if !phase.bubble() {
                         return;
                     }
 
                     let local = local_point(event.position, bounds.origin);
                     let over = hitbox.is_hovered(window);
+                    let button = event.button;
                     up.update(cx, |this, cx| {
+                        let hit = this.hit_over(over, local);
+                        this.point_at(&hit, |at| Pointer::Up(at, button_name(button)));
+                        if button != MouseButton::Left {
+                            return;
+                        }
+
                         let pressed = this.pressed.take();
                         if !over {
                             return;
@@ -2685,6 +2768,36 @@ impl CanvasPanel {
 
     fn hit_at(&self, local: [f32; 2]) -> Hit {
         hit(&self.shapes, &self.config.canvas, local)
+    }
+
+    /// [`hit_at`](Self::hit_at), or nothing while the canvas isn't the
+    /// hovered thing.
+    fn hit_over(&self, hovered: bool, local: [f32; 2]) -> Hit {
+        if hovered {
+            self.hit_at(local)
+        } else {
+            Hit::Nothing
+        }
+    }
+
+    /// Sends the target under the pointer its event, and a leave to the one
+    /// it just left. Nothing else of the pointer goes to a renderer.
+    fn point_at(&mut self, hit: &Hit, pointer: impl FnOnce([f32; 2]) -> Pointer) {
+        let over = match hit {
+            Hit::Target { id, at } => Some((id.as_str(), *at)),
+            _ => None,
+        };
+
+        if self.hovered.as_deref() != over.map(|(id, _)| id) {
+            if let Some(left) = self.hovered.take() {
+                self.targets.point(&left, Pointer::Leave);
+            }
+            self.hovered = over.map(|(id, _)| id.to_string());
+        }
+
+        if let Some((id, at)) = over {
+            self.targets.point(id, pointer(at));
+        }
     }
 
     /// Why a text item's pattern doesn't parse, if it doesn't.
@@ -3098,6 +3211,9 @@ impl Render for CanvasPanel {
             self.design = design;
             self.pointing.set(false);
             self.pressed = None;
+            if let Some(id) = self.hovered.take() {
+                self.targets.point(&id, Pointer::Leave);
+            }
             if !design {
                 self.gesture = None;
                 self.menu = None;
@@ -3470,6 +3586,96 @@ mod tests {
             shape.hidden = true;
         }
         assert_eq!(hit(&shapes, &canvas, [50., 50.]), command("back", "stop"));
+    }
+
+    fn render_target(id: &str, action: &str) -> Value {
+        json!({
+            "id": id,
+            "action": action,
+            "content": { "kind": "target", "owner": "plugin:bars", "width": 64, "height": 64 },
+        })
+    }
+
+    fn on_target(id: &str, at: [f32; 2]) -> Hit {
+        Hit::Target {
+            id: id.to_string(),
+            at,
+        }
+    }
+
+    #[test]
+    fn a_target_with_a_command_keeps_the_click() {
+        let canvas = canvas_of(json!([
+            render_target("plain", ""),
+            render_target("commanded", "play_pause"),
+            {
+                "id": "group",
+                "action": "next_track",
+                "content": { "kind": "group", "items": [render_target("held", "")] },
+            },
+        ]));
+        let shapes = [
+            shape("plain", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape(
+                "commanded",
+                &[],
+                square(200., 0., 100.),
+                ShapeKind::Perspective,
+            ),
+            shape(
+                "held",
+                &["group"],
+                square(400., 0., 100.),
+                ShapeKind::Perspective,
+            ),
+            shape("group", &[], square(400., 0., 100.), ShapeKind::Group),
+        ];
+
+        assert_eq!(
+            hit(&shapes, &canvas, [25., 75.]),
+            on_target("plain", [0.25, 0.75])
+        );
+        assert_eq!(
+            hit(&shapes, &canvas, [250., 50.]),
+            command("commanded", "play_pause")
+        );
+        assert_eq!(
+            hit(&shapes, &canvas, [450., 50.]),
+            command("group", "next_track"),
+            "a group's command covers the target inside it"
+        );
+
+        // A tilted target's point comes back through its quad.
+        let tilted = [[0., 0.], [100., 20.], [100., 80.], [0., 100.]];
+        let shapes = [shape("plain", &[], tilted, ShapeKind::Perspective)];
+        let Hit::Target { at, .. } = hit(&shapes, &canvas, [1., 50.]) else {
+            panic!("the target is under the point");
+        };
+        assert!(at[0] < 0.05 && (at[1] - 0.5).abs() < 0.01, "{at:?}");
+    }
+
+    #[test]
+    fn a_target_behind_another_item_gets_no_pointer() {
+        let canvas = canvas_of(json!([render_target("back", ""), picture("front", "")]));
+        let shapes = [
+            shape("back", &[], square(0., 0., 100.), ShapeKind::Perspective),
+            shape("front", &[], square(50., 50., 100.), ShapeKind::Perspective),
+        ];
+
+        assert_eq!(hit(&shapes, &canvas, [75., 75.]), Hit::Nothing);
+        assert_eq!(
+            hit(&shapes, &canvas, [10., 20.]),
+            on_target("back", [0.1, 0.2])
+        );
+        assert_eq!(hit(&shapes, &canvas, [300., 300.]), Hit::Nothing);
+
+        // Hidden, the front item passes the pointer to the target behind.
+        let mut shapes = shapes;
+        shapes[1].hidden = true;
+        assert_eq!(
+            hit(&shapes, &canvas, [75., 75.]),
+            on_target("back", [0.75, 0.75])
+        );
     }
 
     #[test]

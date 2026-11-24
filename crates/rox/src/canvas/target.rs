@@ -20,8 +20,14 @@
 //! doesn't draw pauses its renderer, so a hidden one costs nothing. The
 //! supervisor also keeps the target's status and its last refusal for the
 //! inspector, and wakes the canvas only when one of them moves.
+//!
+//! Outward a renderer gets what its enable card names and nothing more: the
+//! signal pool's values with the playing position, read on frames the
+//! canvas already draws, and the pointer over its own surface. The canvas
+//! hands those lines to the supervisor through a small bounded outbox, and
+//! a renderer that stops reading loses lines instead of holding rox up.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -37,6 +43,7 @@ use rox_design::palette;
 use rox_frames::{ANNOUNCE_MAX, Mapping, Refusal, Spec};
 use rox_plugins::process::{self, Line};
 use rox_services::renderers::{self, Refused, Session};
+use rox_viz::signal::{Signal, SignalHub, Source as SignalSource};
 
 use crate::canvas::bbox;
 use crate::canvas::texture::{Frame, TextureView};
@@ -63,6 +70,19 @@ const POOL_RETRY: Duration = Duration::from_millis(4);
 /// How often a paused session, whose stdout isn't read, is checked for an
 /// exit.
 const PAUSED_CHECK: Duration = Duration::from_secs(1);
+
+/// Pointer lines held for a renderer that isn't keeping up. Past this the
+/// oldest move goes first, then a scroll, then a leave, and a press only
+/// when nothing else is left to drop.
+const POINTER_QUEUE: usize = 64;
+
+/// The least time between two moves sent, about a frame at 120 Hz. Moves
+/// that come sooner are folded into the one waiting.
+const MOVE_GAP: Duration = Duration::from_millis(8);
+
+/// A pool name past this many characters is cut on the wire. Names come
+/// from the user and from imported workspaces and objects.
+const NAME_MAX: usize = 64;
 
 /// The rules a session is held to.
 #[derive(Clone, Copy, Debug)]
@@ -91,8 +111,8 @@ const LIMITS: Limits = Limits {
 
 /// One renderer session, as the supervisor holds it.
 trait Run: Send {
-    /// Writes one line without waiting on the renderer.
-    fn send(&mut self, line: &[u8]) -> Sent;
+    /// Writes what it can of `bytes` without waiting on the renderer.
+    fn send(&mut self, bytes: &[u8]) -> Sent;
 
     /// Whether the renderer is gone. Asking reaps it.
     fn exited(&self) -> bool;
@@ -106,7 +126,8 @@ trait Run: Send {
 }
 
 enum Sent {
-    Whole,
+    /// This many bytes went, from the front.
+    Wrote(usize),
     /// The pipe had no room; try again later.
     Full,
     Closed,
@@ -160,7 +181,7 @@ impl Host for Renderer {
             log::warn!("render target {}: stdin may block: {e}", self.id);
         }
 
-        Ok((Box::new(Live(session)), Box::new(stdout)))
+        Ok((Box::new(Live::new(session, &self.id)), Box::new(stdout)))
     }
 
     fn due(&self) -> Option<Duration> {
@@ -202,19 +223,30 @@ fn lent(mapping: &Mapping) -> process::Lent<'_> {
 }
 
 /// A session with its stdin still inside, so a stop gets the grace.
+#[cfg(unix)]
 struct Live(Session);
 
+#[cfg(unix)]
+impl Live {
+    fn new(session: Session, _id: &str) -> Live {
+        Live(session)
+    }
+}
+
+#[cfg(unix)]
 impl Run for Live {
-    fn send(&mut self, line: &[u8]) -> Sent {
+    fn send(&mut self, bytes: &[u8]) -> Sent {
         use std::io::{ErrorKind, Write};
 
         let Some(stdin) = self.0.stdin.as_mut() else {
             return Sent::Closed;
         };
 
-        // A line this short goes into a pipe whole or not at all.
-        match stdin.write(line) {
-            Ok(_) => Sent::Whole,
+        // Non-blocking: up to `PIPE_BUF` goes whole or not at all, and a
+        // longer line can go in part.
+        match stdin.write(bytes) {
+            Ok(0) => Sent::Full,
+            Ok(n) => Sent::Wrote(n),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
                 Sent::Full
             }
@@ -232,6 +264,113 @@ impl Run for Live {
 
     fn stop(&mut self) {
         self.0.stop();
+    }
+}
+
+/// Lines a Windows session's writer thread holds before `send` says full.
+#[cfg(windows)]
+const WRITER_LINES: usize = 16;
+
+/// How long a stop waits for the writer thread to hand stdin back.
+#[cfg(windows)]
+const WRITER_GRACE: Duration = Duration::from_millis(100);
+
+/// Never compiled: no Windows target builds here. Windows pipes stay
+/// blocking (`process::never_block`), so the writes go on a thread of their
+/// own and `send` only ever hands a line to its bounded channel.
+#[cfg(windows)]
+struct Live {
+    session: Session,
+    lines: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    /// Hands stdin back once the channel closes, so the stop still gets its
+    /// grace. One stuck on a full pipe is killed with the renderer.
+    writer: Option<JoinHandle<Option<std::process::ChildStdin>>>,
+}
+
+#[cfg(windows)]
+impl Live {
+    fn new(mut session: Session, id: &str) -> Live {
+        let Some(mut stdin) = session.stdin.take() else {
+            return Live {
+                session,
+                lines: None,
+                writer: None,
+            };
+        };
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITER_LINES);
+        let writer = std::thread::Builder::new()
+            .name(format!("target-{id}-write"))
+            .spawn(move || {
+                use std::io::Write;
+
+                while let Ok(line) = rx.recv() {
+                    if stdin.write_all(&line).and_then(|_| stdin.flush()).is_err() {
+                        return None;
+                    }
+                }
+                Some(stdin)
+            });
+
+        match writer {
+            Ok(writer) => Live {
+                session,
+                lines: Some(tx),
+                writer: Some(writer),
+            },
+            Err(e) => {
+                log::warn!("render target {id}: no writer thread, it gets no lines: {e}");
+                Live {
+                    session,
+                    lines: None,
+                    writer: None,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Run for Live {
+    fn send(&mut self, bytes: &[u8]) -> Sent {
+        use std::sync::mpsc::TrySendError;
+
+        let Some(lines) = &self.lines else {
+            return Sent::Closed;
+        };
+
+        match lines.try_send(bytes.to_vec()) {
+            Ok(()) => Sent::Wrote(bytes.len()),
+            Err(TrySendError::Full(_)) => Sent::Full,
+            Err(TrySendError::Disconnected(_)) => Sent::Closed,
+        }
+    }
+
+    fn exited(&self) -> bool {
+        self.session.exited()
+    }
+
+    fn stopped(&self) -> bool {
+        self.session.stopped()
+    }
+
+    fn stop(&mut self) {
+        self.lines.take();
+
+        if let Some(writer) = self.writer.take() {
+            let until = Instant::now() + WRITER_GRACE;
+            while !writer.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+
+            if writer.is_finished()
+                && let Ok(Some(stdin)) = writer.join()
+            {
+                self.session.stdin = Some(stdin);
+            }
+        }
+
+        self.session.stop();
     }
 }
 
@@ -276,6 +415,8 @@ struct State {
     /// The target is gone.
     stop: bool,
     name: Option<String>,
+    /// Lines from the canvas waiting for the renderer.
+    out: Outbox,
 }
 
 impl State {
@@ -381,6 +522,7 @@ impl Source {
                 refused: None,
                 stop: false,
                 name: None,
+                out: Outbox::default(),
             }),
             wake: Condvar::new(),
             copies: AtomicU64::new(0),
@@ -441,6 +583,34 @@ impl Source {
         }
 
         state.held = true;
+        state.out.pause();
+        drop(state);
+        self.shared.wake.notify_all();
+    }
+
+    /// This frame's reading, for a target drawn this frame.
+    fn feed(&self, feed: &Feed) {
+        self.send(|out| {
+            out.name_pool(&feed.pool);
+            if let Some(line) = &feed.signals {
+                out.signals = Some(line.clone());
+            }
+        });
+    }
+
+    fn point(&self, pointer: Pointer) {
+        self.send(|out| out.point(pointer));
+    }
+
+    /// Queues lines for a session that runs and isn't paused, and for no
+    /// other: a paused or stopped target is sent nothing.
+    fn send(&self, queue: impl FnOnce(&mut Outbox)) {
+        let mut state = self.shared.lock();
+        if state.phase != Phase::Running || state.paused() {
+            return;
+        }
+
+        queue(&mut state.out);
         drop(state);
         self.shared.wake.notify_all();
     }
@@ -538,6 +708,10 @@ struct Supervisor {
 
 enum Job {
     Pause(bool),
+    /// A line from the outbox.
+    Send(String),
+    /// Finish what the pipe refused last time.
+    Flush,
     Copy(u32),
 }
 
@@ -608,6 +782,7 @@ impl Supervisor {
                 state.session = session;
                 state.ended = None;
                 state.pending = None;
+                state.out.restart();
             }
             self.set(Phase::Running, None);
 
@@ -750,10 +925,12 @@ impl Supervisor {
         }
     }
 
-    /// One session's life: copies on announce, pause lines on change.
+    /// One session's life: copies on announce, pause lines on change, and
+    /// the canvas's lines while it runs unpaused.
     fn drive(&mut self, run: &mut dyn Run, mapping: &Mapping) -> Exit {
         let limits = self.limits;
         let mut told = false;
+        let mut pipe = Pipe::default();
         let mut resend_at: Option<Instant> = None;
         let mut refused = 0u32;
         let mut last_seq = 0u64;
@@ -776,12 +953,30 @@ impl Supervisor {
                     let idle_at = state.published_at + limits.idle;
                     if !state.taken && !state.idle && now >= idle_at {
                         state.idle = true;
+                        state.out.pause();
                     }
 
                     let paused = state.paused();
-                    let resend_due = resend_at.is_none_or(|at| now >= at);
-                    if paused != told && resend_due {
-                        break Job::Pause(paused);
+                    if resend_at.is_some_and(|at| now >= at) {
+                        resend_at = None;
+                    }
+
+                    // The pause line goes in order behind what the pipe
+                    // holds, and nothing queued goes until it's told to go on.
+                    let mut line_at = None;
+                    if resend_at.is_none() {
+                        if pipe.busy() {
+                            break Job::Flush;
+                        }
+                        if paused != told {
+                            break Job::Pause(paused);
+                        }
+                        if !paused {
+                            match state.out.next(now) {
+                                Ok(line) => break Job::Send(line),
+                                Err(at) => line_at = at,
+                            }
+                        }
                     }
 
                     let copy = !paused && state.taken && state.pending.is_some();
@@ -800,9 +995,7 @@ impl Supervisor {
                     if !state.taken && !state.idle {
                         soonest(idle_at);
                     }
-                    if paused != told
-                        && let Some(at) = resend_at
-                    {
+                    if let Some(at) = resend_at.or(line_at) {
                         soonest(at);
                     }
                     if copy {
@@ -826,25 +1019,34 @@ impl Supervisor {
                 }
             };
 
-            match job {
-                Job::Pause(on) => match run.send(pause_line(on).as_bytes()) {
-                    Sent::Whole | Sent::Closed => {
-                        told = on;
-                        resend_at = None;
-                    }
-                    Sent::Full => resend_at = Some(Instant::now() + RESEND),
-                },
+            let line = match job {
+                Job::Pause(on) => {
+                    told = on;
+                    Some(pause_line(on))
+                }
+                Job::Send(line) => Some(line),
+                Job::Flush => None,
 
-                Job::Copy(slot) => match self.copy(mapping, slot, &mut last_seq) {
-                    Copied::Shown | Copied::Old => refused = 0,
-                    Copied::Torn => {}
-                    Copied::Refused => {
-                        refused += 1;
-                        if refused >= limits.refused_run {
-                            return Exit::Lies;
+                Job::Copy(slot) => {
+                    match self.copy(mapping, slot, &mut last_seq) {
+                        Copied::Shown | Copied::Old => refused = 0,
+                        Copied::Torn => {}
+                        Copied::Refused => {
+                            refused += 1;
+                            if refused >= limits.refused_run {
+                                return Exit::Lies;
+                            }
                         }
                     }
-                },
+                    continue;
+                }
+            };
+
+            if let Some(line) = line {
+                pipe.put(line);
+            }
+            if let Sent::Full = pipe.flush(run) {
+                resend_at = Some(Instant::now() + RESEND);
             }
         }
     }
@@ -934,6 +1136,247 @@ enum Copied {
 
 fn pause_line(on: bool) -> String {
     format!("{}\n", serde_json::json!({ "pause": on }))
+}
+
+/// The bytes of the one line on its way, so a line the pipe took in part is
+/// finished before the next starts.
+#[derive(Default)]
+struct Pipe {
+    bytes: Vec<u8>,
+    sent: usize,
+}
+
+impl Pipe {
+    fn busy(&self) -> bool {
+        self.sent < self.bytes.len()
+    }
+
+    fn put(&mut self, line: String) {
+        debug_assert!(!self.busy(), "a line goes only into an empty pipe");
+        self.bytes = line.into_bytes();
+        self.sent = 0;
+    }
+
+    fn flush(&mut self, run: &mut dyn Run) -> Sent {
+        while self.busy() {
+            match run.send(&self.bytes[self.sent..]) {
+                Sent::Wrote(0) | Sent::Full => return Sent::Full,
+                Sent::Wrote(n) => self.sent += n,
+                Sent::Closed => {
+                    self.sent = self.bytes.len();
+                    return Sent::Closed;
+                }
+            }
+        }
+        Sent::Wrote(self.bytes.len())
+    }
+}
+
+// ── What a renderer is sent ──
+//
+// The boundary of ADR 37's trust rules. Past `hello` and `pause`, a renderer
+// is sent exactly the two things its enable card names (`plugins::grants`):
+// the music's signals, as the pool's values and names with the playing
+// position, and the pointer while it's over the target's own surface. No
+// track, path, key or other item's input crosses here. A new kind of line
+// needs a new grant and new card copy first.
+
+/// One frame's reading for every target a canvas draws.
+pub(crate) struct Feed {
+    pool: String,
+    /// None once playback stopped and the signals came to rest.
+    signals: Option<String>,
+}
+
+/// `{"pool": [{"id": 3, "name": "Bass"}, ...]}`, in pool order.
+fn pool_line(pool: &[Signal]) -> String {
+    let named: Vec<serde_json::Value> = pool
+        .iter()
+        .map(|signal| serde_json::json!({ "id": signal.id, "name": wire_name(signal) }))
+        .collect();
+    format!("{}\n", serde_json::json!({ "pool": named }))
+}
+
+/// The user's name for a signal, or one worded from its source. English in
+/// any UI language, as every machine contract is.
+fn wire_name(signal: &Signal) -> String {
+    if let Some(name) = signal.given_name() {
+        return name.chars().take(NAME_MAX).collect();
+    }
+
+    let band = |kind: &str, lo: f32, hi: f32| format!("{kind} {}-{} Hz", lo.round(), hi.round());
+    match signal.source {
+        SignalSource::Band { lo, hi } => band("band", lo, hi),
+        SignalSource::Onset { lo, hi } => band("onset", lo, hi),
+        SignalSource::Trigger { lo, hi } => band("trigger", lo, hi),
+        SignalSource::Level => "level".to_string(),
+        SignalSource::Aggregate { of, .. } => format!("total of {of}"),
+    }
+}
+
+/// `{"signals": [...], "time": t}`: each pool signal's gated value in pool
+/// order, as routes read it, and the playing position in seconds.
+fn signals_line(pool: &[Signal], hub: &SignalHub, time: f64) -> String {
+    let values: Vec<f64> = pool
+        .iter()
+        .map(|signal| rounded(f64::from(hub.value(signal.id).unwrap_or(0.)), 4))
+        .collect();
+    format!(
+        "{}\n",
+        serde_json::json!({ "signals": values, "time": rounded(time, 3) })
+    )
+}
+
+/// A finite number to `places` decimals, so a line reads 0.3 and not
+/// 0.30000001192092896.
+fn rounded(value: f64, places: i32) -> f64 {
+    let scale = 10f64.powi(places);
+    if value.is_finite() {
+        (value * scale).round() / scale
+    } else {
+        0.
+    }
+}
+
+/// One pointer event on a target's surface, 0 to 1 across it from its
+/// top-left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Pointer {
+    Move([f32; 2]),
+    Down([f32; 2], &'static str),
+    Up([f32; 2], &'static str),
+    /// Where, and how far in lines.
+    Scroll([f32; 2], [f32; 2]),
+    /// Off the surface. It carries no point, and it ends any press.
+    Leave,
+}
+
+impl Pointer {
+    fn line(&self) -> String {
+        let at = |[x, y]: [f32; 2]| (rounded(f64::from(x), 4), rounded(f64::from(y), 4));
+
+        let pointer = match *self {
+            Pointer::Move(p) => {
+                let (x, y) = at(p);
+                serde_json::json!({ "kind": "move", "x": x, "y": y })
+            }
+            Pointer::Down(p, button) => {
+                let (x, y) = at(p);
+                serde_json::json!({ "kind": "down", "x": x, "y": y, "button": button })
+            }
+            Pointer::Up(p, button) => {
+                let (x, y) = at(p);
+                serde_json::json!({ "kind": "up", "x": x, "y": y, "button": button })
+            }
+            Pointer::Scroll(p, delta) => {
+                let (x, y) = at(p);
+                let (dx, dy) = at(delta);
+                serde_json::json!({ "kind": "scroll", "x": x, "y": y, "dx": dx, "dy": dy })
+            }
+            Pointer::Leave => serde_json::json!({ "kind": "leave" }),
+        };
+        format!("{}\n", serde_json::json!({ "pointer": pointer }))
+    }
+
+    /// Which goes first from a full queue: the lowest.
+    fn keep(&self) -> u8 {
+        match self {
+            Pointer::Move(_) => 0,
+            Pointer::Scroll(..) => 1,
+            Pointer::Leave => 2,
+            Pointer::Down(..) | Pointer::Up(..) => 3,
+        }
+    }
+}
+
+/// What the canvas has for a renderer and the pipe hasn't taken. Bounded
+/// whatever the renderer does: the newest pool line, the newest signals
+/// line, and at most [`POINTER_QUEUE`] pointer events.
+#[derive(Default)]
+struct Outbox {
+    /// The pool's line as the canvas last gave it.
+    pool: Option<String>,
+    /// This session hasn't been sent that line yet.
+    pool_due: bool,
+    /// Lossy: a newer reading replaces one not yet sent.
+    signals: Option<String>,
+    pointer: VecDeque<Pointer>,
+    last_move: Option<Instant>,
+}
+
+impl Outbox {
+    fn name_pool(&mut self, line: &str) {
+        if self.pool.as_deref() != Some(line) {
+            self.pool = Some(line.to_string());
+            self.pool_due = true;
+        }
+    }
+
+    fn point(&mut self, pointer: Pointer) {
+        // A move behind a move still waiting folds into it.
+        if let (Pointer::Move(at), Some(Pointer::Move(waiting))) =
+            (pointer, self.pointer.back_mut())
+        {
+            *waiting = at;
+            return;
+        }
+
+        if self.pointer.len() >= POINTER_QUEUE {
+            let least = self.pointer.iter().map(Pointer::keep).min().unwrap_or(0);
+            if let Some(ix) = self.pointer.iter().position(|p| p.keep() == least) {
+                self.pointer.remove(ix);
+            }
+        }
+        self.pointer.push_back(pointer);
+    }
+
+    /// A new session hasn't heard the pool, and nothing queued was for it.
+    fn restart(&mut self) {
+        self.pool_due = self.pool.is_some();
+        self.signals = None;
+        self.pointer.clear();
+        self.last_move = None;
+    }
+
+    /// Paused: what was waiting is stale by the time it goes on.
+    fn pause(&mut self) {
+        self.signals = None;
+        self.pointer.clear();
+    }
+
+    /// The next line due at `now`. Otherwise when a move held back for
+    /// [`MOVE_GAP`] comes due, or None with nothing waiting.
+    fn next(&mut self, now: Instant) -> Result<String, Option<Instant>> {
+        if self.pool_due
+            && let Some(pool) = &self.pool
+        {
+            self.pool_due = false;
+            return Ok(pool.clone());
+        }
+
+        let mut held = None;
+        if let Some(head) = self.pointer.front() {
+            // Only a lone move waits: anything behind it keeps the order.
+            let due = self.last_move.map(|at| at + MOVE_GAP);
+            let lone = self.pointer.len() == 1;
+            match (head, due) {
+                (Pointer::Move(_), Some(due)) if lone && now < due => held = Some(due),
+                _ => {
+                    if let Some(pointer) = self.pointer.pop_front() {
+                        if let Pointer::Move(_) = pointer {
+                            self.last_move = Some(now);
+                        }
+                        return Ok(pointer.line());
+                    }
+                }
+            }
+        }
+
+        if let Some(line) = self.signals.take() {
+            return Ok(line);
+        }
+        Err(held)
+    }
 }
 
 /// The session's stdout, line by line, until it closes or floods. Only the
@@ -1111,6 +1554,14 @@ impl Target {
         self.source.hold();
     }
 
+    fn feed(&self, feed: &Feed) {
+        self.source.feed(feed);
+    }
+
+    fn point(&self, pointer: Pointer) {
+        self.source.point(pointer);
+    }
+
     pub(crate) fn name(&self) -> Option<String> {
         self.source.name()
     }
@@ -1222,9 +1673,50 @@ struct Shown {
 #[derive(Default)]
 pub(crate) struct Targets {
     shown: HashMap<String, Shown>,
+    /// This frame's reading, for every target drawn in it.
+    feed: Option<Feed>,
+    /// Playback stopped and the signals are still falling to rest.
+    tail: bool,
+}
+
+/// Whether any item in the canvas, a group's child included, is a render
+/// target.
+pub(crate) fn holds_targets(canvas: &CanvasState) -> bool {
+    let mut found = false;
+    canvas.walk(&mut |item, _| found |= matches!(item.content, Content::Target { .. }));
+    found
 }
 
 impl Targets {
+    /// Reads the hub for this frame's targets. Once playback stops the
+    /// signals go on only until they come to rest, so a paused canvas reads
+    /// the hub no more. Call it only on a frame the canvas draws anyway.
+    pub(crate) fn read(&mut self, hub: &SignalHub, running: bool, time: impl FnOnce() -> f64) {
+        let send = if running {
+            self.tail = true;
+            true
+        } else if self.tail {
+            self.tail = hub.settling();
+            true
+        } else {
+            false
+        };
+
+        let pool = hub.pool();
+        self.feed = Some(Feed {
+            pool: pool_line(&pool),
+            signals: send.then(|| signals_line(&pool, hub, time())),
+        });
+    }
+
+    /// A pointer event for target `id`. The canvas sends one only off
+    /// design mode, over the front item, inside its quad.
+    pub(crate) fn point(&self, id: &str, pointer: Pointer) {
+        if let Some(target) = self.shown.get(id).and_then(|shown| shown.target.as_ref()) {
+            target.point(pointer);
+        }
+    }
+
     /// The item's element this frame: its newest frame on `face`, or in
     /// design mode its box with the renderer's name while it has none.
     /// None for a face off the stage, which counts as not drawn.
@@ -1261,6 +1753,10 @@ impl Targets {
         }
 
         let frame = shown.target.as_ref().and_then(Target::take);
+        if let (Some(target), Some(feed)) = (&shown.target, &self.feed) {
+            target.feed(feed);
+        }
+
         let Some(frame) = frame else {
             if !design {
                 return None;
@@ -1372,7 +1868,7 @@ fn empty_box(corners: &[[f32; 2]; 4], name: String) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, PipeReader, PipeWriter, Write};
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::mpsc;
 
     use rox_frames::Writer;
@@ -1409,12 +1905,18 @@ mod tests {
     struct FakeRun {
         stdin: Option<PipeWriter>,
         stdout: Arc<Mutex<Option<PipeWriter>>>,
+        /// A renderer that never reads: its pipe is always full.
+        stuck: Arc<AtomicBool>,
     }
 
     impl Run for FakeRun {
-        fn send(&mut self, line: &[u8]) -> Sent {
-            match self.stdin.as_mut().map(|stdin| stdin.write_all(line)) {
-                Some(Ok(())) => Sent::Whole,
+        fn send(&mut self, bytes: &[u8]) -> Sent {
+            if self.stuck.load(Ordering::SeqCst) {
+                return Sent::Full;
+            }
+
+            match self.stdin.as_mut().map(|stdin| stdin.write_all(bytes)) {
+                Some(Ok(())) => Sent::Wrote(bytes.len()),
                 _ => Sent::Closed,
             }
         }
@@ -1441,6 +1943,7 @@ mod tests {
         /// What the gate says, None to let it start.
         refuse: Arc<Mutex<Option<Refused>>>,
         forgiven: Arc<AtomicUsize>,
+        stuck: Arc<AtomicBool>,
     }
 
     impl Host for FakeHost {
@@ -1466,6 +1969,7 @@ mod tests {
             let run = FakeRun {
                 stdin: Some(stdin_w),
                 stdout,
+                stuck: self.stuck.clone(),
             };
             Ok((Box::new(run), Box::new(stdout_r)))
         }
@@ -1520,6 +2024,7 @@ mod tests {
                 due: Arc::new(Mutex::new(Some(Duration::ZERO))),
                 refuse: Arc::new(Mutex::new(refused)),
                 forgiven: Arc::default(),
+                stuck: Arc::default(),
             };
             let spec = Spec::new(SIZE.0, SIZE.1).unwrap();
             let source = Source::spawn(
@@ -1880,6 +2385,349 @@ mod tests {
             rig.source.status() == Status::Starting(Some("no python3".into()))
         });
         rig.finish();
+    }
+
+    fn feed(pool: &str, signals: &str) -> Feed {
+        Feed {
+            pool: format!("{pool}\n"),
+            signals: Some(format!("{signals}\n")),
+        }
+    }
+
+    /// Every pointer line queued, oldest first.
+    fn drain(out: &mut Outbox, now: Instant) -> Vec<String> {
+        std::iter::from_fn(|| out.next(now).ok())
+            .map(|line| line.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn moves_coalesce_and_presses_dont() {
+        let mut out = Outbox::default();
+        let start = Instant::now();
+
+        for x in [0.1, 0.2, 0.3] {
+            out.point(Pointer::Move([x, 0.5]));
+        }
+        out.point(Pointer::Down([0.3, 0.5], "left"));
+        out.point(Pointer::Up([0.3, 0.5], "left"));
+        out.point(Pointer::Down([0.3, 0.5], "left"));
+        out.point(Pointer::Up([0.3, 0.5], "left"));
+        out.point(Pointer::Move([0.4, 0.5]));
+        out.point(Pointer::Move([0.5, 0.5]));
+
+        assert_eq!(
+            drain(&mut out, start),
+            [
+                r#"{"pointer":{"kind":"move","x":0.3,"y":0.5}}"#,
+                r#"{"pointer":{"kind":"down","x":0.3,"y":0.5,"button":"left"}}"#,
+                r#"{"pointer":{"kind":"up","x":0.3,"y":0.5,"button":"left"}}"#,
+                r#"{"pointer":{"kind":"down","x":0.3,"y":0.5,"button":"left"}}"#,
+                r#"{"pointer":{"kind":"up","x":0.3,"y":0.5,"button":"left"}}"#,
+            ],
+            "a press keeps its place between the moves around it"
+        );
+
+        // The move after the presses waits out the gap from the last move,
+        // folding in any that come meanwhile.
+        assert_eq!(out.next(start), Err(Some(start + MOVE_GAP)));
+        out.point(Pointer::Move([0.6, 0.5]));
+        assert_eq!(
+            drain(&mut out, start + MOVE_GAP),
+            [r#"{"pointer":{"kind":"move","x":0.6,"y":0.5}}"#]
+        );
+
+        // Anything behind a waiting move sends it at once, in order.
+        let later = start + MOVE_GAP;
+        out.point(Pointer::Move([0.8, 0.5]));
+        out.point(Pointer::Leave);
+        assert_eq!(
+            drain(&mut out, later),
+            [
+                r#"{"pointer":{"kind":"move","x":0.8,"y":0.5}}"#,
+                r#"{"pointer":{"kind":"leave"}}"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_full_channel_drops_moves_first() {
+        let mut out = Outbox::default();
+        let press = |n: usize| Pointer::Down([n as f32 / 100., 0.], "left");
+
+        // Presses, scrolls and moves, a third each.
+        for n in 0..POINTER_QUEUE {
+            out.point(match n % 3 {
+                0 => press(n),
+                1 => Pointer::Scroll([0., 0.], [0., 1.]),
+                _ => Pointer::Move([n as f32 / 100., 0.]),
+            });
+        }
+        let moves = |out: &Outbox| {
+            out.pointer
+                .iter()
+                .filter(|p| matches!(p, Pointer::Move(_)))
+                .count()
+        };
+        let scrolls = |out: &Outbox| {
+            out.pointer
+                .iter()
+                .filter(|p| matches!(p, Pointer::Scroll(..)))
+                .count()
+        };
+        let (had_moves, had_scrolls) = (moves(&out), scrolls(&out));
+        assert_eq!(out.pointer.len(), POINTER_QUEUE);
+
+        // Each press past the bound takes the oldest move, then the scrolls.
+        for n in 0..had_moves {
+            out.point(press(100 + n));
+            assert_eq!(moves(&out), had_moves - n - 1);
+            assert_eq!(scrolls(&out), had_scrolls);
+        }
+        for n in 0..had_scrolls {
+            out.point(press(200 + n));
+            assert_eq!(scrolls(&out), had_scrolls - n - 1);
+        }
+        assert_eq!(out.pointer.len(), POINTER_QUEUE);
+        assert!(
+            out.pointer.iter().all(|p| p.keep() == 3),
+            "only presses left"
+        );
+
+        // Full of presses, the oldest press goes, and the bound holds.
+        let oldest = out.pointer[0];
+        out.point(press(300));
+        assert_eq!(out.pointer.len(), POINTER_QUEUE);
+        assert_ne!(out.pointer[0], oldest);
+
+        // The signals line is lossy: a newer one replaces one not sent.
+        out.signals = Some("old".into());
+        out.signals = Some("new".into());
+        out.pointer.clear();
+        assert_eq!(out.next(Instant::now()), Ok("new".to_string()));
+        assert_eq!(out.next(Instant::now()), Err(None));
+    }
+
+    #[test]
+    fn nothing_is_sent_while_paused() {
+        let rig = Rig::new(slow());
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        rig.source.hold();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+
+        rig.source
+            .feed(&feed(r#"{"pool":[]}"#, r#"{"signals":[0.5],"time":1.0}"#));
+        rig.source.point(Pointer::Down([0.5, 0.5], "left"));
+        rig.source.point(Pointer::Move([0.5, 0.5]));
+        settle();
+        assert!(
+            fake.stdin.try_recv().is_err(),
+            "a paused target gets nothing"
+        );
+
+        // Drawn again, it's told to go on before anything else.
+        rig.source.take();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        settle();
+        assert!(
+            fake.stdin.try_recv().is_err(),
+            "what came in while paused is dropped"
+        );
+
+        rig.source
+            .feed(&feed(r#"{"pool":[]}"#, r#"{"signals":[0.25],"time":2.0}"#));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pool":[]}"#));
+        assert_eq!(
+            fake.told().as_deref(),
+            Some(r#"{"signals":[0.25],"time":2.0}"#)
+        );
+
+        // Stopped for good: nothing more goes.
+        *rig.host.due.lock().unwrap() = None;
+        fake.exit();
+        until("stopped", || {
+            rig.source.status() == Status::Stopped(Some(Refused::Stopped))
+        });
+        rig.source
+            .feed(&feed(r#"{"pool":[]}"#, r#"{"signals":[1.0],"time":3.0}"#));
+        rig.source.point(Pointer::Move([0.1, 0.1]));
+        assert!(rig.source.shared.lock().out.pointer.is_empty());
+        assert!(rig.source.shared.lock().out.signals.is_none());
+
+        rig.finish();
+    }
+
+    #[test]
+    fn the_pool_is_named_once_and_again_when_it_changes() {
+        let rig = Rig::new(slow());
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        let a = r#"{"pool":[{"id":1,"name":"Bass"}]}"#;
+        let b = r#"{"pool":[{"id":1,"name":"Kick"}]}"#;
+
+        rig.source.feed(&feed(a, r#"{"signals":[0.1],"time":0.0}"#));
+        assert_eq!(fake.told().as_deref(), Some(a));
+        assert_eq!(
+            fake.told().as_deref(),
+            Some(r#"{"signals":[0.1],"time":0.0}"#)
+        );
+
+        rig.source.feed(&feed(a, r#"{"signals":[0.2],"time":0.1}"#));
+        assert_eq!(
+            fake.told().as_deref(),
+            Some(r#"{"signals":[0.2],"time":0.1}"#),
+            "the same pool isn't named twice"
+        );
+
+        rig.source.feed(&feed(b, r#"{"signals":[0.3],"time":0.2}"#));
+        assert_eq!(fake.told().as_deref(), Some(b));
+        assert_eq!(
+            fake.told().as_deref(),
+            Some(r#"{"signals":[0.3],"time":0.2}"#)
+        );
+
+        // A restarted renderer hears the pool again after its hello.
+        fake.exit();
+        let again = rig.session();
+        until("running again", || rig.source.status() == Status::Running);
+        rig.source.feed(&feed(b, r#"{"signals":[0.4],"time":0.3}"#));
+        assert_eq!(again.told().as_deref(), Some(b));
+        assert_eq!(
+            again.told().as_deref(),
+            Some(r#"{"signals":[0.4],"time":0.3}"#)
+        );
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_renderer_that_never_reads_holds_nothing_up() {
+        let rig = Rig::new(slow());
+        rig.host.stuck.store(true, Ordering::SeqCst);
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        let start = Instant::now();
+        for n in 0..10_000 {
+            let x = (n % 100) as f32 / 100.;
+            rig.source
+                .feed(&feed(r#"{"pool":[]}"#, r#"{"signals":[0.5],"time":1.0}"#));
+            rig.source.point(Pointer::Move([x, x]));
+            rig.source.point(Pointer::Down([x, x], "left"));
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "queueing never waits on the renderer: {:?}",
+            start.elapsed()
+        );
+        assert!(rig.source.shared.lock().out.pointer.len() <= POINTER_QUEUE);
+
+        // It starts reading: the pool, then what's left, newest signals last.
+        rig.host.stuck.store(false, Ordering::SeqCst);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pool":[]}"#));
+        let mut last = String::new();
+        while let Some(line) = fake.told() {
+            last = line;
+            if last.starts_with(r#"{"signals""#) {
+                break;
+            }
+        }
+        assert_eq!(last, r#"{"signals":[0.5],"time":1.0}"#);
+
+        rig.finish();
+    }
+
+    /// A pipe that takes a few bytes a call, and is full every other call.
+    struct Trickle {
+        got: Vec<u8>,
+        calls: usize,
+    }
+
+    impl Run for Trickle {
+        fn send(&mut self, bytes: &[u8]) -> Sent {
+            self.calls += 1;
+            if self.calls % 2 == 0 {
+                return Sent::Full;
+            }
+
+            let n = bytes.len().min(3);
+            self.got.extend_from_slice(&bytes[..n]);
+            Sent::Wrote(n)
+        }
+
+        fn exited(&self) -> bool {
+            false
+        }
+
+        fn stopped(&self) -> bool {
+            false
+        }
+
+        fn stop(&mut self) {}
+    }
+
+    #[test]
+    fn a_line_taken_in_part_is_finished_before_the_next() {
+        let mut run = Trickle {
+            got: Vec::new(),
+            calls: 0,
+        };
+        let mut pipe = Pipe::default();
+
+        for line in [
+            "{\"pool\":[{\"id\":1,\"name\":\"Bass\"}]}\n",
+            "{\"pause\":true}\n",
+        ] {
+            pipe.put(line.to_string());
+            while let Sent::Full = pipe.flush(&mut run) {}
+            assert!(!pipe.busy());
+        }
+
+        assert_eq!(
+            String::from_utf8(run.got).unwrap(),
+            "{\"pool\":[{\"id\":1,\"name\":\"Bass\"}]}\n{\"pause\":true}\n"
+        );
+    }
+
+    #[test]
+    fn the_lines_say_only_what_the_card_names() {
+        let named = Signal {
+            id: 3,
+            name: " Bass ".into(),
+            ..Signal::default()
+        };
+        let level = Signal {
+            id: 4,
+            source: SignalSource::Level,
+            ..Signal::default()
+        };
+        let long = Signal {
+            id: 5,
+            name: "x".repeat(NAME_MAX * 2),
+            ..Signal::default()
+        };
+
+        let pool = pool_line(&[named, level, long]);
+        let read: serde_json::Value = serde_json::from_str(&pool).expect("json");
+        assert_eq!(
+            read["pool"][0],
+            serde_json::json!({ "id": 3, "name": "Bass" })
+        );
+        assert_eq!(read["pool"][1]["name"], "level");
+        assert_eq!(
+            read["pool"][2]["name"].as_str().map(str::len),
+            Some(NAME_MAX)
+        );
+        assert_eq!(pool.matches('\n').count(), 1, "one line");
+
+        assert_eq!(
+            Pointer::Scroll([0.25, 1.], [0., -1.]).line(),
+            "{\"pointer\":{\"kind\":\"scroll\",\"x\":0.25,\"y\":1.0,\"dx\":0.0,\"dy\":-1.0}}\n"
+        );
+        assert_eq!(rounded(f64::NAN, 4), 0.);
     }
 
     #[test]

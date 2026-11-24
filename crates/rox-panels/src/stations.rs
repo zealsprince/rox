@@ -53,9 +53,9 @@ pub struct StationsPanel {
     state: AppState,
     config: StationsConfig,
     stations: Vec<(Station, Heard)>,
+    /// The listed station playing, None for anything else.
     playing: Option<TrackKey>,
-    /// The whole second the clocks last read, so the 16ms pump doesn't
-    /// repaint the list sixty times a second.
+    /// The playing row's clock in whole seconds, 0 off a listed station.
     clock_secs: u64,
     /// A station moving to the next song changes a row and nothing else.
     seen_rev: u64,
@@ -97,27 +97,11 @@ impl StationsPanel {
                 }
             },
         );
-        // Clocks read in whole seconds, so a playing station doesn't repaint the
-        // list every tick.
         let _player_changed =
             crate::player::observe_clock(&state.player, cx, |this: &mut Self, _, cx| {
-                let player = this.state.player.read(cx);
-                let playing = player.now_playing().map(|now| now.key);
-                let clock_secs = player
-                    .now_playing()
-                    .map(|now| now.position_secs as u64)
-                    .unwrap_or(0);
-                let rev = player.title_rev().unwrap_or(0);
-
-                if this.playing == playing && this.clock_secs == clock_secs && this.seen_rev == rev
-                {
-                    return;
+                if this.read_on_air(cx) {
+                    cx.notify();
                 }
-
-                this.playing = playing;
-                this.clock_secs = clock_secs;
-                this.seen_rev = rev;
-                cx.notify();
             });
 
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
@@ -139,7 +123,7 @@ impl StationsPanel {
         );
 
         let mut panel = StationsPanel {
-            playing: state.player.read(cx).now_playing().map(|now| now.key),
+            playing: None,
             clock_secs: 0,
             seen_rev: 0,
             state,
@@ -186,7 +170,36 @@ impl StationsPanel {
         self.anchor = self.anchor.take().filter(|url| self.ids.contains_key(url));
         self.cursor = self.cursor.take().filter(|url| self.ids.contains_key(url));
 
+        self.read_on_air(cx);
         cx.notify();
+    }
+
+    /// Re-reads what the playing row shows, true when that moved. The clock and
+    /// the song only draw on a listed station's row, so anything else playing
+    /// reads as nothing playing and its clock never repaints the list.
+    fn read_on_air(&mut self, cx: &App) -> bool {
+        let player = self.state.player.read(cx);
+        let now = player.now_playing().map(|now| (now.key, now.position_secs));
+        let rev = player.title_rev().unwrap_or(0);
+
+        let reading = on_air_reading(now, rev, |key| {
+            self.stations
+                .iter()
+                .any(|(station, _)| key.path.to_string_lossy() == station.url)
+        });
+        let (playing, clock_secs, seen_rev) = match reading {
+            Some((key, secs, rev)) => (Some(key), secs, rev),
+            None => (None, 0, 0),
+        };
+
+        if self.playing == playing && self.clock_secs == clock_secs && self.seen_rev == seen_rev {
+            return false;
+        }
+
+        self.playing = playing;
+        self.clock_secs = clock_secs;
+        self.seen_rev = seen_rev;
+        true
     }
 
     fn url_at(&self, ix: usize) -> Option<String> {
@@ -830,6 +843,19 @@ fn manage(window: &mut Window, cx: &mut App) {
 
 /// The shape [`rox_library::stations`] writes its rows with, which is
 /// what makes the resolve find them.
+/// The playing row's key, its clock in whole seconds and its song's revision,
+/// or None when what plays isn't one of the rows. Whole seconds, so the 16ms
+/// pump doesn't repaint the list sixty times a second.
+fn on_air_reading(
+    now: Option<(TrackKey, f64)>,
+    rev: u64,
+    listed: impl Fn(&TrackKey) -> bool,
+) -> Option<(TrackKey, u64, u64)> {
+    let (key, secs) = now?;
+
+    listed(&key).then_some((key, secs as u64, rev))
+}
+
 fn key_for(url: &str) -> TrackKey {
     TrackKey {
         source: source_id(stations::SOURCE),
@@ -1070,6 +1096,38 @@ mod tests {
             "https://host/jazz"
         );
         assert_eq!(display_name(&station("https://host/jazz", "Jazz")), "Jazz");
+    }
+
+    #[test]
+    fn only_a_listed_station_reads_the_clock() {
+        let station = key_for("http://127.0.0.1:8765/radio.mp3");
+        let local = TrackKey::from(std::path::PathBuf::from("/music/a.flac"));
+        let listed = |key: &TrackKey| *key == station;
+
+        assert_eq!(
+            on_air_reading(Some((local.clone(), 12.7)), 3, listed),
+            None,
+            "a local file's clock reads as nothing"
+        );
+        assert_eq!(on_air_reading(None, 3, listed), None);
+
+        let on_air = on_air_reading(Some((station.clone(), 12.7)), 3, listed);
+        assert_eq!(on_air, Some((station.clone(), 12, 3)));
+        assert_eq!(
+            on_air_reading(Some((station.clone(), 12.2)), 3, listed),
+            on_air,
+            "the same whole second reads the same"
+        );
+        assert_ne!(
+            on_air_reading(Some((station.clone(), 12.2)), 4, listed),
+            on_air,
+            "a song turnover reads as a change"
+        );
+        assert_eq!(
+            on_air_reading(Some((station, 12.7)), 3, |_| false),
+            None,
+            "a station that isn't one of the rows reads as nothing"
+        );
     }
 
     #[test]

@@ -9,6 +9,37 @@ use serde_json::{Value, json};
 
 use rox_ipc::client::Client;
 
+/// `print!` through stdout, ending the run quietly once the reader has gone.
+macro_rules! out {
+    ($($arg:tt)*) => {
+        write_out(format_args!($($arg)*))
+    };
+}
+
+/// `println!` the same way.
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        write_out(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
+/// std ignores SIGPIPE, so a closed pipe (`roxctl status | head -1`) comes
+/// back as a BrokenPipe write error, which `println!` turns into a panic.
+/// Here it exits 0, and `watch` ends at its next line.
+fn write_out(args: std::fmt::Arguments) {
+    use std::io::Write;
+
+    let Err(err) = std::io::stdout().lock().write_fmt(args) else {
+        return;
+    };
+
+    if err.kind() == std::io::ErrorKind::BrokenPipe {
+        std::process::exit(0);
+    }
+    eprintln!("roxctl: writing output: {err}");
+    std::process::exit(1);
+}
+
 const USAGE: &str = "\
 roxctl - control a running rox
 
@@ -133,7 +164,7 @@ fn main() -> ExitCode {
                 args.remove(i);
             }
             "--help" | "-h" | "help" => {
-                print!("{USAGE}");
+                out!("{USAGE}");
                 return ExitCode::SUCCESS;
             }
             _ => i += 1,
@@ -496,7 +527,7 @@ fn run(
         .call(&method, params)
         .map_err(|err| err.to_string())?;
     if as_json {
-        println!(
+        outln!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_default()
         );
@@ -511,50 +542,50 @@ fn run(
         "now" => print_now(&result),
         "track" => print_track(&result),
         "history" => print_history(&result),
-        "rescan" => println!("scan started"),
+        "rescan" => outln!("scan started"),
         "tasks" => print_tasks(&result),
         "task-start" => print_task_started(&result),
-        "task-stop" => println!("stopping at the next file"),
+        "task-stop" => outln!("stopping at the next file"),
         "windows" => print_windows(&result),
         "frames" => print_frames(&result),
         "actions" => print_actions(&result),
         "milkdrop" => print_milkdrop(&result),
         "workspace" => match args.first().map(String::as_str) {
-            Some("save") => println!("saved as {}", result["name"].as_str().unwrap_or_default()),
-            Some("export") => println!(
+            Some("save") => outln!("saved as {}", result["name"].as_str().unwrap_or_default()),
+            Some("export") => outln!(
                 "{}: {} bytes",
                 result["path"].as_str().unwrap_or_default(),
                 result["bytes"].as_u64().unwrap_or_default()
             ),
-            _ => println!(
+            _ => outln!(
                 "imported as {}",
                 result["name"].as_str().unwrap_or_default()
             ),
         },
         "plugin" if args.first().is_some_and(|verb| verb == "pack") => {
-            println!("packed to {}", result["path"].as_str().unwrap_or_default())
+            outln!("packed to {}", result["path"].as_str().unwrap_or_default())
         }
-        "plugin" => println!(
+        "plugin" => outln!(
             "installed {}, switched off",
             result["id"].as_str().unwrap_or_default()
         ),
-        "object" if args.first().is_some_and(|verb| verb == "export") => println!(
+        "object" if args.first().is_some_and(|verb| verb == "export") => outln!(
             "exported {} to {}",
             result["name"].as_str().unwrap_or_default(),
             result["path"].as_str().unwrap_or_default()
         ),
-        "object" => println!(
+        "object" => outln!(
             "installed as {}",
             result["name"].as_str().unwrap_or_default()
         ),
         "library" => print_library(args, &result),
         "settings" => print_settings(&result),
-        "asset" => println!(
+        "asset" => outln!(
             "added {} as {}",
             result["file"].as_str().unwrap_or_default(),
             result["id"].as_str().unwrap_or_default()
         ),
-        _ => println!(
+        _ => outln!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_default()
         ),
@@ -576,32 +607,32 @@ fn watch(client: &mut Client, as_json: bool) -> Result<(), String> {
     loop {
         let (method, params) = client.next_event().map_err(|err| err.to_string())?;
         if as_json {
-            println!("{}", json!({ "method": method, "params": params }));
+            outln!("{}", json!({ "method": method, "params": params }));
             continue;
         }
         match method.as_str() {
             "event.playback" => print_status(&params),
             "event.track" => print_track_change(&params),
-            "event.queue" => println!(
+            "event.queue" => outln!(
                 "queue    rev {}",
                 params["queue_rev"].as_u64().unwrap_or_default()
             ),
-            other => println!("{other}"),
+            other => outln!("{other}"),
         }
     }
 }
 
 fn print_track_change(track: &Value) {
     if !track.is_object() {
-        println!("track    (nothing)");
+        outln!("track    (nothing)");
         return;
     }
     let artist = track["artist"].as_str().unwrap_or_default();
     let title = track["title"].as_str().unwrap_or_default();
     if artist.is_empty() {
-        println!("track    {title}");
+        outln!("track    {title}");
     } else {
-        println!("track    {artist} - {title}");
+        outln!("track    {artist} - {title}");
     }
 }
 
@@ -689,24 +720,24 @@ fn print_library(args: &[String], result: &Value) {
         Some("add") => {
             let path = result["path"].as_str().unwrap_or_default();
             match result["covered_by"].as_str() {
-                Some(root) => println!("{path} is inside {root}; rescanning it"),
-                None => println!("added {path}, scanning"),
+                Some(root) => outln!("{path} is inside {root}; rescanning it"),
+                None => outln!("added {path}, scanning"),
             }
             for absorbed in result["absorbed"].as_array().into_iter().flatten() {
-                println!(
+                outln!(
                     "  takes the place of {}",
                     absorbed.as_str().unwrap_or_default()
                 );
             }
         }
-        Some("remove") => println!("removed {}", result["removed"].as_str().unwrap_or_default()),
+        Some("remove") => outln!("removed {}", result["removed"].as_str().unwrap_or_default()),
         _ => {
             let Some(folders) = result["folders"].as_array().filter(|f| !f.is_empty()) else {
-                println!("no library folders");
+                outln!("no library folders");
                 return;
             };
             for folder in folders {
-                println!(
+                outln!(
                     "{:>7} tracks  {}{}",
                     folder["tracks"].as_u64().unwrap_or_default(),
                     folder["path"].as_str().unwrap_or_default(),
@@ -717,7 +748,7 @@ fn print_library(args: &[String], result: &Value) {
                 );
             }
             if let Some(busy) = result["busy"].as_str() {
-                println!("busy: {busy}");
+                outln!("busy: {busy}");
             }
         }
     }
@@ -748,7 +779,7 @@ fn print_settings(result: &Value) {
             Some("number") => format!("  ({} to {})", row["min"], row["max"]),
             _ => String::new(),
         };
-        println!(
+        outln!(
             "{:>16}  {value}{range}",
             row["key"].as_str().unwrap_or_default()
         );
@@ -785,8 +816,8 @@ fn print_status(status: &Value) {
             } else {
                 format!("{artist} - {title}")
             };
-            println!("{state}  {line}");
-            println!(
+            outln!("{state}  {line}");
+            outln!(
                 "        {} / {}  volume {:.2}",
                 clock(status["position_secs"].as_f64()),
                 clock(status["duration_secs"].as_f64()),
@@ -798,13 +829,13 @@ fn print_status(status: &Value) {
             let ab = &status["ab"];
             match (ab["a"].as_f64(), ab["b"].as_f64()) {
                 (Some(a), Some(b)) => {
-                    println!("        A-B {} to {}", clock(Some(a)), clock(Some(b)))
+                    outln!("        A-B {} to {}", clock(Some(a)), clock(Some(b)))
                 }
-                (Some(a), None) => println!("        A-B {} (waiting for B)", clock(Some(a))),
+                (Some(a), None) => outln!("        A-B {} (waiting for B)", clock(Some(a))),
                 _ => {}
             }
         }
-        false => println!("{state}"),
+        false => outln!("{state}"),
     }
 }
 
@@ -817,7 +848,7 @@ fn print_shift(shift: &Value, indent: &str) {
         true => format!("-{} behind live", clock(shift["behind_secs"].as_f64())),
         false => "live".to_owned(),
     };
-    println!(
+    outln!(
         "{indent}{edge}  tape {} of {}",
         clock(shift["window_secs"].as_f64()),
         clock(shift["cap_secs"].as_f64()),
@@ -826,11 +857,11 @@ fn print_shift(shift: &Value, indent: &str) {
 
 fn print_windows(result: &Value) {
     let Some(windows) = result["windows"].as_array().filter(|w| !w.is_empty()) else {
-        println!("no windows open");
+        outln!("no windows open");
         return;
     };
     for window in windows {
-        println!(
+        outln!(
             "{} {:>4}  {:>4}x{:<4} @{}  {}",
             if window["active"].as_bool().unwrap_or(false) {
                 ">"
@@ -850,11 +881,11 @@ fn print_frames(result: &Value) {
     let frames = result["frames"].as_u64().unwrap_or_default();
     let span = result["span_ms"].as_f64().unwrap_or_default();
     if frames == 0 {
-        println!("no frames drawn in {span:.0} ms");
+        outln!("no frames drawn in {span:.0} ms");
         return;
     }
 
-    println!(
+    outln!(
         "{frames} frames in {span:.0} ms, mean {:.2} ms, worst {:.2} ms",
         result["mean_ms"].as_f64().unwrap_or_default(),
         result["worst_ms"].as_f64().unwrap_or_default(),
@@ -863,23 +894,23 @@ fn print_frames(result: &Value) {
 
 fn print_actions(result: &Value) {
     let Some(actions) = result["actions"].as_array().filter(|a| !a.is_empty()) else {
-        println!("no matching actions");
+        outln!("no matching actions");
         return;
     };
     for action in actions {
         if let Some(name) = action.as_str() {
-            println!("{name}");
+            outln!("{name}");
         }
     }
 }
 
 fn print_queue(queue: &Value) {
     let Some(entries) = queue["entries"].as_array().filter(|e| !e.is_empty()) else {
-        println!("queue empty");
+        outln!("queue empty");
         return;
     };
     for entry in entries {
-        println!(
+        outln!(
             "{} {:>6}  {}{}",
             if entry["current"].as_bool().unwrap_or(false) {
                 ">"
@@ -898,7 +929,7 @@ fn print_queue(queue: &Value) {
 
 fn print_search(result: &Value) {
     let Some(tracks) = result["tracks"].as_array().filter(|t| !t.is_empty()) else {
-        println!("no matches");
+        outln!("no matches");
         return;
     };
     for track in tracks {
@@ -913,13 +944,13 @@ fn print_search(result: &Value) {
             },
         };
         if source == Some("radio") {
-            println!(
+            outln!(
                 "Radio - {}{key}",
                 track["title"].as_str().unwrap_or_default(),
             );
             continue;
         }
-        println!(
+        outln!(
             "{} - {} - {}  [{}]{key}",
             track["artist"].as_str().unwrap_or_default(),
             track["album"].as_str().unwrap_or_default(),
@@ -929,13 +960,13 @@ fn print_search(result: &Value) {
     }
     let total = result["total"].as_u64().unwrap_or_default();
     if total as usize > tracks.len() {
-        println!("({} of {} matches shown)", tracks.len(), total);
+        outln!("({} of {} matches shown)", tracks.len(), total);
     }
 }
 
 fn print_now(track: &Value) {
     if track.is_null() {
-        println!("nothing playing");
+        outln!("nothing playing");
         return;
     }
     for field in [
@@ -958,11 +989,11 @@ fn print_now(track: &Value) {
             None => value.to_string(),
         };
         if !text.is_empty() {
-            println!("{field:>12}  {text}");
+            outln!("{field:>12}  {text}");
         }
     }
     if let (Some(bpm), Some(source)) = (track["bpm"].as_f64(), track["bpm_source"].as_str()) {
-        println!("{:>12}  {bpm} ({source})", "bpm");
+        outln!("{:>12}  {bpm} ({source})", "bpm");
     }
     print_shift(&track["shift"], "       shift  ");
 }
@@ -1042,20 +1073,20 @@ fn print_track(result: &Value) {
             None if value.is_null() => continue,
             None => value.to_string(),
         };
-        println!("{field:>14}  {text}");
+        outln!("{field:>14}  {text}");
     }
     if let Some(duration) = track["duration_ms"].as_f64() {
-        println!("{:>14}  {}", "duration", clock(Some(duration / 1000.0)));
+        outln!("{:>14}  {}", "duration", clock(Some(duration / 1000.0)));
     }
     if let (Some(bpm), Some(source)) = (track["bpm"].as_f64(), track["bpm_source"].as_str()) {
-        println!("{:>14}  {bpm} ({source})", "bpm");
+        outln!("{:>14}  {bpm} ({source})", "bpm");
     }
     if let Some(gain) = track["track_gain_db"].as_f64() {
         let source = track["replaygain_source"].as_str().unwrap_or("tag");
-        println!("{:>14}  {gain:+.2} dB ({source})", "track gain");
+        outln!("{:>14}  {gain:+.2} dB ({source})", "track gain");
     }
     if let Some(start) = track["start_ms"].as_f64() {
-        println!(
+        outln!(
             "{:>14}  {} to {}",
             "cue span",
             clock(Some(start / 1000.0)),
@@ -1064,7 +1095,7 @@ fn print_track(result: &Value) {
     }
 
     if let Some(tags) = result["tags"].as_array() {
-        println!("\ntags");
+        outln!("\ntags");
         for tag in tags {
             let value = match tag["binary_bytes"].as_u64() {
                 Some(bytes) => format!("({bytes} bytes, binary)"),
@@ -1073,12 +1104,12 @@ fn print_track(result: &Value) {
                     .unwrap_or_default()
                     .replace('\n', " / "),
             };
-            println!("  {:>20}  {value}", tag["key"].as_str().unwrap_or_default());
+            outln!("  {:>20}  {value}", tag["key"].as_str().unwrap_or_default());
         }
     }
     let lyrics = &result["lyrics"];
     if !lyrics.is_null() {
-        println!(
+        outln!(
             "\nlyrics ({}, {} timing)\n{}",
             lyrics["source"].as_str().unwrap_or_default(),
             lyrics["synced"].as_str().unwrap_or("no"),
@@ -1087,14 +1118,14 @@ fn print_track(result: &Value) {
     }
     let acoustic = &result["acoustic"];
     if !acoustic.is_null() {
-        println!(
+        outln!(
             "\nacoustic ({})",
             acoustic["model"].as_str().unwrap_or_default()
         );
         match acoustic["neighbours"].as_array().filter(|n| !n.is_empty()) {
             Some(neighbours) => {
                 for near in neighbours {
-                    println!(
+                    outln!(
                         "  {:.3}  {} - {}",
                         near["distance"].as_f64().unwrap_or_default(),
                         near["artist"].as_str().unwrap_or_default(),
@@ -1102,12 +1133,12 @@ fn print_track(result: &Value) {
                     );
                 }
             }
-            None => println!("  not described yet"),
+            None => outln!("  not described yet"),
         }
     }
     let enrichment = &result["enrichment"];
     if !enrichment.is_null() {
-        println!("\nenrichment");
+        outln!("\nenrichment");
         for slot in ["artist", "album_artist", "album"] {
             let entry = &enrichment[slot];
             if entry.is_null() {
@@ -1132,7 +1163,7 @@ fn print_track(result: &Value) {
             if entry["bio"].is_string() {
                 facts.push("biography stored".into());
             }
-            println!(
+            outln!(
                 "  {:>12}  {}  {}",
                 slot,
                 entry["name"].as_str().unwrap_or_default(),
@@ -1142,7 +1173,7 @@ fn print_track(result: &Value) {
     }
     let stats = &result["stats"];
     if !stats.is_null() {
-        println!(
+        outln!(
             "\nplays {}, last played {}",
             stats["plays"].as_u64().unwrap_or_default(),
             stats["last_played"]
@@ -1153,7 +1184,7 @@ fn print_track(result: &Value) {
     }
     if let Some(reasons) = result["reasons"].as_object() {
         for (section, reason) in reasons {
-            println!("\n{section}: {}", reason.as_str().unwrap_or_default());
+            outln!("\n{section}: {}", reason.as_str().unwrap_or_default());
         }
     }
 }
@@ -1161,12 +1192,12 @@ fn print_track(result: &Value) {
 /// One line per listen: when, what was heard, and the key that names it.
 fn print_history(result: &Value) {
     let Some(entries) = result["entries"].as_array().filter(|e| !e.is_empty()) else {
-        println!("nothing played");
+        outln!("nothing played");
         return;
     };
     for entry in entries {
         let heard = &entry["heard"];
-        println!(
+        outln!(
             "{:>10}  {} - {}  {}",
             entry["played_at"].as_i64().unwrap_or_default(),
             heard["artist"].as_str().unwrap_or("?"),
@@ -1175,7 +1206,7 @@ fn print_history(result: &Value) {
         );
     }
     if let Some(next) = result["next"].as_str() {
-        println!("(more: --before {next})");
+        outln!("(more: --before {next})");
     }
 }
 
@@ -1186,7 +1217,7 @@ fn print_tasks(result: &Value) {
         // sortnames counts artists and romanize counts values.
         let unit = task["unit"].as_str().unwrap_or("tracks");
         if task["running"].as_bool().unwrap_or(false) {
-            println!(
+            outln!(
                 "{pass:>10}  {}/{}  eta {}{}",
                 task["done"].as_u64().unwrap_or_default(),
                 task["total"].as_u64().unwrap_or_default(),
@@ -1198,9 +1229,9 @@ fn print_tasks(result: &Value) {
                 },
             );
         } else if !task["enabled"].as_bool().unwrap_or(true) {
-            println!("{pass:>10}  switched off, {missing} {unit} to do");
+            outln!("{pass:>10}  switched off, {missing} {unit} to do");
         } else {
-            println!("{pass:>10}  idle, {missing} {unit} to do");
+            outln!("{pass:>10}  idle, {missing} {unit} to do");
         }
     }
 }
@@ -1218,7 +1249,7 @@ fn print_task_started(result: &Value) {
     if let Some(save) = result["save"].as_str() {
         line.push_str(&format!(", saving to {save}"));
     }
-    println!("{line}");
+    outln!("{line}");
 }
 
 fn save_art(result: &Value, out: &str) -> Result<(), String> {
@@ -1230,7 +1261,7 @@ fn save_art(result: &Value, out: &str) -> Result<(), String> {
         .decode(data)
         .map_err(|_| "artwork arrived garbled")?;
     std::fs::write(out, &bytes).map_err(|err| format!("can't write {out}: {err}"))?;
-    println!(
+    outln!(
         "{out}: {} bytes, {}",
         bytes.len(),
         result["mime"].as_str().unwrap_or("unknown type"),
@@ -1239,11 +1270,11 @@ fn save_art(result: &Value, out: &str) -> Result<(), String> {
 }
 
 fn print_milkdrop(snapshot: &Value) {
-    println!(
+    outln!(
         "preset   {}",
         snapshot["preset"].as_str().unwrap_or("(none)")
     );
-    println!(
+    outln!(
         "locked   {}",
         if snapshot["locked"].as_bool().unwrap_or(false) {
             "yes"
@@ -1251,31 +1282,31 @@ fn print_milkdrop(snapshot: &Value) {
             "no"
         }
     );
-    println!(
+    outln!(
         "presets  {}",
         snapshot["presets"].as_u64().unwrap_or_default()
     );
-    println!(
+    outln!(
         "rotation {}",
         snapshot["rotation"].as_str().unwrap_or_default()
     );
     let engine = snapshot["engine"].as_str().unwrap_or_default();
     match snapshot["renderer"].as_str() {
-        Some(renderer) => println!(
+        Some(renderer) => outln!(
             "engine   {engine}, {renderer}, projectM {}",
             snapshot["projectm_version"].as_str().unwrap_or("?")
         ),
-        None => println!("engine   {engine}"),
+        None => outln!("engine   {engine}"),
     }
-    println!(
+    outln!(
         "frames   {}",
         snapshot["frames"].as_u64().unwrap_or_default()
     );
     if let Some(failed) = snapshot["failed"].as_str() {
-        println!("failed   {failed}");
+        outln!("failed   {failed}");
     }
     if let Some(error) = snapshot["error"].as_str() {
-        println!("error    {error}");
+        outln!("error    {error}");
     }
 }
 
@@ -1288,9 +1319,11 @@ fn save_frame(result: &Value, out: &str) -> Result<(), String> {
         .decode(data)
         .map_err(|_| "frame arrived garbled")?;
     std::fs::write(out, &bytes).map_err(|err| format!("can't write {out}: {err}"))?;
-    println!(
+    outln!(
         "{out}: {}x{} png, seq {}",
-        result["width"], result["height"], result["seq"]
+        result["width"],
+        result["height"],
+        result["seq"]
     );
     Ok(())
 }

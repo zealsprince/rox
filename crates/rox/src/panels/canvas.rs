@@ -2249,12 +2249,16 @@ impl CanvasPanel {
     fn add_file(&mut self, at: Option<[f32; 2]>, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
 
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "canvas: add file",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
 
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
@@ -2289,12 +2293,16 @@ impl CanvasPanel {
     pub(crate) fn add_object_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
 
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "canvas: add object from file",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
 
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {

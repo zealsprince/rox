@@ -2343,12 +2343,16 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     /// The source is copied into the config on the way in, so the path is only
     /// a bookmark for Reload.
     fn pick_shader_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "panel settings: pick shader file",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;
@@ -2400,7 +2404,11 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     let bookmark = path.clone();
                     self.edit_shader(move |shader| shader.path = Some(bookmark), cx);
                 }
-                cx.open_with_system(&path);
+                rox_core::desktop::open_with_system(
+                    cx,
+                    "panel settings: open ejected shader",
+                    &path,
+                );
             }
             Err(error) => {
                 shader::note_error(

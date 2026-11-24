@@ -277,7 +277,11 @@ impl PickerWindow {
                         !has_current,
                         move |_, _, cx| {
                             if let Some(path) = reveal.as_deref() {
-                                cx.reveal_path(path);
+                                rox_core::desktop::reveal_path(
+                                    cx,
+                                    "milkdrop picker: reveal preset",
+                                    path,
+                                );
                             }
                         },
                     )),
@@ -306,7 +310,11 @@ impl PickerWindow {
                 move |_, _, cx| {
                     // Nothing else creates the folder, and the platform refuses a missing path.
                     std::fs::create_dir_all(&folder).ok();
-                    cx.open_with_system(&folder);
+                    rox_core::desktop::open_with_system(
+                        cx,
+                        "milkdrop picker: open presets folder",
+                        &folder,
+                    );
                 },
             ))
     }

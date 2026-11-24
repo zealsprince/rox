@@ -258,7 +258,11 @@ impl SettingsWindow {
                                             icons::FOLDER,
                                             false,
                                             move |_, _, cx| {
-                                                cx.reveal_path(&path);
+                                                rox_core::desktop::reveal_path(
+                                                    cx,
+                                                    "settings application: reveal control socket",
+                                                    &path,
+                                                );
                                             },
                                         ))
                                     })

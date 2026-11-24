@@ -1779,7 +1779,9 @@ impl BiographyPanel {
                         .text_color(palette::text_faint())
                         .hover(|d| d.text_color(palette::text_muted()))
                         .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            rox_core::desktop::open_url(cx, "biography: open source link", &url)
+                        })
                         .child(byline),
                 ),
             );

@@ -5287,12 +5287,16 @@ impl Workspace {
     /// Backing out of that dialog is exactly the old behaviour: the file is
     /// saved, nothing is approved, and nothing is running it.
     fn import_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "menubar: import workspace",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;

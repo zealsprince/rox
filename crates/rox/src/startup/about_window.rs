@@ -186,7 +186,9 @@ impl AboutWindow {
                     rox_i18n::t!("about-release-notes"),
                     icons::EXTERNAL_LINK,
                     false,
-                    cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+                    cx.listener(move |_, _, _, cx| {
+                        rox_core::desktop::open_url(cx, "about: open release", &url)
+                    }),
                 ),
                 small_button(
                     rox_i18n::t!("about-download"),
@@ -200,7 +202,9 @@ impl AboutWindow {
                 rox_i18n::t!("about-get-it"),
                 icons::EXTERNAL_LINK,
                 false,
-                cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+                cx.listener(move |_, _, _, cx| {
+                    rox_core::desktop::open_url(cx, "about: open release", &url)
+                }),
             )]
         }
     }
@@ -246,7 +250,7 @@ fn link(text: impl Into<SharedString>, url: &'static str) -> Div {
         .cursor_pointer()
         .hover(|d| d.text_color(palette::accent_hover()))
         .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
-            cx.open_url(url)
+            rox_core::desktop::open_url(cx, "about: open link", url)
         })
         .child(text.into())
 }

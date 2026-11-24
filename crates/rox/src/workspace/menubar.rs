@@ -121,9 +121,13 @@ impl Workspace {
             MenuAction::OpenSignals => crate::signals_window::open(cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
-            MenuAction::ReportIssue => cx.open_url(ISSUES_URL),
-            MenuAction::OpenDiscussions => cx.open_url(DISCUSSIONS_URL),
-            MenuAction::OpenChat => cx.open_url(CHAT_URL),
+            MenuAction::ReportIssue => {
+                rox_core::desktop::open_url(cx, "menubar: report issue", ISSUES_URL)
+            }
+            MenuAction::OpenDiscussions => {
+                rox_core::desktop::open_url(cx, "menubar: open discussions", DISCUSSIONS_URL)
+            }
+            MenuAction::OpenChat => rox_core::desktop::open_url(cx, "menubar: open chat", CHAT_URL),
             MenuAction::ToggleMenubar => {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);

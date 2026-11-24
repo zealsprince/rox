@@ -55,11 +55,28 @@ commands:
   task-stop <pass>           stop a running pass at the next file
   watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
+  library folders            the library folders with their track counts
+  library add <dir>          add a folder, scanned and watched as a picked
+                             one is
+  library remove <dir>       drop a folder and its tracks; files stay
+  settings list              the settings these verbs reach, with values
+  settings get <key>
+  settings set <key> <value> through the setting's own switch; bools are
+                             true or false, choices by their saved name
   workspace import <file>    store a .roxw in the workspace list and offer
                              it for applying in the front window
+  workspace save <name>      save the live look under a new name
+  workspace export <name> <file>
+                             write a saved or shipped workspace as a .roxw
+  asset import <file>        add an image or font to the live workspace
   plugin install <file>      list a .roxp on the Plugins page, switched off
+  plugin pack <id> <file>    pack an installed plugin folder as a .roxp
   object install <file>      store a .roxo in the objects a canvas's Add
                              menu lists, placed nowhere
+  object export [--name N] [--author A] [--description D] [--license L]
+                <item> <file>
+                             write a canvas item as a .roxo; exports never
+                             write over a file
   raw <method> [json]        any method, params as one JSON argument
 
 drive commands (the debug scope: work the UI without OS input tools):
@@ -378,23 +395,70 @@ fn run(
             }
             ("debug.milkdrop".into(), params)
         }
+        "library" => match args {
+            [verb] if verb == "folders" => ("library.folders".into(), json!({})),
+            [verb, dir] if verb == "add" => (
+                "library.add_folder".into(),
+                json!({ "path": absolute(dir) }),
+            ),
+            [verb, dir] if verb == "remove" => (
+                "library.remove_folder".into(),
+                json!({ "path": absolute(dir) }),
+            ),
+            _ => return Err("library takes folders, add <dir>, or remove <dir>".into()),
+        },
+        "settings" => match args {
+            [verb] if verb == "list" => ("settings.list".into(), json!({})),
+            [verb, key] if verb == "get" => ("settings.get".into(), json!({ "key": key })),
+            [verb, key, value] if verb == "set" => (
+                "settings.set".into(),
+                json!({ "key": key, "value": setting_value(value) }),
+            ),
+            _ => return Err("settings takes list, get <key>, or set <key> <value>".into()),
+        },
         "workspace" => match args {
             [verb, file] if verb == "import" => {
                 ("workspace.import".into(), json!({ "path": absolute(file) }))
             }
-            _ => return Err("workspace takes import <file>".into()),
+            [verb, name] if verb == "save" => ("workspace.save".into(), json!({ "name": name })),
+            [verb, name, file] if verb == "export" => (
+                "workspace.export".into(),
+                json!({ "name": name, "path": out_path(file) }),
+            ),
+            _ => {
+                return Err(
+                    "workspace takes import <file>, save <name>, or export <name> <file>".into(),
+                );
+            }
+        },
+        "asset" => match args {
+            [verb, file] if verb == "import" => {
+                ("assets.import".into(), json!({ "path": absolute(file) }))
+            }
+            _ => return Err("asset takes import <file>".into()),
         },
         "plugin" => match args {
             [verb, file] if verb == "install" => {
                 ("plugins.install".into(), json!({ "path": absolute(file) }))
             }
-            _ => return Err("plugin takes install <file>".into()),
+            [verb, id, file] if verb == "pack" => (
+                "plugins.pack".into(),
+                json!({ "id": id, "path": out_path(file) }),
+            ),
+            _ => return Err("plugin takes install <file> or pack <id> <file>".into()),
         },
         "object" => match args {
             [verb, file] if verb == "install" => {
                 ("objects.install".into(), json!({ "path": absolute(file) }))
             }
-            _ => return Err("object takes install <file>".into()),
+            [verb, rest @ ..] if verb == "export" => {
+                let mut params = object_export_params(rest)?;
+                if let Some(id) = window {
+                    params["window"] = json!(id);
+                }
+                ("objects.export".into(), params)
+            }
+            _ => return Err("object takes install <file> or export <item> <file>".into()),
         },
         "watch" => return watch(client, as_json),
         "art" => {
@@ -455,17 +519,40 @@ fn run(
         "frames" => print_frames(&result),
         "actions" => print_actions(&result),
         "milkdrop" => print_milkdrop(&result),
-        "workspace" => println!(
-            "imported as {}",
-            result["name"].as_str().unwrap_or_default()
-        ),
+        "workspace" => match args.first().map(String::as_str) {
+            Some("save") => println!("saved as {}", result["name"].as_str().unwrap_or_default()),
+            Some("export") => println!(
+                "{}: {} bytes",
+                result["path"].as_str().unwrap_or_default(),
+                result["bytes"].as_u64().unwrap_or_default()
+            ),
+            _ => println!(
+                "imported as {}",
+                result["name"].as_str().unwrap_or_default()
+            ),
+        },
+        "plugin" if args.first().is_some_and(|verb| verb == "pack") => {
+            println!("packed to {}", result["path"].as_str().unwrap_or_default())
+        }
         "plugin" => println!(
             "installed {}, switched off",
             result["id"].as_str().unwrap_or_default()
         ),
+        "object" if args.first().is_some_and(|verb| verb == "export") => println!(
+            "exported {} to {}",
+            result["name"].as_str().unwrap_or_default(),
+            result["path"].as_str().unwrap_or_default()
+        ),
         "object" => println!(
             "installed as {}",
             result["name"].as_str().unwrap_or_default()
+        ),
+        "library" => print_library(args, &result),
+        "settings" => print_settings(&result),
+        "asset" => println!(
+            "added {} as {}",
+            result["file"].as_str().unwrap_or_default(),
+            result["id"].as_str().unwrap_or_default()
         ),
         _ => println!(
             "{}",
@@ -557,6 +644,115 @@ fn resolve(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
 #[cfg(not(unix))]
 fn resolve(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     std::path::absolute(path)
+}
+
+/// A file that doesn't exist yet can't be canonicalized, so an export's
+/// target joins onto the working directory instead.
+fn out_path(path: &str) -> String {
+    std::path::absolute(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_owned())
+}
+
+/// `true`, `16` and `"de"` read as JSON; a bare word goes as a string, so
+/// `set theme dark` needs no quotes.
+fn setting_value(arg: &str) -> Value {
+    serde_json::from_str(arg).unwrap_or_else(|_| json!(arg))
+}
+
+fn object_export_params(args: &[String]) -> Result<Value, String> {
+    let mut params = json!({});
+    let mut positional = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            flag @ ("--name" | "--author" | "--description" | "--license") => {
+                let value = rest.next().ok_or(format!("{flag} takes a value"))?;
+                params[&flag[2..]] = json!(value);
+            }
+            other => positional.push(other),
+        }
+    }
+
+    match positional.as_slice() {
+        [item, file] => {
+            params["item"] = json!(item);
+            params["path"] = json!(out_path(file));
+            Ok(params)
+        }
+        _ => Err("object export takes a canvas item's id and an out file".into()),
+    }
+}
+
+fn print_library(args: &[String], result: &Value) {
+    match args.first().map(String::as_str) {
+        Some("add") => {
+            let path = result["path"].as_str().unwrap_or_default();
+            match result["covered_by"].as_str() {
+                Some(root) => println!("{path} is inside {root}; rescanning it"),
+                None => println!("added {path}, scanning"),
+            }
+            for absorbed in result["absorbed"].as_array().into_iter().flatten() {
+                println!(
+                    "  takes the place of {}",
+                    absorbed.as_str().unwrap_or_default()
+                );
+            }
+        }
+        Some("remove") => println!("removed {}", result["removed"].as_str().unwrap_or_default()),
+        _ => {
+            let Some(folders) = result["folders"].as_array().filter(|f| !f.is_empty()) else {
+                println!("no library folders");
+                return;
+            };
+            for folder in folders {
+                println!(
+                    "{:>7} tracks  {}{}",
+                    folder["tracks"].as_u64().unwrap_or_default(),
+                    folder["path"].as_str().unwrap_or_default(),
+                    match folder["reachable"].as_bool() {
+                        Some(false) => "  (unreachable)",
+                        _ => "",
+                    }
+                );
+            }
+            if let Some(busy) = result["busy"].as_str() {
+                println!("busy: {busy}");
+            }
+        }
+    }
+}
+
+/// `list` answers a row per key; `get` and `set` answer the one.
+fn print_settings(result: &Value) {
+    let rows = match result["settings"].as_array() {
+        Some(rows) => rows.clone(),
+        None => vec![result.clone()],
+    };
+    for row in rows {
+        let value = match row["value"].as_str() {
+            Some(text) => text.to_owned(),
+            None => row["value"].to_string(),
+        };
+        let range = match row["type"].as_str() {
+            Some("choice") => format!(
+                "  ({})",
+                row["values"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Some("number") => format!("  ({} to {})", row["min"], row["max"]),
+            _ => String::new(),
+        };
+        println!(
+            "{:>16}  {value}{range}",
+            row["key"].as_str().unwrap_or_default()
+        );
+    }
 }
 
 /// Stream URLs and `source|path` keys pass through: they name rows, not
@@ -1161,6 +1357,28 @@ mod tests {
             json!({ "limit": 5, "before": "1700000000:42", "key": "/m/a.flac" })
         );
         assert!(history_params(&args(&["--limit", "many"])).is_err());
+    }
+
+    #[test]
+    fn a_setting_value_reads_as_json_or_a_bare_word() {
+        assert_eq!(setting_value("true"), json!(true));
+        assert_eq!(setting_value("16"), json!(16));
+        assert_eq!(setting_value("dark"), json!("dark"));
+        assert_eq!(setting_value("\"de\""), json!("de"));
+    }
+
+    #[test]
+    fn object_export_takes_flags_an_item_and_a_file() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+
+        let params =
+            object_export_params(&args(&["--name", "Clock", "item-3", "/m/clock.roxo"])).unwrap();
+        assert_eq!(params["name"], json!("Clock"));
+        assert_eq!(params["item"], json!("item-3"));
+        assert_eq!(params["path"], json!("/m/clock.roxo"));
+
+        assert!(object_export_params(&args(&["item-3"])).is_err());
+        assert!(object_export_params(&args(&["--author"])).is_err());
     }
 
     #[test]

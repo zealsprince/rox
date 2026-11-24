@@ -482,7 +482,11 @@ impl SettingsWindow {
                                 icons::FILE_TEXT,
                                 false,
                                 cx.listener(|_, _, _, cx| {
-                                    cx.reveal_path(&rox_core::logging::log_path());
+                                    rox_core::desktop::reveal_path(
+                                        cx,
+                                        "settings storage: reveal log",
+                                        &rox_core::logging::log_path(),
+                                    );
                                 }),
                             )),
                     )

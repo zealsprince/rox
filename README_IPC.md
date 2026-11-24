@@ -60,12 +60,23 @@ did without a second round trip.
 | `library.history`                                          | `{"key": ".."?, "limit": 1..500?, "before": cursor?}` | listens newest first and a `next` cursor; see [history](#libraryhistory) |
 | `library.artwork`                                          | `{"path": ".."}`                              | `{"mime": "..", "data_base64": ".."}`                                   |
 | `library.rescan`                                           |                                               | `{"started": true}`; an error while busy or without library folders     |
+| `library.folders`                                          |                                               | each library folder with its `path`, `reachable`, `tracks`, `albums`, and `bytes`, plus `busy` and `watching` |
+| `library.add_folder`                                       | `{"path": ".."}`                              | `{"path", "added", "covered_by", "absorbed", "scanning"}`; see [library folders](#library-folders) |
+| `library.remove_folder`                                    | `{"path": ".."}`                              | `{"removed": ".."}`; the folder's tracks leave the library, the files stay |
+| `settings.list`                                            |                                               | every setting these verbs reach: `key`, `type`, `values` or `min` and `max`, and the saved `value` |
+| `settings.get`                                             | `{"key": ".."}`                               | `{"key", "value"}`                                                     |
+| `settings.set`                                             | `{"key": "..", "value": ..}`                  | `{"key", "value"}`, once the file is written and the app follows       |
 | `tasks.status`                                             |                                               | the analysis passes: switch state, tracks to do, progress while running |
 | `tasks.start`                                              | `{"pass": "acoustic"/"replaygain"/"tempo"/"sortnames"/"romanize"}` | what the pass took on: count, workers, estimate, save mode              |
 | `tasks.stop`                                               | `{"pass": ..}`                                | `{"stopping": true}`; the pass drops out at the next file               |
 | `workspace.import`                                         | `{"path": ".."}`                              | `{"name": ".."}`, the name it was stored under                          |
+| `workspace.save`                                           | `{"name": ".."}`                              | `{"name": ".."}`; the live look saved under a name no workspace holds yet |
+| `workspace.export`                                         | `{"name": "..", "path": ".."}`                | `{"path", "bytes"}`, a saved or shipped workspace written as a `.roxw`  |
+| `assets.import`                                            | `{"path": ".."}`                              | `{"id", "file", "kind", "bytes"}`, the asset the live workspace now holds |
 | `plugins.install`                                          | `{"path": ".."}`                              | `{"id": ".."}`, the plugin it listed                                    |
+| `plugins.pack`                                             | `{"id": "..", "path": ".."}`                  | `{"path": ".."}`, an installed plugin folder written as a `.roxp`       |
 | `objects.install`                                          | `{"path": ".."}`                              | `{"name": ".."}`, the name it was stored under, placed nowhere          |
+| `objects.export`                                           | `{"item": "..", "path": "..", "name"?, "author"?, "description"?, "license"?, "window"?}` | `{"path", "name"}`, a canvas item written as a `.roxo` |
 | `ai.status`                                                |                                               | `{"enabled": bool, "mcp": bool}`, the toggles rox-mcp checks            |
 | `subscribe`                                                |                                               | the pushed frames start: `{"subscribed": true}`                          |
 | `debug.settings`                                           |                                               | the settings as saved                                                  |
@@ -107,6 +118,46 @@ the saved list under a name no other workspace holds, and the front window offer
 in the apply confirm. Nothing changes until someone answers that. An installed plugin
 lists on the Plugins page, switched off. A file rox refuses comes back as `-32000`
 with the reason.
+
+The rest of the file verbs stand in for a file picker or a save prompt, and each ends
+in the function the window runs once its picker has a path. `assets.import` takes an
+image or a font through the same kind and size checks the Workspace page's Add runs.
+`workspace.export`, `objects.export` and `plugins.pack` write the file the window's
+Export or Pack would: the path is absolute, its folder has to exist, and a path that's
+already there, folder or file, is refused rather than written over, since the save
+prompt asks before it replaces a file and a socket call has no one to ask.
+`workspace.save` refuses a name already saved for the same reason. `objects.export`
+names the item by its id in the canvas config `debug.panels` dumps, and finds the
+canvas in the front workspace window, or the one `window` names, that holds it. None of
+these applies, places, approves or switches anything on.
+
+## Library folders
+
+`library.add_folder` gives the folder to the same add a picked folder goes through on
+the Library panel, the launcher and Settings > Library, so it's scanned, watched and
+saved the same way. The path has to be absolute, spelled without `.` or `..`, and a
+folder that exists. The list never nests: a folder that is a library folder, or sits
+inside one, is rescanned instead of added, and the reply names that folder as
+`covered_by` with `added` false. A folder holding listed folders takes their place,
+and they come back under `absorbed`. `library.remove_folder` takes a folder exactly as
+`library.folders` lists it, drops it from the list and its tracks from the library,
+and leaves the files where they are. Both are refused while the library is busy, where
+the window's buttons would do nothing.
+
+## Settings
+
+`settings.set` reaches a fixed list of settings, by the names `settings.list` gives.
+A set writes the setting and runs what its switch on the Settings window or the menu
+runs, so a new language rewords the open windows at once and a theme repaints them.
+A value has to be the setting's type: `true` or `false`, a choice by the name the
+settings file saves it under (`dark`, `de`, `system`), or a number inside the range
+`settings.list` states. Anything else, and any key not on the list, is an
+invalid-params error.
+
+What the list leaves out is left out on purpose. Accounts, tokens and passwords,
+the folders rox reads and the programs it runs, the audio device and exclusive mode,
+and the update channel stay with the Settings window. So does every approval gate: the
+AI and MCP switches, the plugin switch and a plugin's enable, and a shader's approval.
 
 Search uses the panels' query language: free terms match title, artist, album artist,
 album, and genre, while a pin like `artist:name` or `year:1990` narrows one field. The
@@ -299,11 +350,28 @@ commands:
   task-stop <pass>           stop a running pass at the next file
   watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
+  library folders            the library folders with their track counts
+  library add <dir>          add a folder, scanned and watched as a picked
+                             one is
+  library remove <dir>       drop a folder and its tracks; files stay
+  settings list              the settings these verbs reach, with values
+  settings get <key>
+  settings set <key> <value> through the setting's own switch; bools are
+                             true or false, choices by their saved name
   workspace import <file>    store a .roxw in the workspace list and offer
                              it for applying in the front window
+  workspace save <name>      save the live look under a new name
+  workspace export <name> <file>
+                             write a saved or shipped workspace as a .roxw
+  asset import <file>        add an image or font to the live workspace
   plugin install <file>      list a .roxp on the Plugins page, switched off
+  plugin pack <id> <file>    pack an installed plugin folder as a .roxp
   object install <file>      store a .roxo in the objects a canvas's Add
                              menu lists, placed nowhere
+  object export [--name N] [--author A] [--description D] [--license L]
+                <item> <file>
+                             write a canvas item as a .roxo; exports never
+                             write over a file
   raw <method> [json]        any method, params as one JSON argument
 
 drive commands (the debug scope: work the UI without OS input tools):
@@ -327,6 +395,20 @@ the server's error. `raw` covers anything the verbs don't:
 ```
 roxctl raw queue.move '{"id": 3, "after": 7}'
 ```
+
+## Automated runs
+
+A file picker is raised by the desktop portal, so it lands on the desktop even when
+rox itself runs on a headless compositor. Started with `ROX_NO_NATIVE_DIALOGS=1`,
+rox opens no native file or folder picker. Every picker answers the way a cancelled
+one does, and opening a link in the browser, revealing a file in the file manager and
+opening a file with its default program do nothing. Each refusal writes one log
+line, `native dialog refused: <caller>` (or `link`, `reveal`, `open`), so a test can
+see what it reached. The verbs above cover what those pickers were for.
+
+The switch is read once at start. It doesn't reach what the UI toolkit opens on its
+own, such as a link inside a biography's formatted text, nor what rox puts on the
+session bus: media controls, the tray icon and taskbar progress.
 
 ## Security
 

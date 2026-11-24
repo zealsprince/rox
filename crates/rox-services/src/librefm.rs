@@ -80,7 +80,11 @@ impl LibreFm {
             this.update(cx, |this, cx| {
                 match result {
                     Ok(token) => {
-                        cx.open_url(&format!("{AUTH_URL}?api_key={API_KEY}&token={token}"));
+                        rox_core::desktop::open_url(
+                            cx,
+                            "librefm: sign in",
+                            &format!("{AUTH_URL}?api_key={API_KEY}&token={token}"),
+                        );
                         this.phase = AuthPhase::Waiting(token);
                     }
                     Err(e) => this.phase = AuthPhase::Failed(format!("getting a token: {e}")),

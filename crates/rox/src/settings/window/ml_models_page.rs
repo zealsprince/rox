@@ -185,12 +185,16 @@ impl SettingsWindow {
     }
 
     fn pick_local_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings ml models: pick model file",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         self.acoustic_local_error = None;
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
@@ -340,7 +344,13 @@ impl SettingsWindow {
                     .child(settings_ui::icon_button(
                         icons::EXTERNAL_LINK,
                         false,
-                        move |_, _, cx| cx.open_url(source),
+                        move |_, _, cx| {
+                            rox_core::desktop::open_url(
+                                cx,
+                                "settings ml models: open model source",
+                                source,
+                            )
+                        },
                     )),
             );
         if model.weights.is_some() {

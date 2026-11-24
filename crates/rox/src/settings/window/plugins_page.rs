@@ -200,12 +200,16 @@ enum Standing {
 /// Each picked file installs on its own and toasts its own outcome. The row
 /// shows up through the rescan that follows, switched off.
 fn install_plugins(window: &mut Window, cx: &mut App) {
-    let rx = cx.prompt_for_paths(PathPromptOptions {
-        files: true,
-        directories: false,
-        multiple: true,
-        prompt: None,
-    });
+    let rx = rox_core::desktop::prompt_for_paths(
+        cx,
+        "settings plugins: install",
+        PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        },
+    );
     let origin = window.window_handle();
 
     cx.spawn(async move |cx| {
@@ -770,7 +774,12 @@ impl SettingsWindow {
     fn pack_plugin(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{id}.{}", package::EXT);
-        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+        let rx = rox_core::desktop::prompt_for_new_path(
+            cx,
+            "settings plugins: pack",
+            &home,
+            Some(file.as_str()),
+        );
 
         let origin = window.window_handle();
         let name = self.plugin_name(id);
@@ -879,7 +888,7 @@ impl SettingsWindow {
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         log::warn!("plugins: creating {}: {e}", dir.display());
                     }
-                    cx.reveal_path(&dir);
+                    rox_core::desktop::reveal_path(cx, "settings plugins: reveal folder", &dir);
                 },
             ))
             .child(small_button(
@@ -892,7 +901,9 @@ impl SettingsWindow {
                 rox_i18n::t!("settings-plugins-guide"),
                 icons::EXTERNAL_LINK,
                 false,
-                |_, _, cx| cx.open_url(GUIDE_URL),
+                |_, _, cx| {
+                    rox_core::desktop::open_url(cx, "settings plugins: open guide", GUIDE_URL)
+                },
             ));
 
         // One row per plugin the scan found, then one per record whose plugin

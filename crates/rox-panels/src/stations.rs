@@ -348,12 +348,16 @@ impl StationsPanel {
     }
 
     fn import(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "stations: import stations",
+            gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
 
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
@@ -603,7 +607,9 @@ impl StationsPanel {
             Some(homepage) => menu.item(
                 PopupMenuItem::new(rox_i18n::t!("stations-homepage"))
                     .icon(Icon::default().path(icons::EXTERNAL_LINK))
-                    .on_click(move |_, _, cx| cx.open_url(&homepage)),
+                    .on_click(move |_, _, cx| {
+                        rox_core::desktop::open_url(cx, "stations: open homepage", &homepage)
+                    }),
             ),
 
             None => menu,

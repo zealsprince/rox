@@ -462,7 +462,9 @@ impl SettingsWindow {
                         .child(settings_ui::icon_button(
                             icons::EXTERNAL_LINK,
                             false,
-                            move |_, _, cx| cx.open_url(&url),
+                            move |_, _, cx| {
+                                rox_core::desktop::open_url(cx, "settings audio: open link", &url)
+                            },
                         ))
                         .tooltip(|_, cx| {
                             cx.new(|_| {

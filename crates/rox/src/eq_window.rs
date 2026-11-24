@@ -488,7 +488,12 @@ impl EqWindow {
 
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.txt");
-        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+        let rx = rox_core::desktop::prompt_for_new_path(
+            cx,
+            "eq: export preset",
+            &home,
+            Some(file.as_str()),
+        );
         cx.spawn(async move |_, _| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
@@ -961,12 +966,16 @@ impl EqWindow {
     }
 
     fn load_ir_file(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "eq: load impulse response",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = rx.await
                 && let Some(path) = paths.pop()

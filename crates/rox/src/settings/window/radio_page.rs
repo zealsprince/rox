@@ -258,12 +258,16 @@ impl SettingsWindow {
     }
 
     fn import_stations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings radio: import stations",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
 
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
@@ -424,7 +428,11 @@ impl SettingsWindow {
                                         log::warn!("capture: creating the folder failed: {e}");
                                         return;
                                     }
-                                    cx.reveal_path(&folder);
+                                    rox_core::desktop::reveal_path(
+                                        cx,
+                                        "settings radio: reveal capture folder",
+                                        &folder,
+                                    );
                                 },
                             )),
                     )
@@ -536,12 +544,16 @@ impl SettingsWindow {
     }
 
     fn pick_capture_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings radio: pick capture folder",
+            PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: None,
+            },
+        );
 
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {

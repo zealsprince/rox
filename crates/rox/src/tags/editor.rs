@@ -2629,7 +2629,9 @@ impl TagEditor {
                     rox_i18n::t!("tags-editor-reveal"),
                     icons::FOLDER,
                     false,
-                    move |_, _, cx| cx.reveal_path(&path),
+                    move |_, _, cx| {
+                        rox_core::desktop::reveal_path(cx, "tag editor: reveal file", &path)
+                    },
                 ))
             })
             .when(!single, |d| {
@@ -3039,7 +3041,7 @@ impl CellGrid {
                 move |_, _, cx| {
                     if let Some(editor) = reveal.upgrade() {
                         let path = editor.read(cx).tracks[track].path.clone();
-                        cx.reveal_path(&path);
+                        rox_core::desktop::reveal_path(cx, "tag editor: reveal file", &path);
                     }
                 },
             ))

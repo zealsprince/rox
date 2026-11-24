@@ -1297,7 +1297,12 @@ impl PlaylistsPanel {
         }
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.{}", format.extension());
-        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+        let rx = rox_core::desktop::prompt_for_new_path(
+            cx,
+            "playlists: export playlist",
+            &home,
+            Some(file.as_str()),
+        );
         cx.spawn(async move |_, _| {
             if let Ok(Ok(Some(path))) = rx.await {
                 let format = Format::from_path(&path).unwrap_or(format);
@@ -1311,12 +1316,16 @@ impl PlaylistsPanel {
     /// The format comes off the content, not the extension. Relative paths
     /// resolve against the file's folder; unscanned paths are skipped.
     fn import(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "playlists: import playlist",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;

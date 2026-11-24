@@ -815,7 +815,12 @@ pub(crate) fn confirm_export(
 
     let home = dirs::home_dir().unwrap_or_default();
     let file = file_name(&settings::safe_file_stem(&card.name, "object"));
-    let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+    let rx = rox_core::desktop::prompt_for_new_path(
+        cx,
+        "canvas: export object",
+        &home,
+        Some(file.as_str()),
+    );
 
     cx.spawn_in(window, async move |this, cx| {
         let Ok(Ok(Some(path))) = rx.await else {
@@ -1434,57 +1439,5 @@ mod tests {
             ..quiet_card()
         };
         assert!(card.needs_review());
-    }
-
-    /// The export without its save prompt, for driving a live run: lifts
-    /// `ROX_OBJECT_ITEM` out of the canvas in the `workspace.json` at
-    /// `ROX_OBJECT_LOOK`, with files from the `assets/` beside it, and writes
-    /// `ROX_OBJECT_OUT`.
-    #[test]
-    #[ignore]
-    fn export_from_a_saved_look() {
-        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
-        let look_path = PathBuf::from(var("ROX_OBJECT_LOOK"));
-        let id = var("ROX_OBJECT_ITEM");
-        let out = PathBuf::from(var("ROX_OBJECT_OUT"));
-
-        let text = std::fs::read_to_string(&look_path).unwrap();
-        let look: settings::LookState = serde_json::from_str(&text).unwrap();
-
-        fn configs(value: &serde_json::Value, out: &mut Vec<crate::panels::canvas::CanvasConfig>) {
-            match value {
-                serde_json::Value::Object(map) => {
-                    if map.get("panel_name").and_then(|name| name.as_str())
-                        == Some(crate::panels::canvas::PANEL_NAME)
-                        && let Some(config) = map.get("info").and_then(|info| info.get("panel"))
-                        && let Ok(config) = serde_json::from_value(config.clone())
-                    {
-                        out.push(config);
-                    }
-                    map.values().for_each(|child| configs(child, out));
-                }
-                serde_json::Value::Array(items) => items.iter().for_each(|v| configs(v, out)),
-                _ => {}
-            }
-        }
-        let mut found = Vec::new();
-        configs(look.layout.as_ref().unwrap(), &mut found);
-        let config = found
-            .into_iter()
-            .find(|config| config.canvas.find(&id).is_some())
-            .expect("a canvas holds the item");
-
-        let store_dir = look_path.parent().unwrap().join("assets");
-        let lifted = lift(
-            &config.canvas,
-            &config.routes,
-            &id,
-            &look.bundle.shaders,
-            &look.bundle.signals,
-            &look.bundle.assets,
-            &store_dir,
-        )
-        .unwrap();
-        roxo::write(&out, &lifted.bundle, &lifted.files).unwrap();
     }
 }

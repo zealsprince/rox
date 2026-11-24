@@ -449,12 +449,16 @@ impl ConvertDialog {
     }
 
     fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "convert: pick output folder",
+            PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = rx.await
                 && let Some(dir) = paths.pop()

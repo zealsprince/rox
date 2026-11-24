@@ -416,12 +416,16 @@ pub(crate) fn choose_file(
         return;
     };
 
-    let rx = cx.prompt_for_paths(PathPromptOptions {
-        files: true,
-        directories: false,
-        multiple: false,
-        prompt: None,
-    });
+    let rx = rox_core::desktop::prompt_for_paths(
+        cx,
+        "canvas shader: pick file",
+        PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        },
+    );
     cx.spawn_in(window, async move |this, cx| {
         let Ok(Ok(Some(mut paths))) = rx.await else {
             return;
@@ -505,7 +509,7 @@ pub(crate) fn eject(this: &mut CanvasPanel, cx: &mut Context<CanvasPanel>) {
                     cx,
                 );
             }
-            cx.open_with_system(&path);
+            rox_core::desktop::open_with_system(cx, "canvas shader: open ejected shader", &path);
         }
 
         Err(e) => {

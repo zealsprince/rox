@@ -273,7 +273,7 @@ impl ConsoleWindow {
                 icons::FILE_TEXT,
                 false,
                 cx.listener(|_, _, _, cx| {
-                    cx.reveal_path(&logging::log_path());
+                    rox_core::desktop::reveal_path(cx, "console: reveal log", &logging::log_path());
                 }),
             ))
             .child(settings_ui::small_button(

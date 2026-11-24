@@ -542,9 +542,11 @@ impl Scrobbler {
             this.update(cx, |this, cx| {
                 match result {
                     Ok(token) => {
-                        cx.open_url(&format!(
-                            "https://www.Last.fm/api/auth/?api_key={key}&token={token}"
-                        ));
+                        rox_core::desktop::open_url(
+                            cx,
+                            "lastfm: sign in",
+                            &format!("https://www.Last.fm/api/auth/?api_key={key}&token={token}"),
+                        );
                         this.phase = AuthPhase::Waiting(token);
                     }
                     Err(e) => this.phase = AuthPhase::Failed(format!("getting a token: {e}")),

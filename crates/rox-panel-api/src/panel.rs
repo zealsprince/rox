@@ -492,7 +492,7 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
                     .ok()
                     .and_then(|mut paths| paths.pop());
                 if let Some(path) = path {
-                    cx.reveal_path(&path);
+                    rox_core::desktop::reveal_path(cx, "panel: reveal item", &path);
                 }
             }),
     )
@@ -549,7 +549,7 @@ fn follow_link(source: String, item: String, open: bool, origin: AnyWindowHandle
         let answer = task.await;
 
         cx.update(|cx| match answer {
-            Ok(Some(url)) if open => cx.open_url(&url),
+            Ok(Some(url)) if open => rox_core::desktop::open_url(cx, "panel: open link", &url),
 
             Ok(Some(url)) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(url));

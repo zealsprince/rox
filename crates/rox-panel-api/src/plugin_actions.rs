@@ -239,7 +239,7 @@ fn finished(label: &str, outcome: Outcome, asked: bool, origin: AnyWindowHandle,
         toast = toast.action(
             rox_i18n::t!("plugin-action-open-link"),
             icons::EXTERNAL_LINK,
-            move |_, cx| cx.open_url(&url),
+            move |_, cx| rox_core::desktop::open_url(cx, "plugin action: open link", &url),
         );
     }
 
@@ -261,7 +261,7 @@ fn reveal(path: &str, cx: &mut App) {
     let path = Path::new(path);
 
     match path.exists() {
-        true => cx.reveal_path(path),
+        true => rox_core::desktop::reveal_path(cx, "plugin action: reveal folder", path),
         false => log::warn!("show in folder: {} is gone", path.display()),
     }
 }

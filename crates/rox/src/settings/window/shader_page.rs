@@ -464,7 +464,11 @@ impl SettingsWindow {
                         cx,
                     );
                 }
-                cx.open_with_system(&path);
+                rox_core::desktop::open_with_system(
+                    cx,
+                    "settings shaders: open ejected post shader",
+                    &path,
+                );
             }
             Err(error) => {
                 crate::workspace::note_post_shader_error(
@@ -507,12 +511,16 @@ impl SettingsWindow {
     /// A pick turns nothing on by itself. The name and inline source are
     /// cleared, since both would win over the file.
     fn pick_post_shader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings shaders: pick post shader",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;
@@ -668,7 +676,11 @@ impl SettingsWindow {
         let config = Self::backdrop_config();
         match config.name.as_deref() {
             Some(name) => match panel::shader::eject_pool_entry(name) {
-                Ok(path) => cx.open_with_system(&path),
+                Ok(path) => rox_core::desktop::open_with_system(
+                    cx,
+                    "settings shaders: open ejected backdrop",
+                    &path,
+                ),
                 Err(error) => {
                     crate::workspace::note_backdrop_shader_error(
                         rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string(),
@@ -686,7 +698,11 @@ impl SettingsWindow {
                             Some(path.clone()),
                             cx,
                         );
-                        cx.open_with_system(&path);
+                        rox_core::desktop::open_with_system(
+                            cx,
+                            "settings shaders: open ejected backdrop",
+                            &path,
+                        );
                     }
                     Err(error) => {
                         crate::workspace::note_backdrop_shader_error(
@@ -712,12 +728,16 @@ impl SettingsWindow {
     }
 
     fn pick_backdrop_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings shaders: pick backdrop file",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;

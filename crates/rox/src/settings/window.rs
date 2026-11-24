@@ -1437,7 +1437,9 @@ impl SettingsWindow {
             .hover(|d| d.bg(palette::bg_menu_hover()))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |_, _, _, cx| cx.open_with_system(&open())),
+                cx.listener(move |_, _, _, cx| {
+                    rox_core::desktop::open_with_system(cx, "settings: open file", &open())
+                }),
             )
             .child(
                 svg()

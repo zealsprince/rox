@@ -4,6 +4,7 @@
 // Release builds use the GUI subsystem so Windows opens no console next to the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod asset_import;
 mod autoeq_window;
 mod backdrop_visual;
 mod bake;
@@ -389,6 +390,7 @@ fn main() {
     };
     app.run(move |cx: &mut App| {
         logging::init();
+        rox_core::desktop::init();
         // Early, so a launch arriving mid-startup queues instead of starting its own rox.
         startup::single_instance::serve(instance, cx);
         #[cfg(target_os = "macos")]

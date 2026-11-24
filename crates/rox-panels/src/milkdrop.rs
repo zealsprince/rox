@@ -694,7 +694,7 @@ impl MilkdropPanel {
 
     fn reveal_preset(&self, cx: &mut App) {
         if let Some(path) = self.current_path() {
-            cx.reveal_path(&path);
+            rox_core::desktop::reveal_path(cx, "milkdrop: reveal preset", &path);
         }
     }
 
@@ -741,7 +741,7 @@ impl MilkdropPanel {
     fn open_presets_folder(cx: &mut App) {
         let folder = rox_core::settings::milkdrop_dir().join("presets");
         std::fs::create_dir_all(&folder).ok();
-        cx.open_with_system(&folder);
+        rox_core::desktop::open_with_system(cx, "milkdrop: open presets folder", &folder);
     }
 
     /// A panel whose engine hasn't started drops commands rather than
@@ -1021,12 +1021,16 @@ impl MilkdropPanel {
 
     /// Directories only: a pack is a folder, and a file would be a preset.
     fn pick_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "milkdrop: add preset folder",
+            PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;
@@ -1653,7 +1657,9 @@ impl MilkdropPanel {
                     .text_color(palette::text_muted())
                     .hover(|d| d.text_color(palette::text_bright()))
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(url))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        rox_core::desktop::open_url(cx, "milkdrop: open presets link", url)
+                    })
                     .child(name),
             );
         }
@@ -2121,7 +2127,7 @@ impl Panel for MilkdropPanel {
                             .upgrade()
                             .and_then(|panel| panel.read(cx).current_path());
                         if let Some(path) = path {
-                            cx.reveal_path(&path);
+                            rox_core::desktop::reveal_path(cx, "milkdrop: reveal preset", &path);
                         }
                     }),
             )
@@ -2132,7 +2138,11 @@ impl Panel for MilkdropPanel {
                         // Nothing else creates the folder, and the platform refuses a missing
                         // path.
                         std::fs::create_dir_all(&folder).ok();
-                        cx.open_with_system(&folder);
+                        rox_core::desktop::open_with_system(
+                            cx,
+                            "milkdrop: open presets folder",
+                            &folder,
+                        );
                     }),
             );
 

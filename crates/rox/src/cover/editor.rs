@@ -289,12 +289,16 @@ impl CoverEditor {
         if self.saving {
             return;
         }
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(rox_i18n::t!("cover-editor-choose-image")),
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "cover editor: pick image",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some(rox_i18n::t!("cover-editor-choose-image")),
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;

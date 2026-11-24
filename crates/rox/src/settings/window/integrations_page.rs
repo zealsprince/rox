@@ -394,7 +394,11 @@ impl SettingsWindow {
                                         icons::FOLDER,
                                         false,
                                         move |_, _, cx| {
-                                            cx.reveal_path(&settings::data_dir());
+                                            rox_core::desktop::reveal_path(
+                                                cx,
+                                                "settings integrations: reveal data folder",
+                                                &settings::data_dir(),
+                                            );
                                         },
                                     ))
                                     .into_any_element()
@@ -734,7 +738,11 @@ impl SettingsWindow {
                         .hover(|d| d.text_color(palette::text_bright()))
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.open_url("https://listenbrainz.org/settings/")
+                            rox_core::desktop::open_url(
+                                cx,
+                                "settings integrations: open listenbrainz",
+                                "https://listenbrainz.org/settings/",
+                            )
                         })
                         .child(svg().path(icons::EXTERNAL_LINK).size(px(12.)))
                         .child(rox_i18n::t!("settings-integrations-listenbrainz-get-token")),

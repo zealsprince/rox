@@ -10,6 +10,7 @@ pub mod ipc;
 mod ipc_catalog;
 mod ipc_documents;
 mod ipc_plugins;
+mod ipc_settings;
 mod ipc_track;
 #[cfg(target_os = "linux")]
 mod kwin;

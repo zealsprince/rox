@@ -682,7 +682,11 @@ impl SettingsWindow {
                         if let Err(e) = std::fs::create_dir_all(&dir) {
                             log::warn!("assets: creating {}: {e}", dir.display());
                         }
-                        cx.reveal_path(&dir);
+                        rox_core::desktop::reveal_path(
+                            cx,
+                            "settings workspace: reveal assets folder",
+                            &dir,
+                        );
                     },
                 )
                 .keyed("workspace-assets-reveal"),
@@ -777,12 +781,16 @@ impl SettingsWindow {
         let adding = AddingAssets;
         cx.notify();
 
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings workspace: add assets",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: None,
+            },
+        );
 
         cx.spawn_in(window, async move |this, cx| {
             let paths = match rx.await {
@@ -796,16 +804,14 @@ impl SettingsWindow {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
 
-                if let Err(why) = asset_refusal(&path, &file) {
+                if let Some(refusal) = crate::asset_import::refusal(&path, &file) {
+                    let why = refusal.reason();
                     this.update_in(cx, |_, window, cx| asset_failed(&file, why, window, cx))
                         .ok();
                     continue;
                 }
 
-                let max_bytes = match assets::kind_for(&file) {
-                    Some(AssetKind::Font) => crate::workspace_fonts::MAX_FONT_BYTES,
-                    _ => u64::MAX,
-                };
+                let max_bytes = crate::asset_import::max_bytes(&file);
                 let src = path.clone();
                 let staged = cx
                     .background_executor()
@@ -813,10 +819,7 @@ impl SettingsWindow {
                     .await;
 
                 this.update_in(cx, |_, window, cx| {
-                    match staged.and_then(assets::commit_staged) {
-                        Ok(asset) if asset.kind == AssetKind::Font => {
-                            crate::workspace_fonts::register(cx);
-                        }
+                    match staged.and_then(|staged| crate::asset_import::commit(staged, cx)) {
                         Ok(_) => {}
                         Err(e) => {
                             log::warn!("assets: adding {}: {e}", path.display());
@@ -1731,7 +1734,12 @@ impl SettingsWindow {
         crate::workspace::denoise_f32(&mut dump);
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.json");
-        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+        let rx = rox_core::desktop::prompt_for_new_path(
+            cx,
+            "settings workspace: export layout",
+            &home,
+            Some(file.as_str()),
+        );
         cx.spawn(async move |_, _| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
@@ -1744,12 +1752,16 @@ impl SettingsWindow {
     }
 
     fn import_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings workspace: import layout",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;
@@ -1864,7 +1876,12 @@ impl SettingsWindow {
             rox_core::settings::roxw::EXT
         );
         let label = name.to_string();
-        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+        let rx = rox_core::desktop::prompt_for_new_path(
+            cx,
+            "settings workspace: export workspace",
+            &home,
+            Some(file.as_str()),
+        );
         cx.spawn(async move |_, _| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
@@ -1890,12 +1907,16 @@ impl SettingsWindow {
     /// unapproved shaders opens the apply confirm on the way in, so its code
     /// gets read out at import; backing out leaves it saved and unapproved.
     fn import_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings workspace: import workspace",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;
@@ -2006,35 +2027,6 @@ impl SettingsWindow {
         self.mini_layout = bundle.mini_layout.clone();
         cx.notify();
     }
-}
-
-/// What the store would refuse anyway, caught before the copy starts so the
-/// toast can say why in the user's language.
-fn asset_refusal(path: &Path, file: &str) -> Result<(), SharedString> {
-    let Some(kind) = assets::kind_for(file) else {
-        return Err(rox_i18n::t!("settings-workspace-assets-unknown-kind"));
-    };
-    if kind != AssetKind::Font {
-        return Ok(());
-    }
-
-    let fonts = assets::all()
-        .iter()
-        .filter(|asset| asset.kind == AssetKind::Font)
-        .count();
-    if fonts >= crate::workspace_fonts::MAX_FONTS {
-        return Err(rox_i18n::t!("settings-workspace-assets-too-many-fonts"));
-    }
-
-    let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-    if bytes > crate::workspace_fonts::MAX_FONT_BYTES {
-        return Err(rox_i18n::t!(
-            "settings-workspace-assets-font-too-large",
-            size = (crate::workspace_fonts::MAX_FONT_BYTES / 1_000_000).to_string()
-        ));
-    }
-
-    Ok(())
 }
 
 fn asset_failed(file: &str, why: SharedString, window: &mut Window, cx: &mut App) {

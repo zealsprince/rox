@@ -2635,12 +2635,16 @@ fn keys_from(
 }
 
 pub fn browse(library: &Entity<Library>, cx: &mut App) {
-    let rx = cx.prompt_for_paths(PathPromptOptions {
-        files: false,
-        directories: true,
-        multiple: false,
-        prompt: None,
-    });
+    let rx = rox_core::desktop::prompt_for_paths(
+        cx,
+        "library: add folder",
+        PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        },
+    );
     let library = library.clone();
     cx.spawn(async move |cx| {
         if let Ok(Ok(Some(mut paths))) = rx.await

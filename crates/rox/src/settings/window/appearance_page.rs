@@ -561,12 +561,16 @@ impl SettingsWindow {
     /// Unknown roles and bad values fall away; a file that isn't a map is
     /// ignored.
     fn import_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "settings appearance: import palette",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
                 return;
@@ -598,7 +602,12 @@ impl SettingsWindow {
             self.base.to_map()
         };
         let home = dirs::home_dir().unwrap_or_default();
-        let rx = cx.prompt_for_new_path(&home, Some("palette.json"));
+        let rx = rox_core::desktop::prompt_for_new_path(
+            cx,
+            "settings appearance: export palette",
+            &home,
+            Some("palette.json"),
+        );
         cx.spawn(async move |_, _| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
@@ -1037,7 +1046,11 @@ impl SettingsWindow {
                                     !has_current,
                                     move |_, _, cx| {
                                         if let Some(path) = current.as_deref() {
-                                            cx.reveal_path(path);
+                                            rox_core::desktop::reveal_path(
+                                                cx,
+                                                "settings appearance: reveal backdrop preset",
+                                                path,
+                                            );
                                         }
                                     },
                                 ))

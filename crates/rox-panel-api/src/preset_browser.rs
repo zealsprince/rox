@@ -1647,13 +1647,25 @@ impl Render for PresetBrowser {
                             .item(
                                 PopupMenuItem::new(rox_i18n::t!("milkdrop-reveal"))
                                     .icon(Icon::default().path(icons::EXTERNAL_LINK))
-                                    .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                                    .on_click(move |_, _, cx| {
+                                        rox_core::desktop::reveal_path(
+                                            cx,
+                                            "preset browser: reveal preset",
+                                            &path,
+                                        )
+                                    }),
                             )
                         }
                         MenuTarget::Folder(path) => menu.item(
                             PopupMenuItem::new(rox_i18n::t!("milkdrop-reveal-folder"))
                                 .icon(Icon::default().path(icons::FOLDER))
-                                .on_click(move |_, _, cx| cx.reveal_path(Path::new(&path))),
+                                .on_click(move |_, _, cx| {
+                                    rox_core::desktop::reveal_path(
+                                        cx,
+                                        "preset browser: reveal preset",
+                                        Path::new(&path),
+                                    )
+                                }),
                         ),
                     }
                 }

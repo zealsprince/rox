@@ -4,9 +4,10 @@
 //! can never say something the UI wouldn't.
 //!
 //! Surface, version 1: `transport.*`, `queue.*`, `library.*`, `tasks.*`,
-//! `plugins.*`, `workspace.import`, `ai.status`, and `event.*` pushes after
-//! `subscribe`. `debug.*` is the runtime test surface; its input half is the
-//! sibling `drive` module and its frame timer is `frames`.
+//! `plugins.*`, `workspace.*`, `assets.import`, `objects.*`, `settings.*`,
+//! `ai.status`, and `event.*` pushes after `subscribe`. `debug.*` is the
+//! runtime test surface; its input half is the sibling `drive` module and its
+//! frame timer is `frames`.
 
 use std::path::PathBuf;
 
@@ -117,6 +118,10 @@ fn dispatch(state: &AppState, request: Request, cx: &mut App) {
         "plugins.action" => return super::ipc_plugins::action(request, cx),
         "plugins.install" => return super::ipc_documents::install_plugin(request, cx),
         "workspace.import" => return super::ipc_documents::import_workspace(request, cx),
+        "workspace.save" => return super::ipc_documents::save_workspace(request, cx),
+        "workspace.export" => return super::ipc_documents::export_workspace(request, cx),
+        "assets.import" => return super::ipc_documents::import_asset(request, cx),
+        "plugins.pack" => return super::ipc_documents::pack_plugin(request, cx),
         "debug.frames" => return super::frames::request(request, cx),
         // Debug builds only, like the origin override it drives.
         #[cfg(debug_assertions)]
@@ -136,6 +141,7 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             let name = crate::objects::install(&path).map_err(RpcError::app)?;
             Ok(json!({ "name": name }))
         }
+        "objects.export" => super::ipc_documents::export_object(params, cx),
         "transport.toggle" => {
             state.player.read(cx).toggle_pause();
             Ok(status(state, cx))
@@ -275,6 +281,12 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             state.library.update(cx, |library, cx| library.rescan(cx));
             Ok(json!({ "started": true }))
         }
+        "library.folders" => Ok(library_folders(state, cx)),
+        "library.add_folder" => add_folder(state, params, cx),
+        "library.remove_folder" => remove_folder(state, params, cx),
+        "settings.list" => Ok(super::ipc_settings::list()),
+        "settings.get" => super::ipc_settings::get(params),
+        "settings.set" => super::ipc_settings::set(params, cx),
         "tasks.status" => Ok(tasks_status(state, cx)),
         "tasks.start" => tasks_start(state, params, cx),
         "tasks.stop" => tasks_stop(params, cx),
@@ -344,6 +356,90 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         other => super::drive::route(other, params, cx)
             .unwrap_or_else(|| Err(RpcError::method_not_found(other))),
     }
+}
+
+fn library_folders(state: &AppState, cx: &App) -> Value {
+    let library = state.library.read(cx);
+    let folders: Vec<Value> = library
+        .root_stats()
+        .into_iter()
+        .map(|(path, stats)| {
+            json!({
+                "path": path,
+                "reachable": path.is_dir(),
+                "tracks": stats.tracks,
+                "albums": stats.albums,
+                "bytes": stats.bytes,
+            })
+        })
+        .collect();
+
+    json!({
+        "folders": folders,
+        "busy": library.busy().map(|busy| busy.to_string()),
+        "watching": library.watching(),
+    })
+}
+
+/// The folder a picker would hand the Library panel, the launcher and the
+/// Settings library page, given to the same `add_root` they end in, so it's
+/// scanned, watched and saved alike. The list never nests: a folder inside
+/// one already listed is rescanned rather than added, and one holding listed
+/// folders takes their place.
+fn add_folder(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
+    // A trust boundary: the scan reads whatever this names, so it has to
+    // be a real folder, absolute and spelled plainly.
+    let folder = super::ipc_documents::dir_param(params, "path")?;
+    let library = state.library.read(cx);
+    // add_root does nothing while the library is busy, so say so instead.
+    if let Some(busy) = library.busy() {
+        return Err(RpcError::app(format!("the library is busy: {busy}")));
+    }
+
+    let roots = library.roots();
+    let covered_by = roots.iter().find(|root| folder.starts_with(root)).cloned();
+    let absorbed: Vec<PathBuf> = match covered_by {
+        Some(_) => Vec::new(),
+        None => roots
+            .iter()
+            .filter(|root| root.starts_with(&folder))
+            .cloned()
+            .collect(),
+    };
+
+    state
+        .library
+        .update(cx, |library, cx| library.add_root(folder.clone(), cx));
+
+    Ok(json!({
+        "path": folder,
+        "added": covered_by.is_none(),
+        "covered_by": covered_by,
+        "absorbed": absorbed,
+        "scanning": true,
+    }))
+}
+
+/// The Settings library page's remove: the folder leaves the list and its
+/// tracks leave the library. The files stay where they are.
+fn remove_folder(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
+    let folder = super::ipc_documents::path_param(params)?;
+    let library = state.library.read(cx);
+    if let Some(busy) = library.busy() {
+        return Err(RpcError::app(format!("the library is busy: {busy}")));
+    }
+    if !library.roots().contains(&folder) {
+        return Err(RpcError::app(format!(
+            "{} isn't a library folder; library.folders lists them",
+            folder.display()
+        )));
+    }
+
+    state
+        .library
+        .update(cx, |library, cx| library.remove_root(&folder, cx));
+
+    Ok(json!({ "removed": folder }))
 }
 
 fn pass_param(params: &Value) -> Result<&str, RpcError> {
@@ -608,7 +704,7 @@ fn panel_tree(cx: &mut App) -> Result<Value, RpcError> {
     serde_json::to_value(dump).map_err(RpcError::app)
 }
 
-fn workspace_for(
+pub(super) fn workspace_for(
     id: Option<u64>,
     cx: &mut App,
 ) -> Result<Entity<crate::workspace::Workspace>, RpcError> {

@@ -644,7 +644,13 @@ impl SettingsWindow {
                     .child(settings_ui::icon_button(
                         icons::EXTERNAL_LINK,
                         false,
-                        move |_, _, cx| cx.open_url(source),
+                        move |_, _, cx| {
+                            rox_core::desktop::open_url(
+                                cx,
+                                "settings library: open dictionary source",
+                                source,
+                            )
+                        },
                     )),
             )
             .child(if downloading {

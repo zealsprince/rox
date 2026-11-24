@@ -4500,7 +4500,7 @@ fn open_link_button(link: NoticeLink) -> impl IntoElement {
     };
 
     crate::settings::ui::small_button(label, icons::EXTERNAL_LINK, false, move |_, _, cx| {
-        cx.open_url(&link.url)
+        rox_core::desktop::open_url(cx, "external sources: open link", &link.url)
     })
 }
 

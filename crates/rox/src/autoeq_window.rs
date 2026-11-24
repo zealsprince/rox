@@ -315,12 +315,16 @@ impl AutoEqWindow {
     }
 
     fn import_file(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let rx = rox_core::desktop::prompt_for_paths(
+            cx,
+            "autoeq: import file",
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+        );
 
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = rx.await

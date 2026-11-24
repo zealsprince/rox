@@ -3,6 +3,7 @@
 
 pub mod acoustic;
 pub mod continuation;
+pub mod desktop;
 pub mod fmt;
 pub mod install;
 pub mod logging;

@@ -1740,7 +1740,7 @@ fn link(homepage: Homepage) -> AnyElement {
         .cursor_pointer()
         .hover(|d| d.text_color(palette::accent_hover()))
         .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
-            cx.open_url(&url)
+            rox_core::desktop::open_url(cx, "catalog: open link", &url)
         })
         .child(SharedString::from(homepage.host))
         .child(Icon::default().path(icons::EXTERNAL_LINK).xsmall())

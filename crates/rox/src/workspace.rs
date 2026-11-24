@@ -143,12 +143,45 @@ fn typed_workspace(workspace: &gpui::AnyWeakEntity) -> Option<Entity<Workspace>>
     workspace.upgrade()?.downcast::<Workspace>().ok()
 }
 
+/// Runs every workspace window's debounced layout save that hasn't fired yet.
+/// From the quit hook, which `App::shutdown` runs before it drops the windows.
+fn flush_pending_layouts(cx: &mut App) {
+    let open: Vec<_> = cx
+        .try_global::<WorkspaceWindows>()
+        .map(|windows| {
+            windows
+                .open
+                .iter()
+                .map(|open| (open.handle, open.workspace.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (handle, workspace) in open {
+        let Some(workspace) = typed_workspace(&workspace) else {
+            continue;
+        };
+
+        let _ = handle.update(cx, |_, window, cx| {
+            workspace.update(cx, |this, cx| {
+                if this.save_task.is_some() {
+                    this.persist(window, cx);
+                }
+            });
+        });
+    }
+}
+
 /// Renegotiate every window's decorations to the live flags. The main
 /// windows follow OS Decorations; child windows (settings, popouts,
 /// editors) follow it only with Child Windows on, and keep the OS chrome
 /// otherwise. Called from the Window menu toggle and the settings window's
 /// Appearance page.
 pub(crate) fn apply_decorations(cx: &mut App) {
+    // The macOS bar's OS Decorations row reads the flag too, and its setter
+    // has no `App` to rebuild it from.
+    native_menu::rebuild(cx);
+
     // Deferred out of the caller's update: the menu toggle runs inside the
     // very window this renegotiates, and a window can't be updated while it's
     // already on the update stack. The re-entrant update errs and the window
@@ -1546,6 +1579,14 @@ pub fn init(cx: &mut App) {
     // panels); workspace windows persist their layout first via their own
     // handler, which stops the action before it gets here.
     cx.on_action(|_: &Quit, cx| cx.quit());
+    // This fallback, the tray's Quit and the updater's relaunch quit without
+    // a workspace window's persist, and a debounced save still waiting would
+    // go with the process.
+    cx.on_app_quit(|cx| {
+        flush_pending_layouts(cx);
+        async {}
+    })
+    .detach();
     cx.on_action(|_: &CloseWindow, cx| close_active_window(cx));
     // Every native-menu row that isn't one of the bound actions below comes
     // through here. Nothing binds or handles MenuCommand in a window, so the

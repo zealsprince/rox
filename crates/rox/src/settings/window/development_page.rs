@@ -7,9 +7,6 @@ impl SettingsWindow {
         self.experimental = on;
         Settings::update(move |s| s.experimental = on);
         settings::set_experimental(on, cx);
-        // The macOS bar is built once and held by the system, so it needs a
-        // rebuild.
-        crate::workspace::native_menu::rebuild(cx);
         cx.notify();
     }
 

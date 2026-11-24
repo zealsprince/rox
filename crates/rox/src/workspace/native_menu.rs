@@ -373,3 +373,31 @@ fn placeholder(label: impl Into<SharedString>) -> gpui::MenuItem {
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{App, TestAppContext};
+    use rox_core::settings::{self, MenuStates};
+
+    fn moves(cx: &mut App, set: impl FnOnce(&mut App)) -> bool {
+        let before = cx.default_global::<MenuStates>().0;
+        set(cx);
+
+        cx.default_global::<MenuStates>().0 > before
+    }
+
+    /// Each set writes back what the static already holds, so the flags other
+    /// tests read don't move.
+    #[gpui::test]
+    fn every_toggle_the_bar_shows_moves_the_menu_states(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let (menubar, design) = (settings::hide_menubar(), settings::design_mode());
+            let (tray, experimental) = (settings::quit_to_tray(), settings::experimental());
+
+            assert!(moves(cx, |cx| settings::set_hide_menubar(menubar, cx)));
+            assert!(moves(cx, |cx| settings::set_design_mode(design, cx)));
+            assert!(moves(cx, |cx| settings::set_quit_to_tray(tray, cx)));
+            assert!(moves(cx, |cx| settings::set_experimental(experimental, cx)));
+        });
+    }
+}

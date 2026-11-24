@@ -446,6 +446,8 @@ fn main() {
             integrations::tray::relabel(cx);
         })
         .detach();
+        cx.observe_global::<rox_core::settings::MenuStates>(workspace::native_menu::rebuild)
+            .detach();
         // After the widget library's init, whose bindings it snapshots as the bottom layer.
         keymap::init(cx);
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
@@ -479,7 +481,7 @@ fn main() {
         set_fold_case(settings.fold_case);
         set_show_readings(settings.show_readings, cx);
         rox_library::genre::set_split_compounds(settings.split_genre_compounds);
-        set_quit_to_tray(settings.quit_to_tray);
+        set_quit_to_tray(settings.quit_to_tray, cx);
         set_design_mode(settings.design_mode, cx);
         set_resize_lock(settings.resize_lock, cx);
         set_experimental(settings.experimental, cx);

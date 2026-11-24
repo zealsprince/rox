@@ -893,6 +893,18 @@ pub struct LanguageSwitch(pub u64);
 
 impl gpui::Global for LanguageSwitch {}
 
+/// Bumped by every setter whose state the macOS menu bar shows, for
+/// `cx.observe_global`. That bar is a snapshot AppKit never re-reads, and
+/// these settings change from the menus, the Settings window and the socket.
+#[derive(Default)]
+pub struct MenuStates(pub u64);
+
+impl gpui::Global for MenuStates {}
+
+fn menu_states_moved(cx: &mut App) {
+    cx.default_global::<MenuStates>().0 += 1;
+}
+
 fn resolve_theme(theme: Theme) -> palette::Mode {
     match theme {
         Theme::Dark => palette::Mode::Dark,
@@ -975,6 +987,7 @@ pub fn hide_menubar() -> bool {
 
 pub fn set_hide_menubar(on: bool, cx: &mut App) {
     HIDE_MENUBAR.store(on, Ordering::Relaxed);
+    menu_states_moved(cx);
     cx.refresh_windows();
 }
 
@@ -1070,7 +1083,8 @@ pub fn window_decorations() -> WindowDecorations {
     }
 }
 
-/// Open windows are renegotiated by the caller (`workspace::apply_decorations`).
+/// Open windows and the macOS menu follow through the caller's
+/// `workspace::apply_decorations`, since this has no `App` to reach them with.
 pub fn set_os_decorations(on: bool) {
     OS_DECORATIONS.store(on, Ordering::Relaxed);
 }
@@ -1185,6 +1199,7 @@ pub fn set_design_mode(on: bool, cx: &mut App) {
     // came from is mid-update and its handle can't be reached, so it would
     // keep its cached views and miss the flip.
     cx.refresh_windows();
+    menu_states_moved(cx);
 }
 
 pub fn resize_lock() -> bool {
@@ -1203,8 +1218,9 @@ pub fn quit_to_tray() -> bool {
 }
 
 /// The caller reconciles the tray icon (`tray::sync`).
-pub fn set_quit_to_tray(on: bool) {
+pub fn set_quit_to_tray(on: bool, cx: &mut App) {
     QUIT_TO_TRAY.store(on, Ordering::Relaxed);
+    menu_states_moved(cx);
 }
 
 static EXPERIMENTAL: AtomicBool = AtomicBool::new(false);
@@ -1215,6 +1231,7 @@ pub fn experimental() -> bool {
 
 pub fn set_experimental(on: bool, cx: &mut App) {
     EXPERIMENTAL.store(on, Ordering::Relaxed);
+    menu_states_moved(cx);
     cx.refresh_windows();
 }
 

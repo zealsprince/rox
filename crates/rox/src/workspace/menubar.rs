@@ -132,7 +132,6 @@ impl Workspace {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);
                 Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
-                native_menu::rebuild(cx);
             }
             MenuAction::ToggleDesignMode => toggle_design_mode(cx),
             MenuAction::ToggleDecorations => {
@@ -140,7 +139,6 @@ impl Workspace {
                 settings::set_os_decorations(on);
                 Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
                 apply_decorations(cx);
-                native_menu::rebuild(cx);
             }
             MenuAction::ToggleArtTheming => {
                 let on = !palette::art_theming();
@@ -156,10 +154,9 @@ impl Workspace {
             MenuAction::ConvertLayoutToCanvas => self.convert_layout_to_canvas(window, cx),
             MenuAction::ToggleQuitToTray => {
                 let on = !settings::quit_to_tray();
-                settings::set_quit_to_tray(on);
+                settings::set_quit_to_tray(on, cx);
                 Settings::update(move |s| s.quit_to_tray = on);
                 tray::sync(cx);
-                native_menu::rebuild(cx);
                 cx.refresh_windows();
             }
             MenuAction::CloseWindow => {
@@ -2146,7 +2143,6 @@ pub(crate) fn toggle_design_mode(cx: &mut App) {
     let on = !settings::design_mode();
     settings::set_design_mode(on, cx);
     Settings::update(move |s| s.design_mode = on);
-    native_menu::rebuild(cx);
 }
 
 /// The flyout itself is chained on by the caller.

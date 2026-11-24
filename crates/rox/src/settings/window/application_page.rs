@@ -7,7 +7,7 @@ use super::*;
 impl SettingsWindow {
     /// Reads the static, so it matches the Window menu toggle.
     fn set_quit_to_tray(&mut self, on: bool, cx: &mut Context<Self>) {
-        settings::set_quit_to_tray(on);
+        settings::set_quit_to_tray(on, cx);
         Settings::update(move |s| s.quit_to_tray = on);
         tray::sync(cx);
         cx.notify();

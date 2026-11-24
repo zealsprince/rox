@@ -145,7 +145,8 @@ fn language_name(saved: Option<&str>) -> &'static str {
     }
 }
 
-/// The menubar's show and hide rows run these after their write.
+/// For a setting whose setter can't reach the menu: song theming's lives in
+/// rox-design, below the `MenuStates` the rest bump.
 fn rebuild_menu(cx: &mut App) {
     crate::workspace::native_menu::rebuild(cx);
 }
@@ -183,7 +184,6 @@ static KEYS: &[Key] = &[
         write: |s, v| s.design_mode = v.on(),
         apply: |v, cx| {
             settings::set_design_mode(v.on(), cx);
-            rebuild_menu(cx);
         },
     },
     Key {
@@ -214,7 +214,6 @@ static KEYS: &[Key] = &[
         write: |s, v| s.look.bundle.appearance.hide_menubar = v.on(),
         apply: |v, cx| {
             settings::set_hide_menubar(v.on(), cx);
-            rebuild_menu(cx);
         },
     },
     Key {
@@ -258,7 +257,6 @@ static KEYS: &[Key] = &[
         apply: |v, cx| {
             settings::set_os_decorations(v.on());
             crate::workspace::apply_decorations(cx);
-            rebuild_menu(cx);
         },
     },
     Key {
@@ -368,9 +366,8 @@ static KEYS: &[Key] = &[
         read: |s| Val::Bool(s.quit_to_tray),
         write: |s, v| s.quit_to_tray = v.on(),
         apply: |v, cx| {
-            settings::set_quit_to_tray(v.on());
+            settings::set_quit_to_tray(v.on(), cx);
             crate::integrations::tray::sync(cx);
-            rebuild_menu(cx);
             cx.refresh_windows();
         },
     },
@@ -389,7 +386,6 @@ static KEYS: &[Key] = &[
         write: |s, v| s.experimental = v.on(),
         apply: |v, cx| {
             settings::set_experimental(v.on(), cx);
-            rebuild_menu(cx);
         },
     },
 ];

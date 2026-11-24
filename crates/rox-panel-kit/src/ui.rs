@@ -328,12 +328,15 @@ fn build_section(
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
+        // Trailing actions that don't fit beside the heading drop to their own
+        // line, right-aligned, the way setting_row_wrap drops a control.
         .child(
             div()
                 .flex()
                 .flex_row()
+                .flex_wrap()
                 .items_center()
-                .justify_between()
+                .gap_y(px(2.))
                 .pb(tokens::SPACE_XS)
                 .border_b_1()
                 .border_color(palette::border())
@@ -343,6 +346,7 @@ fn build_section(
                         .flex_row()
                         .items_center()
                         .gap(tokens::SPACE_XS)
+                        .mr(tokens::SPACE_SM)
                         .text_xs()
                         .text_color(palette::text_muted())
                         .when_some(icon, |d, icon| {
@@ -357,7 +361,20 @@ fn build_section(
                         .child(label)
                         .when_some(control, |d, control| d.child(control)),
                 )
-                .when_some(trailing, |d, trailing| d.child(trailing)),
+                // Grows into what the heading leaves, so a wrapping row of
+                // buttons has a definite width to wrap in.
+                .when_some(trailing, |d, trailing| {
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .flex_grow()
+                            .flex_shrink()
+                            .min_w_0()
+                            .child(trailing),
+                    )
+                }),
         )
         .child(body)
 }

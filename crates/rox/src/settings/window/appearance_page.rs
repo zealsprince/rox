@@ -1312,6 +1312,8 @@ impl SettingsWindow {
         let controls = div()
             .flex()
             .flex_row()
+            .flex_wrap()
+            .justify_end()
             .items_center()
             .gap(tokens::SPACE_XS)
             .child(small_button(

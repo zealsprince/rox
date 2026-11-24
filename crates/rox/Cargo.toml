@@ -60,6 +60,8 @@ rox-plugins = { path = "../rox-plugins" }
 rox-romanize = { path = "../rox-romanize" }
 # The canvas panel's saved shape and its projection (ADR 33).
 rox-canvas = { path = "../rox-canvas" }
+# The frame mapping a render target reads its renderer's frames from (ADR 37).
+rox-frames = { path = "../rox-frames" }
 rox-services = { path = "../rox-services" }
 rox-viz = { path = "../rox-viz" }
 # Home for file pickers, runtime dir for the instance socket, data dir for
@@ -149,3 +151,6 @@ winresource = "0.1"
 [dev-dependencies]
 # gpui's headless TestAppContext and #[gpui::test].
 gpui = { workspace = true, features = ["test-support"] }
+# The renderer's side of the mapping, for the render target's tests only.
+# Never a normal dependency: rox's own build has no way to write a frame.
+rox-frames = { path = "../rox-frames", features = ["writer"] }

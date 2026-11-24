@@ -1,6 +1,6 @@
 //! The parts of a canvas panel (ADR 33) below the panel itself: the live
 //! bodies kept beside a canvas's saved items, the nesting cap, and the grid,
-//! image, shader, text and texture items. [`crate::panels::canvas`] owns them
+//! image, shader, text, texture and render target items. [`crate::panels::canvas`] owns them
 //! and draws the result.
 //!
 //! The saved items stay the source of truth. A body holds only what can't be
@@ -16,6 +16,7 @@ pub(crate) mod overlay;
 pub(crate) mod routes;
 pub(crate) mod shader;
 pub(crate) mod states;
+pub(crate) mod target;
 pub(crate) mod text;
 pub(crate) mod texture;
 
@@ -31,6 +32,7 @@ pub(crate) enum Body<G> {
     Group(Vec<Body<G>>),
     Image,
     Shader,
+    Target,
     Text(text::Line),
     /// Built into nothing: a kind with no body yet, a grid whose dump
     /// didn't restore, or a container past the nesting cap.
@@ -117,6 +119,8 @@ pub(crate) fn build_bodies<G>(
             Content::Shader { .. } => Body::Shader,
 
             Content::Text { text, .. } => Body::Text(text::Line::new(text)),
+
+            Content::Target { .. } => Body::Target,
 
             _ => Body::Unknown,
         })

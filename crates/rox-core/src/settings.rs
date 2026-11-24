@@ -4979,6 +4979,36 @@ mod tests {
     }
 
     #[test]
+    fn a_canvas_names_the_renderers_its_targets_draw_with() {
+        let target = |id: &str, owner: &str| {
+            serde_json::json!({
+                "id": id,
+                "content": { "kind": "target", "owner": owner, "width": 1280, "height": 720 },
+            })
+        };
+        let bundle = WorkspaceBundle {
+            layouts: vec![NamedLayout {
+                name: "staged".to_string(),
+                size: None,
+                dump: in_a_canvas(
+                    serde_json::json!([]),
+                    serde_json::json!([
+                        target("bars", "plugin:bars"),
+                        {
+                            "id": "g",
+                            "content": { "kind": "group", "items": [target("deep", "plugin:waves")] },
+                        },
+                        target("blank", ""),
+                    ]),
+                ),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        assert_eq!(bundle.required_plugins(), ["bars", "waves"]);
+    }
+
+    #[test]
     fn scrubbing_reaches_a_grid_inside_a_canvas() {
         let mut bundle = WorkspaceBundle {
             layouts: vec![NamedLayout {

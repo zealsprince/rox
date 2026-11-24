@@ -6942,6 +6942,7 @@ dependencies = [
  "rox-core",
  "rox-design",
  "rox-dock",
+ "rox-frames",
  "rox-i18n",
  "rox-ipc",
  "rox-library",

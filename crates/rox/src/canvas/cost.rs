@@ -61,6 +61,8 @@ impl Weight {
                 grids: self.cost.grids.max(other.cost.grids),
                 shaders: self.cost.shaders.max(other.cost.shaders),
                 depth: self.cost.depth.max(other.cost.depth),
+                targets: self.cost.targets.max(other.cost.targets),
+                target_pixels: self.cost.target_pixels.max(other.cost.target_pixels),
             },
             shader_surfaces: self.shader_surfaces.max(other.shader_surfaces),
             moving_grids: self.moving_grids.max(other.moving_grids),

@@ -1,6 +1,6 @@
 //! The mapping on Windows: a page-file-backed section. Its size is fixed
 //! when it's made, so it needs no seal. The handle isn't inheritable; the
-//! renderer gets a duplicate with map rights only.
+//! spawn gives the renderer a duplicate with [`CHILD_ACCESS`] only.
 //!
 //! Written from the Win32 documentation and the windows-sys signatures.
 //! No compiler for a Windows target has seen it yet, and it has never run.
@@ -8,12 +8,11 @@
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::ptr::NonNull;
 
-use windows_sys::Win32::Foundation::{DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS,
     MapViewOfFile, PAGE_READWRITE, UnmapViewOfFile,
 };
-use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 use crate::layout::{self, HEADER_BYTES};
 use crate::{Error, Spec};
@@ -25,32 +24,10 @@ impl Section {
     pub(crate) fn borrow(&self) -> BorrowedHandle<'_> {
         self.0.as_handle()
     }
-
-    /// Map read and map write, and nothing else: no right to change the
-    /// section's security or to query it.
-    pub(crate) fn share_with(&self, process: BorrowedHandle<'_>) -> Result<usize, Error> {
-        let mut theirs: HANDLE = std::ptr::null_mut();
-
-        // SAFETY: duplicates a handle we own into a process handle the
-        // caller borrows for the call. `theirs` is only written.
-        let ok = unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                self.0.as_raw_handle().cast(),
-                process.as_raw_handle().cast(),
-                &mut theirs,
-                FILE_MAP_READ | FILE_MAP_WRITE,
-                0,
-                0,
-            )
-        };
-        if ok == 0 {
-            return Err(Error::os("DuplicateHandle"));
-        }
-
-        Ok(theirs as usize)
-    }
 }
+
+/// Map read and map write, and nothing else.
+pub(crate) const CHILD_ACCESS: u32 = FILE_MAP_READ | FILE_MAP_WRITE;
 
 /// One view of the section, unmapped on drop.
 pub(crate) struct View {

@@ -4,12 +4,10 @@
 //! [`Frame`]s, the way Milkdrop hands its frames to the renderer.
 //!
 //! The texture belongs to one window's registry, so it's registered, fed and
-//! released from paint, and moves when the canvas pops out. In a release
-//! build nothing feeds it. A debug build proves it with a gradient item
-//! (`{"kind": "debug_texture"}`), which a release build keeps as saved like
-//! any kind it doesn't know.
-
-#![cfg_attr(not(debug_assertions), allow(dead_code))]
+//! released from paint, and moves when the canvas pops out. Render targets
+//! feed it ([`crate::canvas::target`]). A debug build also proves it with a
+//! gradient item (`{"kind": "debug_texture"}`), which a release build keeps
+//! as saved like any kind it doesn't know.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -160,6 +158,12 @@ impl TextureView {
             frame,
             face: None,
         }
+    }
+
+    /// The frame it paints from now on. One it already shows costs no
+    /// upload.
+    pub(crate) fn show(&mut self, frame: Frame) {
+        self.frame = frame;
     }
 
     /// Where it paints this frame, panel-relative. None paints nothing.

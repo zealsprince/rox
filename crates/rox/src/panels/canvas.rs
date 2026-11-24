@@ -54,6 +54,7 @@ use crate::canvas::overlay::Inspector;
 use crate::canvas::routes::{self, Snapshot};
 use crate::canvas::shader::{self as shader_item, Shaders};
 use crate::canvas::states::{self, Cases};
+use crate::canvas::target::Targets;
 use crate::canvas::text::{self, Values};
 use crate::canvas::texture::{self, TextureView};
 use crate::canvas::{self, Body, Placing};
@@ -355,6 +356,8 @@ pub struct CanvasPanel {
     pub(crate) shaders: Shaders,
     /// The texture items' views, by item id.
     textures: HashMap<String, Entity<TextureView>>,
+    /// The render targets' sessions and views, by item id.
+    targets: Targets,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Renders still owed after a resize.
     settle: Rc<Cell<u8>>,
@@ -497,6 +500,7 @@ impl CanvasPanel {
             images: Images::default(),
             shaders: Shaders::default(),
             textures: HashMap::new(),
+            targets: Targets::default(),
             bounds: Rc::default(),
             settle: Rc::default(),
             pointer: Rc::default(),
@@ -806,6 +810,7 @@ impl CanvasPanel {
         // here, where the window is in hand.
         let canvas = &self.config.canvas;
         self.shaders.keep(canvas);
+        self.targets.keep(canvas, window, cx);
         self.textures.retain(|id, view| {
             let kept = canvas
                 .find(id)
@@ -912,6 +917,7 @@ impl CanvasPanel {
             images: &mut self.images,
             shaders: &mut self.shaders,
             textures: &mut self.textures,
+            targets: &mut self.targets,
             layers: Vec::new(),
             shapes: Vec::new(),
         };
@@ -1124,6 +1130,7 @@ struct Draw<'a> {
     images: &'a mut Images,
     shaders: &'a mut Shaders,
     textures: &'a mut HashMap<String, Entity<TextureView>>,
+    targets: &'a mut Targets,
     layers: Vec<AnyElement>,
     shapes: Vec<Shape>,
 }
@@ -1150,6 +1157,7 @@ fn place(
 
     for (item, body) in items.iter().zip(bodies) {
         if !item.visible {
+            draw.targets.hold(&item.id);
             continue;
         }
 
@@ -1163,6 +1171,7 @@ fn place(
         // children, off the stage and out of the hit walk. In design mode it
         // draws as a ghost so it can still be picked.
         if !applied.visible && !at.design {
+            draw.targets.hold(&item.id);
             continue;
         }
         let ghost = draw.ghost || !applied.visible;
@@ -1240,6 +1249,7 @@ fn place(
                     images: &mut *draw.images,
                     shaders: &mut *draw.shaders,
                     textures: &mut *draw.textures,
+                    targets: &mut *draw.targets,
                     layers: Vec::new(),
                     shapes: Vec::new(),
                 };
@@ -1317,6 +1327,23 @@ fn place(
                     depth: projected.depth,
                     elements: element.into_iter().collect(),
                     shapes: vec![shape(projected.corners, ShapeKind::Flat)],
+                });
+            }
+
+            (Body::Target, Content::Target { .. }) => {
+                let Some(projected) = projected() else {
+                    draw.targets.hold(&item.id);
+                    continue;
+                };
+                let seen = canvas::on_stage(&projected.corners, at.viewport);
+                let element = draw
+                    .targets
+                    .element(item, seen.then_some(projected), at.design, cx);
+
+                layers.push(Layer {
+                    depth: projected.depth,
+                    elements: element.into_iter().collect(),
+                    shapes: vec![shape(projected.corners, kind)],
                 });
             }
 
@@ -2942,6 +2969,7 @@ impl Panel for CanvasPanel {
     fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panel = None;
         self.images.clear(window);
+        self.targets.clear(window, cx);
 
         for view in self.textures.values() {
             view.update(cx, |view, cx| view.release(window, cx));

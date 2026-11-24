@@ -28,6 +28,12 @@ pub type Handle<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
 pub type Handle<'a> = std::os::windows::io::BorrowedHandle<'a>;
 
+/// The rights the renderer's copy of the section gets on Windows: map read
+/// and map write, so no right to change the section's security or query
+/// it.
+#[cfg(windows)]
+pub const CHILD_ACCESS: u32 = os::CHILD_ACCESS;
+
 /// One session's frame mapping, as rox holds it: the handle the renderer
 /// gets, and a read-only view of the whole block.
 pub struct Mapping {
@@ -56,20 +62,10 @@ impl Mapping {
 
     /// The handle to pass to the renderer. On Unix it's close-on-exec, so
     /// the spawn has to put it in place for the child on purpose. On
-    /// Windows it's not inheritable; see [`Mapping::share_with`].
+    /// Windows it's not inheritable, and the spawn duplicates it into the
+    /// child with [`CHILD_ACCESS`] and nothing more.
     pub fn child_handle(&self) -> Handle<'_> {
         self.section.borrow()
-    }
-
-    /// Duplicates the section into the renderer's process with read and
-    /// write access only, and returns the handle's value there for the
-    /// hello line.
-    #[cfg(windows)]
-    pub fn share_with(
-        &self,
-        process: std::os::windows::io::BorrowedHandle<'_>,
-    ) -> Result<usize, Error> {
-        self.section.share_with(process)
     }
 
     /// The size this mapping was made for.

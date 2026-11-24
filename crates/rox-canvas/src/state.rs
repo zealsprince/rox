@@ -366,13 +366,28 @@ pub enum Content {
     Shader {
         shader: Value,
     },
+    /// A picture a renderer draws (ADR 37).
+    Target {
+        /// The renderer, as `plugin:<package id>`. Named `owner` so the
+        /// dump walkers that already read that key list it in `requires`
+        /// with no change.
+        owner: String,
+        /// Pixels the renderer draws at. Clamped to 16..=3840 by 16..=2160
+        /// where a session starts; saved as written.
+        width: u32,
+        height: u32,
+        /// The renderer's own settings, opaque to rox. Reserved: nothing
+        /// reads or writes it yet.
+        #[serde(default)]
+        config: Value,
+    },
     /// A kind this build doesn't know, or a known kind whose body didn't
     /// parse. Serializes back to the value it was read from.
     #[serde(skip)]
     Unknown(Value),
 }
 
-const KINDS: [&str; 5] = ["grid", "group", "image", "text", "shader"];
+const KINDS: [&str; 6] = ["grid", "group", "image", "text", "shader", "target"];
 
 impl Default for Content {
     fn default() -> Self {
@@ -506,6 +521,9 @@ pub struct Cost {
     /// The deepest group nesting: 0 with no groups, 1 for a group at the
     /// top level.
     pub depth: usize,
+    pub targets: usize,
+    /// Every target's width times height, as saved.
+    pub target_pixels: u64,
 }
 
 impl CanvasState {
@@ -556,6 +574,13 @@ impl CanvasState {
                 Content::Grid { .. } => cost.grids += 1,
                 Content::Shader { .. } => cost.shaders += 1,
                 Content::Group { .. } => cost.depth = cost.depth.max(level + 1),
+                Content::Target { width, height, .. } => {
+                    cost.targets += 1;
+                    // Two hand-written u32::MAX squares pass a u64.
+                    cost.target_pixels = cost
+                        .target_pixels
+                        .saturating_add(u64::from(width) * u64::from(height));
+                }
                 _ => {}
             }
         });
@@ -905,8 +930,88 @@ mod tests {
                 grids: 2,
                 shaders: 2,
                 depth: 2,
+                ..Cost::default()
             }
         );
+    }
+
+    fn target(id: &str, owner: &str, width: u32, height: u32) -> CanvasItem {
+        CanvasItem {
+            id: id.into(),
+            content: Content::Target {
+                owner: owner.into(),
+                width,
+                height,
+                config: Value::Null,
+            },
+            ..CanvasItem::default()
+        }
+    }
+
+    #[test]
+    fn a_target_round_trips() {
+        let mut bars = target("bars", "plugin:bars", 1280, 720);
+        if let Content::Target { config, .. } = &mut bars.content {
+            *config = json!({ "palette": "ember", "count": 32 });
+        }
+        let canvas = CanvasState {
+            items: vec![bars, target("blank", "", 16, 16)],
+            ..CanvasState::default()
+        };
+
+        let text = serde_json::to_string(&canvas).unwrap();
+        let back: CanvasState = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(back, canvas);
+        assert!(text.contains(r#""kind":"target""#));
+
+        // No config reads as none, and an empty owner still parses.
+        let bare: CanvasItem = serde_json::from_value(json!({
+            "id": "t",
+            "content": { "kind": "target", "owner": "", "width": 64, "height": 32 },
+        }))
+        .unwrap();
+        assert_eq!(bare.content, target("t", "", 64, 32).content);
+        assert_eq!(bare.assets().count(), 0);
+    }
+
+    #[test]
+    fn a_target_counts_its_pixels() {
+        let canvas = CanvasState {
+            items: vec![
+                target("a", "plugin:bars", 1920, 1080),
+                group("g", vec![target("b", "plugin:bars", 1280, 720)]),
+            ],
+            ..CanvasState::default()
+        };
+
+        let cost = canvas.cost();
+        assert_eq!(cost.targets, 2);
+        assert_eq!(cost.target_pixels, 1920 * 1080 + 1280 * 720);
+
+        // Sizes as large as a saved one can claim saturate the sum.
+        let huge = CanvasState {
+            items: vec![
+                target("x", "plugin:bars", u32::MAX, u32::MAX),
+                target("y", "plugin:bars", u32::MAX, u32::MAX),
+            ],
+            ..CanvasState::default()
+        };
+        assert_eq!(huge.cost().target_pixels, u64::MAX);
+    }
+
+    #[test]
+    fn a_target_names_its_renderer_as_owner() {
+        let value = serde_json::to_value(target("t", "plugin:bars", 640, 360)).unwrap();
+
+        assert_eq!(value["content"]["owner"], "plugin:bars");
+        assert!(value["content"].get("renderer").is_none());
+
+        // A target missing its size is kept as saved, not dropped.
+        let body = json!({ "kind": "target", "owner": "plugin:bars" });
+        let item: CanvasItem =
+            serde_json::from_value(json!({ "id": "t", "content": body.clone() })).unwrap();
+        assert_eq!(item.content, Content::Unknown(body));
     }
 
     #[test]

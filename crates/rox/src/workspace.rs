@@ -3975,7 +3975,11 @@ impl Workspace {
             rox_services::plugins::start(library.clone(), player.clone(), cx);
             // The macOS bar is built once and lists the running plugins'
             // panels, so it's rebuilt whenever which plugins run can change.
-            rox_services::plugins::after_apply(native_menu::rebuild);
+            // A render target resting on a refusal asks the gate again.
+            rox_services::plugins::after_apply(|cx| {
+                native_menu::rebuild(cx);
+                crate::canvas::target::renderers_moved(cx);
+            });
             let scrobbler = cx.new(|cx| Scrobbler::new(&player, &library, &radio, cx));
             let discord = cx.new(|cx| DiscordPresence::new(&player, &library, cx));
             let listenbrainz = cx.new(|cx| ListenBrainz::new(&scrobbler, cx));

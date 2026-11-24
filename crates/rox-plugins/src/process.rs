@@ -37,16 +37,24 @@ pub struct Pipes {
 /// A handle rox lends a child, borrowed for the spawn.
 #[cfg(unix)]
 pub type Lent<'a> = std::os::fd::BorrowedFd<'a>;
+
+/// A handle rox lends a child, borrowed for the spawn, with the rights the
+/// child's copy gets. Never more than the child needs: a section lent for
+/// frames is mapped and nothing else.
 #[cfg(windows)]
-pub type Lent<'a> = std::os::windows::io::BorrowedHandle<'a>;
+#[derive(Clone, Copy)]
+pub struct Lent<'a> {
+    pub handle: std::os::windows::io::BorrowedHandle<'a>,
+    pub access: u32,
+}
 
 /// What a child gets beside its three pipes.
 pub enum Extra<'a> {
     /// Nothing, which is what a plugin gets.
     None,
     /// One handle: fd 3 on Unix, with every other fd closed at exec. On
-    /// Windows a copy is made in the child once it runs, and
-    /// [`Process::handle`] says its value.
+    /// Windows a copy with the lent access is made in the child once it
+    /// runs, and [`Process::handle`] says its value.
     Handle(Lent<'a>),
 }
 
@@ -246,6 +254,34 @@ mod unix {
     }
 }
 
+/// Makes rox's end of a child's stdin refuse a write the pipe has no room
+/// for, rather than wait on a child that stopped reading. A line of at most
+/// `PIPE_BUF` bytes then goes whole or not at all.
+#[cfg(unix)]
+pub fn never_block(stdin: &ChildStdin) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let fd = stdin.as_raw_fd();
+
+    // SAFETY: fcntl on an fd `stdin` holds open for the call.
+    let set = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
+    };
+    if !set {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+/// Windows leaves the pipe blocking: `PIPE_NOWAIT` is a legacy mode on an
+/// anonymous pipe, and nothing here has been compiled for Windows to try it.
+#[cfg(windows)]
+pub fn never_block(_stdin: &ChildStdin) -> io::Result<()> {
+    Ok(())
+}
+
 fn drain_stderr(id: &str, stderr: impl Read) {
     let mut reader = BufReader::new(stderr);
     let mut line = Vec::new();
@@ -426,25 +462,27 @@ mod job {
         }
     }
 
-    /// Copies `lent` into the running child and answers the copy's value
-    /// there. Nothing is inheritable: the copy lands in that one process.
-    pub fn lend(child: &Child, lent: std::os::windows::io::BorrowedHandle) -> Result<u64, String> {
-        use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
+    /// Copies `lent` into the running child with the lent access only, and
+    /// answers the copy's value there. Nothing is inheritable: the copy
+    /// lands in that one process.
+    pub fn lend(child: &Child, lent: super::Lent) -> Result<u64, String> {
+        use windows_sys::Win32::Foundation::DuplicateHandle;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
         let mut copy: HANDLE = std::ptr::null_mut();
 
         // SAFETY: both process handles are live for the call, `lent` is a
-        // borrowed open handle, and `copy` is written by the call.
+        // borrowed open handle, and `copy` is written by the call. No
+        // options: the access is the one asked for, not the source's.
         let done = unsafe {
             DuplicateHandle(
                 GetCurrentProcess(),
-                lent.as_raw_handle() as HANDLE,
+                lent.handle.as_raw_handle() as HANDLE,
                 child.as_raw_handle() as HANDLE,
                 &mut copy,
+                lent.access,
                 0,
                 0,
-                DUPLICATE_SAME_ACCESS,
             )
         };
         if done == 0 {

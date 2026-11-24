@@ -23,6 +23,8 @@ use std::io;
 
 pub use layout::{HEADER_BYTES, HEIGHT, MAGIC, PAGE, PIXEL, SLOTS, Spec, VERSION, WIDTH};
 pub use layout::{header, slot};
+#[cfg(windows)]
+pub use map::CHILD_ACCESS;
 pub use map::{Handle, Mapping};
 pub use read::{Read, Refusal};
 #[cfg(any(test, feature = "writer"))]

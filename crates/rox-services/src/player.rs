@@ -345,6 +345,10 @@ struct Session {
     /// Off the locator rather than the key's source: one source can serve both
     /// stations and fixed-length files.
     live: Vec<bool>,
+    /// The entry that was audible when rox moved its file. The engine
+    /// refuses to remove the audible entry, so its swap waits for the pump
+    /// to see it go quiet.
+    moved_audible: Option<u64>,
 }
 
 impl Session {
@@ -421,6 +425,7 @@ impl Session {
             queue: keys,
             gains,
             live,
+            moved_audible: None,
         })
     }
 }
@@ -531,6 +536,25 @@ fn resolve_locators(
             Locator::Remote(remote)
         })
         .collect()
+}
+
+/// Points each local key at the file's new path, and returns the pool indices
+/// it changed.
+fn follow_moved_keys(keys: &mut [TrackKey], moved: &HashMap<&PathBuf, &PathBuf>) -> Vec<usize> {
+    let mut changed = Vec::new();
+
+    for (idx, key) in keys.iter_mut().enumerate() {
+        if !key.is_local() {
+            continue;
+        }
+
+        if let Some(to) = moved.get(&key.path) {
+            key.path = (*to).clone();
+            changed.push(idx);
+        }
+    }
+
+    changed
 }
 
 /// The snapshot as the Unknown row resolver reads it.
@@ -1619,6 +1643,89 @@ impl Player {
         cx.notify();
     }
 
+    /// Files rox moved on disk, old path to new. The mirror's keys take the
+    /// new paths at once, so every view resolving an entry finds its row
+    /// again. The engine's pool still holds the old locators and is never
+    /// rewritten, so each entry but the audible one is swapped for a fresh
+    /// one at the new path, the way a placeholder's hit lands: an insert
+    /// after it, then a remove. The audible entry plays on from the file it
+    /// holds open, and is swapped once it's no longer audible.
+    pub fn follow_moves(&mut self, moves: &[(PathBuf, PathBuf)], cx: &mut Context<Self>) {
+        let audible = self.now_playing().map(|now| now.audible_idx);
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+
+        let moved: HashMap<&PathBuf, &PathBuf> =
+            moves.iter().map(|(from, to)| (from, to)).collect();
+        let rekeyed = follow_moved_keys(&mut session.queue, &moved);
+        if rekeyed.is_empty() {
+            return;
+        }
+
+        let snap = session.shared.queue_snapshot();
+        let mut swaps = Vec::new();
+        for entry in snap.entries {
+            if !rekeyed.contains(&entry.idx) {
+                continue;
+            }
+
+            match Some(entry.idx) == audible {
+                true => session.moved_audible = Some(entry.id),
+                false => swaps.push(entry),
+            }
+        }
+
+        for entry in swaps {
+            self.swap_entry(&entry, cx);
+        }
+        cx.notify();
+    }
+
+    /// The moved audible entry's swap, once it's no longer audible.
+    fn swap_moved_audible(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.session.as_ref().and_then(|s| s.moved_audible) else {
+            return;
+        };
+        if self.playing_after() == Some(id) {
+            return;
+        }
+
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        session.moved_audible = None;
+
+        let entry = session
+            .shared
+            .queue_snapshot()
+            .entries
+            .into_iter()
+            .find(|e| e.id == id);
+        if let Some(entry) = entry {
+            self.swap_entry(&entry, cx);
+        }
+    }
+
+    /// Replaces `entry` in the engine's order with a fresh one at its mirror
+    /// key, in the same spot and with the same flags.
+    fn swap_entry(&mut self, entry: &QueueEntry, cx: &mut Context<Self>) {
+        let Some(key) = self.key_at(entry.idx) else {
+            return;
+        };
+
+        self.splice(
+            Some(entry.id),
+            vec![key],
+            Some(vec![entry.group]),
+            entry.explicit,
+            false,
+            None,
+            cx,
+        );
+        self.remove_from_queue(entry.id);
+    }
+
     /// The engine refuses the playing entry, so callers needn't guard it.
     pub fn remove_from_queue(&self, id: u64) {
         self.send(Cmd::Remove { id });
@@ -1843,6 +1950,7 @@ impl Player {
                     this.reseed_on_boundary(cx);
                     this.track_song_start();
                     this.take_refusal(cx);
+                    this.swap_moved_audible(cx);
                     let key = this.pump_key(entry);
                     let playing = key.view.playing;
                     // A paused seek moves the clock without moving audio or the
@@ -5042,5 +5150,33 @@ mod tests {
         assert!(!replaces_queue(&[served]));
         assert!(!replaces_queue(&[live.clone(), file.clone()]));
         assert!(!replaces_queue(&[file, live]));
+    }
+
+    /// A moved file's keys follow it, every occurrence of it; a server's row
+    /// on the same path string doesn't.
+    #[test]
+    fn moved_keys_follow_the_file() {
+        let old = PathBuf::from("/m/a/t3.flac");
+        let new = PathBuf::from("/m/Artist/Album/03 - Song.flac");
+        let other = TrackKey::from(PathBuf::from("/m/a/t4.flac"));
+        let served = TrackKey {
+            source: rox_library::cue::source_id("subsonic:1"),
+            path: old.clone(),
+            sub: 0,
+        };
+        let mut keys = vec![
+            TrackKey::from(old.clone()),
+            other.clone(),
+            served.clone(),
+            TrackKey::from(old.clone()),
+        ];
+
+        let moved = HashMap::from([(&old, &new)]);
+        assert_eq!(follow_moved_keys(&mut keys, &moved), vec![0, 3]);
+
+        assert_eq!(keys[0].path, new);
+        assert_eq!(keys[1], other);
+        assert_eq!(keys[2], served);
+        assert_eq!(keys[3].path, new);
     }
 }

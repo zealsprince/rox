@@ -40,6 +40,7 @@ use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ui::{self as settings_ui, Seg, kbd_line, section, small_button};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
+use rox_services::player::Player;
 
 use crate::matching::{WindowRegistry, open_or_focus};
 use crate::tags::guess;
@@ -309,6 +310,7 @@ fn move_sidecars(from: &Path, to: &Path) -> Vec<(PathBuf, PathBuf)> {
 
 pub struct RenameFiles {
     library: Entity<Library>,
+    player: Entity<Player>,
     tracks: Vec<Track>,
     pattern: Entity<InputState>,
     remembered: Vec<SharedString>,
@@ -425,6 +427,7 @@ impl RenameFiles {
         });
         let mut this = RenameFiles {
             library: state.library,
+            player: state.player,
             tracks,
             pattern,
             remembered,
@@ -492,6 +495,7 @@ impl RenameFiles {
         self.remember(cx);
         cx.notify();
         let library = self.library.clone();
+        let player = self.player.clone();
         cx.spawn_in(window, async move |this, cx| {
             let mut landed: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut failures = 0usize;
@@ -548,7 +552,10 @@ impl RenameFiles {
             }
             this.update_in(cx, move |this, window, cx| {
                 if !landed.is_empty() {
-                    library.update(cx, |library, cx| library.rename_files(landed, cx));
+                    // The queue names files by path, so its entries follow too,
+                    // after the rows: a swapped entry reads its tags off the row.
+                    library.update(cx, |library, cx| library.rename_files(landed.clone(), cx));
+                    player.update(cx, |player, cx| player.follow_moves(&landed, cx));
                 }
                 match first_error {
                     None => {

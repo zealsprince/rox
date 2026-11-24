@@ -112,6 +112,19 @@ fn form_fields(sort_fields: bool) -> Vec<usize> {
         .collect()
 }
 
+/// The first row the form draws as an input. A batch shows its per-track
+/// fields as text, and focus sent to one of those lands on nothing, taking
+/// the window's Enter with it.
+fn first_form_input(sort_fields: bool, single: bool) -> usize {
+    form_fields(sort_fields)
+        .into_iter()
+        .find(|&i| {
+            let (field, _, per_track) = &FIELDS[i];
+            (single || !per_track) && *field != Field::Rating
+        })
+        .unwrap_or(0)
+}
+
 /// The labels are English literals, so a character count is the whole
 /// measurement; the real advance only exists inside a paint.
 const LABEL_CHAR_W: f32 = 7.5;
@@ -1247,24 +1260,30 @@ impl TagEditor {
         cx.notify();
     }
 
+    /// The field to type into lands a frame later: the click that got here
+    /// focuses its button after this returns, and the button doesn't
+    /// survive the swap.
     fn toggle_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.table {
+        let target = if self.table {
             self.table = false;
             self.refill_form(window, cx);
-            window.focus(&self.inputs[0].read(cx).focus_handle(cx));
+            let first = first_form_input(self.sort_fields, self.tracks.len() == 1);
+            Some(self.inputs[first].read(cx).focus_handle(cx))
         } else {
             if self.baselines.is_none() {
                 return;
             }
             self.table = true;
             self.seed_cells(window, cx);
-            if let Some(cells) = &self.cells {
-                window.focus(
-                    &cells[0][self.first_visible_field()]
-                        .read(cx)
-                        .focus_handle(cx),
-                );
-            }
+            self.cells.as_ref().map(|cells| {
+                cells[0][self.first_visible_field()]
+                    .read(cx)
+                    .focus_handle(cx)
+            })
+        };
+
+        if let Some(target) = target {
+            cx.on_next_frame(window, move |_, window, _| window.focus(&target));
         }
         cx.notify();
     }
@@ -3441,9 +3460,9 @@ mod tests {
     use super::{
         ColumnKind, FIELDS, LABEL_MIN_W, LEAD, OPT_IN_COLUMNS, TagColumn, TagIntent,
         baseline_value, change_for, column_keys, column_kind, column_rank, column_shown,
-        default_widths, file_tag_key, fills_sort_field, fold_cell, fold_tag_intents, form_fields,
-        grid_columns, label_column_w, placed_widths, shared_value, sort_columns_to_show,
-        sort_field, tag_change_for, tag_key_of, title_case,
+        default_widths, file_tag_key, fills_sort_field, first_form_input, fold_cell,
+        fold_tag_intents, form_fields, grid_columns, label_column_w, placed_widths, shared_value,
+        sort_columns_to_show, sort_field, tag_change_for, tag_key_of, title_case,
     };
     use rox_library::writer::{Field, UnknownValue};
     use std::collections::{BTreeMap, HashSet};
@@ -3842,5 +3861,14 @@ mod tests {
         }
         assert!(label_column_w(&form_fields(true)) > label_column_w(&form_fields(false)));
         assert!(label_column_w(&[]) == LABEL_MIN_W);
+    }
+
+    /// A batch draws Title as text, so the form's focus starts on Artist; one
+    /// file starts on Title.
+    #[test]
+    fn the_form_focuses_a_field_it_draws() {
+        assert_eq!(FIELDS[first_form_input(false, false)].0, Field::Artist);
+        assert_eq!(FIELDS[first_form_input(true, false)].0, Field::Artist);
+        assert_eq!(FIELDS[first_form_input(false, true)].0, Field::Title);
     }
 }

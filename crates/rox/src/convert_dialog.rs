@@ -448,6 +448,15 @@ impl ConvertDialog {
         self.check_soon(false, cx);
     }
 
+    /// After a pick from the format menu, which hands focus back somewhere
+    /// the window's Enter can't hear it. A frame later, since the menu
+    /// restores focus after the pick runs.
+    fn refocus_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_next_frame(window, |this, window, cx| {
+            window.focus(&this.pattern.read(cx).focus_handle(cx));
+        });
+    }
+
     fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = rox_core::desktop::prompt_for_paths(
             cx,
@@ -647,9 +656,12 @@ impl ConvertDialog {
                     menu = menu.item(
                         PopupMenuItem::new(preset.label())
                             .checked(!custom && preset == current)
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 if let Some(host) = host.upgrade() {
-                                    host.update(cx, |this, cx| this.set_preset(preset, cx));
+                                    host.update(cx, |this, cx| {
+                                        this.set_preset(preset, cx);
+                                        this.refocus_soon(window, cx);
+                                    });
                                 }
                             }),
                     );
@@ -658,9 +670,12 @@ impl ConvertDialog {
                 menu.item(
                     PopupMenuItem::new(rox_i18n::t!("convert-dialog-custom-menu-item"))
                         .checked(custom)
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
                             if let Some(host) = host.upgrade() {
-                                host.update(cx, |this, cx| this.set_custom(cx));
+                                host.update(cx, |this, cx| {
+                                    this.set_custom(cx);
+                                    this.refocus_soon(window, cx);
+                                });
                             }
                         }),
                 )

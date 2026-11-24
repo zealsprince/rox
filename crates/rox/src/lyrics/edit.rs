@@ -398,12 +398,16 @@ impl LyricsEdit {
             Some(secs) => rox_i18n::t!("lyrics-edit-stamp-time", time = fmt_time(secs)),
             None => rox_i18n::t!("lyrics-edit-stamp"),
         };
+        // Keyed apart from its label, which ticks with the playhead: a
+        // focused button keyed by its label drops focus, and the window's
+        // save chord with it.
         let stamp = settings_ui::small_button(
             stamp_label,
             icons::CLOCK,
             !ready || position.is_none(),
             cx.listener(|this, _, window, cx| this.stamp_line(window, cx)),
-        );
+        )
+        .keyed("lyrics-edit-stamp");
         let reason = if self.baseline.is_none() {
             Some(rox_i18n::t!("lyrics-edit-loading"))
         } else if self.saving {

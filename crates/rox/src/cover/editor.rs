@@ -733,31 +733,41 @@ impl CoverEditor {
                         .child(div().text_xs().child(rox_i18n::t!("cover-editor-replace"))),
                 )
         });
+        // Each of these goes away once clicked, and the focus it took with
+        // it, so the window takes the keys back for its Enter.
         let actions = div()
             .flex()
             .flex_row()
             .gap(tokens::SPACE_XS)
             .when(self.removable(slot), |d| {
-                d.child(settings_ui::small_button(
-                    rox_i18n::t!("cover-editor-remove"),
-                    icons::TRASH,
-                    self.saving,
-                    cx.listener(move |this, _, _, cx| {
-                        this.slots[slot].action = Action::Remove;
-                        cx.notify();
-                    }),
-                ))
+                d.child(
+                    settings_ui::small_button(
+                        rox_i18n::t!("cover-editor-remove"),
+                        icons::TRASH,
+                        self.saving,
+                        cx.listener(move |this, _, window, cx| {
+                            this.slots[slot].action = Action::Remove;
+                            this.refocus_soon(window, cx);
+                            cx.notify();
+                        }),
+                    )
+                    .keyed(("cover-editor-remove", slot)),
+                )
             })
             .when(!matches!(self.slots[slot].action, Action::Keep), |d| {
-                d.child(settings_ui::small_button(
-                    rox_i18n::t!("cover-editor-revert"),
-                    icons::CLOSE,
-                    self.saving,
-                    cx.listener(move |this, _, _, cx| {
-                        this.slots[slot].action = Action::Keep;
-                        cx.notify();
-                    }),
-                ))
+                d.child(
+                    settings_ui::small_button(
+                        rox_i18n::t!("cover-editor-revert"),
+                        icons::CLOSE,
+                        self.saving,
+                        cx.listener(move |this, _, window, cx| {
+                            this.slots[slot].action = Action::Keep;
+                            this.refocus_soon(window, cx);
+                            cx.notify();
+                        }),
+                    )
+                    .keyed(("cover-editor-revert", slot)),
+                )
             });
         div()
             .flex()
@@ -813,6 +823,17 @@ pub(crate) fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
         Some("image/webp")
     } else {
         None
+    }
+}
+
+impl CoverEditor {
+    /// A frame later: the click that got here focuses its button after the
+    /// handler returns.
+    fn refocus_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_next_frame(window, |this, window, cx| {
+            window.focus(&this.focus);
+            cx.notify();
+        });
     }
 }
 

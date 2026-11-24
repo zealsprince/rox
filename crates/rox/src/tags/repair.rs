@@ -492,16 +492,19 @@ impl TagRepair {
             .text_xs()
             .text_color(palette::text_muted())
             .child(count_label)
-            .child(small_button(
-                if all {
-                    rox_i18n::t!("tags-repair-select-none")
-                } else {
-                    rox_i18n::t!("tags-repair-select-all")
-                },
-                icons::CHECK,
-                self.repairing,
-                cx.listener(move |this, _, _, cx| this.select_all(!all, cx)),
-            ))
+            .child(
+                small_button(
+                    if all {
+                        rox_i18n::t!("tags-repair-select-none")
+                    } else {
+                        rox_i18n::t!("tags-repair-select-all")
+                    },
+                    icons::CHECK,
+                    self.repairing,
+                    cx.listener(move |this, _, _, cx| this.select_all(!all, cx)),
+                )
+                .keyed("tags-repair-select-all"),
+            )
             .into_any_element();
         let list = div()
             .flex_1()
@@ -611,16 +614,22 @@ impl TagRepair {
                         .child(label),
                 )
             })
-            .child(small_button(
-                if self.scanned {
-                    rox_i18n::t!("dialog-rescan")
-                } else {
-                    rox_i18n::t!("dialog-scan")
-                },
-                icons::SEARCH,
-                busy,
-                cx.listener(|this, _, window, cx| this.scan(window, cx)),
-            ))
+            // Keyed apart from its label, which turns to Rescan after a scan: a
+            // clicked button keyed by its label drops focus when it changes, and
+            // the window's Enter goes with it.
+            .child(
+                small_button(
+                    if self.scanned {
+                        rox_i18n::t!("dialog-rescan")
+                    } else {
+                        rox_i18n::t!("dialog-scan")
+                    },
+                    icons::SEARCH,
+                    busy,
+                    cx.listener(|this, _, window, cx| this.scan(window, cx)),
+                )
+                .keyed("tags-repair-scan"),
+            )
             .into_any_element();
         section(
             rox_i18n::t!("tags-repair-section"),
@@ -710,12 +719,15 @@ impl TagRepair {
                     .flex_none()
                     .items_center()
                     .gap(tokens::SPACE_SM)
-                    .child(small_button(
-                        rox_i18n::t!("tags-repair-repair-button", count = count as u64),
-                        icons::CHECK,
-                        busy || count == 0,
-                        cx.listener(|this, _, window, cx| this.repair(window, cx)),
-                    ))
+                    .child(
+                        small_button(
+                            rox_i18n::t!("tags-repair-repair-button", count = count as u64),
+                            icons::CHECK,
+                            busy || count == 0,
+                            cx.listener(|this, _, window, cx| this.repair(window, cx)),
+                        )
+                        .keyed("tags-repair-repair"),
+                    )
                     .child(small_button(
                         rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,

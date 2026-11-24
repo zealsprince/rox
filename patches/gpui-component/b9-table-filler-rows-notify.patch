@@ -1,0 +1,24 @@
+--- a/src/table/state.rs
++++ b/src/table/state.rs
+@@ -1443,14 +1443,13 @@
+                                             cx,
+                                         );
+ 
+-                                        if visible_range.end > rows_count {
+-                                            table.scroll_to_row(
+-                                                std::cmp::min(
+-                                                    visible_range.start,
+-                                                    rows_count.saturating_sub(1),
+-                                                ),
+-                                                cx,
+-                                            );
++                                        // rox patch: stripe fillers sit past the last row, so a
++                                        // filler in view isn't a scroll past the end. Scroll back
++                                        // only when no real row is in view. This runs in prepaint,
++                                        // where the notify re-rendered the table on every frame
++                                        // something else in the window drew.
++                                        if visible_range.start >= rows_count {
++                                            table.scroll_to_row(rows_count.saturating_sub(1), cx);
+                                         }
+ 
+                                         let mut items = Vec::with_capacity(

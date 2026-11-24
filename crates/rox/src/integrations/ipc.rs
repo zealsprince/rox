@@ -302,7 +302,10 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             }))
         }
         "debug.settings" => {
-            serde_json::to_value(rox_core::settings::Settings::load()).map_err(RpcError::app)
+            let mut dump = serde_json::to_value(rox_core::settings::Settings::load())
+                .map_err(RpcError::app)?;
+            redact(&mut dump);
+            Ok(dump)
         }
         // Cumulative, never reset: sample twice and diff for rates.
         "debug.thumbs" => {
@@ -355,6 +358,29 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         }
         other => super::drive::route(other, params, cx)
             .unwrap_or_else(|| Err(RpcError::method_not_found(other))),
+    }
+}
+
+/// Credentials `debug.settings` blanks out, as dotted paths into the dump.
+/// A dump lands in every transcript of a harness run, so a secret field added
+/// to the settings goes here too; the test below fails on one named like a
+/// secret that isn't listed.
+const REDACTED: &[&str] = &["broadcast.user", "broadcast.password"];
+
+const REDACTION: &str = "<redacted>";
+
+/// An unset value stays as it was, so the dump still tells set from unset.
+fn redact(dump: &mut Value) {
+    for path in REDACTED {
+        let pointer = format!("/{}", path.replace('.', "/"));
+        let Some(value) = dump.pointer_mut(&pointer) else {
+            continue;
+        };
+
+        let unset = value.is_null() || value.as_str().is_some_and(str::is_empty);
+        if !unset {
+            *value = Value::String(REDACTION.into());
+        }
     }
 }
 
@@ -1039,6 +1065,101 @@ fn artwork(request: Request, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use rox_core::settings::{LocalModel, Settings};
+
+    fn key_paths(value: &Value, prefix: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    out.push(path.clone());
+                    key_paths(child, &path, out);
+                }
+            }
+
+            Value::Array(items) => {
+                for item in items {
+                    key_paths(item, prefix, out);
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    fn named_like_a_secret(path: &str) -> bool {
+        let leaf = path.rsplit('.').next().unwrap_or(path).to_ascii_lowercase();
+
+        [
+            "pass",
+            "token",
+            "secret",
+            "session",
+            "credential",
+            "cookie",
+            "auth",
+        ]
+        .iter()
+        .any(|word| leaf.contains(word))
+            || leaf.ends_with("key")
+            || matches!(leaf.as_str(), "user" | "username" | "login")
+    }
+
+    /// Fields that only serialize when set are filled, so their names show.
+    fn full_dump() -> Value {
+        let mut settings = Settings::default();
+        settings.language = Some("de".into());
+        settings.acoustic_local_model = Some(LocalModel {
+            path: PathBuf::from("/m/model.onnx"),
+            id: "local".into(),
+            bytes: 1,
+            mtime: 1,
+        });
+        settings
+            .keymap
+            .insert("toggle_playback".into(), vec!["space".into()]);
+
+        serde_json::to_value(&settings).unwrap()
+    }
+
+    #[test]
+    fn every_secret_in_the_settings_dump_is_redacted() {
+        let mut paths = Vec::new();
+        key_paths(&full_dump(), "", &mut paths);
+
+        for path in paths.iter().filter(|path| named_like_a_secret(path)) {
+            assert!(
+                REDACTED.contains(&path.as_str()),
+                "{path} looks like a secret and debug.settings would print it"
+            );
+        }
+
+        for path in REDACTED {
+            assert!(
+                paths.iter().any(|known| known == path),
+                "{path} is redacted but no longer in the dump"
+            );
+        }
+    }
+
+    #[test]
+    fn a_set_secret_reads_as_the_marker_and_an_unset_one_stays_empty() {
+        let mut settings = Settings::default();
+        settings.broadcast.password = "hunter2".into();
+        settings.broadcast.user = String::new();
+
+        let mut dump = serde_json::to_value(&settings).unwrap();
+        redact(&mut dump);
+
+        assert_eq!(dump["broadcast"]["password"], REDACTION);
+        assert_eq!(dump["broadcast"]["user"], "");
+        assert_eq!(dump["broadcast"]["port"], settings.broadcast.port);
+    }
 
     fn on_disk(paths: &'static [&'static str]) -> impl Fn(&str) -> bool {
         move |p| paths.contains(&p)

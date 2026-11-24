@@ -79,7 +79,7 @@ did without a second round trip.
 | `objects.export`                                           | `{"item": "..", "path": "..", "name"?, "author"?, "description"?, "license"?, "window"?}` | `{"path", "name"}`, a canvas item written as a `.roxo` |
 | `ai.status`                                                |                                               | `{"enabled": bool, "mcp": bool}`, the toggles rox-mcp checks            |
 | `subscribe`                                                |                                               | the pushed frames start: `{"subscribed": true}`                          |
-| `debug.settings`                                           |                                               | the settings as saved                                                  |
+| `debug.settings`                                           |                                               | the settings as saved, credentials redacted                            |
 | `debug.panels`                                             |                                               | the frontmost workspace's panel tree, as the layout persist writes it   |
 | `debug.thumbs`                                             |                                               | the artwork service's counters: requests, starts, lands, refused, pending, entries |
 | `debug.workspace`                                          | `{"name": ".."}`                              | null; applies that workspace to the front window                         |
@@ -416,3 +416,9 @@ The surface is local, never a network port. Auth is filesystem permissions: the
 Unix socket is created user-only (0600), and the Windows pipe uses the platform's
 default per-session access control. Remote access means proxying the socket
 yourself.
+
+`debug.settings` never prints a credential. The Icecast source user and password
+read as `<redacted>` when they're set and stay empty when they aren't, so a dump
+still tells the two apart. The file on disk and every other reader keep the real
+values. Accounts, tokens and sessions live in a separate settings file the dump
+never includes.

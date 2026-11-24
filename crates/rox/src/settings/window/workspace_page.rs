@@ -10,6 +10,7 @@ use rox_core::settings::assets;
 use rox_core::settings::panel_presets::SaveScope;
 use rox_core::settings::{Asset, AssetKind};
 use rox_dock::DockArea;
+use rox_panel_kit::PlaceholderKey as _;
 
 /// Built when a row's details open and dropped when they close.
 pub(crate) struct CardEditor {
@@ -460,7 +461,7 @@ impl SettingsWindow {
                     let value = field(&mut seed).clone();
                     cx.new(|cx| {
                         InputState::new(window, cx)
-                            .placeholder(rox_i18n::t!(*placeholder))
+                            .placeholder_key(placeholder, window, cx)
                             .default_value(value)
                     })
                 })

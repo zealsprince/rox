@@ -60,7 +60,7 @@ fn open_fresh_with(host: Box<dyn PresetHost>, cx: &mut App) {
     let built: Rc<RefCell<Option<WeakEntity<PickerWindow>>>> = Rc::new(RefCell::new(None));
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("milkdrop-picker-title"),
+        || rox_i18n::t!("milkdrop-picker-title"),
         bounds,
         Some(min),
         {

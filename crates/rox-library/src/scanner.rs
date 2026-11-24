@@ -37,7 +37,7 @@ pub const EXTENSIONS: &[&str] = &[
 pub const CUE_EXTENSION: &str = "cue";
 const BATCH: usize = 512;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ScanSummary {
     pub indexed: usize,
     pub unchanged: usize,

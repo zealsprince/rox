@@ -45,6 +45,16 @@ signal-kind-level = Уровень
 signal-kind-onset = Атака
 signal-kind-trigger = Триггер
 signal-kind-total = Сумма
+
+# A signal's name until the user gives it one, worded from its source.
+# $range is a band's span in hertz, the unit written once when both ends
+# share it; $rate is a total's laps a second.
+signal-range = { $lo }–{ $hi }
+signal-label-band = { signal-kind-band } { $range }
+signal-label-onset = { signal-kind-onset } { $range }
+signal-label-trigger = { signal-kind-trigger } { $range }
+signal-label-total = { signal-kind-total } { $rate }/s
+
 signal-response = Отклик
 signal-response-pulse = Как долго звенит каждый импульс, прежде чем затухнуть
 signal-response-drift = 0 идёт за музыкой вплотную, 100 тянется следом
@@ -120,6 +130,7 @@ panel-section-size = Размер
 panel-section-opacity = Непрозрачность
 panel-section-frame = Рамка
 panel-section-colors = Цвета
+panel-colors-overrides-note = Переопределения перекрашивают только эту панель и не меняются при окраске по треку; ссылка вместо этого следует за другим цветом приложения и меняется вместе с темой. Сбросьте образец или очистите его поле hex, чтобы снова следовать палитре приложения
 panel-section-font = Шрифт
 panel-section-slider = Ползунок
 panel-section-shader = Шейдер
@@ -170,6 +181,9 @@ panel-shader-is-scene = Этот шейдер является сценой, п�
 shader-source = Источник
 shader-pick-none = Нет
 shader-reload = Перезагрузить
+shader-no-pipeline-title = Шейдеры не работают в этой сборке
+shader-no-pipeline-note = Эта сборка рисует через бэкенд без конвейера шейдеров. Шейдеры работают на конвейерах отрисовки blade, поэтому любой исходник отклоняется, что бы в нём ни было.
+shader-unapproved-post = этот шейдер пришёл с рабочим пространством и ещё не подтверждён на этой машине
 shader-edit-as-file = Править как файл
 shader-make-private-copy = Сделать личную копию
 shader-save-replace = Заменить
@@ -209,6 +223,18 @@ preset-save-replaces-global = Заменяет глобальный пресет
 ## Keyboard hints
 hint-press = Нажмите
 hint-key-enter = Enter
+hint-to-save = чтобы сохранить
+hint-to-apply = чтобы применить
+hint-to-convert = чтобы конвертировать
+hint-to-repair = чтобы исправить
+
+## Dialog buttons
+
+# The commit and scan buttons the small editor windows share.
+dialog-save = Сохранить
+dialog-apply = Применить
+dialog-scan = Сканировать
+dialog-rescan = Пересканировать
 
 ## Settings: language
 settings-language = Язык
@@ -217,6 +243,10 @@ settings-language = Язык
 settings-language-system = (Системный язык)
 settings-language-search = Поиск языков
 picker-no-matches = Нет совпадений
+picker-icon-none = Нет
+picker-icon-search = Поиск значков
+picker-font-default = По умолчанию
+picker-font-search = Поиск шрифтов
 settings-search-no-matches = Нет совпадений для «{ $text }»
 settings-search-scope = Искать только на открытой странице
 
@@ -448,6 +478,20 @@ playback-sleep-tip-remaining = Таймер сна, осталось { $minutes 
 menubar-button-tasks = Кнопка задач
 menubar-button-sleep = Кнопка таймера сна
 menubar-button-rescan = Кнопка пересканирования
+menubar-rescan-tip = Пересканировать папки медиатеки
+menubar-stop-scan-tip = Остановить сканирование
+
+# The menubar's line after a scan: the track count, then what changed.
+library-status-with-details = { $tracks } ({ $details })
+library-status-joiner = { ", " }
+library-status-indexed = проиндексировано: { $count }
+library-status-unchanged = без изменений: { $count }
+library-status-untagged = без тегов: { $count }
+library-status-removed = удалено: { $count }
+library-status-unreachable = недоступно папок: { $count }
+library-status-stopped-early = остановлено досрочно
+library-status-updated = обновлено: { $count }
+library-status-renamed = переименовано: { $count }
 
 ## Custom button states
 
@@ -914,6 +958,41 @@ settings-appearance-theme-dark = Тёмная
 settings-appearance-theme-light = Светлая
 settings-appearance-theme-system = Системная
 
+## Palette roles
+
+# The colour roles a palette is made of, named in the Appearance page's
+# grid, the panel colour overrides and every colour picker, with the
+# groups the grid heads them with. Keyed by the role's saved name.
+palette-group-core = Основные
+palette-group-surfaces = Поверхности
+palette-group-tints = Оттенки
+palette-group-ink = Передний план
+palette-role-accent = Акцент
+palette-role-accent-hover = Акцент при наведении
+palette-role-highlight = Подсветка
+palette-role-border = Граница
+palette-role-border-light = Светлая граница
+palette-role-text-bright = Яркий текст
+palette-role-text-on-accent = Текст на акценте
+palette-role-bg-root = Фон
+palette-role-bg-panel = Панель
+palette-role-bg-elevated = Приподнятый
+palette-role-bg-header = Заголовок
+palette-role-bg-menubar = Строка меню
+palette-role-bg-menu = Меню
+palette-role-bg-control = Элемент управления
+palette-role-bg-menu-hover = Меню при наведении
+palette-role-bg-control-active = Активный элемент
+palette-role-bg-control-hover = Элемент при наведении
+palette-role-bg-input = Поле ввода
+palette-role-bg-toolbar = Панель инструментов
+palette-role-text = Текст
+palette-role-text-secondary = Вторичный
+palette-role-text-dim = Приглушённый
+palette-role-text-muted = Тусклый
+palette-role-text-faint = Бледный
+palette-role-gridline = Линия сетки
+
 ## Settings: application
 settings-application-check-updates = Проверять обновления
     .description = Раз в день при запуске rox искать более новый выпуск rox и новые версии того, что установлено из каталога; окно «О программе» проверяет прямо сейчас в любом случае
@@ -1016,6 +1095,8 @@ settings-audio-replaygain-status-measured = Усиление для выравн
 settings-audio-replaygain-status-tagged = Теги ReplayGain есть у всех просканированных треков ({ $total })
 settings-audio-replaygain-untagged = Файлы без тегов
     .description = На какой громкости играет файл без тегов ReplayGain. Его никто не мерил, так что это догадка вместо измерения; оставьте ноль, и треки без тегов будут играть как раньше
+settings-audio-replaygain-status-none = Ни у одного из просканированных треков ({ $total }) нет ReplayGain для выравнивания. «Измерить недостающее» проанализирует их и сохранит значения
+settings-audio-replaygain-status-partial = Усиление для выравнивания есть у { $covered } из { $total } просканированных треков, из них { $measured } измерил rox. Остальные ({ $missing }) играют с настройкой для файлов без тегов
 settings-audio-section-broadcast = Вещание
 settings-audio-section-equalizer = Эквалайзер
 settings-audio-section-output = Вывод
@@ -1606,6 +1687,7 @@ menu-health = Состояние библиотеки
 menu-power-search = Расширенный поиск
 menu-quick-play = Быстрый запуск
 menu-hide-menubar = Скрыть строку меню
+menu-show-menubar = Показать строку меню
 menu-import-workspace = Импортировать рабочее пространство...
 menu-library = Медиатека
 menu-measure-replaygain = Измерить ReplayGain...
@@ -1654,6 +1736,13 @@ menu-welcome = Приветствие
 menu-window = Окно
 menu-workspace = Рабочее пространство
 menu-workspace-builtin-tag = Встроенное
+
+# The macOS menu bar has no checkmarks, so a toggle row names what picking
+# it does to the setting it carries.
+native-menu-show = Показать: { $what }
+native-menu-hide = Скрыть: { $what }
+native-menu-turn-on = Включить: { $what }
+native-menu-turn-off = Выключить: { $what }
 
 ## Workspaces
 workspace-apply-body = Это заменит весь внешний вид: макеты, палитру, оформление.
@@ -1749,6 +1838,7 @@ tasks-measuring = Измерение { $progress }
 tasks-model-downloading = Модель ещё скачивается
 tasks-no-library-window = Ни одного окна медиатеки не открыто, поэтому отсюда это не запустить
 tasks-nothing-to-measure = Пока нечего измерять, ничего не просканировано
+tasks-nothing-to-analyze = Пока нечего анализировать, ничего не просканировано
 tasks-rg-all-gain = Усиление для воспроизведения есть у всех треков ({ $count })
 tasks-rg-partial = У { $missing } из { $total } треков нет усиления
 tasks-scan-folder-count = { $count ->
@@ -2497,6 +2587,24 @@ tags-editor-unread-count = Не удалось прочитать теги фа�
 tags-editor-will-clear = будет очищено
 tags-editor-will-remove = будет удалено
 tags-editor-window-title = rox - Редактор тегов
+
+# The tag fields as the tag editor and the release matcher name them.
+tags-field-file = Файл
+tags-field-title = Название
+tags-field-title-sort = Сортировка названия
+tags-field-artist = Исполнитель
+tags-field-artist-sort = Сортировка исполнителя
+tags-field-album-artist = Исполнитель альбома
+tags-field-album-artist-sort = Сортировка исполнителя альбома
+tags-field-album = Альбом
+tags-field-album-sort = Сортировка альбома
+tags-field-genre = Жанр
+tags-field-year = Год
+tags-field-track = Номер трека
+tags-field-disc = Диск
+tags-field-comment = Комментарий
+tags-field-rating = Оценка
+
 tags-guess-empty-segment = шаблон даёт пустое имя папки или файла
 tags-guess-no-placeholders = нет подстановок
 tags-guess-placeholders = Подстановки
@@ -2539,6 +2647,8 @@ tags-rename-window-title = rox - Переименование файлов
 tags-repair-affected-files = Затронутые файлы
 tags-repair-section = Починка
 tags-repair-check-to-repair = Отметьте файл, чтобы починить его
+tags-repair-scanning = Сканирование...
+tags-repair-scanning-progress = Сканирование { $done }/{ $total }...
 tags-repair-count = { $count ->
     [one] { $count } файл
     [few] { $count } файла
@@ -2786,6 +2896,7 @@ cover-editor-section = Обложка
 cover-editor-slot-back = Задняя обложка
 cover-editor-slot-front = Передняя обложка
 cover-editor-slot-media = Носитель
+cover-editor-slot-artist = Исполнитель
 cover-editor-will-remove = Будет удалено
 cover-editor-window-title = rox - Обложка
 cover-matcher-blocked-fetching = Загрузка полного изображения...
@@ -2800,6 +2911,7 @@ cover-matcher-cover-count = { $count ->
 cover-matcher-editor-closed = Редактор обложек был закрыт
 cover-matcher-no-covers = Обложек не найдено
 cover-matcher-search-failed = Поиск не удался: { $error }
+cover-matcher-searching = Поиск...
 cover-matcher-set-cover = Поставить обложку
 cover-matcher-setting = Установка...
 cover-matcher-tile-info = { $provider }  { $width }px
@@ -2879,6 +2991,8 @@ lyrics-matcher-match-count = { $count ->
 lyrics-matcher-no-query = У этого трека нет исполнителя и названия, по которым можно искать
 lyrics-matcher-pick-preview = Выберите совпадение для предпросмотра
 lyrics-matcher-search-failed = Поиск не удался: { $error }
+lyrics-matcher-searching = Поиск...
+lyrics-matcher-no-matches = Совпадений не найдено
 lyrics-matcher-synced-tag = { $provider }  синхронизировано
 lyrics-matcher-window-title = rox - Поиск текстов
 lyrics-no-lyrics-notice = Нет текста
@@ -2962,6 +3076,7 @@ quick-play-cover = Обложка
 quick-play-duration = Длительность
     .description = Показывать длину каждого результата справа
 quick-play-search-placeholder = Поиск по медиатеке
+quick-play-library-empty = Медиатека пуста
 quick-play-subtitle = Подпись
     .description = Показывать исполнителя и альбом под каждым результатом
 quick-play-syntax-absent = Строки вообще без значения
@@ -3016,6 +3131,8 @@ tray-quit = Выход
 ## Window controls
 window-controls-close = Закрыть
 window-controls-maximize = Развернуть
+window-controls-exit-fullscreen = Выйти из полноэкранного режима
+window-controls-fullscreen-zoom = Полный экран; щелчок с Option разворачивает окно
 window-controls-mini-toggle = Переключатель мини
 window-controls-minimize = Свернуть
 window-controls-pieces = Кнопки
@@ -3196,6 +3313,17 @@ waveform-live-window = Окно эфира
 waveform-live-expression = Формула движения
     .description = x идёт от 0 до 1 по ширине полосы, t — это секунды по часам панели; sin cos tan abs sqrt exp ln floor min max clamp mix, а также + - * / ^ pi и скобки
 waveform-live-expression-error = { $reason }, поэтому полоса рисует фигуру по умолчанию
+
+# Why a motion expression didn't parse; $at is the character position.
+expr-error-stray = неожиданный символ в позиции { $at }
+expr-error-unknown = неизвестное имя в позиции { $at }
+expr-error-arity = неверное число аргументов в позиции { $at }
+expr-error-unclosed = незакрытая скобка в позиции { $at }
+expr-error-ended = выражение обрывается в позиции { $at }
+expr-error-trailing = лишний текст в позиции { $at }
+expr-error-too-deep = слишком глубокая вложенность в позиции { $at }
+expr-error-too-long = слишком длинно в позиции { $at }
+
 waveform-section-live = Эфир
 waveform-streaming = ПОТОК
 waveform-unavailable = Волновая форма для этого трека недоступна
@@ -3949,6 +4077,8 @@ track-info-menu-overflow = Переполнение
 track-info-next = Далее: { $line }
 track-info-opening = открываем...
 track-info-output-fallback = Устройство отказало в монопольном выводе, поэтому воспроизведение идёт через общий микшер. Устройство сообщило: { $reason }
+track-info-output-exclusive = Монопольный { $rate } kHz { $format }
+track-info-queue-finished = (очередь закончилась)
 track-info-output-resample-exclusive = Этот файл на { $source } кГц, а карта взяла { $device } кГц, так что каждый сэмпл преобразуется по пути наружу. Устройство отказалось работать на собственной частоте файла.
 track-info-output-resample-mixer = Этот файл на { $source } кГц, а микшер работает на { $device } кГц, так что каждый сэмпл преобразуется по пути наружу. Монопольный режим отдал бы карте собственную частоту файла.
 track-info-output-resample-exclusive-stream = Этот поток на { $source } кГц, а карта взяла { $device } кГц, так что каждый сэмпл преобразуется по пути наружу. Устройство отказалось работать на собственной частоте потока.
@@ -4108,6 +4238,7 @@ transport-pieces = Части
 
 ## Stragglers picked up in the final sweep
 duplicates-scanning = Сканирование...
+duplicates-section = Дубликаты
 about-copyright = Copyright © 2026
 signal-name-placeholder = Название сигнала
 signals-empty = Пока нет сигналов. Добавьте один или щёлкните правой кнопкой по любому привязываемому регулятору.

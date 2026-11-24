@@ -72,7 +72,7 @@ pub fn open(
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("bake-window-title"),
+        || rox_i18n::t!("bake-window-title"),
         bounds,
         Some(MIN),
         move |window, cx| cx.new(|cx| BakeDialog::new(library, now_art, only, window, cx)),

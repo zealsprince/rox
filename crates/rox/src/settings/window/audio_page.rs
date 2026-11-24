@@ -135,17 +135,20 @@ impl SettingsWindow {
             None
         } else if split.covered() == 0 {
             Some(format!(
-                "None of the {total} tracks scanned have a ReplayGain to level by. Measure \
-                 Missing analyzes them and saves the numbers{}",
+                "{}{}",
+                rox_i18n::t!("settings-audio-replaygain-status-none", total = total),
                 self.rg_estimate_suffix(split.missing)
             ))
         } else if split.missing > 0 {
             Some(format!(
-                "{} of {total} scanned tracks have a gain to level by, {} of them measured \
-                 by rox. The other {} play at the untagged setting{}",
-                split.covered(),
-                split.measured,
-                split.missing,
+                "{}{}",
+                rox_i18n::t!(
+                    "settings-audio-replaygain-status-partial",
+                    covered = split.covered(),
+                    total = total,
+                    measured = split.measured,
+                    missing = split.missing
+                ),
                 self.rg_estimate_suffix(split.missing),
             ))
         } else if split.measured > 0 {

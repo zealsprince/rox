@@ -347,7 +347,7 @@ impl Motion {
             Ok(expr) => (expr, None),
             Err(e) => (
                 Expr::parse(LIVE_MOTION_DEFAULT).expect("the default expression parses"),
-                Some(e.to_string()),
+                Some(e.message()),
             ),
         };
 

@@ -46,6 +46,16 @@ signal-kind-level = レベル
 signal-kind-onset = オンセット
 signal-kind-trigger = トリガー
 signal-kind-total = トータル
+
+# A signal's name until the user gives it one, worded from its source.
+# $range is a band's span in hertz, the unit written once when both ends
+# share it; $rate is a total's laps a second.
+signal-range = { $lo }～{ $hi }
+signal-label-band = { signal-kind-band } { $range }
+signal-label-onset = { signal-kind-onset } { $range }
+signal-label-trigger = { signal-kind-trigger } { $range }
+signal-label-total = { signal-kind-total } { $rate }/s
+
 signal-response = 応答
 signal-response-pulse = 各パルスが消えるまで鳴り残る長さ
 signal-response-drift = 0 は音に張り付き、100 は遅れて追う
@@ -118,6 +128,7 @@ panel-section-size = サイズ
 panel-section-opacity = 不透明度
 panel-section-frame = 枠
 panel-section-colors = 色
+panel-colors-overrides-note = 上書きはこのパネルだけの色を変え、曲テーマでも動きません。リンクは代わりにアプリの別の色に従い、テーマと一緒に動きます。見本をリセットするか hex 欄を空にすると、再びアプリのパレットに従います
 panel-section-font = フォント
 panel-section-slider = スライダー
 panel-section-shader = シェーダー
@@ -168,6 +179,9 @@ panel-shader-is-scene = このシェーダーはシーンなので、パネル�
 shader-source = ソース
 shader-pick-none = なし
 shader-reload = 再読み込み
+shader-no-pipeline-title = このビルドではシェーダーが動きません
+shader-no-pipeline-note = このビルドはシェーダーパイプラインのないバックエンドで描画しています。シェーダーは blade の描画パイプラインで動くため、中身にかかわらずすべてのソースが拒否されます。
+shader-unapproved-post = このシェーダーはワークスペースと一緒に届き、このマシンではまだ承認されていません
 shader-edit-as-file = ファイルとして編集
 shader-make-private-copy = 専用のコピーを作る
 shader-save-replace = 置き換える
@@ -207,6 +221,18 @@ preset-save-replaces-global = 既に { $name } という名前のグローバル
 ## Keyboard hints
 hint-press = 押す
 hint-key-enter = Enter
+hint-to-save = で保存
+hint-to-apply = で適用
+hint-to-convert = で変換
+hint-to-repair = で修復
+
+## Dialog buttons
+
+# The commit and scan buttons the small editor windows share.
+dialog-save = 保存
+dialog-apply = 適用
+dialog-scan = スキャン
+dialog-rescan = 再スキャン
 
 ## Settings: language
 settings-language = 言語
@@ -215,6 +241,10 @@ settings-language = 言語
 settings-language-system = (システムの言語)
 settings-language-search = 言語を検索
 picker-no-matches = 一致なし
+picker-icon-none = なし
+picker-icon-search = アイコンを検索
+picker-font-default = 既定
+picker-font-search = フォントを検索
 settings-search-no-matches = "{ $text }" に一致するものがありません
 settings-search-scope = 開いているページのみ検索
 
@@ -431,6 +461,20 @@ playback-sleep-tip-remaining = スリープタイマー、残り { $minutes } �
 menubar-button-tasks = タスクボタン
 menubar-button-sleep = スリープタイマーボタン
 menubar-button-rescan = 再スキャンボタン
+menubar-rescan-tip = ライブラリのフォルダを再スキャン
+menubar-stop-scan-tip = スキャンを停止
+
+# The menubar's line after a scan: the track count, then what changed.
+library-status-with-details = { $tracks }（{ $details }）
+library-status-joiner = { "、" }
+library-status-indexed = { $count } 件を登録
+library-status-unchanged = { $count } 件は変更なし
+library-status-untagged = { $count } 件はタグなし
+library-status-removed = { $count } 件を削除
+library-status-unreachable = { $count } 個のフォルダにアクセスできません
+library-status-stopped-early = 途中で停止
+library-status-updated = { $count } 件を更新
+library-status-renamed = { $count } 件の名前を変更
 
 ## Custom button states
 
@@ -897,6 +941,41 @@ settings-appearance-theme-dark = ダーク
 settings-appearance-theme-light = ライト
 settings-appearance-theme-system = システム
 
+## Palette roles
+
+# The colour roles a palette is made of, named in the Appearance page's
+# grid, the panel colour overrides and every colour picker, with the
+# groups the grid heads them with. Keyed by the role's saved name.
+palette-group-core = 基本
+palette-group-surfaces = 面
+palette-group-tints = 色付け
+palette-group-ink = 前景
+palette-role-accent = アクセント
+palette-role-accent-hover = アクセント（ホバー）
+palette-role-highlight = ハイライト
+palette-role-border = 枠線
+palette-role-border-light = 枠線（明）
+palette-role-text-bright = 明るいテキスト
+palette-role-text-on-accent = アクセント上のテキスト
+palette-role-bg-root = 背景
+palette-role-bg-panel = パネル
+palette-role-bg-elevated = 浮き上がり
+palette-role-bg-header = 見出し
+palette-role-bg-menubar = メニューバー
+palette-role-bg-menu = メニュー
+palette-role-bg-control = コントロール
+palette-role-bg-menu-hover = メニュー（ホバー）
+palette-role-bg-control-active = コントロール（押下）
+palette-role-bg-control-hover = コントロール（ホバー）
+palette-role-bg-input = 入力欄
+palette-role-bg-toolbar = ツールバー
+palette-role-text = テキスト
+palette-role-text-secondary = セカンダリ
+palette-role-text-dim = 暗め
+palette-role-text-muted = 控えめ
+palette-role-text-faint = 淡色
+palette-role-gridline = 目盛り線
+
 ## Settings: application
 settings-application-check-updates = 更新を確認
     .description = rox の起動時に一日一度、rox の新しいリリースと、カタログから入れたものの新しいバージョンを探す。バージョン情報のウィンドウはどちらにせよその場で確認する
@@ -999,6 +1078,8 @@ settings-audio-replaygain-status-measured = スキャン済み { $total } 曲す
 settings-audio-replaygain-status-tagged = スキャン済み { $total } 曲すべてに ReplayGain タグがあります
 settings-audio-replaygain-untagged = タグのないファイル
     .description = ReplayGain タグを持たないファイルをどの音量で鳴らすか。誰も測っていないので、これは測定の代わりの当て推量。0 のままにすれば、タグのない曲は今までどおり鳴る
+settings-audio-replaygain-status-none = スキャン済みの { $total } 曲には、基準となる ReplayGain がまだありません。未測定を測るで解析して値を保存できます
+settings-audio-replaygain-status-partial = スキャン済み { $total } 曲のうち { $covered } 曲に基準となるゲインがあり、うち { $measured } 曲は rox が測定しました。残りの { $missing } 曲はタグのないファイルの設定で再生されます
 settings-audio-section-broadcast = 配信
 settings-audio-section-equalizer = イコライザー
 settings-audio-section-output = 出力
@@ -1583,6 +1664,7 @@ menu-health = ライブラリの健全性
 menu-power-search = パワーサーチ
 menu-quick-play = クイック再生
 menu-hide-menubar = メニューバーを隠す
+menu-show-menubar = メニューバーを表示
 menu-import-workspace = ワークスペースをインポート...
 menu-library = ライブラリ
 menu-measure-replaygain = ReplayGain を測定...
@@ -1631,6 +1713,13 @@ menu-welcome = ようこそ
 menu-window = ウィンドウ
 menu-workspace = ワークスペース
 menu-workspace-builtin-tag = 組み込み
+
+# The macOS menu bar has no checkmarks, so a toggle row names what picking
+# it does to the setting it carries.
+native-menu-show = { $what }を表示
+native-menu-hide = { $what }を隠す
+native-menu-turn-on = { $what }をオン
+native-menu-turn-off = { $what }をオフ
 
 ## Workspaces
 workspace-apply-body = 見た目がまるごと置き換わります。レイアウト、パレット、外観。
@@ -1720,6 +1809,7 @@ tasks-measuring = 測定中 { $progress }
 tasks-model-downloading = モデルをまだダウンロード中です
 tasks-no-library-window = ライブラリのウィンドウが開いていないので、ここからは始められません
 tasks-nothing-to-measure = 測定できるスキャン済みのものがまだありません
+tasks-nothing-to-analyze = 解析できるスキャン済みのものがまだありません
 tasks-rg-all-gain = { $count } 曲すべてに再生時のゲインがあります
 tasks-rg-partial = { $total } 曲中 { $missing } 曲にゲインがありません
 tasks-scan-folder-count = { $count ->
@@ -2444,6 +2534,24 @@ tags-editor-unread-count = { $total } 件中 { $failed } 件のファイルの�
 tags-editor-will-clear = 消去されます
 tags-editor-will-remove = 削除されます
 tags-editor-window-title = rox - タグエディター
+
+# The tag fields as the tag editor and the release matcher name them.
+tags-field-file = ファイル
+tags-field-title = タイトル
+tags-field-title-sort = ソート用タイトル
+tags-field-artist = アーティスト
+tags-field-artist-sort = ソート用アーティスト
+tags-field-album-artist = アルバムアーティスト
+tags-field-album-artist-sort = ソート用アルバムアーティスト
+tags-field-album = アルバム
+tags-field-album-sort = ソート用アルバム
+tags-field-genre = ジャンル
+tags-field-year = 年
+tags-field-track = トラック番号
+tags-field-disc = ディスク
+tags-field-comment = コメント
+tags-field-rating = レーティング
+
 tags-guess-empty-segment = パターンの結果でフォルダー名かファイル名が空になります
 tags-guess-no-placeholders = プレースホルダーがありません
 tags-guess-placeholders = プレースホルダー
@@ -2483,6 +2591,8 @@ tags-rename-window-title = rox - ファイル名の変更
 tags-repair-affected-files = 対象のファイル
 tags-repair-section = 修復
 tags-repair-check-to-repair = 修復するファイルにチェックを入れてください
+tags-repair-scanning = スキャン中...
+tags-repair-scanning-progress = スキャン中 { $done }/{ $total }...
 tags-repair-count = { $count ->
    *[other] { $count } 件のファイル
 }
@@ -2694,6 +2804,7 @@ cover-editor-section = カバーアート
 cover-editor-slot-back = 裏ジャケット
 cover-editor-slot-front = 表ジャケット
 cover-editor-slot-media = 盤面
+cover-editor-slot-artist = アーティスト
 cover-editor-will-remove = 削除されます
 cover-editor-window-title = rox - カバーアート
 cover-matcher-blocked-fetching = 元の画像を取得中...
@@ -2705,6 +2816,7 @@ cover-matcher-cover-count = { $count ->
 cover-matcher-editor-closed = カバーエディターは閉じられました
 cover-matcher-no-covers = カバーが見つかりません
 cover-matcher-search-failed = 検索に失敗しました: { $error }
+cover-matcher-searching = 検索中...
 cover-matcher-set-cover = カバーに設定
 cover-matcher-setting = 設定中...
 cover-matcher-tile-info = { $provider }  { $width }px
@@ -2781,6 +2893,8 @@ lyrics-matcher-match-count = { $count ->
 lyrics-matcher-no-query = この曲には照合できるアーティストとタイトルがありません
 lyrics-matcher-pick-preview = プレビューする候補を選んでください
 lyrics-matcher-search-failed = 検索に失敗しました: { $error }
+lyrics-matcher-searching = 検索中...
+lyrics-matcher-no-matches = 候補が見つかりません
 lyrics-matcher-synced-tag = { $provider }  同期あり
 lyrics-matcher-window-title = rox - 歌詞を探す
 lyrics-no-lyrics-notice = 歌詞なし
@@ -2859,6 +2973,7 @@ quick-play-cover = カバー
 quick-play-duration = 長さ
     .description = 各結果の右に長さを出す
 quick-play-search-placeholder = ライブラリを検索
+quick-play-library-empty = ライブラリが空です
 quick-play-subtitle = サブタイトル
     .description = 各結果の下にアーティストとアルバムを出す
 quick-play-syntax-absent = 値がまったくない行
@@ -2913,6 +3028,8 @@ tray-quit = 終了
 ## Window controls
 window-controls-close = 閉じる
 window-controls-maximize = 最大化
+window-controls-exit-fullscreen = フルスクリーンを終了
+window-controls-fullscreen-zoom = フルスクリーン。Option キーを押しながらクリックで拡大
 window-controls-mini-toggle = ミニ切り替え
 window-controls-minimize = 最小化
 window-controls-pieces = ボタン
@@ -3093,6 +3210,17 @@ waveform-live-window = ライブの表示幅
 waveform-live-expression = 動きの式
     .description = x は帯の左端から右端まで 0 から 1、t はパネルの時計の秒数。sin cos tan abs sqrt exp ln floor min max clamp mix と + - * / ^ pi、かっこが使えます
 waveform-live-expression-error = { $reason } のため、帯は既定の図形を描いています
+
+# Why a motion expression didn't parse; $at is the character position.
+expr-error-stray = 位置 { $at } に予期しない文字
+expr-error-unknown = 位置 { $at } に不明な名前
+expr-error-arity = 位置 { $at } で引数の数が違います
+expr-error-unclosed = 位置 { $at } の括弧が閉じていません
+expr-error-ended = 位置 { $at } で式が途中で終わっています
+expr-error-trailing = 位置 { $at } に余分な文字列
+expr-error-too-deep = 位置 { $at } で入れ子が深すぎます
+expr-error-too-long = 位置 { $at } で長すぎます
+
 waveform-section-live = ライブ
 waveform-streaming = ストリーミング
 waveform-unavailable = この曲の波形は利用できません
@@ -3801,6 +3929,8 @@ track-info-menu-overflow = はみ出し
 track-info-next = 次: { $line }
 track-info-opening = 開いています...
 track-info-output-fallback = 排他出力がデバイスに拒否されたため、共有ミキサー経由で再生しています。デバイスの応答: { $reason }
+track-info-output-exclusive = 排他 { $rate } kHz { $format }
+track-info-queue-finished = （キュー終了）
 track-info-output-resample-exclusive = このファイルは { $source } kHz ですが、カードは { $device } kHz を受けたので、出力の途中で全サンプルが変換されています。デバイスがファイル自身のレートで動きませんでした。
 track-info-output-resample-mixer = このファイルは { $source } kHz ですが、ミキサーは { $device } kHz で動いているので、出力の途中で全サンプルが変換されています。排他モードならファイル自身のレートをカードに渡せます。
 track-info-output-resample-exclusive-stream = このストリームは { $source } kHz ですが、カードは { $device } kHz を受けたので、出力の途中で全サンプルが変換されています。デバイスがストリーム自身のレートで動きませんでした。
@@ -3960,6 +4090,7 @@ transport-pieces = 構成要素
 
 ## Stragglers picked up in the final sweep
 duplicates-scanning = スキャン中...
+duplicates-section = 重複
 about-copyright = Copyright © 2026
 signal-name-placeholder = シグナル名
 signals-empty = シグナルがまだありません。追加するか、結び付けられるつまみを右クリックしてください。

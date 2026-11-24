@@ -7,7 +7,7 @@
 //! `rox-panels` can't depend on the binary.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Rgba,
@@ -34,6 +34,7 @@ use rox_panel_kit::{
 use rox_services::catalog::LibraryEvent;
 
 use crate::keymap::{self, Group};
+use rox_panel_kit::PlaceholderKey as _;
 
 const GLYPH: f32 = 16.0;
 
@@ -251,7 +252,7 @@ fn command_label(id: &str) -> SharedString {
     keymap::COMMANDS
         .iter()
         .find(|command| command.id == id)
-        .map(|command| SharedString::from(command.label))
+        .map(|command| command.label())
         .unwrap_or_else(|| SharedString::from(id.to_owned()))
 }
 
@@ -337,12 +338,12 @@ pub(crate) fn prefill_action(action: &mut String, spec: Option<&StateSpec>) {
     }
 }
 
-/// Built once: `COMMANDS` is a `LazyLock`, and a settings render shouldn't
-/// rebuild the list every frame.
+/// Built once per language: a settings render shouldn't translate a hundred
+/// labels every frame, and a language switch has to reach them.
 pub(crate) fn command_rows() -> Arc<Vec<PickRow>> {
-    static ROWS: OnceLock<Arc<Vec<PickRow>>> = OnceLock::new();
+    static ROWS: rox_i18n::LocaleCache<Arc<Vec<PickRow>>> = rox_i18n::LocaleCache::new();
 
-    ROWS.get_or_init(|| {
+    ROWS.get(|| {
         let mut rows = Vec::new();
         for group in Group::ALL {
             for command in keymap::global_commands().filter(|c| c.group == *group) {
@@ -351,24 +352,24 @@ pub(crate) fn command_rows() -> Arc<Vec<PickRow>> {
         }
         Arc::new(rows)
     })
-    .clone()
 }
 
 /// The id goes in the search terms so a command is findable by its settings
 /// key.
 pub(crate) fn command_row(command: &'static keymap::Command) -> PickRow {
-    let label = command.label.to_lowercase();
+    let label = command.label();
+    let lowered = label.to_lowercase();
 
     let mut terms: Vec<SharedString> = vec![command.id.to_lowercase().into()];
     terms.extend(
-        label
+        lowered
             .split_whitespace()
             .map(|word| SharedString::from(word.to_owned())),
     );
-    terms.push(label.into());
+    terms.push(lowered.into());
 
     PickRow {
-        label: SharedString::from(command.label),
+        label,
         value: Some(SharedString::from(command.id)),
         terms,
         icon: Some(SharedString::from(command.group.icon())),
@@ -691,7 +692,7 @@ impl ControlsPanel {
                 .unwrap_or_default();
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(rox_i18n::t!("button-editor-tip-placeholder"))
+                    .placeholder_key("button-editor-tip-placeholder", window, cx)
                     .default_value(current)
             });
             let (id, when) = key.clone();
@@ -975,7 +976,7 @@ impl ControlsPanel {
         let when = case.when.clone();
         let roles: Vec<(String, SharedString)> = palette::ROLES
             .iter()
-            .map(|role| (role.name.to_string(), SharedString::from(role.label)))
+            .map(|role| (role.name.to_string(), settings_ui::role_label(role.name)))
             .collect();
 
         let icon = {
@@ -1214,6 +1215,28 @@ impl Render for ControlsPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_rows_rebuild_when_the_language_changes() {
+        let label = |rows: &[PickRow]| {
+            rows.iter()
+                .find(|row| row.value == Some(SharedString::from("toggle_playback")))
+                .map(|row| row.label.clone())
+                .expect("play/pause is offered")
+        };
+
+        rox_i18n::pin_thread_locale("en-CA");
+        let english = label(&command_rows());
+        assert_eq!(english, rox_i18n::t!("keymap-toggle-playback"));
+
+        rox_i18n::pin_thread_locale("de");
+        let german = label(&command_rows());
+        assert_eq!(german, rox_i18n::t!("keymap-toggle-playback"));
+        assert_ne!(english, german);
+
+        rox_i18n::pin_thread_locale("en-CA");
+        assert_eq!(label(&command_rows()), english);
+    }
 
     fn b(id: u64) -> WellItem {
         WellItem::Button(id)

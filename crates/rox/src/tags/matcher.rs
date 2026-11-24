@@ -21,6 +21,7 @@ use crate::tags::editor::TagEditor;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers::{self, MetadataCandidate, TrackQuery};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
@@ -43,19 +44,19 @@ enum Sink {
 /// title and album sort, since MusicBrainz only has sort names for artists.
 type Pull = fn(&MetadataCandidate) -> String;
 const FIELDS: &[(Field, &str, Pull)] = &[
-    (Field::Title, "Title", |c| c.title.clone()),
-    (Field::Artist, "Artist", |c| c.artist.clone()),
-    (Field::ArtistSort, "Artist Sort", |c| c.artist_sort.clone()),
-    (Field::AlbumArtist, "Album Artist", |c| {
+    (Field::Title, "title", |c| c.title.clone()),
+    (Field::Artist, "artist", |c| c.artist.clone()),
+    (Field::ArtistSort, "artist sort", |c| c.artist_sort.clone()),
+    (Field::AlbumArtist, "album artist", |c| {
         c.album_artist.clone()
     }),
-    (Field::AlbumArtistSort, "Album Artist Sort", |c| {
+    (Field::AlbumArtistSort, "album artist sort", |c| {
         c.album_artist_sort.clone()
     }),
-    (Field::Album, "Album", |c| c.album.clone()),
-    (Field::Year, "Year", |c| c.year.clone()),
-    (Field::TrackNo, "Track", |c| c.track_no.clone()),
-    (Field::DiscNo, "Disc", |c| c.disc_no.clone()),
+    (Field::Album, "album", |c| c.album.clone()),
+    (Field::Year, "year", |c| c.year.clone()),
+    (Field::TrackNo, "track", |c| c.track_no.clone()),
+    (Field::DiscNo, "disc", |c| c.disc_no.clone()),
 ];
 
 const DEFAULT_SIZE: (f32, f32) = (760., 560.);
@@ -117,7 +118,7 @@ fn open_with(
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("tags-matcher-window-title"),
+                || rox_i18n::t!("tags-matcher-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| {
@@ -185,12 +186,12 @@ impl TagMatch {
         };
         let artist_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("head-piece-artist"))
+                .placeholder_key("head-piece-artist", window, cx)
                 .default_value(artist)
         });
         let title_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("info-item-title"))
+                .placeholder_key("info-item-title", window, cx)
                 .default_value(title)
         });
         let _input_events = [&artist_input, &title_input]
@@ -539,7 +540,7 @@ impl TagMatch {
                         .w(px(84.))
                         .flex_none()
                         .text_color(palette::text_muted())
-                        .child(*label),
+                        .child(crate::tags::editor::field_title(label)),
                 )
                 .child(
                     div()
@@ -715,7 +716,7 @@ impl TagMatch {
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...".into(),
+                Phase::Searching => rox_i18n::t!("tags-matcher-searching"),
                 _ => rox_i18n::t!("tags-matcher-blocked-no-match"),
             });
         }
@@ -760,7 +761,7 @@ impl TagMatch {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Apply",
+                        rox_i18n::t!("dialog-apply"),
                         icons::CHECK,
                         !can_apply,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),

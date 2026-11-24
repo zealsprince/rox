@@ -45,6 +45,16 @@ signal-kind-level = 电平
 signal-kind-onset = 起音
 signal-kind-trigger = 触发
 signal-kind-total = 累加
+
+# A signal's name until the user gives it one, worded from its source.
+# $range is a band's span in hertz, the unit written once when both ends
+# share it; $rate is a total's laps a second.
+signal-range = { $lo }～{ $hi }
+signal-label-band = { signal-kind-band } { $range }
+signal-label-onset = { signal-kind-onset } { $range }
+signal-label-trigger = { signal-kind-trigger } { $range }
+signal-label-total = { signal-kind-total } { $rate }/s
+
 signal-response = 响应
 signal-response-pulse = 每次脉冲衰减前会响多久
 signal-response-drift = 0 紧贴音乐，100 拖在后面
@@ -117,6 +127,7 @@ panel-section-size = 尺寸
 panel-section-opacity = 不透明度
 panel-section-frame = 边框
 panel-section-colors = 颜色
+panel-colors-overrides-note = 覆盖只给这个面板换色，在歌曲配色下保持不变；链接则跟随应用的另一种颜色，随主题一起变。重置色块或清空它的十六进制栏，就会重新跟随应用调色板
 panel-section-font = 字体
 panel-section-slider = 滑块
 panel-section-shader = 着色器
@@ -167,6 +178,9 @@ panel-shader-is-scene = 这个着色器是场景，所以它盖住面板主体�
 shader-source = 来源
 shader-pick-none = 无
 shader-reload = 重新加载
+shader-no-pipeline-title = 这个版本无法运行着色器
+shader-no-pipeline-note = 这个版本通过没有着色器管线的后端绘制。着色器依赖 blade 的渲染管线，所以无论源码写了什么都会被拒绝。
+shader-unapproved-post = 这个着色器随工作区一起到来，还没在这台机器上批准
 shader-edit-as-file = 作为文件编辑
 shader-make-private-copy = 建立私有副本
 shader-save-replace = 替换
@@ -206,6 +220,18 @@ preset-save-replaces-global = 替换已经叫 { $name } 的全局预设
 ## Keyboard hints
 hint-press = 按
 hint-key-enter = Enter
+hint-to-save = 保存
+hint-to-apply = 应用
+hint-to-convert = 转换
+hint-to-repair = 修复
+
+## Dialog buttons
+
+# The commit and scan buttons the small editor windows share.
+dialog-save = 保存
+dialog-apply = 应用
+dialog-scan = 扫描
+dialog-rescan = 重新扫描
 
 ## Settings: language
 settings-language = 语言
@@ -214,6 +240,10 @@ settings-language = 语言
 settings-language-system = （系统语言）
 settings-language-search = 搜索语言
 picker-no-matches = 无匹配项
+picker-icon-none = 无
+picker-icon-search = 搜索图标
+picker-font-default = 默认
+picker-font-search = 搜索字体
 settings-search-no-matches = 没找到匹配“{ $text }”的项
 settings-search-scope = 仅搜索当前页面
 
@@ -431,6 +461,20 @@ playback-sleep-tip-remaining = 睡眠定时，剩余 { $minutes } 分钟
 menubar-button-tasks = 任务按钮
 menubar-button-sleep = 睡眠定时按钮
 menubar-button-rescan = 重新扫描按钮
+menubar-rescan-tip = 重新扫描媒体库文件夹
+menubar-stop-scan-tip = 停止扫描
+
+# The menubar's line after a scan: the track count, then what changed.
+library-status-with-details = { $tracks }（{ $details }）
+library-status-joiner = { "，" }
+library-status-indexed = 已索引 { $count }
+library-status-unchanged = 未变 { $count }
+library-status-untagged = 无标签 { $count }
+library-status-removed = 已移除 { $count }
+library-status-unreachable = { $count } 个文件夹无法访问
+library-status-stopped-early = 提前停止
+library-status-updated = 已更新 { $count }
+library-status-renamed = 已重命名 { $count }
 
 ## Custom button states
 
@@ -897,6 +941,41 @@ settings-appearance-theme-dark = 深色
 settings-appearance-theme-light = 浅色
 settings-appearance-theme-system = 系统
 
+## Palette roles
+
+# The colour roles a palette is made of, named in the Appearance page's
+# grid, the panel colour overrides and every colour picker, with the
+# groups the grid heads them with. Keyed by the role's saved name.
+palette-group-core = 基础
+palette-group-surfaces = 表面
+palette-group-tints = 色块
+palette-group-ink = 前景
+palette-role-accent = 强调色
+palette-role-accent-hover = 强调色（悬停）
+palette-role-highlight = 高亮
+palette-role-border = 边框
+palette-role-border-light = 浅边框
+palette-role-text-bright = 亮色文字
+palette-role-text-on-accent = 强调色上的文字
+palette-role-bg-root = 背景
+palette-role-bg-panel = 面板
+palette-role-bg-elevated = 抬高
+palette-role-bg-header = 分组标题
+palette-role-bg-menubar = 菜单栏
+palette-role-bg-menu = 菜单
+palette-role-bg-control = 控件
+palette-role-bg-menu-hover = 菜单（悬停）
+palette-role-bg-control-active = 控件（激活）
+palette-role-bg-control-hover = 控件（悬停）
+palette-role-bg-input = 输入框
+palette-role-bg-toolbar = 工具栏
+palette-role-text = 文字
+palette-role-text-secondary = 次要
+palette-role-text-dim = 暗淡
+palette-role-text-muted = 柔和
+palette-role-text-faint = 浅色
+palette-role-gridline = 网格线
+
 ## Settings: application
 settings-application-check-updates = 检查更新
     .description = rox 启动时每天查一次有没有新版本的 rox，以及从目录安装的内容有没有新版本；不管开不开，“关于”窗口都会当场检查
@@ -999,6 +1078,8 @@ settings-audio-replaygain-status-measured = 扫描到的 { $total } 首曲目全
 settings-audio-replaygain-status-tagged = 扫描到的 { $total } 首曲目都有 ReplayGain 标签
 settings-audio-replaygain-untagged = 无标签文件
     .description = 没有 ReplayGain 标签的文件按什么电平播放。没有测量结果，所以这只是个顶替用的估计值。保持为零，无标签的曲目就照旧播放
+settings-audio-replaygain-status-none = 扫描到的 { $total } 首曲目都还没有可用的 ReplayGain。“测量缺失项”会分析它们并保存数值
+settings-audio-replaygain-status-partial = 扫描到的 { $total } 首曲目中有 { $covered } 首有可用的增益，其中 { $measured } 首由 rox 测得。其余 { $missing } 首按无标签文件的设置播放
 settings-audio-section-broadcast = 广播
 settings-audio-section-equalizer = 均衡器
 settings-audio-section-output = 输出
@@ -1583,6 +1664,7 @@ menu-health = 媒体库健康
 menu-power-search = 高级搜索
 menu-quick-play = 快速播放
 menu-hide-menubar = 隐藏菜单栏
+menu-show-menubar = 显示菜单栏
 menu-import-workspace = 导入工作区…
 menu-library = 媒体库
 menu-measure-replaygain = 测量 ReplayGain…
@@ -1631,6 +1713,13 @@ menu-welcome = 欢迎
 menu-window = 窗口
 menu-workspace = 工作区
 menu-workspace-builtin-tag = 内置
+
+# The macOS menu bar has no checkmarks, so a toggle row names what picking
+# it does to the setting it carries.
+native-menu-show = 显示{ $what }
+native-menu-hide = 隐藏{ $what }
+native-menu-turn-on = 开启{ $what }
+native-menu-turn-off = 关闭{ $what }
 
 ## Workspaces
 workspace-apply-body = 这会替换整套外观：布局、调色板、外观设置。
@@ -1720,6 +1809,7 @@ tasks-measuring = 正在测量 { $progress }
 tasks-model-downloading = 还有模型在下载
 tasks-no-library-window = 没有打开的媒体库窗口，所以这些没法从这里启动
 tasks-nothing-to-measure = 还没扫描到可测量的内容
+tasks-nothing-to-analyze = 还没扫描到可分析的内容
 tasks-rg-all-gain = { $count } 首曲目全都有播放用的增益
 tasks-rg-partial = { $total } 首曲目里有 { $missing } 首没有增益
 tasks-scan-folder-count = { $count ->
@@ -2443,6 +2533,24 @@ tags-editor-unread-count = { $total } 个文件里有 { $failed } 个的标签�
 tags-editor-will-clear = 将清空
 tags-editor-will-remove = 将移除
 tags-editor-window-title = rox - 标签编辑器
+
+# The tag fields as the tag editor and the release matcher name them.
+tags-field-file = 文件
+tags-field-title = 标题
+tags-field-title-sort = 排序标题
+tags-field-artist = 艺术家
+tags-field-artist-sort = 排序艺术家
+tags-field-album-artist = 专辑艺术家
+tags-field-album-artist-sort = 排序专辑艺术家
+tags-field-album = 专辑
+tags-field-album-sort = 排序专辑
+tags-field-genre = 流派
+tags-field-year = 年份
+tags-field-track = 曲目号
+tags-field-disc = 碟片
+tags-field-comment = 注释
+tags-field-rating = 评分
+
 tags-guess-empty-segment = 模式渲染出空的文件夹名或文件名
 tags-guess-no-placeholders = 没有占位符
 tags-guess-placeholders = 占位符
@@ -2482,6 +2590,8 @@ tags-rename-window-title = rox - 重命名文件
 tags-repair-affected-files = 受影响的文件
 tags-repair-section = 修复
 tags-repair-check-to-repair = 勾选文件来修复它
+tags-repair-scanning = 正在扫描…
+tags-repair-scanning-progress = 正在扫描 { $done }/{ $total }…
 tags-repair-count = { $count ->
    *[other] { $count } 个文件
 }
@@ -2693,6 +2803,7 @@ cover-editor-section = 封面
 cover-editor-slot-back = 封底
 cover-editor-slot-front = 正面封面
 cover-editor-slot-media = 碟面
+cover-editor-slot-artist = 艺术家
 cover-editor-will-remove = 将移除
 cover-editor-window-title = rox - 封面
 cover-matcher-blocked-fetching = 正在获取完整图片…
@@ -2704,6 +2815,7 @@ cover-matcher-cover-count = { $count ->
 cover-matcher-editor-closed = 封面编辑器已关闭
 cover-matcher-no-covers = 没找到封面
 cover-matcher-search-failed = 搜索失败：{ $error }
+cover-matcher-searching = 正在搜索…
 cover-matcher-set-cover = 设为封面
 cover-matcher-setting = 正在设置…
 cover-matcher-tile-info = { $provider }  { $width }px
@@ -2780,6 +2892,8 @@ lyrics-matcher-match-count = { $count ->
 lyrics-matcher-no-query = 这首曲目没有艺术家和标题，没法拿去匹配
 lyrics-matcher-pick-preview = 选一个匹配来预览
 lyrics-matcher-search-failed = 搜索失败：{ $error }
+lyrics-matcher-searching = 正在搜索…
+lyrics-matcher-no-matches = 没找到匹配
 lyrics-matcher-synced-tag = { $provider }  已同步
 lyrics-matcher-window-title = rox - 查找歌词
 lyrics-no-lyrics-notice = 没有歌词
@@ -2858,6 +2972,7 @@ quick-play-cover = 封面
 quick-play-duration = 时长
     .description = 在右边显示每条结果的长度
 quick-play-search-placeholder = 搜索媒体库
+quick-play-library-empty = 媒体库是空的
 quick-play-subtitle = 副标题
     .description = 在每条结果下面显示艺术家和专辑
 quick-play-syntax-absent = 完全没有该值的条目
@@ -2912,6 +3027,8 @@ tray-quit = 退出
 ## Window controls
 window-controls-close = 关闭
 window-controls-maximize = 最大化
+window-controls-exit-fullscreen = 退出全屏
+window-controls-fullscreen-zoom = 全屏，按住 Option 点按可缩放
 window-controls-mini-toggle = 迷你切换
 window-controls-minimize = 最小化
 window-controls-pieces = 按钮
@@ -3092,6 +3209,17 @@ waveform-live-window = 直播窗口
 waveform-live-expression = 动态表达式
     .description = x 沿带子从 0 到 1，t 是面板时钟的秒数；可用 sin cos tan abs sqrt exp ln floor min max clamp mix，以及 + - * / ^ pi 和括号
 waveform-live-expression-error = { $reason }，所以带子画的是默认形状
+
+# Why a motion expression didn't parse; $at is the character position.
+expr-error-stray = 位置 { $at } 有意外的字符
+expr-error-unknown = 位置 { $at } 有未知名称
+expr-error-arity = 位置 { $at } 参数个数不对
+expr-error-unclosed = 位置 { $at } 的括号没有闭合
+expr-error-ended = 表达式在位置 { $at } 提前结束
+expr-error-trailing = 位置 { $at } 有多余的文本
+expr-error-too-deep = 位置 { $at } 嵌套太深
+expr-error-too-long = 位置 { $at } 处过长
+
 waveform-section-live = 直播
 waveform-streaming = 流媒体
 waveform-unavailable = 这首曲目没有波形
@@ -3800,6 +3928,8 @@ track-info-menu-overflow = 溢出
 track-info-next = 下一首：{ $line }
 track-info-opening = 正在打开…
 track-info-output-fallback = 设备拒绝了独占输出，所以播放走的是共享混音器。设备报告：{ $reason }
+track-info-output-exclusive = 独占 { $rate } kHz { $format }
+track-info-queue-finished = （队列已结束）
 track-info-output-resample-exclusive = 这个文件是 { $source } kHz，声卡接的是 { $device } kHz，所以每一个采样都在出去的路上被转换。设备跑不了文件自身的采样率。
 track-info-output-resample-mixer = 这个文件是 { $source } kHz，混音器跑在 { $device } kHz，所以每一个采样都在出去的路上被转换。独占模式会直接把文件自身的采样率交给声卡。
 track-info-output-resample-exclusive-stream = 这个音频流是 { $source } kHz，声卡接的是 { $device } kHz，所以每一个采样都在出去的路上被转换。设备跑不了音频流自身的采样率。
@@ -3959,6 +4089,7 @@ transport-pieces = 组件
 
 ## Stragglers picked up in the final sweep
 duplicates-scanning = 正在扫描…
+duplicates-section = 重复曲目
 about-copyright = 版权所有 © 2026
 signal-name-placeholder = 信号名称
 signals-empty = 还没有信号。加一个，或者右键任意可绑定的旋钮。

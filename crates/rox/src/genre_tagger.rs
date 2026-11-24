@@ -41,6 +41,7 @@ use rox_library::writer::{self, Change, Field};
 use rox_net::providers;
 use rox_panel_api::panel::{self, AppState};
 use rox_panel_api::suggest;
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{MIN_SIZE, checkbox, section, small_button};
 use rox_services::backdrop::WindowBackdrop;
 use rox_services::catalog::LibraryEvent;
@@ -80,7 +81,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(720.), px(640.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("tag-genres-window-title"),
+        || rox_i18n::t!("tag-genres-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| GenreTagger::new(state, window, cx)),
@@ -176,8 +177,11 @@ impl GenreTagger {
             },
         );
         let input = cx.new(|cx| {
-            let mut input = InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("tag-genres-input-placeholder"));
+            let mut input = InputState::new(window, cx).placeholder_key(
+                "tag-genres-input-placeholder",
+                window,
+                cx,
+            );
             input.lsp.completion_provider = suggest::provider(&state.library, &Field::Genre, cx);
             input
         });

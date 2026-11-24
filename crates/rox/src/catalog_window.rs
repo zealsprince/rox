@@ -35,6 +35,7 @@ use rox_services::plugins as host;
 
 use crate::catalog;
 use crate::startup::updates::CURRENT;
+use rox_panel_kit::PlaceholderKey as _;
 
 const DEFAULT_SIZE: (f32, f32) = (920., 640.);
 
@@ -167,7 +168,7 @@ fn open_now(select: Option<String>, updates: bool, cx: &mut App) {
 
     panel::open_child_window(
         cx,
-        rox_i18n::t!("catalog-window-title"),
+        || rox_i18n::t!("catalog-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| CatalogWindow::new(player, select, updates, window, cx)),
@@ -545,8 +546,9 @@ impl CatalogWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let find = cx
-            .new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("catalog-placeholder")));
+        let find = cx.new(|cx| {
+            InputState::new(window, cx).placeholder_key("catalog-placeholder", window, cx)
+        });
         window.focus(&find.focus_handle(cx));
 
         let _find_events = cx.subscribe_in(

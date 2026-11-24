@@ -261,7 +261,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = panel::open_child_window(
         cx,
-        rox_i18n::t!("tasks-window-title"),
+        || rox_i18n::t!("tasks-window-title"),
         bounds,
         Some(MIN),
         move |window, cx| cx.new(|cx| TasksWindow::new(player, library.clone(), window, cx)),
@@ -308,7 +308,7 @@ impl Job {
             Job::LovedImport => rox_i18n::t!("tasks-job-loved-import"),
             Job::PlaysImport => rox_i18n::t!("tasks-job-plays-import"),
             Job::Convert => rox_i18n::t!("tasks-job-convert"),
-            Job::Bake => "Embed Stored Metadata".into(),
+            Job::Bake => rox_i18n::t!("bake-title"),
             Job::Plugin(serial) => plugin_actions::job(serial)
                 .map(|job| format!("{}: {}", job.plugin, job.label).into())
                 .unwrap_or_default(),
@@ -966,7 +966,7 @@ impl TasksWindow {
                 if !self.facts.acoustic_on {
                     lines.push(rox_i18n::t!("tasks-acoustic-off").to_string());
                 } else if coverage.total == 0 {
-                    lines.push("Nothing scanned to analyze yet".into());
+                    lines.push(rox_i18n::t!("tasks-nothing-to-analyze").to_string());
                 } else if coverage.missing() == 0 {
                     lines.push(
                         rox_i18n::t!(
@@ -1031,7 +1031,7 @@ impl TasksWindow {
                 if !self.facts.tempo_on {
                     lines.push(rox_i18n::t!("tasks-tempo-off").to_string());
                 } else if bpm.total() == 0 {
-                    lines.push("Nothing scanned to analyze yet".into());
+                    lines.push(rox_i18n::t!("tasks-nothing-to-analyze").to_string());
                 } else if bpm.missing == 0 {
                     // "All of them" only holds with no refused pile.
                     lines.push(if bpm.refused > 0 {

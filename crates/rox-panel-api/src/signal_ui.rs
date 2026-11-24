@@ -29,6 +29,7 @@ use rox_viz::signal::{AGGREGATE_RATE_MAX, Route, Signal, SignalHub, Source};
 use crate::panel::{self, ScrubState, ValueEdit, toggle};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 
 /// The tuning sliders' band, and the smallest ratio kept between a
@@ -166,7 +167,7 @@ pub fn open_bands<P: SignalHost>(host: &P) -> Vec<BandMark> {
             };
             let scrubs = ui.signal_scrubs.get(&signal.id);
             Some(BandMark {
-                label: signal.label(),
+                label: signal_label(signal),
                 lo,
                 hi,
                 dragging: scrubs.is_some_and(|s| s.lo.is_dragging() || s.hi.is_dragging()),
@@ -185,11 +186,59 @@ fn hz_to_frac(hz: f32) -> f32 {
 }
 
 fn fmt_hz(hz: f32) -> String {
+    let (number, unit) = hz_parts(hz);
+    format!("{number} {unit}")
+}
+
+/// The number and unit apart, so a range can say its unit once.
+fn hz_parts(hz: f32) -> (String, &'static str) {
     if hz >= 1000.0 {
-        rox_i18n::format::format_unit(hz as f64 / 1000.0, 1, "kHz")
+        (rox_i18n::format::format_float(hz as f64 / 1000.0, 1), "kHz")
     } else {
-        rox_i18n::format::format_unit(hz as f64, 0, "Hz")
+        (rox_i18n::format::format_float(hz as f64, 0), "Hz")
     }
+}
+
+/// A band's span: the unit once when both ends share it ("30-120 Hz"), on
+/// each end when they don't ("30 Hz-1.5 kHz"). The range mark is the locale's.
+fn hz_range(lo: f32, hi: f32) -> String {
+    let (lo_number, lo_unit) = hz_parts(lo);
+    let (hi_number, hi_unit) = hz_parts(hi);
+    let lo = if lo_unit == hi_unit {
+        lo_number
+    } else {
+        format!("{lo_number} {lo_unit}")
+    };
+
+    rox_i18n::t!(
+        "signal-range",
+        lo = lo,
+        hi = format!("{hi_number} {hi_unit}")
+    )
+    .to_string()
+}
+
+/// What a signal reads as everywhere it's listed: the user's name as typed,
+/// or one worded from its source in the active language. The pool keeps a
+/// default name empty, so switching languages rewords it.
+pub fn signal_label(signal: &Signal) -> String {
+    if let Some(name) = signal.given_name() {
+        return name.to_owned();
+    }
+
+    let label = match signal.source {
+        Source::Band { lo, hi } => rox_i18n::t!("signal-label-band", range = hz_range(lo, hi)),
+        Source::Onset { lo, hi } => rox_i18n::t!("signal-label-onset", range = hz_range(lo, hi)),
+        Source::Trigger { lo, hi } => {
+            rox_i18n::t!("signal-label-trigger", range = hz_range(lo, hi))
+        }
+        Source::Level => rox_i18n::t!("signal-kind-level"),
+        Source::Aggregate { rate, .. } => rox_i18n::t!(
+            "signal-label-total",
+            rate = rox_i18n::format::format_float(rate as f64, 2)
+        ),
+    };
+    label.to_string()
 }
 
 /// The source picker's face for [`Source`], minus the band bounds.
@@ -386,7 +435,7 @@ fn begin_rename<P: SignalHost>(host: &mut P, id: u64, window: &mut Window, cx: &
         .unwrap_or_default();
     let input = cx.new(|cx| {
         InputState::new(window, cx)
-            .placeholder(rox_i18n::t!("signal-name-placeholder"))
+            .placeholder_key("signal-name-placeholder", window, cx)
             .default_value(current)
     });
     let sub = cx.subscribe_in(
@@ -436,7 +485,7 @@ fn remove_signal<P: SignalHost>(host: &mut P, id: u64, cx: &mut Context<P>) {
 pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
     let pool = host.hub().pool();
     let add = settings_ui::small_button(
-        "Add Signal",
+        rox_i18n::t!("signal-add"),
         icons::PLUS,
         false,
         cx.listener(|this: &mut P, _, _, cx| {
@@ -465,7 +514,7 @@ pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
         list = list.child(signal_block(host, signal.id, cx));
     }
     div().flex().flex_col().gap(SECTION_GAP).child(section(
-        "Signals",
+        rox_i18n::t!("panel-section-signals"),
         Some(add.into_any_element()),
         list,
     ))
@@ -526,7 +575,7 @@ fn signal_block<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         _ => div()
             .text_xs()
             .text_color(palette::text_muted())
-            .child(signal.label())
+            .child(signal_label(signal))
             .into_any_element(),
     };
     // Only the chevron and name take the fold's click, and not during a
@@ -820,7 +869,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
     let others: Vec<(u64, String)> = pool
         .iter()
         .filter(|s| s.id != id)
-        .map(|s| (s.id, s.label()))
+        .map(|s| (s.id, signal_label(s)))
         .collect();
     let alone = others.is_empty();
     let known = others.iter().any(|(other, _)| *other == of);
@@ -975,7 +1024,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     for signal in &pool {
         let id = signal.id;
         chips = chips.child(scope_chip(
-            signal.label(),
+            signal_label(signal),
             known && route.signal == id,
             move |this: &mut P, cx| {
                 if let Some(route) = this.routes_mut().get_mut(index) {
@@ -1121,13 +1170,13 @@ pub fn bindable_row<P: RouteHost>(
                 let id = signal.id;
                 let panel = weak.clone();
                 let target = menu_target.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(signal.label()).on_click(move |_, _, cx| {
+                menu = menu.item(PopupMenuItem::new(signal_label(signal)).on_click(
+                    move |_, _, cx| {
                         if let Some(this) = panel.upgrade() {
                             this.update(cx, |this, cx| attach_signal(this, target.clone(), id, cx));
                         }
-                    }),
-                );
+                    },
+                ));
             }
             if !pool.is_empty() {
                 menu = menu.separator();
@@ -1223,4 +1272,60 @@ pub fn bindable_row<P: RouteHost>(
         ));
     }
     row
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    fn unnamed(source: Source) -> Signal {
+        Signal {
+            source,
+            ..Signal::default()
+        }
+    }
+
+    #[test]
+    fn a_default_label_is_worded_in_the_active_language() {
+        let band = unnamed(Source::Band {
+            lo: 30.0,
+            hi: 120.0,
+        });
+
+        rox_i18n::pin_thread_locale("en-CA");
+        assert_eq!(signal_label(&band), "Band 30-120 Hz");
+
+        rox_i18n::pin_thread_locale("de");
+        assert_eq!(signal_label(&band), "Band 30–120 Hz");
+
+        rox_i18n::pin_thread_locale("ru");
+        assert_eq!(signal_label(&unnamed(Source::Level)), "Уровень");
+    }
+
+    #[test]
+    fn a_band_spanning_units_names_each_end() {
+        let wide = unnamed(Source::Onset {
+            lo: 30.0,
+            hi: 1500.0,
+        });
+
+        rox_i18n::pin_thread_locale("en-CA");
+        assert_eq!(signal_label(&wide), "Onset 30 Hz-1.5 kHz");
+
+        rox_i18n::pin_thread_locale("de");
+        assert_eq!(signal_label(&wide), "Onset 30 Hz–1,5 kHz");
+    }
+
+    #[test]
+    fn a_signal_the_user_named_keeps_their_name_in_every_language() {
+        let named = Signal {
+            name: " Kick drum ".to_string(),
+            ..Signal::default()
+        };
+
+        for locale in ["en-CA", "de", "ja"] {
+            rox_i18n::pin_thread_locale(locale);
+            assert_eq!(signal_label(&named), "Kick drum", "{locale}");
+        }
+    }
 }

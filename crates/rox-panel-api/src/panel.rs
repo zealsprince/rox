@@ -1121,21 +1121,25 @@ fn dock_back_offered(window: &Window) -> bool {
 }
 
 fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mut App) {
-    let name = panel
-        .tab_name(cx)
-        .unwrap_or_else(|| display_name(panel.panel_name(cx)).into());
-    let title = SharedString::from(format!("rox - {name}"));
+    // A name the user gave stays as typed; the kind's name is worded again
+    // after a language switch.
+    let custom = panel.tab_name(cx);
+    let kind = panel.panel_name(cx);
+    let title = move || {
+        let name = custom.clone().unwrap_or_else(|| display_name(kind).into());
+        SharedString::from(format!("rox - {name}"))
+    };
     let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_decorations: Some(rox_core::settings::child_window_decorations()),
-        titlebar: Some(child_titlebar(title.clone())),
+        titlebar: Some(child_titlebar(title())),
         app_id: Some(rox_core::APP_ID.into()),
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
         // Wayland ignores the creation-time title; only set_window_title gets through.
-        crate::windows::set_window_title(window, &title);
+        crate::windows::set_window_title_with(window, title, cx);
         settle_child_chrome(window, cx);
         // A popped-out panel keeps its surface shader, so this window needs the hub
         // and player its slots read from.
@@ -1165,9 +1169,11 @@ fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mu
 /// Open a child window hosting `build`'s view in a Root, with the app id so
 /// the compositor groups it with the main window. `min_size` floors an
 /// interactive resize. The caller keeps its own singleton bookkeeping.
+/// `title` runs again after a language switch, so it words the title rather
+/// than holding one.
 pub fn open_child_window<V: 'static + Render>(
     cx: &mut App,
-    title: impl Into<SharedString>,
+    title: impl Fn() -> SharedString + 'static,
     bounds: Bounds<Pixels>,
     min_size: Option<Size<Pixels>>,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
@@ -1178,7 +1184,7 @@ pub fn open_child_window<V: 'static + Render>(
 /// [`open_child_window`] the user can't resize, for a dialog with one set layout.
 pub fn open_fixed_window<V: 'static + Render>(
     cx: &mut App,
-    title: impl Into<SharedString>,
+    title: impl Fn() -> SharedString + 'static,
     bounds: Bounds<Pixels>,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
 ) -> WindowHandle<Root> {
@@ -1187,24 +1193,23 @@ pub fn open_fixed_window<V: 'static + Render>(
 
 fn open_window<V: 'static + Render>(
     cx: &mut App,
-    title: impl Into<SharedString>,
+    title: impl Fn() -> SharedString + 'static,
     bounds: Bounds<Pixels>,
     min_size: Option<Size<Pixels>>,
     resizable: bool,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
 ) -> WindowHandle<Root> {
-    let title = title.into();
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: min_size,
         is_resizable: resizable,
         window_decorations: Some(rox_core::settings::child_window_decorations()),
-        titlebar: Some(child_titlebar(title.clone())),
+        titlebar: Some(child_titlebar(title())),
         app_id: Some(rox_core::APP_ID.into()),
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
-        crate::windows::set_window_title(window, &title);
+        crate::windows::set_window_title_with(window, title, cx);
         settle_child_chrome(window, cx);
         // `WindowOptions::focus` is already true, but some window managers grant
         // the map and deny the raise, so keys keep going to the old window until a

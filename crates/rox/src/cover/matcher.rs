@@ -17,6 +17,7 @@ use crate::matching::{Phase, WindowRegistry, note, open_or_focus};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers::{self, ArtCandidate, TrackQuery};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
@@ -54,7 +55,7 @@ pub fn open(
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("cover-matcher-window-title"),
+                || rox_i18n::t!("cover-matcher-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| {
@@ -100,12 +101,12 @@ impl CoverMatch {
     ) -> Self {
         let artist_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("head-piece-artist"))
+                .placeholder_key("head-piece-artist", window, cx)
                 .default_value(artist)
         });
         let album_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("head-piece-album"))
+                .placeholder_key("head-piece-album", window, cx)
                 .default_value(album)
         });
         let _input_events = [&artist_input, &album_input]
@@ -387,7 +388,7 @@ impl CoverMatch {
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref l) if !l.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...".into(),
+                Phase::Searching => rox_i18n::t!("cover-matcher-searching"),
                 _ => rox_i18n::t!("cover-matcher-blocked-no-cover"),
             });
         }
@@ -466,7 +467,7 @@ impl Render for CoverMatch {
         };
 
         let content = match &self.phase {
-            Phase::Searching => note("Searching...").into_any_element(),
+            Phase::Searching => note(rox_i18n::t!("cover-matcher-searching")).into_any_element(),
             Phase::Failed(e) => crate::console_window::notice(e.clone()).into_any_element(),
             Phase::Ready(loaded) if loaded.is_empty() => {
                 note(rox_i18n::t!("cover-matcher-no-covers")).into_any_element()

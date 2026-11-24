@@ -100,7 +100,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
     let bounds = Bounds::centered(None, size(px(720.), px(600.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("tags-repair-window-title"),
+        || rox_i18n::t!("tags-repair-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| TagRepair::new(library, now_art, window, cx)),
@@ -587,9 +587,13 @@ impl TagRepair {
             .gap(tokens::SPACE_SM)
             .when(self.scanning, |d| {
                 let label = if self.scan_total > 0 {
-                    format!("Scanning {}/{}...", self.scan_done, self.scan_total)
+                    rox_i18n::t!(
+                        "tags-repair-scanning-progress",
+                        done = self.scan_done,
+                        total = self.scan_total
+                    )
                 } else {
-                    "Scanning...".to_string()
+                    rox_i18n::t!("tags-repair-scanning")
                 };
                 d.child(
                     div()
@@ -604,7 +608,11 @@ impl TagRepair {
                 )
             })
             .child(small_button(
-                if self.scanned { "Rescan" } else { "Scan" },
+                if self.scanned {
+                    rox_i18n::t!("dialog-rescan")
+                } else {
+                    rox_i18n::t!("dialog-scan")
+                },
                 icons::SEARCH,
                 busy,
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
@@ -648,9 +656,9 @@ impl TagRepair {
                 .into_any_element()
         } else {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to repair".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-repair")),
             ])
             .text_xs()
             .into_any_element()

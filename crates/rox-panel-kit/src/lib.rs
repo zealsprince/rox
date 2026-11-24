@@ -46,6 +46,9 @@ pub use gesture::*;
 mod motif;
 pub use motif::motif;
 
+mod placeholder;
+pub use placeholder::{PlaceholderKey, reword_placeholders};
+
 mod tracked_load;
 pub use tracked_load::TrackedImage;
 

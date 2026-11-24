@@ -2,8 +2,8 @@
 //! or one being edited. A blank name is fine: the mark shows its time.
 
 use gpui::{
-    App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, Rgba, SharedString,
-    Stateful, Subscription, Window, actions, div, prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, Rgba, Stateful,
+    Subscription, Window, actions, div, prelude::*, px, size,
 };
 use gpui_component::Sizable as _;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -15,6 +15,7 @@ use rox_design::{palette, tokens};
 use rox_library::cue::TrackKey;
 use rox_panel_api::bookmark_ui::{self, QUICK_COLORS};
 use rox_panel_api::panel::AppState;
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{Seg, kbd_line, section, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
@@ -41,7 +42,7 @@ pub fn open_new(state: AppState, key: TrackKey, secs: f64, cx: &mut App) {
     open_modal(
         state,
         Action::New { key, position_ms },
-        rox_i18n::t!("bookmark-new-title"),
+        "bookmark-new-title",
         String::new(),
         None,
         cx,
@@ -56,7 +57,7 @@ pub fn open_edit(state: AppState, id: i64, cx: &mut App) {
     open_modal(
         state,
         Action::Edit(id),
-        rox_i18n::t!("bookmark-edit-title"),
+        "bookmark-edit-title",
         mark.name,
         mark.color,
         cx,
@@ -66,12 +67,17 @@ pub fn open_edit(state: AppState, id: i64, cx: &mut App) {
 fn open_modal(
     state: AppState,
     action: Action,
-    verb: SharedString,
+    verb: &'static str,
     name: String,
     color: Option<String>,
     cx: &mut App,
 ) {
-    let title = rox_i18n::t!("bookmark-window-title", verb = verb.to_string());
+    let title = move || {
+        rox_i18n::t!(
+            "bookmark-window-title",
+            verb = rox_i18n::t!(verb).to_string()
+        )
+    };
     let bounds = Bounds::centered(None, size(px(400.), px(250.)), cx);
     rox_panel_api::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| BookmarkWindow::new(state, action, name, color, window, cx))
@@ -102,7 +108,7 @@ impl BookmarkWindow {
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("bookmark-name-placeholder"))
+                .placeholder_key("bookmark-name-placeholder", window, cx)
                 .default_value(name)
         });
         let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {

@@ -12,10 +12,6 @@ use rox_design::assets::icons;
 
 use crate::search_picker::{PickRow, search_picker};
 
-/// Untranslated like the rest of this picker's copy, since the names it sits
-/// among are file stems.
-const UNSET_LABEL: &str = "None";
-
 /// `current` is a catalog path, empty for unset; a path the catalog no longer
 /// has reads as unset.
 // `use<..>` and the named `A` for the same reason as the crate root's
@@ -41,15 +37,15 @@ where
         .iter()
         .find(|row| row.value == current)
         .map(|row| row.label.clone())
-        .unwrap_or_else(|| UNSET_LABEL.into());
+        .unwrap_or_else(|| rox_i18n::t!("picker-icon-none"));
 
     search_picker(
         id,
         rows,
         label,
         current,
-        "Search icons".into(),
-        "No matches".into(),
+        rox_i18n::t!("picker-icon-search"),
+        rox_i18n::t!("picker-no-matches"),
         move |this, value, cx| {
             if let Some(value) = value {
                 apply(this, value.into(), cx);

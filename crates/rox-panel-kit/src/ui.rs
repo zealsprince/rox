@@ -1537,13 +1537,16 @@ impl Span {
             return fmt_duration_secs(value);
         }
 
-        // The unit carries its own leading space, so this concatenates
-        // rather than going through format_unit.
-        format!(
-            "{}{}",
-            rox_i18n::format::format_float(value as f64, self.decimals as u8),
-            self.unit
-        )
+        let number = rox_i18n::format::format_float(value as f64, self.decimals as u8);
+
+        // Where the percent sign sits is the locale's call. Any other unit
+        // carries its own leading space, so it concatenates rather than going
+        // through format_unit.
+        if self.unit == "%" {
+            return rox_i18n::t!("unit-percent", value = number).to_string();
+        }
+
+        format!("{number}{}", self.unit)
     }
 
     /// A duration seeds with its readout; anything else with a bare ASCII
@@ -1703,7 +1706,7 @@ pub fn slider_edit<P: 'static>(
         scrub,
         edit,
         value,
-        format!("{}%", (value * 100.0).round() as u32),
+        rox_i18n::format::format_percent((value * 100.0).round() as f64),
         format!("{}", (value * 100.0).round() as u32),
         |v| v / 100.0,
         apply,
@@ -1741,6 +1744,19 @@ pub fn color_cell(
         .when_some(trailing, |d, trailing| d.child(trailing))
 }
 
+/// A palette role's name in the editors, by its saved `name`. A role with no
+/// message reads as its name with the underscores opened out.
+pub fn role_label(name: &str) -> SharedString {
+    rox_i18n::try_translate(&palette::role_key(name))
+        .unwrap_or_else(|| SharedString::from(name.replace('_', " ")))
+}
+
+/// The heading over a group of palette roles.
+pub fn role_group_label(group: &str) -> SharedString {
+    rox_i18n::try_translate(&palette::group_key(group))
+        .unwrap_or_else(|| SharedString::from(group.to_owned()))
+}
+
 /// The link button beside a swatch: its menu points the color at an app
 /// palette role, grouped as the role grid groups them. Filled with the
 /// accent while linked, so a link reads apart from a literal hex.
@@ -1771,13 +1787,13 @@ pub fn role_link<P: 'static>(
                 }
                 if target.group != group {
                     group = target.group;
-                    menu = menu.item(PopupMenuItem::label(group));
+                    menu = menu.item(PopupMenuItem::label(role_group_label(group)));
                 }
 
                 let weak = weak.clone();
                 let pick = pick.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(target.label)
+                    PopupMenuItem::new(role_label(target.name))
                         .checked(linked == Some(target.name))
                         .on_click(move |_, window, cx| {
                             if let Some(this) = weak.upgrade() {
@@ -1801,7 +1817,7 @@ pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> D
             .position(|role| role.group != group)
             .map(|n| i + n)
             .unwrap_or(ROLES.len());
-        body = body.child(header(group));
+        body = body.child(header(role_group_label(group)));
         for row_start in (i..end).step_by(columns) {
             let mut row = div().flex().flex_row().gap(tokens::SPACE_SM);
             for j in row_start..row_start + columns {
@@ -1820,7 +1836,33 @@ pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> D
 
 #[cfg(test)]
 mod tests {
-    use super::{OVER, Query, ceiling, fmt_duration_secs, parse_duration_secs, span, span_secs};
+    use super::{
+        OVER, Query, ceiling, fmt_duration_secs, parse_duration_secs, role_label, span, span_secs,
+    };
+
+    #[test]
+    fn a_role_label_comes_from_the_locale() {
+        rox_i18n::pin_thread_locale("de");
+        assert_eq!(role_label("accent"), "Akzent");
+        assert_eq!(role_label("bg_menu_hover"), "Menü (Hover)");
+    }
+
+    #[test]
+    fn a_role_with_no_message_reads_as_its_name() {
+        rox_i18n::pin_thread_locale("de");
+        assert_eq!(role_label("bg_mystery_fill"), "bg mystery fill");
+    }
+
+    #[test]
+    fn every_palette_role_and_group_has_a_message() {
+        rox_i18n::pin_thread_locale("en-CA");
+        for role in rox_design::palette::ROLES {
+            let key = rox_design::palette::role_key(role.name);
+            assert!(rox_i18n::try_translate(&key).is_some(), "{key}");
+            let key = rox_design::palette::group_key(role.group);
+            assert!(rox_i18n::try_translate(&key).is_some(), "{key}");
+        }
+    }
 
     #[test]
     fn a_duration_reads_back_as_the_seconds_it_was_written_from() {

@@ -72,7 +72,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("convert-dialog-window-title"),
+                || rox_i18n::t!("convert-dialog-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| ConvertDialog::new(state, ids, window, cx)),
@@ -793,9 +793,9 @@ impl ConvertDialog {
                 .child(line)
                 .into_any_element(),
             None => kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to convert".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-convert")),
             ])
             .text_xs()
             .into_any_element(),

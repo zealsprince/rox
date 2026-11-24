@@ -185,8 +185,8 @@ impl SettingsWindow {
                         match panel::shader::unsupported(&error) {
                             true => panel::banner(
                                 panel::Tone::Bad,
-                                panel::shader::NO_PIPELINE_TITLE,
-                                vec![panel::shader::NO_PIPELINE_NOTE.into()],
+                                panel::shader::no_pipeline_title(),
+                                vec![panel::shader::no_pipeline_note()],
                             ),
                             false => panel::banner(
                                 panel::Tone::Bad,
@@ -919,8 +919,8 @@ impl SettingsWindow {
                         match panel::shader::unsupported(&error) {
                             true => panel::banner(
                                 panel::Tone::Bad,
-                                panel::shader::NO_PIPELINE_TITLE,
-                                vec![panel::shader::NO_PIPELINE_NOTE.into()],
+                                panel::shader::no_pipeline_title(),
+                                vec![panel::shader::no_pipeline_note()],
                             ),
                             false => panel::banner(
                                 panel::Tone::Bad,

@@ -23,6 +23,7 @@ use rox_library::projection::{QUERY_FIELDS, SortKey};
 use rox_panel_api::panel::AppState;
 use rox_panel_api::query::search::{SearchBox, SearchEvent};
 use rox_panel_api::suggest;
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{self as settings_ui, Seg, checkbox, kbd_line, section, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
@@ -98,11 +99,16 @@ fn query_note(query: &str) -> Option<SharedString> {
 
 pub fn open(state: AppState, id: Option<i64>, cx: &mut App) {
     let verb = if id.is_some() {
-        rox_i18n::t!("smart-playlist-edit-title")
+        "smart-playlist-edit-title"
     } else {
-        rox_i18n::t!("smart-playlist-new-title")
+        "smart-playlist-new-title"
     };
-    let title = rox_i18n::t!("smart-playlist-window-title", verb = verb.to_string());
+    let title = move || {
+        rox_i18n::t!(
+            "smart-playlist-window-title",
+            verb = rox_i18n::t!(verb).to_string()
+        )
+    };
     let bounds = Bounds::centered(None, size(px(900.), px(560.)), cx);
     rox_panel_api::panel::open_child_window(
         cx,
@@ -156,24 +162,17 @@ impl SmartPlaylistWindow {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("smart-playlist-name-placeholder"))
+                .placeholder_key("smart-playlist-name-placeholder", window, cx)
                 .default_value(current_name)
         });
-        let query = cx.new(|cx| {
-            SearchBox::new(
-                rox_i18n::t!("smart-playlist-query-label"),
-                &def.query,
-                window,
-                cx,
-            )
-            .small()
-        });
+        let query = cx
+            .new(|cx| SearchBox::new("smart-playlist-query-label", &def.query, window, cx).small());
         // The library box's completions, so the syntax is learnable here.
         let provider = suggest::query_provider(&state.library, cx);
         query.update(cx, |query, cx| query.set_completions(provider, cx));
         let limit = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("smart-playlist-limit-placeholder"))
+                .placeholder_key("smart-playlist-limit-placeholder", window, cx)
                 .default_value(def.limit.map(|n| n.to_string()).unwrap_or_default())
         });
 
@@ -482,9 +481,9 @@ impl SmartPlaylistWindow {
     fn footer(&self, savable: bool, cx: &mut Context<Self>) -> Div {
         let hint = if savable {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-save")),
             ])
             .text_xs()
             .into_any_element()
@@ -514,7 +513,7 @@ impl SmartPlaylistWindow {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Save",
+                        rox_i18n::t!("dialog-save"),
                         icons::CHECK,
                         !savable,
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),

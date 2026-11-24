@@ -8,8 +8,6 @@ use gpui::{App, Context, SharedString, prelude::*};
 
 use crate::search_picker::{PickRow, search_picker};
 
-const DEFAULT_LABEL: &str = "Default";
-
 /// A picker over the installed families, headed by a Default row that clears
 /// the override. `current` None means inherit.
 // `use<..>` and the named `A` for the same reason as the crate root's
@@ -29,14 +27,14 @@ where
     let label: SharedString = current
         .clone()
         .map(SharedString::from)
-        .unwrap_or_else(|| DEFAULT_LABEL.into());
+        .unwrap_or_else(|| rox_i18n::t!("picker-font-default"));
     search_picker(
         id,
         families(cx),
         label,
         current.map(SharedString::from),
-        "Search fonts".into(),
-        "No matches".into(),
+        rox_i18n::t!("picker-font-search"),
+        rox_i18n::t!("picker-no-matches"),
         apply,
         cx,
     )
@@ -49,17 +47,26 @@ pub fn fonts_changed() {
     FONTS_REV.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Enumerated once per [`fonts_changed`]: the settings pages render on every
-/// slider scrub.
+/// The family rows as built for one font revision in one language.
+struct Families {
+    rev: u64,
+    locale: &'static str,
+    rows: Arc<Vec<PickRow>>,
+}
+
+/// Enumerated once per [`fonts_changed`] and language: the settings pages
+/// render on every slider scrub, and the Default row is translated.
 fn families(cx: &mut App) -> Arc<Vec<PickRow>> {
-    static FONTS: Mutex<Option<(u64, Arc<Vec<PickRow>>)>> = Mutex::new(None);
+    static FONTS: Mutex<Option<Families>> = Mutex::new(None);
 
     let rev = FONTS_REV.load(Ordering::Relaxed);
+    let locale = rox_i18n::locale();
     let mut cache = FONTS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, rows)) = cache.as_ref()
-        && *at == rev
+    if let Some(held) = cache.as_ref()
+        && held.rev == rev
+        && held.locale == locale
     {
-        return rows.clone();
+        return held.rows.clone();
     }
 
     let mut names = cx.text_system().all_font_names();
@@ -67,7 +74,7 @@ fn families(cx: &mut App) -> Arc<Vec<PickRow>> {
     names.dedup();
 
     let mut rows = vec![PickRow {
-        label: DEFAULT_LABEL.into(),
+        label: rox_i18n::t!("picker-font-default"),
         value: None,
         terms: Vec::new(),
         icon: None,
@@ -83,7 +90,11 @@ fn families(cx: &mut App) -> Arc<Vec<PickRow>> {
     }));
 
     let rows = Arc::new(rows);
-    *cache = Some((rev, rows.clone()));
+    *cache = Some(Families {
+        rev,
+        locale,
+        rows: rows.clone(),
+    });
 
     rows
 }

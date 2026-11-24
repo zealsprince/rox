@@ -18,6 +18,7 @@ use rox_panel_kit::ui::{Seg, kbd_line, section, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
 use crate::matching::{WindowRegistry, open_or_focus};
+use rox_panel_kit::PlaceholderKey as _;
 
 actions!(track_title, [Save]);
 
@@ -63,7 +64,7 @@ pub fn open(state: AppState, id: i64, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(420.), px(170.)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("track-title-window-title"),
+                || rox_i18n::t!("track-title-window-title"),
                 bounds,
                 None,
                 move |window, cx| cx.new(|cx| TitleWindow::new(state, key, current, window, cx)),
@@ -95,7 +96,7 @@ impl TitleWindow {
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("info-item-title"))
+                .placeholder_key("info-item-title", window, cx)
                 .default_value(current.clone())
         });
         let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
@@ -186,9 +187,9 @@ impl TitleWindow {
     fn footer(&self, savable: bool, cx: &mut Context<Self>) -> Div {
         let hint = if savable {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-save")),
             ])
             .text_xs()
             .into_any_element()
@@ -222,7 +223,7 @@ impl TitleWindow {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Save",
+                        rox_i18n::t!("dialog-save"),
                         icons::CHECK,
                         !savable,
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),

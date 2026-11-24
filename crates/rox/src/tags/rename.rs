@@ -89,7 +89,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("tags-rename-window-title"),
+                || rox_i18n::t!("tags-rename-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| RenameFiles::new(state, ids, window, cx)),
@@ -738,9 +738,9 @@ impl RenameFiles {
                 .into_any_element()
         } else {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to apply".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-apply")),
             ])
             .text_xs()
             .into_any_element()
@@ -765,7 +765,7 @@ impl RenameFiles {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Apply",
+                        rox_i18n::t!("dialog-apply"),
                         icons::CHECK,
                         self.applying || movable == 0,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),

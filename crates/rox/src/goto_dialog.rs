@@ -12,6 +12,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use rox_core::fmt::fmt_time;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState, ScrubState};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{Seg, kbd_line};
 use rox_services::player::NowPlaying;
 
@@ -39,8 +40,8 @@ impl GoTo {
     pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Empty rather than seeded with the current time, which would have to be
         // cleared before typing. The clocks show where playback is.
-        let input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("goto-placeholder")));
+        let input = cx
+            .new(|cx| InputState::new(window, cx).placeholder_key("goto-placeholder", window, cx));
         let _input_events = cx.subscribe_in(
             &input,
             window,

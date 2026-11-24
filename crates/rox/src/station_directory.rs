@@ -25,6 +25,7 @@ use rox_library::cue::{TrackKey, source_id};
 use rox_library::stations::{self, Station};
 use rox_net::sources::radio_browser::{self, Found};
 use rox_panel_api::panel::{self, AppState};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_services::catalog::LibraryEvent;
 
 /// The directory ranks by votes, so past the head of the list is noise.
@@ -55,7 +56,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("directory-window-title"),
+        || rox_i18n::t!("directory-window-title"),
         bounds,
         Some(MIN),
         move |window, cx| cx.new(|cx| StationDirectory::new(state, window, cx)),
@@ -83,7 +84,7 @@ struct StationDirectory {
 impl StationDirectory {
     fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let find = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rox_i18n::t!("directory-placeholder"))
+            InputState::new(window, cx).placeholder_key("directory-placeholder", window, cx)
         });
         window.focus(&find.focus_handle(cx));
 

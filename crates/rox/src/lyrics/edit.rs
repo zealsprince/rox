@@ -68,7 +68,7 @@ pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("lyrics-edit-window-title"),
+                || rox_i18n::t!("lyrics-edit-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| LyricsEdit::new(state, target, window, cx)),
@@ -412,9 +412,9 @@ impl LyricsEdit {
                 .into_any_element(),
             None => {
                 let mut segs = vec![
-                    Seg::Text("Press".into()),
+                    Seg::Text(rox_i18n::t!("hint-press")),
                     Seg::Key(settings_ui::chord("Enter")),
-                    Seg::Text("to save".into()),
+                    Seg::Text(rox_i18n::t!("hint-to-save")),
                 ];
                 if position.is_some() {
                     segs.push(Seg::Text(rox_i18n::t!("lyrics-edit-hint-or")));
@@ -452,7 +452,7 @@ impl LyricsEdit {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Save",
+                        rox_i18n::t!("dialog-save"),
                         icons::CHECK,
                         !ready,
                         cx.listener(|this, _, window, cx| this.save(window, cx)),

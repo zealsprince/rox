@@ -96,6 +96,7 @@ use audio_page::output_mode;
 use library_page::seed_root_stats;
 use ml_models_page::ModelKind;
 use radio_page::read_stations;
+use rox_panel_kit::PlaceholderKey as _;
 use storage_page::StorageInfo;
 
 const TRACKS_COL_W: Pixels = px(56.);
@@ -142,7 +143,7 @@ pub fn open(
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("settings-window-title"),
+        || rox_i18n::t!("settings-window-title"),
         bounds,
         Some(settings_ui::MIN_SIZE),
         move |window, cx| {
@@ -690,29 +691,35 @@ impl SettingsWindow {
         let _librefm_changed = cx.observe(&state.librefm, |_, _, cx| cx.notify());
         let listenbrainz_api_url = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-integrations-listenbrainz-api-url-placeholder"
-                ))
+                .placeholder_key(
+                    "settings-integrations-listenbrainz-api-url-placeholder",
+                    window,
+                    cx,
+                )
                 .default_value(settings.accounts.listenbrainz.url.clone())
         });
         let listenbrainz_token = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-integrations-listenbrainz-token-placeholder"
-                ))
+                .placeholder_key(
+                    "settings-integrations-listenbrainz-token-placeholder",
+                    window,
+                    cx,
+                )
                 .masked(true)
                 .default_value(settings.accounts.listenbrainz.token.clone())
         });
         let lastfm_key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-integrations-lastfm-key-placeholder"))
+                .placeholder_key("settings-integrations-lastfm-key-placeholder", window, cx)
                 .default_value(settings.accounts.lastfm.api_key.clone())
         });
         let lastfm_secret = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-integrations-lastfm-secret-placeholder"
-                ))
+                .placeholder_key(
+                    "settings-integrations-lastfm-secret-placeholder",
+                    window,
+                    cx,
+                )
                 .masked(true)
                 .default_value(settings.accounts.lastfm.api_secret.clone())
         });
@@ -739,7 +746,7 @@ impl SettingsWindow {
         }
         let broadcast_host = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-audio-broadcast-host-placeholder"))
+                .placeholder_key("settings-audio-broadcast-host-placeholder", window, cx)
                 .default_value(settings.broadcast.host.clone())
         });
         let broadcast_port = cx.new(|cx| {
@@ -754,20 +761,18 @@ impl SettingsWindow {
         });
         let broadcast_user = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-audio-broadcast-user-placeholder"))
+                .placeholder_key("settings-audio-broadcast-user-placeholder", window, cx)
                 .default_value(settings.broadcast.user.clone())
         });
         let broadcast_password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-audio-broadcast-password-placeholder"
-                ))
+                .placeholder_key("settings-audio-broadcast-password-placeholder", window, cx)
                 .masked(true)
                 .default_value(settings.broadcast.password.clone())
         });
         let broadcast_name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-audio-broadcast-name-placeholder"))
+                .placeholder_key("settings-audio-broadcast-name-placeholder", window, cx)
                 .default_value(settings.broadcast.name.clone())
         });
         let mut _broadcast_changes = Vec::with_capacity(6);
@@ -817,12 +822,18 @@ impl SettingsWindow {
         let plugins = subsonic::read_plugins(&settings.accounts.plugins, &library, cx);
 
         let station_url = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-sources-stations-url-placeholder"))
+            InputState::new(window, cx).placeholder_key(
+                "settings-sources-stations-url-placeholder",
+                window,
+                cx,
+            )
         });
         let station_name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-sources-stations-name-placeholder"))
+            InputState::new(window, cx).placeholder_key(
+                "settings-sources-stations-name-placeholder",
+                window,
+                cx,
+            )
         });
         let stations = read_stations(&library, cx);
         let _station_submit = [&station_url, &station_name]
@@ -841,8 +852,11 @@ impl SettingsWindow {
             .collect();
 
         let exclude_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-library-exclude-placeholder"))
+            InputState::new(window, cx).placeholder_key(
+                "settings-library-exclude-placeholder",
+                window,
+                cx,
+            )
         });
         let _exclude_submit = cx.subscribe_in(
             &exclude_input,
@@ -939,7 +953,7 @@ impl SettingsWindow {
         // Blank means no album tag.
         let capture_album = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-playback-capture-album-placeholder"))
+                .placeholder_key("settings-playback-capture-album-placeholder", window, cx)
                 .default_value(settings.capture.album.clone())
         });
         let _capture_album_changed =
@@ -954,7 +968,7 @@ impl SettingsWindow {
         // struct doesn't put the old key back.
         let acoustid_key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("settings-providers-acoustid-key-placeholder"))
+                .placeholder_key("settings-providers-acoustid-key-placeholder", window, cx)
                 .default_value(settings.accounts.providers.acoustid_key.clone())
         });
         let _acoustid_key_changed =
@@ -969,7 +983,7 @@ impl SettingsWindow {
         // The first search measures storage, so the Storage rows have numbers
         // without a page visit.
         let search = cx.new(|cx| {
-            SearchBox::new(rox_i18n::t!("query-search"), "", window, cx)
+            SearchBox::new("query-search", "", window, cx)
                 .small()
                 .icon()
         });
@@ -1123,12 +1137,18 @@ impl SettingsWindow {
             rg_coverage,
             rg_job,
             layout_name: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(rox_i18n::t!("settings-workspace-layout-name-placeholder"))
+                InputState::new(window, cx).placeholder_key(
+                    "settings-workspace-layout-name-placeholder",
+                    window,
+                    cx,
+                )
             }),
             workspace_name: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(rox_i18n::t!("settings-workspace-name-placeholder"))
+                InputState::new(window, cx).placeholder_key(
+                    "settings-workspace-name-placeholder",
+                    window,
+                    cx,
+                )
             }),
             workspace_card: None,
             workspace_authors: crate::workspaces::saved_authors(),

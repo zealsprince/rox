@@ -366,6 +366,10 @@ fn windows_tray_thread(
         if msg.hwnd.is_null() {
             match msg.message {
                 WM_ROX_TRAY_STATE => {
+                    // Every state push re-words the menu, which is how a
+                    // language switch reaches it.
+                    open.set_text(rox_i18n::t!("tray-open"));
+                    quit.set_text(rox_i18n::t!("tray-quit"));
                     toggle.set_text(if msg.wParam & 2 != 0 {
                         rox_i18n::t!("tray-pause")
                     } else {
@@ -530,3 +534,19 @@ pub(crate) fn set_playing(has_track: bool, playing: bool, cx: &mut App) {
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn set_playing(_has_track: bool, _playing: bool, _cx: &mut App) {}
+
+/// Re-word the menu after a language switch by pushing the last state again:
+/// the push is what makes either tray rebuild its labels. Nothing pushed yet
+/// means the icon still shows the idle state it was spawned with.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn relabel(cx: &mut App) {
+    let (has_track, playing) = cx
+        .default_global::<TrayService>()
+        .pushed
+        .take()
+        .unwrap_or((false, false));
+    set_playing(has_track, playing, cx);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub(crate) fn relabel(_cx: &mut App) {}

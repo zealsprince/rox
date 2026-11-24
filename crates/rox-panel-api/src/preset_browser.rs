@@ -31,6 +31,7 @@ use rox_core::settings as core_settings;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_library::folders::{Node, build_roots, sum_counts};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui as settings_ui;
 
 /// The tests' row cap. The browser passes no bound, since its list only draws
@@ -648,7 +649,7 @@ impl EventEmitter<BrowserEvent> for PresetBrowser {}
 impl PresetBrowser {
     pub fn new(height: Option<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rox_i18n::t!("milkdrop-filter-presets"))
+            InputState::new(window, cx).placeholder_key("milkdrop-filter-presets", window, cx)
         });
         let _filter_events = cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {

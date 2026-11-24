@@ -133,6 +133,13 @@ pub struct ParseError {
     pub what: Problem,
 }
 
+impl ParseError {
+    /// For the settings row; [`fmt::Display`] stays English for logs and tests.
+    pub fn message(&self) -> String {
+        rox_i18n::t!(self.what.key(), at = self.at).to_string()
+    }
+}
+
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} at {}", self.what.text(), self.at)
@@ -152,6 +159,19 @@ pub enum Problem {
 }
 
 impl Problem {
+    fn key(self) -> &'static str {
+        match self {
+            Problem::Stray => "expr-error-stray",
+            Problem::Unknown => "expr-error-unknown",
+            Problem::Arity => "expr-error-arity",
+            Problem::Unclosed => "expr-error-unclosed",
+            Problem::Ended => "expr-error-ended",
+            Problem::Trailing => "expr-error-trailing",
+            Problem::TooDeep => "expr-error-too-deep",
+            Problem::TooLong => "expr-error-too-long",
+        }
+    }
+
     fn text(self) -> &'static str {
         match self {
             Problem::Stray => "unexpected character",

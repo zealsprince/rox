@@ -640,8 +640,7 @@ impl PlaylistsPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search =
-            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
+        let search = cx.new(|cx| SearchBox::new("query-search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         let _query_changed = cx.subscribe(
             &state.query,

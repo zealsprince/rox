@@ -224,7 +224,7 @@ enum Refresh {
     },
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct WatchSummary {
     updated: usize,
     removed: usize,
@@ -258,7 +258,7 @@ pub struct Library {
     /// Newest value per track; one drain writes them at a time.
     pending_ratings: HashMap<i64, u8>,
     rating_write_running: bool,
-    status: SharedString,
+    status: StatusLine,
     /// Apart from `watcher`, which is also None with no roots yet, so adding
     /// the first folder arms it.
     watch_on: bool,
@@ -274,6 +274,24 @@ pub struct Library {
     self_writes: HashMap<PathBuf, std::time::Instant>,
     /// The same for the app's own renames: the row already moved with the file.
     self_renames: HashMap<(PathBuf, PathBuf), std::time::Instant>,
+}
+
+/// The menubar's library line. A scan's summary is held as counts and worded
+/// on read, so a language switch rewords it; anything else is a line as
+/// written.
+enum StatusLine {
+    Text(SharedString),
+    Scan {
+        total: usize,
+        summary: Option<ScanSummary>,
+        watch: Option<WatchSummary>,
+    },
+}
+
+impl<T: Into<SharedString>> From<T> for StatusLine {
+    fn from(text: T) -> Self {
+        StatusLine::Text(text.into())
+    }
 }
 
 impl EventEmitter<LibraryEvent> for Library {}
@@ -345,7 +363,7 @@ impl Library {
             scan: None,
             pending_ratings: HashMap::new(),
             rating_write_running: false,
-            status,
+            status: status.into(),
             watch_on: rox_core::settings::Settings::load().watch_library,
             watcher: None,
             watch_task: None,
@@ -466,7 +484,14 @@ impl Library {
     }
 
     pub fn status(&self) -> SharedString {
-        self.status.clone()
+        match &self.status {
+            StatusLine::Text(text) => text.clone(),
+            StatusLine::Scan {
+                total,
+                summary,
+                watch,
+            } => status_line(*total, summary.as_ref(), watch.as_ref()).into(),
+        }
     }
 
     pub fn can_rescan(&self) -> bool {
@@ -1986,12 +2011,11 @@ impl Library {
                                 order,
                                 row_by_id,
                             } => {
-                                this.status = status_line(
-                                    projection.browse_len(),
-                                    summary.as_ref(),
-                                    watch.as_ref(),
-                                )
-                                .into();
+                                this.status = StatusLine::Scan {
+                                    total: projection.browse_len(),
+                                    summary: summary.clone(),
+                                    watch: watch.clone(),
+                                };
                                 this.swap_projection(*projection, order, row_by_id);
                             }
                             Loaded::Patch {
@@ -2002,8 +2026,11 @@ impl Library {
                             } => {
                                 owed = !this.apply_patch(*shard, &gone, &plays, &spans);
                                 let total = this.projection.as_ref().map_or(0, |p| p.browse_len());
-                                this.status =
-                                    status_line(total, summary.as_ref(), watch.as_ref()).into();
+                                this.status = StatusLine::Scan {
+                                    total,
+                                    summary: summary.clone(),
+                                    watch: watch.clone(),
+                                };
                             }
                         }
                         // A patch only re-reads the counts of rows it touched,
@@ -2552,45 +2579,38 @@ fn status_line(
 ) -> String {
     // Zero counts stay out, so the line fits the menubar.
     let mut parts = Vec::new();
-    let count = |n: usize| rox_i18n::format::format_int(n as i64);
+    fn part(parts: &mut Vec<String>, key: &str, n: usize) {
+        if n > 0 {
+            parts.push(rox_i18n::t!(key, count = n as u64).to_string());
+        }
+    }
+
     if let Some(s) = summary {
-        if s.indexed > 0 {
-            parts.push(format!("{} indexed", count(s.indexed)));
-        }
-        if s.unchanged > 0 {
-            parts.push(format!("{} unchanged", count(s.unchanged)));
-        }
-        if s.untagged > 0 {
-            parts.push(format!("{} untagged", count(s.untagged)));
-        }
-        if s.removed > 0 {
-            parts.push(format!("{} removed", count(s.removed)));
-        }
-        match s.unreachable {
-            0 => {}
-            1 => parts.push("1 folder unreachable".into()),
-            n => parts.push(format!("{} folders unreachable", count(n))),
-        }
+        part(&mut parts, "library-status-indexed", s.indexed);
+        part(&mut parts, "library-status-unchanged", s.unchanged);
+        part(&mut parts, "library-status-untagged", s.untagged);
+        part(&mut parts, "library-status-removed", s.removed);
+        part(&mut parts, "library-status-unreachable", s.unreachable);
         if s.aborted {
-            parts.push("stopped early".into());
+            parts.push(rox_i18n::t!("library-status-stopped-early").to_string());
         }
     }
     if let Some(w) = watch {
-        if w.updated > 0 {
-            parts.push(format!("{} updated", count(w.updated)));
-        }
-        if w.removed > 0 {
-            parts.push(format!("{} removed", count(w.removed)));
-        }
-        if w.renamed > 0 {
-            parts.push(format!("{} renamed", count(w.renamed)));
-        }
+        part(&mut parts, "library-status-updated", w.updated);
+        part(&mut parts, "library-status-removed", w.removed);
+        part(&mut parts, "library-status-renamed", w.renamed);
     }
     let tracks = rox_i18n::t!("status-count-tracks", count = total as u64);
     if parts.is_empty() {
         return tracks.to_string();
     }
-    format!("{tracks} ({})", parts.join(", "))
+    let joiner = rox_i18n::t!("library-status-joiner");
+    rox_i18n::t!(
+        "library-status-with-details",
+        tracks = tracks.to_string(),
+        details = parts.join(joiner.as_ref())
+    )
+    .to_string()
 }
 
 fn keys_from(

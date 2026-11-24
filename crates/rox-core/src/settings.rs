@@ -880,11 +880,19 @@ pub fn set_theme(theme: Theme, cx: &mut App) {
 }
 
 /// Swap the interface language and repaint every window, since the locale
-/// static is outside gpui's reactivity.
+/// static is outside gpui's reactivity. Text set outside a render (window
+/// titles, OS menus) observes [`LanguageSwitch`] to be worded again.
 pub fn set_language(language: Option<&str>, cx: &mut App) {
     rox_i18n::set_locale(language);
+    cx.default_global::<LanguageSwitch>().0 += 1;
     cx.refresh_windows();
 }
+
+/// Bumped by every [`set_language`], for `cx.observe_global`.
+#[derive(Default)]
+pub struct LanguageSwitch(pub u64);
+
+impl gpui::Global for LanguageSwitch {}
 
 fn resolve_theme(theme: Theme) -> palette::Mode {
     match theme {

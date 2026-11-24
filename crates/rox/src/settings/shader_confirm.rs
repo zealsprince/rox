@@ -50,7 +50,7 @@ pub fn open(
         let view = view.clone();
         rox_panel_api::panel::open_fixed_window(
             cx,
-            rox_i18n::t!("shader-confirm-window-title"),
+            || rox_i18n::t!("shader-confirm-window-title"),
             bounds,
             move |_, cx| {
                 let entity =

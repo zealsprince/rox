@@ -46,6 +46,16 @@ signal-kind-level = Livello
 signal-kind-onset = Attacco
 signal-kind-trigger = Trigger
 signal-kind-total = Totale
+
+# A signal's name until the user gives it one, worded from its source.
+# $range is a band's span in hertz, the unit written once when both ends
+# share it; $rate is a total's laps a second.
+signal-range = { $lo }–{ $hi }
+signal-label-band = { signal-kind-band } { $range }
+signal-label-onset = { signal-kind-onset } { $range }
+signal-label-trigger = { signal-kind-trigger } { $range }
+signal-label-total = { signal-kind-total } { $rate }/s
+
 signal-response = Risposta
 signal-response-pulse = Quanto a lungo ogni impulso risuona prima di spegnersi
 signal-response-drift = 0 scatta con la musica, 100 le va dietro
@@ -119,6 +129,7 @@ panel-section-size = Dimensione
 panel-section-opacity = Opacità
 panel-section-frame = Cornice
 panel-section-colors = Colori
+panel-colors-overrides-note = Le sostituzioni ricolorano solo questo pannello e restano ferme sotto i colori del brano; un collegamento segue invece un altro colore dell'app e si muove con il tema. Reimposta un campione o svuota il suo campo hex per tornare a seguire la palette dell'app
 panel-section-font = Carattere
 panel-section-slider = Cursore
 panel-section-shader = Shader
@@ -169,6 +180,9 @@ panel-shader-is-scene = Questo shader è una scena, quindi copre il corpo del pa
 shader-source = Sorgente
 shader-pick-none = Nessuno
 shader-reload = Ricarica
+shader-no-pipeline-title = Gli shader non girano in questa build
+shader-no-pipeline-note = Questa build disegna con un backend senza pipeline degli shader. Gli shader passano per le pipeline di rendering di blade, quindi ogni sorgente viene rifiutata, qualunque cosa dica.
+shader-unapproved-post = questo shader è arrivato con uno spazio di lavoro e non è stato approvato su questa macchina
 shader-edit-as-file = Modifica come file
 shader-make-private-copy = Crea copia privata
 shader-save-replace = Sostituisci
@@ -208,6 +222,18 @@ preset-save-replaces-global = Sostituisce la preimpostazione globale che si chia
 ## Keyboard hints
 hint-press = Premi
 hint-key-enter = Invio
+hint-to-save = per salvare
+hint-to-apply = per applicare
+hint-to-convert = per convertire
+hint-to-repair = per riparare
+
+## Dialog buttons
+
+# The commit and scan buttons the small editor windows share.
+dialog-save = Salva
+dialog-apply = Applica
+dialog-scan = Scansiona
+dialog-rescan = Riscansiona
 
 ## Settings: language
 settings-language = Lingua
@@ -216,6 +242,10 @@ settings-language = Lingua
 settings-language-system = (Lingua di sistema)
 settings-language-search = Cerca una lingua
 picker-no-matches = Nessun risultato
+picker-icon-none = Nessuna
+picker-icon-search = Cerca un'icona
+picker-font-default = Predefinito
+picker-font-search = Cerca un carattere
 settings-search-no-matches = Nessun risultato per "{ $text }"
 settings-search-scope = Cerca solo nella pagina aperta
 
@@ -443,6 +473,23 @@ playback-sleep-tip-remaining = Timer, { $minutes } min rimasti
 menubar-button-tasks = Pulsante attività
 menubar-button-sleep = Pulsante timer
 menubar-button-rescan = Pulsante di nuova scansione
+menubar-rescan-tip = Riscansiona le cartelle della libreria
+menubar-stop-scan-tip = Ferma la scansione
+
+# The menubar's line after a scan: the track count, then what changed.
+library-status-with-details = { $tracks } ({ $details })
+library-status-joiner = { ", " }
+library-status-indexed = { $count } indicizzate
+library-status-unchanged = { $count } invariate
+library-status-untagged = { $count } senza tag
+library-status-removed = { $count } rimosse
+library-status-unreachable = { $count ->
+    [one] { $count } cartella irraggiungibile
+   *[other] { $count } cartelle irraggiungibili
+}
+library-status-stopped-early = interrotto in anticipo
+library-status-updated = { $count } aggiornate
+library-status-renamed = { $count } rinominate
 
 ## Custom button states
 
@@ -909,6 +956,41 @@ settings-appearance-theme-dark = Scuro
 settings-appearance-theme-light = Chiaro
 settings-appearance-theme-system = Sistema
 
+## Palette roles
+
+# The colour roles a palette is made of, named in the Appearance page's
+# grid, the panel colour overrides and every colour picker, with the
+# groups the grid heads them with. Keyed by the role's saved name.
+palette-group-core = Base
+palette-group-surfaces = Superfici
+palette-group-tints = Tinte
+palette-group-ink = Primo piano
+palette-role-accent = Accento
+palette-role-accent-hover = Accento al passaggio
+palette-role-highlight = Evidenziazione
+palette-role-border = Bordo
+palette-role-border-light = Bordo chiaro
+palette-role-text-bright = Testo brillante
+palette-role-text-on-accent = Testo su accento
+palette-role-bg-root = Sfondo
+palette-role-bg-panel = Pannello
+palette-role-bg-elevated = Rialzato
+palette-role-bg-header = Intestazione
+palette-role-bg-menubar = Barra dei menu
+palette-role-bg-menu = Menu
+palette-role-bg-control = Controllo
+palette-role-bg-menu-hover = Menu al passaggio
+palette-role-bg-control-active = Controllo attivo
+palette-role-bg-control-hover = Controllo al passaggio
+palette-role-bg-input = Campo di input
+palette-role-bg-toolbar = Barra degli strumenti
+palette-role-text = Testo
+palette-role-text-secondary = Secondario
+palette-role-text-dim = Attenuato
+palette-role-text-muted = Smorzato
+palette-role-text-faint = Tenue
+palette-role-gridline = Linea guida
+
 ## Settings: application
 settings-application-check-updates = Cerca aggiornamenti
     .description = Cerca una versione più recente di rox e di ciò che è stato installato dal catalogo una volta al giorno all'avvio; la finestra Informazioni controlla subito in ogni caso
@@ -1014,6 +1096,8 @@ settings-audio-replaygain-status-measured = { $measured ->
 settings-audio-replaygain-status-tagged = Tutte le { $total } tracce scansionate hanno i tag ReplayGain
 settings-audio-replaygain-untagged = File senza tag
     .description = A che livello suona un file senza tag ReplayGain. Niente l'ha misurato, quindi questa è una stima al posto di una misura. Lascialo a zero e le tracce senza tag suoneranno come hanno sempre fatto
+settings-audio-replaygain-status-none = Nessuna delle tracce scansionate ({ $total }) ha un ReplayGain su cui livellare. Misura i mancanti le analizza e salva i valori
+settings-audio-replaygain-status-partial = { $covered } delle { $total } tracce scansionate hanno un guadagno su cui livellare, misurato da rox per { $measured }. Le altre { $missing } suonano con l'impostazione dei file senza tag
 settings-audio-section-broadcast = Trasmissione
 settings-audio-section-equalizer = Equalizzatore
 settings-audio-section-output = Uscita
@@ -1612,6 +1696,7 @@ menu-health = Stato della libreria
 menu-power-search = Ricerca avanzata
 menu-quick-play = Riproduzione rapida
 menu-hide-menubar = Nascondi la barra dei menu
+menu-show-menubar = Mostra la barra dei menu
 menu-import-workspace = Importa spazio di lavoro...
 menu-library = Libreria
 menu-measure-replaygain = Misura il ReplayGain...
@@ -1660,6 +1745,13 @@ menu-welcome = Benvenuto
 menu-window = Finestra
 menu-workspace = Spazio di lavoro
 menu-workspace-builtin-tag = Integrato
+
+# The macOS menu bar has no checkmarks, so a toggle row names what picking
+# it does to the setting it carries.
+native-menu-show = Mostra { $what }
+native-menu-hide = Nascondi { $what }
+native-menu-turn-on = Attiva { $what }
+native-menu-turn-off = Disattiva { $what }
 
 ## Workspaces
 workspace-apply-body = Questo sostituisce tutto il look: layout, palette, aspetto.
@@ -1754,6 +1846,7 @@ tasks-measuring = Misurazione di { $progress }
 tasks-model-downloading = Un modello si sta ancora scaricando
 tasks-no-library-window = Non c'è nessuna finestra della libreria aperta, quindi non si possono avviare da qui
 tasks-nothing-to-measure = Ancora niente di scansionato da misurare
+tasks-nothing-to-analyze = Ancora niente di scansionato da analizzare
 tasks-rg-all-gain = Tutte le { $count } tracce hanno un guadagno a cui suonare
 tasks-rg-partial = { $missing ->
     [one] { $missing } di { $total } tracce non ha guadagno
@@ -2528,6 +2621,24 @@ tags-editor-unread-count = Non è stato possibile leggere i tag di { $failed } f
 tags-editor-will-clear = verrà pulito
 tags-editor-will-remove = verrà rimosso
 tags-editor-window-title = rox - Editor dei tag
+
+# The tag fields as the tag editor and the release matcher name them.
+tags-field-file = File
+tags-field-title = Titolo
+tags-field-title-sort = Ordinamento titolo
+tags-field-artist = Artista
+tags-field-artist-sort = Ordinamento artista
+tags-field-album-artist = Artista dell'album
+tags-field-album-artist-sort = Ordinamento artista dell'album
+tags-field-album = Album
+tags-field-album-sort = Ordinamento album
+tags-field-genre = Genere
+tags-field-year = Anno
+tags-field-track = N. traccia
+tags-field-disc = Disco
+tags-field-comment = Commento
+tags-field-rating = Valutazione
+
 tags-guess-empty-segment = lo schema produce un nome di cartella o file vuoto
 tags-guess-no-placeholders = nessun segnaposto
 tags-guess-placeholders = Segnaposto
@@ -2574,6 +2685,8 @@ tags-rename-window-title = rox - Rinomina file
 tags-repair-affected-files = File interessati
 tags-repair-section = Riparazione
 tags-repair-check-to-repair = Spunta un file per ripararlo
+tags-repair-scanning = Scansione in corso...
+tags-repair-scanning-progress = Scansione in corso { $done }/{ $total }...
 tags-repair-count = { $count ->
     [one] 1 file
    *[other] { $count } file
@@ -2839,6 +2952,7 @@ cover-editor-section = Copertina
 cover-editor-slot-back = Copertina posteriore
 cover-editor-slot-front = Copertina frontale
 cover-editor-slot-media = Supporto
+cover-editor-slot-artist = Artista
 cover-editor-will-remove = Verrà rimossa
 cover-editor-window-title = rox - Copertina
 cover-matcher-blocked-fetching = Recupero dell'immagine intera...
@@ -2851,6 +2965,7 @@ cover-matcher-cover-count = { $count ->
 cover-matcher-editor-closed = L'editor della copertina è stato chiuso
 cover-matcher-no-covers = Nessuna copertina trovata
 cover-matcher-search-failed = Ricerca fallita: { $error }
+cover-matcher-searching = Ricerca...
 cover-matcher-set-cover = Imposta la copertina
 cover-matcher-setting = Impostazione...
 cover-matcher-tile-info = { $provider }  { $width }px
@@ -2928,6 +3043,8 @@ lyrics-matcher-match-count = { $count ->
 lyrics-matcher-no-query = Questa traccia non ha artista e titolo su cui cercare
 lyrics-matcher-pick-preview = Scegli una corrispondenza da vedere in anteprima
 lyrics-matcher-search-failed = Ricerca fallita: { $error }
+lyrics-matcher-searching = Ricerca...
+lyrics-matcher-no-matches = Nessuna corrispondenza trovata
 lyrics-matcher-synced-tag = { $provider }  sincronizzato
 lyrics-matcher-window-title = rox - Trova testo
 lyrics-no-lyrics-notice = Nessun testo
@@ -3014,6 +3131,7 @@ quick-play-cover = Copertina
 quick-play-duration = Durata
     .description = Mostra la durata di ogni risultato a destra
 quick-play-search-placeholder = Cerca nella libreria
+quick-play-library-empty = La libreria è vuota
 quick-play-subtitle = Sottotitolo
     .description = Mostra artista e album sotto ogni risultato
 quick-play-syntax-absent = Righe senza alcun valore
@@ -3068,6 +3186,8 @@ tray-quit = Esci
 ## Window controls
 window-controls-close = Chiudi
 window-controls-maximize = Ingrandisci
+window-controls-exit-fullscreen = Esci da schermo intero
+window-controls-fullscreen-zoom = Schermo intero, o clic con Opzione per ingrandire
 window-controls-mini-toggle = Interruttore mini
 window-controls-minimize = Riduci a icona
 window-controls-pieces = Pulsanti
@@ -3248,6 +3368,17 @@ waveform-live-window = Finestra in diretta
 waveform-live-expression = Espressione del movimento
     .description = x va da 0 a 1 lungo la striscia, t sono i secondi dell'orologio del pannello; sin cos tan abs sqrt exp ln floor min max clamp mix, con + - * / ^ pi e le parentesi
 waveform-live-expression-error = { $reason }, quindi la striscia disegna la forma predefinita
+
+# Why a motion expression didn't parse; $at is the character position.
+expr-error-stray = carattere inatteso alla posizione { $at }
+expr-error-unknown = nome sconosciuto alla posizione { $at }
+expr-error-arity = numero di argomenti sbagliato alla posizione { $at }
+expr-error-unclosed = parentesi non chiusa alla posizione { $at }
+expr-error-ended = l'espressione finisce troppo presto alla posizione { $at }
+expr-error-trailing = testo in più alla posizione { $at }
+expr-error-too-deep = annidato troppo a fondo alla posizione { $at }
+expr-error-too-long = troppo lungo alla posizione { $at }
+
 waveform-section-live = In diretta
 waveform-streaming = IN STREAMING
 waveform-unavailable = Forma d'onda non disponibile per questa traccia
@@ -3975,6 +4106,8 @@ track-info-menu-overflow = Testo in eccesso
 track-info-next = Prossimo: { $line }
 track-info-opening = apertura...
 track-info-output-fallback = L'uscita esclusiva è stata rifiutata dal dispositivo, quindi la riproduzione passa dal mixer condiviso. Il dispositivo ha riferito: { $reason }
+track-info-output-exclusive = Esclusiva { $rate } kHz { $format }
+track-info-queue-finished = (coda finita)
 track-info-output-resample-exclusive = Questo file è a { $source } kHz e la scheda ha accettato { $device } kHz, quindi ogni campione viene convertito in uscita. Il dispositivo non ha voluto girare alla frequenza del file.
 track-info-output-resample-mixer = Questo file è a { $source } kHz e il mixer gira a { $device } kHz, quindi ogni campione viene convertito in uscita. La modalità esclusiva passerebbe invece alla scheda la frequenza del file.
 track-info-output-resample-exclusive-stream = Questo flusso è a { $source } kHz e la scheda ha accettato { $device } kHz, quindi ogni campione viene convertito in uscita. Il dispositivo non ha voluto girare alla frequenza del flusso.
@@ -4135,6 +4268,7 @@ transport-pieces = Elementi
 ## Stragglers picked up in the final sweep
 
 duplicates-scanning = Scansione in corso...
+duplicates-section = Duplicati
 about-copyright = Copyright © 2026
 signal-name-placeholder = Nome del segnale
 signals-empty = Ancora nessun segnale. Aggiungine uno, oppure fai clic destro su una manopola collegabile.

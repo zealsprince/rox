@@ -1248,8 +1248,8 @@ impl SettingsWindow {
                         match panel::shader::unsupported(&error) {
                             true => panel::banner(
                                 panel::Tone::Bad,
-                                panel::shader::NO_PIPELINE_TITLE,
-                                vec![panel::shader::NO_PIPELINE_NOTE.into()],
+                                panel::shader::no_pipeline_title(),
+                                vec![panel::shader::no_pipeline_note()],
                             ),
                             false => panel::banner(
                                 panel::Tone::Bad,
@@ -1284,7 +1284,7 @@ impl SettingsWindow {
                 .m(px(-4.))
                 .into_any_element()
         };
-        settings_ui::color_cell(control, role.label, false, None)
+        settings_ui::color_cell(control, settings_ui::role_label(role.name), false, None)
     }
 
     fn colors_section(&self, q: &Query, columns: usize, cx: &mut Context<Self>) -> Section {

@@ -25,6 +25,7 @@ use rox_library::duplicates::match_duplicates;
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{MIN_SIZE, block_header, checkbox, section, small_button};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
@@ -100,7 +101,7 @@ pub fn open(
     let bounds = Bounds::centered(None, size(px(760.), px(600.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("duplicates-window-title"),
+        || rox_i18n::t!("duplicates-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| Duplicates::new(library, thumbs, now_art, window, cx)),
@@ -143,7 +144,7 @@ impl Duplicates {
     ) -> Self {
         let _backdrop_changed = cx.observe(&now_art, |_, _, cx| cx.notify());
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rox_i18n::t!("duplicates-filter-placeholder"))
+            InputState::new(window, cx).placeholder_key("duplicates-filter-placeholder", window, cx)
         });
         let _query_changed = cx.subscribe_in(
             &query_input,
@@ -510,7 +511,11 @@ impl Duplicates {
                 )
             })
             .child(small_button(
-                if self.scanned { "Rescan" } else { "Scan" },
+                if self.scanned {
+                    rox_i18n::t!("dialog-rescan")
+                } else {
+                    rox_i18n::t!("dialog-scan")
+                },
                 icons::SEARCH,
                 busy,
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
@@ -909,7 +914,7 @@ impl Render for Duplicates {
             .bg(palette::bg_elevated())
             .child(
                 section(
-                    "Duplicates",
+                    rox_i18n::t!("duplicates-section"),
                     Some(self.scan_controls(cx).into_any_element()),
                     body,
                 )

@@ -81,17 +81,20 @@ impl BuiltinHesuviProfile {
         ]
     }
 
-    pub fn display_name(&self) -> &'static str {
+    /// The virtualizer a profile was captured from, a product name that reads
+    /// the same in every language. None for the built-in crossfeed, which the
+    /// UI names in its own words.
+    pub fn product_name(&self) -> Option<&'static str> {
         match self {
-            BuiltinHesuviProfile::None => "Built-in Crossfeed",
-            BuiltinHesuviProfile::Atmos => "Dolby Atmos",
-            BuiltinHesuviProfile::Gsx => "Sennheiser GSX",
-            BuiltinHesuviProfile::Dtshx => "DTS Headphone:X",
-            BuiltinHesuviProfile::CmssGame => "Creative CMSS-3D",
-            BuiltinHesuviProfile::Sbx67 => "Sound BlasterX",
-            BuiltinHesuviProfile::Razer => "Razer Surround",
-            BuiltinHesuviProfile::Sonic => "Windows Sonic",
-            BuiltinHesuviProfile::DolbyHeadphone => "Dolby Headphone",
+            BuiltinHesuviProfile::None => None,
+            BuiltinHesuviProfile::Atmos => Some("Dolby Atmos"),
+            BuiltinHesuviProfile::Gsx => Some("Sennheiser GSX"),
+            BuiltinHesuviProfile::Dtshx => Some("DTS Headphone:X"),
+            BuiltinHesuviProfile::CmssGame => Some("Creative CMSS-3D"),
+            BuiltinHesuviProfile::Sbx67 => Some("Sound BlasterX"),
+            BuiltinHesuviProfile::Razer => Some("Razer Surround"),
+            BuiltinHesuviProfile::Sonic => Some("Windows Sonic"),
+            BuiltinHesuviProfile::DolbyHeadphone => Some("Dolby Headphone"),
         }
     }
 
@@ -163,16 +166,6 @@ impl IrLayout {
             2 => IrLayout::Stereo2,
             1 => IrLayout::Mono1,
             n => IrLayout::Generic(n),
-        }
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            IrLayout::Hesuvi14 => "HeSuVi 14-ch HRIR",
-            IrLayout::TrueStereo4 => "True Stereo (4-ch)",
-            IrLayout::Stereo2 => "Stereo IR (2-ch)",
-            IrLayout::Mono1 => "Mono IR (1-ch)",
-            IrLayout::Generic(_) => "Multi-channel IR",
         }
     }
 }

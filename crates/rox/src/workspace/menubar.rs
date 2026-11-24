@@ -1011,7 +1011,7 @@ impl Workspace {
                     icons::REFRESH_CW,
                     px(12.),
                     palette::text_muted(),
-                    "Rescan the library folders",
+                    panel::Tip::keyed("menubar-rescan", rox_i18n::t!("menubar-rescan-tip")),
                     |this: &mut Workspace, cx| {
                         this.state
                             .library
@@ -1025,7 +1025,7 @@ impl Workspace {
                     icons::CLOSE,
                     px(12.),
                     palette::text_muted(),
-                    "Stop the scan",
+                    panel::Tip::keyed("menubar-stop-scan", rox_i18n::t!("menubar-stop-scan-tip")),
                     |this: &mut Workspace, cx| {
                         this.state
                             .library

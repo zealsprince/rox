@@ -546,6 +546,37 @@ pub fn t_static(key: &str) -> &'static str {
     text
 }
 
+/// A value built once per language: a list too long to translate on every
+/// render, which a language switch still has to reach. Keyed by the locale
+/// [`locale`] answers, so a test's pinned locale gets its own build.
+pub struct LocaleCache<T>(Mutex<Option<(&'static str, T)>>);
+
+impl<T: Clone> LocaleCache<T> {
+    pub const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    pub fn get(&self, build: impl FnOnce() -> T) -> T {
+        let locale = locale();
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((built_in, value)) = held.as_ref()
+            && *built_in == locale
+        {
+            return value.clone();
+        }
+
+        let value = build();
+        *held = Some((locale, value.clone()));
+        value
+    }
+}
+
+impl<T: Clone> Default for LocaleCache<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// With ROX_PSEUDOLOCALE set, every string gains brackets and a third of
 /// padding, exposing hardcoded literals and layouts that can't take German.
 fn decorate(text: String) -> String {
@@ -885,6 +916,27 @@ mod tests {
                 loc.id
             );
         }
+    }
+
+    #[test]
+    fn a_locale_cache_rebuilds_when_the_language_changes() {
+        static BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let cache: LocaleCache<String> = LocaleCache::new();
+        let read = || {
+            cache.get(|| {
+                BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                translate("settings-language", None).to_string()
+            })
+        };
+
+        pin_thread_locale("en-CA");
+        let english = read();
+        assert_eq!(read(), english, "a second read is served from the cache");
+        pin_thread_locale("de");
+        let german = read();
+
+        assert_ne!(english, german);
+        assert_eq!(BUILDS.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[test]

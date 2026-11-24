@@ -25,6 +25,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers::{LyricsCandidate, TrackQuery};
 use rox_panel_api::panel::AppState;
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::lyrics::{LyricsTarget, PluginLyrics, save_target};
@@ -53,7 +54,7 @@ pub fn open(state: AppState, target: LyricsTarget, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("lyrics-matcher-window-title"),
+                || rox_i18n::t!("lyrics-matcher-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| LyricsMatch::new(state, target, window, cx)),
@@ -106,12 +107,12 @@ impl LyricsMatch {
 
         let artist_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("head-piece-artist"))
+                .placeholder_key("head-piece-artist", window, cx)
                 .default_value(query.artist.clone())
         });
         let title_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("info-item-title"))
+                .placeholder_key("info-item-title", window, cx)
                 .default_value(query.title.clone())
         });
         let _input_events = [&artist_input, &title_input]
@@ -465,7 +466,7 @@ impl LyricsMatch {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Apply",
+                        rox_i18n::t!("dialog-apply"),
                         icons::CHECK,
                         !can_apply,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
@@ -507,9 +508,11 @@ impl Render for LyricsMatch {
         });
 
         let content = match &self.phase {
-            Phase::Searching => note("Searching..."),
+            Phase::Searching => note(rox_i18n::t!("lyrics-matcher-searching")),
             Phase::Failed(e) => crate::console_window::notice(e.clone()),
-            Phase::Ready(found) if found.is_empty() => note("No matches found"),
+            Phase::Ready(found) if found.is_empty() => {
+                note(rox_i18n::t!("lyrics-matcher-no-matches"))
+            }
             Phase::Ready(found) => div()
                 .flex()
                 .flex_row()

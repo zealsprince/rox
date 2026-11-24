@@ -59,7 +59,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, window_size(major), cx);
     let handle = rox_panel_api::panel::open_fixed_window(
         cx,
-        rox_i18n::t!("about-window-title"),
+        || rox_i18n::t!("about-window-title"),
         bounds,
         move |_window, cx| cx.new(|cx| AboutWindow::new(state, cx)),
     );

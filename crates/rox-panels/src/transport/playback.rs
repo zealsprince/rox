@@ -438,6 +438,14 @@ struct ModePress {
 
 /// Random keeps the crossed arrows. Similar takes the radio, the metaphor
 /// people already have for "more of this".
+/// `ShuffleMode::label` is the settings file's English; this is the menu's.
+fn shuffle_label(mode: ShuffleMode) -> gpui::SharedString {
+    match mode {
+        ShuffleMode::Random => rox_i18n::t!("settings-playback-shuffle-random"),
+        ShuffleMode::Similar => rox_i18n::t!("settings-playback-shuffle-similar"),
+    }
+}
+
 fn mode_icon(mode: ShuffleMode) -> &'static str {
     match mode {
         ShuffleMode::Random => icons::SHUFFLE,
@@ -758,7 +766,7 @@ impl TransportPanel {
             for mode in ShuffleMode::ALL {
                 let player = player.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(mode.label())
+                    PopupMenuItem::new(shuffle_label(mode))
                         .icon(Icon::default().path(mode_icon(mode)))
                         .checked(mode == current)
                         .on_click(move |_, _, cx| {
@@ -1208,11 +1216,8 @@ impl TransportPanel {
             palette::text_faint()
         };
         let shuffle_tip = if player.shuffle() {
-            rox_i18n::t!(
-                "playback-shuffle-on",
-                order = shuffle_mode.label().to_lowercase()
-            )
-            .to_string()
+            let order = shuffle_label(shuffle_mode).to_lowercase();
+            rox_i18n::t!("playback-shuffle-on", order = order).to_string()
         } else {
             rox_i18n::t!("playback-shuffle-off").to_string()
         };

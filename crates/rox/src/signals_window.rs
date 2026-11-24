@@ -64,7 +64,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = panel::open_child_window(
         cx,
-        rox_i18n::t!("signals-window-title"),
+        || rox_i18n::t!("signals-window-title"),
         bounds,
         Some(MIN),
         move |window, cx| cx.new(|cx| SignalsWindow::new(state, about, window, cx)),

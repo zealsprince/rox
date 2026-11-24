@@ -97,7 +97,7 @@ fn open_with(state: AppState, reopen: Reopen, cx: &mut App) {
     let sink = built.clone();
     let window = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("search-window-title"),
+        || rox_i18n::t!("search-window-title"),
         bounds,
         Some(MIN),
         move |window, cx| {

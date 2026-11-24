@@ -78,14 +78,14 @@ impl RouteEditState {
 /// longer has reads as a prompt.
 fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
     match pool.iter().find(|signal| signal.id == route.signal) {
-        Some(signal) => (signal.label(), false),
+        Some(signal) => (super::signal_label(signal), false),
         None => (rox_i18n::t!("route-pick-signal").to_string(), true),
     }
 }
 
 fn ride_summary(route: &Route, pool: &[Signal]) -> String {
     match pool.iter().find(|signal| signal.id == route.signal) {
-        Some(signal) => signal.label(),
+        Some(signal) => super::signal_label(signal),
         None => rox_i18n::t!("route-no-signal").to_string(),
     }
 }
@@ -365,7 +365,7 @@ impl<P: 'static> RouteEditor<'_, P> {
         let (label, placeholder) = pick_label(route, pool);
         let options: Vec<(u64, String)> = pool
             .iter()
-            .map(|signal| (signal.id, signal.label()))
+            .map(|signal| (signal.id, super::signal_label(signal)))
             .collect();
         let weak = cx.entity().downgrade();
         let mutate = self.mutate.clone();
@@ -446,7 +446,7 @@ fn spans<P: 'static>(
                 from_scrub,
                 editor.value_edit,
                 from,
-                format!("{}%", (from * 100.0).round() as i32),
+                rox_i18n::format::format_percent((from * 100.0).round() as f64),
                 format!("{}", (from * 100.0).round() as i32),
                 OVER,
                 |v| v / 100.0,
@@ -472,7 +472,7 @@ fn spans<P: 'static>(
                 to_scrub,
                 editor.value_edit,
                 to,
-                format!("{}%", (to * 100.0).round() as i32),
+                rox_i18n::format::format_percent((to * 100.0).round() as f64),
                 format!("{}", (to * 100.0).round() as i32),
                 OVER,
                 |v| v / 100.0,

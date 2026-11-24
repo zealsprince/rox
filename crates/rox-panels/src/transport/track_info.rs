@@ -1547,12 +1547,13 @@ impl TrackInfoPanel {
         // "Shared" is every desktop's default and goes unsaid; "Exclusive" is
         // the state someone went looking for. The rate goes through the library
         // column's speller.
-        let label = format!(
-            "{}{} kHz {}",
-            if exclusive { "Exclusive " } else { "" },
-            group_head::khz(negotiated.sample_rate),
-            negotiated.format
-        );
+        let rate = group_head::khz(negotiated.sample_rate);
+        let format = negotiated.format.to_string();
+        let label = if exclusive {
+            rox_i18n::t!("track-info-output-exclusive", rate = rate, format = format).to_string()
+        } else {
+            format!("{rate} kHz {format}")
+        };
         Some(
             div()
                 .id(("output-chip", ix))
@@ -1801,7 +1802,7 @@ impl TrackInfoPanel {
         // The end-of-queue note trails the first row's last run, where
         // the single line has always worn it.
         if ended && let Some((_, bits)) = plans.first_mut() {
-            let note = ("(queue finished)".to_string(), true);
+            let note = (rox_i18n::t!("track-info-queue-finished").to_string(), true);
             match bits.last_mut() {
                 Some(RowBit::Run(run)) => run.push(note),
                 _ => bits.push(RowBit::Run(vec![note])),

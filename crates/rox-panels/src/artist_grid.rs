@@ -398,8 +398,7 @@ impl ArtistGridPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search =
-            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
+        let search = cx.new(|cx| SearchBox::new("query-search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // Filter changes arrive here too, including our own picks, which
         // keeps the outlines honest when another surface clears them.

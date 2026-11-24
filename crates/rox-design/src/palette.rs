@@ -224,31 +224,41 @@ pub fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rgba {
     }
 }
 
-/// `name` keys the settings map and stays stable; `label` is the editor's.
+/// `name` keys the settings map and stays stable. The editor names a role and
+/// its group through the `palette-role-*` and `palette-group-*` messages,
+/// derived by [`role_key`] and [`group_key`].
 pub struct Role {
     pub name: &'static str,
-    pub label: &'static str,
+    /// One of `core`, `surfaces`, `tints` or `ink`.
     pub group: &'static str,
     pub get: fn(&Palette) -> Rgba,
     pub set: fn(&mut Palette, Rgba),
 }
 
-/// One line per role defines its [`Palette`] field, default, editor label,
-/// accessor, and [`ROLES`] entry. `surfaces` read out at surface opacity;
+pub fn role_key(name: &str) -> String {
+    format!("palette-role-{}", name.replace('_', "-"))
+}
+
+pub fn group_key(group: &str) -> String {
+    format!("palette-group-{group}")
+}
+
+/// One line per role defines its [`Palette`] field, default, accessor, and
+/// [`ROLES`] entry. `surfaces` read out at surface opacity;
 /// `tints` draw on a surface that already has the wash, so they read at its
 /// square; `ink` lifts toward `text_bright` as surfaces thin, so contrast
 /// holds. The rest read plain.
 macro_rules! tokens {
     (
-        $( $(#[$doc:meta])* $role:ident: $default:literal, $label:literal; )*
+        $( $(#[$doc:meta])* $role:ident: $default:literal; )*
         @surfaces {
-            $( $(#[$sdoc:meta])* $srole:ident: $sdefault:literal, $slabel:literal; )*
+            $( $(#[$sdoc:meta])* $srole:ident: $sdefault:literal; )*
         }
         @tints {
-            $( $(#[$tdoc:meta])* $trole:ident: $tdefault:literal, $tlabel:literal; )*
+            $( $(#[$tdoc:meta])* $trole:ident: $tdefault:literal; )*
         }
         @ink {
-            $( $(#[$idoc:meta])* $irole:ident: $idefault:literal, $ilabel:literal; )*
+            $( $(#[$idoc:meta])* $irole:ident: $idefault:literal; )*
         }
     ) => {
         /// The default is the stock dark look.
@@ -338,58 +348,58 @@ macro_rules! tokens {
         )*
 
         pub const ROLES: &[Role] = &[
-            $( Role { name: stringify!($role), label: $label, group: "Core", get: |p| p.$role, set: |p, c| p.$role = c }, )*
-            $( Role { name: stringify!($srole), label: $slabel, group: "Surfaces", get: |p| p.$srole, set: |p, c| p.$srole = c }, )*
-            $( Role { name: stringify!($trole), label: $tlabel, group: "Tints", get: |p| p.$trole, set: |p, c| p.$trole = c }, )*
-            $( Role { name: stringify!($irole), label: $ilabel, group: "Ink", get: |p| p.$irole, set: |p, c| p.$irole = c }, )*
+            $( Role { name: stringify!($role), group: "core", get: |p| p.$role, set: |p, c| p.$role = c }, )*
+            $( Role { name: stringify!($srole), group: "surfaces", get: |p| p.$srole, set: |p, c| p.$srole = c }, )*
+            $( Role { name: stringify!($trole), group: "tints", get: |p| p.$trole, set: |p, c| p.$trole = c }, )*
+            $( Role { name: stringify!($irole), group: "ink", get: |p| p.$irole, set: |p, c| p.$irole = c }, )*
         ];
     };
 }
 
 tokens! {
-    accent: 0xffb300, "Accent";
+    accent: 0xffb300;
     /// The accent lifted toward white, for hover.
-    accent_hover: 0xfed840, "Accent hover";
+    accent_hover: 0xfed840;
     /// The mark over accent fills: playheads, knobs, peak caps. Song theming
     /// gives it the cover's runner-up color.
-    highlight: 0xfacc15, "Highlight";
+    highlight: 0xfacc15;
 
-    border: 0x333333, "Border";
-    border_light: 0x3a3a3a, "Border light";
+    border: 0x333333;
+    border_light: 0x3a3a3a;
 
     // Fixed text roles: the top of the ladder ink lifts toward, and text on
     // opaque accent fills.
-    text_bright: 0xe0e0e0, "Bright text";
+    text_bright: 0xe0e0e0;
     /// Text over accent-filled controls.
-    text_on_accent: 0x121212, "Text on accent";
+    text_on_accent: 0x121212;
 
     @surfaces {
-        bg_root: 0x121212, "Root";
-        bg_panel: 0x181818, "Panel";
-        bg_elevated: 0x1c1c1c, "Elevated";
+        bg_root: 0x121212;
+        bg_panel: 0x181818;
+        bg_elevated: 0x1c1c1c;
         /// The grouped lists' heading strips.
-        bg_header: 0x1c1c1c, "Header";
-        bg_menubar: 0x242424, "Menubar";
-        bg_menu: 0x262626, "Menu";
-        bg_control: 0x2a2a2a, "Control";
-        bg_menu_hover: 0x2f2f2f, "Menu hover";
-        bg_control_active: 0x333333, "Control active";
-        bg_control_hover: 0x3a3a3a, "Control hover";
+        bg_header: 0x1c1c1c;
+        bg_menubar: 0x242424;
+        bg_menu: 0x262626;
+        bg_control: 0x2a2a2a;
+        bg_menu_hover: 0x2f2f2f;
+        bg_control_active: 0x333333;
+        bg_control_hover: 0x3a3a3a;
     }
 
     // Fills that always draw on one of the surfaces above.
     @tints {
-        bg_input: 0x141414, "Input";
-        bg_toolbar: 0x1f1f1f, "Toolbar";
+        bg_input: 0x141414;
+        bg_toolbar: 0x1f1f1f;
     }
 
     @ink {
-        text: 0xc0c0c0, "Text";
-        text_secondary: 0xa0a0a0, "Secondary";
-        text_dim: 0x9a9a9a, "Dim";
-        text_muted: 0x808080, "Muted";
-        text_faint: 0x707070, "Faint";
-        gridline: 0x6e6e6e, "Gridline";
+        text: 0xc0c0c0;
+        text_secondary: 0xa0a0a0;
+        text_dim: 0x9a9a9a;
+        text_muted: 0x808080;
+        text_faint: 0x707070;
+        gridline: 0x6e6e6e;
     }
 }
 
@@ -1479,7 +1489,7 @@ impl Palette {
     fn mean_surface_lightness(&self) -> f32 {
         let (sum, count) = ROLES
             .iter()
-            .filter(|role| role.group == "Surfaces")
+            .filter(|role| role.group == "surfaces")
             .map(|role| rgba_to_oklch((role.get)(self)).0)
             .fold((0.0, 0), |(sum, count), lightness| {
                 (sum + lightness, count + 1)

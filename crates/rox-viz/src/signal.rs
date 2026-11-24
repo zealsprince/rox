@@ -135,27 +135,12 @@ impl Signal {
         x * x * (3.0 - 2.0 * x)
     }
 
-    /// The given name, or a label derived from the source.
-    pub fn label(&self) -> String {
+    /// The name the user gave it, trimmed, or None when the UI should word a
+    /// default from [`Signal::source`]. Saved empty either way, so a default
+    /// follows the language.
+    pub fn given_name(&self) -> Option<&str> {
         let name = self.name.trim();
-        if !name.is_empty() {
-            return name.to_string();
-        }
-        fn hz(v: f32) -> String {
-            if v >= 1000.0 {
-                format!("{:.1}k", v / 1000.0)
-            } else {
-                format!("{v:.0}")
-            }
-        }
-        match self.source {
-            Source::Band { lo, hi } => format!("Band {} - {} Hz", hz(lo), hz(hi)),
-            Source::Onset { lo, hi } => format!("Onset {} - {} Hz", hz(lo), hz(hi)),
-            Source::Trigger { lo, hi } => format!("Trigger {} - {} Hz", hz(lo), hz(hi)),
-            Source::Level => "Level".to_string(),
-            // Can't name the followed signal without the pool; the rate tells two apart.
-            Source::Aggregate { rate, .. } => format!("Aggregate {rate:.2}/s"),
-        }
+        (!name.is_empty()).then_some(name)
     }
 }
 
@@ -1003,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_add_allocates_fresh_ids_and_labels_derive() {
+    fn hub_add_allocates_fresh_ids_and_leaves_names_unset() {
         let hub = SignalHub::new(Vec::new());
         let (a, _) = hub.add(Source::Level, 0.3);
         let (b, pool) = hub.add(
@@ -1015,10 +1000,10 @@ mod tests {
         );
         assert_ne!(a, b);
         assert_eq!(pool.len(), 2);
-        assert_eq!(pool[0].label(), "Level");
-        assert_eq!(pool[1].label(), "Band 30 - 1.5k Hz");
-        let named = hub.edit(|pool| pool[0].name = "Mix swell".to_string());
-        assert_eq!(named[0].label(), "Mix swell");
+        assert_eq!(pool[0].given_name(), None);
+        assert_eq!(pool[1].given_name(), None);
+        let named = hub.edit(|pool| pool[0].name = " Mix swell ".to_string());
+        assert_eq!(named[0].given_name(), Some("Mix swell"));
     }
 
     fn tone(frames: usize) -> Vec<f32> {

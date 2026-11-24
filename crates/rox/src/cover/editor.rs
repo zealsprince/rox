@@ -38,7 +38,7 @@ fn slot_label(kind: PicKind) -> SharedString {
         PicKind::Front => rox_i18n::t!("cover-editor-slot-front"),
         PicKind::Back => rox_i18n::t!("cover-editor-slot-back"),
         PicKind::Media => rox_i18n::t!("cover-editor-slot-media"),
-        PicKind::Artist => "Artist".into(),
+        PicKind::Artist => rox_i18n::t!("cover-editor-slot-artist"),
     }
 }
 
@@ -80,7 +80,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("cover-editor-window-title"),
+                || rox_i18n::t!("cover-editor-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| CoverEditor::new(state, ids, window, cx)),
@@ -627,9 +627,9 @@ impl CoverEditor {
                 .child(reason)
                 .into_any_element(),
             None => kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-save")),
             ])
             .text_xs()
             .into_any_element(),
@@ -653,7 +653,7 @@ impl CoverEditor {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Save",
+                        rox_i18n::t!("dialog-save"),
                         icons::CHECK,
                         self.saving || self.baselines.is_none(),
                         cx.listener(|this, _, window, cx| this.save(window, cx)),

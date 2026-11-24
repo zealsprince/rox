@@ -85,7 +85,7 @@ pub fn open(state: AppState, target: ShaderEditTarget, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                rox_i18n::t!("shader-editor-window-title"),
+                || rox_i18n::t!("shader-editor-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| ShaderEditor::new(state, target, window, cx)),
@@ -439,7 +439,7 @@ impl ShaderEditor {
                 .child(rox_i18n::t!("shader-editor-signals-empty"))
         } else {
             div().flex().flex_col().children(pool.iter().map(|signal| {
-                let label = signal.label();
+                let label = signal_ui::signal_label(signal);
                 let insert = match next_free {
                     Some(slot) => format!("// @slot {slot}: {label}\n"),
                     None => String::new(),
@@ -516,14 +516,8 @@ impl ShaderEditor {
             Check::Unsupported => div()
                 .flex()
                 .flex_col()
-                .child(line(
-                    palette::tone_warn(),
-                    surface::NO_PIPELINE_TITLE.into(),
-                ))
-                .child(line(
-                    palette::text_muted(),
-                    surface::NO_PIPELINE_NOTE.into(),
-                )),
+                .child(line(palette::tone_warn(), surface::no_pipeline_title()))
+                .child(line(palette::text_muted(), surface::no_pipeline_note())),
             // naga's lines stay left-aligned: the caret points at a column.
             Check::Err(error) => div()
                 .flex()

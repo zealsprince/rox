@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, ElementId, Entity, Focusable, KeyContext, MouseButton, Render,
@@ -99,9 +99,10 @@ impl Inspector {
     }
 }
 
+/// The words are worded per render from the held tally, so a language
+/// switch reaches them; only the walk over the config is cached.
 struct Weighed {
-    counts: SharedString,
-    warnings: Vec<SharedString>,
+    weight: cost::Weight,
 }
 
 struct Typing {
@@ -339,15 +340,14 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
         let weight = serde_json::to_value(&panel.config)
             .map(cost::weigh_canvas)
             .unwrap_or_default();
-        Weighed {
-            counts: cost::counts(&weight),
-            warnings: cost::warnings(&weight),
-        }
+        Weighed { weight }
     });
+    let counts = cost::counts(&weighed.weight);
+    let lines = cost::warnings(&weighed.weight);
 
     // The tone is a fixed yellow that washes out on a light theme, so it
     // marks the line and the words keep the theme's own text color.
-    let warnings = weighed.warnings.iter().map(|line| {
+    let warnings = lines.into_iter().map(|line| {
         div()
             .flex()
             .flex_row()
@@ -361,7 +361,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
                     .size(px(12.))
                     .text_color(palette::tone_warn()),
             )
-            .child(div().flex_1().min_w_0().child(line.clone()))
+            .child(div().flex_1().min_w_0().child(line))
     });
 
     div()
@@ -372,7 +372,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
         .px(tokens::SPACE_XS)
         .text_xs()
         .text_color(palette::text_muted())
-        .child(weighed.counts.clone())
+        .child(counts)
         .children(warnings)
         .into_any_element()
 }
@@ -821,7 +821,7 @@ fn item_rows(
         &scrubs.opacity,
         &panel.inspector.edit,
         item.opacity,
-        format!("{:.0}%", item.opacity * 100.),
+        rox_i18n::format::format_percent((item.opacity * 100.).round() as f64),
         format!("{:.0}", item.opacity * 100.),
         |v| v / 100.,
         move |this: &mut CanvasPanel, f, cx| {
@@ -858,30 +858,20 @@ fn item_rows(
 }
 
 /// Custom Controls' command list, headed by a row that clears the command.
-/// Held against the head row's label, which follows the language where the
-/// command labels don't.
+/// Held per language, like the list under it.
 fn command_choices() -> Arc<Vec<PickRow>> {
-    static ROWS: Mutex<Option<(SharedString, Arc<Vec<PickRow>>)>> = Mutex::new(None);
+    static ROWS: rox_i18n::LocaleCache<Arc<Vec<PickRow>>> = rox_i18n::LocaleCache::new();
 
-    let none = rox_i18n::t!("canvas-item-on-click-none");
-    let mut held = ROWS.lock().unwrap();
-    if let Some((label, rows)) = &*held
-        && *label == none
-    {
-        return rows.clone();
-    }
-
-    let mut rows = vec![PickRow {
-        label: none.clone(),
-        value: None,
-        terms: Vec::new(),
-        icon: None,
-    }];
-    rows.extend(controls::command_rows().iter().cloned());
-
-    let rows = Arc::new(rows);
-    *held = Some((none, rows.clone()));
-    rows
+    ROWS.get(|| {
+        let mut rows = vec![PickRow {
+            label: rox_i18n::t!("canvas-item-on-click-none"),
+            value: None,
+            terms: Vec::new(),
+            icon: None,
+        }];
+        rows.extend(controls::command_rows().iter().cloned());
+        Arc::new(rows)
+    })
 }
 
 /// What a click on the item runs off design mode. A grid has no row: its
@@ -894,7 +884,7 @@ fn command_row(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
         .find(|command| !item.action.is_empty() && command.id == item.action);
     let label = command.map_or_else(
         || rox_i18n::t!("canvas-item-on-click-none"),
-        |command| SharedString::from(command.label),
+        |command| command.label(),
     );
     let current = command.map(|command| SharedString::from(command.id));
 
@@ -1105,7 +1095,7 @@ fn case_opacity(
         &scrub,
         &panel.inspector.edit,
         opacity,
-        format!("{:.0}%", opacity * 100.),
+        rox_i18n::format::format_percent((opacity * 100.).round() as f64),
         format!("{:.0}", opacity * 100.),
         1.,
         panel::SliderWidth::Fill,
@@ -1473,7 +1463,7 @@ fn text_roles(color: &str) -> Vec<(String, SharedString)> {
     roles.extend(
         palette::ROLES
             .iter()
-            .map(|role| (role.name.to_string(), SharedString::from(role.label))),
+            .map(|role| (role.name.to_string(), settings_ui::role_label(role.name))),
     );
 
     roles
@@ -1732,8 +1722,8 @@ fn shader_rows(
         if surface::unsupported(&error) {
             panel::banner(
                 Tone::Bad,
-                surface::NO_PIPELINE_TITLE,
-                vec![surface::NO_PIPELINE_NOTE.into()],
+                surface::no_pipeline_title(),
+                vec![surface::no_pipeline_note()],
             )
         } else {
             panel::banner(

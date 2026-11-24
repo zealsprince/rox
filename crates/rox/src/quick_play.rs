@@ -261,14 +261,7 @@ impl Focusable for QuickPlay {
 
 impl QuickPlay {
     pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| {
-            SearchBox::new(
-                rox_i18n::t!("quick-play-search-placeholder"),
-                "",
-                window,
-                cx,
-            )
-        });
+        let search = cx.new(|cx| SearchBox::new("quick-play-search-placeholder", "", window, cx));
         let _input_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // A scan swaps the projection, so recompute over the new one.
         let _library_changed = cx.subscribe(
@@ -1077,9 +1070,9 @@ impl Render for QuickPlay {
                 .justify_center()
                 .text_color(palette::text_muted())
                 .child(if self.query.is_empty() {
-                    "The library is empty"
+                    rox_i18n::t!("quick-play-library-empty")
                 } else {
-                    "No matches"
+                    rox_i18n::t!("picker-no-matches")
                 })
                 .into_any_element()
         } else {

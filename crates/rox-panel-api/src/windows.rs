@@ -2,10 +2,11 @@
 //! close hook. The workspace entity is defined in the binary, so the
 //! registry holds it type-erased and the binary downcasts it back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 use std::sync::RwLock;
 
-use gpui::{AnyWeakEntity, AnyWindowHandle, App, Global, Window};
+use gpui::{AnyWeakEntity, AnyWindowHandle, App, Global, SharedString, Window};
 
 use crate::panel::AppState;
 
@@ -85,4 +86,49 @@ pub fn set_title_tag(window: &mut Window, tag: Option<String>) {
 
 pub fn window_title(id: u64) -> Option<String> {
     WINDOW_TITLES.read().unwrap().get(&id).cloned()
+}
+
+/// How each child window words its title, run again by [`retitle`].
+#[derive(Default)]
+struct TitleSources(HashMap<u64, Rc<dyn Fn() -> SharedString>>);
+
+impl Global for TitleSources {}
+
+/// Set the title now and again after every language switch.
+pub fn set_window_title_with(
+    window: &mut Window,
+    title: impl Fn() -> SharedString + 'static,
+    cx: &mut App,
+) {
+    let id = window.window_handle().window_id().as_u64();
+    set_window_title(window, &title());
+    cx.default_global::<TitleSources>()
+        .0
+        .insert(id, Rc::new(title));
+}
+
+/// Re-word every open window's title in the active language. Windows that
+/// closed since drop out here.
+pub fn retitle(cx: &mut App) {
+    let sources = std::mem::take(&mut cx.default_global::<TitleSources>().0);
+    let mut kept = HashMap::new();
+
+    for handle in cx.windows() {
+        let id = handle.window_id().as_u64();
+        let Some(title) = sources.get(&id) else {
+            continue;
+        };
+
+        let text = title();
+        if handle
+            .update(cx, |_, window, _| set_window_title(window, &text))
+            .is_ok()
+        {
+            kept.insert(id, title.clone());
+        }
+    }
+
+    // A window opened by a title closure above would have registered itself
+    // meanwhile; keep it.
+    cx.default_global::<TitleSources>().0.extend(kept);
 }

@@ -104,9 +104,13 @@ pub fn pick(
     let rows = action.param_fields().len() as f32;
     let bounds = Bounds::centered(None, size(px(420.), px(110. + rows * 64.)), cx);
 
-    crate::panel::open_fixed_window(cx, title, bounds, move |window, cx| {
-        cx.new(|cx| ActionForm::new(source, action, items, origin, window, cx))
-    });
+    // The plugin's own words, in whatever language it ships.
+    crate::panel::open_fixed_window(
+        cx,
+        move || title.clone(),
+        bounds,
+        move |window, cx| cx.new(|cx| ActionForm::new(source, action, items, origin, window, cx)),
+    );
 }
 
 fn run(

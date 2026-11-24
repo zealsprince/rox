@@ -432,9 +432,17 @@ fn main() {
         rox_dock::init(cx);
         workspace::init(cx);
         let settings = Settings::load();
-        // Before keymap::init, which fixes every command label in the locale
-        // active at that moment, and before the first window title renders.
+        // Before the first window title renders.
         set_language(settings.language.as_deref(), cx);
+        // Text set outside a render doesn't repaint with the windows, so a
+        // switch words it again here.
+        cx.observe_global::<rox_core::settings::LanguageSwitch>(|cx| {
+            rox_panel_api::windows::retitle(cx);
+            rox_panel_kit::reword_placeholders(cx);
+            workspace::native_menu::rebuild(cx);
+            integrations::tray::relabel(cx);
+        })
+        .detach();
         // After the widget library's init, whose bindings it snapshots as the bottom layer.
         keymap::init(cx);
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);

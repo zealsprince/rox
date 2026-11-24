@@ -133,6 +133,7 @@ const ALT_DOUBLE_TAP: Duration = Duration::from_millis(500);
 // single-instance guard) need.
 use rox_panel_api::windows::OpenWorkspace;
 use rox_panel_api::windows::{WorkspaceWindows, note_activated};
+use rox_panel_kit::PlaceholderKey as _;
 
 /// The workspace behind a registry entry, or None once its entity has
 /// gone. The registry stores it type-erased so nothing below the binary
@@ -230,8 +231,15 @@ pub(crate) fn apply_resize_border(cx: &mut App) {
 static POST_SHADER_ERROR: RwLock<Option<String>> = RwLock::new(None);
 
 /// The last post shader compile error, read live by the settings window.
+/// The log keeps the unapproved note in English; the readout words it in
+/// the user's language.
 pub(crate) fn post_shader_error() -> Option<String> {
-    POST_SHADER_ERROR.read().unwrap().clone()
+    let error = POST_SHADER_ERROR.read().unwrap().clone()?;
+    if error == UNAPPROVED_POST_SHADER {
+        return Some(rox_i18n::t!("shader-unapproved-post").to_string());
+    }
+
+    Some(error)
 }
 
 /// Put a line in that readout from outside the compile path, which is how
@@ -5179,8 +5187,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("workspace-dialog-workspace-name-placeholder"))
+            InputState::new(window, cx).placeholder_key(
+                "workspace-dialog-workspace-name-placeholder",
+                window,
+                cx,
+            )
         });
         self._layout_input =
             Some(
@@ -5490,8 +5501,11 @@ impl Workspace {
     /// commits into a new preset.
     pub(crate) fn open_save_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("workspace-dialog-layout-name-placeholder"))
+            InputState::new(window, cx).placeholder_key(
+                "workspace-dialog-layout-name-placeholder",
+                window,
+                cx,
+            )
         });
         self._layout_input =
             Some(

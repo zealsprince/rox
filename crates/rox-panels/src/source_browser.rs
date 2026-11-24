@@ -803,7 +803,7 @@ impl SourceBrowserPanel {
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
 
         let search = cx.new(|cx| {
-            let mut search = SearchBox::new(rox_i18n::t!("source-browser-search"), "", window, cx)
+            let mut search = SearchBox::new("source-browser-search", "", window, cx)
                 .small()
                 .icon();
             search.set_completions(Some(rox_panel_api::suggest::criteria_provider()), cx);
@@ -4458,7 +4458,7 @@ fn field_order(
 
 fn fmt_field(kind: FieldKind, value: &FieldValue) -> String {
     match (kind, value) {
-        (FieldKind::Percent, FieldValue::Number(n)) => format!("{}%", n.round() as i64),
+        (FieldKind::Percent, FieldValue::Number(n)) => rox_i18n::format::format_percent(n.round()),
         (FieldKind::Count, FieldValue::Number(n)) => fmt_count(*n),
         (_, FieldValue::Number(n)) => format!("{n}"),
         (_, FieldValue::Text(text)) => text.clone(),

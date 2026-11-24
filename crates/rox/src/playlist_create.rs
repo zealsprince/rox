@@ -2,14 +2,15 @@
 //! any tracks the caller passed, or renames an existing one.
 
 use gpui::{
-    App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, SharedString,
-    Subscription, Window, actions, div, prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, Subscription, Window,
+    actions, div, prelude::*, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::AppState;
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{Seg, kbd_line, section, small_button};
 use rox_services::backdrop::WindowBackdrop;
 
@@ -32,7 +33,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     open_modal(
         state,
         Action::Create(ids),
-        rox_i18n::t!("playlist-create-title"),
+        "playlist-create-title",
         String::new(),
         cx,
     );
@@ -42,14 +43,20 @@ pub fn open_rename(state: AppState, id: i64, current: String, cx: &mut App) {
     open_modal(
         state,
         Action::Rename(id),
-        rox_i18n::t!("playlist-create-rename-title"),
+        "playlist-create-rename-title",
         current,
         cx,
     );
 }
 
-fn open_modal(state: AppState, action: Action, verb: SharedString, current: String, cx: &mut App) {
-    let title = rox_i18n::t!("playlist-create-window-title", verb = verb.to_string());
+/// `verb` is a message key, so the title follows a language switch.
+fn open_modal(state: AppState, action: Action, verb: &'static str, current: String, cx: &mut App) {
+    let title = move || {
+        rox_i18n::t!(
+            "playlist-create-window-title",
+            verb = rox_i18n::t!(verb).to_string()
+        )
+    };
     let bounds = Bounds::centered(None, size(px(380.), px(170.)), cx);
     rox_panel_api::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| PlaylistNameWindow::new(state, action, current, window, cx))
@@ -75,7 +82,7 @@ impl PlaylistNameWindow {
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(rox_i18n::t!("playlist-create-placeholder"))
+                .placeholder_key("playlist-create-placeholder", window, cx)
                 .default_value(current)
         });
         let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
@@ -122,9 +129,9 @@ impl PlaylistNameWindow {
     fn footer(&self, savable: bool, cx: &mut Context<Self>) -> Div {
         let hint = if savable {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("hint-to-save")),
             ])
             .text_xs()
             .into_any_element()
@@ -154,7 +161,7 @@ impl PlaylistNameWindow {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Save",
+                        rox_i18n::t!("dialog-save"),
                         icons::CHECK,
                         !savable,
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),

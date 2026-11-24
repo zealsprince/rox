@@ -2292,8 +2292,7 @@ impl LibraryPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search =
-            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
+        let search = cx.new(|cx| SearchBox::new("query-search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         let _query_changed = cx.subscribe(
             &state.query,
@@ -3392,7 +3391,13 @@ impl LibraryPanel {
         }
         let Some(def) = column_def(&key) else { return };
         let current = self.column_label(&key, cx).unwrap_or_default();
-        let title = rox_i18n::t!("library-column-rename-window-title", column = def.label);
+        let title = {
+            let key = key.clone();
+            move || {
+                let column = column_def(&key).map_or("", |def| def.label);
+                rox_i18n::t!("library-column-rename-window-title", column = column)
+            }
+        };
         let bounds = gpui::Bounds::centered(None, gpui::size(px(380.), px(205.)), cx);
         let state = self.state.clone();
         let panel = cx.weak_entity();

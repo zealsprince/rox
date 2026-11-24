@@ -314,9 +314,18 @@ fn spatial_source() -> Option<SharedString> {
         player::BuiltinHesuviProfile::None => Some(
             player::convolver_ir_name()
                 .map(SharedString::from)
-                .unwrap_or_else(|| rox_i18n::t!("eq-convolver-no-file")),
+                .unwrap_or_else(|| profile_label(player::BuiltinHesuviProfile::None)),
         ),
-        profile => Some(profile.display_name().into()),
+        profile => Some(profile_label(profile)),
+    }
+}
+
+/// A bundled convolver profile as the Spatial tab's picker names it: the
+/// product it was captured from, or the built-in crossfeed in words.
+pub fn profile_label(profile: player::BuiltinHesuviProfile) -> SharedString {
+    match profile.product_name() {
+        Some(name) => SharedString::from(name),
+        None => rox_i18n::t!("eq-convolver-no-file"),
     }
 }
 

@@ -34,6 +34,7 @@ use crate::signal_ui::{self, routes::RouteEditState};
 use rox_core::settings::panel_presets::{PresetEntry, PresetScope, SaveScope};
 use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, PanelPreset, ROUNDING_MAX};
 use rox_dock::{PanelView, TabPanel};
+use rox_panel_kit::PlaceholderKey as _;
 use rox_panel_kit::ui::{
     self as settings_ui, PageBody, Query, SECTION_GAP, Section, Seg, SidesScrub, grid_columns,
     kbd_line, section, sidebar, small_button,
@@ -165,10 +166,13 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = rox_i18n::t!(
-        "panel-settings-window-title",
-        panel = panel::display_name(panel.read(cx).panel_name())
-    );
+    let name = panel.read(cx).panel_name();
+    let title = move || {
+        rox_i18n::t!(
+            "panel-settings-window-title",
+            panel = panel::display_name(name)
+        )
+    };
     // Floored at MIN_SIZE so a stale small frame never opens under the minimum.
     let min = settings_ui::MIN_SIZE;
     let (width, height) = settings::Settings::load()
@@ -722,10 +726,13 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = rox_i18n::t!(
-        "panel-rename-window-title",
-        panel = panel::display_name(panel.read(cx).panel_name())
-    );
+    let name = panel.read(cx).panel_name();
+    let title = move || {
+        rox_i18n::t!(
+            "panel-rename-window-title",
+            panel = panel::display_name(name)
+        )
+    };
     let bounds = Bounds::centered(None, size(px(380.), px(195.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
@@ -885,10 +892,13 @@ fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     {
         return;
     }
-    let title = rox_i18n::t!(
-        "panel-save-preset-window-title",
-        panel = panel::display_name(panel.read(cx).panel_name())
-    );
+    let name = panel.read(cx).panel_name();
+    let title = move || {
+        rox_i18n::t!(
+            "panel-save-preset-window-title",
+            panel = panel::display_name(name)
+        )
+    };
     let bounds = Bounds::centered(None, size(px(420.), px(300.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
@@ -1262,7 +1272,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             let seed = value.map(|n| format!("{n:.0}")).unwrap_or_default();
             cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(rox_i18n::t!("panel-size-off"))
+                    .placeholder_key("panel-size-off", window, cx)
                     .default_value(seed)
             })
         };
@@ -1289,7 +1299,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let _max_width_events = watch(&max_width_input, Self::apply_max_width, window, cx);
         let _max_height_events = watch(&max_height_input, Self::apply_max_height, window, cx);
         let search = cx.new(|cx| {
-            SearchBox::new(rox_i18n::t!("query-search"), "", window, cx)
+            SearchBox::new("query-search", "", window, cx)
                 .small()
                 .icon()
         });
@@ -2822,24 +2832,28 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                                         }
                                         if target.group != group {
                                             group = target.group;
-                                            menu = menu.item(PopupMenuItem::label(group));
+                                            menu = menu.item(PopupMenuItem::label(
+                                                settings_ui::role_group_label(group),
+                                            ));
                                         }
                                         let pick = pick.clone();
                                         menu = menu.item(
-                                            PopupMenuItem::new(target.label)
-                                                .checked(linked == Some(target.name))
-                                                .on_click(move |_, window, cx| {
-                                                    if let Some(this) = pick.upgrade() {
-                                                        this.update(cx, |this, cx| {
-                                                            this.set_role_reference(
-                                                                j,
-                                                                target.name,
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        });
-                                                    }
-                                                }),
+                                            PopupMenuItem::new(settings_ui::role_label(
+                                                target.name,
+                                            ))
+                                            .checked(linked == Some(target.name))
+                                            .on_click(move |_, window, cx| {
+                                                if let Some(this) = pick.upgrade() {
+                                                    this.update(cx, |this, cx| {
+                                                        this.set_role_reference(
+                                                            j,
+                                                            target.name,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    });
+                                                }
+                                            }),
                                         );
                                     }
                                     menu
@@ -2865,7 +2879,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                                 .into_any_element();
                             settings_ui::color_cell(
                                 control,
-                                role.label,
+                                settings_ui::role_label(role.name),
                                 overridden(role.name),
                                 Some(trailing),
                             )
@@ -2875,12 +2889,12 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_XS)
-                            .child(div().text_xs().text_color(palette::text_muted()).child(
-                                "Overrides recolor just this panel and hold still under song \
-                                 theming; a link follows another app color instead, moving \
-                                 with the theme. Reset a swatch or clear its hex field to \
-                                 follow the app palette again",
-                            ))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("panel-colors-overrides-note")),
+                            )
                             .child(grid)
                             .into_any_element()
                     },

@@ -138,7 +138,10 @@ fn native_label(item: MenuItem, playing: bool) -> String {
                 rox_i18n::t!("playback-item-play").to_string()
             }
         }
-        MenuAction::ToggleMenubar => showing(!settings::hide_menubar(), "Menubar"),
+        MenuAction::ToggleMenubar => match settings::hide_menubar() {
+            false => rox_i18n::t!("menu-hide-menubar").to_string(),
+            true => rox_i18n::t!("menu-show-menubar").to_string(),
+        },
         MenuAction::ToggleDecorations => showing(
             settings::os_decorations(),
             rox_i18n::t!("menu-os-decorations"),
@@ -163,20 +166,22 @@ fn native_label(item: MenuItem, playing: bool) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn showing(on: bool, what: impl std::fmt::Display) -> String {
+fn showing(on: bool, what: SharedString) -> String {
+    let what = what.to_string();
     if on {
-        format!("Hide {what}")
+        rox_i18n::t!("native-menu-hide", what = what).to_string()
     } else {
-        format!("Show {what}")
+        rox_i18n::t!("native-menu-show", what = what).to_string()
     }
 }
 
 #[cfg(target_os = "macos")]
-fn switching(on: bool, what: impl std::fmt::Display) -> String {
+fn switching(on: bool, what: SharedString) -> String {
+    let what = what.to_string();
     if on {
-        format!("Turn Off {what}")
+        rox_i18n::t!("native-menu-turn-off", what = what).to_string()
     } else {
-        format!("Turn On {what}")
+        rox_i18n::t!("native-menu-turn-on", what = what).to_string()
     }
 }
 

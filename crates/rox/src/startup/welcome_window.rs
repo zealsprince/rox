@@ -39,7 +39,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(1240.), px(660.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("welcome-window-title"),
+        || rox_i18n::t!("welcome-window-title"),
         bounds,
         Some(size(px(700.), px(460.))),
         move |window, cx| cx.new(|cx| WelcomeWindow::new(state, window, cx)),

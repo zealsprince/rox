@@ -9,13 +9,14 @@ use std::rc::Rc;
 
 use gpui::{
     Action, AnyElement, App, AppContext, Context, Div, Entity, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, KeyDownEvent, ParentElement, SharedString, Styled,
-    Subscription, Window, div,
+    FocusHandle, Focusable, InteractiveElement, KeyDownEvent, ParentElement, Styled, Subscription,
+    Window, div,
 };
 use gpui_component::input::{
     CompletionProvider, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
 use gpui_component::{ActiveTheme, Icon, Sizable};
+use rox_panel_kit::PlaceholderKey as _;
 
 use rox_design::assets::icons;
 
@@ -41,15 +42,16 @@ pub struct SearchBox {
 impl EventEmitter<SearchEvent> for SearchBox {}
 
 impl SearchBox {
+    /// `placeholder` is a message key, so the hint follows a language switch.
     pub fn new(
-        placeholder: impl Into<SharedString>,
+        placeholder: &'static str,
         initial: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(placeholder)
+                .placeholder_key(placeholder, window, cx)
                 .default_value(initial.to_string())
         });
         let _input_events = cx.subscribe(&input, |this: &mut Self, input, event, cx| {

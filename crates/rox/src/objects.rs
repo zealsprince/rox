@@ -34,6 +34,7 @@ use crate::canvas::edit;
 use crate::panels::canvas::CanvasPanel;
 use crate::workspace::Workspace;
 use crate::workspaces::{self, PendingShader};
+use rox_panel_kit::PlaceholderKey as _;
 
 thread_local! {
     /// The canvas that last held focus, for a document opened from outside.
@@ -767,7 +768,7 @@ pub(crate) fn open_export(
             let seed = if ix == 0 { name.clone() } else { String::new() };
             cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(rox_i18n::t!(*placeholder))
+                    .placeholder_key(placeholder, window, cx)
                     .default_value(seed)
             })
         })

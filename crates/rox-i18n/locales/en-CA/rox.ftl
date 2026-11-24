@@ -51,6 +51,16 @@ signal-kind-level = Level
 signal-kind-onset = Onset
 signal-kind-trigger = Trigger
 signal-kind-total = Total
+
+# A signal's name until the user gives it one, worded from its source.
+# $range is a band's span in hertz, the unit written once when both ends
+# share it; $rate is a total's laps a second.
+signal-range = { $lo }-{ $hi }
+signal-label-band = { signal-kind-band } { $range }
+signal-label-onset = { signal-kind-onset } { $range }
+signal-label-trigger = { signal-kind-trigger } { $range }
+signal-label-total = { signal-kind-total } { $rate }/s
+
 signal-response = Response
 signal-response-pulse = How long each pulse rings before it dies away
 signal-response-drift = 0 snaps to the music, 100 drifts after it
@@ -126,6 +136,7 @@ panel-section-size = Size
 panel-section-opacity = Opacity
 panel-section-frame = Frame
 panel-section-colors = Colors
+panel-colors-overrides-note = Overrides recolor just this panel and hold still under song theming; a link follows another app color instead, moving with the theme. Reset a swatch or clear its hex field to follow the app palette again
 panel-section-font = Font
 panel-section-slider = Slider
 panel-section-shader = Shader
@@ -177,6 +188,9 @@ panel-shader-is-scene = This shader is a scene, so it covers the panel's body ra
 shader-source = Source
 shader-pick-none = None
 shader-reload = Reload
+shader-no-pipeline-title = Shaders don't run on this build
+shader-no-pipeline-note = This build renders through a backend with no shader pipeline. Shaders ride blade's render pipelines, so every source gets turned down whatever it says.
+shader-unapproved-post = this shader arrived with a workspace and hasn't been approved on this machine
 shader-edit-as-file = Edit as File
 shader-make-private-copy = Make Private Copy
 shader-save-replace = Replace
@@ -218,6 +232,18 @@ preset-save-replaces-global = Replaces the global preset already called { $name 
 
 hint-press = Press
 hint-key-enter = Enter
+hint-to-save = to save
+hint-to-apply = to apply
+hint-to-convert = to convert
+hint-to-repair = to repair
+
+## Dialog buttons
+
+# The commit and scan buttons the small editor windows share.
+dialog-save = Save
+dialog-apply = Apply
+dialog-scan = Scan
+dialog-rescan = Rescan
 
 ## Settings: language
 
@@ -227,6 +253,10 @@ settings-language = Language
 settings-language-system = (System Language)
 settings-language-search = Search languages
 picker-no-matches = No matches
+picker-icon-none = None
+picker-icon-search = Search icons
+picker-font-default = Default
+picker-font-search = Search fonts
 settings-search-no-matches = Nothing matches "{ $text }"
 settings-search-scope = Search only the open page
 
@@ -459,6 +489,23 @@ playback-sleep-tip-remaining = Sleep timer, { $minutes } min left
 menubar-button-tasks = Tasks button
 menubar-button-sleep = Sleep timer button
 menubar-button-rescan = Rescan button
+menubar-rescan-tip = Rescan the library folders
+menubar-stop-scan-tip = Stop the scan
+
+# The menubar's line after a scan: the track count, then what changed.
+library-status-with-details = { $tracks } ({ $details })
+library-status-joiner = { ", " }
+library-status-indexed = { $count } indexed
+library-status-unchanged = { $count } unchanged
+library-status-untagged = { $count } untagged
+library-status-removed = { $count } removed
+library-status-unreachable = { $count ->
+    [one] { $count } folder unreachable
+   *[other] { $count } folders unreachable
+}
+library-status-stopped-early = stopped early
+library-status-updated = { $count } updated
+library-status-renamed = { $count } renamed
 
 ## Custom button states
 
@@ -936,6 +983,41 @@ settings-appearance-theme-dark = Dark
 settings-appearance-theme-light = Light
 settings-appearance-theme-system = System
 
+## Palette roles
+
+# The colour roles a palette is made of, named in the Appearance page's
+# grid, the panel colour overrides and every colour picker, with the
+# groups the grid heads them with. Keyed by the role's saved name.
+palette-group-core = Core
+palette-group-surfaces = Surfaces
+palette-group-tints = Tints
+palette-group-ink = Ink
+palette-role-accent = Accent
+palette-role-accent-hover = Accent hover
+palette-role-highlight = Highlight
+palette-role-border = Border
+palette-role-border-light = Border light
+palette-role-text-bright = Bright text
+palette-role-text-on-accent = Text on accent
+palette-role-bg-root = Root
+palette-role-bg-panel = Panel
+palette-role-bg-elevated = Elevated
+palette-role-bg-header = Header
+palette-role-bg-menubar = Menubar
+palette-role-bg-menu = Menu
+palette-role-bg-control = Control
+palette-role-bg-menu-hover = Menu hover
+palette-role-bg-control-active = Control active
+palette-role-bg-control-hover = Control hover
+palette-role-bg-input = Input
+palette-role-bg-toolbar = Toolbar
+palette-role-text = Text
+palette-role-text-secondary = Secondary
+palette-role-text-dim = Dim
+palette-role-text-muted = Muted
+palette-role-text-faint = Faint
+palette-role-gridline = Gridline
+
 ## Settings: application
 
 settings-application-check-updates = Check for Updates
@@ -1046,6 +1128,8 @@ settings-audio-replaygain-status-tagged = { $total ->
 }
 settings-audio-replaygain-untagged = Untagged Files
     .description = What a file with no ReplayGain tags plays at. Nothing measured it, so this is a guess standing in for one. Leave it at zero and untagged tracks play as they always did
+settings-audio-replaygain-status-none = None of the { $total } tracks scanned have a ReplayGain to level by. Measure Missing analyzes them and saves the numbers
+settings-audio-replaygain-status-partial = { $covered } of { $total } scanned tracks have a gain to level by, { $measured } of them measured by rox. The other { $missing } play at the untagged setting
 settings-audio-section-broadcast = Broadcast
 settings-audio-section-equalizer = Equalizer
 settings-audio-section-output = Output
@@ -1667,6 +1751,7 @@ menu-health = Library Health
 menu-power-search = Power Search
 menu-quick-play = Quick Play
 menu-hide-menubar = Hide Menubar
+menu-show-menubar = Show Menubar
 menu-import-workspace = Import Workspace...
 menu-library = Library
 menu-measure-replaygain = Measure ReplayGain...
@@ -1715,6 +1800,13 @@ menu-welcome = Welcome
 menu-window = Window
 menu-workspace = Workspace
 menu-workspace-builtin-tag = Built-in
+
+# The macOS menu bar has no checkmarks, so a toggle row names what picking
+# it does to the setting it carries.
+native-menu-show = Show { $what }
+native-menu-hide = Hide { $what }
+native-menu-turn-on = Turn On { $what }
+native-menu-turn-off = Turn Off { $what }
 
 ## Workspaces
 
@@ -1811,6 +1903,7 @@ tasks-measuring = Measuring { $progress }
 tasks-model-downloading = A model is still downloading
 tasks-no-library-window = No library window is open, so these can't be started from here
 tasks-nothing-to-measure = Nothing scanned to measure yet
+tasks-nothing-to-analyze = Nothing scanned to analyze yet
 tasks-rg-all-gain = { $count ->
     [one] The one track has a gain to play at
    *[other] All { $count } tracks have a gain to play at
@@ -2569,6 +2662,24 @@ tags-editor-unread-count = Couldn't read tags for { $failed } of { $total } file
 tags-editor-will-clear = will clear
 tags-editor-will-remove = will remove
 tags-editor-window-title = rox - Tag Editor
+
+# The tag fields as the tag editor and the release matcher name them.
+tags-field-file = File
+tags-field-title = Title
+tags-field-title-sort = Title Sort
+tags-field-artist = Artist
+tags-field-artist-sort = Artist Sort
+tags-field-album-artist = Album Artist
+tags-field-album-artist-sort = Album Artist Sort
+tags-field-album = Album
+tags-field-album-sort = Album Sort
+tags-field-genre = Genre
+tags-field-year = Year
+tags-field-track = Track
+tags-field-disc = Disc
+tags-field-comment = Comment
+tags-field-rating = Rating
+
 tags-guess-empty-segment = pattern renders an empty folder or file name
 tags-guess-no-placeholders = no placeholders
 tags-guess-placeholders = Placeholders
@@ -2609,6 +2720,8 @@ tags-rename-window-title = rox - Rename Files
 tags-repair-affected-files = Affected Files
 tags-repair-section = Repair
 tags-repair-check-to-repair = Check a file to repair it
+tags-repair-scanning = Scanning...
+tags-repair-scanning-progress = Scanning { $done }/{ $total }...
 tags-repair-count = { $count ->
     [one] { $count } file
    *[other] { $count } files
@@ -2837,6 +2950,7 @@ cover-editor-section = Cover Art
 cover-editor-slot-back = Back Cover
 cover-editor-slot-front = Front Cover
 cover-editor-slot-media = Media
+cover-editor-slot-artist = Artist
 cover-editor-will-remove = Will remove
 cover-editor-window-title = rox - Cover Art
 cover-matcher-blocked-fetching = Fetching the full image...
@@ -2849,6 +2963,7 @@ cover-matcher-cover-count = { $count ->
 cover-matcher-editor-closed = The cover editor was closed
 cover-matcher-no-covers = No covers found
 cover-matcher-search-failed = Search failed: { $error }
+cover-matcher-searching = Searching...
 cover-matcher-set-cover = Set Cover
 cover-matcher-setting = Setting...
 cover-matcher-tile-info = { $provider }  { $width }px
@@ -2927,6 +3042,8 @@ lyrics-matcher-match-count = { $count ->
 lyrics-matcher-no-query = This track has no artist and title to match on
 lyrics-matcher-pick-preview = Pick a match to preview
 lyrics-matcher-search-failed = Search failed: { $error }
+lyrics-matcher-searching = Searching...
+lyrics-matcher-no-matches = No matches found
 lyrics-matcher-synced-tag = { $provider }  synced
 lyrics-matcher-window-title = rox - Find Lyrics
 lyrics-no-lyrics-notice = No lyrics
@@ -3015,6 +3132,7 @@ quick-play-cover = Cover
 quick-play-duration = Duration
     .description = Show each result's length on the right
 quick-play-search-placeholder = Search the library
+quick-play-library-empty = The library is empty
 quick-play-subtitle = Subtitle
     .description = Show the artist and album under each result
 quick-play-syntax-absent = Rows with no value at all
@@ -3073,6 +3191,8 @@ tray-quit = Quit
 
 window-controls-close = Close
 window-controls-maximize = Maximize
+window-controls-exit-fullscreen = Exit Fullscreen
+window-controls-fullscreen-zoom = Fullscreen, or Option-click to zoom
 window-controls-mini-toggle = Mini Toggle
 window-controls-minimize = Minimize
 window-controls-pieces = Buttons
@@ -3257,6 +3377,17 @@ waveform-live-window = Live Window
 waveform-live-expression = Motion Expression
     .description = x runs 0 to 1 across the strip, t is seconds on the panel's clock; sin cos tan abs sqrt exp ln floor min max clamp mix, with + - * / ^ pi and brackets
 waveform-live-expression-error = { $reason }, so the strip is drawing the default shape
+
+# Why a motion expression didn't parse; $at is the character position.
+expr-error-stray = unexpected character at { $at }
+expr-error-unknown = unknown name at { $at }
+expr-error-arity = wrong number of arguments at { $at }
+expr-error-unclosed = unclosed bracket at { $at }
+expr-error-ended = expression ends early at { $at }
+expr-error-trailing = leftover text at { $at }
+expr-error-too-deep = nested too deep at { $at }
+expr-error-too-long = too long at { $at }
+
 waveform-section-live = Live
 waveform-streaming = STREAMING
 waveform-unavailable = Waveform unavailable for this track
@@ -4004,6 +4135,8 @@ track-info-menu-overflow = Overflow
 track-info-next = Next: { $line }
 track-info-opening = opening...
 track-info-output-fallback = Exclusive output was refused by the device, so playback is running through the shared mixer. The device reported: { $reason }
+track-info-output-exclusive = Exclusive { $rate } kHz { $format }
+track-info-queue-finished = (queue finished)
 track-info-output-resample-exclusive = This file is { $source } kHz and the card took { $device } kHz, so every sample is being converted on the way out. The device wouldn't run at the file's own rate.
 track-info-output-resample-mixer = This file is { $source } kHz and the mixer is running at { $device } kHz, so every sample is being converted on the way out. Exclusive mode would hand the card the file's own rate instead.
 track-info-output-resample-exclusive-stream = This stream is { $source } kHz and the card took { $device } kHz, so every sample is being converted on the way out. The device wouldn't run at the stream's own rate.
@@ -4174,6 +4307,7 @@ transport-pieces = Pieces
 ## Stragglers picked up in the final sweep
 
 duplicates-scanning = Scanning...
+duplicates-section = Duplicates
 about-copyright = Copyright © 2026
 signal-name-placeholder = Signal name
 signals-empty = No signals yet. Add one, or right-click any bindable knob.

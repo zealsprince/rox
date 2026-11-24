@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, PoisonError, RwLock};
 
-use gpui::{Action, App, Global, KeyBinding, Keystroke, Window};
+use gpui::{Action, App, Global, KeyBinding, Keystroke, SharedString, Window};
 
 use rox_core::settings::Settings;
 
@@ -130,8 +130,8 @@ pub enum Reach {
 pub struct Command {
     /// The settings key. Never rename it: that silently resets everyone's rebinds.
     pub id: &'static str,
-    pub label: &'static str,
-    pub description: &'static str,
+    label_key: &'static str,
+    description_key: &'static str,
     pub group: Group,
     /// `None` is everywhere, including the settings window and popped-out panels.
     pub context: Option<&'static str>,
@@ -145,6 +145,14 @@ pub struct Command {
 }
 
 impl Command {
+    pub fn label(&self) -> SharedString {
+        rox_i18n::t!(self.label_key)
+    }
+
+    pub fn description(&self) -> SharedString {
+        rox_i18n::t!(self.description_key)
+    }
+
     /// None for a chord that doesn't parse, so one bad hand edit doesn't block the rest.
     fn binding(&self, chord: &str) -> Option<KeyBinding> {
         parses(chord).then(|| (self.build)(chord, self.scope(chord)))
@@ -209,8 +217,8 @@ macro_rules! command {
     ($id:literal, $label:expr, $group:expr, $ctx:expr, $keys:expr, $action:expr, $desc:expr, $reach:expr) => {
         Command {
             id: $id,
-            label: $label,
-            description: $desc,
+            label_key: $label,
+            description_key: $desc,
             group: $group,
             context: $ctx,
             defaults: $keys,
@@ -313,1111 +321,1112 @@ mod defaults {
     pub const CANVAS_UNGROUP: &[&str] = &["ctrl-shift-g"];
 }
 
-/// Page order within each group. A `LazyLock` because the labels resolve
-/// through the locale bundles; iterate with `.iter()`, since deref coercion
-/// doesn't reach `IntoIterator`.
+/// Page order within each group. A `LazyLock` because an action's name isn't
+/// const; iterate with `.iter()`, since deref coercion doesn't reach
+/// `IntoIterator`. Labels are held as message keys and resolved on read, so
+/// they follow a language switch.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     vec![
         command!(
             "toggle_playback",
-            rox_i18n::t_static("keymap-toggle-playback"),
+            "keymap-toggle-playback",
             Group::Playback,
             PLAYBACK,
             &["space"],
             TogglePlayback,
-            rox_i18n::t_static("keymap-toggle-playback.description")
+            "keymap-toggle-playback.description"
         ),
         command!(
             "seek_backward",
-            rox_i18n::t_static("keymap-seek-backward"),
+            "keymap-seek-backward",
             Group::Playback,
             SEEK,
             &["left"],
             SeekBackward,
-            rox_i18n::t_static("keymap-seek-backward.description")
+            "keymap-seek-backward.description"
         ),
         command!(
             "seek_forward",
-            rox_i18n::t_static("keymap-seek-forward"),
+            "keymap-seek-forward",
             Group::Playback,
             SEEK,
             &["right"],
             SeekForward,
-            rox_i18n::t_static("keymap-seek-forward.description")
+            "keymap-seek-forward.description"
         ),
         // Comma and dot, the video editor's frame keys. On the seek scope so the
         // pair stays one control if rebound onto arrows.
         command!(
             "step_backward",
-            rox_i18n::t_static("keymap-step-backward"),
+            "keymap-step-backward",
             Group::Playback,
             SEEK,
             &[","],
             StepBackward,
-            rox_i18n::t_static("keymap-step-backward.description")
+            "keymap-step-backward.description"
         ),
         command!(
             "step_forward",
-            rox_i18n::t_static("keymap-step-forward"),
+            "keymap-step-forward",
             Group::Playback,
             SEEK,
             &["."],
             StepForward,
-            rox_i18n::t_static("keymap-step-forward.description")
+            "keymap-step-forward.description"
         ),
         command!(
             "go_to_time",
-            rox_i18n::t_static("keymap-go-to-time"),
+            "keymap-go-to-time",
             Group::Playback,
             WORKSPACE,
             defaults::GO_TO_TIME,
             OpenGoTo,
-            rox_i18n::t_static("keymap-go-to-time.description")
+            "keymap-go-to-time.description"
         ),
         command!(
             "stop_playback",
-            rox_i18n::t_static("keymap-stop-playback"),
+            "keymap-stop-playback",
             Group::Playback,
             WORKSPACE,
             defaults::STOP,
             StopPlayback,
-            rox_i18n::t_static("keymap-stop-playback.description")
+            "keymap-stop-playback.description"
         ),
         // Bare l is mpv's ab-loop key, with the same three-press cycle.
         command!(
             "ab_repeat",
-            rox_i18n::t_static("keymap-ab-repeat"),
+            "keymap-ab-repeat",
             Group::Playback,
             PLAYBACK,
             defaults::AB_REPEAT,
             AbRepeat,
-            rox_i18n::t_static("keymap-ab-repeat.description")
+            "keymap-ab-repeat.description"
         ),
         command!(
             "ab_clear",
-            rox_i18n::t_static("keymap-ab-clear"),
+            "keymap-ab-clear",
             Group::Playback,
             WORKSPACE,
             &[],
             AbClear,
-            rox_i18n::t_static("keymap-ab-clear.description")
+            "keymap-ab-clear.description"
         ),
         command!(
             "bookmark",
-            rox_i18n::t_static("keymap-bookmark"),
+            "keymap-bookmark",
             Group::Playback,
             PLAYBACK,
             defaults::BOOKMARK,
             AddBookmark,
-            rox_i18n::t_static("keymap-bookmark.description")
+            "keymap-bookmark.description"
         ),
         command!(
             "bookmark_named",
-            rox_i18n::t_static("keymap-bookmark-named"),
+            "keymap-bookmark-named",
             Group::Playback,
             PLAYBACK,
             defaults::BOOKMARK_NAMED,
             AddNamedBookmark,
-            rox_i18n::t_static("keymap-bookmark-named.description")
+            "keymap-bookmark-named.description"
         ),
         command!(
             "prev_bookmark",
-            rox_i18n::t_static("keymap-prev-bookmark"),
+            "keymap-prev-bookmark",
             Group::Playback,
             WORKSPACE,
             defaults::PREV_BOOKMARK,
             PrevBookmark,
-            rox_i18n::t_static("keymap-prev-bookmark.description")
+            "keymap-prev-bookmark.description"
         ),
         command!(
             "next_bookmark",
-            rox_i18n::t_static("keymap-next-bookmark"),
+            "keymap-next-bookmark",
             Group::Playback,
             WORKSPACE,
             defaults::NEXT_BOOKMARK,
             NextBookmark,
-            rox_i18n::t_static("keymap-next-bookmark.description")
+            "keymap-next-bookmark.description"
         ),
         command!(
             "cue",
-            rox_i18n::t_static("keymap-cue"),
+            "keymap-cue",
             Group::Playback,
             PLAYBACK,
             defaults::CUE,
             Cue,
-            rox_i18n::t_static("keymap-cue.description")
+            "keymap-cue.description"
         ),
         command!(
             "cue_prev",
-            rox_i18n::t_static("keymap-cue-prev"),
+            "keymap-cue-prev",
             Group::Playback,
             WORKSPACE,
             &[],
             CuePrev,
-            rox_i18n::t_static("keymap-cue-prev.description")
+            "keymap-cue-prev.description"
         ),
         command!(
             "cue_next",
-            rox_i18n::t_static("keymap-cue-next"),
+            "keymap-cue-next",
             Group::Playback,
             WORKSPACE,
             &[],
             CueNext,
-            rox_i18n::t_static("keymap-cue-next.description")
+            "keymap-cue-next.description"
         ),
         // Unbound on purpose: it throws away work.
         command!(
             "cue_clear",
-            rox_i18n::t_static("keymap-cue-clear"),
+            "keymap-cue-clear",
             Group::Playback,
             WORKSPACE,
             &[],
             CueClear,
-            rox_i18n::t_static("keymap-cue-clear.description")
+            "keymap-cue-clear.description"
         ),
         command!(
             "next_track",
-            rox_i18n::t_static("keymap-next-track"),
+            "keymap-next-track",
             Group::Playback,
             WORKSPACE,
             defaults::NEXT_TRACK,
             NextTrack,
-            rox_i18n::t_static("keymap-next-track.description")
+            "keymap-next-track.description"
         ),
         command!(
             "previous_track",
-            rox_i18n::t_static("keymap-previous-track"),
+            "keymap-previous-track",
             Group::Playback,
             WORKSPACE,
             defaults::PREVIOUS_TRACK,
             PreviousTrack,
-            rox_i18n::t_static("keymap-previous-track.description")
+            "keymap-previous-track.description"
         ),
         command!(
             "play_random",
-            rox_i18n::t_static("keymap-play-random"),
+            "keymap-play-random",
             Group::Playback,
             WORKSPACE,
             defaults::PLAY_RANDOM,
             PlayRandom,
-            rox_i18n::t_static("keymap-play-random.description")
+            "keymap-play-random.description"
         ),
         command!(
             "play_similar",
-            rox_i18n::t_static("keymap-play-similar"),
+            "keymap-play-similar",
             Group::Playback,
             WORKSPACE,
             &[],
             PlaySimilar,
-            rox_i18n::t_static("keymap-play-similar.description")
+            "keymap-play-similar.description"
         ),
         command!(
             "toggle_mute",
-            rox_i18n::t_static("keymap-toggle-mute"),
+            "keymap-toggle-mute",
             Group::Playback,
             WORKSPACE,
             defaults::MUTE,
             ToggleMute,
-            rox_i18n::t_static("keymap-toggle-mute.description")
+            "keymap-toggle-mute.description"
         ),
         command!(
             "toggle_shuffle",
-            rox_i18n::t_static("keymap-toggle-shuffle"),
+            "keymap-toggle-shuffle",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleShuffle,
-            rox_i18n::t_static("keymap-toggle-shuffle.description")
+            "keymap-toggle-shuffle.description"
         ),
         command!(
             "cycle_shuffle_mode",
-            rox_i18n::t_static("keymap-cycle-shuffle-mode"),
+            "keymap-cycle-shuffle-mode",
             Group::Playback,
             WORKSPACE,
             &[],
             CycleShuffleMode,
-            rox_i18n::t_static("keymap-cycle-shuffle-mode.description")
+            "keymap-cycle-shuffle-mode.description"
         ),
         command!(
             "cycle_loop",
-            rox_i18n::t_static("keymap-cycle-loop"),
+            "keymap-cycle-loop",
             Group::Playback,
             WORKSPACE,
             &[],
             CycleLoop,
-            rox_i18n::t_static("keymap-cycle-loop.description")
+            "keymap-cycle-loop.description"
         ),
         command!(
             "toggle_stop_after",
-            rox_i18n::t_static("keymap-toggle-stop-after"),
+            "keymap-toggle-stop-after",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleStopAfter,
-            rox_i18n::t_static("keymap-toggle-stop-after.description")
+            "keymap-toggle-stop-after.description"
         ),
         // Sleep gets only its cancel: every other sleep row carries a length.
         command!(
             "toggle_continuation",
-            rox_i18n::t_static("keymap-toggle-continuation"),
+            "keymap-toggle-continuation",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleContinuation,
-            rox_i18n::t_static("keymap-toggle-continuation.description")
+            "keymap-toggle-continuation.description"
         ),
         command!(
             "sleep_off",
-            rox_i18n::t_static("keymap-sleep-off"),
+            "keymap-sleep-off",
             Group::Playback,
             WORKSPACE,
             &[],
             SleepOff,
-            rox_i18n::t_static("keymap-sleep-off.description")
+            "keymap-sleep-off.description"
         ),
         command!(
             "clear_queue",
-            rox_i18n::t_static("keymap-clear-queue"),
+            "keymap-clear-queue",
             Group::Playback,
             WORKSPACE,
             &[],
             ClearQueue,
-            rox_i18n::t_static("keymap-clear-queue.description")
+            "keymap-clear-queue.description"
         ),
         command!(
             "toggle_favourite",
-            rox_i18n::t_static("keymap-toggle-favourite"),
+            "keymap-toggle-favourite",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleFavourite,
-            rox_i18n::t_static("keymap-toggle-favourite.description")
+            "keymap-toggle-favourite.description"
         ),
         command!(
             "volume_up",
-            rox_i18n::t_static("keymap-volume-up"),
+            "keymap-volume-up",
             Group::Playback,
             WORKSPACE,
             &[],
             VolumeUp,
-            rox_i18n::t_static("keymap-volume-up.description")
+            "keymap-volume-up.description"
         ),
         command!(
             "volume_down",
-            rox_i18n::t_static("keymap-volume-down"),
+            "keymap-volume-down",
             Group::Playback,
             WORKSPACE,
             &[],
             VolumeDown,
-            rox_i18n::t_static("keymap-volume-down.description")
+            "keymap-volume-down.description"
         ),
         command!(
             "toggle_crossfade",
-            rox_i18n::t_static("keymap-toggle-crossfade"),
+            "keymap-toggle-crossfade",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleCrossfade,
-            rox_i18n::t_static("keymap-toggle-crossfade.description")
+            "keymap-toggle-crossfade.description"
         ),
         command!(
             "toggle_crossfade_albums",
-            rox_i18n::t_static("keymap-toggle-crossfade-albums"),
+            "keymap-toggle-crossfade-albums",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleCrossfadeAlbums,
-            rox_i18n::t_static("keymap-toggle-crossfade-albums.description")
+            "keymap-toggle-crossfade-albums.description"
         ),
         command!(
             "cycle_replaygain_mode",
-            rox_i18n::t_static("keymap-cycle-replaygain-mode"),
+            "keymap-cycle-replaygain-mode",
             Group::Playback,
             WORKSPACE,
             &[],
             CycleReplayGainMode,
-            rox_i18n::t_static("keymap-cycle-replaygain-mode.description")
+            "keymap-cycle-replaygain-mode.description"
         ),
         // Rebuilds the running session either way; not a quiet switch.
         command!(
             "toggle_exclusive_output",
-            rox_i18n::t_static("keymap-toggle-exclusive-output"),
+            "keymap-toggle-exclusive-output",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleExclusiveOutput,
-            rox_i18n::t_static("keymap-toggle-exclusive-output.description")
+            "keymap-toggle-exclusive-output.description"
         ),
         command!(
             "toggle_eq",
-            rox_i18n::t_static("keymap-toggle-eq"),
+            "keymap-toggle-eq",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleEq,
-            rox_i18n::t_static("keymap-toggle-eq.description")
+            "keymap-toggle-eq.description"
         ),
         command!(
             "flatten_eq",
-            rox_i18n::t_static("keymap-flatten-eq"),
+            "keymap-flatten-eq",
             Group::Playback,
             WORKSPACE,
             &[],
             FlattenEq,
-            rox_i18n::t_static("keymap-flatten-eq.description")
+            "keymap-flatten-eq.description"
         ),
         command!(
             "toggle_scrobbling",
-            rox_i18n::t_static("keymap-toggle-scrobbling"),
+            "keymap-toggle-scrobbling",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleScrobbling,
-            rox_i18n::t_static("keymap-toggle-scrobbling.description")
+            "keymap-toggle-scrobbling.description"
         ),
         command!(
             "toggle_discord",
-            rox_i18n::t_static("keymap-toggle-discord"),
+            "keymap-toggle-discord",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleDiscord,
-            rox_i18n::t_static("keymap-toggle-discord.description")
+            "keymap-toggle-discord.description"
         ),
         command!(
             "toggle_broadcast",
-            rox_i18n::t_static("keymap-toggle-broadcast"),
+            "keymap-toggle-broadcast",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleBroadcast,
-            rox_i18n::t_static("keymap-toggle-broadcast.description")
+            "keymap-toggle-broadcast.description"
         ),
         command!(
             "toggle_capture",
-            rox_i18n::t_static("keymap-toggle-capture"),
+            "keymap-toggle-capture",
             Group::Playback,
             WORKSPACE,
             &[],
             ToggleCapture,
-            rox_i18n::t_static("keymap-toggle-capture.description")
+            "keymap-toggle-capture.description"
         ),
         command!(
             "rename_track",
-            rox_i18n::t_static("keymap-rename-track"),
+            "keymap-rename-track",
             Group::Library,
             PLAYBACK,
             &["f2"],
             RenameTrack,
-            rox_i18n::t_static("keymap-rename-track.description")
+            "keymap-rename-track.description"
         ),
         // Library operations ship unbound except health and power search: an
         // afternoon-long pass shouldn't be reachable by accident.
         command!(
             "rescan_library",
-            rox_i18n::t_static("keymap-rescan-library"),
+            "keymap-rescan-library",
             Group::Library,
             WORKSPACE,
             &[],
             RescanLibrary,
-            rox_i18n::t_static("keymap-rescan-library.description")
+            "keymap-rescan-library.description"
         ),
         command!(
             "toggle_watch_folders",
-            rox_i18n::t_static("keymap-toggle-watch-folders"),
+            "keymap-toggle-watch-folders",
             Group::Library,
             WORKSPACE,
             &[],
             ToggleWatchFolders,
-            rox_i18n::t_static("keymap-toggle-watch-folders.description")
+            "keymap-toggle-watch-folders.description"
         ),
         command!(
             "abort_scan",
-            rox_i18n::t_static("keymap-abort-scan"),
+            "keymap-abort-scan",
             Group::Library,
             WORKSPACE,
             &[],
             AbortScan,
-            rox_i18n::t_static("keymap-abort-scan.description")
+            "keymap-abort-scan.description"
         ),
         command!(
             "measure_replaygain",
-            rox_i18n::t_static("keymap-measure-replaygain"),
+            "keymap-measure-replaygain",
             Group::Library,
             WORKSPACE,
             &[],
             MeasureReplayGain,
-            rox_i18n::t_static("keymap-measure-replaygain.description")
+            "keymap-measure-replaygain.description"
         ),
         command!(
             "analyze_tempo",
-            rox_i18n::t_static("keymap-analyze-tempo"),
+            "keymap-analyze-tempo",
             Group::Library,
             WORKSPACE,
             &[],
             AnalyzeTempo,
-            rox_i18n::t_static("keymap-analyze-tempo.description")
+            "keymap-analyze-tempo.description"
         ),
         command!(
             "build_acoustic",
-            rox_i18n::t_static("keymap-build-acoustic"),
+            "keymap-build-acoustic",
             Group::Library,
             WORKSPACE,
             &[],
             BuildAcoustic,
-            rox_i18n::t_static("keymap-build-acoustic.description")
+            "keymap-build-acoustic.description"
         ),
         command!(
             "fill_sort_names",
-            rox_i18n::t_static("keymap-fill-sort-names"),
+            "keymap-fill-sort-names",
             Group::Library,
             WORKSPACE,
             &[],
             FillSortNames,
-            rox_i18n::t_static("keymap-fill-sort-names.description")
+            "keymap-fill-sort-names.description"
         ),
         command!(
             "romanize_library",
-            rox_i18n::t_static("keymap-romanize-library"),
+            "keymap-romanize-library",
             Group::Library,
             WORKSPACE,
             &[],
             RomanizeLibrary,
-            rox_i18n::t_static("keymap-romanize-library.description")
+            "keymap-romanize-library.description"
         ),
         command!(
             "find_duplicates",
-            rox_i18n::t_static("keymap-find-duplicates"),
+            "keymap-find-duplicates",
             Group::Library,
             WORKSPACE,
             &[],
             FindDuplicates,
-            rox_i18n::t_static("keymap-find-duplicates.description")
+            "keymap-find-duplicates.description"
         ),
         command!(
             "tag_genres",
-            rox_i18n::t_static("keymap-tag-genres"),
+            "keymap-tag-genres",
             Group::Library,
             WORKSPACE,
             &[],
             TagGenres,
-            rox_i18n::t_static("keymap-tag-genres.description")
+            "keymap-tag-genres.description"
         ),
         command!(
             "open_health",
-            rox_i18n::t_static("keymap-open-health"),
+            "keymap-open-health",
             Group::Library,
             WORKSPACE,
             defaults::HEALTH,
             OpenHealth,
-            rox_i18n::t_static("keymap-open-health.description")
+            "keymap-open-health.description"
         ),
         command!(
             "open_power_search",
-            rox_i18n::t_static("keymap-open-power-search"),
+            "keymap-open-power-search",
             Group::Library,
             WORKSPACE,
             defaults::POWER_SEARCH,
             OpenPowerSearch,
-            rox_i18n::t_static("keymap-open-power-search.description")
+            "keymap-open-power-search.description"
         ),
         command!(
             "type_ahead_next",
-            rox_i18n::t_static("keymap-type-ahead-next"),
+            "keymap-type-ahead-next",
             Group::Browsing,
             TYPE_AHEAD,
             &["tab"],
             TypeAheadNext,
-            rox_i18n::t_static("keymap-type-ahead-next.description"),
+            "keymap-type-ahead-next.description",
             Reach::Panel
         ),
         command!(
             "type_ahead_prev",
-            rox_i18n::t_static("keymap-type-ahead-prev"),
+            "keymap-type-ahead-prev",
             Group::Browsing,
             TYPE_AHEAD,
             &["shift-tab"],
             TypeAheadPrev,
-            rox_i18n::t_static("keymap-type-ahead-prev.description"),
+            "keymap-type-ahead-prev.description",
             Reach::Panel
         ),
         command!(
             "next_tab",
-            rox_i18n::t_static("keymap-next-tab"),
+            "keymap-next-tab",
             Group::Browsing,
             WORKSPACE,
             &["ctrl-tab"],
             NextTab,
-            rox_i18n::t_static("keymap-next-tab.description"),
+            "keymap-next-tab.description",
             Reach::Panel
         ),
         command!(
             "prev_tab",
-            rox_i18n::t_static("keymap-prev-tab"),
+            "keymap-prev-tab",
             Group::Browsing,
             WORKSPACE,
             &["ctrl-shift-tab"],
             PrevTab,
-            rox_i18n::t_static("keymap-prev-tab.description"),
+            "keymap-prev-tab.description",
             Reach::Panel
         ),
         command!(
             "close_panel",
-            rox_i18n::t_static("keymap-close-panel"),
+            "keymap-close-panel",
             Group::Browsing,
             WORKSPACE,
             &[],
             ClosePanelAction,
-            rox_i18n::t_static("keymap-close-panel.description"),
+            "keymap-close-panel.description",
             Reach::Panel
         ),
         command!(
             "new_window",
-            rox_i18n::t_static("keymap-new-window"),
+            "keymap-new-window",
             Group::Windows,
             WORKSPACE,
             defaults::NEW_WINDOW,
             NewWindow,
-            rox_i18n::t_static("keymap-new-window.description")
+            "keymap-new-window.description"
         ),
         command!(
             "new_empty_window",
-            rox_i18n::t_static("keymap-new-empty-window"),
+            "keymap-new-empty-window",
             Group::Windows,
             WORKSPACE,
             &[],
             NewEmptyWindow,
-            rox_i18n::t_static("keymap-new-empty-window.description")
+            "keymap-new-empty-window.description"
         ),
         command!(
             "open_tasks",
-            rox_i18n::t_static("keymap-open-tasks"),
+            "keymap-open-tasks",
             Group::Windows,
             WORKSPACE,
             defaults::TASKS,
             OpenTasks,
-            rox_i18n::t_static("keymap-open-tasks.description")
+            "keymap-open-tasks.description"
         ),
         command!(
             "open_catalog",
-            rox_i18n::t_static("keymap-open-catalog"),
+            "keymap-open-catalog",
             Group::Windows,
             WORKSPACE,
             &[],
             OpenCatalog,
-            rox_i18n::t_static("keymap-open-catalog.description")
+            "keymap-open-catalog.description"
         ),
         command!(
             "open_equalizer",
-            rox_i18n::t_static("keymap-open-equalizer"),
+            "keymap-open-equalizer",
             Group::Windows,
             WORKSPACE,
             defaults::EQUALIZER,
             OpenEqualizer,
-            rox_i18n::t_static("keymap-open-equalizer.description")
+            "keymap-open-equalizer.description"
         ),
         command!(
             "open_preset_picker",
-            rox_i18n::t_static("keymap-open-preset-picker"),
+            "keymap-open-preset-picker",
             Group::Windows,
             WORKSPACE,
             defaults::PRESET_PICKER,
             OpenPresetPicker,
-            rox_i18n::t_static("keymap-open-preset-picker.description")
+            "keymap-open-preset-picker.description"
         ),
         command!(
             "open_console",
-            rox_i18n::t_static("keymap-open-console"),
+            "keymap-open-console",
             Group::Windows,
             WORKSPACE,
             &["f12"],
             OpenConsole,
-            rox_i18n::t_static("keymap-open-console.description")
+            "keymap-open-console.description"
         ),
         command!(
             "open_welcome",
-            rox_i18n::t_static("keymap-open-welcome"),
+            "keymap-open-welcome",
             Group::Windows,
             WORKSPACE,
             &["f1"],
             OpenWelcome,
-            rox_i18n::t_static("keymap-open-welcome.description")
+            "keymap-open-welcome.description"
         ),
         command!(
             "open_about",
-            rox_i18n::t_static("keymap-open-about"),
+            "keymap-open-about",
             Group::Windows,
             WORKSPACE,
             &["shift-f1"],
             OpenAbout,
-            rox_i18n::t_static("keymap-open-about.description")
+            "keymap-open-about.description"
         ),
         command!(
             "report_issue",
-            rox_i18n::t_static("keymap-report-issue"),
+            "keymap-report-issue",
             Group::Windows,
             WORKSPACE,
             &[],
             ReportIssue,
-            rox_i18n::t_static("keymap-report-issue.description")
+            "keymap-report-issue.description"
         ),
         command!(
             "open_discussions",
-            rox_i18n::t_static("keymap-open-discussions"),
+            "keymap-open-discussions",
             Group::Windows,
             WORKSPACE,
             &[],
             OpenDiscussions,
-            rox_i18n::t_static("keymap-open-discussions.description")
+            "keymap-open-discussions.description"
         ),
         command!(
             "open_chat",
-            rox_i18n::t_static("keymap-open-chat"),
+            "keymap-open-chat",
             Group::Windows,
             WORKSPACE,
             &[],
             OpenChat,
-            rox_i18n::t_static("keymap-open-chat.description")
+            "keymap-open-chat.description"
         ),
         command!(
             "open_settings",
-            rox_i18n::t_static("keymap-open-settings"),
+            "keymap-open-settings",
             Group::Windows,
             WORKSPACE,
             defaults::SETTINGS,
             OpenSettings,
-            rox_i18n::t_static("keymap-open-settings.description")
+            "keymap-open-settings.description"
         ),
         command!(
             "open_panel_settings",
-            rox_i18n::t_static("keymap-open-panel-settings"),
+            "keymap-open-panel-settings",
             Group::Windows,
             WORKSPACE,
             defaults::PANEL_SETTINGS,
             OpenPanelSettings,
-            rox_i18n::t_static("keymap-open-panel-settings.description"),
+            "keymap-open-panel-settings.description",
             Reach::Panel
         ),
         command!(
             "open_stats",
-            rox_i18n::t_static("keymap-open-stats"),
+            "keymap-open-stats",
             Group::Windows,
             WORKSPACE,
             defaults::STATS,
             OpenStats,
-            rox_i18n::t_static("keymap-open-stats.description")
+            "keymap-open-stats.description"
         ),
         command!(
             "open_quick_play",
-            rox_i18n::t_static("keymap-open-quick-play"),
+            "keymap-open-quick-play",
             Group::Library,
             WORKSPACE,
             defaults::QUICK_PLAY,
             OpenQuickPlay,
-            rox_i18n::t_static("keymap-open-quick-play.description")
+            "keymap-open-quick-play.description"
         ),
         command!(
             "open_signals",
-            rox_i18n::t_static("keymap-open-signals"),
+            "keymap-open-signals",
             Group::Windows,
             WORKSPACE,
             &[],
             OpenSignals,
-            rox_i18n::t_static("keymap-open-signals.description")
+            "keymap-open-signals.description"
         ),
         command!(
             "import_workspace",
-            rox_i18n::t_static("keymap-import-workspace"),
+            "keymap-import-workspace",
             Group::Windows,
             WORKSPACE,
             &[],
             ImportWorkspace,
-            rox_i18n::t_static("keymap-import-workspace.description")
+            "keymap-import-workspace.description"
         ),
         command!(
             "save_layout",
-            rox_i18n::t_static("keymap-save-layout"),
+            "keymap-save-layout",
             Group::Windows,
             WORKSPACE,
             &[],
             SaveLayout,
-            rox_i18n::t_static("keymap-save-layout.description")
+            "keymap-save-layout.description"
         ),
         command!(
             "save_workspace",
-            rox_i18n::t_static("keymap-save-workspace"),
+            "keymap-save-workspace",
             Group::Windows,
             WORKSPACE,
             &[],
             SaveWorkspace,
-            rox_i18n::t_static("keymap-save-workspace.description")
+            "keymap-save-workspace.description"
         ),
         command!(
             "toggle_quit_to_tray",
-            rox_i18n::t_static("keymap-toggle-quit-to-tray"),
+            "keymap-toggle-quit-to-tray",
             Group::Windows,
             WORKSPACE,
             &[],
             ToggleQuitToTray,
-            rox_i18n::t_static("keymap-toggle-quit-to-tray.description")
+            "keymap-toggle-quit-to-tray.description"
         ),
         command!(
             "close_window",
-            rox_i18n::t_static("keymap-close-window"),
+            "keymap-close-window",
             Group::Windows,
             None,
             defaults::CLOSE_WINDOW,
             CloseWindow,
-            rox_i18n::t_static("keymap-close-window.description")
+            "keymap-close-window.description"
         ),
         command!(
             "quit",
-            rox_i18n::t_static("keymap-quit"),
+            "keymap-quit",
             Group::Windows,
             None,
             defaults::QUIT,
             Quit,
-            rox_i18n::t_static("keymap-quit.description")
+            "keymap-quit.description"
         ),
         command!(
             "focus_search",
-            rox_i18n::t_static("keymap-focus-search"),
+            "keymap-focus-search",
             Group::View,
             WORKSPACE,
             defaults::FOCUS_SEARCH,
             FocusSearch,
-            rox_i18n::t_static("keymap-focus-search.description")
+            "keymap-focus-search.description"
         ),
         command!(
             "toggle_zoom",
-            rox_i18n::t_static("keymap-toggle-zoom"),
+            "keymap-toggle-zoom",
             Group::View,
             WORKSPACE,
             &["shift-escape"],
             ToggleZoom,
-            rox_i18n::t_static("keymap-toggle-zoom.description"),
+            "keymap-toggle-zoom.description",
             Reach::Panel
         ),
         command!(
             "increase_font_size",
-            rox_i18n::t_static("keymap-increase-font-size"),
+            "keymap-increase-font-size",
             Group::View,
             None,
             defaults::ZOOM_IN,
             IncreaseFontSize,
-            rox_i18n::t_static("keymap-increase-font-size.description")
+            "keymap-increase-font-size.description"
         ),
         command!(
             "decrease_font_size",
-            rox_i18n::t_static("keymap-decrease-font-size"),
+            "keymap-decrease-font-size",
             Group::View,
             None,
             defaults::ZOOM_OUT,
             DecreaseFontSize,
-            rox_i18n::t_static("keymap-decrease-font-size.description")
+            "keymap-decrease-font-size.description"
         ),
         command!(
             "reset_font_size",
-            rox_i18n::t_static("keymap-reset-font-size"),
+            "keymap-reset-font-size",
             Group::View,
             None,
             defaults::ZOOM_RESET,
             ResetFontSize,
-            rox_i18n::t_static("keymap-reset-font-size.description")
+            "keymap-reset-font-size.description"
         ),
         command!(
             "toggle_post_shader",
-            rox_i18n::t_static("keymap-toggle-post-shader"),
+            "keymap-toggle-post-shader",
             Group::View,
             None,
             defaults::POST_SHADER,
             TogglePostShader,
-            rox_i18n::t_static("keymap-toggle-post-shader.description")
+            "keymap-toggle-post-shader.description"
         ),
         command!(
             "toggle_backdrop_shader",
-            rox_i18n::t_static("keymap-toggle-backdrop-shader"),
+            "keymap-toggle-backdrop-shader",
             Group::View,
             WORKSPACE,
             &[],
             ToggleBackdropShader,
-            rox_i18n::t_static("keymap-toggle-backdrop-shader.description")
+            "keymap-toggle-backdrop-shader.description"
         ),
         command!(
             "toggle_backdrop_all_windows",
-            rox_i18n::t_static("keymap-toggle-backdrop-all-windows"),
+            "keymap-toggle-backdrop-all-windows",
             Group::View,
             WORKSPACE,
             &[],
             ToggleBackdropAllWindows,
-            rox_i18n::t_static("keymap-toggle-backdrop-all-windows.description")
+            "keymap-toggle-backdrop-all-windows.description"
         ),
         command!(
             "toggle_theme",
-            rox_i18n::t_static("keymap-toggle-theme"),
+            "keymap-toggle-theme",
             Group::View,
             None,
             defaults::THEME,
             ToggleTheme,
-            rox_i18n::t_static("keymap-toggle-theme.description")
+            "keymap-toggle-theme.description"
         ),
         command!(
             "toggle_design_mode",
-            rox_i18n::t_static("keymap-toggle-design-mode"),
+            "keymap-toggle-design-mode",
             Group::View,
             WORKSPACE,
             defaults::DESIGN_MODE,
             ToggleDesignMode,
-            rox_i18n::t_static("keymap-toggle-design-mode.description")
+            "keymap-toggle-design-mode.description"
         ),
         command!(
             "toggle_resize_lock",
-            rox_i18n::t_static("keymap-toggle-resize-lock"),
+            "keymap-toggle-resize-lock",
             Group::View,
             WORKSPACE,
             &[],
             ToggleResizeLock,
-            rox_i18n::t_static("keymap-toggle-resize-lock.description")
+            "keymap-toggle-resize-lock.description"
         ),
         command!(
             "toggle_menubar",
-            rox_i18n::t_static("keymap-toggle-menubar"),
+            "keymap-toggle-menubar",
             Group::View,
             WORKSPACE,
             &[],
             ToggleMenubar,
-            rox_i18n::t_static("keymap-toggle-menubar.description")
+            "keymap-toggle-menubar.description"
         ),
         command!(
             "toggle_decorations",
-            rox_i18n::t_static("keymap-toggle-decorations"),
+            "keymap-toggle-decorations",
             Group::View,
             WORKSPACE,
             &[],
             ToggleDecorations,
-            rox_i18n::t_static("keymap-toggle-decorations.description")
+            "keymap-toggle-decorations.description"
         ),
         command!(
             "toggle_art_theming",
-            rox_i18n::t_static("keymap-toggle-art-theming"),
+            "keymap-toggle-art-theming",
             Group::View,
             WORKSPACE,
             &[],
             ToggleArtTheming,
-            rox_i18n::t_static("keymap-toggle-art-theming.description")
+            "keymap-toggle-art-theming.description"
         ),
         command!(
             "toggle_seams",
-            rox_i18n::t_static("keymap-toggle-seams"),
+            "keymap-toggle-seams",
             Group::View,
             WORKSPACE,
             &[],
             ToggleSeams,
-            rox_i18n::t_static("keymap-toggle-seams.description")
+            "keymap-toggle-seams.description"
         ),
         command!(
             "toggle_readings",
-            rox_i18n::t_static("keymap-toggle-readings"),
+            "keymap-toggle-readings",
             Group::View,
             WORKSPACE,
             &[],
             ToggleReadings,
-            rox_i18n::t_static("keymap-toggle-readings.description")
+            "keymap-toggle-readings.description"
         ),
         command!(
             "toggle_milkdrop_backdrop",
-            rox_i18n::t_static("keymap-toggle-milkdrop-backdrop"),
+            "keymap-toggle-milkdrop-backdrop",
             Group::View,
             WORKSPACE,
             &[],
             ToggleMilkdropBackdrop,
-            rox_i18n::t_static("keymap-toggle-milkdrop-backdrop.description")
+            "keymap-toggle-milkdrop-backdrop.description"
         ),
         command!(
             "toggle_milkdrop_hard_cuts",
-            rox_i18n::t_static("keymap-toggle-milkdrop-hard-cuts"),
+            "keymap-toggle-milkdrop-hard-cuts",
             Group::View,
             WORKSPACE,
             &[],
             ToggleMilkdropHardCuts,
-            rox_i18n::t_static("keymap-toggle-milkdrop-hard-cuts.description")
+            "keymap-toggle-milkdrop-hard-cuts.description"
         ),
         command!(
             "random_milkdrop_preset",
-            rox_i18n::t_static("keymap-random-milkdrop-preset"),
+            "keymap-random-milkdrop-preset",
             Group::View,
             WORKSPACE,
             &[],
             RandomMilkdropPreset,
-            rox_i18n::t_static("keymap-random-milkdrop-preset.description")
+            "keymap-random-milkdrop-preset.description"
         ),
         command!(
             "toggle_milkdrop_lock",
-            rox_i18n::t_static("keymap-toggle-milkdrop-lock"),
+            "keymap-toggle-milkdrop-lock",
             Group::View,
             WORKSPACE,
             &[],
             ToggleMilkdropLock,
-            rox_i18n::t_static("keymap-toggle-milkdrop-lock.description")
+            "keymap-toggle-milkdrop-lock.description"
         ),
         // A window with neither the mini nor the primary preset named stays put.
         command!(
             "toggle_mini",
-            rox_i18n::t_static("keymap-toggle-mini"),
+            "keymap-toggle-mini",
             Group::View,
             WORKSPACE,
             &[],
             ToggleMini,
-            rox_i18n::t_static("keymap-toggle-mini.description")
+            "keymap-toggle-mini.description"
         ),
         command!(
             "stamp_line",
-            rox_i18n::t_static("keymap-stamp-line"),
+            "keymap-stamp-line",
             Group::Editing,
             LYRICS,
             &["shift-enter"],
             StampLine,
-            rox_i18n::t_static("keymap-stamp-line.description"),
+            "keymap-stamp-line.description",
             Reach::Panel
         ),
         command!(
             "canvas_undo",
-            rox_i18n::t_static("canvas-key-undo"),
+            "canvas-key-undo",
             Group::Editing,
             CANVAS,
             defaults::CANVAS_UNDO,
             Undo,
-            rox_i18n::t_static("canvas-key-undo.description"),
+            "canvas-key-undo.description",
             Reach::Panel
         ),
         command!(
             "canvas_redo",
-            rox_i18n::t_static("canvas-key-redo"),
+            "canvas-key-redo",
             Group::Editing,
             CANVAS,
             defaults::CANVAS_REDO,
             Redo,
-            rox_i18n::t_static("canvas-key-redo.description"),
+            "canvas-key-redo.description",
             Reach::Panel
         ),
         command!(
             "canvas_delete",
-            rox_i18n::t_static("canvas-key-delete"),
+            "canvas-key-delete",
             Group::Editing,
             CANVAS_ITEM,
             &["delete", "backspace"],
             DeleteItem,
-            rox_i18n::t_static("canvas-key-delete.description"),
+            "canvas-key-delete.description",
             Reach::Panel
         ),
         command!(
             "canvas_group",
-            rox_i18n::t_static("canvas-key-group"),
+            "canvas-key-group",
             Group::Editing,
             CANVAS_ITEM,
             defaults::CANVAS_GROUP,
             GroupItem,
-            rox_i18n::t_static("canvas-key-group.description"),
+            "canvas-key-group.description",
             Reach::Panel
         ),
         command!(
             "canvas_ungroup",
-            rox_i18n::t_static("canvas-key-ungroup"),
+            "canvas-key-ungroup",
             Group::Editing,
             CANVAS_ITEM,
             defaults::CANVAS_UNGROUP,
             UngroupItem,
-            rox_i18n::t_static("canvas-key-ungroup.description"),
+            "canvas-key-ungroup.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_left",
-            rox_i18n::t_static("canvas-key-nudge-left"),
+            "canvas-key-nudge-left",
             Group::Editing,
             CANVAS_ITEM,
             &["left"],
             NudgeLeft,
-            rox_i18n::t_static("canvas-key-nudge-left.description"),
+            "canvas-key-nudge-left.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_right",
-            rox_i18n::t_static("canvas-key-nudge-right"),
+            "canvas-key-nudge-right",
             Group::Editing,
             CANVAS_ITEM,
             &["right"],
             NudgeRight,
-            rox_i18n::t_static("canvas-key-nudge-right.description"),
+            "canvas-key-nudge-right.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_up",
-            rox_i18n::t_static("canvas-key-nudge-up"),
+            "canvas-key-nudge-up",
             Group::Editing,
             CANVAS_ITEM,
             &["up"],
             NudgeUp,
-            rox_i18n::t_static("canvas-key-nudge-up.description"),
+            "canvas-key-nudge-up.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_down",
-            rox_i18n::t_static("canvas-key-nudge-down"),
+            "canvas-key-nudge-down",
             Group::Editing,
             CANVAS_ITEM,
             &["down"],
             NudgeDown,
-            rox_i18n::t_static("canvas-key-nudge-down.description"),
+            "canvas-key-nudge-down.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_left_far",
-            rox_i18n::t_static("canvas-key-nudge-left-far"),
+            "canvas-key-nudge-left-far",
             Group::Editing,
             CANVAS_ITEM,
             &["shift-left"],
             NudgeLeftFar,
-            rox_i18n::t_static("canvas-key-nudge-left-far.description"),
+            "canvas-key-nudge-left-far.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_right_far",
-            rox_i18n::t_static("canvas-key-nudge-right-far"),
+            "canvas-key-nudge-right-far",
             Group::Editing,
             CANVAS_ITEM,
             &["shift-right"],
             NudgeRightFar,
-            rox_i18n::t_static("canvas-key-nudge-right-far.description"),
+            "canvas-key-nudge-right-far.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_up_far",
-            rox_i18n::t_static("canvas-key-nudge-up-far"),
+            "canvas-key-nudge-up-far",
             Group::Editing,
             CANVAS_ITEM,
             &["shift-up"],
             NudgeUpFar,
-            rox_i18n::t_static("canvas-key-nudge-up-far.description"),
+            "canvas-key-nudge-up-far.description",
             Reach::Panel
         ),
         command!(
             "canvas_nudge_down_far",
-            rox_i18n::t_static("canvas-key-nudge-down-far"),
+            "canvas-key-nudge-down-far",
             Group::Editing,
             CANVAS_ITEM,
             &["shift-down"],
             NudgeDownFar,
-            rox_i18n::t_static("canvas-key-nudge-down-far.description"),
+            "canvas-key-nudge-down-far.description",
             Reach::Panel
         ),
         command!(
             "canvas_step_out",
-            rox_i18n::t_static("canvas-key-step-out"),
+            "canvas-key-step-out",
             Group::Editing,
             CANVAS_ITEM,
             &["escape"],
             StepOut,
-            rox_i18n::t_static("canvas-key-step-out.description"),
+            "canvas-key-step-out.description",
             Reach::Panel
         ),
     ]
@@ -1462,7 +1471,7 @@ pub fn clash(
     command: &Command,
     chord: &str,
     overrides: &BTreeMap<String, Vec<String>>,
-) -> Option<&'static str> {
+) -> Option<SharedString> {
     let scope = command.scope(chord);
     COMMANDS
         .iter()
@@ -1472,7 +1481,7 @@ pub fn clash(
                 .iter()
                 .any(|held| held == chord && overlaps(other.scope(held), scope))
         })
-        .map(|other| other.label)
+        .map(|other| other.label())
 }
 
 struct Layers {
@@ -1852,7 +1861,7 @@ mod tests {
                     clash(command, chord, &overrides),
                     None,
                     "{} shares {chord} with another command",
-                    command.label
+                    command.id
                 );
             }
         }
@@ -1935,7 +1944,7 @@ mod tests {
         let overrides = BTreeMap::new();
         assert_eq!(
             clash(seek, focus.defaults[0], &overrides),
-            Some(focus.label),
+            Some(focus.label()),
             "a modified playback chord binds where Focus Search lives"
         );
         assert_eq!(

@@ -34,6 +34,7 @@ use rox_panel_kit::ui::{self as settings_ui, icon_button, small_button};
 use rox_services::player::{self, BuiltinHesuviProfile, ConvolverMode, IrLayout};
 
 use crate::eq_presets;
+use rox_panel_kit::PlaceholderKey as _;
 
 const NAME_W: f32 = 140.0;
 
@@ -162,7 +163,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("eq-window-title"),
+        || rox_i18n::t!("eq-window-title"),
         bounds,
         Some(min),
         move |window, cx| cx.new(|cx| EqWindow::new(state, window, cx)),
@@ -230,7 +231,7 @@ impl EqWindow {
             rox_services::player::observe_clock(&state.player, cx, |_, _, cx| cx.notify())
         });
         let preset_name =
-            cx.new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("eq-preset-name")));
+            cx.new(|cx| InputState::new(window, cx).placeholder_key("eq-preset-name", window, cx));
         let _name_changed = cx.subscribe_in(
             &preset_name,
             window,
@@ -1008,11 +1009,10 @@ impl EqWindow {
         let mut options: Vec<(IrChoice, SharedString)> = BuiltinHesuviProfile::all()
             .iter()
             .map(|&p| {
-                let label = match p {
-                    BuiltinHesuviProfile::None => rox_i18n::t!("eq-convolver-no-file"),
-                    p => p.display_name().into(),
-                };
-                (IrChoice::Profile(p), label)
+                (
+                    IrChoice::Profile(p),
+                    rox_panels::eq_widget::profile_label(p),
+                )
             })
             .collect();
 

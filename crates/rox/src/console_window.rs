@@ -60,7 +60,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("console-window-title"),
+        || rox_i18n::t!("console-window-title"),
         bounds,
         Some(min),
         move |window, cx| cx.new(|cx| ConsoleWindow::new(player, window, cx)),

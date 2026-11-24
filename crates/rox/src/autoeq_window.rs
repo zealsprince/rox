@@ -21,6 +21,7 @@ use rox_panel_api::panel;
 use rox_services::player;
 
 use crate::eq_presets;
+use rox_panel_kit::PlaceholderKey as _;
 
 const DEFAULT_SIZE: (f32, f32) = (560., 680.);
 
@@ -69,7 +70,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        rox_i18n::t!("autoeq-window-title"),
+        || rox_i18n::t!("autoeq-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| AutoEqWindow::new(player, window, cx)),
@@ -100,8 +101,9 @@ struct AutoEqWindow {
 
 impl AutoEqWindow {
     fn new(player: Option<EntityId>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let find = cx
-            .new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("autoeq-placeholder")));
+        let find = cx.new(|cx| {
+            InputState::new(window, cx).placeholder_key("autoeq-placeholder", window, cx)
+        });
         window.focus(&find.focus_handle(cx));
 
         let _find_events = cx.subscribe_in(

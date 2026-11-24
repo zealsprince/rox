@@ -75,7 +75,9 @@ impl SettingsWindow {
         let chords = keymap::chords(command, &self.keymap);
         // `custom` matches keywords only, so the label, description and chords
         // (typed and printed) go in by hand.
-        let mut keywords: Vec<String> = vec![command.label.into(), command.description.into()];
+        let label = command.label();
+        let description = command.description();
+        let mut keywords: Vec<String> = vec![label.to_string(), description.to_string()];
         keywords.extend(chords.iter().map(|chord| chord.to_string()));
         keywords.extend(chords.iter().map(|chord| keymap::display(chord)));
         keywords.push("shortcut".into());
@@ -86,7 +88,7 @@ impl SettingsWindow {
         let recording = self.recording == Some(command.id);
         let is_default = keymap::is_default(command, &self.keymap);
         // Per chord, since only one of a row's chords may be shadowed.
-        let clashes: Vec<(String, &'static str)> = chords
+        let clashes: Vec<(String, SharedString)> = chords
             .iter()
             .filter_map(|chord| {
                 keymap::clash(command, chord, &self.keymap)
@@ -100,14 +102,14 @@ impl SettingsWindow {
                 .flex()
                 .flex_col()
                 .gap(tokens::SPACE_XS)
-                .child(panel::setting_row(
-                    command.label,
-                    Some(command.description.into()),
-                    control,
-                ));
+                .child(panel::setting_row(label, Some(description), control));
             for (chord, other) in clashes {
                 row = row.child(div().text_xs().text_color(palette::text_muted()).child(
-                    rox_i18n::t!("settings-keymap-clash", chord = chord, other = other),
+                    rox_i18n::t!(
+                        "settings-keymap-clash",
+                        chord = chord,
+                        other = other.to_string()
+                    ),
                 ));
             }
             row.into_any_element()

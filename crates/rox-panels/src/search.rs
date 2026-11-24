@@ -62,7 +62,7 @@ impl SearchPanel {
         let initial = state.query.read(cx).text().to_string();
         // Bare and one line tall: the panel frames the box itself.
         let search = cx.new(|cx| {
-            SearchBox::new(rox_i18n::t!("search-placeholder"), &initial, window, cx)
+            SearchBox::new("search-placeholder", &initial, window, cx)
                 .bare()
                 .xsmall()
                 .icon()

@@ -498,6 +498,36 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
     )
 }
 
+/// Whether every one of these tracks is a file of its own on disk. A cue
+/// track isn't: its file is the whole disc, so trashing one track would take
+/// the rest of the image with it.
+pub fn trashable(state: &AppState, ids: &[i64], cx: &App) -> bool {
+    let library = state.library.read(cx);
+
+    !ids.is_empty()
+        && library.local_ids(ids).len() == ids.len()
+        && library
+            .keys_for(ids)
+            .is_ok_and(|keys| keys.len() == ids.len() && keys.iter().all(|key| key.sub == 0))
+}
+
+/// Move to Trash, the last of the track actions and behind a rule of its
+/// own. Left out unless the whole selection is [`trashable`], and the click
+/// only asks: the workspace confirms before a file moves.
+pub fn trash_item(menu: PopupMenu, state: AppState, ids: Vec<i64>, cx: &App) -> PopupMenu {
+    if !trashable(&state, &ids, cx) {
+        return menu;
+    }
+
+    menu.separator().item(
+        PopupMenuItem::new(rox_i18n::t!("panel-move-to-trash"))
+            .icon(Icon::default().path(icons::TRASH))
+            .on_click(move |_, _, cx| {
+                crate::openers::trash_tracks(state.clone(), ids.clone(), cx);
+            }),
+    )
+}
+
 /// A plugin row's source and item, the plugin's own key being the row's
 /// path. None for anything else.
 pub fn plugin_item(key: &rox_library::cue::TrackKey) -> Option<(String, String)> {
@@ -998,9 +1028,10 @@ pub fn track_actions_with(
         go_to_submenu(state.clone(), source, stored, window, cx)
     });
 
-    let menu = copy_ids_submenu(menu, state.clone(), ids, window, cx);
+    let menu = copy_ids_submenu(menu, state.clone(), ids.clone(), window, cx);
     let menu = menu.when_some(go_to, |menu, item| menu.item(item));
-    reveal_item(menu, state, reveal)
+    let menu = reveal_item(menu, state.clone(), reveal);
+    trash_item(menu, state, ids, cx)
 }
 
 /// Go to for one plugin row outside the External Sources panel: its album

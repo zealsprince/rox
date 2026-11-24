@@ -611,11 +611,9 @@ pub fn line_content(
                 }
             }
             HeadPiece::Tracks => {
-                stats.push(if head.tracks == 1 {
-                    "1 track".to_string()
-                } else {
-                    format!("{} tracks", head.tracks)
-                });
+                stats.push(
+                    rox_i18n::t!("status-count-tracks", count = head.tracks as u64).to_string(),
+                );
             }
             HeadPiece::Time => {
                 stats.push(fmt_total(head.total_ms));

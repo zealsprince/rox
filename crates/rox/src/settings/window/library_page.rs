@@ -432,15 +432,11 @@ impl SettingsWindow {
                         Some(limit) => rows.row_dyn(
                             &["monitor", "auto", "rescan", "folder"],
                             rox_i18n::t!("settings-library-watch-folders"),
-                            Some(
-                                format!(
-                                    "Off: this library spans {dirs} folders and each needs \
-                                 one Linux file watch, more than the {limit} the app \
-                                 will take from the system's shared budget. Rescan by \
-                                 hand to fold in changes"
-                                )
-                                .into(),
-                            ),
+                            Some(rox_i18n::t!(
+                                "settings-library-watch-over-limit",
+                                dirs = dirs.to_string(),
+                                limit = limit.to_string()
+                            )),
                             panel::toggle_locked(false),
                         ),
                         None => rows.keyed(

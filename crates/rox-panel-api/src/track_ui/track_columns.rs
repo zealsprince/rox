@@ -318,8 +318,7 @@ pub fn source_cell(mark: Option<&SourceMark>) -> Div {
 pub fn fmt_plays(plays: u32) -> String {
     match plays {
         0 => String::new(),
-        1 => "1 play".to_string(),
-        n => format!("{n} plays"),
+        n => rox_i18n::t!("status-count-plays", count = u64::from(n)).to_string(),
     }
 }
 

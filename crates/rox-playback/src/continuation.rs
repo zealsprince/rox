@@ -137,19 +137,21 @@ pub enum Order {
     Browse,
     Random,
     Similar,
+    Albums,
 }
 
 /// The strategy for a mode, None while off. Built at the point of use so a
 /// mode switched mid-query can't leave a live provider behind.
 ///
 /// `order` takes the draw over the mode: Similar shuffle refills with radio,
-/// and Random shuffle under Continue refills with a shuffle of the rest.
-/// Weighted is already a shuffle and stays.
+/// Random shuffle under Continue refills with a shuffle of the rest, and
+/// album shuffle with whole albums. Weighted is already a shuffle and stays.
 pub fn provider(mode: Mode, order: Order) -> Option<Box<dyn Provider>> {
     match (mode, order) {
         (Mode::Off, _) => None,
         (_, Order::Similar) => Some(Box::new(Radio)),
         (Mode::Continue, Order::Random) => Some(Box::new(Shuffled)),
+        (Mode::Continue, Order::Albums) => Some(Box::new(Albums)),
         (Mode::Continue, Order::Browse) => Some(Box::new(Browse)),
         (Mode::Weighted, _) => Some(Box::new(Weighted)),
     }
@@ -249,6 +251,62 @@ impl Provider for Shuffled {
         }
         out.into_iter().map(Pick::ungrouped).collect()
     }
+}
+
+/// Whole albums, for album shuffle: albums drawn at random, each in track
+/// order, from the view first and then the library. Only an album's unheard
+/// tracks are drawn, so the rest of one the session started still comes
+/// round, and nothing is heard twice until both are spent.
+struct Albums;
+
+impl Provider for Albums {
+    fn next(&self, conn: &Connection, seed: &Seed) -> Vec<Pick> {
+        let Ok(runs) = store::album_runs(conn) else {
+            return Vec::new();
+        };
+        let seen = seed.seen();
+        let unheard = |keep: &dyn Fn(i64) -> bool| -> Vec<Vec<i64>> {
+            runs.iter()
+                .map(|run| {
+                    run.iter()
+                        .copied()
+                        .filter(|id| !seen.contains(id) && keep(*id))
+                        .collect::<Vec<i64>>()
+                })
+                .filter(|run| !run.is_empty())
+                .collect()
+        };
+
+        let mut out = Vec::new();
+        if let Scope::View(order) = &seed.scope {
+            let view: HashSet<i64> = order.iter().copied().collect();
+            out = whole_albums(unheard(&|id| view.contains(&id)), seed.count);
+        }
+        if out.is_empty() {
+            out = whole_albums(unheard(&|_| true), seed.count);
+        }
+        // Everything heard: go round again, album by album.
+        if out.is_empty() {
+            out = whole_albums(runs, seed.count);
+        }
+
+        out.into_iter().map(Pick::ungrouped).collect()
+    }
+}
+
+/// Shuffled, then taken whole until `count` tracks are in. An album is never
+/// cut to fit, so the batch runs over rather than stop mid-record.
+fn whole_albums(mut albums: Vec<Vec<i64>>, count: usize) -> Vec<i64> {
+    shuffle_slice(&mut albums);
+
+    let mut out = Vec::new();
+    for album in albums {
+        if out.len() >= count {
+            break;
+        }
+        out.extend(album);
+    }
+    out
 }
 
 /// History-weighted draws (#38): never-played first, then longest unplayed.
@@ -713,7 +771,7 @@ mod tests {
         let conn = library(6);
         let provided = Scope::Provided(Arc::new(Fixed(vec![900, 901])));
 
-        for order in [Order::Browse, Order::Random, Order::Similar] {
+        for order in [Order::Browse, Order::Random, Order::Similar, Order::Albums] {
             let batch = draw(
                 Mode::Continue,
                 order,
@@ -738,6 +796,102 @@ mod tests {
             &seed(Scope::Library, Vec::new(), 3),
         );
         assert_eq!(plain.len(), 3, "without one, the mode's provider draws");
+    }
+
+    /// Four albums of three tracks each.
+    fn album_library() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        listens::init_schema(&conn).unwrap();
+        embeddings::init_schema(&conn).unwrap();
+        for album in 0..4 {
+            for track in 1..=3 {
+                conn.execute(
+                    "INSERT INTO tracks (path, title, artist, album, album_artist, genre, year,
+                        track_no, disc_no, duration_ms, size, mtime)
+                     VALUES (?1, ?2, 'A', ?3, 'A', 'g', 0, ?4, 1, 200000, 0, 0)",
+                    rox_library::rusqlite::params![
+                        format!("/m/{album}/{track}.flac"),
+                        format!("t{track}"),
+                        format!("al{album}"),
+                        track,
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        conn
+    }
+
+    #[test]
+    fn album_shuffle_draws_whole_albums_in_track_order() {
+        let conn = album_library();
+        let all = ids(&conn);
+        let albums: Vec<&[i64]> = all.chunks(3).collect();
+        let draw = provider(Mode::Continue, Order::Albums).expect("continuation is on");
+
+        // The first album played, and one track of the second.
+        let mut played = albums[0].to_vec();
+        played.push(albums[1][0]);
+        let batch = picked(draw.next(&conn, &seed(Scope::Library, played.clone(), 4)));
+
+        assert!(batch.len() >= 4, "albums are taken whole, past the count");
+        for id in &batch {
+            assert!(!played.contains(id), "replayed the session");
+        }
+        // Every album in the batch is all of what's unheard of it, in order.
+        for album in &albums[1..] {
+            let unheard: Vec<i64> = album
+                .iter()
+                .copied()
+                .filter(|id| !played.contains(id))
+                .collect();
+            let drawn: Vec<i64> = batch
+                .iter()
+                .copied()
+                .filter(|id| album.contains(id))
+                .collect();
+            assert!(
+                drawn.is_empty() || drawn == unheard,
+                "{drawn:?} of {unheard:?}"
+            );
+        }
+        let starts: Vec<usize> = batch
+            .iter()
+            .map(|id| all.iter().position(|a| a == id).unwrap() / 3)
+            .collect();
+        let mut runs = starts.clone();
+        runs.dedup();
+        let distinct: HashSet<usize> = starts.into_iter().collect();
+        assert_eq!(
+            runs.len(),
+            distinct.len(),
+            "an album's tracks stay together"
+        );
+    }
+
+    #[test]
+    fn album_shuffle_stays_in_the_view_until_it_is_spent() {
+        let conn = album_library();
+        let all = ids(&conn);
+        let view = Arc::new(all[..6].to_vec());
+        let draw = provider(Mode::Continue, Order::Albums).expect("continuation is on");
+
+        let batch = picked(draw.next(
+            &conn,
+            &seed(Scope::View(view.clone()), all[..3].to_vec(), 2),
+        ));
+        assert_eq!(batch, all[3..6].to_vec(), "the view's one unheard album");
+
+        let widened = picked(draw.next(&conn, &seed(Scope::View(view), all[..6].to_vec(), 2)));
+        assert_eq!(widened.len(), 3);
+        assert!(
+            widened.iter().all(|id| all[6..].contains(id)),
+            "then the library"
+        );
+
+        let again = picked(draw.next(&conn, &seed(Scope::Library, all.clone(), 2)));
+        assert_eq!(again.len(), 3, "everything heard goes round again");
     }
 
     #[test]

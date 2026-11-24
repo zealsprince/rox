@@ -731,11 +731,7 @@ impl ShaderPanel {
                 .row_dyn(
                     &["shader", "idle", "pause", "freeze", "silent"],
                     rox_i18n::t!("panel-run-when-idle"),
-                    Some(
-                        "Keep drawing while the audio is silent. Off, the shader parks where it \
-                         stands and the panel costs nothing"
-                            .into(),
-                    ),
+                    Some(rox_i18n::t!("shader-run-when-idle-description")),
                     toggle(
                         run_when_idle,
                         |this: &mut Self, on, cx| {

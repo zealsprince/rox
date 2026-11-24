@@ -58,6 +58,9 @@ pub struct Openers {
     pub cover_editor: fn(AppState, Vec<i64>, &mut App),
     pub rename_dialog: fn(AppState, Vec<i64>, &mut App),
     pub convert_dialog: fn(AppState, Vec<i64>, &mut App),
+    /// Ask before moving these tracks' files to the OS trash, and do it on a
+    /// yes. The ask goes up in the front workspace window.
+    pub trash_tracks: fn(AppState, Vec<i64>, &mut App),
     /// Whether ffmpeg is installed. Menus hide "Convert..." without it.
     pub convert_available: fn() -> bool,
     pub playlist_create: fn(AppState, Vec<i64>, &mut App),
@@ -127,6 +130,12 @@ fn openers(what: &str) -> Option<&'static Openers> {
             log::warn!("{what} was called before the app installed its openers");
             None
         }
+    }
+}
+
+pub fn trash_tracks(state: AppState, ids: Vec<i64>, cx: &mut App) {
+    if let Some(openers) = openers("the trash confirm") {
+        (openers.trash_tracks)(state, ids, cx);
     }
 }
 

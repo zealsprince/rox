@@ -424,7 +424,7 @@ impl LyricsMatch {
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...".into(),
+                Phase::Searching => rox_i18n::t!("lyrics-matcher-searching"),
                 _ => rox_i18n::t!("lyrics-matcher-blocked-no-match"),
             });
         }

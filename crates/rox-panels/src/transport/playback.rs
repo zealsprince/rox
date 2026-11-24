@@ -436,20 +436,22 @@ struct ModePress {
     opened: bool,
 }
 
-/// Random keeps the crossed arrows. Similar takes the radio, the metaphor
-/// people already have for "more of this".
-/// `ShuffleMode::label` is the settings file's English; this is the menu's.
+/// The names the Playback page gives the orders.
 fn shuffle_label(mode: ShuffleMode) -> gpui::SharedString {
     match mode {
         ShuffleMode::Random => rox_i18n::t!("settings-playback-shuffle-random"),
         ShuffleMode::Similar => rox_i18n::t!("settings-playback-shuffle-similar"),
+        ShuffleMode::Albums => rox_i18n::t!("settings-playback-shuffle-albums"),
     }
 }
 
+/// Random keeps the crossed arrows. Similar takes the radio, the metaphor
+/// people already have for "more of this", and Albums the record.
 fn mode_icon(mode: ShuffleMode) -> &'static str {
     match mode {
         ShuffleMode::Random => icons::SHUFFLE,
         ShuffleMode::Similar => icons::RADIO,
+        ShuffleMode::Albums => icons::DISC,
     }
 }
 
@@ -617,17 +619,14 @@ impl TransportPanel {
             ModeButton::Random => "random",
         };
         // A button whose menu would hold one row isn't a button with a menu.
-        // Until something is described, shuffle and the draw lose their hold.
-        if button != ModeButton::Crossfade && !crate::player::similar_ready() {
+        // Until something is described the draw loses its hold. Shuffle keeps
+        // it: Random and Albums need nothing described.
+        if button == ModeButton::Random && !crate::player::similar_ready() {
             return panel::icon_control(
                 icon,
                 color,
                 panel::Tip::keyed(key, tip),
-                move |this: &mut Self, cx| match button {
-                    ModeButton::Random => this.play_draw(cx),
-                    // Crossfade never gets here: it keeps its menu regardless.
-                    _ => this.state.player.update(cx, |p, cx| p.toggle_shuffle(cx)),
-                },
+                |this: &mut Self, cx| this.play_draw(cx),
                 cx,
             );
         }
@@ -753,7 +752,7 @@ impl TransportPanel {
         cx.notify();
     }
 
-    /// The same two the Behavior page lists and explains.
+    /// The same orders the Behavior page lists and explains.
     fn shuffle_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
         let current = self.state.player.read(cx).shuffle_mode();
         let player = self.state.player.clone();
@@ -761,9 +760,14 @@ impl TransportPanel {
             // The check goes on the right: a left check replaces the row's icon
             // (`render_icon`) instead of joining it.
             let mut menu = menu.check_side(Side::Right);
-            // The button drops its menu while Similar has nothing to sort by, so
-            // there's no disabled row here.
+            // Similar is left off while it has nothing to sort by, so there's
+            // no disabled row here.
+            let similar = crate::player::similar_ready();
             for mode in ShuffleMode::ALL {
+                if mode == ShuffleMode::Similar && !similar {
+                    continue;
+                }
+
                 let player = player.clone();
                 menu = menu.item(
                     PopupMenuItem::new(shuffle_label(mode))
@@ -1216,8 +1220,12 @@ impl TransportPanel {
             palette::text_faint()
         };
         let shuffle_tip = if player.shuffle() {
-            let order = shuffle_label(shuffle_mode).to_lowercase();
-            rox_i18n::t!("playback-shuffle-on", order = order).to_string()
+            match shuffle_mode {
+                ShuffleMode::Random => rox_i18n::t!("playback-shuffle-random"),
+                ShuffleMode::Similar => rox_i18n::t!("playback-shuffle-similar"),
+                ShuffleMode::Albums => rox_i18n::t!("playback-shuffle-albums"),
+            }
+            .to_string()
         } else {
             rox_i18n::t!("playback-shuffle-off").to_string()
         };

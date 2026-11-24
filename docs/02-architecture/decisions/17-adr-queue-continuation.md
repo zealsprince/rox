@@ -146,3 +146,28 @@ the queue first runs low. A plugin without one keeps Continue's library fall-thr
 A provided scope can also save itself with the queue (`Provider::saved`, opaque to
 this crate), and the saved queue carries it, so a station started before a restart
 carries on after it rather than dropping to the library. Off still ends both.
+
+**Amended 2026-11-23: album shuffle is a shuffle order with its own engine command.**
+Album shuffle (#42) shipped as a third order beside Random and Similar, and the engine
+got `Cmd::ShuffleGroups` for it. The play-order paragraph above had the presence of
+group ids switch the one shuffle over to permuting groups. Crossfade
+([ADR 19](19-adr-processing-chain.md)) closed that door when it started reading the
+same ids to pick which boundaries fade: the player now puts an album group on every
+entry whose track names an album, so the rule would have turned nearly every shuffle
+into an album shuffle. Which permutation runs is the listener's choice of order, and
+the player sends the command that matches.
+
+The rest of that paragraph stands. Orders live in the engine, flat, with the group as
+metadata on the entry. `ShuffleGroups` shuffles the groups of the upcoming portion and
+keeps each one in pool order. An entry without a group is a group of one. What's left
+of the audible entry's album plays first, so turning the order on mid-album finishes
+that album before the next one starts. `SetShuffle(false)` restores pool order from it
+as it does from any shuffle.
+
+The refill follows the order, as the roster amendment requires. `Order::Albums` under
+Continue draws albums at random, each in track order, from the view play started in and
+then from the rest of the library. It takes only an album's unheard tracks, so an album
+the session already started comes round for the remainder. A batch runs past the
+requested count rather than cut an album to fit. It lands at the tail as drawn, and the
+engine doesn't permute it again. Weighted keeps its own draw here as it does under
+Random, so its refill under album shuffle arrives track by track.

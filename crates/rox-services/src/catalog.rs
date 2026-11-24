@@ -522,7 +522,7 @@ impl Library {
             return;
         };
         scan.cancel.store(true, Ordering::Relaxed);
-        self.busy = Some("stopping...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-stopping"));
         cx.notify();
     }
 
@@ -691,7 +691,7 @@ impl Library {
         if self.busy.is_some() {
             return;
         }
-        self.busy = Some("clearing vectors...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-clearing-vectors"));
         let db_path = self.db_path.clone();
         let model = model.to_owned();
         cx.spawn(async move |this, cx| {
@@ -728,7 +728,7 @@ impl Library {
         if self.busy.is_some() {
             return;
         }
-        self.busy = Some("clearing tempos...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-clearing-tempos"));
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let cleared = cx
@@ -761,7 +761,7 @@ impl Library {
         if self.busy.is_some() {
             return;
         }
-        self.busy = Some("clearing listens...".into());
+        self.busy = Some(rox_i18n::t!("library-busy-clearing-listens"));
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let cleared = cx
@@ -1957,12 +1957,12 @@ impl Library {
             return;
         }
         self.busy = Some(match &refresh {
-            Refresh::Load => "loading library...".into(),
-            Refresh::Scan(_) => "scanning...".into(),
-            Refresh::Remove(_) => "removing...".into(),
-            Refresh::Reindex(_) => "refreshing...".into(),
-            Refresh::Prune(_) => "removing...".into(),
-            Refresh::Watch { .. } => "syncing...".into(),
+            Refresh::Load => rox_i18n::t!("library-busy-loading"),
+            Refresh::Scan(_) => rox_i18n::t!("library-busy-scanning"),
+            Refresh::Remove(_) => rox_i18n::t!("library-busy-removing"),
+            Refresh::Reindex(_) => rox_i18n::t!("library-busy-refreshing"),
+            Refresh::Prune(_) => rox_i18n::t!("library-busy-removing"),
+            Refresh::Watch { .. } => rox_i18n::t!("library-busy-syncing"),
         });
         let progress = Arc::new(ScanProgress::default());
         if matches!(refresh, Refresh::Scan(_)) {
@@ -2109,7 +2109,11 @@ impl Library {
                     // A pending stop owns the badge.
                     if total > 0 && !progress.cancel.load(Ordering::Relaxed) {
                         let scanned = progress.scanned.load(Ordering::Relaxed);
-                        this.busy = Some(format!("scanning {scanned}/{total}").into());
+                        this.busy = Some(rox_i18n::t!(
+                            "library-busy-scanning-progress",
+                            done = scanned as u64,
+                            total = total as u64
+                        ));
                         this.status = progress.current.lock().unwrap().clone().into();
                         cx.notify();
                     }

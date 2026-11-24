@@ -2706,7 +2706,7 @@ impl TagEditor {
                 .items_center()
                 .gap(tokens::SPACE_XS)
                 .text_xs()
-                .text_color(palette::tone_warn())
+                .text_color(palette::text_muted())
                 .child(Spinner::new().with_size(Size::Small))
                 .child(label)
                 .into_any_element()

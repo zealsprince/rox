@@ -493,10 +493,14 @@ impl SettingsWindow {
             match std::fs::read_to_string(path) {
                 Ok(source) => source,
                 Err(error) => {
-                    crate::workspace::note_post_shader_error(format!(
-                        "reading {}: {error}",
-                        path.display()
-                    ));
+                    crate::workspace::note_post_shader_error(
+                        rox_i18n::t!(
+                            "shader-read-error",
+                            path = path.display().to_string(),
+                            error = error.to_string()
+                        )
+                        .to_string(),
+                    );
                     cx.notify();
                     return;
                 }
@@ -760,10 +764,14 @@ impl SettingsWindow {
                 self.edit_backdrop_source(None, source, Some(path), cx);
             }
             Err(error) => {
-                crate::workspace::note_backdrop_shader_error(format!(
-                    "reading {}: {error}",
-                    path.display()
-                ));
+                crate::workspace::note_backdrop_shader_error(
+                    rox_i18n::t!(
+                        "shader-read-error",
+                        path = path.display().to_string(),
+                        error = error.to_string()
+                    )
+                    .to_string(),
+                );
                 cx.notify();
             }
         }

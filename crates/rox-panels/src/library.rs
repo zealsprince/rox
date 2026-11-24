@@ -46,8 +46,8 @@ use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
-use crate::settings::GainModeSetting;
 use crate::settings::ui as settings_ui;
+use crate::settings::{GainModeSetting, ShuffleMode};
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::SourceMark;
@@ -3519,7 +3519,11 @@ impl LibraryPanel {
     /// back and Next runs on. This is the playing context, never the queue.
     fn play_from(&mut self, ix: usize, cx: &mut Context<Self>) {
         // The engine pins the head, so the clicked track still plays first.
-        if self.state.player.read(cx).shuffle() {
+        // Album shuffle wants the view's own run instead of a sample of it:
+        // the rows around the click are whole albums, which the engine then
+        // shuffles as units.
+        let player = self.state.player.read(cx);
+        if player.shuffle() && player.shuffle_mode() != ShuffleMode::Albums {
             self.play_shuffled_from(ix, cx);
             return;
         }

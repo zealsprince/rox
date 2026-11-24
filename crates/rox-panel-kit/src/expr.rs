@@ -173,16 +173,16 @@ impl Problem {
     }
 
     fn text(self) -> &'static str {
-        match self {
-            Problem::Stray => "unexpected character",
-            Problem::Unknown => "unknown name",
-            Problem::Arity => "wrong number of arguments",
-            Problem::Unclosed => "unclosed bracket",
-            Problem::Ended => "expression ends early",
-            Problem::Trailing => "leftover text",
-            Problem::TooDeep => "nested too deep",
-            Problem::TooLong => "too long",
-        }
+        rox_i18n::t_static(match self {
+            Problem::Stray => "expr-problem-stray",
+            Problem::Unknown => "expr-problem-unknown",
+            Problem::Arity => "expr-problem-arity",
+            Problem::Unclosed => "expr-problem-unclosed",
+            Problem::Ended => "expr-problem-ended",
+            Problem::Trailing => "expr-problem-trailing",
+            Problem::TooDeep => "expr-problem-too-deep",
+            Problem::TooLong => "expr-problem-too-long",
+        })
     }
 }
 

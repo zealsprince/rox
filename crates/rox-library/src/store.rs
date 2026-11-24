@@ -415,6 +415,22 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         },
         rescan: false,
     },
+    // Cue tracks read differently: a sheet naming no performer leaves the
+    // artist to the image's tags, a file the sheet gives one track puts its
+    // own tags first, and a track indexed under the next FILE belongs to
+    // that file. Only cue rows are re-read, and a plain file some sheet now
+    // claims re-cuts on the scan's own sheet check.
+    crate::migrate::Migration {
+        name: "cue-tags-reread",
+        up: |conn| {
+            conn.execute(
+                "UPDATE tracks SET mtime = 0 WHERE source = 'local' AND sub > 0",
+                [],
+            )
+            .map(|_| ())
+        },
+        rescan: false,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -2240,6 +2256,33 @@ pub fn all_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
+/// Every local track id, cut into albums: [`all_ids`]' order, split wherever
+/// the album artist or the album changes. A track with no album is a run of
+/// its own, matching [`crate::hash::album_group`], which won't merge them.
+pub fn album_runs(conn: &Connection) -> rusqlite::Result<Vec<Vec<i64>>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, album_artist, album FROM tracks WHERE source = 'local'
+         ORDER BY album_artist, album, disc_no, track_no, title",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut runs: Vec<Vec<i64>> = Vec::new();
+    let mut last: Option<(String, String)> = None;
+
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let album: (String, String) = (row.get(1)?, row.get(2)?);
+        let joins = !album.1.is_empty() && last.as_ref() == Some(&album);
+
+        match (joins, runs.last_mut()) {
+            (true, Some(run)) => run.push(id),
+            _ => runs.push(vec![id]),
+        }
+        last = Some(album);
+    }
+
+    Ok(runs)
+}
+
 /// Resolve a playable path to its track id, for marking the playing row.
 /// Ok(None) when the path is not in the library. The source is a parameter
 /// for [`queue_meta_for_key`]'s reason: a path alone no longer names a row.
@@ -2752,6 +2795,37 @@ mod tests {
             .unwrap();
         assert_eq!((rate, depth), (0, 0), "the columns default unread");
         assert_eq!(mtime, 0, "the row is owed a re-read");
+    }
+
+    #[test]
+    fn cue_reread_step_asks_only_cue_rows_for_a_re_read() {
+        let conn = Connection::open_in_memory().unwrap();
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "cue-tags-reread")
+            .expect("the cue-tags-reread rung is part of the ladder");
+        run_ladder(&conn, &MIGRATIONS[..rung]).unwrap();
+        for (path, sub) in [("/m/disc.wav", 1), ("/m/disc.wav", 2), ("/m/plain.wav", 0)] {
+            conn.execute(
+                "INSERT INTO tracks (path, sub, title, artist, album_artist, album, genre, year,
+                    track_no, duration_ms, size, mtime)
+                 VALUES (?1, ?2, 'One', '', '', 'Album', '', 0, 1, 0, 10, 500)",
+                rusqlite::params![path, sub],
+            )
+            .unwrap();
+        }
+
+        run_ladder(&conn, &MIGRATIONS[..=rung]).unwrap();
+
+        let mtimes = |path: &str| -> Vec<i64> {
+            let mut stmt = conn
+                .prepare("SELECT mtime FROM tracks WHERE path = ?1 ORDER BY sub")
+                .unwrap();
+            let rows = stmt.query_map([path], |r| r.get(0)).unwrap();
+            rows.map(Result::unwrap).collect()
+        };
+        assert_eq!(mtimes("/m/disc.wav"), [0, 0], "the image is owed a re-read");
+        assert_eq!(mtimes("/m/plain.wav"), [500], "a plain file is left alone");
     }
 
     /// The replaygain-source step adds its column reading as tag-sourced and,

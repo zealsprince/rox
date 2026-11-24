@@ -15,6 +15,11 @@ fn shuffle_modes() -> Vec<panel::ModeSpec<ShuffleMode>> {
             description: rox_i18n::t!("settings-playback-shuffle-similar.description"),
             value: ShuffleMode::Similar,
         },
+        panel::ModeSpec {
+            label: rox_i18n::t!("settings-playback-shuffle-albums"),
+            description: rox_i18n::t!("settings-playback-shuffle-albums.description"),
+            value: ShuffleMode::Albums,
+        },
     ]
 }
 
@@ -266,6 +271,7 @@ impl SettingsWindow {
                         "order",
                         "random",
                         "similar",
+                        "albums",
                         "sound",
                         "play order",
                     ],

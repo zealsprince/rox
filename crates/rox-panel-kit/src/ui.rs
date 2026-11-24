@@ -239,12 +239,21 @@ pub fn header(label: impl Into<SharedString>) -> Div {
 }
 
 pub fn chord(key: &str) -> SharedString {
-    if cfg!(target_os = "macos") {
-        format!("Cmd+{key}")
-    } else {
-        format!("Ctrl+{key}")
-    }
-    .into()
+    let lead = match cfg!(target_os = "macos") {
+        true => rox_i18n::t!("keymap-mod-cmd"),
+        false => rox_i18n::t!("keymap-mod-ctrl"),
+    };
+    // Callers name keys the way a keycap prints them in English.
+    let rest: Vec<String> = key
+        .split('+')
+        .map(|part| match part {
+            "Enter" => rox_i18n::t!("hint-key-enter").to_string(),
+            "Shift" => rox_i18n::t!("keymap-mod-shift").to_string(),
+            part => part.to_string(),
+        })
+        .collect();
+
+    format!("{lead}+{}", rest.join("+")).into()
 }
 
 pub enum Seg {
@@ -1146,7 +1155,10 @@ impl RenderOnce for SelectField {
         .child(
             div()
                 .flex_1()
-                .overflow_hidden()
+                .min_w_0()
+                // One line with an ellipsis: left to wrap, a long label shows
+                // as two half lines clipped by the field's height.
+                .truncate()
                 .when(placeholder, |d| d.text_color(palette::text_muted()))
                 .child(label),
         )

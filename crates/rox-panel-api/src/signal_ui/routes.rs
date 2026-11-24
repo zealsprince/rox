@@ -153,22 +153,13 @@ impl<P: 'static> RouteEditor<'_, P> {
     pub fn list(&self, cx: &mut Context<P>) -> Div {
         let mut list = div().flex().flex_col().gap(tokens::SPACE_MD);
         if self.routes.is_empty() {
-            list = list.child(note(
-                "Nothing routed: every slot reads zero until a route feeds it a signal. \
-                 A shader can name its slots with `// @slot 0: bass` comments and the \
-                 names show up here."
-                    .into(),
-            ));
+            list = list.child(note(rox_i18n::t!("signal-routes-none")));
         }
         for index in 0..self.routes.len() {
             list = list.child(self.row(index, cx));
         }
         if next_free_slot(self.routes).is_none() {
-            list = list.child(note(
-                "All sixteen slots are routed. Point one somewhere else or delete it to \
-                 add another."
-                    .into(),
-            ));
+            list = list.child(note(rox_i18n::t!("signal-routes-full")));
         }
         list
     }

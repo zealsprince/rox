@@ -166,13 +166,13 @@ pub fn stop(cx: &mut App) {
 
 pub fn blocked_reason(cx: &App) -> Option<&'static str> {
     if progress(cx).is_some() || super::import::progress(cx).is_some() {
-        return Some("An import is already running");
+        return Some(rox_i18n::t_static("lastfm-import-blocked-running"));
     }
     if api_key().is_empty() {
-        return Some("This build has no api key to ask with");
+        return Some(rox_i18n::t_static("lastfm-import-blocked-no-key"));
     }
     if username().is_empty() {
-        return Some("Connect a Last.fm account first");
+        return Some(rox_i18n::t_static("lastfm-import-blocked-no-account"));
     }
     None
 }
@@ -479,8 +479,10 @@ fn fetch_counts(key: &str, user: &str, progress: &Progress) -> Result<Vec<TopTra
         let (entries, pages) = fetch_page(key, user, page)?;
         if let Some(last) = entries.last() {
             progress.say(format!(
-                "{} - {} ({} plays)",
-                last.artist, last.title, last.playcount
+                "{} - {} ({})",
+                last.artist,
+                last.title,
+                rox_i18n::t!("status-count-plays", count = u64::from(last.playcount))
             ));
         }
         let count_on_page = entries.len();

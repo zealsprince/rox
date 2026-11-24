@@ -122,12 +122,15 @@ fn untagged_color() -> Rgba {
 /// By the color's own luminance rather than the theme, so a dim light
 /// palette still gets legible cards.
 pub fn text_on(color: Rgba) -> Rgba {
-    let luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
-    if luminance > 0.55 {
+    if reads_light(color) {
         rgb(0x1c1c1e)
     } else {
         rgb(0xf3f3f5)
     }
+}
+
+fn reads_light(color: Rgba) -> bool {
+    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b > 0.55
 }
 
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -1135,16 +1138,28 @@ pub fn backdrop_wash() -> Rgba {
 
 /// Bit-perfect, matched, claimed.
 pub fn tone_good() -> Rgba {
-    rgb(0x4ade80)
+    tone(0x4ade80, 0x15803d)
 }
 
 /// A fallback, a resample, a setting the hardware rejected.
 pub fn tone_warn() -> Rgba {
-    rgb(0xfbbf24)
+    tone(0xfbbf24, 0xb45309)
 }
 
 pub fn tone_bad() -> Rgba {
-    rgb(0xf87171)
+    tone(0xf87171, 0xb91c1c)
+}
+
+/// `bright` over a dark panel, `deep` over a light one: the bright amber
+/// measures 1.35:1 on the stock light panel, the deep one 4.06:1. Picked by
+/// the panel's own color like [`text_on`], so a tinted panel chooses for
+/// itself.
+fn tone(bright: u32, deep: u32) -> Rgba {
+    if reads_light(active_role(|p| p.bg_panel)) {
+        rgb(deep)
+    } else {
+        rgb(bright)
+    }
 }
 
 /// The choke point for an app-wide change, so callers never replay seeds.
@@ -1732,6 +1747,12 @@ mod tests {
                 assert!((a - b).abs() < 0.005, "{hex:06x} drifted: {a} vs {b}");
             }
         }
+    }
+
+    #[test]
+    fn the_stock_panels_read_as_their_theme() {
+        assert!(!reads_light(Palette::default().bg_panel));
+        assert!(reads_light(Palette::light().bg_panel));
     }
 
     #[test]

@@ -287,12 +287,12 @@ pub fn pending_shader(
                 .gap(px(2.))
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child(
-                    "This shader arrived inside a layout or a workspace. It doesn't run \
-                     until you've read it and approved it on this machine.",
-                )
+                .child(rox_i18n::t!("shader-confirm-arrived"))
                 .child(origin)
-                .child(format!("Hash {}", shader::fingerprint(source))),
+                .child(rox_i18n::t!(
+                    "shader-confirm-hash",
+                    hash = shader::fingerprint(source).to_string()
+                )),
         )
         .child(listing)
         .child(

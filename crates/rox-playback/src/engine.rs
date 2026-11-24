@@ -18,6 +18,7 @@
 //! [`LIVE_IDLE_HANGUP_SECS`] lets the socket go. `hung_up` holding a value
 //! with no open source is the whole state between `hang_up` and `rejoin`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -67,6 +68,10 @@ pub enum Cmd {
     Volume(f32),
     SetLoop(LoopMode),
     SetShuffle(bool),
+    /// Shuffle the upcoming portion by album group (ADR 17): groups in random
+    /// order, each in pool order, with the rest of the audible entry's own
+    /// group first. `SetShuffle(false)` undoes it like any other shuffle.
+    ShuffleGroups,
     /// Reorder the upcoming portion into this entry order, for Similar shuffle.
     /// Unknown ids are ignored; unnamed entries keep their order behind the
     /// named ones.
@@ -543,6 +548,7 @@ impl Engine {
                         }
                     }
                     Cmd::SetShuffle(on) => reopen_runahead |= self.set_shuffle(on),
+                    Cmd::ShuffleGroups => reopen_runahead |= self.shuffle_groups(),
                     Cmd::OrderTail(ids) => reopen_runahead |= self.order_tail(&ids),
                     Cmd::SetStopAfter(on) => self.stop_after = on,
                     Cmd::SetAbLoop(marks) => {
@@ -1716,6 +1722,52 @@ impl Engine {
             } else {
                 tail.sort_by_key(|e| (cur.is_some_and(|cur| e.idx < cur), e.idx));
             }
+        })
+    }
+
+    /// Shuffle the upcoming portion album by album. An entry with no group
+    /// is an album of one. What's left of the audible entry's group goes
+    /// first, picking up after it the way shuffle-off does, so turning this
+    /// on mid-album finishes the album.
+    fn shuffle_groups(&mut self) -> bool {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        enum Unit {
+            Group(u64),
+            Lone(usize),
+        }
+
+        let audible = self.order.get(self.reorder_anchor()).map(|e| e.idx);
+        let playing = audible.and_then(|idx| self.groups[idx]).map(Unit::Group);
+        // The sort runs with `self` borrowed, so it reads a copy.
+        let groups = self.groups.clone();
+        let unit = move |e: &OrderEntry| match groups[e.idx] {
+            Some(group) => Unit::Group(group),
+            None => Unit::Lone(e.idx),
+        };
+
+        self.reorder_tail(|tail| {
+            let mut units: Vec<Unit> = Vec::new();
+            let mut seen = HashSet::new();
+            for entry in tail.iter() {
+                let unit = unit(entry);
+                if Some(unit) != playing && seen.insert(unit) {
+                    units.push(unit);
+                }
+            }
+            shuffle_slice(&mut units);
+
+            let rank: HashMap<Unit, usize> = units
+                .into_iter()
+                .enumerate()
+                .map(|(at, unit)| (unit, at + 1))
+                .collect();
+            tail.sort_by_key(|e| {
+                let unit = unit(e);
+                let rank = rank.get(&unit).copied().unwrap_or(0);
+                let skipped = rank == 0 && audible.is_some_and(|cur| e.idx < cur);
+
+                (rank, skipped, e.idx)
+            });
         })
     }
 
@@ -3217,6 +3269,64 @@ mod tests {
             "shuffle off sorts the wrapped tail back to pool order"
         );
         assert_eq!(e.pos, 3);
+    }
+
+    #[test]
+    fn shuffle_groups_keeps_albums_whole_and_finishes_the_one_playing() {
+        let mut e = test_engine(10);
+        // Three albums and two loose tracks, playing the second track of the
+        // first album.
+        set_groups(
+            &mut e,
+            &[
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(2),
+                Some(2),
+                None,
+                Some(3),
+                Some(3),
+                Some(3),
+                None,
+            ],
+        );
+        set_audible(&e, 1);
+        e.pos = 1;
+
+        e.shuffle_groups();
+
+        let order: Vec<usize> = e.order.iter().map(|en| en.idx).collect();
+        assert_eq!(order[..3], [0, 1, 2], "the playing album finishes first");
+
+        // Each album is one unbroken run, in track order.
+        for album in [vec![3, 4], vec![6, 7, 8]] {
+            let at = order.iter().position(|idx| *idx == album[0]).unwrap();
+            assert_eq!(order[at..at + album.len()], album[..], "{order:?}");
+        }
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>(), "nothing lost");
+    }
+
+    #[test]
+    fn shuffle_groups_plays_out_the_album_from_where_it_stands() {
+        let mut e = test_engine(6);
+        set_groups(&mut e, &[Some(1); 6]);
+        // A flat shuffle left the album scattered around the playing track 3.
+        let scattered = [3, 5, 0, 4, 1, 2];
+        e.order
+            .sort_by_key(|en| scattered.iter().position(|&idx| idx == en.idx));
+        set_audible(&e, 3);
+        e.pos = 0;
+
+        e.shuffle_groups();
+
+        assert_eq!(
+            e.order.iter().map(|en| en.idx).collect::<Vec<_>>(),
+            vec![3, 4, 5, 0, 1, 2],
+            "on from the playing track, the skipped ones trailing"
+        );
     }
 
     /// A runahead already in the ring keeps its slot; the ranking lands behind it.

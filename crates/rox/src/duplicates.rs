@@ -7,7 +7,7 @@
 //! tool can't take a track's last copy. Trash only, never a plain unlink.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     App, Bounds, Context, Div, Entity, Global, ObjectFit, SharedString, Stateful, Subscription,
@@ -417,18 +417,7 @@ impl Duplicates {
                     Err(e) => {
                         failures += 1;
                         if first_error.is_none() {
-                            let name = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| path.display().to_string());
-                            first_error = Some(
-                                rox_i18n::t!(
-                                    "duplicates-trash-error",
-                                    name = name,
-                                    error = e.to_string()
-                                )
-                                .to_string(),
-                            );
+                            first_error = Some(trash_failure(&path, &e));
                         }
                     }
                 }
@@ -854,6 +843,34 @@ impl Duplicates {
     }
 }
 
+/// Why a file didn't reach the trash, as "name: reason". The crate's own
+/// Display is a Debug dump of the variant, so the readable part is dug out.
+pub(crate) fn trash_failure(path: &Path, error: &trash::Error) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+
+    let reason = match error {
+        trash::Error::Unknown { description } | trash::Error::Os { description, .. } => {
+            description.clone()
+        }
+
+        // The variant only exists where the crate has it.
+        #[cfg(all(
+            unix,
+            not(target_os = "macos"),
+            not(target_os = "ios"),
+            not(target_os = "android")
+        ))]
+        trash::Error::FileSystem { source, .. } => source.to_string(),
+
+        other => other.to_string(),
+    };
+
+    rox_i18n::t!("duplicates-trash-error", name = name, error = reason).to_string()
+}
+
 /// Title, artist, or any copy's file name or folder, so a path fragment narrows.
 fn group_matches(group: &DupGroup, query: &str) -> bool {
     group.title.to_lowercase().contains(query)
@@ -940,5 +957,34 @@ impl Render for Duplicates {
                     .child(page)
                     .child(self.footer(cx)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trash_failure_names_the_file_and_the_systems_reason() {
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let path = Path::new("/music/Album/01.flac");
+
+        let refused = trash::Error::Os {
+            code: 5,
+            description: "Access is denied.".to_string(),
+        };
+        assert_eq!(trash_failure(path, &refused), "01.flac: Access is denied.");
+
+        #[cfg(target_os = "linux")]
+        {
+            let gone = trash::Error::FileSystem {
+                path: path.to_path_buf(),
+                source: std::io::Error::from_raw_os_error(2),
+            };
+            assert_eq!(
+                trash_failure(path, &gone),
+                "01.flac: No such file or directory (os error 2)"
+            );
+        }
     }
 }

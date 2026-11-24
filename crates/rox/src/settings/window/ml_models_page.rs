@@ -128,13 +128,13 @@ impl SettingsWindow {
         let checking = self.acoustic_local_checking;
         let local = self.acoustic_local.clone();
         let description = match &local {
-            Some(local) => format!(
-                "{}. {} values per track, stored under {}, so its vectors never mix with \
-                 the catalog's",
-                local.path.display(),
-                rox_acoustic::panns::DIM,
-                local.id
-            ),
+            Some(local) => rox_i18n::t!(
+                "settings-mlmodels-custom-description",
+                path = local.path.display().to_string(),
+                dim = rox_acoustic::panns::DIM.to_string(),
+                id = local.id.to_string()
+            )
+            .to_string(),
             None => rox_i18n::t!("settings-mlmodels-custom-description-empty").to_string(),
         };
         let mut controls = div().flex().flex_row().items_center().gap(tokens::SPACE_SM);

@@ -71,23 +71,16 @@ impl SettingsWindow {
                 rows = rows.row_dyn(
                     &["extractor", "model", "built-in", "quality"],
                     rox_i18n::t!("settings-library-acoustic-extractor"),
-                    Some(
-                        if installed {
-                            format!(
-                                "Built-in needs no download and describes timbre and rhythm. \
-                                 {ml_label} hears more, and is the model the ML Models page is \
-                                 offering. Switching re-describes the library under the new one"
-                            )
-                        } else {
-                            format!(
-                                "Built-in needs no download and describes timbre and rhythm. \
-                                 No model is installed, so there's nothing to switch to yet: \
-                                 download {ml_label}, or pick a weights file of your own, on \
-                                 the ML Models page"
-                            )
-                        }
-                        .into(),
-                    ),
+                    Some(match installed {
+                        true => rox_i18n::t!(
+                            "settings-library-acoustic-extractor-installed",
+                            model = ml_label.to_string()
+                        ),
+                        false => rox_i18n::t!(
+                            "settings-library-acoustic-extractor-none",
+                            model = ml_label.to_string()
+                        ),
+                    }),
                     // Dimmed rather than refused: with nothing installed the
                     // pick falls back to Built-in, which reads as a broken
                     // button.

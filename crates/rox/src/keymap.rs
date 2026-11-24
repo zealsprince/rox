@@ -45,7 +45,8 @@ use crate::workspace::{
     ToggleExclusiveOutput, ToggleFavourite, ToggleMenubar, ToggleMilkdropBackdrop,
     ToggleMilkdropHardCuts, ToggleMilkdropLock, ToggleMini, ToggleMute, TogglePostShader,
     ToggleQuitToTray, ToggleReadings, ToggleResizeLock, ToggleScrobbling, ToggleSeams,
-    ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders, VolumeDown, VolumeUp,
+    ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders, TrashSelection, VolumeDown,
+    VolumeUp,
 };
 
 /// Workspace-wide except while the search box, a type-ahead phrase, the
@@ -719,6 +720,17 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             &["f2"],
             RenameTrack,
             "keymap-rename-track.description"
+        ),
+        // Unbound: a file shouldn't be a stray keypress from the trash, even
+        // with the confirm in between.
+        command!(
+            "trash_selection",
+            "keymap-trash-selection",
+            Group::Library,
+            PLAYBACK,
+            &[],
+            TrashSelection,
+            "keymap-trash-selection.description"
         ),
         // Library operations ship unbound except health and power search: an
         // afternoon-long pass shouldn't be reachable by accident.
@@ -1696,7 +1708,7 @@ fn display_keystroke(keystroke: &Keystroke) -> String {
 fn key_label(key: &str) -> String {
     match key {
         "escape" => rox_i18n::t!("keymap-key-esc").to_string(),
-        "enter" => "Enter".to_string(),
+        "enter" => rox_i18n::t!("hint-key-enter").to_string(),
         "backspace" => rox_i18n::t!("keymap-key-backspace").to_string(),
         "delete" => rox_i18n::t!("keymap-key-delete").to_string(),
         "space" => rox_i18n::t!("keymap-key-space").to_string(),
@@ -1835,6 +1847,19 @@ mod tests {
         "canvas_nudge_down_far",
         "canvas_step_out",
     ];
+
+    /// The table is built once, before the saved language is applied, and
+    /// outlives every later change of it.
+    #[test]
+    fn labels_follow_the_language() {
+        let rescan = command("rescan_library").expect("the keymap has it");
+
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        assert_eq!(rescan.label().as_ref(), "Rescan Library");
+
+        rox_i18n::pin_thread_locale("de");
+        assert_eq!(rescan.label().as_ref(), "Bibliothek neu einlesen");
+    }
 
     /// A Global command handled on a panel gives a button that silently does nothing.
     #[test]

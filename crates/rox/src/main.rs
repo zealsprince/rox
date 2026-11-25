@@ -295,7 +295,7 @@ fn tune_allocator() {
 fn tune_allocator() {}
 
 /// A suspend/resume can lose the Vulkan device (#118: NVIDIA on X11). The
-/// renderer detects it (vendored gpui patch z3) and this re-execs in place:
+/// renderer detects it (vendored gpui patch c5) and this re-execs in place:
 /// same pid and argv, and the launch restore brings the session back. The
 /// stale single-instance socket is treated as dead and rebound.
 ///

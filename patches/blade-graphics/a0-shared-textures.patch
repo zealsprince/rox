@@ -1,0 +1,805 @@
+Shared textures: a texture whose memory another process draws into.
+
+The GPU frame path (ADR 37): rox allocates a texture, lends its memory to a
+renderer process as an opaque fd, and samples what the renderer draws into
+it with no copy through the CPU. blade 0.7.1 can export and import memory
+through `TextureDesc::external`, but the image it makes has a fixed format,
+no format list and no external-memory check, and allocation and fd export
+`unwrap`, so a driver that says no panics. This adds a module of its own
+beside `resource.rs` and leaves that path as it was.
+
+`vulkan/shared.rs`, Vulkan backend on unix only:
+
+- `Context::export_texture(&SharedTextureDesc) -> Result<ExportedTexture,
+  SharedTextureError>` makes a 2D image with optimal tiling and a
+  dedicated device-local allocation, and exports the memory as an opaque
+  fd, with the create info as raw Vulkan values (`SharedImageInfo`) for an
+  importer that isn't blade. Before it makes anything it asks
+  `vkGetPhysicalDeviceImageFormatProperties2` with
+  `VkPhysicalDeviceExternalImageFormatInfo` whether this format, usage and
+  flag set can be exported as an opaque fd at this size
+  (VUID-VkImageCreateInfo-pNext-00990), and says which part failed if not.
+- `Context::import_texture(&SharedTextureDesc, OwnedFd, allocation_size,
+  memory_type) -> Result<Texture, SharedTextureError>` builds the same
+  image, checks the exporter's size and memory type against what this
+  device asks of it, and imports. Only test renderers and the Rust example
+  renderer call it. rox never imports a renderer's memory: on RADV a lying
+  import crashed the importer's process in the driver's own error path.
+- `Context::device_identity() -> DeviceIdentity`, the device and driver
+  UUIDs an importer compares before it tries, since an opaque fd only means
+  something to the same driver on the same device.
+- `Context::create_shared_texture_view(Texture, name, TextureFormat,
+  TextureUsage) -> Result<TextureView, SharedTextureError>`, a view narrowed
+  to the usage given. blade's `create_texture_view` gives a view the
+  image's whole usage, and an sRGB view of an image with storage usage
+  breaks VUID-VkImageViewCreateInfo-usage-02275.
+- `Context::transfer_external_ownership(&mut CommandEncoder, Texture,
+  ExternalOwnership)` records the release or the acquire half of an
+  ownership transfer to or from `VK_QUEUE_FAMILY_EXTERNAL`, in `GENERAL`.
+
+A mutable-format image lists its view formats and then its own format,
+which needs Vulkan 1.2 or the call says so. Every failure is a
+`SharedTextureError` naming the check or the Vulkan call; nothing on these
+paths unwraps on a handle, a size or a driver answer. gpu-alloc asserts on
+an out-of-range memory type and on an empty allocation budget, so both are
+checked before memory is booked with it.
+
+The module sits inside the Vulkan backend, so the Metal and GLES backends
+never compile it, and `cfg(unix)` keeps it off Windows Vulkan builds,
+where the handle would not be an fd.
+
+Not a backport. A blade bump re-diffs this against the new source, and a
+gpui bump re-checks which blade it pulls in.
+
+diff -ruN -x .rox-stamp -x target a/src/vulkan/mod.rs b/src/vulkan/mod.rs
+--- a/src/vulkan/mod.rs
++++ b/src/vulkan/mod.rs
+@@ -9,8 +9,18 @@
+ mod init;
+ mod pipeline;
+ mod resource;
++// rox patch: textures another process shares through an opaque fd. The
++// handle is an fd, so unix only.
++#[cfg(unix)]
++mod shared;
+ mod surface;
+ 
++#[cfg(unix)]
++pub use shared::{
++    DeviceIdentity, ExportedTexture, ExternalOwnership, SharedImageInfo, SharedTextureDesc,
++    SharedTextureError,
++};
++
+ const QUERY_POOL_SIZE: usize = crate::limits::PASS_COUNT + 1;
+ 
+ #[derive(Debug)]
+diff -ruN -x .rox-stamp -x target a/src/vulkan/shared.rs b/src/vulkan/shared.rs
+--- a/src/vulkan/shared.rs
++++ b/src/vulkan/shared.rs
+@@ -0,0 +1,726 @@
++//! rox patch: a 2D texture whose memory two processes on one device share,
++//! through an opaque fd (`VK_KHR_external_memory_fd`). One side exports: it
++//! makes the image and its memory and lends the fd. The other imports, with an
++//! image made from the same description.
++//!
++//! rox only ever exports. `import_texture` is for test renderers and the Rust
++//! example renderer, never for rox on a renderer's handle. A run on RADV fed
++//! an import a lying shape: the driver refused the allocation and then
++//! crashed in its own error path, in the importer's process. Whoever imports a
++//! stranger's memory can be crashed by the stranger, so the program that has
++//! to survive is the one that allocates.
++//!
++//! An opaque fd only means something to the same driver on the same device
++//! ([`DeviceIdentity`]), and both images must be identical
++//! (VUID-VkMemoryDedicatedAllocateInfo-image-01878): 2D, one mip and layer,
++//! optimal tiling, exclusive sharing, and a dedicated allocation whose size and
++//! memory type the importer repeats (VUID-VkMemoryAllocateInfo-allocationSize-01742).
++//! A mutable-format image lists its view formats followed by its own format,
++//! the order wgpu-hal builds the list in, so a wgpu program importing through
++//! ash can reproduce the create info.
++//!
++//! Ownership crosses between the two Vulkan instances through
++//! `VK_QUEUE_FAMILY_EXTERNAL` ([`ExternalOwnership`]). The exporter takes the
++//! image out of `UNDEFINED` into `GENERAL` and releases it once, before the fd
++//! leaves; the importer acquires it before its first use. Everything after
++//! that is in `GENERAL`.
++//!
++//! Every failure is a [`SharedTextureError`]. Nothing here unwraps on a handle,
++//! a size or anything the driver answers.
++
++use ash::vk;
++use std::fmt;
++use std::os::fd::{FromRawFd as _, IntoRawFd as _, OwnedFd};
++
++const HANDLE: vk::ExternalMemoryHandleTypeFlags = vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD;
++
++// blade keeps every image in GENERAL, so the shared one lives there too.
++const SHARED_LAYOUT: vk::ImageLayout = vk::ImageLayout::GENERAL;
++
++/// The image both processes make. Identical on both sides, field for field.
++#[derive(Clone, Copy, Debug)]
++pub struct SharedTextureDesc<'a> {
++    pub name: &'a str,
++    pub format: crate::TextureFormat,
++    /// Formats a view may take besides `format`. Not empty makes the image
++    /// mutable-format.
++    pub view_formats: &'a [crate::TextureFormat],
++    pub width: u32,
++    pub height: u32,
++    pub usage: crate::TextureUsage,
++}
++
++/// What `export_texture` made. The texture is this context's and is freed with
++/// `destroy_texture` like any other. The other process needs the rest.
++#[derive(Debug)]
++pub struct ExportedTexture {
++    pub texture: super::Texture,
++    pub fd: OwnedFd,
++    /// The dedicated allocation's size, which the importer must repeat.
++    pub allocation_size: u64,
++    /// The memory type index it came from, which the importer must repeat.
++    pub memory_type: u32,
++    pub info: SharedImageInfo,
++}
++
++/// The create info the image was made with, as raw Vulkan values, for an
++/// importer that isn't blade (wgpu through ash, say) to repeat exactly.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct SharedImageInfo {
++    /// `VkFormat`.
++    pub format: i32,
++    /// `VkImageFormatListCreateInfo::pViewFormats`, in order. Empty for an
++    /// image that isn't mutable-format.
++    pub view_formats: Vec<i32>,
++    /// `VkImageCreateFlags`.
++    pub flags: u32,
++    /// `VkImageUsageFlags`.
++    pub usage: u32,
++    /// `VkImageTiling`.
++    pub tiling: i32,
++    /// The `VkImageLayout` an [`ExternalOwnership`] transfer leaves it in.
++    pub layout: i32,
++}
++
++/// What another process compares before it imports.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct DeviceIdentity {
++    /// `VkPhysicalDeviceIDProperties::deviceUUID`.
++    pub device_uuid: [u8; 16],
++    /// `VkPhysicalDeviceIDProperties::driverUUID`.
++    pub driver_uuid: [u8; 16],
++}
++
++/// One half of an ownership transfer between this instance and
++/// `VK_QUEUE_FAMILY_EXTERNAL`. The layout stays `GENERAL` either way.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ExternalOwnership {
++    /// Hand the image to the other instance, after this side's writes.
++    Release,
++    /// Take it back, before this side's next use.
++    Acquire,
++}
++
++#[derive(Debug)]
++pub enum SharedTextureError {
++    /// The device has no `VK_KHR_external_memory_fd`, so nothing can be shared.
++    NoExternalMemory,
++    /// A view format list needs Vulkan 1.2, and the device or loader is older.
++    ApiVersion { found: u32 },
++    /// Zero, or past what the device can make for this format and usage, or
++    /// past the 65535 blade keeps a texture's size in.
++    Size {
++        width: u32,
++        height: u32,
++        max: [u32; 2],
++    },
++    /// The device can't share this format and usage as an opaque fd.
++    NotShareable(&'static str),
++    /// None of the memory types the image accepts is device-local.
++    NoMemoryType,
++    /// An import whose size or memory type doesn't fit the image this device
++    /// makes from the same description.
++    Mismatch {
++        allocation_size: u64,
++        memory_type: u32,
++        wanted_size: u64,
++        wanted_types: u32,
++    },
++    /// blade's allocator has no allocations left, or a panic poisoned it.
++    Allocator(&'static str),
++    /// A Vulkan call failed.
++    Vulkan {
++        call: &'static str,
++        result: vk::Result,
++    },
++}
++
++impl fmt::Display for SharedTextureError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::NoExternalMemory => write!(f, "the device has no external memory"),
++
++            Self::ApiVersion { found } => write!(
++                f,
++                "shared textures need Vulkan 1.2, the device and loader give {}.{}",
++                vk::api_version_major(*found),
++                vk::api_version_minor(*found)
++            ),
++
++            Self::Size { width, height, max } => write!(
++                f,
++                "a shared texture can't be {width}x{height}, the most is {}x{}",
++                max[0], max[1]
++            ),
++
++            Self::NotShareable(why) => write!(f, "the device can't share this texture: {why}"),
++
++            Self::NoMemoryType => write!(f, "no device-local memory type fits the texture"),
++
++            Self::Mismatch {
++                allocation_size,
++                memory_type,
++                wanted_size,
++                wanted_types,
++            } => write!(
++                f,
++                "the import doesn't fit: {allocation_size} bytes of type {memory_type}, \
++                 the image wants {wanted_size} bytes of a type in {wanted_types:#x}"
++            ),
++
++            Self::Allocator(why) => write!(f, "the allocator {why}"),
++
++            Self::Vulkan { call, result } => write!(f, "{call}: {result}"),
++        }
++    }
++}
++
++impl std::error::Error for SharedTextureError {}
++
++fn vulkan(call: &'static str) -> impl FnOnce(vk::Result) -> SharedTextureError {
++    move |result| SharedTextureError::Vulkan { call, result }
++}
++
++/// Which side of the handle a format query asks about.
++#[derive(Clone, Copy)]
++enum Direction {
++    Export,
++    Import,
++}
++
++impl super::Context {
++    /// The identity an importer compares with its own before it imports.
++    pub fn device_identity(&self) -> DeviceIdentity {
++        let mut id = vk::PhysicalDeviceIDProperties::default();
++        let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
++
++        // SAFETY: the physical device is the one this context was made on, and
++        // blade only accepts devices at Vulkan 1.1 or later, where this is core.
++        unsafe {
++            self.instance
++                .core
++                .get_physical_device_properties2(self.physical_device, &mut properties);
++        }
++
++        DeviceIdentity {
++            device_uuid: id.device_uuid,
++            driver_uuid: id.driver_uuid,
++        }
++    }
++
++    /// The Vulkan version both the device and the loader speak.
++    fn shared_api_version(&self) -> u32 {
++        // SAFETY: a query on this context's own physical device and entry.
++        let device = unsafe {
++            self.instance
++                .core
++                .get_physical_device_properties(self.physical_device)
++        }
++        .api_version;
++        // SAFETY: the entry is the one this context's instance came from.
++        let loader = unsafe { self.entry.try_enumerate_instance_version() }
++            .ok()
++            .flatten()
++            .unwrap_or(vk::API_VERSION_1_0);
++
++        device.min(loader)
++    }
++
++    /// Asks the device whether it can share this image as an opaque fd before
++    /// anything is made, as VUID-VkImageCreateInfo-pNext-00990 requires, and
++    /// checks the size against what it answers.
++    fn check_shareable(
++        &self,
++        desc: &SharedTextureDesc,
++        info: &vk::ImageCreateInfo,
++        formats: &[vk::Format],
++        direction: Direction,
++    ) -> Result<(), SharedTextureError> {
++        let mut external_info =
++            vk::PhysicalDeviceExternalImageFormatInfo::default().handle_type(HANDLE);
++        let mut list = vk::ImageFormatListCreateInfo::default().view_formats(formats);
++        let mut format_info = vk::PhysicalDeviceImageFormatInfo2::default()
++            .format(info.format)
++            .ty(info.image_type)
++            .tiling(info.tiling)
++            .usage(info.usage)
++            .flags(info.flags)
++            .push_next(&mut external_info);
++        if !formats.is_empty() {
++            format_info = format_info.push_next(&mut list);
++        }
++
++        let mut external = vk::ExternalImageFormatProperties::default();
++        let mut properties = vk::ImageFormatProperties2::default().push_next(&mut external);
++
++        // SAFETY: every struct in both chains lives to the end of this block,
++        // and the call is core in the 1.1 blade requires.
++        let answer = unsafe {
++            self.instance
++                .core
++                .get_physical_device_image_format_properties2(
++                    self.physical_device,
++                    &format_info,
++                    &mut properties,
++                )
++        };
++        match answer {
++            Ok(()) => {}
++            Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED) => {
++                return Err(SharedTextureError::NotShareable(
++                    "this format and usage can't be an external image",
++                ));
++            }
++            Err(result) => {
++                return Err(SharedTextureError::Vulkan {
++                    call: "vkGetPhysicalDeviceImageFormatProperties2",
++                    result,
++                });
++            }
++        }
++
++        // Read before `external`, which `properties` borrows until its last use.
++        let extent = properties.image_format_properties.max_extent;
++        let memory = external.external_memory_properties;
++        if !memory.compatible_handle_types.contains(HANDLE) {
++            return Err(SharedTextureError::NotShareable(
++                "opaque fds aren't a compatible handle type",
++            ));
++        }
++
++        let needs = match direction {
++            Direction::Export => vk::ExternalMemoryFeatureFlags::EXPORTABLE,
++            Direction::Import => vk::ExternalMemoryFeatureFlags::IMPORTABLE,
++        };
++        if !memory.external_memory_features.contains(needs) {
++            return Err(SharedTextureError::NotShareable(match direction {
++                Direction::Export => "the memory can't be exported as an opaque fd",
++                Direction::Import => "the memory can't be imported from an opaque fd",
++            }));
++        }
++
++        // blade keeps a texture's size in a u16.
++        let max = [
++            extent.width.min(u16::MAX as u32),
++            extent.height.min(u16::MAX as u32),
++        ];
++        if desc.width == 0 || desc.height == 0 || desc.width > max[0] || desc.height > max[1] {
++            return Err(SharedTextureError::Size {
++                width: desc.width,
++                height: desc.height,
++                max,
++            });
++        }
++
++        Ok(())
++    }
++
++    /// Makes the image both sides share, unbound, after checking the device
++    /// can share it.
++    fn shared_image(
++        &self,
++        desc: &SharedTextureDesc,
++        direction: Direction,
++    ) -> Result<(vk::Image, vk::MemoryRequirements, SharedImageInfo), SharedTextureError> {
++        if self.device.external_memory.is_none() {
++            return Err(SharedTextureError::NoExternalMemory);
++        }
++
++        let format = super::map_texture_format(desc.format);
++        let mut formats: Vec<vk::Format> = desc
++            .view_formats
++            .iter()
++            .map(|&view| super::map_texture_format(view))
++            .collect();
++        let mut flags = vk::ImageCreateFlags::empty();
++        if !formats.is_empty() {
++            let found = self.shared_api_version();
++            if found < vk::API_VERSION_1_2 {
++                return Err(SharedTextureError::ApiVersion { found });
++            }
++            flags |= vk::ImageCreateFlags::MUTABLE_FORMAT;
++            formats.push(format);
++        }
++
++        let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(HANDLE);
++        let mut list = vk::ImageFormatListCreateInfo::default().view_formats(&formats);
++        let mut info = vk::ImageCreateInfo::default()
++            .flags(flags)
++            .image_type(vk::ImageType::TYPE_2D)
++            .format(format)
++            .extent(vk::Extent3D {
++                width: desc.width,
++                height: desc.height,
++                depth: 1,
++            })
++            .mip_levels(1)
++            .array_layers(1)
++            .samples(vk::SampleCountFlags::TYPE_1)
++            .tiling(vk::ImageTiling::OPTIMAL)
++            .usage(super::resource::map_texture_usage(
++                desc.usage,
++                desc.format.aspects(),
++            ))
++            .sharing_mode(vk::SharingMode::EXCLUSIVE)
++            // An external image must start undefined (VUID-VkImageCreateInfo-pNext-01443).
++            .initial_layout(vk::ImageLayout::UNDEFINED);
++
++        self.check_shareable(desc, &info, &formats, direction)?;
++
++        let shared_info = SharedImageInfo {
++            format: info.format.as_raw(),
++            view_formats: formats.iter().map(|format| format.as_raw()).collect(),
++            flags: info.flags.as_raw(),
++            usage: info.usage.as_raw(),
++            tiling: info.tiling.as_raw(),
++            layout: SHARED_LAYOUT.as_raw(),
++        };
++
++        info = info.push_next(&mut external);
++        if !formats.is_empty() {
++            info = info.push_next(&mut list);
++        }
++
++        // SAFETY: the chain lives to the end of this block, and the check above
++        // is the one VUID-VkImageCreateInfo-pNext-00990 asks for.
++        let image = unsafe { self.device.core.create_image(&info, None) }
++            .map_err(vulkan("vkCreateImage"))?;
++        // SAFETY: the image was just made on this device.
++        let requirements = unsafe { self.device.core.get_image_memory_requirements(image) };
++
++        Ok((image, requirements, shared_info))
++    }
++
++    /// Binds `memory` to `image` and books it with blade's allocator, so
++    /// `destroy_texture` frees both the way it frees any texture. Frees them
++    /// itself when it fails.
++    fn adopt(
++        &self,
++        desc: &SharedTextureDesc,
++        image: vk::Image,
++        memory: vk::DeviceMemory,
++        memory_type: u32,
++        allocation_size: u64,
++    ) -> Result<super::Texture, SharedTextureError> {
++        let release = || {
++            // SAFETY: neither has been handed to anything else yet.
++            unsafe {
++                self.device.core.free_memory(memory, None);
++                self.device.core.destroy_image(image, None);
++            }
++        };
++
++        // SAFETY: a dedicated allocation made for this image, bound at 0.
++        if let Err(result) = unsafe { self.device.core.bind_image_memory(image, memory, 0) } {
++            release();
++            return Err(SharedTextureError::Vulkan {
++                call: "vkBindImageMemory",
++                result,
++            });
++        }
++
++        // SAFETY: a query on this context's own physical device.
++        let types = unsafe {
++            self.instance
++                .core
++                .get_physical_device_memory_properties(self.physical_device)
++        };
++        let Some(flags) = types
++            .memory_types
++            .get(memory_type as usize)
++            .filter(|_| memory_type < types.memory_type_count)
++            .map(|kind| kind.property_flags)
++        else {
++            release();
++            return Err(SharedTextureError::NoMemoryType);
++        };
++
++        let Ok(mut manager) = self.memory.lock() else {
++            release();
++            return Err(SharedTextureError::Allocator("was poisoned by a panic"));
++        };
++        // gpu-alloc asserts on both of these, so they're checked first.
++        if manager.allocator.remaining_allocations() == 0 {
++            drop(manager);
++            release();
++            return Err(SharedTextureError::Allocator("has no allocations left"));
++        }
++
++        // SAFETY: the memory is a live allocation of `allocation_size` bytes
++        // from `memory_type`, which is in range (checked above), and nothing
++        // else books it.
++        let block = unsafe {
++            manager.allocator.import_memory(
++                memory,
++                memory_type,
++                gpu_alloc_ash::memory_properties_from_ash(flags),
++                0,
++                allocation_size,
++            )
++        };
++        let memory_handle = manager.slab.insert(block);
++        drop(manager);
++
++        // blade's `set_object_name` unwraps a CString, which a NUL fails.
++        if !desc.name.is_empty() && !desc.name.contains('\0') {
++            self.set_object_name(image, desc.name);
++        }
++
++        Ok(super::Texture {
++            raw: image,
++            memory_handle,
++            // `check_shareable` held both to a u16.
++            target_size: [desc.width as u16, desc.height as u16],
++            format: desc.format,
++            external: None,
++        })
++    }
++
++    /// Makes the texture in device-local memory and exports it as an opaque
++    /// fd. The image is still `UNDEFINED`: take it to `GENERAL` with
++    /// `init_texture` and release it with [`ExternalOwnership::Release`],
++    /// and wait for that to finish, before the fd goes anywhere.
++    pub fn export_texture(
++        &self,
++        desc: &SharedTextureDesc,
++    ) -> Result<ExportedTexture, SharedTextureError> {
++        let (image, requirements, info) = self.shared_image(desc, Direction::Export)?;
++
++        // Device-local first, and of those the ones the CPU can't map: with
++        // resizable BAR the host-visible ones are a smaller heap.
++        // SAFETY: a query on this context's own physical device.
++        let types = unsafe {
++            self.instance
++                .core
++                .get_physical_device_memory_properties(self.physical_device)
++        };
++        let fits = |index: u32, avoid: vk::MemoryPropertyFlags| {
++            let flags = types.memory_types[index as usize].property_flags;
++            requirements.memory_type_bits & (1 << index) != 0
++                && flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
++                && !flags.intersects(avoid)
++        };
++        let count = types.memory_type_count.min(vk::MAX_MEMORY_TYPES as u32);
++        let memory_type = (0..count)
++            .find(|&index| fits(index, vk::MemoryPropertyFlags::HOST_VISIBLE))
++            .or_else(|| (0..count).find(|&index| fits(index, vk::MemoryPropertyFlags::empty())));
++        let Some(memory_type) = memory_type else {
++            // SAFETY: the image is unbound and nothing else has it.
++            unsafe { self.device.core.destroy_image(image, None) };
++            return Err(SharedTextureError::NoMemoryType);
++        };
++
++        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
++        let mut export = vk::ExportMemoryAllocateInfo::default().handle_types(HANDLE);
++        let allocate = vk::MemoryAllocateInfo::default()
++            .allocation_size(requirements.size)
++            .memory_type_index(memory_type)
++            .push_next(&mut export)
++            .push_next(&mut dedicated);
++
++        // SAFETY: the chain lives to the end of this block, and the type index
++        // is one the image's requirements allow.
++        let memory = match unsafe { self.device.core.allocate_memory(&allocate, None) } {
++            Ok(memory) => memory,
++            Err(result) => {
++                // SAFETY: the image is unbound and nothing else has it.
++                unsafe { self.device.core.destroy_image(image, None) };
++                return Err(SharedTextureError::Vulkan {
++                    call: "vkAllocateMemory",
++                    result,
++                });
++            }
++        };
++
++        let texture = self.adopt(desc, image, memory, memory_type, requirements.size)?;
++
++        let fd = match self.device.external_memory.as_ref() {
++            // SAFETY: the memory was allocated exportable as this handle type.
++            Some(fns) => unsafe {
++                fns.get_memory_fd(
++                    &vk::MemoryGetFdInfoKHR::default()
++                        .memory(memory)
++                        .handle_type(HANDLE),
++                )
++            }
++            .map_err(vulkan("vkGetMemoryFdKHR")),
++            None => Err(SharedTextureError::NoExternalMemory),
++        };
++        let fd = fd.and_then(|fd| match fd {
++            0.. => Ok(fd),
++            _ => Err(SharedTextureError::Vulkan {
++                call: "vkGetMemoryFdKHR",
++                result: vk::Result::ERROR_INVALID_EXTERNAL_HANDLE,
++            }),
++        });
++        let fd = match fd {
++            Ok(fd) => fd,
++            Err(e) => {
++                crate::traits::ResourceDevice::destroy_texture(self, texture);
++                return Err(e);
++            }
++        };
++
++        Ok(ExportedTexture {
++            texture,
++            // SAFETY: vkGetMemoryFdKHR hands the caller a new fd it owns.
++            fd: unsafe { OwnedFd::from_raw_fd(fd) },
++            allocation_size: requirements.size,
++            memory_type,
++            info,
++        })
++    }
++
++    /// Imports a texture another process exported. `allocation_size` and
++    /// `memory_type` are the exporter's, checked against what this device
++    /// asks of an image made from `desc` before anything is allocated. The
++    /// fd is consumed either way. Acquire the image with
++    /// [`ExternalOwnership::Acquire`] before its first use.
++    pub fn import_texture(
++        &self,
++        desc: &SharedTextureDesc,
++        fd: OwnedFd,
++        allocation_size: u64,
++        memory_type: u32,
++    ) -> Result<super::Texture, SharedTextureError> {
++        let (image, requirements, _) = self.shared_image(desc, Direction::Import)?;
++
++        let fits = memory_type < 32
++            && requirements.memory_type_bits & (1 << memory_type) != 0
++            && allocation_size == requirements.size;
++        if !fits {
++            // SAFETY: the image is unbound and nothing else has it.
++            unsafe { self.device.core.destroy_image(image, None) };
++            return Err(SharedTextureError::Mismatch {
++                allocation_size,
++                memory_type,
++                wanted_size: requirements.size,
++                wanted_types: requirements.memory_type_bits,
++            });
++        }
++
++        // A successful import owns the fd; a failed one leaves it with us.
++        let raw = fd.into_raw_fd();
++        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
++        let mut import = vk::ImportMemoryFdInfoKHR::default()
++            .handle_type(HANDLE)
++            .fd(raw);
++        let info = vk::MemoryAllocateInfo::default()
++            .allocation_size(allocation_size)
++            .memory_type_index(memory_type)
++            .push_next(&mut import)
++            .push_next(&mut dedicated);
++
++        // SAFETY: the chain lives to the end of this block, and size and type
++        // match this image's requirements.
++        let memory = match unsafe { self.device.core.allocate_memory(&info, None) } {
++            Ok(memory) => memory,
++            Err(result) => {
++                // SAFETY: the failed import left the fd ours, and the image is
++                // unbound with nothing else holding it.
++                unsafe {
++                    drop(OwnedFd::from_raw_fd(raw));
++                    self.device.core.destroy_image(image, None);
++                }
++                return Err(SharedTextureError::Vulkan {
++                    call: "vkAllocateMemory",
++                    result,
++                });
++            }
++        };
++
++        self.adopt(desc, image, memory, memory_type, allocation_size)
++    }
++
++    /// A view of a shared texture. blade's own `create_texture_view` gives a
++    /// view the image's whole usage, and an sRGB view of an image with
++    /// storage usage breaks VUID-VkImageViewCreateInfo-usage-02275, since sRGB
++    /// formats can't be storage images. This narrows the view to `usage`.
++    pub fn create_shared_texture_view(
++        &self,
++        texture: super::Texture,
++        name: &str,
++        format: crate::TextureFormat,
++        usage: crate::TextureUsage,
++    ) -> Result<super::TextureView, SharedTextureError> {
++        let aspects = format.aspects();
++        let mut view_usage = vk::ImageViewUsageCreateInfo::default()
++            .usage(super::resource::map_texture_usage(usage, aspects));
++        let info = vk::ImageViewCreateInfo::default()
++            .image(texture.raw)
++            .view_type(vk::ImageViewType::TYPE_2D)
++            .format(super::map_texture_format(format))
++            .subresource_range(super::map_subresource_range(&Default::default(), aspects))
++            .push_next(&mut view_usage);
++
++        // SAFETY: the chain lives to the end of this block, and the texture is
++        // a live image of this device.
++        let raw = unsafe { self.device.core.create_image_view(&info, None) }
++            .map_err(vulkan("vkCreateImageView"))?;
++        if !name.is_empty() && !name.contains('\0') {
++            self.set_object_name(raw, name);
++        }
++
++        Ok(super::TextureView {
++            raw,
++            target_size: texture.target_size,
++            aspects,
++        })
++    }
++
++    /// Records one half of an ownership transfer of `texture` between this
++    /// instance and `VK_QUEUE_FAMILY_EXTERNAL`, into an encoder that has been
++    /// started. Waits on nothing: the other side's half is ordered by whatever
++    /// the two processes say to each other, and it has to have finished
++    /// before this half runs.
++    pub fn transfer_external_ownership(
++        &self,
++        encoder: &mut super::CommandEncoder,
++        texture: super::Texture,
++        ownership: ExternalOwnership,
++    ) {
++        let (src_family, dst_family, src_access, dst_access) = match ownership {
++            ExternalOwnership::Release => (
++                self.queue_family_index,
++                vk::QUEUE_FAMILY_EXTERNAL,
++                vk::AccessFlags::MEMORY_WRITE,
++                vk::AccessFlags::empty(),
++            ),
++            ExternalOwnership::Acquire => (
++                vk::QUEUE_FAMILY_EXTERNAL,
++                self.queue_family_index,
++                vk::AccessFlags::empty(),
++                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
++            ),
++        };
++        let barrier = vk::ImageMemoryBarrier::default()
++            .src_access_mask(src_access)
++            .dst_access_mask(dst_access)
++            .old_layout(SHARED_LAYOUT)
++            .new_layout(SHARED_LAYOUT)
++            .src_queue_family_index(src_family)
++            .dst_queue_family_index(dst_family)
++            .image(texture.raw)
++            .subresource_range(super::map_subresource_range(
++                &Default::default(),
++                texture.format.aspects(),
++            ));
++
++        let Some(cmd_buf) = encoder.buffers.first() else {
++            return;
++        };
++        // SAFETY: the caller started the encoder, so its first buffer is
++        // recording, and the texture is a live image of this device.
++        unsafe {
++            self.device.core.cmd_pipeline_barrier(
++                cmd_buf.raw,
++                vk::PipelineStageFlags::ALL_COMMANDS,
++                vk::PipelineStageFlags::ALL_COMMANDS,
++                vk::DependencyFlags::empty(),
++                &[],
++                &[],
++                &[barrier],
++            );
++        }
++    }
++}

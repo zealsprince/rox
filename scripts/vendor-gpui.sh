@@ -19,6 +19,7 @@ export LC_ALL=C
 crates=(
     "gpui 0.2.2 979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707"
     "gpui-component 0.5.1 d021d46b4088d3d93a57ccdf443da85695a77272108caca2f6fe5369f584966a"
+    "blade-graphics 0.7.1 e71cfb73b98eb9f58ee84048aa1bdf4e7497fd20c141b57523499fa066b48fed"
 )
 
 checksum() {
@@ -34,10 +35,19 @@ vendor_one() {
     local crate="$name-$version.crate"
     local out="vendor/$name"
     local stamp="$out/.rox-stamp"
-    # Ordered by LC_ALL=C, see the pin at the top of the script.
-    local patches=(patches/"$name"/*.patch)
+    # Ordered by LC_ALL=C, see the pin at the top of the script. A crate with
+    # no patches vendors its crates.io source as it is. An unmatched glob stays
+    # the literal pattern, so keep only real files. The ${a[@]+...} expansions
+    # are for macOS's bash 3.2, which calls an empty array unbound under set -u,
+    # and /dev/null keeps an empty set's cat off stdin.
+    local patches=() p
+    for p in patches/"$name"/*.patch; do
+        if [[ -f $p ]]; then
+            patches+=("$p")
+        fi
+    done
 
-    local want="$version-$(cat "${patches[@]}" | checksum)"
+    local want="$version-$(cat /dev/null ${patches[@]+"${patches[@]}"} | checksum)"
     if [[ -f $stamp && $(<"$stamp") == "$want" ]]; then
         return 0
     fi
@@ -60,7 +70,7 @@ vendor_one() {
     fi
 
     tar -xzf "$tmp/$crate" -C "$tmp"
-    for p in "${patches[@]}"; do
+    for p in ${patches[@]+"${patches[@]}"}; do
         # -F0 forbids fuzz. A hunk whose context has drifted is a hunk that
         # lands wherever the search happens to stop, and GNU patch and the BSD
         # patch macOS ships stop in different places: a fuzzy hunk here dropped

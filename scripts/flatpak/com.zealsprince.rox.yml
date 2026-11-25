@@ -3,7 +3,7 @@
 # bundles a static ffmpeg so Convert works out of the box.
 #
 # What it mirrors and where the pins are duplicated from:
-# - gpui and gpui-component are the crates.io tarballs with patches/<crate>
+# - gpui, gpui-component and blade-graphics are the crates.io tarballs with patches/<crate>
 #   applied, the table in scripts/vendor-gpui.sh and flake.nix (vendoredCrate).
 # - libprojectM is the commit scripts/vendor-projectm.sh and flake.nix pin,
 #   submodule included, with patches/projectm on top.
@@ -146,7 +146,7 @@ modules:
       # sources below have already put the pristine trees under vendor/.
       - |
         export LC_ALL=C
-        for name in gpui gpui-component projectm; do
+        for name in gpui gpui-component blade-graphics projectm; do
           for p in patches/$name/*.patch; do
             patch -p1 -F0 -d "vendor/$name" --no-backup-if-mismatch < "$p"
           done
@@ -168,9 +168,9 @@ modules:
         url: https://github.com/zealsprince/rox.git
         tag: v1.27.0
         commit: 62bdd0ba6cabaea392a2fc58934deb0a8062608e
-      # Every registry crate in Cargo.lock. gpui and gpui-component aren't in
-      # it: the lock carries them as path deps with no source, which is why
-      # the two tarballs below are fetched here.
+      # Every registry crate in Cargo.lock. gpui, gpui-component and
+      # blade-graphics aren't in it: the lock carries them as path deps with
+      # no source, which is why the three tarballs below are fetched here.
       - cargo-sources.json
       - type: archive
         url: https://static.crates.io/crates/gpui/gpui-0.2.2.crate
@@ -184,6 +184,12 @@ modules:
         archive-type: tar-gzip
         strip-components: 1
         dest: vendor/gpui-component
+      - type: archive
+        url: https://static.crates.io/crates/blade-graphics/blade-graphics-0.7.1.crate
+        sha256: e71cfb73b98eb9f58ee84048aa1bdf4e7497fd20c141b57523499fa066b48fed
+        archive-type: tar-gzip
+        strip-components: 1
+        dest: vendor/blade-graphics
       # Submodules on: vendor/projectm-eval is what the build links when
       # ENABLE_SYSTEM_PROJECTM_EVAL is off, and an empty directory there is a
       # link error a long way downstream.

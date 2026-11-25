@@ -84,7 +84,11 @@
             inherit sha256;
           };
           unpackCmd = ''tar -xzf "$curSrc"'';
-          patches = lib.filesystem.listFilesRecursive ./patches/${name};
+          # A crate with no patches yet builds from its pristine source, the
+          # way the script vendors it.
+          patches = lib.optionals (builtins.pathExists ./patches/${name}) (
+            lib.filesystem.listFilesRecursive ./patches/${name}
+          );
           # No fuzz, same as scripts/vendor-gpui.sh: a hunk whose context has
           # drifted lands wherever the search stops, which isn't the same place
           # on every patch implementation.
@@ -133,6 +137,9 @@
           gpuiComponent =
             vendoredCrate pkgs "gpui-component" "0.5.1"
               "d021d46b4088d3d93a57ccdf443da85695a77272108caca2f6fe5369f584966a";
+          bladeGraphics =
+            vendoredCrate pkgs "blade-graphics" "0.7.1"
+              "e71cfb73b98eb9f58ee84048aa1bdf4e7497fd20c141b57523499fa066b48fed";
           projectm = projectmSrc pkgs;
         in
         lib.makeOverridable (
@@ -161,7 +168,7 @@
               ACOUSTID_CLIENT_KEY = acoustidClientKey;
             };
 
-            # gpui and gpui-component resolve as path deps in the lock, so no
+            # The vendored crates resolve as path deps in the lock, so no
             # extra hashes are needed for them here.
             cargoLock.lockFile = ./Cargo.lock;
 
@@ -180,6 +187,7 @@
               mkdir -p vendor
               cp -r ${gpui} vendor/gpui
               cp -r ${gpuiComponent} vendor/gpui-component
+              cp -r ${bladeGraphics} vendor/blade-graphics
               cp -r ${projectm} vendor/projectm
               chmod -R u+w vendor/projectm
             '';

@@ -79,7 +79,7 @@ gpui = "=0.2.2"
 gpui-component = "=0.5.1"
 gpui-component-assets = "=0.5.1"
 
-# Both crates build from the pinned crates.io source with rox's patches
+# These build from the pinned crates.io source with rox's patches
 # applied on top. vendor/ is generated, never checked in: scripts/vendor-gpui.sh
 # (run by the nix shellHook) fetches each crate tarball, verifies it, and
 # applies patches/<crate>/*.patch in glob order. Each patch carries its own
@@ -91,3 +91,8 @@ gpui-component-assets = "=0.5.1"
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 gpui-component = { path = "vendor/gpui-component" }
+# gpui's GPU layer on Linux, and on macOS under macos-blade. Vendored for the
+# GPU frame path (ADR 37): a texture rox allocates and lends to a renderer
+# process as an opaque fd. gpui 0.2.2 asks for ^0.7.0 and the lock holds
+# 0.7.1, so a gpui bump re-checks this copy too.
+blade-graphics = { path = "vendor/blade-graphics" }

@@ -1,0 +1,550 @@
+External user textures: a texture another process draws into.
+
+The GPU frame path for render targets (ADR 37). A renderer process draws
+into memory the window allocated, and the window paints it with
+`paint_texture_quad` (e3) with no copy through the CPU. This adds
+`Window::register_external_texture(width, height) -> Result<(UserTextureId,
+ExternalTexture), String>` beside `register_dynamic_texture` (c6), a
+`PlatformWindow` method whose default answers `unsupported`, and forwards
+from the Wayland and X11 windows to the blade renderer, which both use
+alike.
+
+On blade the texture comes from `export_texture` in the vendored blade
+(patches/blade-graphics/a0): `Rgba8Unorm`, mutable-format with an
+`Rgba8UnormSrgb` view, usage transfer source and destination, sampled,
+colour attachment and storage, a dedicated device-local allocation
+exported as an opaque fd. It's an entry in `user_textures` flagged
+`external`: `update_user_texture` and `flush_texture_uploads` skip it,
+`release_user_texture` retires it like any dynamic texture, and `destroy`
+frees it with the rest. `Window` refuses an update to it as well. The view
+the quad samples is narrowed to sampling, because an sRGB view that
+inherits the image's storage usage is invalid Vulkan. `ExternalTexture`
+carries the fd, the create info as raw Vulkan values, and the device and
+driver UUIDs, which is everything an importer needs.
+
+The image leaves `UNDEFINED` once. Registration records that transition
+and a release to `VK_QUEUE_FAMILY_EXTERNAL` on an encoder of its own,
+submits them, and waits on the window's own fence before the fd is
+returned, so a renderer's first write can't race the transition. That is
+the only wait, and it is on the window's own work. The window never waits
+on anything a renderer controls: no fence, semaphore or mutex is shared
+with it, and a paint samples whatever the memory holds at the time.
+Registration runs on the UI thread, like every `Window` call. Measured on
+RADV (RX 6800 XT) at 1920x1080: 0.7 to 4 ms for the whole call in a
+window, across two runs; on an idle queue, 0.55 ms for the export and
+0.1 ms for the submit and wait. It happens when a target is made, resized
+or moved to another window, not per frame.
+
+Device loss: c5 re-execs the process. The fd is made close-on-exec here,
+since a driver needn't, so the restart doesn't carry it into the new
+process. The renderer keeps its own import, whose memory lives until it
+exits; nothing samples it any more, and if the reset took its device too,
+its own next submit says so.
+
+Everything but Linux and FreeBSD answers `Err("unsupported")`, as do the
+trait default (macOS, Windows, the test platform) and a backend without
+user shaders. A device with no external memory, or one that can't share
+this image as an opaque fd, answers with blade's reason. None of these
+panic.
+
+gpui's own workspace (b5) patches blade-graphics to the vendored copy as
+well, or `cargo test --manifest-path vendor/gpui/Cargo.toml` can't build.
+The Cargo.lock the crate ships pins blade 0.7.0, so that run wants
+`cargo update -p blade-graphics` first; offline, a lock copied from rox's
+resolves where the shipped one doesn't.
+
+Not a backport. A gpui bump carries this forward with c6 and e3, and a
+blade bump with blade's a0.
+
+diff -ruN -x .rox-stamp -x target a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -780,3 +780,9 @@
+ # vendor/gpui/Cargo.toml` can build the dev-dependencies the shader tests need.
+ # A patched-in path dependency is never a member of the outer workspace anyway.
+ [workspace]
++
++# rox patch: e5 calls the shared-texture API of the vendored blade
++# (patches/blade-graphics/a0), so this workspace builds against that copy
++# too. rox's own [patch.crates-io] does the same for the app.
++[patch.crates-io.blade-graphics]
++path = "../blade-graphics"
+diff -ruN -x .rox-stamp -x target a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -458,6 +458,9 @@
+     // and only once; a dynamic texture uploaded every frame does it on its
+     // first flush and never again.
+     initialised: bool,
++    // rox patch: drawn by another process through shared memory, so never
++    // uploaded to. See `register_external_texture`.
++    external: bool,
+ }
+ 
+ #[derive(Clone, Debug, Eq, PartialEq)]
+@@ -747,6 +750,11 @@
+     // Released dynamic textures, held until the frame that might still be
+     // reading them has landed. Drained at the end of the next `draw`.
+     retired_textures: Vec<UserTexture>,
++    // rox patch: records an external texture's handover, which is submitted
++    // and waited on before registration returns. Its own encoder because the
++    // main one rotates buffers a frame in flight may still be using. Made on
++    // the first registration.
++    transition_encoder: Option<gpu::CommandEncoder>,
+     texture_belt: BufferBelt,
+     rendering_parameters: RenderingParameters,
+     // rox patch: set by `destroy`, so everything that would touch GPU state
+@@ -858,6 +866,7 @@
+             pending_texture_uploads: Vec::new(),
+             empty_texture: None,
+             retired_textures: Vec::new(),
++            transition_encoder: None,
+             texture_belt: BufferBelt::new(BufferBeltDescriptor {
+                 memory: gpu::Memory::Upload,
+                 min_chunk_size: 0x10000,
+@@ -1119,6 +1128,7 @@
+                 width,
+                 height,
+                 initialised: false,
++                external: false,
+             },
+         );
+         self.pending_texture_uploads.push(PendingTextureUpload {
+@@ -1173,6 +1183,7 @@
+                 width,
+                 height,
+                 initialised: false,
++                external: false,
+             },
+         );
+         self.pending_texture_uploads.push(PendingTextureUpload {
+@@ -1184,6 +1195,142 @@
+         });
+     }
+ 
++    /// rox patch: a texture another process draws into, its memory exported
++    /// as an opaque fd (blade's `export_texture`, patches/blade-graphics/a0).
++    /// Sampled through an sRGB view like a dynamic texture, so
++    /// `paint_texture_quad` draws it as it is, and never uploaded to.
++    ///
++    /// The image is taken out of `UNDEFINED` into `GENERAL` and released to
++    /// `VK_QUEUE_FAMILY_EXTERNAL` on an encoder of its own, and that's waited
++    /// on here, before the fd is returned. A frame the caller paints after
++    /// this samples a `GENERAL` image, and the other process's first write
++    /// can't race the transition. The wait is on this renderer's own
++    /// submission: nothing here, or in any later draw, waits on the other
++    /// process.
++    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++    pub fn register_external_texture(
++        &mut self,
++        id: u32,
++        width: u32,
++        height: u32,
++    ) -> Result<crate::ExternalTexture, String> {
++        if self.destroyed {
++            return Err("the window is closing".to_string());
++        }
++        if self.user_textures.contains_key(&id) {
++            return Err(format!("user texture {id} is taken"));
++        }
++
++        let exported = self
++            .gpu
++            .export_texture(&gpu::SharedTextureDesc {
++                name: "external user texture",
++                format: gpu::TextureFormat::Rgba8Unorm,
++                view_formats: &[gpu::TextureFormat::Rgba8UnormSrgb],
++                width,
++                height,
++                usage: gpu::TextureUsage::COPY
++                    | gpu::TextureUsage::RESOURCE
++                    | gpu::TextureUsage::TARGET
++                    | gpu::TextureUsage::STORAGE,
++            })
++            .map_err(|e| e.to_string())?;
++        let texture = exported.texture;
++
++        // The sRGB view `fs_tex_sprite` expects, narrowed to sampling: the
++        // image's storage usage can't carry over to an sRGB view.
++        let view = match self.gpu.create_shared_texture_view(
++            texture,
++            "external user texture view",
++            gpu::TextureFormat::Rgba8UnormSrgb,
++            gpu::TextureUsage::RESOURCE,
++        ) {
++            Ok(view) => view,
++            Err(e) => {
++                self.gpu.destroy_texture(texture);
++                return Err(e.to_string());
++            }
++        };
++
++        let gpu = &self.gpu;
++        let encoder = self.transition_encoder.get_or_insert_with(|| {
++            gpu.create_command_encoder(gpu::CommandEncoderDesc {
++                name: "external texture handover",
++                buffer_count: 1,
++            })
++        });
++        encoder.start();
++        encoder.init_texture(texture);
++        gpu.transfer_external_ownership(encoder, texture, gpu::ExternalOwnership::Release);
++        let sync_point = gpu.submit(encoder);
++        if !gpu.wait_for(&sync_point, MAX_FRAME_TIME_MS) {
++            // Ten seconds on one barrier is a lost device, which the next
++            // frame's wait turns into c5's restart. The GPU may still reach
++            // the image and the encoder's buffer, so both are leaked rather
++            // than freed or reset under it.
++            std::mem::forget(self.transition_encoder.take());
++            return Err("the GPU didn't finish handing the texture over".to_string());
++        }
++
++        // A driver needn't set close-on-exec, and an fd that survives an exec
++        // would outlive c5's restart in the new process.
++        let fd = exported.fd;
++        // SAFETY: fcntl on an fd this function owns, with no pointer arguments.
++        let cloexec = unsafe {
++            let flags = libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&fd), libc::F_GETFD);
++            flags >= 0
++                && libc::fcntl(
++                    std::os::fd::AsRawFd::as_raw_fd(&fd),
++                    libc::F_SETFD,
++                    flags | libc::FD_CLOEXEC,
++                ) >= 0
++        };
++        if !cloexec {
++            self.retired_textures.push(UserTexture {
++                texture,
++                view,
++                width,
++                height,
++                initialised: true,
++                external: true,
++            });
++            return Err(format!(
++                "the texture's fd can't be made close-on-exec: {}",
++                std::io::Error::last_os_error()
++            ));
++        }
++
++        self.user_textures.insert(
++            id,
++            UserTexture {
++                texture,
++                view,
++                width,
++                height,
++                initialised: true,
++                external: true,
++            },
++        );
++
++        let identity = self.gpu.device_identity();
++        let info = exported.info;
++        Ok(crate::ExternalTexture {
++            fd,
++            width,
++            height,
++            allocation_size: exported.allocation_size,
++            memory_type: exported.memory_type,
++            format: info.format,
++            view_formats: info.view_formats,
++            flags: info.flags,
++            usage: info.usage,
++            tiling: info.tiling,
++            layout: info.layout,
++            device_uuid: identity.device_uuid,
++            driver_uuid: identity.driver_uuid,
++        })
++    }
++
+     /// Replaces a dynamic texture's pixels. The bytes ride the next frame's
+     /// encoder like every other upload, so two updates between two frames
+     /// collapse to the last one: the first is dropped rather than uploaded and
+@@ -1197,6 +1344,11 @@
+         let Some(texture) = self.user_textures.get(&id).copied() else {
+             return;
+         };
++        // rox patch: another process's frames live there. `Window` refuses
++        // this already.
++        if texture.external {
++            return;
++        }
+         self.pending_texture_uploads
+             .retain(|upload| upload.id != id);
+         self.pending_texture_uploads.push(PendingTextureUpload {
+@@ -1502,6 +1654,9 @@
+         self.gpu.destroy_sampler(self.atlas_sampler);
+         self.instance_belt.destroy(&self.gpu);
+         self.gpu.destroy_command_encoder(&mut self.command_encoder);
++        if let Some(mut encoder) = self.transition_encoder.take() {
++            self.gpu.destroy_command_encoder(&mut encoder);
++        }
+         self.pipelines.destroy(&self.gpu);
+         self.gpu.destroy_surface(&mut self.surface);
+         self.gpu.destroy_texture(self.path_intermediate_texture);
+@@ -2434,6 +2589,16 @@
+     /// against the frame's encoder.
+     fn flush_texture_uploads(&mut self) {
+         for upload in std::mem::take(&mut self.pending_texture_uploads) {
++            // rox patch: an external texture is never uploaded to, and
++            // `init_texture` on it would discard the other process's frame.
++            if self
++                .user_textures
++                .get(&upload.id)
++                .is_some_and(|texture| texture.external)
++            {
++                continue;
++            }
++
+             // `init_texture` is the undefined-to-general layout transition,
+             // wanted once per texture rather than once per copy. A dynamic
+             // texture uploads every frame and only transitions on the first.
+diff -ruN -x .rox-stamp -x target a/src/platform/linux/wayland/window.rs b/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -1185,6 +1185,17 @@
+         self.borrow_mut().renderer.update_user_texture(id, rgba8);
+     }
+ 
++    fn register_external_texture(
++        &self,
++        id: u32,
++        width: u32,
++        height: u32,
++    ) -> std::result::Result<crate::ExternalTexture, String> {
++        self.borrow_mut()
++            .renderer
++            .register_external_texture(id, width, height)
++    }
++
+     fn release_user_texture(&self, id: u32) {
+         self.borrow_mut().renderer.release_user_texture(id);
+     }
+diff -ruN -x .rox-stamp -x target a/src/platform/linux/x11/window.rs b/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -1817,6 +1817,19 @@
+             .update_user_texture(id, rgba8);
+     }
+ 
++    fn register_external_texture(
++        &self,
++        id: u32,
++        width: u32,
++        height: u32,
++    ) -> std::result::Result<crate::ExternalTexture, String> {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .register_external_texture(id, width, height)
++    }
++
+     fn release_user_texture(&self, id: u32) {
+         self.0.state.borrow_mut().renderer.release_user_texture(id);
+     }
+diff -ruN -x .rox-stamp -x target a/src/platform.rs b/src/platform.rs
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -485,6 +485,51 @@
+     pub(crate) force_render: bool,
+ }
+ 
++/// rox patch: a texture this window allocated for another process to draw
++/// into, and everything that process needs to import it. Linux and FreeBSD
++/// only for now, over Vulkan: the memory is an opaque fd, which only the same
++/// driver on the same device can import (compare the UUIDs first), into an
++/// image made from exactly this create info with a dedicated allocation of
++/// `allocation_size` bytes from `memory_type`. 2D, one mip and one layer,
++/// exclusive sharing.
++///
++/// When the fd is handed out the image is in `layout` and released to
++/// `VK_QUEUE_FAMILY_EXTERNAL`. The importer acquires it from there before its
++/// first write. The window samples it through an sRGB view whenever it paints
++/// and never waits on the other process, so finish the GPU work on a frame
++/// before saying it's there.
++#[derive(Debug)]
++pub struct ExternalTexture {
++    /// The memory. Close-on-exec, so lending it to a child means placing a
++    /// copy at the number the child expects.
++    #[cfg(unix)]
++    pub fd: std::os::fd::OwnedFd,
++    /// The image's width in pixels.
++    pub width: u32,
++    /// The image's height in pixels.
++    pub height: u32,
++    /// The dedicated allocation's size in bytes.
++    pub allocation_size: u64,
++    /// The memory type index it was allocated from.
++    pub memory_type: u32,
++    /// `VkFormat` of the image.
++    pub format: i32,
++    /// `VkImageFormatListCreateInfo::pViewFormats`, in order.
++    pub view_formats: Vec<i32>,
++    /// `VkImageCreateFlags`.
++    pub flags: u32,
++    /// `VkImageUsageFlags`.
++    pub usage: u32,
++    /// `VkImageTiling`.
++    pub tiling: i32,
++    /// `VkImageLayout` the image is in, here and after every transfer.
++    pub layout: i32,
++    /// `VkPhysicalDeviceIDProperties::deviceUUID`.
++    pub device_uuid: [u8; 16],
++    /// `VkPhysicalDeviceIDProperties::driverUUID`.
++    pub driver_uuid: [u8; 16],
++}
++
+ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn bounds(&self) -> Bounds<Pixels>;
+     fn is_maximized(&self) -> bool;
+@@ -619,6 +664,16 @@
+         Ok(())
+     }
+     fn update_user_texture(&self, _id: u32, _rgba8: std::sync::Arc<Vec<u8>>) {}
++    /// rox patch: a texture another process draws into, see
++    /// [`ExternalTexture`]. Only the Linux Vulkan windows can make one.
++    fn register_external_texture(
++        &self,
++        _id: u32,
++        _width: u32,
++        _height: u32,
++    ) -> std::result::Result<ExternalTexture, String> {
++        Err("unsupported".to_string())
++    }
+     fn release_user_texture(&self, _id: u32) {}
+     fn set_post_shader(&self, _chain: Option<&[ChainPassDesc]>) {}
+     fn set_post_signals(&self, _signals: [f32; 16], _meta: [f32; 8], _mouse: [f32; 4]) {}
+diff -ruN -x .rox-stamp -x target a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3700,6 +3700,55 @@
+         }
+     }
+ 
++    /// Allocates a texture another process draws into, and hands back its id
++    /// with what that process needs to import it (see
++    /// [`crate::ExternalTexture`]). Paint it with
++    /// [`Window::paint_texture_quad`] and free it with
++    /// [`Window::release_user_texture`], like a dynamic texture.
++    /// [`Window::update_user_texture`] refuses it: nothing is ever uploaded.
++    ///
++    /// Blocks until this window's GPU has taken the image out of its
++    /// undefined layout and released it to the other process, so the fd
++    /// never leaves before that. The wait is on this window's own work only.
++    /// After that the window samples whatever the memory holds whenever it
++    /// paints, and never waits on, or shares a fence, semaphore or lock with,
++    /// the process drawing it.
++    ///
++    /// Linux and FreeBSD on Vulkan only. Everywhere else, and on a device
++    /// that can't share this image as an opaque fd, this is an `Err`, and the
++    /// caller falls back to uploading frames.
++    ///
++    /// rox patch: the GPU frame path for render targets (ADR 37).
++    pub fn register_external_texture(
++        &mut self,
++        width: u32,
++        height: u32,
++    ) -> std::result::Result<(UserTextureId, crate::ExternalTexture), String> {
++        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        {
++            if !self.platform_window.user_shaders_supported() {
++                return Err("unsupported".to_string());
++            }
++
++            let id = self.user_textures.register_external(width, height)?;
++            match self
++                .platform_window
++                .register_external_texture(id.0, width, height)
++            {
++                Ok(external) => Ok((id, external)),
++                Err(message) => {
++                    self.user_textures.release(id);
++                    Err(message)
++                }
++            }
++        }
++        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        {
++            let _ = (width, height);
++            Err("unsupported".to_string())
++        }
++    }
++
+     /// Replaces a dynamic texture's pixels.
+     ///
+     /// `rgba8` is `width * height * 4` bytes for the size the texture was made
+@@ -6804,6 +6853,9 @@
+     // lets `update` check the byte count, and what lets both `update` and
+     // `release` refuse a hashed id, which is shared and has no single owner.
+     dynamic: std::collections::HashMap<UserTextureId, (u32, u32)>,
++    // rox patch: the dynamic ids another process draws into. Released like
++    // any dynamic id, never updated: an upload would land on its frames.
++    external: std::collections::HashSet<UserTextureId>,
+     count: u32,
+ }
+ 
+@@ -6895,6 +6947,12 @@
+         let Some((width, height)) = self.dynamic.get(&id).copied() else {
+             return Err(format!("user texture {} is not a dynamic texture", id.0));
+         };
++        if self.external.contains(&id) {
++            return Err(format!(
++                "user texture {} is drawn by another process and takes no uploads",
++                id.0
++            ));
++        }
+         let expected = width as usize * height as usize * 4;
+         if len != expected {
+             return Err(format!(
+@@ -6916,8 +6974,25 @@
+         allow(dead_code)
+     )]
+     fn release(&mut self, id: UserTextureId) -> bool {
++        self.external.remove(&id);
+         self.dynamic.remove(&id).is_some()
+     }
++
++    /// rox patch: a dynamic id another process draws into. Released like the
++    /// rest, refused by `check_update`.
++    #[cfg_attr(
++        not(any(target_os = "linux", target_os = "freebsd")),
++        allow(dead_code)
++    )]
++    fn register_external(
++        &mut self,
++        width: u32,
++        height: u32,
++    ) -> std::result::Result<UserTextureId, String> {
++        let id = self.register_dynamic(width, height)?;
++        self.external.insert(id);
++        Ok(id)
++    }
+ }
+ 
+ #[cfg(all(
+@@ -7620,6 +7695,23 @@
+         assert!(registry.check_update(dynamic, 2 * 2 * 4).is_err());
+     }
+ 
++    #[test]
++    fn an_external_texture_takes_no_uploads_and_releases_like_the_rest() {
++        let mut registry = UserTextureRegistry::default();
++        let dynamic = registry.register_dynamic(2, 2).unwrap();
++        let external = registry.register_external(2, 2).unwrap();
++
++        // Off the same counter, so it never collides with a dynamic id.
++        assert_eq!(external, UserTextureId(1));
++        assert!(registry.check_update(dynamic, 2 * 2 * 4).is_ok());
++        assert!(registry.check_update(external, 2 * 2 * 4).is_err());
++        assert!(registry.register_external(0, 2).is_err());
++
++        assert!(registry.release(external));
++        assert!(!registry.release(external));
++        assert!(registry.check_update(external, 2 * 2 * 4).is_err());
++    }
++
+     // A chain pass that reaches for everything a pass can have: the composed
+     // frame, its own last output, the pass ahead of it and a declared image.
+     const EVERYTHING: &str = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {

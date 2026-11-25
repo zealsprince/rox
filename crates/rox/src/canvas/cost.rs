@@ -40,20 +40,34 @@ use crate::panels::canvas::PANEL_NAME;
 const GRIDS: usize = 70;
 const SHADER_SURFACES: usize = 68;
 
-// Render targets, measured 2026-11-24 on the same Ryzen 9 5950X and its Navi
-// 21 Radeon (amdgpu), release build, the same headless sway at 1920x1080,
-// design mode off. Each target ran the Python test renderer at 60 fps, and its
-// frames kept the canvas drawing. Mean `debug.frames` ms, the mean of three
-// to six runs of 3 s each:
+// Render targets, measured 2026-11-24 on the same Ryzen 9 5950X and RX 6800 XT,
+// RADV (Mesa 26.1.8), Linux 6.18, release build, the same headless sway at
+// 1920x1080, design mode off. Each target ran the Rust Plasma example, which
+// published 60 fps on 14% of a core at 1920x1080 and 51% at 3840x2160. Mean
+// `debug.frames` ms over three runs of 3 s. The first five rows are 1920x1080
+// targets, the rest 3840x2160 ones, with a third target at whatever size
+// makes up the megapixels:
 //
-//   megapixels        2.1   8.3   15.9  16.6  17.3  20.2  22.5  24.9  33.2
-//   targets           1     1     3     2     3     3     3     3     4
-//   mean ms           1.3   3.0   7.4   6.1   12.4  8.8   13.8  17.5  29.5
+//   megapixels   targets   mean ms   worst ms   fps
+//   2.1          1         1.1       2.0        60
+//   4.1          2         1.8       3.0        62
+//   6.2          3         2.5       6.4        62
+//   8.3          4         3.2       5.1        62
+//   12.4         6         5.0       8.8        61
+//   8.3          1         3.0       4.8        60
+//   16.6         2         6.6       11.6       62
+//   17.5         3         7.1       11.1       62
+//   18.7         3         8.3       12.0       62
+//   19.4         3         8.7       13.3       62
+//   20.3         3         9.7       16.6       62
+//   22.3         3         17.5      29.2       55
+//   24.9         3         20.6      28.8       47
+//   33.2         4         28.0      75.3       31
 //
-// The renderers' own copies share the machine's memory with rox, which is why
-// 17.3 reads above 20.2. The threshold is read between 16.6 and 17.3, where
-// the mean first crosses 8.3 ms.
-const TARGET_PIXELS: u64 = 16_800_000;
+// At 33.2 the renderers fell short of 60 on nearly a core each, so that row
+// is partly theirs. Six more runs at 18.7 and three at 19.4 put the means at
+// 8.2 and 8.8, and the threshold is read between them.
+const TARGET_PIXELS: u64 = 18_800_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Weight {
@@ -492,11 +506,12 @@ mod tests {
         assert_eq!(target_counts(&Weight::default()), None);
         assert!(warnings(&weight).is_empty(), "under the threshold");
 
-        // Two 4K targets drew under half a frame, three didn't.
+        // Two 4K targets and a 1080p one drew under half a frame. With
+        // 2240x1260 in place of the 1080p one they didn't.
         let mut heavy = weight;
-        heavy.cost.target_pixels = 2 * 3840 * 2160;
+        heavy.cost.target_pixels = 2 * 3840 * 2160 + 1920 * 1080;
         assert!(warnings(&heavy).is_empty());
-        heavy.cost.target_pixels = 3 * 3840 * 2160;
+        heavy.cost.target_pixels = 2 * 3840 * 2160 + 2240 * 1260;
         assert_eq!(warnings(&heavy).len(), 1);
     }
 

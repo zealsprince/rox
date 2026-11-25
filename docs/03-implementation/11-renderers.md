@@ -427,13 +427,45 @@ headless compositor at 1920x1080 drawing at 61.9 Hz, one renderer at 60 frames a
 | 3840x2160 | 2.66 ms | 7.26 ms | 2.24 ms |
 
 The upload is gpui's copy into its staging memory, the same cost Milkdrop's frames pay
-(0.53 ms at 1920x1080 on that machine). Each further 1920x1080 target added about
-0.8 ms of UI thread. At 1920x1080 rox's memory grew 32 MB with a target, the block and
-the frame buffers, and 127 MB at 3840x2160, beside the texture on the GPU (8.3 MB and
-33 MB). The renderer's figure is the copy alone. A GPU renderer reads its frame back
-into the slot, and that readback is the copy. Whole frames down a pipe were measured as
-well: 4.96 ms to read one at 1920x1080, against the 0.77 ms copy. ADR 37's amendment of
-2026-11-23 has the decision those numbers made.
+(0.53 ms at 1920x1080 on that machine). At 1920x1080 rox's memory grew 32 MB with a
+target, the block and the frame buffers, and 127 MB at 3840x2160, beside the texture on
+the GPU (8.3 MB and 33 MB). The renderer's figure is the copy alone. A GPU renderer
+reads its frame back into the slot, and that readback is the copy. Whole frames down a
+pipe were measured as well: 4.96 ms to read one at 1920x1080, against the 0.77 ms copy.
+ADR 37's amendment of 2026-11-23 has the decision those numbers made.
+
+Many targets at once were measured 2026-11-24 on the shipped channel, on the same
+machine (RADV from Mesa 26.1.8, Linux 6.18.64), in a release build with a 1920x1080
+window and design mode off. Every target ran the Plasma example, which published 60
+frames a second on 14% of a core at 1920x1080 and 51% at 3840x2160. The figure is
+`debug.frames`, the main thread's time per frame from the workspace's render to the
+present, as the mean of three runs of 3 s:
+
+| Targets | Megapixels | Mean | Worst | Frames a second | rox CPU |
+|---|---|---|---|---|---|
+| 1 at 1920x1080 | 2.1 | 1.1 ms | 2.0 ms | 60 | 11% |
+| 2 at 1920x1080 | 4.1 | 1.8 ms | 3.0 ms | 62 | 21% |
+| 3 at 1920x1080 | 6.2 | 2.5 ms | 6.4 ms | 62 | 35% |
+| 4 at 1920x1080 | 8.3 | 3.2 ms | 5.1 ms | 62 | 46% |
+| 6 at 1920x1080 | 12.4 | 5.0 ms | 8.8 ms | 61 | 86% |
+| 1 at 3840x2160 | 8.3 | 3.0 ms | 4.8 ms | 60 | 32% |
+| 2 at 3840x2160 | 16.6 | 6.6 ms | 11.6 ms | 62 | 80% |
+| 2 at 3840x2160, 1 at 1280x720 | 17.5 | 7.1 ms | 11.1 ms | 62 | 88% |
+| 2 at 3840x2160, 1 at 1920x1080 | 18.7 | 8.3 ms | 12.0 ms | 62 | 113% |
+| 2 at 3840x2160, 1 at 2240x1260 | 19.4 | 8.7 ms | 13.3 ms | 62 | 128% |
+| 2 at 3840x2160, 1 at 2560x1440 | 20.3 | 9.7 ms | 16.6 ms | 62 | 139% |
+| 2 at 3840x2160, 1 at 3200x1800 | 22.3 | 17.5 ms | 29.2 ms | 55 | 281% |
+| 3 at 3840x2160 | 24.9 | 20.6 ms | 28.8 ms | 47 | 278% |
+| 4 at 3840x2160 | 33.2 | 28.0 ms | 75.3 ms | 31 | 371% |
+
+rox CPU counts every rox thread, 100% being one core. The cost follows the megapixels,
+not the count: four 1920x1080 targets cost what one 3840x2160 target does, and each
+further 1920x1080 target adds about 0.7 ms. Past 20 megapixels it more than doubles
+within 2 megapixels. At 33.2 the renderers fell short of 60 frames a second on nearly a
+core each, so that row is partly their cost. The mean crosses 8.3 ms, half a 60 Hz frame,
+at about 18.8 megapixels, read from nine runs at 18.7 (8.2 ms) and six at 19.4 (8.8 ms).
+That's where the canvas's weight line starts warning (`TARGET_PIXELS` in
+`crates/rox/src/canvas/cost.rs`).
 
 ## Reference
 

@@ -768,6 +768,11 @@ impl TabPanel {
         h_flex()
             .gap_1()
             .occlude()
+            // rox addition: the occlusion hides this press from the group's
+            // own handler, so the toolbar reports it.
+            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                this.note_press(true, window, cx);
+            }))
             .when_some(self.toolbar_buttons(window, cx), |this, buttons| {
                 this.children(
                     buttons
@@ -1838,6 +1843,31 @@ impl TabPanel {
         }
     }
 
+    /// rox addition: a press anywhere in this group, heard in the capture
+    /// phase. It records the group as the last one clicked, which the dock's
+    /// keyboard zoom targets. A press on the chrome (tabs, title, toolbar)
+    /// also focuses the panel shown, as a press in its content does: buttons
+    /// refuse focus on press, so a toolbar click would leave the keys with
+    /// another panel. Capture runs first, so a text input in the title still
+    /// takes focus itself afterwards.
+    fn note_press(&mut self, chrome: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // The other half of the focus-ring story: a press means the ring
+        // goes, since it answers the keyboard only.
+        if crate::focus_visible() {
+            crate::set_focus_visible(false);
+            cx.refresh_windows();
+        }
+
+        let weak = cx.entity().downgrade();
+        _ = self
+            .dock_area
+            .update(cx, |dock, _| dock.active_tab_panel = Some(weak));
+
+        if chrome {
+            self.focus_active_panel(window, cx);
+        }
+    }
+
     /// The keyboard path into zoom; same behavior as the menu item.
     pub(crate) fn toggle_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.on_action_toggle_zoom(&ToggleZoom, window, cx);
@@ -2017,17 +2047,9 @@ impl Render for TabPanel {
             // Record this group as the last one clicked; the dock's
             // keyboard zoom targets it. Capture phase, so tabs and panel
             // content that stop mouse events can't hide the click.
-            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
-                // The other half of the focus-ring story: a press means
-                // the ring goes, since it answers the keyboard only.
-                if crate::focus_visible() {
-                    crate::set_focus_visible(false);
-                    cx.refresh_windows();
-                }
-                let weak = cx.entity().downgrade();
-                _ = this
-                    .dock_area
-                    .update(cx, |dock, _| dock.active_tab_panel = Some(weak));
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                let chrome = !this.content_bounds.get().contains(&event.position);
+                this.note_press(chrome, window, cx);
             }))
             // An armed press (middle or Alt+Left, on a tab or the body)
             // becomes a panel move once the pointer travels past the

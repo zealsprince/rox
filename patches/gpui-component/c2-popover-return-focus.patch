@@ -1,0 +1,100 @@
+--- a/src/popover.rs
++++ b/src/popover.rs
+@@ -195,6 +195,10 @@
+     trigger_bounds: Option<Bounds<Pixels>>,
+     open: bool,
+     on_open_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
++    /// rox patch: what the opening press left focused, for focus to go back
++    /// to on close. Settled on the first render after opening.
++    focus_before_open: Option<FocusHandle>,
++    settling: bool,
+ 
+     _dismiss_subscription: Option<Subscription>,
+ }
+@@ -207,6 +211,8 @@
+             trigger_bounds: None,
+             open: default_open,
+             on_open_change: None,
++            focus_before_open: None,
++            settling: false,
+             _dismiss_subscription: None,
+         }
+     }
+@@ -233,6 +239,8 @@
+     fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.open = !self.open;
+         if self.open {
++            self.focus_before_open = window.focused(cx);
++            self.settling = true;
+             let state = cx.entity();
+             let focus_handle = if let Some(tracked_focus_handle) = self.tracked_focus_handle.clone()
+             {
+@@ -253,6 +261,8 @@
+                 );
+         } else {
+             self._dismiss_subscription = None;
++            self.settling = false;
++            self.return_focus(window, cx);
+         }
+ 
+         if let Some(callback) = self.on_open_change.as_ref() {
+@@ -261,6 +271,48 @@
+         cx.notify();
+     }
+ 
++    /// rox patch: a Button trigger keeps its press from moving focus, so
++    /// what had focus before the press stands. Any other trigger lets the
++    /// press go on to focus the panel or dialog it sits in, after
++    /// toggle_open took focus, and that's where focus belongs on close. The
++    /// popover takes focus back from it, as toggle_open meant to.
++    fn settle_focus(&mut self, window: &mut Window, cx: &App) {
++        if !std::mem::take(&mut self.settling) {
++            return;
++        }
++
++        let own = self
++            .tracked_focus_handle
++            .clone()
++            .unwrap_or_else(|| self.focus_handle.clone());
++        if own.is_focused(window) {
++            return;
++        }
++
++        if let Some(moved) = window.focused(cx) {
++            self.focus_before_open = Some(moved);
++        }
++        own.focus(window);
++    }
++
++    /// rox patch: without this the closed popover kept focus, and the panel
++    /// or dialog it opened over went deaf until clicked. Only while focus is
++    /// still inside the popover: a picked item may have moved it on purpose.
++    fn return_focus(&mut self, window: &mut Window, cx: &App) {
++        let Some(before) = self.focus_before_open.take() else {
++            return;
++        };
++
++        let inside = self.focus_handle.contains_focused(window, cx)
++            || self
++                .tracked_focus_handle
++                .as_ref()
++                .is_some_and(|handle| handle.contains_focused(window, cx));
++        if inside || window.focused(cx).is_none() {
++            window.focus(&before);
++        }
++    }
++
+     fn on_action_cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+         self.dismiss(window, cx);
+     }
+@@ -299,6 +351,10 @@
+             }
+         });
+ 
++        if state.read(cx).settling {
++            state.update(cx, |state, cx| state.settle_focus(window, cx));
++        }
++
+         let open = state.read(cx).open;
+         let focus_handle = state.read(cx).focus_handle.clone();
+         let trigger_bounds = state.read(cx).trigger_bounds;

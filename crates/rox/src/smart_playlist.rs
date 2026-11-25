@@ -250,15 +250,6 @@ impl SmartPlaylistWindow {
         self.requery(cx);
     }
 
-    /// After a pick from the sort menu, which hands focus back somewhere the
-    /// window's Enter can't hear it. A frame later, since the menu restores
-    /// focus after the pick runs.
-    fn refocus_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.on_next_frame(window, |this, window, cx| {
-            window.focus(&this.name.read(cx).focus_handle(cx));
-        });
-    }
-
     fn toggle_descending(&mut self, cx: &mut Context<Self>) {
         self.descending = !self.descending;
         self.requery(cx);
@@ -359,11 +350,10 @@ impl SmartPlaylistWindow {
                                     let this = weak.clone();
                                     menu = menu.item(
                                         PopupMenuItem::new(label).checked(sort == key).on_click(
-                                            move |_, window, cx| {
+                                            move |_, _, cx| {
                                                 if let Some(this) = this.upgrade() {
                                                     this.update(cx, |this, cx| {
-                                                        this.set_sort(key, cx);
-                                                        this.refocus_soon(window, cx);
+                                                        this.set_sort(key, cx)
                                                     });
                                                 }
                                             },

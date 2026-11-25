@@ -1,0 +1,21 @@
+--- a/src/menu/dropdown_menu.rs
++++ b/src/menu/dropdown_menu.rs
+@@ -93,6 +93,18 @@
+             .trigger(self.trigger)
+             .trigger_style(self.style)
+             .anchor(self.anchor)
++            // rox patch: the menu is rebuilt on every open. Kept past a close
++            // that didn't come from the menu, a trigger press or the
++            // popover's own Escape, it came back stale and unfocused, so the
++            // arrows did nothing and Escape went to the popover again.
++            .on_open_change({
++                let menu_state = menu_state.clone();
++                move |open, _, cx| {
++                    if !*open {
++                        menu_state.update(cx, |state, _| state.menu = None);
++                    }
++                }
++            })
+             .content(move |_, window, cx| {
+                 // Here is special logic to only create the PopupMenu once and reuse it.
+                 // Because this `content` will called in every time render, so we need to store the menu

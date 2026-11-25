@@ -674,8 +674,6 @@ impl CanvasPanel {
                 .update(cx, |_, window, cx| {
                     me.update(cx, |this, cx| {
                         this.change_keyed(Some(key), edit, window, cx);
-
-                        this.refocus_soon(window, cx);
                     })
                     .ok();
                 })
@@ -683,11 +681,9 @@ impl CanvasPanel {
         });
     }
 
-    /// Hands the keys back to the canvas after an inspector control made an
-    /// edit. A picker's popover gives focus back to the button that opened
-    /// it when it closes, and a committed field leaves it nowhere, so undo
-    /// went unheard until a click. A frame later, since the popover restores
-    /// focus after the pick runs.
+    /// Hands the keys back to the canvas after a typed inspector field
+    /// commits. The field goes away and leaves focus nowhere, so undo went
+    /// unheard until a click.
     pub(crate) fn refocus_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.on_next_frame(window, |this, window, cx| {
             window.focus(&this.focus);

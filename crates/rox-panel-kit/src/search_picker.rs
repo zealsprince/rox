@@ -273,6 +273,10 @@ impl RenderOnce for SearchPicker {
                                     let commit = commit.clone();
                                     row_body(row.label, row.icon, picked, ix == state.selected)
                                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                            // Left to bubble, the press focuses the
+                                            // popover it just closed, and the keys
+                                            // go with it.
+                                            window.prevent_default();
                                             commit(value.clone(), window, cx)
                                         })
                                 })

@@ -36,7 +36,7 @@ guide drawn from this document.
 4. If any of its files change, or a new `.roxp` with its id replaces the old one, the
    plugin switches itself off until it's switched on again, and the card shows what
    changed. For a folder, Developer mode approves the change instead when the manifest
-   declares nothing new.
+   is exactly the one last approved.
 5. A plugin source's tracks are browsed and searched in the External Sources panel:
    Add Panel > Plugins > the plugin opens one on its source, and the bare panel is in
    the Catalogue group while plugins can run (`live` in `rox/src/panel_catalog.rs`).
@@ -985,9 +985,13 @@ switched-on plugin's switch (`plugin_row`, `rox/src/settings/window/plugins_page
 an in-memory set in `rox-services/src/plugins.rs` (`DEVELOPING`), never saved, so it
 ends when rox quits, and switching the plugin off or removing it clears it. Before
 `apply` looks for changed folders, `redevelop` approves each switched-on plugin in the
-set whose folder loads and whose manifest diff against the last approval is empty. The
-host then restarts on the new hash like any re-approval. A diff that isn't empty falls
-through to the usual switch-off and card. A developing plugin whose folder stops loading
+set whose folder loads and whose manifest equals the last approved one exactly, as JSON,
+so only its other files moved (`since` answering `Files`; `redevelops`). The host then
+restarts on the new hash like any re-approval. Any change to the manifest falls through
+to the usual switch-off and card: a new capability, program or entry, and also a dropped
+program, a changed label, settings schema, panel, description or version, none of which
+the card's diff names. A folder that hashes as the approved one and still isn't approved
+on this machine, as after a settings file copied from another, goes to the card too. A developing plugin whose folder stops loading
 keeps its switch rather than being switched off, since it can't run either way.
 Turning the toggle on is the direct user action that approves the saves that follow.
 
@@ -1022,7 +1026,7 @@ The Plugins page's copy, in English, for finding each string in the other locale
 | Lyrics switch, by what the manifest declares | `source.lyrics`: Ask this plugin for its tracks' lyrics before the lyrics providers. Offered because the plugin answers them / `providers.lyrics`: Include this plugin's sheets when rox looks up lyrics for any track. Offered because the plugin answers them / both: Ask this plugin first for its own tracks, and include its sheets when rox looks up lyrics for any other. Offered because the plugin answers them |
 | Tag Lookup switch | Include this plugin's matches when you look up a track's tags. Offered because the plugin answers them |
 | Artist Info switch | Ask this plugin about an artist first, and let the artist providers fill in what it leaves out. Offered because the plugin answers it |
-| Developer mode tooltip | Developer mode: until rox quits, a change to this plugin's folder is approved on its own and restarts it. A change to what its manifest declares still switches it off |
+| Developer mode tooltip | Developer mode: until rox quits, a change to this plugin's folder is approved on its own and restarts it. A change to its manifest still switches it off |
 | Pack tooltip | Pack into a .roxp to share |
 | After Pack | Packed into { $path } |
 | Nothing kept | Nothing synced yet. Switch sync on for a collection in the plugin's source browser |

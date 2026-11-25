@@ -90,11 +90,99 @@ pub struct Capabilities {
     pub renderer: Option<RendererCap>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+/// Each field past the label is a grant: the enable card names it, and
+/// rox sends or offers it only to a renderer whose approved manifest asks.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct RendererCap {
     /// What rox lists the renderer as.
     pub label: String,
+    /// The signals it follows, which rox offers to add to the user's pool
+    /// when a render target for it is placed. Nothing is added unasked.
+    #[serde(default)]
+    pub signals: Vec<WantedSignal>,
+    /// Sent the theme's colours.
+    #[serde(default)]
+    pub palette: bool,
+    /// Sent the playing track's cover as pixels.
+    #[serde(default)]
+    pub cover: bool,
 }
+
+/// One signal a renderer asks for. Matched against the pool by kind and
+/// band, never by name, since a name is the user's to change.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct WantedSignal {
+    /// `band`, `level`, `onset`, `trigger` or `aggregate`. A kind this rox
+    /// doesn't know is skipped, so a renderer written for a later rox loads.
+    pub kind: String,
+    /// The band in Hz, for the kinds that listen to one.
+    #[serde(default)]
+    pub low: Option<f32>,
+    #[serde(default)]
+    pub high: Option<f32>,
+    /// A name for the signal if it's added. Untrusted text.
+    #[serde(default)]
+    pub name: String,
+    /// The Signals window's Response, 0 to 100, for an added signal.
+    #[serde(default)]
+    pub response: Option<u8>,
+    /// The Signals window's Threshold, 0 to 100, for an added signal.
+    #[serde(default)]
+    pub threshold: Option<u8>,
+    /// An aggregate's input: the index of another entry in this list.
+    #[serde(default)]
+    pub of: Option<usize>,
+    /// An aggregate's rate, above 0 and at most 8.
+    #[serde(default)]
+    pub rate: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalKind {
+    Band,
+    Level,
+    Onset,
+    Trigger,
+    Aggregate,
+}
+
+impl SignalKind {
+    pub fn listens_to_a_band(self) -> bool {
+        matches!(self, Self::Band | Self::Onset | Self::Trigger)
+    }
+}
+
+impl WantedSignal {
+    /// None for a kind this rox doesn't know.
+    pub fn kind(&self) -> Option<SignalKind> {
+        match self.kind.as_str() {
+            "band" => Some(SignalKind::Band),
+            "level" => Some(SignalKind::Level),
+            "onset" => Some(SignalKind::Onset),
+            "trigger" => Some(SignalKind::Trigger),
+            "aggregate" => Some(SignalKind::Aggregate),
+            _ => None,
+        }
+    }
+
+    /// The name as given, trimmed, or None.
+    pub fn given_name(&self) -> Option<&str> {
+        let name = self.name.trim();
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+/// The most signals one renderer can ask for.
+pub const MAX_WANTED_SIGNALS: usize = 16;
+
+/// The longest name a renderer can give a signal, in characters.
+pub const WANTED_NAME_MAX: usize = 32;
+
+/// The band a wanted signal can name, the spectrum the hub hears.
+pub const WANTED_HZ: RangeInclusive<f32> = 20.0..=20_000.0;
+
+/// An aggregate's rate ceiling, the pool's own.
+pub const WANTED_RATE_MAX: f32 = 8.0;
 
 impl Manifest {
     pub fn is_renderer(&self) -> bool {
@@ -355,7 +443,104 @@ fn check_renderer(manifest: &Manifest) -> Result<(), String> {
         ));
     }
 
+    check_wanted(&renderer.signals)
+}
+
+/// The signals a renderer asks for. Each one lands in the user's pool if
+/// they say yes, and its name shows on the card and in the canvas editor,
+/// so the numbers have to be ones the pool can hold and the name plain
+/// text of a size those can show.
+fn check_wanted(signals: &[WantedSignal]) -> Result<(), String> {
+    if signals.len() > MAX_WANTED_SIGNALS {
+        return Err(format!(
+            "{FILE}: a renderer asks for more than {MAX_WANTED_SIGNALS} signals"
+        ));
+    }
+
+    for (at, signal) in signals.iter().enumerate() {
+        let refuse = |why: &str| Err(format!("{FILE}: signal {at} {why}"));
+
+        if signal.name.trim().chars().count() > WANTED_NAME_MAX {
+            return refuse(&format!("has a name over {WANTED_NAME_MAX} characters"));
+        }
+        // A control or direction character in a name could hide or reorder
+        // what the card and the prompt show around it.
+        if signal.name.chars().any(misleads) {
+            return refuse("has a control or direction character in its name");
+        }
+        if signal.response.is_some_and(|n| n > 100) {
+            return refuse("has a response over 100");
+        }
+        if signal.threshold.is_some_and(|n| n > 100) {
+            return refuse("has a threshold over 100");
+        }
+
+        let Some(kind) = signal.kind() else {
+            continue;
+        };
+
+        let band = (signal.low, signal.high);
+        if kind.listens_to_a_band() {
+            let (Some(low), Some(high)) = band else {
+                return refuse("needs a low and a high in Hz");
+            };
+            let inside = |hz: f32| hz.is_finite() && WANTED_HZ.contains(&hz);
+            if !inside(low) || !inside(high) || low >= high {
+                return refuse("has a band that isn't low below high, inside 20 to 20000 Hz");
+            }
+        } else if band != (None, None) {
+            return refuse("names a band its kind doesn't listen to");
+        }
+
+        match kind {
+            SignalKind::Aggregate => {
+                let Some(of) = signal.of else {
+                    return refuse("is an aggregate with no `of`");
+                };
+                if of == at || of >= signals.len() {
+                    return refuse("adds up an entry that isn't another in the list");
+                }
+                if signals[of].kind() == Some(SignalKind::Aggregate) {
+                    return refuse("adds up another aggregate");
+                }
+                if signal
+                    .rate
+                    .is_some_and(|rate| !(rate > 0.0 && rate <= WANTED_RATE_MAX))
+                {
+                    return refuse("has a rate outside 0 to 8");
+                }
+            }
+            _ if signal.of.is_some() || signal.rate.is_some() => {
+                return refuse("has an `of` or a `rate`, which only an aggregate takes");
+            }
+            _ => {}
+        }
+
+        let same = signals[..at]
+            .iter()
+            .any(|earlier| earlier.kind() == Some(kind) && same_ask(earlier, signal));
+        if same {
+            return refuse("asks for the same signal as one before it");
+        }
+    }
+
     Ok(())
+}
+
+fn misleads(c: char) -> bool {
+    // The bidi marks, embeddings, overrides and isolates, by code point.
+    c.is_control()
+        || matches!(
+            u32::from(c),
+            0x061C | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069
+        )
+}
+
+/// Two entries of one kind that would match the same pool signal.
+fn same_ask(a: &WantedSignal, b: &WantedSignal) -> bool {
+    let hz = |v: Option<f32>| v.map(|v| v.round() as u32);
+
+    hz(a.low) == hz(b.low) && hz(a.high) == hz(b.high) && a.of == b.of
 }
 
 fn check_actions(manifest: &Manifest) -> Result<(), String> {
@@ -1459,13 +1644,162 @@ mod tests {
         assert_eq!(
             manifest.capabilities.renderer,
             Some(RendererCap {
-                label: "Bars".into()
-            })
+                label: "Bars".into(),
+                ..RendererCap::default()
+            }),
+            "asking for nothing asks for no signals, palette or cover"
         );
         assert_eq!(manifest.capabilities.source, None);
 
         let blank = parse(&renderer_manifest(r#"{ "renderer": { "label": " " } }"#)).unwrap_err();
         assert!(blank.contains("no label"), "{blank}");
+    }
+
+    fn renderer_asking(fields: &str) -> Result<RendererCap, String> {
+        let capabilities = format!(r#"{{ "renderer": {{ "label": "Bars", {fields} }} }}"#);
+        parse(&renderer_manifest(&capabilities)).map(|m| m.capabilities.renderer.unwrap())
+    }
+
+    #[test]
+    fn a_renderer_asks_for_the_palette_and_the_cover() {
+        let cap = renderer_asking(r#""palette": true, "cover": true"#).unwrap();
+        assert!(cap.palette && cap.cover && cap.signals.is_empty());
+
+        let cap = renderer_asking(r#""palette": false"#).unwrap();
+        assert!(!cap.palette && !cap.cover);
+
+        let err = renderer_asking(r#""cover": "yes""#).unwrap_err();
+        assert!(err.contains("plugin.json"), "{err}");
+    }
+
+    #[test]
+    fn a_renderer_asks_for_signals() {
+        let cap = renderer_asking(
+            r#""signals": [
+                { "kind": "band", "low": 30, "high": 120, "name": "Kick", "response": 20 },
+                { "kind": "level" },
+                { "kind": "trigger", "low": 2000, "high": 8000, "threshold": 60 },
+                { "kind": "aggregate", "of": 0, "rate": 2.5 },
+                { "kind": "sparkle", "whatever": 1 }
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(cap.signals.len(), 5);
+        assert_eq!(cap.signals[0].kind(), Some(SignalKind::Band));
+        assert_eq!(cap.signals[0].given_name(), Some("Kick"));
+        assert_eq!(
+            (cap.signals[0].low, cap.signals[0].high),
+            (Some(30.), Some(120.))
+        );
+        assert_eq!(cap.signals[0].response, Some(20));
+        assert_eq!(cap.signals[1].kind(), Some(SignalKind::Level));
+        assert_eq!(cap.signals[2].threshold, Some(60));
+        assert_eq!(cap.signals[3].of, Some(0));
+        assert_eq!(
+            cap.signals[4].kind(),
+            None,
+            "a kind this rox doesn't know is skipped"
+        );
+    }
+
+    #[test]
+    fn a_broken_signal_ask_refuses_the_renderer() {
+        let many = vec![r#"{ "kind": "level", "name": "x" }"#; MAX_WANTED_SIGNALS + 1].join(",");
+        let long = "n".repeat(WANTED_NAME_MAX + 1);
+
+        let cases = [
+            (format!(r#""signals": [{many}]"#), "more than 16"),
+            (
+                format!(r#""signals": [{{ "kind": "level", "name": "{long}" }}]"#),
+                "over 32 characters",
+            ),
+            (
+                r#""signals": [{ "kind": "level", "name": "a\u202eb" }]"#.into(),
+                "direction character",
+            ),
+            (
+                r#""signals": [{ "kind": "level", "name": "a\nb" }]"#.into(),
+                "control or direction",
+            ),
+            (r#""signals": [{ "kind": "band" }]"#.into(), "needs a low"),
+            (
+                r#""signals": [{ "kind": "band", "low": 120, "high": 30 }]"#.into(),
+                "low below high",
+            ),
+            (
+                r#""signals": [{ "kind": "onset", "low": 10, "high": 30 }]"#.into(),
+                "inside 20 to 20000",
+            ),
+            (
+                r#""signals": [{ "kind": "trigger", "low": 30, "high": 30000 }]"#.into(),
+                "inside 20 to 20000",
+            ),
+            (
+                r#""signals": [{ "kind": "level", "low": 30, "high": 120 }]"#.into(),
+                "doesn't listen to",
+            ),
+            (
+                r#""signals": [{ "kind": "level", "response": 101 }]"#.into(),
+                "response over 100",
+            ),
+            (
+                r#""signals": [{ "kind": "level", "threshold": 200 }]"#.into(),
+                "threshold over 100",
+            ),
+            (r#""signals": [{ "kind": "aggregate" }]"#.into(), "no `of`"),
+            (
+                r#""signals": [{ "kind": "aggregate", "of": 0 }]"#.into(),
+                "isn't another",
+            ),
+            (
+                r#""signals": [{ "kind": "level" }, { "kind": "aggregate", "of": 5 }]"#.into(),
+                "isn't another",
+            ),
+            (
+                r#""signals": [{ "kind": "level" }, { "kind": "aggregate", "of": 0, "rate": 9 }]"#
+                    .into(),
+                "rate outside",
+            ),
+            (
+                r#""signals": [{ "kind": "level" }, { "kind": "aggregate", "of": 0, "rate": 0 }]"#
+                    .into(),
+                "rate outside",
+            ),
+            (
+                r#""signals": [{ "kind": "level", "of": 0 }]"#.into(),
+                "only an aggregate",
+            ),
+            (
+                r#""signals": [{ "kind": "level" }, { "kind": "aggregate", "of": 0 }, { "kind": "aggregate", "of": 1 }]"#
+                    .into(),
+                "another aggregate",
+            ),
+            (
+                r#""signals": [{ "kind": "band", "low": 30, "high": 120 }, { "kind": "band", "low": 30.2, "high": 120 }]"#
+                    .into(),
+                "same signal",
+            ),
+            (
+                r#""signals": [{ "kind": "level" }, { "kind": "level", "name": "Again" }]"#.into(),
+                "same signal",
+            ),
+        ];
+
+        for (fields, why) in cases {
+            let err = renderer_asking(&fields).unwrap_err();
+            assert!(err.contains(why), "{fields}: {err}");
+        }
+
+        // The same band as another kind is another signal.
+        assert!(
+            renderer_asking(
+                r#""signals": [{ "kind": "band", "low": 30, "high": 120 }, { "kind": "onset", "low": 30, "high": 120 }]"#
+            )
+            .is_ok()
+        );
+        // A response that isn't a whole number from 0 to 255 fails the parse.
+        assert!(renderer_asking(r#""signals": [{ "kind": "level", "response": -1 }]"#).is_err());
     }
 
     #[test]

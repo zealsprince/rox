@@ -8,6 +8,9 @@ license.workspace = true
 # The renderer's side of the mapping. rox itself never turns this on, so
 # its own build carries no way to map a frame block writable.
 writer = []
+# The renderer's side of the cover mapping. rox writes the cover and never
+# turns this on.
+cover-reader = []
 
 # memfd_create, the seals, shm_open and mmap. The same line the plugin host
 # and playback already take.

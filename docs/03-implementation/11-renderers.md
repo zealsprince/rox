@@ -17,8 +17,9 @@ in Python's standard library, and [`examples/renderers/plasma`](../../examples/r
 in Rust on rox's own `rox-frames`.
 
 Version-sensitive: rox starts a renderer with `ROX_RENDER_API=1`, and `hello` says 1
-(`API`, `rox-services/src/renderers.rs:30`). The shared memory is layout version 1 behind
-the magic `RXF1` (`VERSION` and `MAGIC`, `rox-frames/src/layout.rs:10-12`). The manifest
+(`API`, `rox-services/src/renderers.rs:33`). The shared memory is layout version 1 behind
+the magic `RXF1` (`VERSION` and `MAGIC`, `rox-frames/src/layout.rs:10-12`), and the cover
+mapping is layout version 1 behind `RXC1` (`rox-frames/src/cover.rs`). The manifest
 is plugin API 1 (`SUPPORTED_API`, `rox-plugins/src/manifest.rs:24`). `rox-frames` uses
 libc 0.2 on Unix (0.2.186 in rox's lockfile, 0.2.190 in the plasma example's) and
 windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) says of wgpu
@@ -28,22 +29,24 @@ was read in wgpu 30.0.2, which rox doesn't depend on.
 
 1. Turn on Enable Plugins at the top of Settings > Plugins. Renderers are behind the
    same switch, and none starts while it's off (`check`,
-   `rox-services/src/renderers.rs:137`).
+   `rox-services/src/renderers.rs:143`).
 2. Copy `examples/renderers/bars` into the plugins folder (Reveal Folder on the Plugins
    page opens it), or install a `.roxp` packed from it. It lists under Renderers,
    switched off.
 3. Switch it on. The card says it draws in render targets on a canvas, gets the music's
-   signals and the playing position, and gets the pointer while it's over the render
-   target. Switch On approves exactly the files in the package, as it does for a plugin.
+   signals and the playing position, gets the pointer while it's over the render target,
+   and gets the colours of the current theme, since its manifest asks for the palette.
+   Switch On approves exactly the files in the package, as it does for a plugin.
 4. Add a Canvas panel: an empty window offers one, and the Panels menu lists it under
    Arrangement. With Panels > Design Mode on, right-click empty stage, or press the plus
    in the canvas inspector's header, and pick Add Render Target > Bars (`open_add_menu`,
-   `rox/src/panels/canvas.rs:2124`). The new target draws at 1280 by 720 pixels on a
-   640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`, `canvas.rs:2971-2972`).
+   `rox/src/panels/canvas.rs:2135`). The new target draws at 1280 by 720 pixels on a
+   640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`, `canvas.rs:3081-3082`).
    The inspector's Resolution row changes the pixel size, and Status says whether the
    renderer runs.
 5. Leave design mode and play something. Bars draws a bar for each signal in the pool
-   (Application > Signals edits it), so a pool with nothing in it draws one empty bar.
+   (Application > Signals edits it) in the theme's accent, so a pool with nothing in it
+   draws one empty bar.
 
 The Python example needs Python 3.7 or later and a Unix that lends it fd 3, so it exits
 on Windows (see [Platforms](#platforms)). Plasma is a Cargo project. Its README says how to build it and put the build in a package folder.
@@ -69,7 +72,7 @@ and nothing else. The bars example's:
     "license": "AGPL-3.0-only"
   },
   "capabilities": {
-    "renderer": { "label": "Bars" }
+    "renderer": { "label": "Bars", "palette": true }
   }
 }
 ```
@@ -78,8 +81,64 @@ and nothing else. The bars example's:
 refuses the manifest with "the renderer has no label". A renderer that also declares a
 `source`, any `panels` or a true flag under `providers` is refused with "a renderer
 declares nothing else, and this one declares ..." (`check_renderer`,
-`rox-plugins/src/manifest.rs:331`), because those would give it a plugin host and the
+`rox-plugins/src/manifest.rs:419`), because those would give it a plugin host and the
 plugin wire. Unknown keys inside `capabilities` are ignored, as they are for a plugin.
+
+### What a renderer asks for
+
+Three more keys under `capabilities.renderer` ask for something past the signals and
+the pointer every renderer gets. Each is a grant: the enable card says it, and rox sends
+or offers it only to a renderer whose approved manifest asks (`grants`,
+`rox-services/src/plugins.rs:1090`). Left out, each is off, and the card says nothing of
+it.
+
+| Key | Type | What it gets | The card says |
+|---|---|---|---|
+| `signals` | a list | rox offers to add these to the user's pool | Follows these signals: Kick (Band 30-120 Hz), Level. When you place a render target for it, rox offers to add the ones you don't have yet. |
+| `palette` | `true` or `false` | the theme's colours, on [`palette` lines](#rox-to-the-renderer) | Gets the colours of the current theme. |
+| `cover` | `true` or `false` | the playing track's cover as pixels, through [the cover mapping](#the-cover-mapping) | Gets the cover of the playing track, as a picture. |
+
+A manifest asking for everything:
+
+```json
+"capabilities": {
+  "renderer": {
+    "label": "Pulse",
+    "palette": true,
+    "cover": true,
+    "signals": [
+      { "kind": "band", "low": 30, "high": 120, "name": "Kick", "response": 20 },
+      { "kind": "trigger", "low": 2000, "high": 8000, "threshold": 60 },
+      { "kind": "level" },
+      { "kind": "aggregate", "of": 0, "rate": 2 }
+    ]
+  }
+}
+```
+
+Each entry under `signals` is one signal the renderer follows:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `band`, `level`, `onset`, `trigger` or `aggregate`, the kinds on the [pool line](#the-pool). A kind this rox doesn't know is skipped, so a renderer written for a later rox still loads. Required. |
+| `low`, `high` | The band in Hz, for `band`, `onset` and `trigger`, required for those and refused on the others. From 20 to 20,000, `low` below `high`. |
+| `name` | What the signal is called if it's added. At most 32 characters, with no control character and no bidi mark, embedding, override or isolate. Optional. |
+| `response` | The Signals window's Response, a whole number from 0 to 100, for the added signal. Optional: 30, the pool's own default. |
+| `threshold` | The Signals window's Threshold, a whole number from 0 to 100. Optional: 0, or 50 for a trigger, which never fires at 0. |
+| `of` | An `aggregate`'s input: the index of another entry in this list, counted from 0, that isn't an aggregate. Required for an aggregate and refused on the others. |
+| `rate` | An `aggregate`'s Rate, above 0 and at most 8. Optional: 1. |
+
+A renderer can suggest how an added signal is shaped and nothing else: Response and
+Threshold are where the Signals window puts its own defaults, and a renderer that
+expects a sharp pulse or a gated band can say so. Reset on Track, Flush and the routes
+stay the user's. The manifest is refused with one reason, on the Plugins page, for more
+than 16 entries, two entries a pool signal would answer alike, and any field outside the
+ranges above (`check_wanted`, `rox-plugins/src/manifest.rs:453`).
+
+A renderer's name for a signal is a stranger's text, so it's held to that size and
+shown only after the signal's kind and band: the card and the canvas editor list
+"Kick (Band 30-120 Hz)", never "Kick" alone, so a name can't pass for another kind of
+signal.
 
 `id`, `name`, `version`, `api` and `entry` are required, and a key at the top level the
 manifest doesn't know refuses it. `meta` can be left out, and so can each key in it
@@ -87,11 +146,11 @@ manifest doesn't know refuses it. `meta` can be left out, and so can each key in
 when they're there, with the top-level `version`. rox reads `meta.website`,
 `meta.version` and `meta.license` and shows none of them.
 
-The entry resolves the way a plugin's does (`entry_for`, `manifest.rs:483`). A script
+The entry resolves the way a plugin's does (`entry_for`, `manifest.rs:668`). A script
 entry runs `<interpreter> <path>`. For `"interpreter": "python3"` rox tries `python3`,
 then `python`, with the `py -3` launcher ahead of both on Windows, and takes the first
-that answers `--version` with "Python 3" inside 5 seconds (`aliases`, `manifest.rs:612`;
-`speaks_python3`, `:698`). The user needs a Python 3 on PATH, or in a folder listed under
+that answers `--version` with "Python 3" inside 5 seconds (`aliases`, `manifest.rs:797`;
+`speaks_python3`, `:883`). The user needs a Python 3 on PATH, or in a folder listed under
 Program Folders on the Plugins page. A native entry maps `<os>-<arch>` to a file in the
 package:
 
@@ -111,16 +170,16 @@ A renderer gets no settings from rox: nothing in `hello` comes from `config_sche
 
 A renderer runs one process per render target. Two targets naming the same renderer are
 two processes. A target's `owner` is `plugin:<id>` (`renderer_id`,
-`rox/src/canvas/target.rs:1688`), and the canvas starts its renderer the first time it
+`rox/src/canvas/target.rs:1960`), and the canvas starts its renderer the first time it
 draws the item. The start goes through the gate on a thread of the target's own: Enable
 Plugins on, the package approved for its current hash, switched on, and not stopped by
-exits (`start`, `rox-services/src/renderers.rs:237`). rox never starts a renderer at
+exits (`start`, `rox-services/src/renderers.rs:264`). rox never starts a renderer at
 launch, only when a target asks.
 
 The process starts in the package's folder (for a `.roxp`, rox's unpacked copy under
 `plugin-cache`) with rox's environment, PATH set to the plugin search path, and
 `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1` and `PYTHONUTF8=1`
-(`spawn_with`, `rox-plugins/src/process.rs:72`). [What a native renderer starts
+(`spawn_with`, `rox-plugins/src/process.rs:87`). [What a native renderer starts
 with](#what-a-native-renderer-starts-with) has the whole of it. On top of those:
 
 | Variable | Value |
@@ -128,20 +187,22 @@ with](#what-a-native-renderer-starts-with) has the whole of it. On top of those:
 | `ROX_RENDER_API` | `1` |
 | `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | The target's size in pixels |
 | `ROX_FRAMES_FD` | `3`, on Unix only |
+| `ROX_COVER_FD` | `4`, on Unix only, and only for a renderer granted the cover |
 
-On Unix the renderer leads its own process group, gets the mapping as fd 3, and every
-fd past 3 is marked to close at exec (`lend` and `close_from`, `process.rs:185-262`).
+On Unix the renderer leads its own process group, gets the mapping as fd 3 and, granted
+the cover, the cover mapping as fd 4. Every fd past the last one lent is marked to close
+at exec (`lend` and `close_from`, `process.rs:204-288`).
 rox writes `hello` as soon as the process runs. A renderer that can't be spawned, or
-whose `hello` can't be written, counts as an exit (`launch`, `renderers.rs:289`).
+whose `hello` can't be written, counts as an exit (`launch`, `renderers.rs:333`).
 
 A target pauses its renderer when nothing shows it. On a canvas that draws, a target
 item the canvas skips is paused straight away with `{"pause":true}` (`hold`,
-`target.rs:583`): one that's hidden, one a state takes off the stage outside design
+`target.rs:645`): one that's hidden, one a state takes off the stage outside design
 mode, and one with a corner behind the camera or its quad off the stage. A target inside
 a group that's hidden, or that a state takes off the stage, isn't paused that way. It
 waits, as a target does when its canvas isn't drawn at all, as with a hidden window or a
 tab behind another: a frame left untaken for 500 ms pauses it (`LIMITS.idle`,
-`target.rs:104`). Shown again, it gets `{"pause":false}`. While paused rox sends nothing
+`target.rs:109`). Shown again, it gets `{"pause":false}`. While paused rox sends nothing
 else, drops what it had queued, and reads nothing from the renderer's stdout. A renderer
 that keeps announcing frames fills that pipe and blocks in its own write. rox looks for
 an exit once a second while it's paused.
@@ -149,7 +210,7 @@ an exit once a second while it's paused.
 An exit rox didn't ask for leaves the last frame showing, and rox starts the renderer
 again after 0, 1, 2 and 4 seconds for the first to fourth exit inside ten minutes. The
 fifth stops it (`BACKOFF` and `CRASH_WINDOW`, `rox-plugins/src/host.rs:26-34`; `due`
-and `note_exit`, `renderers.rs:371-379`). A stopped target draws empty, with a dashed
+and `note_exit`, `renderers.rs:458-466`). A stopped target draws empty, with a dashed
 box and the renderer's name in design mode, until the user presses Start Again under
 its Status, or switches the renderer off and on. A failed start, a flood of stdout
 lines and a run of refused frames each count as an exit. A restarted renderer gets
@@ -159,11 +220,11 @@ rox stops a session in two ways:
 
 - Deleting the item, changing its resolution and closing the canvas close the
   renderer's stdin, wait up to 200 ms for it to exit, then kill its process group
-  (`Session::stop` and `GRACE`, `renderers.rs:38` and `:349`). A new resolution is a new
+  (`Session::stop` and `GRACE`, `renderers.rs:41` and `:436`). A new resolution is a new
   session with a new mapping.
 - Switching the renderer off, removing it, a change to its files and turning Enable
-  Plugins off kill it at once (`enforce`, `renderers.rs:415`). So does quitting rox
-  (`stop_all`, `:450`).
+  Plugins off kill it at once (`enforce`, `renderers.rs:502`). So does quitting rox
+  (`stop_all`, `:537`).
 
 Kill is `SIGKILL` to the process group on Unix. A renderer has no shutdown to answer
 and nothing to save. Exiting when stdin closes is all rox asks.
@@ -202,7 +263,7 @@ The rules on rox's side:
 
 - rox makes the block, writes the header, seals it where the platform can, and keeps
   only a read-only view. On Linux it's a `memfd` sealed with `F_SEAL_SHRINK`,
-  `F_SEAL_GROW` and `F_SEAL_SEAL` (`seal`, `rox-frames/src/map/unix.rs:118`), so a
+  `F_SEAL_GROW` and `F_SEAL_SEAL` (`seal`, `rox-frames/src/map/unix.rs:203`), so a
   renderer can't resize it under rox's reads. It never maps memory a renderer made, and
   never maps anything executable.
 - Every length and offset rox uses comes from the size it asked for. It never reads the
@@ -221,7 +282,7 @@ Frame `n` counts from 0 and goes to slot `n % 2`:
 1. Store `2n + 1` in the slot's `seq`. An odd counter marks the slot as mid-write.
 2. Store the frame's width and height at 16 and 20, and its pixels from 64.
 3. Store the clock in `stamp_ns`: `CLOCK_MONOTONIC` on Unix and the system clock since
-   the Unix epoch on Windows (`clock_ns`, `rox-frames/src/lib.rs:114`). It's for
+   the Unix epoch on Windows (`clock_ns`, `rox-frames/src/lib.rs:119`). It's for
    latency figures, and nothing about what rox shows depends on it.
 4. Store `2n + 2` in `seq`. An even counter marks one whole frame.
 5. Write `f <n> <slot>\n` to stdout and flush.
@@ -238,7 +299,7 @@ When an announce arrives, rox reads the slot's counter. It throws the frame away
 when the counter is odd, or when it moved by the time the copy finished. It refuses the
 frame when the counter is 0 or the slot's width and height aren't the target's. A whole
 frame is shown only if its counter is higher than the last one shown in this session,
-so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs:1080`). The frame
+so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs:1180`). The frame
 number in the announce line isn't checked: rox goes by the counter.
 
 rox copies a slot only once the canvas has taken the frame before it, and only the
@@ -253,6 +314,69 @@ writes. It's `unsafe`, since one writer per block is the caller's promise.
 `writer.frame(n, |pixels| ...)` does the five steps above around the closure and returns
 the slot, and `rox_frames::announce(n, slot)` makes the line.
 
+## The cover mapping
+
+A renderer granted the cover gets a second block of shared memory, the playing track's
+cover as pixels. The trust runs the other way from the frame mapping: rox makes it, rox
+writes it, and the renderer only reads it (`Cover`, `rox-frames/src/cover.rs`). It never
+gets a path to the file, and nothing about the track comes with the pixels. One block per
+session, little-endian, 266,240 bytes:
+
+| Offset | Field | Type | Value |
+|---|---|---|---|
+| 0 | magic | 4 bytes | `RXC1` |
+| 4 | version | u32 | 1 |
+| 8 | width | u32 | 256 |
+| 12 | height | u32 | 256 |
+| 16 | seq | u64 | The cover counter: 0 never written, odd while rox writes, even when whole |
+| 24 to 63 | | | Unused |
+| 64 | pixels | 262,144 bytes | RGBA8, straight alpha, sRGB, top row first, 1,024 bytes a row with no padding |
+
+The block ends at 64 + 262,144 rounded up to 4,096. The square is always 256 by 256. A
+cover that isn't square is scaled to fit, keeping its shape, and centred, and the bands
+around it are transparent: a 2:1 cover fills rows 64 to 191 (`fit` and `letterbox`).
+With nothing playing, or a track with no cover, the pixels are all transparent.
+
+rox writes the pixels the way a renderer writes a frame. It stores the next odd counter,
+then the pixels, then the even counter after it, with a release fence after each counter
+store (`Cover::write`), and then writes a [`cover` line](#rox-to-the-renderer) naming the
+even counter. A renderer reads it the way rox reads a slot:
+
+1. Read `seq`. If it's 0, nothing was written. If it's odd, rox is writing: read again
+   later, the next line is on its way.
+2. Copy the 262,144 bytes from 64.
+3. Read `seq` again. If it moved, the copy is torn: throw it away and read again. If it's
+   the same even number, the copy is one whole cover.
+
+`rox_frames::CoverReader` does that in Rust (`read` answers `Whole(seq)`, `Torn` or
+`Empty`). It's behind the crate's `cover-reader` feature, which rox's own build never
+turns on. `CoverReader::open(handle)` maps the block read-only and checks its size and
+header first.
+
+The pixels come from the library's own art cache, the 256-pixel thumbnail every cover
+view reads (`rox_library::thumbs::thumbnail`). A remote row's cover comes only from what
+that cache already holds, so writing a cover never reaches the network. The decode and
+the scale happen on the target's supervisor thread, and once per track for every target:
+a second target for the same track copies the first's square (`cover_pixels` and
+`COVER_MEMO`, `rox/src/canvas/target.rs:1424-1451`).
+
+The handle a renderer gets can only read:
+
+- On Linux the block is a `memfd`. rox maps its own writable view, then seals the file
+  with `F_SEAL_FUTURE_WRITE` along with `F_SEAL_SHRINK`, `F_SEAL_GROW` and `F_SEAL_SEAL`
+  (`seal_cover`, `rox-frames/src/map/unix.rs:136`). From then on a `write` and a shared
+  writable `mmap` fail through any fd, and `mprotect` can't make a read-only mapping
+  writable. Reopening `/proc/self/fd/4` read-write gives nothing either, since the seal is
+  the file's. The renderer's fd 4 is the memfd itself, so `mmap(..., PROT_READ,
+  MAP_SHARED, 4, 0)` is how to map it. The future-write seal came in Linux 5.1. On an
+  older kernel rox adds the other three seals and the renderer could write the pixels,
+  which costs rox nothing: it never reads the block back, and keeps the counter on its
+  own side.
+- On macOS the design opens the shared memory object a second time by its name,
+  read-only, before unlinking it, and lends that fd. Never compiled or run.
+- On Windows the section's copy is duplicated with map read alone
+  (`COVER_CHILD_ACCESS`, `rox-frames/src/map/windows.rs`). Never compiled or run.
+
 ## The wire
 
 ### rox to the renderer
@@ -262,25 +386,32 @@ run past a pipe's atomic write size, and rox finishes a line it wrote in part be
 starts the next. Read each line as JSON. Key order and number spelling aren't part of
 the contract, and a line or key a renderer doesn't know should be skipped.
 
-These are every line rox writes (`target.rs:1227-1370`):
+These are every line rox writes (`target.rs:1327-1592`):
 
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
+{"hello":1,"width":1280,"height":720,"handle":0,"cover":{"fd":4,"width":256,"height":256}}
 {"pool":[{"id":1,"name":"Kick","kind":"band","low":30,"high":120},{"id":2,"name":"onset 30-120 Hz","kind":"onset","low":30,"high":120},{"id":3,"name":"level","kind":"level"},{"id":4,"name":"total of 1","kind":"aggregate"}]}
 {"signals":[0.3958,0.0,1.0],"time":4.224}
 {"pointer":{"kind":"move","x":0.27,"y":0.36}}
+{"palette":{"background":"#121212","surface":"#181818","text":"#c0c0c0","muted":"#808080","accent":"#ffb300","highlight":"#facc15","dark":true}}
+{"cover":2}
+{"cover":null}
 {"pause":true}
 ```
 
 `hello` is always first. Its width and height are the target's, and `handle` is the
-mapping's handle value on Windows and 0 elsewhere.
+mapping's handle value on Windows and 0 elsewhere. A renderer granted the cover finds it
+under `cover`: `fd` 4 on Unix, `handle` on Windows, the section's handle value in the
+renderer, and the square's `width` and `height`, both 256. Without the grant `hello` has no
+`cover` key.
 
 `pool` describes the signal pool by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
 30-120 Hz`, `onset 30-120 Hz`, `trigger 30-120 Hz`, `level`, or `total of <id>`
-(`wire_name`, `target.rs:1284`). Read what a signal is from `kind`, since a renamed one
+(`wire_name`, `target.rs:1506`). Read what a signal is from `kind`, since a renamed one
 says nothing about it in its name: `band`, `level`, `onset`, `trigger` or `aggregate`, a
-running total of another signal that wraps at 1 (`wire_signal`, `target.rs:1253`). A
+running total of another signal that wraps at 1 (`wire_signal`, `target.rs:1475`). A
 `band`, `onset` or `trigger` also has `low` and `high`, the frequency range it listens
 to in whole hertz, kept between 20 and 20,000 (`Source::band`,
 `rox-viz/src/signal.rs:62`). Past the name an entry holds only those fixed words and
@@ -289,15 +420,15 @@ and the canvas draws, and again whenever the pool changes. An empty pool is
 `{"pool":[]}`.
 
 `signals` holds each pool signal's value in pool order, from 0 to 1, to 4 decimals, the
-value routes read (`signals_line`, `target.rs:1299`). `time` is the playing position in
+value routes read (`signals_line`, `target.rs:1521`). `time` is the playing position in
 seconds, to 3 decimals, and 0 with nothing playing. A line goes with each frame the
 canvas paints while music plays. When playback pauses or stops, lines keep coming for
 about a second while the signals settle, then none come until music plays again
-(`Targets::read`, `target.rs:1775`). The canvas paints when a renderer publishes a
+(`Targets::read`, `target.rs:2049`). The canvas paints when a renderer publishes a
 frame, so a renderer that stops drawing stops getting signals. A reading rox hasn't sent
 yet is replaced by a newer one.
 
-`pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1335`):
+`pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1557`):
 
 | `kind` | Fields |
 |---|---|
@@ -309,14 +440,45 @@ yet is replaced by a newer one.
 `x` and `y` run from 0 to 1 across the surface from its top-left, to 4 decimals, mapped
 back through the item's tilt the way it's drawn. rox sends them only outside design
 mode, and only while the target is the front item under the pointer with no On Click
-command rox can run on it or on a group around it (`hit`, `rox/src/panels/canvas.rs:2600`). Moves
+command rox can run on it or on a group around it (`hit`, `rox/src/panels/canvas.rs:2710`). Moves
 go at most every 8 ms with the newest position. At most 64 events wait for a renderer
 that's behind: moves are dropped first, then scrolls, then leaves, and presses last
-(`Outbox`, `target.rs:1376`). `leave` comes when the pointer goes to another item or off
+(`Outbox`, `target.rs:1599`). `leave` comes when the pointer goes to another item or off
 the canvas, and when design mode comes on, and it ends any press. An `up` can come with
 no `down` before it, from a press that started elsewhere.
 
+`palette` goes only to a renderer granted it: the theme's colours as `#rrggbb`, under
+fixed names, and whether the theme is dark (`palette_line`, `target.rs:1373`):
+
+| Key | The theme's |
+|---|---|
+| `background` | Window background |
+| `surface` | Panel surface |
+| `text` | Body text |
+| `muted` | Muted text |
+| `accent` | Accent |
+| `highlight` | The mark drawn over accent fills. With song theming on it's the cover's second colour |
+| `dark` | `true` when the background wants light text over it |
+| `art_primary`, `art_secondary` | The cover's two colours, only while song theming is on and the cover has them |
+
+The colours are the theme's as the target's window shows it once a change has eased in,
+so a theme that eases over a third of a second sends one line, not one a frame. The line
+comes once the session runs and the canvas draws, then again whenever a colour changes:
+a theme switch, song theming switched on or off, and with song theming on, a track whose
+cover gives other colours. It rides on the redraw the theme's own change already makes,
+and asks for none. With song theming on, the palette changing tells a renderer that the
+album changed, though not which album.
+
+`cover` goes only to a renderer granted it, after rox writes the cover mapping: the even
+counter of that write, or `null` when nothing plays or the track has no cover and the
+square is transparent (`cover_line`, `target.rs:1418`). It comes when the session
+starts, then each time the playing track changes, between frames, without a redraw. The
+gap between two tracks of one queue doesn't count: the last cover holds, as the
+backdrop's does.
+
 `pause` is `true` when nothing shows the target and `false` when something does again.
+While paused, the palette and the cover wait too: rox writes nothing into the cover
+mapping, and on the resume the current palette and cover go once if they changed.
 
 Closing stdin tells the renderer to exit.
 
@@ -326,9 +488,29 @@ The pool is the user's, and there's one for the whole app. It's edited under
 Application > Signals and saved with the live look in `workspace.json` in rox's data
 folder, as `bundle.signals` (`LookState` and `WorkspaceBundle`,
 `rox-core/src/settings.rs`). Every canvas and every render target reads that one pool,
-and applying a workspace replaces it with the one the workspace carries. A renderer
-can't add a signal or ask for one, since nothing on its wire goes that way. It gets the
-pool the user made.
+and applying a workspace replaces it with the one the workspace carries. A renderer can't
+add a signal, since nothing on its wire goes that way. Its manifest can ask for some
+(see [What a renderer asks for](#what-a-renderer-asks-for)), and the user says whether
+they go in.
+
+When the user adds a render target in design mode for an approved renderer whose wanted
+signals aren't all in the pool, rox asks over the canvas: "Add the signals Pulse
+follows?", the ones the pool lacks listed by name and kind, with Not Now and Add
+(`offer_signals`, `rox/src/panels/canvas.rs:2423`). Add wears the accent, as the Place
+confirm for an object does, since adding is undone by deleting the signals in the Signals
+window. Escape and Not Now leave the pool as it was. While any are still missing, the
+target's inspector shows a Signals row, "Not in the pool yet:" and the list, with an Add
+Signals button. Both add them the way an object's signals are merged: fresh ids, and a
+name already taken gets a number after it (`add_wanted_signals`, `:2464`).
+
+What's missing is worked out by kind and band, never by name: a wanted `band` from 30 to
+120 Hz is answered by any pool band from 30 to 120 Hz, whatever the user called it, with
+the band rounded to whole hertz as the pool line carries it. An `aggregate` is answered by
+a total of whatever answers its input (`missing_signals` and `signals_to_add`,
+`rox-services/src/renderers.rs:627-640`). Nothing is added outside design mode, nothing
+is offered for a renderer that isn't approved as it stands, and nothing is added without
+the click. A renderer still meets the pool the user made, so it reads what it got by
+`kind` and band from the pool line, as below.
 
 A renderer meets pools it wasn't written for, then. With an empty pool it gets
 `{"pool":[]}` and `signals` lines with no values, and it should still draw something:
@@ -376,27 +558,30 @@ to 0 at their falling rate, and a pulse finishes its decay.
 A renderer writes announce lines to stdout and nothing else: `f`, a space, the frame number in
 decimal digits, a space, the slot `0` or `1`, and `\n`. A line is at most 64 bytes,
 newline included, and `\r\n` is refused (`ANNOUNCE_MAX` and `parse_announce`,
-`rox-frames/src/lib.rs:34-81`). Any other line, or a longer one, is dropped without a
+`rox-frames/src/lib.rs:39-86`). Any other line, or a longer one, is dropped without a
 log line, and still counts toward the flood rule below. Of the lines waiting when rox
-reads, only the newest announce is acted on (`read`, `target.rs:1466`).
+reads, only the newest announce is acted on (`read`, `target.rs:1734`).
 
 stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 KiB
-(`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:308`).
+(`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:336`).
 
 ## Limits
 
 | | Limit | Where |
 |---|---|---|
-| Resolution | 16 to 3840 by 16 to 2160 pixels, 1280 by 720 for a new target | `WIDTHS`, `HEIGHTS`, `renderers.rs:33`; `WIDTH`, `HEIGHT`, `layout.rs:24-26` |
-| An announce line | 64 bytes, newline included | `ANNOUNCE_MAX`, `lib.rs:34` |
-| stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS`, `target.rs:104`; `Rate`, `:1531` |
+| Resolution | 16 to 3840 by 16 to 2160 pixels, 1280 by 720 for a new target | `WIDTHS`, `HEIGHTS`, `renderers.rs:36`; `WIDTH`, `HEIGHT`, `layout.rs:24-26` |
+| An announce line | 64 bytes, newline included | `ANNOUNCE_MAX`, `lib.rs:39` |
+| stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS`, `target.rs:109`; `Rate`, `:1799` |
 | Refused frames | 60 in a row stop the renderer | `LIMITS.refused_run` |
 | An untaken frame | 500 ms, then the renderer is paused | `LIMITS.idle` |
 | Restarts | 0, 1, 2, 4 s; the fifth exit in ten minutes stops it | `BACKOFF`, `host.rs:26` |
-| Stop | 200 ms after stdin closes, then killed | `GRACE`, `renderers.rs:38` |
-| A pool name | 64 characters | `NAME_MAX`, `target.rs:85` |
-| Pointer events waiting | 64; moves 8 ms apart | `POINTER_QUEUE`, `MOVE_GAP`, `target.rs:77-81` |
+| Stop | 200 ms after stdin closes, then killed | `GRACE`, `renderers.rs:41` |
+| A pool name | 64 characters | `NAME_MAX`, `target.rs:90` |
+| Pointer events waiting | 64; moves 8 ms apart | `POINTER_QUEUE`, `MOVE_GAP`, `target.rs:82-86` |
 | A stderr line | 4 KiB | `STDERR_LINE`, `process.rs:22` |
+| Wanted signals | 16 | `MAX_WANTED_SIGNALS`, `manifest.rs:176` |
+| A wanted signal's name | 32 characters | `WANTED_NAME_MAX` |
+| The cover | 256 by 256 pixels | `SIZE`, `rox-frames/src/cover.rs` |
 
 The flood rule counts lines in one-second spans from the first line, and stops a
 renderer whose current span passes 500 right after one that did. A renderer that
@@ -404,15 +589,27 @@ announces once a frame is far inside it at any display rate.
 
 ## What a renderer is sent
 
-`hello`, `pause`, `pool`, `signals` with `time`, and `pointer`, and nothing else. The
-enable card names the two grants behind them: "Gets the music's signals and the playing
-position" and "Gets the pointer while it's over the render target" (`plugins::grants`,
-`rox-services/src/plugins.rs`). A renderer isn't told the track, a path, a key press, or
-anything about another item, and its wire has no way to call into rox. It runs with the
-user's permissions, unsandboxed, as a plugin does, and the card says so.
+`hello`, `pause`, `pool`, `signals` with `time`, and `pointer`, and nothing else unless
+its approved manifest asks. The enable card names the two grants behind them: "Gets the
+music's signals and the playing position" and "Gets the pointer while it's over the
+render target" (`plugins::grants`, `rox-services/src/plugins.rs`). A renderer that asks
+for the palette also gets `palette` lines, and one that asks for the cover gets the cover
+mapping, fd 4 and `ROX_COVER_FD`, `cover` in `hello`, and `cover` lines. Each has its own
+card line. The grants are read from the manifest the gate approved when the session
+starts (`Session::asks`, `rox-services/src/renderers.rs`), so a renderer whose files
+change can't widen them without the card. A renderer that asks for nothing gets exactly
+what it got before these grants existed.
+
+A renderer isn't told the track, a path, a key press, or anything about another item,
+and its wire has no way to call into rox. The cover is pixels with a counter. It runs
+with the user's permissions, unsandboxed, as a plugin does, and the card says so.
+
+A manifest that gains a grant is a changed manifest. The renderer switches off, and its
+card lists the new grant under "Changed since you last switched it on" (`Change::Grant`).
+Asking for other signals than before counts the same way.
 
 A workspace or an object with a render target lists the renderer in `requires`, the way
-it lists a plugin, and never includes it (`named_renderers`, `target.rs:1699`). An
+it lists a plugin, and never includes it (`named_renderers`, `target.rs:1971`). An
 exported object carries the pool signals its routes read, and the ones those totals
 follow, but not the pool a render target's renderer reads (`lift`, `rox/src/objects.rs`).
 Placed in another rox, the renderer reads that rox's pool.
@@ -420,7 +617,8 @@ Placed in another rox, the renderer reads that rox's pool.
 ## Platforms
 
 On Linux the block is a sealed `memfd`, lent as fd 3 with `ROX_FRAMES_FD=3`, and
-`hello`'s `handle` is 0.
+`hello`'s `handle` is 0. The cover is a second `memfd`, future-write sealed, lent as fd 4
+with `ROX_COVER_FD=4`.
 
 On macOS the design is the same fd 3 handoff, with the block a POSIX shared memory
 object under a random name that's unlinked as soon as it's open. macOS has no seals.
@@ -429,12 +627,14 @@ keep a renderer from shrinking it (`open` and `seal`, `rox-frames/src/map/unix.r
 
 On Windows the design is an unnamed section backed by the page file, duplicated into
 the renderer with map read and map write rights only (`CHILD_ACCESS`,
-`rox-frames/src/map.rs:35`; `lend`, `rox-plugins/src/process.rs:491`). There's no
+`rox-frames/src/map.rs:35`; `lend`, `rox-plugins/src/process.rs:525`). There's no
 `ROX_FRAMES_FD`. The section's handle value in the renderer is `hello`'s `handle`, which
 a renderer maps with `MapViewOfFile` for the block's whole length. rox's pipe to a
 renderer's stdin is blocking there, so the lines go through a writer thread that holds
-up to 16 before rox counts the pipe as full (`WRITER_LINES`, `target.rs:272`). The
-renderer starts with no console window and inside a job object, as a plugin does.
+up to 16 before rox counts the pipe as full (`WRITER_LINES`, `target.rs:334`). The
+renderer starts with no console window and inside a job object, as a plugin does. The
+cover is a second section, duplicated with map read alone, and its value is `hello`'s
+`cover.handle`.
 Python's `mmap` maps a file or a named mapping and has no way to take a section handle,
 so the Python example logs that and exits on Windows. The Rust example takes the handle
 from `hello`.
@@ -572,7 +772,7 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 
 The inspector's Status row words the same states for the user, with the gate's reason
 when it refused. rox writes no line for a frame it drops, only a count in the line each
-session ends with (`log_tally`, `target.rs:1140`). Frames copied are whole frames read
+session ends with (`log_tally`, `target.rs:1240`). Frames copied are whole frames read
 out of a slot. Torn ones had an odd counter, or one that moved during the copy.
 Unwritten ones were announced while the slot's counter was still 0, and wrong size ones
 had size words other than `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`. Lines read counts
@@ -590,13 +790,16 @@ a `.roxp` that's rox's data directory, where the unpacked copy goes. On one moun
 `noexec` the start fails with "Permission denied" five times and stops.
 
 Developer mode, on a switched-on renderer folder's row, approves its saves until rox
-quits, and Pack beside it writes a `.roxp`. A running session keeps the code it started
-with. Switching the renderer off and on starts the new code.
+quits, and Pack beside it writes a `.roxp`. It approves only a save that leaves
+`plugin.json` exactly as it was last approved. A change to the manifest, even its
+description or version, switches the renderer off and puts the card up, since a new
+grant lives there. A running session keeps the code it started with. Switching the
+renderer off and on starts the new code.
 
 A renderer can't run without a block rox made, so testing one outside rox takes a
 stand-in host that does what this doc describes: make the block, write the header, put
 it at fd 3, start the renderer with the four variables, write `hello`, and read the
-announce lines.
+announce lines. One granted the cover also wants the cover block at fd 4.
 
 ## Costs
 
@@ -656,20 +859,25 @@ That's where the canvas's weight line starts warning (`TARGET_PIXELS` in
 The shared memory is `crates/rox-frames`: `layout.rs` (the offsets, `Spec`, the ranges),
 `map.rs` with `map/unix.rs` and `map/windows.rs` (making, sealing and lending the block),
 `read.rs` (`copy_slot`, `Read`, `Refusal`), `write.rs` (`Writer`, behind the `writer`
-feature) and `lib.rs` (`ANNOUNCE_MAX`, `parse_announce`, `announce`, `clock_ns`).
+feature), `cover.rs` (the cover mapping: its layout, `fit`, `letterbox`, `Cover`, and
+`CoverReader` behind the `cover-reader` feature) and `lib.rs` (`ANNOUNCE_MAX`,
+`parse_announce`, `announce`, `clock_ns`).
 
 The package side is `crates/rox-services/src/renderers.rs` (the listing, the gate,
-`start`, `Session`, the exit count, `enforce`) on top of `crates/rox-plugins`:
-`manifest.rs` (`capabilities.renderer`, `check_renderer`, the entry and the interpreter
-table), `process.rs` (the spawn, fd 3, the Windows handle, stderr, `never_block`) and
-`host.rs` (`BACKOFF`, `CRASH_WINDOW`). The approval card's grants are `grants` in
-`crates/rox-services/src/plugins.rs`.
+`asks`, `start`, `Session`, the exit count, `enforce`, and the wanted signals' matching)
+on top of `crates/rox-plugins`: `manifest.rs` (`capabilities.renderer`, `check_renderer`,
+`check_wanted`, the entry and the interpreter table), `process.rs` (the spawn, fd 3 and 4,
+the Windows handles, stderr, `never_block`) and `host.rs` (`BACKOFF`, `CRASH_WINDOW`). The
+approval card's grants are `grants` in `crates/rox-services/src/plugins.rs`, with the
+re-approval diff in `changes`.
 
 The item is `crates/rox/src/canvas/target.rs` (the supervisor, the limits, the reader,
-the copy, every line sent, the status), drawn through `crates/rox/src/canvas/texture.rs`.
-`crates/rox/src/panels/canvas.rs` places it, reads the signals for it each frame and
-sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), and adds it
-from the Add menu. A pool entry's kind and band come from `Source` in
+the copy, every line sent, the cover's decode, the status), drawn through
+`crates/rox/src/canvas/texture.rs`. `crates/rox/src/panels/canvas.rs` places it, reads
+the signals and the palette for it each frame, follows the playing track for its cover,
+sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), adds it from the
+Add menu, and offers its wanted signals (`offer_signals`). The prompt and the inspector's
+Signals row are in `crates/rox/src/canvas/overlay.rs`. A pool entry's kind and band come from `Source` in
 `crates/rox-viz/src/signal.rs`. The Renderers section of the Plugins page is
 `crates/rox/src/settings/window/plugins_page.rs`.
 

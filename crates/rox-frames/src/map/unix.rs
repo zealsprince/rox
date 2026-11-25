@@ -91,6 +91,91 @@ pub(crate) fn create(spec: &Spec) -> Result<(Section, View), Error> {
     Ok((Section(fd), view))
 }
 
+/// The cover's view, the one writable view rox ever keeps. Only
+/// [`create_cover`] makes one.
+pub(crate) struct WritableView(View);
+
+impl WritableView {
+    pub(crate) fn base_mut(&mut self) -> *mut u8 {
+        self.0.base.as_ptr()
+    }
+}
+
+/// The cover mapping: rox's writable view, then the handle a renderer gets
+/// and whether that handle can only read.
+pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), Error> {
+    let size = libc::off_t::try_from(len).map_err(|_| Error::Overflow)?;
+    let (rw, child) = open_cover()?;
+
+    // SAFETY: ftruncate on a file this function just made.
+    if unsafe { libc::ftruncate(rw.as_raw_fd(), size) } != 0 {
+        return Err(Error::os("ftruncate"));
+    }
+
+    // Mapped before the seal: the future-write seal refuses every writable
+    // mapping made after it, and leaves this one be.
+    let view = map(rw.as_fd(), len, libc::PROT_READ | libc::PROT_WRITE)?;
+    let read_only = seal_cover(child.as_ref().unwrap_or(&rw).as_fd())?;
+
+    Ok((Section(child.unwrap_or(rw)), WritableView(view), read_only))
+}
+
+/// One memfd: the renderer's fd is rox's own, and the seal is what keeps
+/// it from writing.
+#[cfg(target_os = "linux")]
+fn open_cover() -> Result<(OwnedFd, Option<OwnedFd>), Error> {
+    Ok((open()?, None))
+}
+
+/// The future-write seal (Linux 5.1) refuses a write and a writable shared
+/// mapping through any fd, a reopen of `/proc/<pid>/fd` included, so the
+/// renderer can only read. A kernel without it gets the other three seals,
+/// which keep the size, and a renderer that could write the pixels rox
+/// sends it. rox never reads them back, so that costs rox nothing.
+#[cfg(target_os = "linux")]
+fn seal_cover(fd: BorrowedFd<'_>) -> Result<bool, Error> {
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+
+    // SAFETY: fcntl on an fd we own.
+    if unsafe {
+        libc::fcntl(
+            fd.as_raw_fd(),
+            libc::F_ADD_SEALS,
+            seals | libc::F_SEAL_FUTURE_WRITE,
+        )
+    } == 0
+    {
+        return Ok(true);
+    }
+
+    // SAFETY: as above. The first call added nothing when it failed.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
+        return Err(Error::os("F_ADD_SEALS"));
+    }
+
+    Ok(false)
+}
+
+/// Maps a cover handle read-only, after checking the file is exactly `len`.
+#[cfg(any(test, feature = "cover-reader"))]
+pub(crate) fn map_readable(fd: BorrowedFd<'_>, len: usize) -> Result<View, Error> {
+    // SAFETY: an all-zero stat is a valid value, and fstat fills the one we
+    // own.
+    let (stat, got) = unsafe {
+        let mut stat = std::mem::zeroed::<libc::stat>();
+        let got = libc::fstat(fd.as_raw_fd(), &mut stat);
+        (stat, got)
+    };
+    if got != 0 {
+        return Err(Error::os("fstat"));
+    }
+    if usize::try_from(stat.st_size).ok() != Some(len) {
+        return Err(Error::Mismatch);
+    }
+
+    map(fd, len, libc::PROT_READ)
+}
+
 /// A fresh anonymous memfd, close-on-exec and open to sealing.
 #[cfg(target_os = "linux")]
 fn open() -> Result<OwnedFd, Error> {
@@ -172,6 +257,68 @@ fn open() -> Result<OwnedFd, Error> {
     }
 
     Err(Error::os("shm_open"))
+}
+
+/// Two fds on one shm object, opened by its name before it's unlinked:
+/// rox's read-write one and the renderer's read-only one, which can't map
+/// it writable. Never compiled or run.
+#[cfg(target_os = "macos")]
+fn open_cover() -> Result<(OwnedFd, Option<OwnedFd>), Error> {
+    for _ in 0..8 {
+        let mut random = [0u8; 8];
+        // SAFETY: fills the eight bytes we own.
+        unsafe { libc::arc4random_buf(random.as_mut_ptr().cast(), random.len()) };
+
+        let name = format!("/rox-cover-{:016x}", u64::from_ne_bytes(random));
+        let name = std::ffi::CString::new(name).map_err(|_| Error::Mismatch)?;
+
+        // SAFETY: shm_open with a NUL-terminated name; the mode goes
+        // through the variadic as a C int.
+        let rw = unsafe {
+            libc::shm_open(
+                name.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+                0o600 as libc::c_uint,
+            )
+        };
+        if rw < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
+                continue;
+            }
+            return Err(Error::os("shm_open"));
+        }
+
+        // SAFETY: a valid fd nothing else owns. The second open is by the
+        // name just made, before the unlink that keeps anyone else from it.
+        let (rw, ro) = unsafe {
+            let rw = OwnedFd::from_raw_fd(rw);
+            let ro = libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0 as libc::c_uint);
+            libc::shm_unlink(name.as_ptr());
+            (rw, ro)
+        };
+        if ro < 0 {
+            return Err(Error::os("shm_open"));
+        }
+        // SAFETY: as above.
+        let ro = unsafe { OwnedFd::from_raw_fd(ro) };
+
+        for fd in [&rw, &ro] {
+            // SAFETY: fcntl on an fd we own. A leaked fd is a renderer's.
+            if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+                return Err(Error::os("F_SETFD"));
+            }
+        }
+
+        return Ok((rw, Some(ro)));
+    }
+
+    Err(Error::os("shm_open"))
+}
+
+/// The renderer's fd was opened read-only. See [`seal`] for the size.
+#[cfg(target_os = "macos")]
+fn seal_cover(_fd: BorrowedFd<'_>) -> Result<bool, Error> {
+    Ok(true)
 }
 
 /// macOS has no seals. As far as Apple's documentation goes, a POSIX shm

@@ -21,7 +21,7 @@ use rox_library::members::InLibrary;
 use rox_library::projection::{FilterField, FilterSet};
 use rox_panel_api::toast::Toast;
 use rox_plugins::host::STOPPED_AFTER_CRASHES;
-use rox_plugins::manifest::ProviderDomain;
+use rox_plugins::manifest::{Manifest, ProviderDomain};
 use rox_plugins::{Loaded, Origin, Status, package};
 use rox_services::plugin_library;
 use rox_services::plugins::{self as host, Change, Grant, Since};
@@ -400,7 +400,11 @@ impl EnableCard {
                 label = renderer.label.as_str()
             ));
         }
-        lines.extend(host::grants(&manifest).into_iter().map(grant_line));
+        lines.extend(
+            host::grants(&manifest)
+                .into_iter()
+                .map(|grant| grant_line(grant, &manifest)),
+        );
 
         let providers = manifest.capabilities.providers;
         if providers.any() {
@@ -444,7 +448,7 @@ impl EnableCard {
             match since {
                 Since::Declared(changes) => {
                     lines.push(rox_i18n::t!("settings-plugins-card-changed"));
-                    lines.extend(changes.iter().map(change_line));
+                    lines.extend(changes.iter().map(|change| change_line(change, &manifest)));
                 }
                 Since::Manifest => {
                     lines.push(rox_i18n::t!("settings-plugins-card-manifest-changed"))
@@ -463,11 +467,35 @@ impl EnableCard {
     }
 }
 
-fn grant_line(grant: Grant) -> SharedString {
+fn grant_line(grant: Grant, manifest: &Manifest) -> SharedString {
     match grant {
         Grant::MusicSignals => rox_i18n::t!("settings-plugins-card-renderer-signals"),
         Grant::Pointer => rox_i18n::t!("settings-plugins-card-renderer-pointer"),
+        Grant::WantedSignals => rox_i18n::t!(
+            "settings-plugins-card-renderer-wanted",
+            signals = wanted_list(manifest)
+        ),
+        Grant::Palette => rox_i18n::t!("settings-plugins-card-renderer-palette"),
+        Grant::Cover => rox_i18n::t!("settings-plugins-card-renderer-cover"),
     }
+}
+
+/// The signals a renderer asks for, worded as the pool would list them
+/// once added. The names are the renderer's, capped and plain by the
+/// manifest check.
+fn wanted_list(manifest: &Manifest) -> String {
+    let wanted = manifest
+        .capabilities
+        .renderer
+        .as_ref()
+        .map(|cap| cap.signals.as_slice())
+        .unwrap_or_default();
+
+    rox_services::renderers::signals_to_add(wanted, &[])
+        .iter()
+        .map(crate::canvas::target::signal_words)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Whether a scanned package is a renderer. One whose manifest doesn't
@@ -476,7 +504,7 @@ fn is_renderer(folder: &Loaded) -> bool {
     folder.manifest.as_ref().is_some_and(|m| m.is_renderer())
 }
 
-fn change_line(change: &Change) -> SharedString {
+fn change_line(change: &Change, manifest: &Manifest) -> SharedString {
     match change {
         Change::CapabilityAdded(name) => rox_i18n::t!(
             "settings-plugins-change-capability-added",
@@ -505,6 +533,9 @@ fn change_line(change: &Change) -> SharedString {
             "settings-plugins-change-provider",
             domain = domain_name(*domain).to_string()
         ),
+        // The card lists every grant above. Under the changes it says the
+        // new one again, worded the same.
+        Change::Grant(grant) => grant_line(*grant, manifest),
     }
 }
 
@@ -1851,8 +1882,9 @@ mod tests {
             card.lines
         );
         assert!(card.lines[0].contains("Bars"), "{}", card.lines[0]);
+        let manifest = renderer.manifest.clone().unwrap();
         for (line, grant) in card.lines[1..].iter().zip(&grants) {
-            assert_eq!(*line, grant_line(*grant));
+            assert_eq!(*line, grant_line(*grant, &manifest));
         }
 
         // Re-approving a renderer whose manifest didn't move.
@@ -1877,11 +1909,64 @@ mod tests {
             Some(&rox_i18n::t!("settings-plugins-card-manifest-changed"))
         );
 
+        // One that asks for everything a renderer can, and one that gained
+        // the palette and the cover since it was approved.
+        let mut asking = renderer.clone();
+        let document = json!({
+            "id": "bars", "name": "Bars", "version": "2", "api": 1,
+            "entry": { "script": { "path": "draw.py", "interpreter": "python3" } },
+            "capabilities": { "renderer": {
+                "label": "Bars", "palette": true, "cover": true,
+                "signals": [
+                    { "kind": "band", "low": 30, "high": 120, "name": "Kick" },
+                    { "kind": "level" },
+                ],
+            } },
+        });
+        asking.manifest = Some(rox_plugins::manifest::parse(&document.to_string()).unwrap());
+        asking.document = document;
+        let asks = EnableCard::of(asking.clone(), None).unwrap();
+        let wanted = "Follows these signals: Kick (Band 30-120 Hz), Level. \
+                      When you place a render target for it, rox offers to add the ones you don't have yet.";
+        assert_eq!(
+            asks.lines[1..6],
+            [
+                rox_i18n::t!("settings-plugins-card-renderer-signals"),
+                rox_i18n::t!("settings-plugins-card-renderer-pointer"),
+                SharedString::from(wanted),
+                SharedString::from("Gets the colours of the current theme."),
+                SharedString::from("Gets the cover of the playing track, as a picture."),
+            ]
+        );
+
+        let mut approved_manifest = asking.document.clone();
+        approved_manifest["capabilities"]["renderer"]["palette"] = json!(false);
+        approved_manifest["capabilities"]["renderer"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cover");
+        let before = PluginRecord {
+            approved_manifest,
+            ..record(true, "old")
+        };
+        let regained = EnableCard::of(asking, Some(&before)).unwrap();
+        let tail = &regained.lines[regained.lines.len() - 3..];
+        assert_eq!(
+            tail,
+            [
+                rox_i18n::t!("settings-plugins-card-changed"),
+                SharedString::from("Gets the colours of the current theme."),
+                SharedString::from("Gets the cover of the playing track, as a picture."),
+            ]
+        );
+
         let everything: Vec<String> = card
             .lines
             .iter()
             .chain(&again.lines)
             .chain(&redescribed.lines)
+            .chain(&asks.lines)
+            .chain(&regained.lines)
             .chain(&card.lead)
             .map(|line| line.to_lowercase())
             .collect();

@@ -717,3 +717,5 @@ connects to the control socket. A verb into rox, if a renderer gets one, goes th
 the typed allowlist this record already reserves. The folder hash, the approval gate and
 the one switch cover a renderer as they cover any plugin. The capability set stays
 closed, and adding to it is still a product decision and an amendment here.
+
+**Amended 2026-11-25: a renderer's grants, and Developer mode compares the whole manifest.** The renderer capability gains three optional fields, `signals`, `palette` and `cover`. They stay inside the one capability, so the closed set doesn't grow, and ADR 37's amendment of the same date records them as product decisions. The re-approval card names a grant newly asked for. Developer mode now approves a save on its own only when the stored approved manifest equals the current one exactly. Any manifest change switches the package off and puts the card up, including a label, description, version, dropped program or settings schema. This supersedes "as long as the manifest's diff against the last approval is empty" in the amendment of 2026-09-29.

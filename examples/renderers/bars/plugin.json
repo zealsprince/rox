@@ -8,11 +8,11 @@
   },
   "meta": {
     "author": "rox",
-    "description": "An example renderer in Python's standard library. It draws a bar for each signal, a stripe for the playing position and a dot under the pointer.",
+    "description": "An example renderer in Python's standard library. It draws a bar for each signal in the theme's accent, a stripe for the playing position and a dot under the pointer.",
     "website": "https://github.com/zealsprince/rox",
     "license": "AGPL-3.0-only"
   },
   "capabilities": {
-    "renderer": { "label": "Bars" }
+    "renderer": { "label": "Bars", "palette": true }
   }
 }

@@ -7,7 +7,8 @@
 //! A renderer is never a plugin host. It gets no `Host` and no plugin wire,
 //! answers no requests, and is started only when a render target asks, never
 //! with the plugins at launch. What it gets is its pipes, three variables,
-//! the `hello` line and one lent handle (fd 3 on Unix). Restarting is the
+//! the `hello` line and one lent handle (fd 3 on Unix), and a second (fd 4)
+//! for the cover when its approved manifest asks for one. Restarting is the
 //! render target's job, on the plugin host's schedule through [`due`] and
 //! [`note_exit`].
 
@@ -23,8 +24,10 @@ use serde_json::json;
 
 use rox_core::settings::{self, PluginRecord, Settings};
 use rox_plugins::host::{BACKOFF, CRASH_WINDOW};
+use rox_plugins::manifest::{RendererCap, SignalKind, WantedSignal};
 use rox_plugins::process::{self, Extra, Lent, Process};
 use rox_plugins::{Loaded, manifest};
+use rox_viz::signal::{Signal, Source};
 
 /// What `ROX_RENDER_API` and the `hello` line say.
 pub const API: u32 = 1;
@@ -38,7 +41,7 @@ pub const HEIGHTS: std::ops::RangeInclusive<u32> = 16..=2160;
 const GRACE: Duration = Duration::from_millis(200);
 
 /// A renderer as the Plugins page lists it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Renderer {
     pub id: String,
     /// The manifest's display name.
@@ -49,6 +52,8 @@ pub struct Renderer {
     pub approved: bool,
     /// Its record is switched on.
     pub enabled: bool,
+    /// The signals its manifest asks for.
+    pub signals: Vec<WantedSignal>,
 }
 
 /// Why [`start`] won't run a renderer. The page and the toast word it; the
@@ -126,6 +131,7 @@ fn listed(
                 label: cap.label.clone(),
                 approved: approved(&folder.id, &folder.hash),
                 enabled: records.iter().any(|r| r.id == folder.id && r.enabled),
+                signals: cap.signals.clone(),
             })
         })
         .collect()
@@ -193,9 +199,29 @@ pub fn forgive(id: &str) {
     forget_exits(&|kept| kept != id);
 }
 
+/// What renderer `id`'s manifest asks for, read through the gate as
+/// [`start`] reads it. None when the gate would turn it away.
+pub fn asks(id: &str) -> Option<RendererCap> {
+    let folders = crate::plugins::loaded();
+    let records = Settings::load().accounts.plugins;
+    let folder = check(
+        id,
+        &folders,
+        &records,
+        &settings::plugin_approved,
+        crate::plugins::allowed(),
+    )
+    .ok()?;
+
+    folder.manifest.as_ref()?.capabilities.renderer.clone()
+}
+
 /// One run of a renderer. Dropping it stops the renderer.
 pub struct Session {
     id: String,
+    /// What the approved manifest asks for, as this session got it: the
+    /// cover only when it was lent one.
+    asks: RendererCap,
     /// rox's lines to the renderer, `hello` already sent. Closing it is the
     /// signal to exit.
     pub stdin: Option<ChildStdin>,
@@ -232,9 +258,16 @@ static EXITS: LazyLock<Mutex<HashMap<String, VecDeque<Instant>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Starts renderer `id` drawing at `width` by `height` into the mapping
-/// behind `handle`, after the gate and the exit count agree. Blocking: it
-/// may probe an interpreter, so never on the UI thread.
-pub fn start(id: &str, handle: Lent<'_>, width: u32, height: u32) -> Result<Session, Refused> {
+/// behind `handle`, after the gate and the exit count agree. `cover` is
+/// lent only to a renderer whose approved manifest asks for the cover.
+/// Blocking: it may probe an interpreter, so never on the UI thread.
+pub fn start(
+    id: &str,
+    handle: Lent<'_>,
+    cover: Option<Lent<'_>>,
+    width: u32,
+    height: u32,
+) -> Result<Session, Refused> {
     if !WIDTHS.contains(&width) || !HEIGHTS.contains(&height) {
         return Err(Refused::Size);
     }
@@ -253,9 +286,19 @@ pub fn start(id: &str, handle: Lent<'_>, width: u32, height: u32) -> Result<Sess
         return Err(Refused::Stopped);
     }
 
+    // The grants are the manifest's the gate just passed, so a session never
+    // gets what the approved files don't ask for.
+    let mut asks = folder
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest.capabilities.renderer.clone())
+        .unwrap_or_default();
+    let cover = cover.filter(|_| asks.cover);
+    asks.cover = cover.is_some();
+
     // A renderer that can't start counts as one that exits, as a plugin's
     // failed start does, so a broken one stops rather than looping.
-    let started = launch(folder, handle, width, height);
+    let started = launch(folder, handle, cover, width, height);
     if started.is_err() {
         note_exit(id);
     }
@@ -276,6 +319,7 @@ pub fn start(id: &str, handle: Lent<'_>, width: u32, height: u32) -> Result<Sess
 
     Ok(Session {
         id: id.to_string(),
+        asks,
         stdin: Some(stdin),
         stdout: Some(stdout),
         run,
@@ -286,7 +330,13 @@ type Launched = (Process, ChildStdin, ChildStdout);
 
 /// Spawn and `hello`. The command is the plugin entry's own: the same
 /// interpreter lookup, the same folder checks.
-fn launch(folder: &Loaded, handle: Lent, width: u32, height: u32) -> Result<Launched, String> {
+fn launch(
+    folder: &Loaded,
+    handle: Lent,
+    cover: Option<Lent>,
+    width: u32,
+    height: u32,
+) -> Result<Launched, String> {
     let Some(manifest) = folder.manifest.as_ref() else {
         return Err("no manifest".into());
     };
@@ -298,18 +348,28 @@ fn launch(folder: &Loaded, handle: Lent, width: u32, height: u32) -> Result<Laun
         .env("ROX_FRAMES_HEIGHT", height.to_string());
     #[cfg(unix)]
     command.env("ROX_FRAMES_FD", "3");
+    #[cfg(unix)]
+    if cover.is_some() {
+        command.env("ROX_COVER_FD", COVER_FD.to_string());
+    }
 
-    let lent = Extra::Handle(handle);
+    let lent = match cover {
+        Some(cover) => Extra::Handles(vec![handle, cover]),
+        None => Extra::Handle(handle),
+    };
     let (mut process, pipes) =
         process::spawn_with("renderer", &folder.id, command, &folder.dir, lent)?;
     let mut stdin = pipes.stdin;
 
-    let hello = json!({
+    let mut hello = json!({
         "hello": API,
         "width": width,
         "height": height,
         "handle": process.handle().unwrap_or(0),
     });
+    if cover.is_some() {
+        hello["cover"] = cover_hello(&process);
+    }
     let line = format!("{hello}\n");
     if let Err(e) = stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
         process.kill();
@@ -319,9 +379,36 @@ fn launch(folder: &Loaded, handle: Lent, width: u32, height: u32) -> Result<Laun
     Ok((process, stdin, pipes.stdout))
 }
 
+/// The fd the cover arrives as on Unix, the one after the frames'.
+#[cfg(unix)]
+const COVER_FD: u32 = 4;
+
+/// The cover's side in pixels: `rox_frames::cover::SIZE`, which this crate
+/// doesn't link. A test in the render target pins the two equal.
+pub const COVER_SIDE: u32 = 256;
+
+/// Where the cover is and its size, for `hello`.
+#[cfg(unix)]
+fn cover_hello(_process: &Process) -> serde_json::Value {
+    json!({ "fd": COVER_FD, "width": COVER_SIDE, "height": COVER_SIDE })
+}
+
+/// Never compiled: no Windows target builds here. The cover's handle is
+/// the second one lent.
+#[cfg(windows)]
+fn cover_hello(process: &Process) -> serde_json::Value {
+    let handle = process.handles().get(1).copied().unwrap_or(0);
+    json!({ "handle": handle, "width": COVER_SIDE, "height": COVER_SIDE })
+}
+
 impl Session {
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// What this session was granted.
+    pub fn asks(&self) -> &RendererCap {
+        &self.asks
     }
 
     /// The pid while it runs, for a test or a person killing it by hand.
@@ -458,6 +545,145 @@ pub(crate) fn stop_all() {
     }
 }
 
+// ── The signals a renderer asks for ──
+//
+// Pure: the canvas offers what [`signals_to_add`] answers and adds it only
+// on the user's yes, the way an object's signals are merged.
+
+/// The pool signal a wanted one would read, worded as the pool words it.
+/// None for a kind this rox doesn't know, and for an aggregate, whose
+/// input is another entry.
+fn wanted_source(wanted: &WantedSignal) -> Option<Source> {
+    let band = || Some((wanted.low?, wanted.high?));
+
+    match wanted.kind()? {
+        SignalKind::Band => band().map(|(lo, hi)| Source::Band { lo, hi }),
+        SignalKind::Onset => band().map(|(lo, hi)| Source::Onset { lo, hi }),
+        SignalKind::Trigger => band().map(|(lo, hi)| Source::Trigger { lo, hi }),
+        SignalKind::Level => Some(Source::Level),
+        SignalKind::Aggregate => None,
+    }
+}
+
+/// A source's kind and its band in whole hertz, as the hub hears it, so a
+/// wanted 30 to 120 matches a pool band saved as 30.2 to 119.8.
+fn heard(source: &Source) -> (std::mem::Discriminant<Source>, Option<(u32, u32)>) {
+    let band = source
+        .band()
+        .map(|(lo, hi)| (lo.round() as u32, hi.round() as u32));
+
+    (std::mem::discriminant(source), band)
+}
+
+/// Which pool signal answers each wanted one, by kind and band and never
+/// by name. An aggregate is answered by a total of whatever answers its
+/// input.
+fn answered(wanted: &[WantedSignal], pool: &[Signal]) -> Vec<Option<u64>> {
+    let mut found: Vec<Option<u64>> = wanted
+        .iter()
+        .map(|want| {
+            let source = wanted_source(want)?;
+            pool.iter()
+                .find(|signal| heard(&signal.source) == heard(&source))
+                .map(|signal| signal.id)
+        })
+        .collect();
+
+    for (at, want) in wanted.iter().enumerate() {
+        if want.kind() != Some(SignalKind::Aggregate) {
+            continue;
+        }
+
+        let input = want.of.and_then(|of| found.get(of).copied().flatten());
+        found[at] = input.and_then(|input| {
+            pool.iter()
+                .find(|signal| matches!(signal.source, Source::Aggregate { of, .. } if of == input))
+                .map(|signal| signal.id)
+        });
+    }
+
+    found
+}
+
+/// Whether rox could add this entry: a kind it knows, and for an aggregate
+/// an input it knows too.
+fn addable(wanted: &[WantedSignal], at: usize) -> bool {
+    let Some(want) = wanted.get(at) else {
+        return false;
+    };
+
+    match want.kind() {
+        Some(SignalKind::Aggregate) => want
+            .of
+            .filter(|&of| of != at)
+            .and_then(|of| wanted.get(of))
+            .is_some_and(|input| wanted_source(input).is_some()),
+        Some(_) => wanted_source(want).is_some(),
+        None => false,
+    }
+}
+
+/// The wanted signals the pool has nothing for, by index in the list.
+pub fn missing_signals(wanted: &[WantedSignal], pool: &[Signal]) -> Vec<usize> {
+    answered(wanted, pool)
+        .into_iter()
+        .enumerate()
+        .filter(|&(at, found)| found.is_none() && addable(wanted, at))
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// The signals that fill those gaps, in list order, with the renderer's
+/// names and suggested Response and Threshold. Their ids are numbered past
+/// every pool id, and an aggregate over another added one names that one's
+/// id, so the pool's merge renumbers them as it does an object's.
+pub fn signals_to_add(wanted: &[WantedSignal], pool: &[Signal]) -> Vec<Signal> {
+    let found = answered(wanted, pool);
+    let missing = missing_signals(wanted, pool);
+    let base = pool.iter().map(|signal| signal.id).max().unwrap_or(0) + 1;
+    let local = |at: usize| base + at as u64;
+
+    missing
+        .iter()
+        .filter_map(|&at| {
+            let want = &wanted[at];
+            let source = match want.kind()? {
+                SignalKind::Aggregate => {
+                    let of = want.of?;
+                    Source::Aggregate {
+                        of: found[of].unwrap_or(local(of)),
+                        rate: want.rate.unwrap_or(1.0),
+                    }
+                }
+                _ => wanted_source(want)?,
+            };
+
+            let defaults = Signal::default();
+            // A trigger at threshold 0 never fires, so the Signals window
+            // seeds one the same way.
+            let threshold = match (want.threshold, source) {
+                (Some(n), _) => f32::from(n) / 100.,
+                (None, Source::Trigger { .. }) => TRIGGER_SEED,
+                (None, _) => defaults.threshold,
+            };
+
+            Some(Signal {
+                id: local(at),
+                name: want.given_name().unwrap_or_default().to_string(),
+                source,
+                smooth: want
+                    .response
+                    .map_or(defaults.smooth, |n| f32::from(n) / 100.),
+                threshold,
+                ..defaults
+            })
+        })
+        .collect()
+}
+
+/// The Signals window's threshold for a new trigger.
+const TRIGGER_SEED: f32 = 0.5;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +753,7 @@ mod tests {
                 label: "Bars".into(),
                 approved: true,
                 enabled: true,
+                signals: Vec::new(),
             }]
         );
 
@@ -639,6 +866,104 @@ mod tests {
         // next switch on starts it fresh. Other tests' ids pass untouched.
         forget_exits(&|kept| passes(kept, &off));
         assert_eq!(due(id), Some(Duration::ZERO));
+    }
+
+    fn wanted(json: serde_json::Value) -> Vec<WantedSignal> {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn pool_signal(id: u64, source: Source) -> Signal {
+        Signal {
+            id,
+            source,
+            ..Signal::default()
+        }
+    }
+
+    #[test]
+    fn a_wanted_signal_matches_by_kind_and_band_not_name() {
+        let asks = wanted(json!([
+            { "kind": "band", "low": 30, "high": 120, "name": "Kick" },
+            { "kind": "level" },
+            { "kind": "onset", "low": 30, "high": 120 },
+            { "kind": "aggregate", "of": 0, "rate": 2 },
+            { "kind": "sparkle" },
+        ]));
+
+        // A renamed band, saved a hair off whole hertz, still answers.
+        let mut bass = pool_signal(
+            4,
+            Source::Band {
+                lo: 30.2,
+                hi: 119.8,
+            },
+        );
+        bass.name = "Something else".into();
+        let pool = vec![bass.clone(), pool_signal(9, Source::Level)];
+        assert_eq!(
+            missing_signals(&asks, &pool),
+            [2, 3],
+            "the onset and the total are missing; an unknown kind never is"
+        );
+
+        // The same band as another kind isn't the same signal.
+        let only_band = vec![pool_signal(1, Source::Onset { lo: 30., hi: 121. })];
+        assert_eq!(missing_signals(&asks, &only_band), [0, 1, 2, 3]);
+
+        // A total over the band that answers is the total wanted.
+        let all = vec![
+            bass,
+            pool_signal(9, Source::Level),
+            pool_signal(11, Source::Onset { lo: 30., hi: 120. }),
+            pool_signal(12, Source::Aggregate { of: 4, rate: 7. }),
+        ];
+        assert!(missing_signals(&asks, &all).is_empty());
+
+        // A total over another signal isn't.
+        let other_total = vec![
+            all[0].clone(),
+            all[1].clone(),
+            all[2].clone(),
+            pool_signal(12, Source::Aggregate { of: 9, rate: 2. }),
+        ];
+        assert_eq!(missing_signals(&asks, &other_total), [3]);
+    }
+
+    #[test]
+    fn the_signals_added_carry_the_renderers_suggestions() {
+        let asks = wanted(json!([
+            { "kind": "band", "low": 40, "high": 90, "name": " Kick ", "response": 20 },
+            { "kind": "trigger", "low": 2000, "high": 8000 },
+            { "kind": "aggregate", "of": 0 },
+            { "kind": "level", "threshold": 25 },
+        ]));
+        let pool = vec![pool_signal(7, Source::Level)];
+
+        let added = signals_to_add(&asks, &pool);
+        assert_eq!(added.len(), 3, "the level is already there");
+
+        assert_eq!(added[0].id, 8, "numbered past the pool");
+        assert_eq!(added[0].name, "Kick");
+        assert!(matches!(added[0].source, Source::Band { lo: 40., hi: 90. }));
+        assert_eq!(added[0].smooth, 0.2);
+
+        assert_eq!(added[1].threshold, TRIGGER_SEED, "a trigger that can fire");
+        assert_eq!(added[1].smooth, Signal::default().smooth);
+
+        assert!(
+            matches!(added[2].source, Source::Aggregate { of: 8, rate: 1. }),
+            "a total over the band added with it"
+        );
+
+        // Over a band the pool already has, the total adds up that one.
+        let with_band = vec![pool_signal(3, Source::Band { lo: 40., hi: 90. })];
+        let added = signals_to_add(&asks, &with_band);
+        assert!(
+            added
+                .iter()
+                .any(|s| matches!(s.source, Source::Aggregate { of: 3, .. }))
+        );
+        assert!(signals_to_add(&[], &pool).is_empty());
     }
 
     #[test]

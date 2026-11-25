@@ -407,6 +407,7 @@ pub struct CanvasPanel {
     cases: Cases,
     _player: Subscription,
     _player_view: Subscription,
+    _cover: Subscription,
     _library: Subscription,
     _states: [Subscription; 5],
 }
@@ -449,6 +450,16 @@ impl CanvasPanel {
                 cx.notify();
             }
         });
+        // A render target granted the cover hears of a new track here, with
+        // no frame drawn for it.
+        let cover = cx.observe(&state.player, |this: &mut Self, _, cx| {
+            if target::holds_targets(&this.config.canvas)
+                && let Some(ask) = this.playing_cover(cx)
+            {
+                this.targets.follow_cover(ask);
+            }
+        });
+
         // A tag edit to the playing track, as track info follows it, and a
         // mark on it for an item following the favourite.
         let library = cx.subscribe(
@@ -532,6 +543,7 @@ impl CanvasPanel {
             cases: Cases::new(),
             _player: player,
             _player_view: player_view,
+            _cover: cover,
             _library: library,
             _states: followed,
         };
@@ -812,6 +824,21 @@ impl CanvasPanel {
         });
     }
 
+    /// The cover a render target should hold now. None between two tracks,
+    /// where the session is still alive and the old cover holds, as the
+    /// backdrop's does.
+    fn playing_cover(&self, cx: &App) -> Option<target::CoverAsk> {
+        let player = self.state.player.read(cx);
+        let now = player.now_playing();
+        if now.is_none() && player.is_active() && !player.queue_ended() {
+            return None;
+        }
+
+        let track = now.map(|now| now.key.path);
+        let store = self.state.thumbs.read(cx).store_conn();
+        Some(target::CoverAsk::new(track, store))
+    }
+
     /// Whether the item sits square to the screen this frame. A shader item
     /// answers from its last paint, so editing its source can flip it.
     pub(crate) fn is_flat(&self, item: &CanvasItem, cx: &App) -> bool {
@@ -874,10 +901,22 @@ impl CanvasPanel {
         // Every render target drawn this frame is sent the same reading.
         // It rides on frames the canvas draws anyway and asks for none.
         if target::holds_targets(&self.config.canvas) {
+            if let Some(ask) = self.playing_cover(cx) {
+                self.targets.follow_cover(ask);
+            }
+
+            // The window's colours once any ease lands, so an ease sends one
+            // line and not one a frame.
+            let art = palette::art_theming()
+                .then(|| palette::seed(self.state.player.entity_id()))
+                .flatten();
+            let colours = target::palette_line(&palette::resolved(), art.as_ref());
+
             let player = self.state.player.read(cx);
             let running = routes::playback_running(player.is_playing(), player.queue_ended());
             let time = || player.now_playing().map_or(0., |now| now.position_secs);
-            self.targets.read(&self.state.signals, running, time);
+            self.targets
+                .read(&self.state.signals, running, time, colours);
         }
 
         let values = if text::holds_text(&self.config.canvas) {
@@ -2246,6 +2285,11 @@ impl CanvasPanel {
     ) {
         self.menu = None;
 
+        let placed = match &what {
+            NewItem::Target(owner) => Some(owner.clone()),
+            _ => None,
+        };
+
         let (stem, content, size) = match what {
             NewItem::Grid => ("grid", Content::Grid { dock: empty_dock() }, None),
             NewItem::Group => ("group", Content::Group { items: Vec::new() }, None),
@@ -2346,6 +2390,95 @@ impl CanvasPanel {
             cx,
         );
         self.select(Some(id), window, cx);
+
+        if let Some(owner) = placed {
+            self.offer_signals(&owner, window, cx);
+        }
+    }
+
+    /// The signals the renderer `owner` names asks for that the pool hasn't
+    /// got, worded for the prompt and the inspector. Only for a renderer
+    /// approved as it stands: its card listed them before anything is
+    /// offered.
+    pub(crate) fn missing_signals(
+        &self,
+        owner: &str,
+        renderers: &[rox_services::renderers::Renderer],
+    ) -> Vec<rox_viz::signal::Signal> {
+        let renderer = target::renderer_id(owner)
+            .and_then(|id| renderers.iter().find(|r| r.id == id && r.approved));
+
+        match renderer {
+            Some(renderer) => rox_services::renderers::signals_to_add(
+                &renderer.signals,
+                &self.state.signals.pool(),
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// Asks before adding what a new render target's renderer follows. Never
+    /// outside design mode, and never on its own: nothing goes in the pool
+    /// until Add.
+    fn offer_signals(&mut self, owner: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.design {
+            return;
+        }
+
+        let renderers = rox_services::renderers::all();
+        let missing = self.missing_signals(owner, &renderers);
+        if missing.is_empty() {
+            return;
+        }
+
+        let name = target::renderer_id(owner)
+            .and_then(|id| renderers.iter().find(|r| r.id == id))
+            .map(|renderer| renderer.name.clone())
+            .unwrap_or_default();
+        let words = missing.iter().map(target::signal_words).collect();
+
+        let focus = cx.focus_handle();
+        focus.focus(window);
+        self.object_dialog = Some(objects::Dialog::Signals {
+            name,
+            owner: owner.to_string(),
+            words,
+            focus,
+        });
+        cx.notify();
+    }
+
+    /// The prompt's Add.
+    pub(crate) fn confirm_signals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(objects::Dialog::Signals { owner, .. }) = self.object_dialog.take() else {
+            return;
+        };
+        self.close_object_dialog(window, cx);
+
+        self.add_wanted_signals(&owner, cx);
+    }
+
+    /// Adds what renderer `owner` asks for and the pool lacks, read afresh,
+    /// the way an object's signals go in. The inspector's Add Signals and
+    /// the prompt's Add, both a click of the user's.
+    pub(crate) fn add_wanted_signals(&mut self, owner: &str, cx: &mut Context<Self>) {
+        if !self.design {
+            return;
+        }
+
+        let adding = self.missing_signals(owner, &rox_services::renderers::all());
+        if adding.is_empty() {
+            return;
+        }
+
+        let hub = self.state.signals.clone();
+        hub.edit(|pool| {
+            objects::merge_signals(pool, &adding);
+        });
+        rox_panel_api::signal_ui::persist_pool_soon(&hub, cx);
+
+        log::info!("canvas: added {} signals {owner} asks for", adding.len());
+        cx.notify();
     }
 
     /// Imports a picked file into the asset store, then adds it as an image.
@@ -3279,6 +3412,7 @@ mod tests {
             label: "Bars".into(),
             approved: false,
             enabled: false,
+            signals: Vec::new(),
         };
         let unlabelled = rox_services::renderers::Renderer {
             id: "waves".into(),

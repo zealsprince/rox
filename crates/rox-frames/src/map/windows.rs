@@ -102,6 +102,52 @@ pub(crate) fn create(spec: &Spec) -> Result<(Section, View), Error> {
     Ok((Section(section), view))
 }
 
+/// Map read alone, for the cover a renderer only reads.
+pub(crate) const COVER_CHILD_ACCESS: u32 = FILE_MAP_READ;
+
+/// The cover's view, the one writable view rox ever keeps. Only
+/// [`create_cover`] makes one.
+pub(crate) struct WritableView(View);
+
+impl WritableView {
+    pub(crate) fn base_mut(&mut self) -> *mut u8 {
+        self.0.base.as_ptr()
+    }
+}
+
+/// The cover section and rox's writable view of it. The renderer's copy is
+/// duplicated with [`COVER_CHILD_ACCESS`], so it can only read.
+pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), Error> {
+    let size = len as u64;
+
+    // SAFETY: as in `create`.
+    let section = unsafe {
+        let handle = CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            std::ptr::null(),
+            PAGE_READWRITE,
+            (size >> 32) as u32,
+            size as u32,
+            std::ptr::null(),
+        );
+        if handle.is_null() {
+            return Err(Error::os("CreateFileMappingW"));
+        }
+
+        OwnedHandle::from_raw_handle(handle.cast())
+    };
+
+    let view = map(section.as_handle(), FILE_MAP_WRITE, len)?;
+    Ok((Section(section), WritableView(view), true))
+}
+
+/// Maps a cover section read-only. A section smaller than `len` fails the
+/// map.
+#[cfg(any(test, feature = "cover-reader"))]
+pub(crate) fn map_readable(section: BorrowedHandle<'_>, len: usize) -> Result<View, Error> {
+    map(section, FILE_MAP_READ, len)
+}
+
 /// Maps a renderer's section read-write. A section smaller than the spec
 /// fails the map, and the header check catches one larger.
 ///

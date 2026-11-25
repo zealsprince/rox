@@ -40,7 +40,7 @@ use rox_library::store;
 use rox_net::providers::{LyricsCandidate, MetadataCandidate, TrackQuery};
 use rox_playback::continuation::{self, Pick};
 use rox_playback::plugin::{Opened, ReadAt};
-use rox_plugins::manifest::{Manifest, ProviderDomain, SourceCap};
+use rox_plugins::manifest::{Manifest, ProviderDomain, RendererCap, SourceCap};
 use rox_plugins::{
     Host, HostConfig, Loaded, Options, Origin, Status, Stream, loader, package, wire,
 };
@@ -877,8 +877,14 @@ fn redevelop(records: &[PluginRecord], folders: &[Loaded]) -> bool {
             continue;
         }
 
-        // A new capability, program, entry or scrobble ask goes to the card.
-        if !changes(&record.approved_manifest, &folder.document).is_empty() {
+        // Any change to the manifest goes to the card, so only its other
+        // files are approved here.
+        if !redevelops(&since(
+            &record.approved_manifest,
+            &record.hash,
+            &folder.document,
+            &folder.hash,
+        )) {
             continue;
         }
 
@@ -892,6 +898,14 @@ fn redevelop(records: &[PluginRecord], folders: &[Loaded]) -> bool {
     }
 
     approved
+}
+
+/// Developer mode approves a change on its own only when the manifest is the
+/// one last approved, exactly, and other files moved. A folder whose hash
+/// is the approved one and still isn't approved on this machine, as with a
+/// settings file copied from another, goes to the card like any other.
+fn redevelops(since: &Since) -> bool {
+    matches!(since, Since::Files)
 }
 
 /// Plugins in Developer mode. Never saved, so it ends with the session.
@@ -1057,20 +1071,45 @@ fn remove_package(archive: &Path, copies: &Path) {
 }
 
 /// What a package is handed while it runs, beyond what every plugin gets,
-/// for the enable card to list. The card words each one.
+/// for the enable card to list. The card words each one, and the render
+/// target sends or offers each only where its manifest asks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Grant {
     /// A renderer gets the signal pool's values every route reads.
     MusicSignals,
     /// A renderer gets the pointer while it's over its surface.
     Pointer,
+    /// rox offers to add the signals it asks for to the pool.
+    WantedSignals,
+    /// It gets the theme's colours.
+    Palette,
+    /// It gets the playing track's cover as pixels.
+    Cover,
 }
 
 pub fn grants(manifest: &Manifest) -> Vec<Grant> {
-    match manifest.is_renderer() {
-        true => vec![Grant::MusicSignals, Grant::Pointer],
-        false => Vec::new(),
-    }
+    manifest
+        .capabilities
+        .renderer
+        .as_ref()
+        .map(renderer_grants)
+        .unwrap_or_default()
+}
+
+fn renderer_grants(cap: &RendererCap) -> Vec<Grant> {
+    let asks_signals = cap.signals.iter().any(|signal| signal.kind().is_some());
+
+    [
+        (Grant::MusicSignals, true),
+        (Grant::Pointer, true),
+        (Grant::WantedSignals, asks_signals),
+        (Grant::Palette, cap.palette),
+        (Grant::Cover, cap.cover),
+    ]
+    .into_iter()
+    .filter(|(_, asked)| *asked)
+    .map(|(grant, _)| grant)
+    .collect()
 }
 
 /// What changed in a manifest since it was approved, for the enable card.
@@ -1088,6 +1127,9 @@ pub enum Change {
     ActionChanged(String),
     /// A `provider.*` domain declared that the approved manifest didn't.
     ProviderAdded(ProviderDomain),
+    /// A renderer asks for something the approved manifest didn't: a grant
+    /// it didn't have, or other signals than it asked for before.
+    Grant(Grant),
 }
 
 /// Compares the manifests as written, so a capability this build doesn't
@@ -1203,6 +1245,24 @@ pub fn changes(approved: &Value, now: &Value) -> Vec<Change> {
 
     if approved["entry"] != now["entry"] {
         found.push(Change::Entry);
+    }
+
+    // Inside a renderer that was already approved, each new grant asks too.
+    // A new renderer is already the capability line above.
+    let renderer = |doc: &Value| {
+        serde_json::from_value::<RendererCap>(doc["capabilities"]["renderer"].clone()).ok()
+    };
+    if let (Some(was), Some(is)) = (renderer(approved), renderer(now)) {
+        let had = renderer_grants(&was);
+        found.extend(
+            renderer_grants(&is)
+                .into_iter()
+                .filter(|grant| match grant {
+                    Grant::WantedSignals => !had.contains(grant) || was.signals != is.signals,
+                    _ => !had.contains(grant),
+                })
+                .map(Change::Grant),
+        );
     }
 
     found
@@ -3324,6 +3384,118 @@ mod tests {
                 Change::CapabilityRemoved("source".into()),
             ]
         );
+    }
+
+    #[test]
+    fn a_renderer_is_granted_what_its_manifest_asks_and_nothing_more() {
+        let grants_of = |renderer: Value| {
+            let folder = folder_of("bars", json!({ "renderer": renderer }));
+            grants(folder.manifest.as_ref().unwrap())
+        };
+        let band = json!([{ "kind": "band", "low": 30, "high": 120 }]);
+        use Grant::*;
+
+        let cases = [
+            (json!({ "label": "B" }), vec![MusicSignals, Pointer]),
+            (
+                json!({ "label": "B", "palette": true }),
+                vec![MusicSignals, Pointer, Palette],
+            ),
+            (
+                json!({ "label": "B", "cover": true }),
+                vec![MusicSignals, Pointer, Cover],
+            ),
+            (
+                json!({ "label": "B", "signals": band }),
+                vec![MusicSignals, Pointer, WantedSignals],
+            ),
+            (
+                json!({ "label": "B", "signals": band, "palette": true, "cover": true }),
+                vec![MusicSignals, Pointer, WantedSignals, Palette, Cover],
+            ),
+            (
+                json!({ "label": "B", "palette": false, "cover": false, "signals": [] }),
+                vec![MusicSignals, Pointer],
+            ),
+            (
+                json!({ "label": "B", "signals": [{ "kind": "sparkle" }] }),
+                vec![MusicSignals, Pointer],
+            ),
+        ];
+
+        for (renderer, want) in cases {
+            assert_eq!(grants_of(renderer.clone()), want, "{renderer}");
+        }
+    }
+
+    #[test]
+    fn a_renderer_that_asks_for_more_shows_it_on_the_card() {
+        let doc = |renderer: Value| folder_of("bars", json!({ "renderer": renderer })).document;
+        let bare = doc(json!({ "label": "B" }));
+        let band = json!([{ "kind": "band", "low": 30, "high": 120 }]);
+
+        assert_eq!(
+            changes(
+                &bare,
+                &doc(json!({ "label": "B", "palette": true, "cover": true }))
+            ),
+            [Change::Grant(Grant::Palette), Change::Grant(Grant::Cover)]
+        );
+        assert_eq!(
+            changes(&bare, &doc(json!({ "label": "B", "signals": band }))),
+            [Change::Grant(Grant::WantedSignals)]
+        );
+
+        // Other signals than before ask again; asking for less doesn't.
+        let two = json!([
+            { "kind": "band", "low": 30, "high": 120 },
+            { "kind": "level" },
+        ]);
+        let with_band = doc(json!({ "label": "B", "signals": band, "cover": true }));
+        assert_eq!(
+            changes(
+                &with_band,
+                &doc(json!({ "label": "B", "signals": two, "cover": true }))
+            ),
+            [Change::Grant(Grant::WantedSignals)]
+        );
+        assert!(changes(&with_band, &bare).is_empty());
+        assert!(changes(&with_band, &with_band).is_empty());
+
+        // Still a changed manifest, which the card says when nothing it
+        // declares moved.
+        assert_eq!(
+            since(&with_band, "a", &bare, "b"),
+            Since::Manifest,
+            "dropping a grant is a manifest change"
+        );
+    }
+
+    #[test]
+    fn developer_mode_approves_only_an_unchanged_manifest() {
+        let approved = folder_of("bars", json!({ "renderer": { "label": "B" } })).document;
+        let mut relabelled = approved.clone();
+        relabelled["capabilities"]["renderer"]["label"] = json!("Bars");
+        let mut redescribed = approved.clone();
+        redescribed["meta"] = json!({ "description": "Louder." });
+        let mut asking = approved.clone();
+        asking["capabilities"]["renderer"]["palette"] = json!(true);
+
+        // Another file in the folder changed and the manifest is the same.
+        assert!(redevelops(&since(&approved, "old", &approved, "new")));
+
+        // Anything in the manifest changed, declared or not.
+        for now in [&relabelled, &redescribed, &asking] {
+            assert!(!redevelops(&since(&approved, "old", now, "new")), "{now}");
+        }
+        assert!(matches!(
+            since(&approved, "old", &asking, "new"),
+            Since::Declared(_)
+        ));
+        assert_eq!(since(&approved, "old", &relabelled, "new"), Since::Manifest);
+
+        // The approved folder, unapproved here.
+        assert!(!redevelops(&since(&approved, "same", &approved, "same")));
     }
 
     fn manifest(caps: Value, programs: Value, entry: &str) -> Value {

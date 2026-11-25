@@ -11,7 +11,12 @@
 //! lock is shared with the renderer. There's no way to map a file the
 //! renderer made, and nothing is mapped executable. Spawning the renderer,
 //! its wire and its pacing live with the renderer host, not here.
+//!
+//! [`cover`] is the second mapping a renderer can be lent, with the trust
+//! direction reversed: rox writes the playing track's cover and the
+//! renderer only reads it.
 
+pub mod cover;
 mod layout;
 mod map;
 mod read;

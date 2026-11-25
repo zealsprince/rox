@@ -129,7 +129,8 @@ pub fn text_on(color: Rgba) -> Rgba {
     }
 }
 
-fn reads_light(color: Rgba) -> bool {
+/// Whether text on this color wants to be dark: [`text_on`]'s cut.
+pub fn reads_light(color: Rgba) -> bool {
     0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b > 0.55
 }
 

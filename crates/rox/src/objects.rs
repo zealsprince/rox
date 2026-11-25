@@ -727,6 +727,17 @@ pub(crate) enum Dialog {
         file: PathBuf,
         focus: FocusHandle,
     },
+    /// Adding the signals a newly placed render target's renderer asks for
+    /// and the pool lacks. It holds focus, so Escape reaches it.
+    Signals {
+        /// The renderer's name.
+        name: String,
+        /// The target's owner, read again on the yes.
+        owner: String,
+        /// What would be added, worded when it opened.
+        words: Vec<String>,
+        focus: FocusHandle,
+    },
 }
 
 impl Dialog {
@@ -735,13 +746,15 @@ impl Dialog {
     pub(crate) fn destructive(&self) -> bool {
         match self {
             Dialog::Remove { .. } => true,
-            Dialog::Export { .. } | Dialog::Place { .. } => false,
+            Dialog::Export { .. } | Dialog::Place { .. } | Dialog::Signals { .. } => false,
         }
     }
 
     pub(crate) fn focus(&self) -> Option<&FocusHandle> {
         match self {
-            Dialog::Place { focus, .. } | Dialog::Remove { focus, .. } => Some(focus),
+            Dialog::Place { focus, .. }
+            | Dialog::Remove { focus, .. }
+            | Dialog::Signals { focus, .. } => Some(focus),
             Dialog::Export { .. } => None,
         }
     }

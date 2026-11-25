@@ -23,12 +23,16 @@
 //!
 //! Outward a renderer gets what its enable card names and nothing more: the
 //! signal pool's values with the playing position, read on frames the
-//! canvas already draws, and the pointer over its own surface. The canvas
-//! hands those lines to the supervisor through a small bounded outbox, and
-//! a renderer that stops reading loses lines instead of holding rox up.
+//! canvas already draws, and the pointer over its own surface. One whose
+//! approved manifest asks gets the theme's colours, and the playing track's
+//! cover as pixels through a second mapping rox writes and it only reads.
+//! The canvas hands those lines to the supervisor through a small bounded
+//! outbox, and a renderer that stops reading loses lines instead of holding
+//! rox up.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{BufReader, Read};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
@@ -39,7 +43,8 @@ use gpui::{
     prelude::*, px,
 };
 use rox_canvas::{CanvasItem, CanvasState, Content, Projected};
-use rox_design::palette;
+use rox_design::palette::{self, Palette, Seed};
+use rox_frames::cover::{self, Cover};
 use rox_frames::{ANNOUNCE_MAX, Mapping, Refusal, Spec};
 use rox_plugins::process::{self, Line};
 use rox_services::renderers::{self, Refused, Session};
@@ -133,8 +138,23 @@ enum Sent {
     Closed,
 }
 
-/// A session and its stdout.
-type Started = (Box<dyn Run>, Box<dyn Read + Send>);
+/// A session, its stdout, and what it was granted past the pool and the
+/// pointer.
+struct Started {
+    run: Box<dyn Run>,
+    stdout: Box<dyn Read + Send>,
+    wants: Wants,
+    /// The cover mapping lent to it, only when `wants.cover`.
+    cover: Option<Cover>,
+}
+
+/// The grants a session holds beyond what every renderer gets, from the
+/// manifest the gate approved. Each gates its own lines.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Wants {
+    palette: bool,
+    cover: bool,
+}
 
 /// Where sessions come from: the renderer host, or a test's pipes.
 trait Host: Send + 'static {
@@ -167,7 +187,30 @@ struct Renderer {
 
 impl Host for Renderer {
     fn start(&mut self, mapping: &Mapping) -> Result<Started, Refused> {
-        let mut session = renderers::start(&self.id, lent(mapping), self.width, self.height)?;
+        // Made only for a manifest that asks. The start reads the manifest
+        // again through the gate and lends it only if that one asks too.
+        let asks_cover = renderers::asks(&self.id).is_some_and(|asks| asks.cover);
+        let cover = asks_cover
+            .then(|| {
+                Cover::create()
+                    .inspect_err(|e| log::warn!("render target {}: no cover mapping: {e}", self.id))
+                    .ok()
+            })
+            .flatten();
+
+        let mut session = renderers::start(
+            &self.id,
+            lent(mapping),
+            cover.as_ref().map(lent_cover),
+            self.width,
+            self.height,
+        )?;
+
+        let wants = Wants {
+            palette: session.asks().palette,
+            cover: session.asks().cover,
+        };
+        let cover = cover.filter(|_| wants.cover);
 
         let Some(stdout) = session.stdout.take() else {
             return Err(Refused::Start("no stdout".into()));
@@ -181,7 +224,12 @@ impl Host for Renderer {
             log::warn!("render target {}: stdin may block: {e}", self.id);
         }
 
-        Ok((Box::new(Live::new(session, &self.id)), Box::new(stdout)))
+        Ok(Started {
+            run: Box::new(Live::new(session, &self.id)),
+            stdout: Box::new(stdout),
+            wants,
+            cover,
+        })
     }
 
     fn due(&self) -> Option<Duration> {
@@ -219,6 +267,20 @@ fn lent(mapping: &Mapping) -> process::Lent<'_> {
     process::Lent {
         handle: mapping.child_handle(),
         access: rox_frames::CHILD_ACCESS,
+    }
+}
+
+#[cfg(unix)]
+fn lent_cover(cover: &Cover) -> process::Lent<'_> {
+    cover.child_handle()
+}
+
+/// Never compiled: no Windows target builds here. Map read only.
+#[cfg(windows)]
+fn lent_cover(mapping: &Cover) -> process::Lent<'_> {
+    process::Lent {
+        handle: mapping.child_handle(),
+        access: cover::CHILD_ACCESS,
     }
 }
 
@@ -596,10 +658,21 @@ impl Source {
     fn feed(&self, feed: &Feed) {
         self.send(|out| {
             out.name_pool(&feed.pool);
+            if let Some(palette) = &feed.palette {
+                out.name_palette(palette);
+            }
+            if let Some(ask) = &feed.cover {
+                out.ask_cover(ask);
+            }
             if let Some(line) = &feed.signals {
                 out.signals = Some(line.clone());
             }
         });
+    }
+
+    /// The playing track moved, between frames.
+    fn cover(&self, ask: &CoverAsk) {
+        self.send(|out| out.ask_cover(ask));
     }
 
     fn point(&self, pointer: Pointer) {
@@ -728,6 +801,8 @@ enum Job {
     Pause(bool),
     /// A line from the outbox.
     Send(String),
+    /// Write the cover the canvas asked for into the mapping, then say so.
+    Cover(CoverAsk),
     /// Finish what the pipe refused last time.
     Flush,
     Copy(u32),
@@ -768,7 +843,12 @@ impl Supervisor {
             };
 
             let started = self.host.start(&mapping);
-            let (mut run, stdout) = match started {
+            let Started {
+                mut run,
+                stdout,
+                wants,
+                mut cover,
+            } = match started {
                 Ok(started) => started,
 
                 // A failed start already counts as an exit.
@@ -804,7 +884,7 @@ impl Supervisor {
                 state.session = session;
                 state.ended = None;
                 state.pending = None;
-                state.out.restart();
+                state.out.restart(wants);
             }
             self.set(Phase::Running, None);
 
@@ -816,7 +896,7 @@ impl Supervisor {
                     .spawn(move || read(shared, session, stdout, limits))
             };
             let exit = match &reader {
-                Ok(_) => self.drive(run.as_mut(), &mapping),
+                Ok(_) => self.drive(run.as_mut(), &mapping, cover.as_mut()),
                 Err(e) => {
                     log::warn!("render target {}: nothing reads it: {e}", self.tag);
                     Exit::Stop
@@ -833,6 +913,7 @@ impl Supervisor {
             drop(run);
             self.join_reader(session, reader.ok());
             drop(mapping);
+            drop(cover);
 
             match exit {
                 Exit::Stop => return,
@@ -953,7 +1034,12 @@ impl Supervisor {
 
     /// One session's life: copies on announce, pause lines on change, and
     /// the canvas's lines while it runs unpaused.
-    fn drive(&mut self, run: &mut dyn Run, mapping: &Mapping) -> Exit {
+    fn drive(
+        &mut self,
+        run: &mut dyn Run,
+        mapping: &Mapping,
+        mut cover: Option<&mut Cover>,
+    ) -> Exit {
         let limits = self.limits;
         let mut told = false;
         let mut pipe = Pipe::default();
@@ -996,6 +1082,12 @@ impl Supervisor {
                         }
                         if paused != told {
                             break Job::Pause(paused);
+                        }
+                        if !paused
+                            && cover.is_some()
+                            && let Some(ask) = state.out.take_cover()
+                        {
+                            break Job::Cover(ask);
                         }
                         if !paused {
                             match state.out.next(now) {
@@ -1052,6 +1144,14 @@ impl Supervisor {
                 }
                 Job::Send(line) => Some(line),
                 Job::Flush => None,
+
+                // Off the UI thread and outside the lock: the decode is the
+                // memo's, so targets after the first only copy.
+                Job::Cover(ask) => cover.as_deref_mut().map(|cover| {
+                    let pixels = cover_pixels(&ask);
+                    let seq = cover.write(pixels.as_deref().map(Vec::as_slice));
+                    cover_line(pixels.is_some().then_some(seq))
+                }),
 
                 Job::Copy(slot) => {
                     match self.copy(mapping, slot, &mut last_seq) {
@@ -1227,17 +1327,142 @@ impl Pipe {
 // ── What a renderer is sent ──
 //
 // The boundary of ADR 37's trust rules. Past `hello` and `pause`, a renderer
-// is sent exactly the two things its enable card names (`plugins::grants`):
-// the music's signals, as the pool's values, names, kinds and bands with the
+// is sent exactly what its enable card names (`plugins::grants`): the
+// music's signals, as the pool's values, names, kinds and bands with the
 // playing position, and the pointer while it's over the target's own
-// surface. No track, path, key or other item's input crosses here. A new
-// kind of line needs a new grant and new card copy first.
+// surface. One whose approved manifest asks also gets the theme's colours,
+// and the playing track's cover as pixels with a counter, never its path or
+// any word about the track. No other key or item's input crosses here. A
+// new kind of line needs a new grant and new card copy first.
 
 /// One frame's reading for every target a canvas draws.
 pub(crate) struct Feed {
     pool: String,
     /// None once playback stopped and the signals came to rest.
     signals: Option<String>,
+    /// The palette line, for a renderer granted it.
+    palette: Option<String>,
+    /// The playing track's cover, for a renderer granted it.
+    cover: Option<CoverAsk>,
+}
+
+/// Which cover a renderer should hold now: the playing track's, read from
+/// the thumbnail store. Compared by the track alone. The path never leaves
+/// rox: the renderer gets pixels.
+#[derive(Clone, Default)]
+pub(crate) struct CoverAsk {
+    track: Option<PathBuf>,
+    store: Option<Store>,
+}
+
+type Store = Arc<Mutex<rox_library::rusqlite::Connection>>;
+
+impl CoverAsk {
+    pub(crate) fn new(track: Option<PathBuf>, store: Option<Store>) -> CoverAsk {
+        CoverAsk { track, store }
+    }
+
+    fn same(&self, other: &CoverAsk) -> bool {
+        self.track == other.track
+    }
+}
+
+/// `{"palette": {...}}`: the theme's colours as a window shows them once
+/// any ease lands, with the cover's own two when song theming is on. A
+/// renderer can tell from them when the album changes, never which album.
+pub(crate) fn palette_line(colours: &Palette, art: Option<&Seed>) -> String {
+    let hex = |color: gpui::Rgba| serde_json::Value::from(palette::to_hex(color));
+
+    let mut named = serde_json::json!({
+        "background": hex(colours.bg_root),
+        "surface": hex(colours.bg_panel),
+        "text": hex(colours.text),
+        "muted": hex(colours.text_muted),
+        "accent": hex(colours.accent),
+        "highlight": hex(colours.highlight),
+        "dark": !palette::reads_light(colours.bg_root),
+    });
+
+    if let Some(seed) = art {
+        if let Some(primary) = seed.primary {
+            named["art_primary"] = hex(primary);
+        }
+        if let Some(secondary) = seed.secondary {
+            named["art_secondary"] = hex(secondary);
+        }
+    }
+
+    format!("{}\n", serde_json::json!({ "palette": named }))
+}
+
+/// A signal as the card and the canvas editor list it: its kind and band,
+/// after the renderer's name for it when it gives one, so a name can't pass
+/// for another kind of signal.
+pub(crate) fn signal_words(signal: &Signal) -> String {
+    let unnamed = Signal {
+        name: String::new(),
+        ..signal.clone()
+    };
+    let kind = rox_panel_api::signal_ui::signal_label(&unnamed);
+
+    match signal.given_name() {
+        Some(name) => {
+            rox_i18n::t!("canvas-target-signal-named", name = name, signal = kind).to_string()
+        }
+        None => kind,
+    }
+}
+
+/// `{"cover": n}` after a write, n the even counter in the mapping, and
+/// `{"cover": null}` when nothing plays or the track has no cover.
+fn cover_line(seq: Option<u64>) -> String {
+    format!("{}\n", serde_json::json!({ "cover": seq }))
+}
+
+/// The last cover worked out, shared by every target, so a second target
+/// for the same track copies rather than decodes again.
+static COVER_MEMO: Mutex<Option<(PathBuf, Square)>> = Mutex::new(None);
+
+/// A cover's square, or None for a track without one.
+type Square = Option<Arc<Vec<u8>>>;
+
+/// The playing track's cover as the mapping's square, from the 256 pixel
+/// thumbnail the library's own art cache keeps. Blocking: a cover's first
+/// sight reads the file. Never on the UI thread, and never the network: a
+/// remote row answers only from the store.
+fn cover_pixels(ask: &CoverAsk) -> Square {
+    let track = ask.track.as_ref()?;
+    let mut memo = COVER_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((held, pixels)) = memo.as_ref()
+        && held == track
+    {
+        return pixels.clone();
+    }
+
+    let pixels = ask
+        .store
+        .as_ref()
+        .and_then(|store| rox_library::thumbs::thumbnail(store, track))
+        .and_then(|bytes| cover_square(&bytes))
+        .map(Arc::new);
+    *memo = Some((track.clone(), pixels.clone()));
+
+    pixels
+}
+
+/// An image file's bytes scaled to fit the cover square, letterboxed.
+fn cover_square(bytes: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let [_, _, width, height] = cover::fit(image.width(), image.height())?;
+
+    let image = match (image.width(), image.height()) == (width, height) {
+        true => image,
+        false => {
+            image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
+        }
+    };
+
+    cover::letterbox(image.as_raw(), width, height)
 }
 
 /// `{"pool": [{"id": 3, "name": "Bass", "kind": "band", "low": 30, "high":
@@ -1370,14 +1595,24 @@ impl Pointer {
 }
 
 /// What the canvas has for a renderer and the pipe hasn't taken. Bounded
-/// whatever the renderer does: the newest pool line, the newest signals
-/// line, and at most [`POINTER_QUEUE`] pointer events.
+/// whatever the renderer does: the newest pool line, the newest palette and
+/// cover, the newest signals line, and at most [`POINTER_QUEUE`] pointer
+/// events.
 #[derive(Default)]
 struct Outbox {
+    /// What this session was granted. The palette and the cover go only
+    /// where it says so.
+    wants: Wants,
     /// The pool's line as the canvas last gave it.
     pool: Option<String>,
     /// This session hasn't been sent that line yet.
     pool_due: bool,
+    /// The palette's line as the canvas last gave it.
+    palette: Option<String>,
+    palette_due: bool,
+    /// The cover as the canvas last asked for it.
+    cover: Option<CoverAsk>,
+    cover_due: bool,
     /// Lossy: a newer reading replaces one not yet sent.
     signals: Option<String>,
     pointer: VecDeque<Pointer>,
@@ -1390,6 +1625,30 @@ impl Outbox {
             self.pool = Some(line.to_string());
             self.pool_due = true;
         }
+    }
+
+    fn name_palette(&mut self, line: &str) {
+        if self.palette.as_deref() != Some(line) {
+            self.palette = Some(line.to_string());
+            self.palette_due = self.wants.palette;
+        }
+    }
+
+    fn ask_cover(&mut self, ask: &CoverAsk) {
+        if !self.cover.as_ref().is_some_and(|held| held.same(ask)) {
+            self.cover = Some(ask.clone());
+            self.cover_due = self.wants.cover;
+        }
+    }
+
+    /// The cover to write next, once, for a session granted it.
+    fn take_cover(&mut self) -> Option<CoverAsk> {
+        if !(self.cover_due && self.wants.cover) {
+            return None;
+        }
+
+        self.cover_due = false;
+        self.cover.clone()
     }
 
     fn point(&mut self, pointer: Pointer) {
@@ -1410,9 +1669,13 @@ impl Outbox {
         self.pointer.push_back(pointer);
     }
 
-    /// A new session hasn't heard the pool, and nothing queued was for it.
-    fn restart(&mut self) {
+    /// A new session hasn't heard the pool, the palette or the cover, and
+    /// nothing queued was for it.
+    fn restart(&mut self, wants: Wants) {
+        self.wants = wants;
         self.pool_due = self.pool.is_some();
+        self.palette_due = wants.palette && self.palette.is_some();
+        self.cover_due = wants.cover && self.cover.is_some();
         self.signals = None;
         self.pointer.clear();
         self.last_move = None;
@@ -1432,6 +1695,14 @@ impl Outbox {
         {
             self.pool_due = false;
             return Ok(pool.clone());
+        }
+
+        if self.palette_due
+            && self.wants.palette
+            && let Some(palette) = &self.palette
+        {
+            self.palette_due = false;
+            return Ok(palette.clone());
         }
 
         let mut held = None;
@@ -1643,6 +1914,10 @@ impl Target {
         self.source.point(pointer);
     }
 
+    fn cover(&self, ask: &CoverAsk) {
+        self.source.cover(ask);
+    }
+
     pub(crate) fn name(&self) -> Option<String> {
         self.source.name()
     }
@@ -1758,6 +2033,8 @@ pub(crate) struct Targets {
     feed: Option<Feed>,
     /// Playback stopped and the signals are still falling to rest.
     tail: bool,
+    /// The playing track's cover as last asked for.
+    cover: CoverAsk,
 }
 
 /// Whether any item in the canvas, a group's child included, is a render
@@ -1772,7 +2049,13 @@ impl Targets {
     /// Reads the hub for this frame's targets. Once playback stops the
     /// signals go on only until they come to rest, so a paused canvas reads
     /// the hub no more. Call it only on a frame the canvas draws anyway.
-    pub(crate) fn read(&mut self, hub: &SignalHub, running: bool, time: impl FnOnce() -> f64) {
+    pub(crate) fn read(
+        &mut self,
+        hub: &SignalHub,
+        running: bool,
+        time: impl FnOnce() -> f64,
+        palette: String,
+    ) {
         let send = if running {
             self.tail = true;
             true
@@ -1787,7 +2070,26 @@ impl Targets {
         self.feed = Some(Feed {
             pool: pool_line(&pool),
             signals: send.then(|| signals_line(&pool, hub, time())),
+            palette: Some(palette),
+            cover: Some(self.cover.clone()),
         });
+    }
+
+    /// The playing track moved. Every target that runs hears it now,
+    /// without a frame drawn for it, and one paused hears it on its next.
+    pub(crate) fn follow_cover(&mut self, ask: CoverAsk) {
+        if self.cover.same(&ask) {
+            return;
+        }
+
+        for target in self
+            .shown
+            .values()
+            .filter_map(|shown| shown.target.as_ref())
+        {
+            target.cover(&ask);
+        }
+        self.cover = ask;
     }
 
     /// A pointer event for target `id`. The canvas sends one only off
@@ -1953,6 +2255,7 @@ mod tests {
     use std::sync::mpsc;
 
     use rox_frames::Writer;
+    use rox_frames::cover::{CoverRead, CoverReader};
 
     use super::*;
 
@@ -2018,11 +2321,15 @@ mod tests {
 
     #[derive(Clone)]
     struct FakeHost {
+        /// What each session is granted past the pool and the pointer.
+        wants: Wants,
         sessions: mpsc::Sender<Fake>,
         exits: Arc<AtomicUsize>,
         due: Arc<Mutex<Option<Duration>>>,
         /// What the gate says, None to let it start.
         refuse: Arc<Mutex<Option<Refused>>>,
+        /// The cover mapping the next session is lent.
+        cover: Arc<Mutex<Option<Cover>>>,
         forgiven: Arc<AtomicUsize>,
         stuck: Arc<AtomicBool>,
     }
@@ -2052,7 +2359,12 @@ mod tests {
                 stdout,
                 stuck: self.stuck.clone(),
             };
-            Ok((Box::new(run), Box::new(stdout_r)))
+            Ok(Started {
+                run: Box::new(run),
+                stdout: Box::new(stdout_r),
+                wants: self.wants,
+                cover: self.cover.lock().unwrap().take(),
+            })
         }
 
         fn due(&self) -> Option<Duration> {
@@ -2090,6 +2402,8 @@ mod tests {
         source: Source,
         host: FakeHost,
         sessions: mpsc::Receiver<Fake>,
+        /// The renderer's view of the cover mapping, when it's granted one.
+        cover: Option<CoverReader>,
     }
 
     impl Rig {
@@ -2098,8 +2412,18 @@ mod tests {
         }
 
         fn refusing(limits: Limits, refused: Option<Refused>) -> Rig {
+            Rig::granted(limits, refused, Wants::default())
+        }
+
+        fn granted(limits: Limits, refused: Option<Refused>, wants: Wants) -> Rig {
             let (tx, sessions) = mpsc::channel();
+            let cover = wants.cover.then(|| Cover::create().unwrap());
+            let reader = cover
+                .as_ref()
+                .map(|cover| CoverReader::open(cover.child_handle()).unwrap());
             let host = FakeHost {
+                wants,
+                cover: Arc::new(Mutex::new(cover)),
                 sessions: tx,
                 exits: Arc::default(),
                 due: Arc::new(Mutex::new(Some(Duration::ZERO))),
@@ -2120,6 +2444,7 @@ mod tests {
                 source,
                 host,
                 sessions,
+                cover: reader,
             }
         }
 
@@ -2472,6 +2797,18 @@ mod tests {
         Feed {
             pool: format!("{pool}\n"),
             signals: Some(format!("{signals}\n")),
+            palette: None,
+            cover: None,
+        }
+    }
+
+    /// A frame's reading with a palette line and a cover asked for.
+    fn full_feed(palette: &str, cover: CoverAsk) -> Feed {
+        Feed {
+            pool: "{\"pool\":[]}\n".into(),
+            signals: Some("{\"signals\":[],\"time\":0.0}\n".into()),
+            palette: Some(format!("{palette}\n")),
+            cover: Some(cover),
         }
     }
 
@@ -2843,6 +3180,247 @@ mod tests {
             "{\"pointer\":{\"kind\":\"scroll\",\"x\":0.25,\"y\":1.0,\"dx\":0.0,\"dy\":-1.0}}\n"
         );
         assert_eq!(rounded(f64::NAN, 4), 0.);
+
+        // A renderer granted nothing past the pool and the pointer is sent
+        // no palette and written no cover, whatever the canvas hands over.
+        let mut out = Outbox::default();
+        out.restart(Wants::default());
+        out.name_pool("{\"pool\":[]}\n");
+        out.name_palette(&palette_line(&Palette::default(), None));
+        out.ask_cover(&CoverAsk::new(Some("a.flac".into()), None));
+        assert_eq!(out.take_cover().map(|ask| ask.track), None);
+        assert_eq!(
+            drain(&mut out, Instant::now()),
+            [r#"{"pool":[]}"#],
+            "nothing new for a renderer that didn't ask"
+        );
+    }
+
+    #[test]
+    fn a_renderer_that_asks_for_nothing_is_sent_nothing_new() {
+        let rig = Rig::new(slow());
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        let ask = CoverAsk::new(Some("never-sent.flac".into()), None);
+        rig.source.feed(&full_feed(
+            r##"{"palette":{"accent":"#ff0000"}}"##,
+            ask.clone(),
+        ));
+        rig.source.cover(&ask);
+
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pool":[]}"#));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"signals":[],"time":0.0}"#));
+        settle();
+        assert!(fake.stdin.try_recv().is_err(), "no palette, no cover");
+
+        rig.finish();
+    }
+
+    #[test]
+    fn the_palette_goes_once_per_change_and_never_while_paused() {
+        let wants = Wants {
+            palette: true,
+            ..Wants::default()
+        };
+        let rig = Rig::granted(slow(), None, wants);
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        let red = r##"{"palette":{"accent":"#ff0000"}}"##;
+        let blue = r##"{"palette":{"accent":"#0000ff"}}"##;
+        let green = r##"{"palette":{"accent":"#00ff00"}}"##;
+        let signals = r#"{"signals":[],"time":0.0}"#;
+
+        rig.source.feed(&full_feed(red, CoverAsk::default()));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pool":[]}"#));
+        assert_eq!(fake.told().as_deref(), Some(red));
+        assert_eq!(fake.told().as_deref(), Some(signals));
+
+        rig.source.feed(&full_feed(red, CoverAsk::default()));
+        assert_eq!(
+            fake.told().as_deref(),
+            Some(signals),
+            "the same palette isn't sent twice"
+        );
+
+        rig.source.feed(&full_feed(blue, CoverAsk::default()));
+        assert_eq!(fake.told().as_deref(), Some(blue));
+        assert_eq!(fake.told().as_deref(), Some(signals));
+
+        // Paused, the change waits, and the state on resume goes once.
+        rig.source.hold();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+        rig.source.feed(&full_feed(red, CoverAsk::default()));
+        settle();
+        assert!(fake.stdin.try_recv().is_err(), "nothing while paused");
+
+        rig.source.take();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        rig.source.feed(&full_feed(green, CoverAsk::default()));
+        assert_eq!(fake.told().as_deref(), Some(green));
+        assert_eq!(fake.told().as_deref(), Some(signals));
+        settle();
+        assert!(fake.stdin.try_recv().is_err());
+
+        rig.finish();
+    }
+
+    /// A thumbnail store holding one picture under `key`.
+    fn store_with(key: &str, width: u32, height: u32, rgba: [u8; 4]) -> Store {
+        let dir =
+            std::env::temp_dir().join(format!("rox-target-cover-{key}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = rox_library::thumbs::open(&dir.join("thumbs.db")).unwrap();
+
+        let picture = image::RgbaImage::from_pixel(width, height, image::Rgba(rgba));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(picture)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        rox_library::thumbs::store_bytes(&conn, png.get_ref(), key).unwrap();
+
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn pixel(square: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let at = (y * cover::STRIDE + x * 4) as usize;
+        [square[at], square[at + 1], square[at + 2], square[at + 3]]
+    }
+
+    #[test]
+    fn the_cover_is_written_whole_then_named_by_its_counter() {
+        let wants = Wants {
+            cover: true,
+            ..Wants::default()
+        };
+        let rig = Rig::granted(slow(), None, wants);
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+        let reader = rig.cover.as_ref().unwrap();
+        let mut got = Vec::new();
+
+        let key = "target-test-wide-red";
+        let store = store_with(key, 64, 32, [255, 0, 0, 255]);
+        let playing = CoverAsk::new(Some(key.into()), Some(store.clone()));
+
+        rig.source.feed(&full_feed("{}", playing.clone()));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"cover":2}"#));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pool":[]}"#));
+        assert_eq!(reader.read(&mut got), CoverRead::Whole(2));
+
+        // 64 by 32 fits as 256 by 128, with bands above and below.
+        assert_eq!(pixel(&got, 128, 10), [0, 0, 0, 0]);
+        assert_eq!(pixel(&got, 128, 250), [0, 0, 0, 0]);
+        let [r, g, b, a] = pixel(&got, 128, 128);
+        assert!(
+            r > 200 && g < 60 && b < 60 && a == 255,
+            "{:?}",
+            (r, g, b, a)
+        );
+
+        // Asked again for the same track, nothing goes.
+        rig.source.cover(&playing);
+        settle();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"signals":[],"time":0.0}"#));
+        assert!(fake.stdin.try_recv().is_err());
+
+        // Nothing playing is a transparent square and a null.
+        rig.source.cover(&CoverAsk::new(None, Some(store.clone())));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"cover":null}"#));
+        assert_eq!(reader.read(&mut got), CoverRead::Whole(4));
+        assert!(got.iter().all(|&b| b == 0));
+
+        // A track change while paused waits for the resume, then goes once.
+        rig.source.hold();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+        rig.source.cover(&playing);
+        settle();
+        assert!(fake.stdin.try_recv().is_err(), "nothing while paused");
+        assert_eq!(reader.seq(), 4, "and nothing written");
+
+        rig.source.take();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        rig.source.feed(&full_feed("{}", playing));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"cover":6}"#));
+        assert_eq!(reader.read(&mut got), CoverRead::Whole(6));
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_tall_cover_is_letterboxed_left_and_right() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            50,
+            100,
+            image::Rgba([0, 0, 255, 255]),
+        ))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+
+        let square = cover_square(png.get_ref()).unwrap();
+        assert_eq!(square.len(), cover::PIXEL_BYTES);
+        assert_eq!(pixel(&square, 10, 128), [0, 0, 0, 0]);
+        assert_eq!(pixel(&square, 128, 128), [0, 0, 255, 255]);
+        assert_eq!(pixel(&square, 245, 128), [0, 0, 0, 0]);
+        assert_eq!(cover_square(b"not a picture"), None);
+
+        assert_eq!(
+            renderers::COVER_SIDE,
+            cover::SIZE,
+            "hello's size is the mapping's"
+        );
+    }
+
+    #[test]
+    fn the_palette_line_names_its_colours() {
+        let keys = |line: &str| {
+            let read: serde_json::Value = serde_json::from_str(line).unwrap();
+            let named = read["palette"].as_object().unwrap().clone();
+            (named.keys().cloned().collect::<Vec<_>>(), named)
+        };
+
+        let dark = palette_line(&Palette::default(), None);
+        assert_eq!(dark.matches('\n').count(), 1, "one line");
+        let (names, named) = keys(&dark);
+        assert_eq!(
+            names,
+            [
+                "background",
+                "surface",
+                "text",
+                "muted",
+                "accent",
+                "highlight",
+                "dark"
+            ]
+        );
+        assert_eq!(named["background"], "#121212");
+        assert_eq!(named["accent"], "#ffb300");
+        assert_eq!(named["dark"], true);
+
+        let (_, light) = keys(&palette_line(&Palette::light(), None));
+        assert_eq!(light["dark"], false);
+
+        let seed = Seed {
+            primary: Some(gpui::rgb(0xff0000)),
+            secondary: Some(gpui::rgb(0x0000ff)),
+            lightness: 0.5,
+        };
+        let (names, named) = keys(&palette_line(&Palette::default(), Some(&seed)));
+        assert!(names.contains(&"art_primary".to_string()));
+        assert_eq!(named["art_primary"], "#ff0000");
+        assert_eq!(named["art_secondary"], "#0000ff");
+
+        let grey = Seed {
+            primary: None,
+            secondary: None,
+            lightness: 0.5,
+        };
+        let (names, _) = keys(&palette_line(&Palette::default(), Some(&grey)));
+        assert_eq!(names.len(), 7, "a cover with no colour adds none");
     }
 
     #[test]

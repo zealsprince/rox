@@ -36,7 +36,7 @@ use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{PickRow, Tip, search_picker};
 
 use crate::canvas::shader::{self as shader_item, RowState};
-use crate::canvas::{cost, edit, states, text};
+use crate::canvas::{cost, edit, states, target, text};
 use crate::keymap;
 use crate::objects::{self, Dialog};
 use crate::panels::canvas::{self, CanvasPanel};
@@ -77,11 +77,18 @@ pub(crate) struct Inspector {
     preview: Option<(String, String)>,
     /// The case opacity sliders, by case id.
     case_scrubs: RefCell<HashMap<String, ScrubState>>,
-    /// The renderer picker's rows, as of a plugin host generation. Reading
-    /// the list goes to disk, and a running target redraws the inspector
-    /// with every frame it shows.
-    renderers: Option<(u64, Vec<(String, String)>)>,
+    /// The renderer picker's rows and the renderers behind them, as of a
+    /// plugin host generation. Reading the list goes to disk, and a running
+    /// target redraws the inspector with every frame it shows.
+    renderers: Option<RendererRows>,
 }
+
+/// A generation, the picker's owner and label pairs, and the renderers.
+type RendererRows = (
+    u64,
+    Vec<(String, String)>,
+    Vec<rox_services::renderers::Renderer>,
+);
 
 impl Inspector {
     pub(crate) fn on_left(&self) -> bool {
@@ -209,10 +216,11 @@ pub(crate) fn render(
             .inspector
             .renderers
             .as_ref()
-            .is_none_or(|(seen, _)| *seen != generation)
+            .is_none_or(|(seen, ..)| *seen != generation)
         {
-            let rows = canvas::target_choices(&rox_services::renderers::all());
-            panel.inspector.renderers = Some((generation, rows));
+            let renderers = rox_services::renderers::all();
+            let rows = canvas::target_choices(&renderers);
+            panel.inspector.renderers = Some((generation, rows, renderers));
         }
     }
 
@@ -1524,7 +1532,7 @@ fn target_rows(
         .inspector
         .renderers
         .as_ref()
-        .map(|(_, rows)| {
+        .map(|(_, rows, _)| {
             rows.iter()
                 .map(|(owner, label)| (owner.clone(), SharedString::from(label.clone())))
                 .collect()
@@ -1629,7 +1637,48 @@ fn target_rows(
             resolution,
         ))
         .children(target_status(panel, item, cx))
+        .children(target_signals(panel, owner, cx))
         .into_any_element()
+}
+
+/// The offer the prompt made when the target was placed, kept here while
+/// any of what its renderer asks for is missing from the pool.
+fn target_signals(
+    panel: &CanvasPanel,
+    owner: &str,
+    cx: &mut Context<CanvasPanel>,
+) -> Option<AnyElement> {
+    let (_, _, renderers) = panel.inspector.renderers.as_ref()?;
+    let missing = panel.missing_signals(owner, renderers);
+    if missing.is_empty() {
+        return None;
+    }
+
+    let words: Vec<String> = missing.iter().map(target::signal_words).collect();
+    let owner = owner.to_string();
+    let add = settings_ui::small_button(
+        rox_i18n::t!("canvas-target-signals-add"),
+        icons::PLUS,
+        false,
+        cx.listener(move |this, _, _, cx| this.add_wanted_signals(&owner, cx)),
+    )
+    .keyed("canvas-target-signals-add");
+
+    Some(
+        setting_block(
+            rox_i18n::t!("canvas-target-signals"),
+            None,
+            Some(add.into_any_element()),
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!(
+                    "canvas-target-signals-missing",
+                    signals = words.join(", ")
+                )),
+        )
+        .into_any_element(),
+    )
 }
 
 /// The session's line, read from what the target holds. It moves when the
@@ -2605,6 +2654,38 @@ pub(crate) fn object_dialog(
             );
 
             (body, vec![cancel, remove], 320.)
+        }
+
+        // Additive, as a place is: Add wears the accent, and Escape or Not
+        // Now leaves the pool as it was.
+        Dialog::Signals { name, words, .. } => {
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_SM)
+                .child(div().child(rox_i18n::t!(
+                    "canvas-target-signals-title",
+                    name = name.as_str()
+                )))
+                .child(line(rox_i18n::t!("canvas-target-signals-body")))
+                .children(
+                    words
+                        .iter()
+                        .map(|word| line(SharedString::from(word.clone()))),
+                );
+
+            let not_now = settings_ui::dialog_button(
+                rox_i18n::t!("canvas-target-signals-not-now"),
+                false,
+                cx.listener(|this, _, window, cx| this.close_object_dialog(window, cx)),
+            );
+            let add = settings_ui::dialog_button(
+                rox_i18n::t!("canvas-target-signals-confirm"),
+                true,
+                cx.listener(|this, _, window, cx| this.confirm_signals(window, cx)),
+            );
+
+            (body, vec![not_now, add], 360.)
         }
     };
 

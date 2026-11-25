@@ -156,4 +156,4 @@ winresource = "0.1"
 gpui = { workspace = true, features = ["test-support"] }
 # The renderer's side of the mapping, for the render target's tests only.
 # Never a normal dependency: rox's own build has no way to write a frame.
-rox-frames = { path = "../rox-frames", features = ["writer"] }
+rox-frames = { path = "../rox-frames", features = ["writer", "cover-reader"] }

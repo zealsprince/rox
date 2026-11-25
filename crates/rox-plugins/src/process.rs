@@ -25,8 +25,9 @@ pub struct Process {
     child: Child,
     #[cfg(windows)]
     job: Option<job::Job>,
-    /// The extra handle's value inside the child, on Windows only.
-    handle: Option<u64>,
+    /// The lent handles' values inside the child, in lending order, on
+    /// Windows only.
+    handles: Vec<u64>,
 }
 
 pub struct Pipes {
@@ -57,6 +58,20 @@ pub enum Extra<'a> {
     /// Windows a copy with the lent access is made in the child once it
     /// runs, and [`Process::handle`] says its value.
     Handle(Lent<'a>),
+    /// Several, in order: fd 3, 4 and on up on Unix, with every fd past the
+    /// last closed at exec. On Windows a copy of each, and
+    /// [`Process::handles`] says their values in the same order.
+    Handles(Vec<Lent<'a>>),
+}
+
+impl<'a> Extra<'a> {
+    fn lent(self) -> Vec<Lent<'a>> {
+        match self {
+            Extra::None => Vec::new(),
+            Extra::Handle(lent) => vec![lent],
+            Extra::Handles(lent) => lent,
+        }
+    }
 }
 
 /// Starts `command` in the plugin folder with its pipes attached. The
@@ -102,14 +117,16 @@ pub fn spawn_with(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    // Held until the spawn returns: the child dups it onto fd 3.
+    let lent = extra.lent();
+
+    // Held until the spawn returns: the child dups them onto fd 3 and up.
     #[cfg(unix)]
-    let _lent = match &extra {
-        Extra::None => {
+    let _lent = match lent.as_slice() {
+        [] => {
             unix::inherit_pipes_only(&mut command);
-            None
+            Vec::new()
         }
-        Extra::Handle(fd) => Some(unix::lend(&mut command, *fd)?),
+        fds => unix::lend(&mut command, fds)?,
     };
 
     let mut child = command
@@ -126,20 +143,21 @@ pub fn spawn_with(
     };
 
     #[cfg(windows)]
-    let handle = match &extra {
-        Extra::None => None,
-        Extra::Handle(lent) => match job::lend(&child, *lent) {
-            Ok(value) => Some(value),
+    let mut handles = Vec::with_capacity(lent.len());
+    #[cfg(windows)]
+    for lent in &lent {
+        match job::lend(&child, *lent) {
+            Ok(value) => handles.push(value),
             Err(e) => {
                 drop(job);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("could not hand over the handle: {e}"));
             }
-        },
-    };
+        }
+    }
     #[cfg(unix)]
-    let handle = None;
+    let handles = Vec::new();
 
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -160,7 +178,7 @@ pub fn spawn_with(
         child,
         #[cfg(windows)]
         job,
-        handle,
+        handles,
     };
 
     Ok((process, Pipes { stdin, stdout }))
@@ -173,46 +191,56 @@ mod unix {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 
-    /// The fd a lent handle arrives as.
+    /// The fd the first lent handle arrives as.
     pub const FD: RawFd = 3;
 
-    /// Sets the child up to get `fd` as fd 3 and nothing past it. Answers a
-    /// copy of `fd` numbered above 3, to keep open until the spawn returns.
+    /// Sets the child up to get `fds` as fd 3, 4 and on, and nothing past
+    /// them. Answers copies of `fds` numbered above the last of those, to
+    /// keep open until the spawn returns.
     ///
-    /// The copy is what the child dups from. A handle that already sits at
-    /// fd 3 would otherwise be the target of its own dup, and one at 0 to 2
-    /// is overwritten by the pipes before `pre_exec` runs.
-    pub fn lend(command: &mut Command, fd: BorrowedFd) -> Result<OwnedFd, String> {
-        // SAFETY: fcntl on a borrowed open fd; the result is a fresh fd this
-        // function owns.
-        let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, FD + 1) };
-        if copy < 0 {
-            return Err(format!(
-                "could not copy the handle: {}",
-                io::Error::last_os_error()
-            ));
-        }
-        // SAFETY: `copy` was just opened and nothing else holds it.
-        let copy = unsafe { OwnedFd::from_raw_fd(copy) };
+    /// The copies are what the child dups from. A handle that already sits
+    /// where another lands would be overwritten by that dup, and one at 0 to
+    /// 2 is overwritten by the pipes before `pre_exec` runs.
+    pub fn lend(command: &mut Command, fds: &[BorrowedFd]) -> Result<Vec<OwnedFd>, String> {
+        let count = RawFd::try_from(fds.len()).map_err(|_| "too many handles".to_string())?;
+        let past = FD + count;
 
-        let source = copy.as_raw_fd();
+        let mut copies = Vec::with_capacity(fds.len());
+        for fd in fds {
+            // SAFETY: fcntl on a borrowed open fd; the result is a fresh fd
+            // this function owns.
+            let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, past) };
+            if copy < 0 {
+                return Err(format!(
+                    "could not copy the handle: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            // SAFETY: `copy` was just opened and nothing else holds it.
+            copies.push(unsafe { OwnedFd::from_raw_fd(copy) });
+        }
+
+        let sources: Vec<RawFd> = copies.iter().map(AsRawFd::as_raw_fd).collect();
         let limit = open_max();
 
         // SAFETY: the closure runs in the forked child before exec and only
-        // makes async-signal-safe calls: dup2, fcntl and close_range.
+        // makes async-signal-safe calls: dup2, fcntl and close_range. It
+        // reads `sources`, allocated before the fork, and allocates nothing.
         unsafe {
             command.pre_exec(move || {
-                // dup2 leaves the new fd without close-on-exec.
-                if libc::dup2(source, FD) < 0 {
-                    return Err(io::Error::last_os_error());
+                for (at, source) in (FD..).zip(&sources) {
+                    // dup2 leaves the new fd without close-on-exec.
+                    if libc::dup2(*source, at) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
                 }
 
-                close_from(FD + 1, limit);
+                close_from(past, limit);
                 Ok(())
             });
         }
 
-        Ok(copy)
+        Ok(copies)
     }
 
     /// Sets the child up to keep its three pipes and nothing past them.
@@ -378,10 +406,16 @@ impl Process {
         self.child.id()
     }
 
-    /// The lent handle's value in the child on Windows. None on Unix, where
-    /// it is always fd 3, and when nothing was lent.
+    /// The first lent handle's value in the child on Windows. None on Unix,
+    /// where it is always fd 3, and when nothing was lent.
     pub fn handle(&self) -> Option<u64> {
-        self.handle
+        self.handles.first().copied()
+    }
+
+    /// Every lent handle's value in the child on Windows, in lending order.
+    /// Empty on Unix, where they are fd 3 and up.
+    pub fn handles(&self) -> &[u64] {
+        &self.handles
     }
 
     pub fn exited(&mut self) -> Option<ExitStatus> {
@@ -594,15 +628,20 @@ mod tests {
     fn lend_to(tag: &str, file: &std::fs::File, script: &str) -> String {
         use std::os::fd::AsFd;
 
+        lend_with(tag, Extra::Handle(file.as_fd()), script)
+    }
+
+    #[cfg(unix)]
+    fn lend_with(tag: &str, extra: Extra, script: &str) -> String {
         let dir =
             std::env::temp_dir().join(format!("rox-plugins-lend-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut command = Command::new("sh");
         command.arg("-c").arg(script);
-        let (mut process, pipes) =
-            spawn_with("renderer", tag, command, &dir, Extra::Handle(file.as_fd())).unwrap();
+        let (mut process, pipes) = spawn_with("renderer", tag, command, &dir, extra).unwrap();
         assert_eq!(process.handle(), None, "Unix names no handle: it's fd 3");
+        assert!(process.handles().is_empty());
 
         let mut out = String::new();
         let mut stdout = pipes.stdout;
@@ -682,6 +721,40 @@ mod tests {
         let open: Vec<i32> = out.split_whitespace().map(|n| n.parse().unwrap()).collect();
         // Seeing 3 is what shows the probe finds an open fd at all.
         assert_eq!(open, [0, 1, 2, 3], "the child holds {out:?}; {raw} leaked");
+
+        drop(held);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_handles_arrive_as_fd_three_and_four_and_nothing_else_does() {
+        use std::os::fd::{AsFd, AsRawFd};
+
+        let (path, held) = careless_fd("two-leak");
+        let raw = held.as_raw_fd();
+        let (frames_path, frames) = scratch_file("two-frames", "frames\n");
+        let (cover_path, cover) = scratch_file("two-cover", "cover\n");
+
+        let top = raw.max(frames.as_raw_fd()).max(cover.as_raw_fd()) + 16;
+        let script = format!("cat <&3; cat <&4; {}", fd_probe(top));
+        let extra = Extra::Handles(vec![frames.as_fd(), cover.as_fd()]);
+        let out = lend_with("two", extra, &script);
+        for path in [&path, &frames_path, &cover_path] {
+            let _ = std::fs::remove_file(path);
+        }
+
+        let (read, probed) = out.split_at(out.rfind('\n').unwrap() + 1);
+        assert_eq!(read, "frames\ncover\n", "each in its own place, in order");
+
+        let open: Vec<i32> = probed
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        assert_eq!(
+            open,
+            [0, 1, 2, 3, 4],
+            "the child holds {probed:?}; {raw} leaked"
+        );
 
         drop(held);
     }

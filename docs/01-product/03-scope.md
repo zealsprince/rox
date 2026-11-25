@@ -87,7 +87,9 @@ library's search box never waits on a plugin.
 
 A renderer is a program that draws the picture for a render target, a surface on a
 canvas. rox sends it the music's signals and the input that reaches the surface, and
-shows the frames it sends back. A renderer is installed, approved and switched on the way
+shows the frames it sends back. A renderer can also ask for the signals it follows to
+be offered to the user's pool, for the theme's colours, and for the playing track's cover
+as a picture. Each is named on the card that switches it on. A renderer is installed, approved and switched on the way
 a plugin is, and rox lists it apart from plugins. It never runs code inside rox and never
 touches audio. A layout holding a render target works only where its renderer is
 installed.

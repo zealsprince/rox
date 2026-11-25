@@ -545,6 +545,8 @@ pub struct PlaylistsPanel {
     drag_set: Option<(u64, Arc<[i64]>)>,
     /// A member id, so it survives a rebuild.
     anchor: Option<i64>,
+    /// The member the arrows move from and a shift-extend runs to.
+    cursor: Option<i64>,
     menu_row: Option<usize>,
     /// What a smart playlist refused and why, or how an Unknown favourite's
     /// plugin search went. Cleared on the next refresh.
@@ -678,6 +680,7 @@ impl PlaylistsPanel {
             drag_gen: 0,
             drag_set: None,
             anchor: None,
+            cursor: None,
             menu_row: None,
             refusal: None,
             finding_gen: 0,
@@ -1426,6 +1429,7 @@ impl PlaylistsPanel {
             self.selected = HashSet::from([member]);
             self.anchor = Some(member);
         }
+        self.cursor = Some(member);
         self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
@@ -1444,6 +1448,7 @@ impl PlaylistsPanel {
             return;
         }
         self.anchor = members.first().copied();
+        self.cursor = self.anchor;
         self.selected = members.into_iter().collect();
         self.drag_gen += 1;
         self.publish_selection(cx);
@@ -1491,6 +1496,22 @@ impl PlaylistsPanel {
         self.touch_resume(cx);
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+
+        // Only track rows hold the cursor: headers and album rows are skipped.
+        let cursor = self.cursor.and_then(|member| self.index_of(member));
+        let nav = panel::list_nav(&event.keystroke, cursor, self.rows.len(), |ix| {
+            self.member_at(ix).is_some()
+        });
+        if let Some(ix) = nav {
+            let extend = Modifiers {
+                shift: modifiers.shift,
+                ..Modifiers::default()
+            };
+            self.select(ix, extend, cx);
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Top);
+            return;
+        }
+
         if modifiers.secondary() && key == "a" {
             self.select_all(cx);
             return;
@@ -1513,6 +1534,7 @@ impl PlaylistsPanel {
         }
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         self.drag_gen += 1;
         let source = cx.entity_id();
         self.state

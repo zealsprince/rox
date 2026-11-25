@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Modifiers,
-    MouseButton, MouseDownEvent, SharedString, Stateful, Subscription, UniformListScrollHandle,
-    WeakEntity, Window, div, prelude::*, px, uniform_list,
+    MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Stateful, Subscription,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::Icon;
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -128,6 +128,8 @@ pub struct BookmarksPanel {
     scroll: UniformListScrollHandle,
     selected: HashSet<usize>,
     anchor: Option<usize>,
+    /// The row the arrows move from and a shift-extend runs to.
+    cursor: Option<usize>,
     menu_row: Option<Row>,
     /// The playing track, so the observe only repaints on a track change.
     playing: Option<TrackKey>,
@@ -165,6 +167,7 @@ impl BookmarksPanel {
             scroll: UniformListScrollHandle::new(),
             selected: HashSet::new(),
             anchor: None,
+            cursor: None,
             menu_row: None,
             focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
@@ -222,6 +225,7 @@ impl BookmarksPanel {
         // The rows moved under the indices, so nothing selected survives.
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         self.menu_row = None;
         cx.notify();
     }
@@ -250,6 +254,7 @@ impl BookmarksPanel {
             self.selected = HashSet::from([ix]);
             self.anchor = Some(ix);
         }
+        self.cursor = Some(ix);
         self.publish_selection(cx);
         cx.notify();
     }
@@ -259,6 +264,7 @@ impl BookmarksPanel {
             return;
         }
         self.anchor = Some(0);
+        self.cursor = Some(0);
         self.selected = (0..self.rows.len()).collect();
         self.publish_selection(cx);
         cx.notify();
@@ -270,6 +276,7 @@ impl BookmarksPanel {
         }
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         let source = cx.entity_id();
         self.state
             .selection
@@ -320,6 +327,18 @@ impl BookmarksPanel {
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+
+        if let Some(ix) = panel::list_nav(&event.keystroke, self.cursor, self.rows.len(), |_| true)
+        {
+            let extend = Modifiers {
+                shift: modifiers.shift,
+                ..Modifiers::default()
+            };
+            self.select(ix, extend, cx);
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Top);
+            return;
+        }
+
         if modifiers.secondary() && key == "a" {
             self.select_all(cx);
         } else if key == "escape" {

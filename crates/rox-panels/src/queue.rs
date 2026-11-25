@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, Context, Div, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, KeyDownEvent,
-    Modifiers, MouseButton, MouseDownEvent, SharedString, Stateful, Subscription,
+    Modifiers, MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Stateful, Subscription,
     UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, svg, uniform_list,
 };
 use gpui_component::Icon;
@@ -344,6 +344,8 @@ pub struct QueuePanel {
     drag_gen: u64,
     drag_set: Option<(u64, Arc<[u64]>)>,
     anchor: Option<u64>,
+    /// The entry the arrows move from and a shift-extend runs to.
+    cursor: Option<u64>,
     menu_row: Option<u64>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
@@ -427,6 +429,7 @@ impl QueuePanel {
             drag_gen: 0,
             drag_set: None,
             anchor: None,
+            cursor: None,
             menu_row: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle().tab_stop(true),
@@ -880,6 +883,7 @@ impl QueuePanel {
             self.selected = HashSet::from([entry]);
             self.anchor = Some(entry);
         }
+        self.cursor = Some(entry);
         self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
@@ -899,6 +903,7 @@ impl QueuePanel {
             return;
         }
         self.anchor = entries.first().copied();
+        self.cursor = self.anchor;
         self.selected = entries.into_iter().collect();
         self.drag_gen += 1;
         self.publish_selection(cx);
@@ -954,12 +959,14 @@ impl QueuePanel {
         }
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         if let Some(id) = landing
             .filter(|&ti| ti < self.tracks.len())
             .map(|ti| self.tracks[ti].entry_id)
         {
             self.selected.insert(id);
             self.anchor = Some(id);
+            self.cursor = Some(id);
         }
         self.rebuild_rows();
         self.publish_selection(cx);
@@ -978,6 +985,22 @@ impl QueuePanel {
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+
+        // Headings can't hold the cursor, so the arrows step over them.
+        let cursor = self.cursor.and_then(|entry| self.index_of(entry));
+        let nav = panel::list_nav(&event.keystroke, cursor, self.rows.len(), |ix| {
+            self.entry_at(ix).is_some()
+        });
+        if let Some(ix) = nav {
+            let extend = Modifiers {
+                shift: modifiers.shift,
+                ..Modifiers::default()
+            };
+            self.select(ix, extend, cx);
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Top);
+            return;
+        }
+
         if modifiers.secondary() && key == "a" {
             self.select_all(cx);
             return;
@@ -998,6 +1021,7 @@ impl QueuePanel {
         }
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         self.drag_gen += 1;
         let source = cx.entity_id();
         self.state

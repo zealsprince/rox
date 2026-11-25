@@ -305,31 +305,20 @@ impl StationsPanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    fn step(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
-        if self.stations.is_empty() {
-            return;
-        }
-
-        let last = self.stations.len() - 1;
-        let target = match self.cursor.as_deref().and_then(|url| self.index_of(url)) {
-            Some(ix) => ix.saturating_add_signed(delta).min(last),
-            None => 0,
-        };
-
-        self.select(
-            target,
-            Modifiers {
-                shift: extend,
-                ..Modifiers::default()
-            },
-            cx,
-        );
-        self.scroll.scroll_to_item(target);
-    }
-
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+
+        let cursor = self.cursor.as_deref().and_then(|url| self.index_of(url));
+        if let Some(ix) = panel::list_nav(&event.keystroke, cursor, self.stations.len(), |_| true) {
+            let extend = Modifiers {
+                shift: modifiers.shift,
+                ..Modifiers::default()
+            };
+            self.select(ix, extend, cx);
+            self.scroll.scroll_to_item(ix);
+            return;
+        }
 
         if modifiers.secondary() && key == "a" {
             self.select_all(cx);
@@ -337,10 +326,6 @@ impl StationsPanel {
         }
 
         match key {
-            "up" => self.step(-1, modifiers.shift, cx),
-
-            "down" => self.step(1, modifiers.shift, cx),
-
             "enter" => {
                 let urls = self.selected_urls();
                 self.play_urls(&urls, cx);

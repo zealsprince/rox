@@ -818,7 +818,10 @@ impl TabPanel {
                         // so only zoom joins it here.
                         move |menu, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dropdown_menu(menu, window, cx)
+                                // Hands focus back to the panel when the menu
+                                // closes, as the right-click menu does.
+                                let focus_handle = this.focus_handle(cx);
+                                this.dropdown_menu(menu.action_context(focus_handle), window, cx)
                                     .separator()
                                     .menu_with_disabled(
                                         if zoomed {

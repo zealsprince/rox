@@ -1299,6 +1299,58 @@ pub fn type_ahead_scan(len: usize, from: Option<usize>, back: bool) -> impl Iter
     })
 }
 
+/// Rows a Page Up or Page Down moves in a list panel.
+pub const LIST_PAGE_ROWS: usize = 25;
+
+/// Where a list panel's cursor goes for Up, Down, Page Up, Page Down, Home or
+/// End, over `len` rows of which only those `stop` accepts can hold it (a
+/// heading can't). None for any other key, a held Ctrl, Alt or Cmd, or a list
+/// with no stop. With no cursor yet, a step down starts at the top and a step
+/// up at the bottom. The caller reads Shift as the extend.
+pub fn list_nav(
+    keystroke: &gpui::Keystroke,
+    cursor: Option<usize>,
+    len: usize,
+    stop: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let modifiers = &keystroke.modifiers;
+    if len == 0 || modifiers.control || modifiers.alt || modifiers.platform {
+        return None;
+    }
+
+    let last = len - 1;
+    let step = |delta: isize| match cursor {
+        Some(ix) => ix.saturating_add_signed(delta).min(last),
+        None if delta > 0 => 0,
+        None => last,
+    };
+    let page = LIST_PAGE_ROWS as isize;
+    let (raw, forward) = match keystroke.key.as_str() {
+        "up" => (step(-1), false),
+        "down" => (step(1), true),
+        "pageup" => (step(-page), false),
+        "pagedown" => (step(page), true),
+        "home" => (0, true),
+        "end" => (last, false),
+        _ => return None,
+    };
+
+    // The nearest stop the way the key points, else the nearest behind it,
+    // so a step off the end stays on the last stop.
+    let ahead = if forward {
+        (raw..len).find(|&ix| stop(ix))
+    } else {
+        (0..=raw).rev().find(|&ix| stop(ix))
+    };
+    ahead.or_else(|| {
+        if forward {
+            (0..raw).rev().find(|&ix| stop(ix))
+        } else {
+            (raw + 1..len).find(|&ix| stop(ix))
+        }
+    })
+}
+
 /// Pair it with [`type_ahead_fade`] so the badge leaves on time.
 pub fn type_ahead_overlay(phrase: &str, at: Option<Instant>) -> Option<Div> {
     if phrase.is_empty() || !type_ahead_live(at) {
@@ -1774,7 +1826,59 @@ fn valign_choices<P: 'static>(
 
 #[cfg(test)]
 mod tests {
-    use super::{type_ahead_hit, type_ahead_scan};
+    use super::{LIST_PAGE_ROWS, list_nav, type_ahead_hit, type_ahead_scan};
+
+    fn nav(
+        keys: &str,
+        cursor: Option<usize>,
+        len: usize,
+        stop: impl Fn(usize) -> bool,
+    ) -> Option<usize> {
+        list_nav(&gpui::Keystroke::parse(keys).unwrap(), cursor, len, stop)
+    }
+
+    #[test]
+    fn list_nav_steps_and_clamps() {
+        let all = |_| true;
+        assert_eq!(nav("down", Some(2), 5, all), Some(3));
+        assert_eq!(nav("up", Some(2), 5, all), Some(1));
+        assert_eq!(nav("up", Some(0), 5, all), Some(0));
+        assert_eq!(nav("down", Some(4), 5, all), Some(4));
+        assert_eq!(nav("home", Some(3), 5, all), Some(0));
+        assert_eq!(nav("end", Some(1), 5, all), Some(4));
+        assert_eq!(
+            nav("pagedown", Some(0), LIST_PAGE_ROWS * 2, all),
+            Some(LIST_PAGE_ROWS)
+        );
+        assert_eq!(nav("pageup", Some(3), 50, all), Some(0));
+    }
+
+    #[test]
+    fn list_nav_without_a_cursor_starts_at_the_edges() {
+        assert_eq!(nav("down", None, 5, |_| true), Some(0));
+        assert_eq!(nav("up", None, 5, |_| true), Some(4));
+    }
+
+    #[test]
+    fn list_nav_skips_rows_that_cannot_hold_the_cursor() {
+        // Headings at 0 and 3.
+        let track = |ix| ix != 0 && ix != 3;
+        assert_eq!(nav("down", Some(2), 6, track), Some(4));
+        assert_eq!(nav("up", Some(4), 6, track), Some(2));
+        assert_eq!(nav("up", Some(1), 6, track), Some(1));
+        assert_eq!(nav("home", Some(5), 6, track), Some(1));
+        assert_eq!(nav("end", None, 4, track), Some(2));
+    }
+
+    #[test]
+    fn list_nav_leaves_other_keys_and_chords_alone() {
+        assert_eq!(nav("left", Some(1), 5, |_| true), None);
+        assert_eq!(nav("ctrl-down", Some(1), 5, |_| true), None);
+        assert_eq!(nav("alt-up", Some(1), 5, |_| true), None);
+        assert_eq!(nav("down", None, 0, |_| true), None);
+        assert_eq!(nav("down", Some(1), 3, |_| false), None);
+        assert_eq!(nav("shift-down", Some(1), 5, |_| true), Some(2));
+    }
 
     #[test]
     fn scan_steps_past_the_cursor_and_wraps() {

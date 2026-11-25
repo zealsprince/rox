@@ -376,6 +376,8 @@ pub struct HistoryPanel {
     /// Indices into `tracks`, cleared by the refresh that re-reads them.
     selected: HashSet<usize>,
     anchor: Option<usize>,
+    /// The index the arrows move from and a shift-extend runs to.
+    nav_cursor: Option<usize>,
     /// The change detector for the highlight, since the player notifies
     /// every pump.
     playing_key: Option<TrackKey>,
@@ -469,6 +471,7 @@ impl HistoryPanel {
             favourites: HashSet::new(),
             selected: HashSet::new(),
             anchor: None,
+            nav_cursor: None,
             playing_key: None,
             playing: None,
             menu_row: None,
@@ -538,6 +541,7 @@ impl HistoryPanel {
 
         self.selected.clear();
         self.anchor = None;
+        self.nav_cursor = None;
         self.menu_row = None;
         self.rebuild_rows();
         cx.notify();
@@ -812,6 +816,7 @@ impl HistoryPanel {
             self.selected = HashSet::from([ti]);
             self.anchor = Some(ti);
         }
+        self.nav_cursor = Some(ti);
         self.publish_selection(cx);
         cx.notify();
     }
@@ -830,6 +835,7 @@ impl HistoryPanel {
             return;
         }
         self.anchor = tracks.first().copied();
+        self.nav_cursor = self.anchor;
         self.selected = tracks.into_iter().collect();
         self.publish_selection(cx);
         cx.notify();
@@ -906,6 +912,7 @@ impl HistoryPanel {
         }
         self.selected.clear();
         self.anchor = None;
+        self.nav_cursor = None;
         let source = cx.entity_id();
         self.state
             .selection
@@ -916,6 +923,31 @@ impl HistoryPanel {
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+
+        // The cursor is a track index and moves over display rows, skipping
+        // the album headings.
+        let track_at = |ix: usize| match self.rows.get(ix) {
+            Some(Row::Track(ti)) => Some(*ti as usize),
+            _ => None,
+        };
+        let cursor = self.nav_cursor.and_then(|ti| {
+            self.rows
+                .iter()
+                .position(|row| matches!(row, Row::Track(i) if *i as usize == ti))
+        });
+        let nav = panel::list_nav(&event.keystroke, cursor, self.rows.len(), |ix| {
+            track_at(ix).is_some()
+        });
+        if let Some((ix, ti)) = nav.and_then(|ix| Some((ix, track_at(ix)?))) {
+            let extend = Modifiers {
+                shift: modifiers.shift,
+                ..Modifiers::default()
+            };
+            self.select(ti, extend, cx);
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Top);
+            return;
+        }
+
         if modifiers.secondary() && key == "a" {
             self.select_all(cx);
         } else if key == "escape" {

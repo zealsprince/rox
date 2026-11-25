@@ -1,0 +1,112 @@
+--- a/src/menu/context_menu.rs
++++ b/src/menu/context_menu.rs
+@@ -108,6 +108,21 @@
+     _subscription: Option<Subscription>,
+ }
+ 
++/// rox patch: an outside press closes the menu without a dismiss when a
++/// submenu is open, so focus goes back here too.
++fn close_menu(state: &Rc<RefCell<ContextMenuSharedState>>, window: &mut Window, cx: &mut App) {
++    let menu = {
++        let mut state = state.borrow_mut();
++        state.open = false;
++        state.menu_view.clone()
++    };
++
++    if let Some(menu) = menu {
++        menu.read(cx).return_focus(window, cx);
++    }
++    window.refresh();
++}
++
+ pub struct ContextMenuState {
+     element: Option<AnyElement>,
+     shared_state: Rc<RefCell<ContextMenuSharedState>>,
+@@ -186,24 +201,15 @@
+                                         .occlude()
+                                         .on_mouse_down(MouseButton::Left, {
+                                             let dismiss = dismiss.clone();
+-                                            move |_, window, _| {
+-                                                dismiss.borrow_mut().open = false;
+-                                                window.refresh();
+-                                            }
++                                            move |_, window, cx| close_menu(&dismiss, window, cx)
+                                         })
+                                         .on_mouse_down(MouseButton::Right, {
+                                             let dismiss = dismiss.clone();
+-                                            move |_, window, _| {
+-                                                dismiss.borrow_mut().open = false;
+-                                                window.refresh();
+-                                            }
++                                            move |_, window, cx| close_menu(&dismiss, window, cx)
+                                         })
+                                         .on_mouse_down(MouseButton::Middle, {
+                                             let dismiss = dismiss.clone();
+-                                            move |_, window, _| {
+-                                                dismiss.borrow_mut().open = false;
+-                                                window.refresh();
+-                                            }
++                                            move |_, window, cx| close_menu(&dismiss, window, cx)
+                                         })
+                                         .child(
+                                             anchored()
+@@ -325,11 +331,23 @@
+                             let shared_state = shared_state.clone();
+                             let builder = builder.clone();
+                             move |window, cx| {
++                                // rox patch: without an action context the menu
++                                // kept focus after it closed, and the element it
++                                // opened over went deaf until clicked. Taken here
++                                // rather than at the press, so a focus the press
++                                // itself moved counts.
++                                let before = window.focused(cx);
+                                 let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                                     let Some(build) = &builder else {
+                                         return menu;
+                                     };
+-                                    build(menu, window, cx)
++                                    let menu = build(menu, window, cx);
++                                    match before {
++                                        Some(before) if menu.action_context.is_none() => {
++                                            menu.action_context(before)
++                                        }
++                                        _ => menu,
++                                    }
+                                 });
+ 
+                                 // Set up the subscription for dismiss handling
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -934,11 +934,7 @@
+         }
+ 
+         cx.emit(DismissEvent);
+-
+-        // Focus back to the previous focused handle.
+-        if let Some(action_context) = self.action_context.as_ref() {
+-            window.focus(action_context);
+-        }
++        self.return_focus(window, cx);
+ 
+         let Some(parent_menu) = self.parent_menu.clone() else {
+             return;
+@@ -951,6 +947,19 @@
+         });
+     }
+ 
++    /// rox patch: focus goes back to the action context only while this menu
++    /// or one of its submenus still holds it. Upstream refocused it always,
++    /// which takes focus back off whatever a picked item just focused.
++    pub(crate) fn return_focus(&self, window: &mut Window, cx: &App) {
++        let Some(action_context) = self.action_context.as_ref() else {
++            return;
++        };
++
++        if self.focus_handle.contains_focused(window, cx) || window.focused(cx).is_none() {
++            window.focus(action_context);
++        }
++    }
++
+     fn render_key_binding(
+         &self,
+         action: Option<Box<dyn Action>>,

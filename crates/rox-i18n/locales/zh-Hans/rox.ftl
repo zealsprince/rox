@@ -2249,6 +2249,7 @@ eq-preset-name = 预设名称
 eq-preset-save = 保存预设
 eq-presets = 预设
 eq-preset-delete-body = 这会删除该预设，当前曲线保持不变。
+eq-preset-overwrite-body = 这会用当前听到的曲线替换已保存的预设。
 eq-readout-curve = 曲线
 eq-readout-icon = 图标
 eq-readout-section = 读数

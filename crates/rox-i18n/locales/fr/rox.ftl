@@ -2356,6 +2356,7 @@ eq-preset-name = Nom du préréglage
 eq-preset-save = Enregistrer le préréglage
 eq-presets = Préréglages
 eq-preset-delete-body = Ceci supprime le préréglage et laisse la courbe actuelle telle quelle.
+eq-preset-overwrite-body = Ceci remplace le préréglage enregistré par la courbe que vous entendez maintenant.
 eq-readout-curve = Courbe
 eq-readout-icon = Icône
 eq-readout-section = Affichage

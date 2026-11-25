@@ -2791,12 +2791,9 @@ pub(crate) fn trash_tracks(state: AppState, ids: Vec<i64>, cx: &mut App) {
 }
 
 /// A panel's delete confirm, raised the way [`trash_tracks`] raises its own.
-fn confirm_delete(ask: rox_panel_api::openers::Confirm, cx: &mut App) {
+pub(crate) fn confirm_delete(ask: rox_panel_api::openers::Confirm, cx: &mut App) {
     with_front_workspace(cx, move |ws, window, cx| {
-        ws.layout_dialog = Some(LayoutDialog::ConfirmDelete(ask));
-        window.activate_window();
-        window.focus(&ws.focus);
-        cx.notify();
+        ws.raise_confirm(LayoutDialog::ConfirmDelete(ask), window, cx);
     });
 }
 
@@ -3761,6 +3758,9 @@ pub struct Workspace {
     dialog_focus: FocusHandle,
     /// Submits the save dialog's name field on Enter.
     _layout_input: Option<Subscription>,
+    /// What held focus when a panel's confirm went up, so the panel hears
+    /// its keys again once the confirm closes.
+    focus_before_dialog: Option<FocusHandle>,
     /// The analysis pass's start prompt while the Library menu has one up.
     /// The workspace hosts it the way the health and tasks windows do, so
     /// a pass started from the menu asks the same question about workers
@@ -3968,8 +3968,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        rox_panel_api::openers::install_confirm(confirm_delete);
-
         // A reopen from the tray adopts the state the last close handed to
         // the hold, so the playing player, library, and art come straight
         // over; every other open builds its own world.
@@ -4405,6 +4403,7 @@ impl Workspace {
             layout_dialog: None,
             dialog_focus: cx.focus_handle(),
             _layout_input: None,
+            focus_before_dialog: None,
             prompt: None,
             pass_focus: cx.focus_handle(),
             value_edit: panel::ValueEdit::default(),
@@ -5779,10 +5778,21 @@ impl Workspace {
             return;
         }
 
-        self.layout_dialog = Some(LayoutDialog::ConfirmTrash {
+        let dialog = LayoutDialog::ConfirmTrash {
             library: state.library.clone(),
             files,
-        });
+        };
+        self.raise_confirm(dialog, window, cx);
+    }
+
+    /// A confirm a panel asked for. The workspace takes focus for the
+    /// dialog's keys, and remembers what had it to give it back.
+    fn raise_confirm(&mut self, dialog: LayoutDialog, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout_dialog.is_none() {
+            self.focus_before_dialog = window.focused(cx);
+        }
+
+        self.layout_dialog = Some(dialog);
         window.activate_window();
         window.focus(&self.focus);
         cx.notify();
@@ -5925,7 +5935,21 @@ impl Workspace {
     fn close_layout_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.layout_dialog = None;
         self._layout_input = None;
-        window.focus(&self.focus);
+
+        match self.focus_before_dialog.take() {
+            Some(before) => {
+                window.focus(&before);
+
+                // What had focus can be gone by now, such as the menu the
+                // confirm was picked from. Then the workspace keeps the keys.
+                cx.on_next_frame(window, |this, window, cx| {
+                    if !this.focus.contains_focused(window, cx) {
+                        window.focus(&this.focus);
+                    }
+                });
+            }
+            None => window.focus(&self.focus),
+        }
         cx.notify();
         // Every save, overwrite, and apply comes through here on its way out,
         // so this is the one place that catches a workspace or layout the
@@ -7471,7 +7495,12 @@ fn dialog_button(
                     .hover(|d| d.bg(palette::bg_control_hover()))
             }
         })
-        .on_mouse_down(MouseButton::Left, on_click)
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            // Or the card takes focus as the press bubbles out to it, after
+            // a close handed focus back to what had it.
+            window.prevent_default();
+            on_click(event, window, cx);
+        })
         .child(label.into())
 }
 

@@ -308,6 +308,24 @@ impl SettingsWindow {
             .collect()
     }
 
+    /// From render, on the ML Models page only: re-measure when whether a
+    /// model is installed no longer agrees with the size measured for it.
+    /// That's a stat per model with weights, the same the rows already pay.
+    pub(super) fn sync_model_sizes(&mut self) {
+        if self.page != Page::MlModels {
+            return;
+        }
+
+        let stale = rox_acoustic::models::CATALOG.iter().any(|model| {
+            model.weights.as_ref().is_some_and(|weights| {
+                model.installed() != (self.model_size(model.id) == weights.bytes)
+            })
+        });
+        if stale {
+            self.model_sizes = Self::measure_models();
+        }
+    }
+
     fn model_size(&self, id: &str) -> u64 {
         self.model_sizes
             .iter()

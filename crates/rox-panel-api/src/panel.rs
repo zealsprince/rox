@@ -939,10 +939,12 @@ pub fn track_actions_with(
             PopupMenuItem::new(rox_i18n::t!("panel-remove-bookmarks", count = marks))
                 .icon(Icon::default().path(icons::BOOKMARK))
                 .on_click(move |_, _, cx| {
-                    let ids = mark_ids.clone();
-                    mark_state
-                        .library
-                        .update(cx, |library, cx| library.remove_track_bookmarks(&ids, cx));
+                    crate::bookmark_ui::confirm_remove_from_tracks(
+                        &mark_state,
+                        mark_ids.clone(),
+                        marks,
+                        cx,
+                    );
                 }),
         )
     });

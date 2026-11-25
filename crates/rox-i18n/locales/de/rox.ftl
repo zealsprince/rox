@@ -2293,6 +2293,7 @@ eq-preset-name = Name der Voreinstellung
 eq-preset-save = Voreinstellung speichern
 eq-presets = Voreinstellungen
 eq-preset-delete-body = Das löscht die Voreinstellung und lässt die aktuelle Kurve, wie sie ist.
+eq-preset-overwrite-body = Das ersetzt die gespeicherte Voreinstellung durch die Kurve, die gerade zu hören ist.
 eq-readout-curve = Kurve
 eq-readout-icon = Symbol
 eq-readout-section = Anzeige

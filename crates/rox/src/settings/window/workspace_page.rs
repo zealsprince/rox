@@ -11,7 +11,6 @@ use rox_core::settings::panel_presets::SaveScope;
 use rox_core::settings::{Asset, AssetKind};
 use rox_dock::DockArea;
 use rox_panel_kit::PlaceholderKey as _;
-use rox_panel_kit::{OneLine as _, one_line};
 
 /// Built when a row's details open and dropped when they close.
 pub(crate) struct CardEditor {
@@ -464,9 +463,8 @@ impl SettingsWindow {
                     let value = field(&mut seed).clone();
                     cx.new(|cx| {
                         InputState::new(window, cx)
-                            .one_line()
                             .placeholder_key(placeholder, window, cx)
-                            .default_value(one_line(&value).into_owned())
+                            .default_value(value)
                     })
                 })
                 .collect()

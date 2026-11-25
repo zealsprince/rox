@@ -2250,6 +2250,7 @@ eq-preset-name = プリセット名
 eq-preset-save = プリセットを保存
 eq-presets = プリセット
 eq-preset-delete-body = プリセットが削除され、今のカーブはそのまま残ります。
+eq-preset-overwrite-body = 保存済みのプリセットが、今聞こえているカーブに置き換わります。
 eq-readout-curve = カーブ
 eq-readout-icon = アイコン
 eq-readout-section = 表示

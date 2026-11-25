@@ -2316,6 +2316,7 @@ eq-preset-name = Название пресета
 eq-preset-save = Сохранить пресет
 eq-presets = Пресеты
 eq-preset-delete-body = Это удалит пресет, а текущая кривая останется как есть.
+eq-preset-overwrite-body = Это заменит сохранённый пресет кривой, которая звучит сейчас.
 eq-readout-curve = Кривая
 eq-readout-icon = Значок
 eq-readout-section = Показания

@@ -47,7 +47,7 @@ mod motif;
 pub use motif::motif;
 
 mod one_line;
-pub use one_line::{OneLine, one_line};
+pub use one_line::one_line;
 
 mod placeholder;
 pub use placeholder::{PlaceholderKey, reword_placeholders};

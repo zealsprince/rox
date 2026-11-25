@@ -57,6 +57,12 @@ const AXIS_LABEL_W: f32 = 40.0;
 
 const SPECTRUM_BARS: usize = 96;
 
+/// The label columns at their narrowest, and roughly what a character of
+/// their small text takes, so a long translation widens a column's rows alike.
+const READOUT_LABEL_W: f32 = 44.0;
+const SPATIAL_LABEL_W: f32 = 64.0;
+const LABEL_CHAR_W: f32 = 7.0;
+
 /// Long windows resolve the bottom octaves, where a short FFT smears a whole
 /// band into one bin; short ones keep up with the music.
 const FFT_CHOICES: [usize; 6] = [512, 1024, 2048, 4096, 8192, 16384];
@@ -201,8 +207,8 @@ struct EqWindow {
     /// The preset's name and the curve it applied. The picker names it only while
     /// the live curve still matches.
     picked: Option<(String, Vec<BandSetting>)>,
-    /// The preset the delete confirm names, while it's up.
-    deleting: Option<String>,
+    /// The confirm that's up, naming its preset.
+    asking: Option<Ask>,
     dialog_focus: FocusHandle,
     _player_changed: Option<Subscription>,
     _eq_changed: Subscription,
@@ -215,6 +221,12 @@ struct EqWindow {
     /// Scrub states for convolver sliders: wet, width, crossfeed, gain, and 7 speaker levels.
     convolver_scrubs: [ScrubState; 11],
     convolver_error: Option<SharedString>,
+}
+
+/// What a confirm over the window asks about.
+enum Ask {
+    Delete(String),
+    Overwrite(String),
 }
 
 impl EqWindow {
@@ -252,7 +264,7 @@ impl EqWindow {
             presets: eq_presets::list(),
             active: false,
             picked: None,
-            deleting: None,
+            asking: None,
             dialog_focus: cx.focus_handle(),
             scrubs: std::array::from_fn(|_| ScrubState::default()),
             value_edit: panel::ValueEdit::default(),
@@ -431,11 +443,23 @@ impl EqWindow {
         }
     }
 
+    /// Asks first when the name is taken.
     fn save_preset(&mut self, cx: &mut Context<Self>) {
         let name = self.name(cx);
         if name.is_empty() {
             return;
         }
+
+        if eq_presets::exists(&name) {
+            self.asking = Some(Ask::Overwrite(name));
+            cx.notify();
+            return;
+        }
+
+        self.write_preset(name, cx);
+    }
+
+    fn write_preset(&mut self, name: String, cx: &mut Context<Self>) {
         let bands = eq_presets::live_bands();
         let Some(saved) = eq_presets::save(&name, &bands, None, cx) else {
             return;
@@ -507,30 +531,35 @@ impl EqWindow {
         .detach();
     }
 
-    fn delete_confirm(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
-        let name = self.deleting.as_deref()?;
-
-        let weak = cx.entity().downgrade();
-        let text = settings_ui::ConfirmText {
-            title: rox_i18n::t!("workspace-dialog-delete-title", name = name),
-            body: rox_i18n::t!("eq-preset-delete-body"),
-            yes: rox_i18n::t!("settings-common-delete"),
+    fn confirm(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        let text = match self.asking.as_ref()? {
+            Ask::Delete(name) => settings_ui::ConfirmText {
+                title: rox_i18n::t!("workspace-dialog-delete-title", name = name.as_str()),
+                body: rox_i18n::t!("eq-preset-delete-body"),
+                yes: rox_i18n::t!("settings-common-delete"),
+            },
+            Ask::Overwrite(name) => settings_ui::ConfirmText {
+                title: rox_i18n::t!("workspace-dialog-overwrite-title", name = name.as_str()),
+                body: rox_i18n::t!("eq-preset-overwrite-body"),
+                yes: rox_i18n::t!("workspace-dialog-overwrite"),
+            },
         };
 
+        let weak = cx.entity().downgrade();
         Some(settings_ui::destructive_confirm(
             &self.dialog_focus,
             text,
             move |_, cx| {
                 weak.update(cx, |this, cx| {
-                    this.deleting = None;
+                    this.asking = None;
                     cx.notify();
                 })
                 .ok();
             },
-            cx.listener(|this, _, _, cx| {
-                if let Some(name) = this.deleting.take() {
-                    this.delete_preset(&name, cx);
-                }
+            cx.listener(|this, _, _, cx| match this.asking.take() {
+                Some(Ask::Delete(name)) => this.delete_preset(&name, cx),
+                Some(Ask::Overwrite(name)) => this.write_preset(name, cx),
+                None => {}
             }),
             window,
             cx,
@@ -573,7 +602,7 @@ impl EqWindow {
                 icons::TRASH,
                 !named,
                 cx.listener(|this, _, _, cx| {
-                    this.deleting = this.picked_name().map(|name| name.to_string());
+                    this.asking = this.picked_name().map(|name| Ask::Delete(name.to_string()));
                     cx.notify();
                 }),
             ))
@@ -910,6 +939,14 @@ impl EqWindow {
 
     fn readouts(&self, cx: &mut Context<Self>) -> Div {
         let band = self.selected.min(BANDS - 1);
+        let labels = [
+            rox_i18n::t!("eq-freq-label"),
+            rox_i18n::t!("eq-gain-label"),
+            rox_i18n::t!("eq-width-label"),
+        ];
+        let label_w = label_column_w(&labels, READOUT_LABEL_W);
+        let [freq, gain, width] = labels;
+
         div()
             .flex()
             .flex_col()
@@ -920,10 +957,11 @@ impl EqWindow {
                     .text_color(palette::text_muted())
                     .child(rox_i18n::t!("eq-band-label", number = (band + 1) as u64).to_string()),
             )
-            .child(self.freq_row(band, cx))
+            .child(self.freq_row(freq, label_w, band, cx))
             .child(
                 self.readout_row(
-                    rox_i18n::t!("eq-gain-label"),
+                    gain,
+                    label_w,
                     band,
                     player::eq_gain(band),
                     settings_ui::span(-GAIN_MAX_DB, GAIN_MAX_DB, " dB")
@@ -935,7 +973,8 @@ impl EqWindow {
                 ),
             )
             .child(self.readout_row(
-                rox_i18n::t!("eq-width-label"),
+                width,
+                label_w,
                 band,
                 player::eq_q(band),
                 settings_ui::span(Q_MIN, Q_MAX, " Q").decimals(2).hard(),
@@ -946,11 +985,17 @@ impl EqWindow {
     }
 
     /// Log-mapped like the axis: linear would put everything under 500 Hz in the first fortieth.
-    fn freq_row(&self, band: usize, cx: &mut Context<Self>) -> Div {
+    fn freq_row(
+        &self,
+        label: SharedString,
+        label_w: Pixels,
+        band: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let hz = player::eq_freq(band);
         labelled(
-            rox_i18n::t!("eq-freq-label"),
-            px(44.),
+            label,
+            label_w,
             panel::value_slider_edit_sized(
                 &self.scrubs[0],
                 &self.value_edit,
@@ -975,6 +1020,7 @@ impl EqWindow {
     fn readout_row(
         &self,
         label: impl Into<SharedString>,
+        label_w: Pixels,
         band: usize,
         value: f32,
         span: settings_ui::Span,
@@ -984,7 +1030,7 @@ impl EqWindow {
     ) -> Div {
         labelled(
             label,
-            px(44.),
+            label_w,
             settings_ui::scalar_sized(
                 &self.scrubs[slot],
                 &self.value_edit,
@@ -1069,9 +1115,11 @@ impl EqWindow {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn convolver_slider_row(
         &self,
         label: impl Into<SharedString>,
+        label_w: Pixels,
         value: f32,
         span: settings_ui::Span,
         apply: impl Fn(f32, &mut App) + Clone + 'static,
@@ -1080,7 +1128,7 @@ impl EqWindow {
     ) -> Div {
         labelled(
             label,
-            px(64.),
+            label_w,
             settings_ui::scalar_sized(
                 &self.convolver_scrubs[slot],
                 &self.value_edit,
@@ -1150,13 +1198,29 @@ impl EqWindow {
         let gain_db = player::convolver_gain_db();
         let (ir_choice, ir_options) = Self::ir_choices(ir_name.as_ref());
 
+        // Every label the tab can show, the speakers' too, so the sliders
+        // start in one line whichever rows are up.
+        let labels: Vec<SharedString> = [
+            "eq-convolver-profile-label",
+            "eq-convolver-mode-label",
+            "eq-convolver-wet-label",
+            "eq-convolver-width-label",
+            "eq-convolver-crossfeed-label",
+            "eq-convolver-gain-label",
+        ]
+        .into_iter()
+        .chain(Self::SPEAKERS.iter().map(|&(key, _)| key))
+        .map(|key| rox_i18n::t!(key))
+        .collect();
+        let label_w = label_column_w(&labels, SPATIAL_LABEL_W);
+
         div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
             .child(labelled(
                 rox_i18n::t!("eq-convolver-profile-label"),
-                px(64.),
+                label_w,
                 div()
                     .flex()
                     .flex_row()
@@ -1195,7 +1259,7 @@ impl EqWindow {
             .when(ir_layout == Some(IrLayout::Hesuvi14), |d| {
                 d.child(labelled(
                     rox_i18n::t!("eq-convolver-mode-label"),
-                    px(64.),
+                    label_w,
                     div().flex().flex_row().child(panel::picker(
                         "eq-convolver-mode",
                         mode,
@@ -1225,6 +1289,7 @@ impl EqWindow {
                     .gap(tokens::SPACE_XS)
                     .child(self.convolver_slider_row(
                         rox_i18n::t!("eq-convolver-wet-label"),
+                        label_w,
                         wet * 100.0,
                         settings_ui::span(0.0, 100.0, "%").decimals(0).hard(),
                         |val, cx| player::set_convolver_wet(val / 100.0, cx),
@@ -1233,6 +1298,7 @@ impl EqWindow {
                     ))
                     .child(self.convolver_slider_row(
                         rox_i18n::t!("eq-convolver-width-label"),
+                        label_w,
                         width * 100.0,
                         settings_ui::span(0.0, 200.0, "%").decimals(0).hard(),
                         |val, cx| player::set_convolver_stereo_width(val / 100.0, cx),
@@ -1241,6 +1307,7 @@ impl EqWindow {
                     ))
                     .child(self.convolver_slider_row(
                         rox_i18n::t!("eq-convolver-crossfeed-label"),
+                        label_w,
                         crossfeed * 100.0,
                         settings_ui::span(0.0, 100.0, "%").decimals(0).hard(),
                         |val, cx| player::set_convolver_crossfeed(val / 100.0, cx),
@@ -1249,6 +1316,7 @@ impl EqWindow {
                     ))
                     .child(self.convolver_slider_row(
                         rox_i18n::t!("eq-convolver-gain-label"),
+                        label_w,
                         gain_db,
                         settings_ui::span(-12.0, 12.0, " dB").decimals(1).hard(),
                         player::set_convolver_gain_db,
@@ -1300,6 +1368,7 @@ impl EqWindow {
                                 .map(|(i, &(key, point))| {
                                     self.convolver_slider_row(
                                         rox_i18n::t!(key),
+                                        label_w,
                                         player::convolver_channel_gain_db(point),
                                         settings_ui::span(-18.0, 6.0, " dB").decimals(1).hard(),
                                         move |val, cx| {
@@ -1344,6 +1413,18 @@ enum IrChoice {
     File,
 }
 
+/// Wide enough for the longest of `labels` by [`LABEL_CHAR_W`], and never
+/// under `min`.
+fn label_column_w(labels: &[SharedString], min: f32) -> Pixels {
+    px(labels
+        .iter()
+        .map(|label| label.chars().count() as f32 * LABEL_CHAR_W)
+        .fold(min, f32::max)
+        .ceil())
+}
+
+/// `label_w` is the label's narrowest. A label never wraps: a word that
+/// doesn't fit widens its row instead of breaking mid-word.
 fn labelled(label: impl Into<SharedString>, label_w: Pixels, control: Div) -> Div {
     div()
         .flex()
@@ -1353,8 +1434,9 @@ fn labelled(label: impl Into<SharedString>, label_w: Pixels, control: Div) -> Di
         .gap(tokens::SPACE_SM)
         .child(
             div()
-                .w(label_w)
+                .min_w(label_w)
                 .flex_none()
+                .whitespace_nowrap()
                 .text_xs()
                 .text_color(palette::text_muted())
                 .child(label.into()),
@@ -1480,7 +1562,7 @@ impl Render for EqWindow {
 
                 EqTab::Spatial => body.child(self.spatial(cx)),
             }
-            .children(self.delete_confirm(window, cx))
+            .children(self.confirm(window, cx))
             .into_any_element()
         })
     }

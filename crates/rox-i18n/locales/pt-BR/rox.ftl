@@ -2302,6 +2302,7 @@ eq-preset-name = Nome da predefinição
 eq-preset-save = Salvar predefinição
 eq-presets = Predefinições
 eq-preset-delete-body = Isto exclui a predefinição e deixa a curva atual como está.
+eq-preset-overwrite-body = Isto substitui a predefinição salva pela curva que você ouve agora.
 eq-readout-curve = Curva
 eq-readout-icon = Ícone
 eq-readout-section = Leitura

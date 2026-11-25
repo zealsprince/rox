@@ -1,0 +1,71 @@
+--- a/src/input/state.rs
++++ b/src/input/state.rs
+@@ -683,6 +683,9 @@
+     ) {
+         let text: SharedString = text.into();
+         let range = 0..self.text.chars().map(|c| c.len_utf16()).sum();
++        // rox patch: stripped here too, so a value of nothing but line breaks
++        // clears the input rather than being refused as one.
++        let text = self.single_line_text(&text);
+         self.replace_text_in_range_silent(Some(range), &text, window, cx);
+         self.reset_highlighter(cx);
+     }
+@@ -793,7 +796,9 @@
+     /// Set the default value of the input field.
+     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
+         let text: SharedString = value.into();
+-        self.text = Rope::from(text.as_str());
++        // rox patch: a multi-line input sets its mode before its value.
++        let text = self.single_line_text(&text);
++        self.text = Rope::from(text.as_ref());
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+         }
+@@ -1923,6 +1928,17 @@
+         self.replace_text_in_range(range_utf16, new_text, window, cx);
+         self.silent_replace_text = false;
+     }
++
++    /// rox patch: a single-line input never holds a line break, typed, pasted
++    /// or set. gpui shapes its text as one line and asserts there's none, and
++    /// an Enter nothing handles arrives here as typed text.
++    fn single_line_text<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
++        if self.mode.is_single_line() && text.contains(['\n', '\r']) {
++            std::borrow::Cow::Owned(text.replace(['\n', '\r'], ""))
++        } else {
++            std::borrow::Cow::Borrowed(text)
++        }
++    }
+ }
+ 
+ impl EntityInputHandler for InputState {
+@@ -1978,6 +1994,14 @@
+             return;
+         }
+ 
++        // rox patch: a stray Enter strips to nothing, which would otherwise
++        // delete the selection.
++        let stripped = self.single_line_text(new_text);
++        if stripped.is_empty() && !new_text.is_empty() {
++            return;
++        }
++        let new_text = stripped.as_ref();
++
+         self.pause_blink_cursor(cx);
+ 
+         let range = range_utf16
+@@ -2046,6 +2070,14 @@
+             return;
+         }
+ 
++        // rox patch: as in replace_text_in_range. Empty text cancels an IME
++        // composition, so line breaks alone never stand in for it.
++        let stripped = self.single_line_text(new_text);
++        if stripped.is_empty() && !new_text.is_empty() {
++            return;
++        }
++        let new_text = stripped.as_ref();
++
+         self.lsp.reset();
+ 
+         let range = range_utf16

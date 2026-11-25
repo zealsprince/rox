@@ -2344,6 +2344,7 @@ eq-preset-name = Nombre del preajuste
 eq-preset-save = Guardar preajuste
 eq-presets = Preajustes
 eq-preset-delete-body = Esto elimina el preajuste y deja la curva actual como está.
+eq-preset-overwrite-body = Esto reemplaza el preajuste guardado por la curva que suena ahora.
 eq-readout-curve = Curva
 eq-readout-icon = Icono
 eq-readout-section = Lectura

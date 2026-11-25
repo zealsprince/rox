@@ -77,6 +77,16 @@ fn save_in(
     }
 }
 
+/// Whether saving under `name` would write over a preset, folded the way a
+/// save folds it.
+pub fn exists(name: &str) -> bool {
+    exists_in(&settings::eq_presets_dir(), name)
+}
+
+fn exists_in(dir: &Path, name: &str) -> bool {
+    dir.join(file_name(name)).is_file()
+}
+
 pub fn load(name: &str) -> Option<Vec<BandSetting>> {
     load_in(&settings::eq_presets_dir(), name)
 }
@@ -243,6 +253,8 @@ mod tests {
         );
         assert_eq!(list_in(&dir), vec!["Bass   Boost".to_string()]);
         assert!(load_in(&dir, "Bass / Boost").is_some());
+        assert!(exists_in(&dir, "Bass / Boost"), "the folded name is taken");
+        assert!(!exists_in(&dir, "Bass Boost"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

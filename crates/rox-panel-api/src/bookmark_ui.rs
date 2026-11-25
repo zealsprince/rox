@@ -383,6 +383,27 @@ pub fn confirm_remove(state: &AppState, ids: Vec<i64>, cx: &mut App) {
     openers::confirm(ask, cx);
 }
 
+/// Asks before every bookmark on these tracks goes. `count` is how many the
+/// menu that asks counted.
+pub fn confirm_remove_from_tracks(state: &AppState, tracks: Vec<i64>, count: u64, cx: &mut App) {
+    if count == 0 {
+        return;
+    }
+
+    let library = state.library.clone();
+    let ask = openers::Confirm {
+        title: rox_i18n::t!("bookmarks-remove-title", count = count),
+        body: rox_i18n::t!("bookmarks-remove-body", count = count),
+        yes: rox_i18n::t!("settings-common-remove"),
+        run: Box::new(move |cx| {
+            library.update(cx, |library, cx| {
+                library.remove_track_bookmarks(&tracks, cx)
+            });
+        }),
+    };
+    openers::confirm(ask, cx);
+}
+
 /// A pick lands on every id at once. The custom picker only shows for a
 /// single mark.
 pub fn color_submenu(

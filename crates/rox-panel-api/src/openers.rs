@@ -61,6 +61,8 @@ pub struct Openers {
     /// Ask before moving these tracks' files to the OS trash, and do it on a
     /// yes. The ask goes up in the front workspace window.
     pub trash_tracks: fn(AppState, Vec<i64>, &mut App),
+    /// Ask about a delete in the front workspace window, and run it on a yes.
+    pub confirm: fn(Confirm, &mut App),
     /// Whether ffmpeg is installed. Menus hide "Convert..." without it.
     pub convert_available: fn() -> bool,
     pub playlist_create: fn(AppState, Vec<i64>, &mut App),
@@ -131,21 +133,6 @@ pub struct Confirm {
     pub run: Box<dyn FnOnce(&mut App)>,
 }
 
-/// Set by the workspace as its first window opens, beside the table.
-static CONFIRM: OnceLock<fn(Confirm, &mut App)> = OnceLock::new();
-
-pub fn install_confirm(ask: fn(Confirm, &mut App)) {
-    let _ = CONFIRM.set(ask);
-}
-
-/// Without a workspace to ask in, nothing is deleted.
-pub fn confirm(ask: Confirm, cx: &mut App) {
-    match CONFIRM.get() {
-        Some(raise) => raise(ask, cx),
-        None => log::warn!("a delete confirm was asked for before the app installed it"),
-    }
-}
-
 /// Called once from `main`, before any window opens.
 pub fn install(openers: Openers) {
     let _ = OPENERS.set(openers);
@@ -158,6 +145,13 @@ fn openers(what: &str) -> Option<&'static Openers> {
             log::warn!("{what} was called before the app installed its openers");
             None
         }
+    }
+}
+
+/// Without a workspace to ask in, nothing is deleted.
+pub fn confirm(ask: Confirm, cx: &mut App) {
+    if let Some(openers) = openers("a delete confirm") {
+        (openers.confirm)(ask, cx);
     }
 }
 

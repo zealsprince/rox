@@ -1,12 +1,9 @@
-//! Text a single-line input or a raw shaped line holds. gpui shapes such a
-//! line in one call that asserts there's no line break in it, so a newline
-//! there is a panic in a debug build. A single-line input refuses one only
-//! on paste: an Enter that nothing handles reaches it as typed text, and a
-//! stored value goes in as it was written.
+//! Text shaped as one raw line outside an input, such as canvas text. gpui
+//! shapes such a line in one call that asserts there's no line break in it,
+//! so a newline there is a panic in a debug build. Single-line inputs strip
+//! their own, in the vendored widget.
 
 use std::borrow::Cow;
-
-use gpui_component::input::InputState;
 
 /// `text` without its line breaks.
 pub fn one_line(text: &str) -> Cow<'_, str> {
@@ -14,18 +11,6 @@ pub fn one_line(text: &str) -> Cow<'_, str> {
         Cow::Owned(text.replace(['\n', '\r'], ""))
     } else {
         Cow::Borrowed(text)
-    }
-}
-
-pub trait OneLine {
-    /// Refuses an edit that would leave a line break in the text. Takes the
-    /// input's one validator, so it can't sit beside another.
-    fn one_line(self) -> Self;
-}
-
-impl OneLine for InputState {
-    fn one_line(self) -> Self {
-        self.validate(|text, _| !text.contains(['\n', '\r']))
     }
 }
 

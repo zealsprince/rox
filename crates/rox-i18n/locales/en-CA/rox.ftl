@@ -2379,6 +2379,7 @@ eq-preset-name = Preset name
 eq-preset-save = Save Preset
 eq-presets = Presets
 eq-preset-delete-body = This deletes the preset and leaves the curve you hear as it is.
+eq-preset-overwrite-body = This replaces the saved preset with the curve you hear now.
 eq-readout-curve = Curve
 eq-readout-icon = Icon
 eq-readout-section = Readout

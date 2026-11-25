@@ -2313,6 +2313,7 @@ eq-preset-name = Nome del preset
 eq-preset-save = Salva preset
 eq-presets = Preset
 eq-preset-delete-body = Questo elimina il preset e lascia la curva attuale com'è.
+eq-preset-overwrite-body = Questo sostituisce il preset salvato con la curva che senti adesso.
 eq-readout-curve = Curva
 eq-readout-icon = Icona
 eq-readout-section = Lettura

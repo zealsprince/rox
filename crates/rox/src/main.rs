@@ -219,6 +219,7 @@ fn install_openers() {
         rename_dialog: tags::rename::open,
         convert_dialog: convert_dialog::open,
         trash_tracks: workspace::trash_tracks,
+        confirm: workspace::confirm_delete,
         convert_available: convert::available,
         playlist_create: playlist_create::open,
         playlist_rename: playlist_create::open_rename,

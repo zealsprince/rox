@@ -2765,6 +2765,23 @@ pub(crate) fn with_front_workspace(
     });
 }
 
+/// Dock Back into a front workspace with no tab group showing. The panel
+/// goes where the Panels menu puts its kind, which in an emptied window
+/// makes it the first panel.
+pub(crate) fn dock_back_home(panel: Arc<dyn PanelView>, cx: &mut App) {
+    with_front_workspace(cx, move |ws, window, cx| {
+        let placement = catalog::def_for(panel.panel_name(cx))
+            .map(|def| def.placement)
+            .unwrap_or(PanelPlacement::Center);
+
+        match placement {
+            PanelPlacement::Center => ws.add_center(panel, window, cx),
+            PanelPlacement::Bottom => ws.add_bottom(panel, window, cx),
+            PanelPlacement::Top => ws.add_top(panel, window, cx),
+        }
+    });
+}
+
 /// Move to Trash from a track menu. The ask goes up in the front workspace,
 /// since a popped-out panel's window has no dialog of its own.
 pub(crate) fn trash_tracks(state: AppState, ids: Vec<i64>, cx: &mut App) {

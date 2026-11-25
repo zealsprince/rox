@@ -114,6 +114,9 @@ pub struct Openers {
     /// Open a plugin's node in an External Sources panel on that source,
     /// adding one when none is open: Go to from a menu outside the panel.
     pub go_to_source: fn(AppState, String, Target, &mut Window, &mut App),
+    /// Dock Back when no tab group shows: the panel becomes the front
+    /// workspace's first, placed as the Panels menu would place its kind.
+    pub dock_back_home: fn(Arc<dyn PanelView>, &mut App),
 }
 
 static OPENERS: OnceLock<Openers> = OnceLock::new();
@@ -369,6 +372,12 @@ pub fn go_to_source(
 ) {
     if let Some(openers) = openers("Go to") {
         (openers.go_to_source)(state, source, target, window, cx);
+    }
+}
+
+pub fn dock_back_home(panel: Arc<dyn PanelView>, cx: &mut App) {
+    if let Some(openers) = openers("Dock Back") {
+        (openers.dock_back_home)(panel, cx);
     }
 }
 

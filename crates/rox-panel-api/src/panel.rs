@@ -376,12 +376,14 @@ pub fn dock_back_item(menu: PopupMenu, panel: Arc<dyn PanelView>, state: AppStat
         PopupMenuItem::new(rox_i18n::t!("panel-dock-back"))
             .icon(Icon::default().path(icons::EXTERNAL_LINK))
             .on_click(move |_, window, cx| {
-                let Some(tabs) = hosts.read(cx).last_live(cx) else {
-                    return;
-                };
-                tabs.update(cx, |tabs, cx| {
-                    tabs.add_panel(panel.clone(), window, cx);
-                });
+                match hosts.read(cx).last_live(cx) {
+                    Some(tabs) => tabs.update(cx, |tabs, cx| {
+                        tabs.add_panel(panel.clone(), window, cx);
+                    }),
+
+                    // An emptied main window shows no group to join.
+                    None => crate::openers::dock_back_home(panel.clone(), cx),
+                }
                 window.remove_window();
             }),
     )

@@ -145,7 +145,7 @@ hash stand for bytes outside the folder. A file name that isn't UTF-8 is refused
 since it can't hash the same on every OS.
 
 The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
-(`rox-plugins/src/process.rs:48`), so a Python plugin's first import doesn't write
+(`rox-plugins/src/process.rs:87`), so a Python plugin's first import doesn't write
 `__pycache__/` into its own folder and change its own hash.
 
 ## The manifest
@@ -249,7 +249,7 @@ What refuses a manifest, with the reason the page shows:
 Newline-delimited JSON-RPC 2.0 over the plugin's stdin (rox to plugin) and stdout
 (plugin to rox). One object per line, UTF-8, each line at most 1 MiB. stderr is free
 text: every line goes to rox's log as `plugin <id>: <line>`, cut at 4 KiB
-(`drain_stderr`, `rox-plugins/src/process.rs:95-112`). The plugin never calls rox.
+(`drain_stderr`, `rox-plugins/src/process.rs:308-325`). The plugin never calls rox.
 
 Every request has an `id`, and the answer echoes it with either `result` or
 `error: {code, message}`. rox may have many requests in flight, and a plugin may answer
@@ -661,7 +661,7 @@ that reaches a plugin on every OS when rox goes away without a shutdown.
 | Candidates in a `provider.*` answer | 50 | `MAX_CANDIDATES`, `wire.rs` |
 | An artist sheet's bio | 64 KiB | `MAX_BIO`, `wire.rs` |
 | A read's `len` | 256 KiB asked, 512 KiB at most | `Options`, `stream.rs:35-42`; `MAX_READ`, `wire.rs:24` |
-| A stderr line | 4 KiB | `STDERR_LINE`, `process.rs:20` |
+| A stderr line | 4 KiB | `STDERR_LINE`, `process.rs:22` |
 | Sync pages per collection | 2,000 | `MAX_SYNC_PAGES`, `rox-services/src/plugins.rs:45` |
 
 A call that times out fails on its own; the plugin keeps serving its other calls. A
@@ -676,7 +676,7 @@ stdin, one reading stdout and a table of pending requests by id, so any number o
 can be in flight.
 
 The process starts in the plugin's folder with rox's environment (PATH, HOME and the
-rest) plus `PYTHONDONTWRITEBYTECODE=1` (`spawn`, `rox-plugins/src/process.rs:36-93`). A
+rest) plus `PYTHONDONTWRITEBYTECODE=1` (`spawn`, `rox-plugins/src/process.rs:66-167`). A
 plugin can read its own switches from the environment.
 
 When a plugin exits unexpectedly, every call it had fails with "the plugin exited", and
@@ -696,8 +696,10 @@ Per OS:
 
 - Linux and macOS: the plugin leads its own process group (`process_group(0)`), and
   stopping it sends SIGKILL to the whole group, so whatever it started goes with it
-  (`kill`, `process.rs:189-200`). A child that moves itself to another group escapes, as
-  it would from a shell.
+  (`kill`, `process.rs:408-430`). A child that moves itself to another group escapes, as
+  it would from a shell. The plugin gets its three pipes and no other fd: every fd past
+  2 is marked to close at exec, so nothing rox holds open, its database and sockets
+  included, reaches it (`inherit_pipes_only`, `process.rs:219`).
 - Windows: the plugin starts with `CREATE_NO_WINDOW`, so no console window opens, and
   goes into a job object with kill-on-close right after spawn. Closing the job's handle
   ends everything in it. A grandchild started between the spawn and the assignment can

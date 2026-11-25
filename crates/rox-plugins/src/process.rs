@@ -50,7 +50,8 @@ pub struct Lent<'a> {
 
 /// What a child gets beside its three pipes.
 pub enum Extra<'a> {
-    /// Nothing, which is what a plugin gets.
+    /// Nothing, which is what a plugin gets: on Unix every fd past 2 is
+    /// closed at exec.
     None,
     /// One handle: fd 3 on Unix, with every other fd closed at exec. On
     /// Windows a copy with the lent access is made in the child once it
@@ -104,7 +105,10 @@ pub fn spawn_with(
     // Held until the spawn returns: the child dups it onto fd 3.
     #[cfg(unix)]
     let _lent = match &extra {
-        Extra::None => None,
+        Extra::None => {
+            unix::inherit_pipes_only(&mut command);
+            None
+        }
         Extra::Handle(fd) => Some(unix::lend(&mut command, *fd)?),
     };
 
@@ -197,49 +201,65 @@ mod unix {
         // SAFETY: the closure runs in the forked child before exec and only
         // makes async-signal-safe calls: dup2, fcntl and close_range.
         unsafe {
-            command.pre_exec(move || inherit_only(source, limit));
+            command.pre_exec(move || {
+                // dup2 leaves the new fd without close-on-exec.
+                if libc::dup2(source, FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+
+                close_from(FD + 1, limit);
+                Ok(())
+            });
         }
 
         Ok(copy)
     }
 
-    /// rox holds its database, sockets and audio devices open, and a library
-    /// rox links may open an fd without close-on-exec. Everything past fd 3
-    /// is marked so it closes at exec, the lent handle's copy included.
-    fn inherit_only(source: RawFd, limit: RawFd) -> io::Result<()> {
-        // SAFETY: plain fd calls in the child; see `lend`.
-        unsafe {
-            // dup2 leaves the new fd without close-on-exec.
-            if libc::dup2(source, FD) < 0 {
-                return Err(io::Error::last_os_error());
-            }
+    /// Sets the child up to keep its three pipes and nothing past them.
+    pub fn inherit_pipes_only(command: &mut Command) {
+        let limit = open_max();
 
+        // SAFETY: the closure runs in the forked child before exec and only
+        // makes async-signal-safe calls: fcntl and close_range.
+        unsafe {
+            command.pre_exec(move || {
+                close_from(3, limit);
+                Ok(())
+            });
+        }
+    }
+
+    /// rox holds its database, sockets and audio devices open, and a library
+    /// rox links may open an fd without close-on-exec. Every fd from `first`
+    /// up is marked so it closes at exec. Runs in the forked child, so only
+    /// async-signal-safe calls.
+    unsafe fn close_from(first: RawFd, limit: RawFd) {
+        // SAFETY: plain fd calls in the child; see the callers.
+        unsafe {
             #[cfg(target_os = "linux")]
             {
                 let marked = libc::syscall(
                     libc::SYS_close_range,
-                    (FD + 1) as libc::c_uint,
+                    first as libc::c_uint,
                     libc::c_uint::MAX,
                     libc::CLOSE_RANGE_CLOEXEC,
                 );
                 if marked == 0 {
-                    return Ok(());
+                    return;
                 }
             }
 
             // Kernels before 5.11, and every other Unix.
-            for fd in FD + 1..limit {
+            for fd in first..limit {
                 let flags = libc::fcntl(fd, libc::F_GETFD);
                 if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
                     libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
                 }
             }
         }
-
-        Ok(())
     }
 
-    /// The highest fd number the walk in [`inherit_only`] tries, read here
+    /// The highest fd number the walk in [`close_from`] tries, read here
     /// since getrlimit isn't on the async-signal-safe list.
     fn open_max() -> RawFd {
         let mut limit = libc::rlimit {
@@ -620,35 +640,76 @@ mod tests {
         assert_eq!(again, "the frames\n");
     }
 
+    /// An fd without close-on-exec, as a C dependency's open(2) leaves it,
+    /// numbered well above 3 where a lent handle's dup2 can't hide it.
     #[cfg(unix)]
-    #[test]
-    fn no_other_fd_is_inherited() {
+    fn careless_fd(tag: &str) -> (std::path::PathBuf, std::os::fd::OwnedFd) {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-        // What rox holds that a careless library might have opened: an fd
-        // without close-on-exec, as a C dependency's open(2) leaves it. Put
-        // well above 3, where the lent handle's dup2 can't hide it.
-        let (path, file) = scratch_file("no-leak", "secret\n");
+        let (path, file) = scratch_file(tag, "secret\n");
         // SAFETY: F_DUPFD makes a fresh fd, close-on-exec clear, owned here.
         let held = unsafe {
             let raw = libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 64);
             assert!(raw >= 64);
             OwnedFd::from_raw_fd(raw)
         };
+
+        (path, held)
+    }
+
+    /// A script listing the child's open fds up to `top`.
+    #[cfg(unix)]
+    fn fd_probe(top: i32) -> String {
+        format!(
+            r#"n=0; while [ $n -le {top} ]; do [ -e /dev/fd/$n ] && printf '%s ' $n; n=$((n+1)); done"#
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_other_fd_is_inherited() {
+        use std::os::fd::AsRawFd;
+
+        let (path, held) = careless_fd("no-leak");
         let raw = held.as_raw_fd();
         let (lent_path, lent) = scratch_file("no-leak-lent", "frames\n");
 
         let top = raw.max(lent.as_raw_fd()) + 16;
-        let script = format!(
-            r#"n=0; while [ $n -le {top} ]; do [ -e /dev/fd/$n ] && printf '%s ' $n; n=$((n+1)); done"#
-        );
-        let out = lend_to("no-leak", &lent, &script);
+        let out = lend_to("no-leak", &lent, &fd_probe(top));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&lent_path);
 
         let open: Vec<i32> = out.split_whitespace().map(|n| n.parse().unwrap()).collect();
         // Seeing 3 is what shows the probe finds an open fd at all.
         assert_eq!(open, [0, 1, 2, 3], "the child holds {out:?}; {raw} leaked");
+
+        drop(held);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_plugin_inherits_only_its_pipes() {
+        use std::os::fd::AsRawFd;
+
+        let (path, held) = careless_fd("plain-no-leak");
+        let raw = held.as_raw_fd();
+
+        let dir = std::env::temp_dir().join(format!("rox-plugins-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(fd_probe(raw + 16));
+        let (mut process, pipes) = spawn("plain-no-leak", command, &dir).unwrap();
+
+        let mut out = String::new();
+        let mut stdout = pipes.stdout;
+        stdout.read_to_string(&mut out).unwrap();
+        process.wait_for(Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&path);
+
+        let open: Vec<i32> = out.split_whitespace().map(|n| n.parse().unwrap()).collect();
+        assert_eq!(open, [0, 1, 2], "the plugin holds {out:?}; {raw} leaked");
 
         drop(held);
     }

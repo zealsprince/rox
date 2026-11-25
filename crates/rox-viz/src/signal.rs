@@ -54,16 +54,24 @@ pub enum Source {
 }
 
 impl Source {
-    /// Clamped so a hand-edited file can't invert the band or leave the spectrum.
-    fn bins(&self, sample_rate: u32, half: usize) -> (usize, usize) {
-        let (lo, hi) = match *self {
+    /// The band it listens to in Hz, None for one that has no band. Clamped
+    /// so a hand-edited file can't invert the band or leave the spectrum.
+    /// The high edge takes `max` and `min`, not `clamp`, which panics once
+    /// its floor passes its ceiling: an imported workspace can put the low
+    /// edge anywhere.
+    pub fn band(&self) -> Option<(f32, f32)> {
+        match *self {
             Source::Band { lo, hi } | Source::Onset { lo, hi } | Source::Trigger { lo, hi } => {
-                let lo = lo.clamp(BAND_MIN_HZ, BAND_MAX_HZ);
-                (lo, hi.clamp(lo * 1.01, BAND_MAX_HZ))
+                let lo = lo.clamp(BAND_MIN_HZ, BAND_MAX_HZ / 1.01);
+                Some((lo, hi.max(lo * 1.01).min(BAND_MAX_HZ)))
             }
-            // Aggregates never ask for bins.
-            Source::Level | Source::Aggregate { .. } => (BAND_MIN_HZ, BAND_MAX_HZ),
-        };
+            Source::Level | Source::Aggregate { .. } => None,
+        }
+    }
+
+    fn bins(&self, sample_rate: u32, half: usize) -> (usize, usize) {
+        // Aggregates never ask for bins.
+        let (lo, hi) = self.band().unwrap_or((BAND_MIN_HZ, BAND_MAX_HZ));
         log_bands(1, lo, hi, sample_rate, half)[0]
     }
 }
@@ -580,6 +588,21 @@ mod tests {
             smooth: 0.0,
             ..Signal::default()
         }
+    }
+
+    #[test]
+    fn a_band_at_the_top_of_the_spectrum_still_steps() {
+        let mut engine = Signals::new();
+        let mags = vec![0.5f32; 2048];
+        let pool = vec![band(1, 20_000.0, 20_000.0), band(2, f32::MAX, -1.0)];
+
+        engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+
+        for signal in &pool {
+            let (lo, hi) = signal.source.band().unwrap();
+            assert!((BAND_MIN_HZ..BAND_MAX_HZ).contains(&lo) && lo < hi && hi <= BAND_MAX_HZ);
+        }
+        assert_eq!(Source::Level.band(), None);
     }
 
     #[test]

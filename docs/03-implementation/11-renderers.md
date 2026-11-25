@@ -21,7 +21,8 @@ Version-sensitive: rox starts a renderer with `ROX_RENDER_API=1`, and `hello` sa
 the magic `RXF1` (`VERSION` and `MAGIC`, `rox-frames/src/layout.rs:10-12`). The manifest
 is plugin API 1 (`SUPPORTED_API`, `rox-plugins/src/manifest.rs:24`). `rox-frames` uses
 libc 0.2 on Unix (0.2.186 in rox's lockfile, 0.2.190 in the plasma example's) and
-windows-sys 0.61 (0.61.2) on Windows.
+windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) says of wgpu
+was read in wgpu 30.0.2, which rox doesn't depend on.
 
 ## Trying the examples
 
@@ -80,6 +81,12 @@ declares nothing else, and this one declares ..." (`check_renderer`,
 `rox-plugins/src/manifest.rs:331`), because those would give it a plugin host and the
 plugin wire. Unknown keys inside `capabilities` are ignored, as they are for a plugin.
 
+`id`, `name`, `version`, `api` and `entry` are required, and a key at the top level the
+manifest doesn't know refuses it. `meta` can be left out, and so can each key in it
+(`Meta`, `manifest.rs:73`). The enable card shows `meta.author` and `meta.description`
+when they're there, with the top-level `version`. rox reads `meta.website`,
+`meta.version` and `meta.license` and shows none of them.
+
 The entry resolves the way a plugin's does (`entry_for`, `manifest.rs:483`). A script
 entry runs `<interpreter> <path>`. For `"interpreter": "python3"` rox tries `python3`,
 then `python`, with the `py -3` launcher ahead of both on Windows, and takes the first
@@ -104,16 +111,17 @@ A renderer gets no settings from rox: nothing in `hello` comes from `config_sche
 
 A renderer runs one process per render target. Two targets naming the same renderer are
 two processes. A target's `owner` is `plugin:<id>` (`renderer_id`,
-`rox/src/canvas/target.rs:1657`), and the canvas starts its renderer the first time it
+`rox/src/canvas/target.rs:1688`), and the canvas starts its renderer the first time it
 draws the item. The start goes through the gate on a thread of the target's own: Enable
 Plugins on, the package approved for its current hash, switched on, and not stopped by
 exits (`start`, `rox-services/src/renderers.rs:237`). rox never starts a renderer at
 launch, only when a target asks.
 
 The process starts in the package's folder (for a `.roxp`, rox's unpacked copy under
-`plugin-cache`) with rox's environment, PATH replaced by the plugin search path, and
+`plugin-cache`) with rox's environment, PATH set to the plugin search path, and
 `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1` and `PYTHONUTF8=1`
-(`spawn_with`, `rox-plugins/src/process.rs:72`). On top of those:
+(`spawn_with`, `rox-plugins/src/process.rs:72`). [What a native renderer starts
+with](#what-a-native-renderer-starts-with) has the whole of it. On top of those:
 
 | Variable | Value |
 |---|---|
@@ -230,7 +238,7 @@ When an announce arrives, rox reads the slot's counter. It throws the frame away
 when the counter is odd, or when it moved by the time the copy finished. It refuses the
 frame when the counter is 0 or the slot's width and height aren't the target's. A whole
 frame is shown only if its counter is higher than the last one shown in this session,
-so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs:1077`). The frame
+so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs:1080`). The frame
 number in the announce line isn't checked: rox goes by the counter.
 
 rox copies a slot only once the canvas has taken the frame before it, and only the
@@ -254,11 +262,11 @@ run past a pipe's atomic write size, and rox finishes a line it wrote in part be
 starts the next. Read each line as JSON. Key order and number spelling aren't part of
 the contract, and a line or key a renderer doesn't know should be skipped.
 
-These are every line rox writes (`target.rs:1224-1339`):
+These are every line rox writes (`target.rs:1227-1370`):
 
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
-{"pool":[{"id":1,"name":"Bass"},{"id":2,"name":"level"},{"id":3,"name":"band 2000-8000 Hz"}]}
+{"pool":[{"id":1,"name":"Kick","kind":"band","low":30,"high":120},{"id":2,"name":"onset 30-120 Hz","kind":"onset","low":30,"high":120},{"id":3,"name":"level","kind":"level"},{"id":4,"name":"total of 1","kind":"aggregate"}]}
 {"signals":[0.3958,0.0,1.0],"time":4.224}
 {"pointer":{"kind":"move","x":0.27,"y":0.36}}
 {"pause":true}
@@ -267,22 +275,29 @@ These are every line rox writes (`target.rs:1224-1339`):
 `hello` is always first. Its width and height are the target's, and `handle` is the
 mapping's handle value on Windows and 0 elsewhere.
 
-`pool` names the canvas's signals by id, in pool order. A name is the user's, trimmed
+`pool` describes the canvas's signals by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
 30-120 Hz`, `onset 30-120 Hz`, `trigger 30-120 Hz`, `level`, or `total of <id>`
-(`wire_name`, `target.rs:1251`). It comes once the session runs and the canvas draws, and
-again whenever the pool changes. An empty pool is `{"pool":[]}`.
+(`wire_name`, `target.rs:1284`). Read what a signal is from `kind`, since a renamed one
+says nothing about it in its name: `band`, `level`, `onset`, `trigger` or `aggregate`, a
+running total of another signal that wraps at 1 (`wire_signal`, `target.rs:1253`). A
+`band`, `onset` or `trigger` also has `low` and `high`, the frequency range it listens
+to in whole hertz, kept between 20 and 20,000 (`Source::band`,
+`rox-viz/src/signal.rs:62`). Past the name an entry holds only those fixed words and
+numbers, and nothing about how rox shapes the value. The line comes once the session runs
+and the canvas draws, and again whenever the pool changes. An empty pool is
+`{"pool":[]}`.
 
 `signals` holds each pool signal's value in pool order, from 0 to 1, to 4 decimals, the
-value routes read (`signals_line`, `target.rs:1268`). `time` is the playing position in
+value routes read (`signals_line`, `target.rs:1299`). `time` is the playing position in
 seconds, to 3 decimals, and 0 with nothing playing. A line goes with each frame the
 canvas paints while music plays. When playback pauses or stops, lines keep coming for
 about a second while the signals settle, then none come until music plays again
-(`Targets::read`, `target.rs:1744`). The canvas paints when a renderer publishes a
+(`Targets::read`, `target.rs:1775`). The canvas paints when a renderer publishes a
 frame, so a renderer that stops drawing stops getting signals. A reading rox hasn't sent
 yet is replaced by a newer one.
 
-`pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1304`):
+`pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1335`):
 
 | `kind` | Fields |
 |---|---|
@@ -297,7 +312,7 @@ mode, and only while the target is the front item under the pointer with no On C
 command rox can run on it or on a group around it (`hit`, `rox/src/panels/canvas.rs:2600`). Moves
 go at most every 8 ms with the newest position. At most 64 events wait for a renderer
 that's behind: moves are dropped first, then scrolls, then leaves, and presses last
-(`Outbox`, `target.rs:1345`). `leave` comes when the pointer goes to another item or off
+(`Outbox`, `target.rs:1376`). `leave` comes when the pointer goes to another item or off
 the canvas, and when design mode comes on, and it ends any press. An `up` can come with
 no `down` before it, from a press that started elsewhere.
 
@@ -312,7 +327,7 @@ decimal digits, a space, the slot `0` or `1`, and `\n`. A line is at most 64 byt
 newline included, and `\r\n` is refused (`ANNOUNCE_MAX` and `parse_announce`,
 `rox-frames/src/lib.rs:34-81`). Any other line, or a longer one, is dropped without a
 log line, and still counts toward the flood rule below. Of the lines waiting when rox
-reads, only the newest announce is acted on (`read`, `target.rs:1435`).
+reads, only the newest announce is acted on (`read`, `target.rs:1466`).
 
 stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 KiB
 (`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:308`).
@@ -323,7 +338,7 @@ stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 K
 |---|---|---|
 | Resolution | 16 to 3840 by 16 to 2160 pixels, 1280 by 720 for a new target | `WIDTHS`, `HEIGHTS`, `renderers.rs:33`; `WIDTH`, `HEIGHT`, `layout.rs:24-26` |
 | An announce line | 64 bytes, newline included | `ANNOUNCE_MAX`, `lib.rs:34` |
-| stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS`, `target.rs:104`; `Rate`, `:1500` |
+| stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS`, `target.rs:104`; `Rate`, `:1531` |
 | Refused frames | 60 in a row stop the renderer | `LIMITS.refused_run` |
 | An untaken frame | 500 ms, then the renderer is paused | `LIMITS.idle` |
 | Restarts | 0, 1, 2, 4 s; the fifth exit in ten minutes stops it | `BACKOFF`, `host.rs:26` |
@@ -346,7 +361,7 @@ anything about another item, and its wire has no way to call into rox. It runs w
 user's permissions, unsandboxed, as a plugin does, and the card says so.
 
 A workspace or an object with a render target lists the renderer in `requires`, the way
-it lists a plugin, and never includes it (`named_renderers`, `target.rs:1668`).
+it lists a plugin, and never includes it (`named_renderers`, `target.rs:1699`).
 
 ## Platforms
 
@@ -370,6 +385,106 @@ Python's `mmap` maps a file or a named mapping and has no way to take a section 
 so the Python example logs that and exits on Windows. The Rust example takes the handle
 from `hello`.
 
+## A GPU renderer
+
+Both examples fill their slot from the CPU. A renderer that draws on the GPU reads each
+frame back into the slot, and the contract above leaves it a few things to get right.
+
+### Reading a frame back
+
+Draw, copy the picture into a buffer the CPU can map, and wait for the GPU to finish
+both. Only then start the frame: store the odd counter, copy the buffer into the slot,
+store the even counter, announce. With `rox_frames::Writer` the copy is the closure
+`Writer::frame` hands over. The counter is odd for the copy alone, about a millisecond at
+1920x1080 from the right memory (below). Waiting on the GPU inside the odd window keeps
+the slot mid-write for the whole draw, and rox throws away as torn any copy it starts
+meanwhile. Announce only once the counter is even: rox can copy the slot as soon as it
+reads the line.
+
+Read back from memory the CPU caches. On a discrete GPU with resizable BAR, a buffer the
+CPU can map can land in device-local memory, which the CPU reads uncached across the
+bus. Measured on 2026-11-25 on a Radeon RX 6800 XT (RADV, Mesa 26.1.8), one
+GPU-written 1920x1080 frame took this long to memcpy out of each kind:
+
+| Memory | One frame |
+|---|---|
+| Device-local, host-visible | 226 ms |
+| Host-visible, uncached | 44.6 ms |
+| Host-visible, host-cached | 1.16 ms |
+
+In Vulkan that's a memory type with `HOST_CACHED` among its flags. wgpu asks for one for a
+buffer whose usage maps it for reading and not for writing. Adding `MAP_WRITE` to that
+buffer moves it to memory chosen for uploads, which prefers device-local (`MemoryLocation`
+in `wgpu-hal` 30.0.2, `src/vulkan/device.rs`). A copy that takes tens of milliseconds is
+reading uncached memory.
+
+A slot's rows are packed: each is `width * 4` bytes, right after the one before. A GPU
+copy from a texture into a buffer often wants padded rows. wgpu starts each on a multiple
+of 256 bytes (`COPY_BYTES_PER_ROW_ALIGNMENT`), as Direct3D 12 does
+(`D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`). At a width that's a multiple of 64 the rows come
+out packed and one copy fills the slot. At any other width copy row by row, `width * 4`
+bytes from the start of each padded row. The Resolution presets are all multiples of 64,
+and the Width in Pixels row takes any width from 16 to 3840.
+
+### The pixels
+
+The slot holds sRGB-encoded RGBA8, and rox uploads it as `Rgba8UnormSrgb`. A storage image
+usually can't have an sRGB format: wgpu offers storage on `Rgba8Unorm` and not on
+`Rgba8UnormSrgb`. Write `Rgba8Unorm` and apply the sRGB curve in the shader before the
+store. Linear values written as they are show too dark.
+
+Alpha is straight, not premultiplied, and anything below 255 shows the canvas behind the
+target. An opaque picture writes 255 into every alpha byte. A pass that clears to
+transparent black and never writes alpha leaves the target see-through.
+
+The top row comes first, the way a texture is laid out in wgpu, Vulkan, Direct3D and
+Metal. OpenGL's `glReadPixels` starts at the bottom row, so a renderer on OpenGL flips
+the rows.
+
+### Signals on the renderer's clock
+
+Step a simulation on the renderer's own clock, with the newest signal values it holds.
+Signals come on rox's paints, not the renderer's: a `signals` line goes out with each
+frame the canvas paints while music plays, about one a frame. Its values are the hub's at
+that paint, from audio the player hands the visualizers every 16 ms (`PUMP_INTERVAL`,
+`rox-services/src/player.rs`), so each is about a frame old when it's written. A renderer
+that steps faster than lines arrive steps more than once on the same values. One that
+steps slower gets several lines between steps.
+
+An onset or a trigger is a pulse: it jumps on a hit and falls back at the rate its
+Response sets. Keep the highest value of each since the last step, and start again from
+0 after the step, or a pulse that came and went between two steps is lost. A band, the
+level and a total can take the newest value. The `kind` on the pool line says which is
+which.
+
+The canvas paints for a target when it publishes a frame, so a renderer that stops
+publishing stops getting signals, and they start again with its next frame.
+
+### What a native renderer starts with
+
+The process starts in the package's folder with rox's own environment and these changes,
+and no others (`spawn_with`, `rox-plugins/src/process.rs`; `launch`,
+`rox-services/src/renderers.rs`):
+
+- `PATH` is the plugin search path: the package's `bin` folder, the Program Folders from
+  the Plugins page, then rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`).
+- `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED` and `PYTHONUTF8`, each `1`.
+- `ROX_RENDER_API`, `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`, and on Unix
+  `ROX_FRAMES_FD`.
+
+rox adds nothing to `LD_LIBRARY_PATH` or `DYLD_LIBRARY_PATH` and sets no GPU variable. A
+renderer finds its own GPU libraries, the Vulkan loader among them: from the system's
+library path, from an rpath of its own, or through a launcher script of its own.
+
+What it inherits depends on how rox was started. The Nix package in `flake.nix` finds
+its own libraries through an rpath patched onto the `rox` binary (`patchelf --add-rpath`
+in `postFixup`) and leaves the environment as it was. NixOS has no default library path
+holding the Vulkan loader (`/run/opengl-driver/lib` holds the drivers, not
+`libvulkan.so.1`), so there a renderer started by the packaged rox gets no loader from it.
+The flake's dev shell puts the loader on `LD_LIBRARY_PATH`, and a rox run from that shell
+passes it on. A renderer that runs under a dev build can fail to load `libvulkan.so.1`
+under the package.
+
 ## Debugging
 
 A renderer's stderr is in rox's log: `<data>/logs/rox.log`, rox's own stderr, and the
@@ -390,11 +505,13 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 
 The inspector's Status row words the same states for the user, with the gate's reason
 when it refused. rox writes no line for a frame it drops, only a count in the line each
-session ends with (`log_tally`, `target.rs:1137`). Frames copied are whole frames read
+session ends with (`log_tally`, `target.rs:1140`). Frames copied are whole frames read
 out of a slot. Torn ones had an odd counter, or one that moved during the copy.
 Unwritten ones were announced while the slot's counter was still 0, and wrong size ones
 had size words other than `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`. Lines read counts
-every line rox read from the renderer's stdout, announce or not. Only 60 refusals in a
+every line rox read from the renderer's stdout while the session ran, announce or not.
+The line is written as the session ends and before the renderer's stop, so a new
+resolution's `started at` comes after it. Only 60 refusals in a
 row stop a renderer, and a torn frame never does, so a target that stays blank while
 Status says Running shows up here: check that `seq` goes `2n + 1` then `2n + 2`, that
 the slot's size words are right, that the slot in the line is `n % 2`, and that the line
@@ -485,7 +602,8 @@ The item is `crates/rox/src/canvas/target.rs` (the supervisor, the limits, the r
 the copy, every line sent, the status), drawn through `crates/rox/src/canvas/texture.rs`.
 `crates/rox/src/panels/canvas.rs` places it, reads the signals for it each frame and
 sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), and adds it
-from the Add menu. The Renderers section of the Plugins page is
+from the Add menu. A pool entry's kind and band come from `Source` in
+`crates/rox-viz/src/signal.rs`. The Renderers section of the Plugins page is
 `crates/rox/src/settings/window/plugins_page.rs`.
 
 The examples are `examples/renderers/bars/bars.py` and

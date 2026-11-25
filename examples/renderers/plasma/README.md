@@ -47,7 +47,6 @@ to a `.roxp` to share.
 
 ## Where a GPU renderer differs
 
-This one fills the slot from the CPU. A renderer that draws on the GPU reads its frame
-back into the slot instead: the readback's destination is the closure `Writer::frame`
-hands over, and the counter goes even only once that copy is done. Finish the GPU work
-before announcing: rox may copy the slot as soon as it reads the line.
+This one fills the slot from the CPU. What changes when a frame is drawn on the GPU and
+read back is in the renderers doc, under
+[A GPU renderer](../../../docs/03-implementation/11-renderers.md#a-gpu-renderer).

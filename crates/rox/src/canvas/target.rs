@@ -823,13 +823,16 @@ impl Supervisor {
                 }
             };
 
+            // Before the stop's grace: a new size's session starts on a
+            // supervisor of its own meanwhile, and its line would come first.
+            self.log_tally();
+
             // Asked before the stop, which sets it too.
             let ours = run.stopped();
             run.stop();
             drop(run);
             self.join_reader(session, reader.ok());
             drop(mapping);
-            self.log_tally();
 
             match exit {
                 Exit::Stop => return,
@@ -1225,10 +1228,10 @@ impl Pipe {
 //
 // The boundary of ADR 37's trust rules. Past `hello` and `pause`, a renderer
 // is sent exactly the two things its enable card names (`plugins::grants`):
-// the music's signals, as the pool's values and names with the playing
-// position, and the pointer while it's over the target's own surface. No
-// track, path, key or other item's input crosses here. A new kind of line
-// needs a new grant and new card copy first.
+// the music's signals, as the pool's values, names, kinds and bands with the
+// playing position, and the pointer while it's over the target's own
+// surface. No track, path, key or other item's input crosses here. A new
+// kind of line needs a new grant and new card copy first.
 
 /// One frame's reading for every target a canvas draws.
 pub(crate) struct Feed {
@@ -1237,13 +1240,43 @@ pub(crate) struct Feed {
     signals: Option<String>,
 }
 
-/// `{"pool": [{"id": 3, "name": "Bass"}, ...]}`, in pool order.
+/// `{"pool": [{"id": 3, "name": "Bass", "kind": "band", "low": 30, "high":
+/// 120}, ...]}`, in pool order.
 fn pool_line(pool: &[Signal]) -> String {
-    let named: Vec<serde_json::Value> = pool
-        .iter()
-        .map(|signal| serde_json::json!({ "id": signal.id, "name": wire_name(signal) }))
-        .collect();
+    let named: Vec<serde_json::Value> = pool.iter().map(wire_signal).collect();
     format!("{}\n", serde_json::json!({ "pool": named }))
+}
+
+/// One pool entry. Past the name it carries a fixed word and whole numbers
+/// only: what kind of signal it is and the band it listens to, which a
+/// renamed signal no longer says. Its gate and smoothing stay rox's.
+fn wire_signal(signal: &Signal) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "id": signal.id,
+        "name": wire_name(signal),
+        "kind": wire_kind(&signal.source),
+    });
+
+    if let Some((low, high)) = signal.source.band() {
+        entry["low"] = hz(low).into();
+        entry["high"] = hz(high).into();
+    }
+    entry
+}
+
+fn wire_kind(source: &SignalSource) -> &'static str {
+    match source {
+        SignalSource::Band { .. } => "band",
+        SignalSource::Level => "level",
+        SignalSource::Onset { .. } => "onset",
+        SignalSource::Trigger { .. } => "trigger",
+        SignalSource::Aggregate { .. } => "aggregate",
+    }
+}
+
+/// Whole hertz. `band` keeps it inside the spectrum, so it's always finite.
+fn hz(value: f32) -> u32 {
+    value.round() as u32
 }
 
 /// The user's name for a signal, or one worded from its source. English in
@@ -1253,13 +1286,11 @@ fn wire_name(signal: &Signal) -> String {
         return name.chars().take(NAME_MAX).collect();
     }
 
-    let band = |kind: &str, lo: f32, hi: f32| format!("{kind} {}-{} Hz", lo.round(), hi.round());
-    match signal.source {
-        SignalSource::Band { lo, hi } => band("band", lo, hi),
-        SignalSource::Onset { lo, hi } => band("onset", lo, hi),
-        SignalSource::Trigger { lo, hi } => band("trigger", lo, hi),
-        SignalSource::Level => "level".to_string(),
-        SignalSource::Aggregate { of, .. } => format!("total of {of}"),
+    let kind = wire_kind(&signal.source);
+    match (signal.source, signal.source.band()) {
+        (SignalSource::Aggregate { of, .. }, _) => format!("total of {of}"),
+        (_, Some((lo, hi))) => format!("{kind} {}-{} Hz", hz(lo), hz(hi)),
+        (_, None) => kind.to_string(),
     }
 }
 
@@ -2699,7 +2730,7 @@ mod tests {
     impl Run for Trickle {
         fn send(&mut self, bytes: &[u8]) -> Sent {
             self.calls += 1;
-            if self.calls % 2 == 0 {
+            if self.calls.is_multiple_of(2) {
                 return Sent::Full;
             }
 
@@ -2759,17 +2790,51 @@ mod tests {
             name: "x".repeat(NAME_MAX * 2),
             ..Signal::default()
         };
+        let onset = Signal {
+            id: 6,
+            source: SignalSource::Onset {
+                lo: 2000.4,
+                hi: 99_999.,
+            },
+            smooth: 0.9,
+            threshold: 0.5,
+            ..Signal::default()
+        };
+        let total = Signal {
+            id: 7,
+            source: SignalSource::Aggregate { of: 3, rate: 2. },
+            reset_on_track: true,
+            ..Signal::default()
+        };
 
-        let pool = pool_line(&[named, level, long]);
+        let pool = pool_line(&[named, level, long, onset, total]);
         let read: serde_json::Value = serde_json::from_str(&pool).expect("json");
+
+        // A signal's kind and the band it listens to describe the signal, so
+        // they sit under the card's "Gets the music's signals". Its threshold
+        // and smoothing are how rox shapes the value, and never go.
         assert_eq!(
             read["pool"][0],
-            serde_json::json!({ "id": 3, "name": "Bass" })
+            serde_json::json!({ "id": 3, "name": "Bass", "kind": "band", "low": 30, "high": 120 })
         );
-        assert_eq!(read["pool"][1]["name"], "level");
+        assert_eq!(
+            read["pool"][1],
+            serde_json::json!({ "id": 4, "name": "level", "kind": "level" })
+        );
         assert_eq!(
             read["pool"][2]["name"].as_str().map(str::len),
             Some(NAME_MAX)
+        );
+        assert_eq!(
+            read["pool"][3],
+            serde_json::json!({
+                "id": 6, "name": "onset 2000-20000 Hz", "kind": "onset", "low": 2000, "high": 20000,
+            }),
+            "the band as the hub hears it, clamped to the spectrum"
+        );
+        assert_eq!(
+            read["pool"][4],
+            serde_json::json!({ "id": 7, "name": "total of 3", "kind": "aggregate" })
         );
         assert_eq!(pool.matches('\n').count(), 1, "one line");
 

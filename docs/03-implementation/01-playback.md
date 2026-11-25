@@ -382,6 +382,14 @@ replace removes everything but the playing entry, puts the old order back before
 after it, and keeps the old playing track as history right before it, so the new track
 plays on and the old queue resumes when it ends.
 
+On a queue that has played to its end, an undo can start playback. The engine leaves its play flag up there, and any `Insert` that reaches it with no track open
+jumps to the inserted entries, so an append to a finished queue starts at once (the
+`Cmd::Insert` arm of the engine's drain). An undo that puts entries back sends that same
+insert, so undoing a Clear Queue or a Remove after the last track finished starts playing
+again from what it put back. The engine has no insert that leaves an ended queue ended,
+and the plan sends only the commands any edit sends. Keeping it ended would take an
+insert command that doesn't open a track from the ended state.
+
 Moves of the same entries closer together than 800 ms merge into one step, and the stack
 holds 200 steps: the canvas's window and bound. Removes never merge. The stack lives for
 the session: Stop and the launch restore clear it.

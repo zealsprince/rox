@@ -103,9 +103,12 @@ trash = { version = "5", default-features = false, features = ["coinit_multithre
 # The now-playing cover's file:// URL for the OS transport.
 url = "2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# The glibc malloc knobs; see tune_allocator.
+[target.'cfg(unix)'.dependencies]
+# The glibc malloc knobs (see tune_allocator), and the termination signal
+# handler in startup/signals.rs.
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 # Quit-to-tray over StatusNotifierItem, on async-io rather than tokio.
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 # The updater unpacks the release tarball.

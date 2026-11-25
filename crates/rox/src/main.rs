@@ -246,6 +246,7 @@ fn install_openers() {
         confirm_close_locked,
         task_started: tasks_window::repaint_while_running,
         go_to_source: workspace::go_to_source,
+        dock_back_home: workspace::dock_back_home,
     });
 }
 
@@ -391,6 +392,8 @@ fn main() {
     };
     app.run(move |cx: &mut App| {
         logging::init();
+        // Before the first hook that a signal's quit should run is registered.
+        startup::signals::install(cx);
         rox_core::desktop::init();
         // Early, so a launch arriving mid-startup queues instead of starting its own rox.
         startup::single_instance::serve(instance, cx);

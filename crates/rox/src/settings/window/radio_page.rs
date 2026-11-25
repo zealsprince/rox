@@ -101,7 +101,14 @@ impl SettingsWindow {
         };
         let remove = action_cell(icon_button(icons::CLOSE, false, {
             let url = station.url.clone();
-            cx.listener(move |this, _, _, cx| this.remove_station(&url, cx))
+            let name = title.to_string();
+            cx.listener(move |this, _, _, cx| {
+                this.pending = Some(Pending::RemoveStation {
+                    url: url.clone(),
+                    name: name.clone(),
+                });
+                cx.notify();
+            })
         }));
 
         div()
@@ -298,7 +305,7 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn remove_station(&mut self, url: &str, cx: &mut Context<Self>) {
+    pub(super) fn remove_station(&mut self, url: &str, cx: &mut Context<Self>) {
         let path = self.library.read(cx).db_path();
         let Ok(mut conn) = rox_library::store::open(&path) else {
             return;

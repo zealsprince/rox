@@ -292,6 +292,14 @@ bookmark-menu-color = Couleur
 bookmark-menu-move = Déplacer à la position de lecture
 bookmark-menu-remove = Supprimer
 bookmark-menu-remove-many = Supprimer { $count } signets
+bookmarks-remove-title = { $count ->
+    [one] Supprimer 1 signet ?
+   *[other] Supprimer { $count } signets ?
+}
+bookmarks-remove-body = { $count ->
+    [one] Le signet disparaît et son morceau reste dans la bibliothèque.
+   *[other] Les signets disparaissent et leurs morceaux restent dans la bibliothèque.
+}
 bookmarks-title = Signets
 bookmarks-empty = Aucun signet pour l'instant. Appuyez sur M pendant la lecture pour en poser un, ou Maj+M pour le nommer.
 cue-menu-insert = Insérer un repère ici
@@ -805,6 +813,14 @@ stations-play = Lire
 stations-play-count = Lire { $count } stations
 stations-remove = Supprimer
 stations-remove-count = Supprimer { $count } stations
+stations-remove-title = { $count ->
+    [one] Supprimer 1 station ?
+   *[other] Supprimer { $count } stations ?
+}
+stations-remove-body = { $count ->
+    [one] La station quitte la bibliothèque jusqu'à ce que son URL soit ajoutée de nouveau.
+   *[other] Les stations quittent la bibliothèque jusqu'à ce que leurs URL soient ajoutées de nouveau.
+}
 stations-find = Trouver des stations...
 stations-manage = Gérer les stations...
 stations-import = Importer des stations...
@@ -1533,7 +1549,7 @@ settings-plugins-remove-package-body = Ses morceaux, ses collections synchronis�
 settings-plugins-renderers = Moteurs de rendu
 settings-plugins-renderers-intro = Un moteur de rendu est un programme qui dessine l'image d'une cible de rendu sur un canevas. Il ne tourne que s'il est activé et qu'une cible de rendu l'affiche
 settings-plugins-card-renderer = Dessine { $label } dans les cibles de rendu d'un canevas.
-settings-plugins-card-renderer-signals = Reçoit les signaux de la musique.
+settings-plugins-card-renderer-signals = Reçoit les signaux de la musique et la position de lecture.
 settings-plugins-card-renderer-pointer = Reçoit le pointeur tant qu'il survole la cible de rendu.
 settings-plugins-card-unchanged-renderer = Le manifeste est le même que la dernière fois. D'autres fichiers du moteur de rendu ont changé.
 settings-plugins-renderer-failed-title = Ce moteur de rendu ne peut pas s'exécuter
@@ -1746,6 +1762,13 @@ settings-confirm-overwrite-workspace-body = Ceci remplace l'espace de travail en
 settings-confirm-overwrite-workspace-title = Écraser l'espace de travail « { $name } » ?
 settings-confirm-remove-subsonic-body = Les identifiants sont oubliés et ses pistes quittent la bibliothèque. Les retrouver veut dire se reconnecter et resynchroniser ; le désactiver les garde plutôt.
 settings-confirm-remove-subsonic-title = Retirer « { $name } » ?
+settings-library-remove-folder-body = Le dossier et ses pistes quittent la bibliothèque, et les fichiers restent sur le disque.
+settings-confirm-delete-workspace-body = Ceci supprime l'espace de travail enregistré et laisse l'habillage actuel tel quel.
+settings-confirm-delete-layout-body = Ceci supprime la disposition enregistrée et laisse chaque fenêtre telle quelle.
+settings-confirm-delete-panel-preset-body = Ceci supprime le préréglage enregistré et laisse chaque panneau tel quel.
+settings-confirm-delete-asset-body = Le fichier quitte l'espace de travail, et tout ce qui l'utilise le perd.
+settings-dictionary-delete-body = Ceci supprime le téléchargement de { $size } et garde ce qu'il a déjà romanisé.
+settings-mlmodels-delete-body = Ceci supprime le téléchargement de { $size } et garde les vecteurs déjà calculés.
 settings-sidebar-data-folder = Dossier de données
 settings-sidebar-settings-file = Fichier de réglages
 
@@ -1864,6 +1887,8 @@ workspace-dialog-layout-name-placeholder = Nom de la disposition
 workspace-dialog-not-now = Pas maintenant
 workspace-dialog-overwrite = Écraser
 workspace-dialog-overwrite-title = Écraser « { $name } » ?
+workspace-dialog-delete-title = Supprimer « { $name } » ?
+workspace-dialog-remove-title = Retirer « { $name } » ?
 workspace-dialog-save = Enregistrer
 workspace-dialog-save-layout-title = Enregistrer la disposition
 workspace-dialog-save-workspace-title = Enregistrer l'espace de travail
@@ -2330,6 +2355,7 @@ eq-preset-export-default = Égaliseur
 eq-preset-name = Nom du préréglage
 eq-preset-save = Enregistrer le préréglage
 eq-presets = Préréglages
+eq-preset-delete-body = Ceci supprime le préréglage et laisse la courbe actuelle telle quelle.
 eq-readout-curve = Courbe
 eq-readout-icon = Icône
 eq-readout-section = Affichage
@@ -3934,6 +3960,7 @@ playlists-name-line = Ligne du nom
 playlists-name-line-description = Ce qu'affiche la première rangée de l'en-tête, de gauche à droite ; un espace ou un séparateur répartit les côtés
 playlists-columns = Quelles colonnes de piste s'affichent à côté du titre
 playlists-delete = Supprimer la playlist
+playlists-delete-body = La playlist disparaît et ses morceaux restent dans la bibliothèque.
 playlists-edit-query = Modifier la requête...
 playlists-empty = Aucune playlist pour l'instant, ajoute des pistes ou utilise Nouvelle playlist
 playlists-export-tooltip = Exporter une playlist
@@ -4781,6 +4808,7 @@ canvas-object-exported = { $name } exporté
 canvas-object-export-failed = Impossible d'exporter { $name }
 canvas-object-place-title = Placer « { $name } » ?
 canvas-object-place-body = Il arrive au milieu du canevas. Annuler le retire.
+canvas-object-remove-body = Ceci supprime l'objet installé et laisse tels quels les canevas où il a été placé.
 canvas-object-heavy = Fait { $size } Mo une fois décompressé, plus que la plupart des objets
 canvas-object-shaders-body = Approuver les laisse tourner sur cette machine. Placé sans approbation, chaque shader reste éteint et demande l'approbation là où il se trouve.
 canvas-object-place = Placer

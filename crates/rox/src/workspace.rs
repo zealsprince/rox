@@ -2773,6 +2773,16 @@ pub(crate) fn trash_tracks(state: AppState, ids: Vec<i64>, cx: &mut App) {
     });
 }
 
+/// A panel's delete confirm, raised the way [`trash_tracks`] raises its own.
+fn confirm_delete(ask: rox_panel_api::openers::Confirm, cx: &mut App) {
+    with_front_workspace(cx, move |ws, window, cx| {
+        ws.layout_dialog = Some(LayoutDialog::ConfirmDelete(ask));
+        window.activate_window();
+        window.focus(&ws.focus);
+        cx.notify();
+    });
+}
+
 /// Go to from a menu outside an External Sources panel. A new browser goes
 /// where the Panels menu puts one: the newest tab group can be a one-line
 /// strip, and a browser opened there is out of sight.
@@ -3566,6 +3576,8 @@ enum LayoutDialog {
         library: Entity<rox_services::catalog::Library>,
         files: Vec<PathBuf>,
     },
+    /// A delete a panel asked about, such as a playlist or a bookmark.
+    ConfirmDelete(rox_panel_api::openers::Confirm),
 }
 
 impl LayoutDialog {
@@ -3576,7 +3588,8 @@ impl LayoutDialog {
         match self {
             LayoutDialog::ConfirmOverwrite(_)
             | LayoutDialog::ConfirmOverwriteWorkspace(_)
-            | LayoutDialog::ConfirmTrash { .. } => true,
+            | LayoutDialog::ConfirmTrash { .. }
+            | LayoutDialog::ConfirmDelete(_) => true,
 
             LayoutDialog::Save(_)
             | LayoutDialog::ConfirmApply(_)
@@ -3938,6 +3951,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        rox_panel_api::openers::install_confirm(confirm_delete);
+
         // A reopen from the tray adopts the state the last close handed to
         // the hold, so the playing player, library, and art come straight
         // over; every other open builds its own world.
@@ -5756,6 +5771,15 @@ impl Workspace {
         cx.notify();
     }
 
+    fn delete_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(LayoutDialog::ConfirmDelete(ask)) = self.layout_dialog.take() else {
+            return;
+        };
+        self.close_layout_dialog(window, cx);
+
+        (ask.run)(cx);
+    }
+
     /// Move the files the confirm named. Always the OS trash, never an
     /// unlink: a wrong click has to be something the user can take back.
     fn trash_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -7137,6 +7161,31 @@ impl Workspace {
                             cx.listener(|this, _, window, cx| this.trash_confirmed(window, cx)),
                         )),
                 ),
+            LayoutDialog::ConfirmDelete(ask) => card
+                .child(div().child(ask.title.clone()))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(ask.body.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(tokens::SPACE_SM)
+                        .child(dialog_button(
+                            rox_i18n::t!("workspace-dialog-cancel"),
+                            destructive,
+                            cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
+                        ))
+                        .child(dialog_button(
+                            ask.yes.clone(),
+                            !destructive,
+                            cx.listener(|this, _, window, cx| this.delete_confirmed(window, cx)),
+                        )),
+                ),
         };
         Some(
             div()
@@ -8044,6 +8093,15 @@ mod tests {
         assert!(LayoutDialog::ConfirmOverwrite("a".into()).destructive());
         assert!(LayoutDialog::ConfirmOverwriteWorkspace("a".into()).destructive());
         assert!(!LayoutDialog::ConfirmApply("a".into()).destructive());
+        assert!(
+            LayoutDialog::ConfirmDelete(rox_panel_api::openers::Confirm {
+                title: "a".into(),
+                body: "b".into(),
+                yes: "c".into(),
+                run: Box::new(|_| {}),
+            })
+            .destructive()
+        );
     }
 }
 

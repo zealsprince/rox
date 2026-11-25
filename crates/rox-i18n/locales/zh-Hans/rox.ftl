@@ -290,6 +290,12 @@ bookmark-menu-color = 颜色
 bookmark-menu-move = 移到当前播放位置
 bookmark-menu-remove = 删除
 bookmark-menu-remove-many = 删除 { $count } 个书签
+bookmarks-remove-title = { $count ->
+   *[other] 删除 { $count } 个书签？
+}
+bookmarks-remove-body = { $count ->
+   *[other] 书签会被删除，曲目仍留在媒体库中。
+}
 bookmarks-title = 书签
 bookmarks-empty = 还没有书签。播放时按 M 添加一个，或按 Shift+M 添加并命名。
 cue-menu-insert = 在此插入标记
@@ -782,6 +788,12 @@ stations-play = 播放
 stations-play-count = 播放 { $count } 个电台
 stations-remove = 删除
 stations-remove-count = 删除 { $count } 个电台
+stations-remove-title = { $count ->
+   *[other] 删除 { $count } 个电台？
+}
+stations-remove-body = { $count ->
+   *[other] 电台会离开媒体库，直到你再次添加其网址。
+}
 stations-find = 查找电台...
 stations-manage = 管理电台...
 stations-import = 导入电台...
@@ -1476,7 +1488,7 @@ settings-plugins-remove-package-body = 它的曲目、已同步的收藏和设�
 settings-plugins-renderers = 渲染器
 settings-plugins-renderers-intro = 渲染器是在画布上的渲染目标里绘制画面的程序。只有在打开、并且有渲染目标显示它时才运行
 settings-plugins-card-renderer = 在画布上的渲染目标里绘制 { $label }。
-settings-plugins-card-renderer-signals = 接收音乐的信号。
+settings-plugins-card-renderer-signals = 接收音乐的信号和播放位置。
 settings-plugins-card-renderer-pointer = 指针在渲染目标上方时接收指针。
 settings-plugins-card-unchanged-renderer = 清单和上次相同，是渲染器里的其他文件变了。
 settings-plugins-renderer-failed-title = 此渲染器无法运行
@@ -1686,6 +1698,13 @@ settings-confirm-overwrite-workspace-body = 这会用当前状态替换已保存
 settings-confirm-overwrite-workspace-title = 覆盖工作区“{ $name }”？
 settings-confirm-remove-subsonic-body = 登录会被忘记，它的曲目会离开媒体库。想要找回，就得重新连接并同步；关闭它则会保留这些曲目。
 settings-confirm-remove-subsonic-title = 移除“{ $name }”？
+settings-library-remove-folder-body = 该文件夹和其中的曲目会离开媒体库，文件仍留在磁盘上。
+settings-confirm-delete-workspace-body = 这会删除已保存的工作区，当前外观保持不变。
+settings-confirm-delete-layout-body = 这会删除已保存的布局，所有窗口保持不变。
+settings-confirm-delete-panel-preset-body = 这会删除已保存的预设，所有面板保持不变。
+settings-confirm-delete-asset-body = 该文件会离开工作区，用到它的地方都会失去它。
+settings-dictionary-delete-body = 这会删除 { $size } 的下载内容，已经罗马化的结果会保留。
+settings-mlmodels-delete-body = 这会删除 { $size } 的下载内容，已经生成的向量会保留。
 settings-sidebar-data-folder = 数据文件夹
 settings-sidebar-settings-file = 设置文件
 
@@ -1801,6 +1820,8 @@ workspace-dialog-layout-name-placeholder = 布局名称
 workspace-dialog-not-now = 暂不
 workspace-dialog-overwrite = 覆盖
 workspace-dialog-overwrite-title = 覆盖“{ $name }”？
+workspace-dialog-delete-title = 删除“{ $name }”？
+workspace-dialog-remove-title = 移除“{ $name }”？
 workspace-dialog-save = 保存
 workspace-dialog-save-layout-title = 保存布局
 workspace-dialog-save-workspace-title = 保存工作区
@@ -2227,6 +2248,7 @@ eq-preset-export-default = 均衡器
 eq-preset-name = 预设名称
 eq-preset-save = 保存预设
 eq-presets = 预设
+eq-preset-delete-body = 这会删除该预设，当前曲线保持不变。
 eq-readout-curve = 曲线
 eq-readout-icon = 图标
 eq-readout-section = 读数
@@ -3741,6 +3763,7 @@ playlists-name-line = 名称行
 playlists-name-line-description = 分组标题第一行从左到右显示什么；间隔或分隔线把两侧分开
 playlists-columns = 标题旁边显示哪些曲目列
 playlists-delete = 删除播放列表
+playlists-delete-body = 播放列表会被删除，其中的曲目仍留在媒体库中。
 playlists-edit-query = 编辑查询…
 playlists-empty = 还没有播放列表，加些曲目或者用“新建播放列表”
 playlists-export-tooltip = 导出播放列表
@@ -4550,6 +4573,7 @@ canvas-object-exported = 已导出 { $name }
 canvas-object-export-failed = 无法导出 { $name }
 canvas-object-place-title = 放置“{ $name }”？
 canvas-object-place-body = 它会放在舞台中央。撤销即可移除。
+canvas-object-remove-body = 这会删除已安装的对象，放置过它的画布保持不变。
 canvas-object-heavy = 解压后有 { $size } MB，比一般的对象大
 canvas-object-shaders-body = 批准后它们可以在这台电脑上运行。未经批准放置时，每个着色器保持关闭，并在所在位置请求批准。
 canvas-object-place = 放置

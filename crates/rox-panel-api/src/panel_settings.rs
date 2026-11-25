@@ -39,6 +39,7 @@ use rox_panel_kit::ui::{
     self as settings_ui, PageBody, Query, SECTION_GAP, Section, Seg, SidesScrub, grid_columns,
     kbd_line, section, sidebar, small_button,
 };
+use rox_panel_kit::{OneLine as _, one_line};
 use rox_viz::signal::Route;
 
 actions!(panel_settings, [Rename, SavePreset]);
@@ -345,7 +346,7 @@ impl ShaderNameField {
         }
         self.placeholder = placeholder.to_string();
         let text = SharedString::from(placeholder.to_string());
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(text));
+        let input = cx.new(|cx| InputState::new(window, cx).one_line().placeholder(text));
         self.input = Some(input.clone());
         input
     }
@@ -765,8 +766,9 @@ impl<P: PanelSettings> RenameWindow<P> {
         };
         let input = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder(placeholder)
-                .default_value(current)
+                .default_value(one_line(&current).into_owned())
         });
         let _input_events =
             cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
@@ -943,8 +945,9 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         };
         let input = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder(fallback.clone())
-                .default_value(current)
+                .default_value(one_line(&current).into_owned())
         });
         let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
             // The footer's replaces note has to re-read on every keystroke.
@@ -1272,6 +1275,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             let seed = value.map(|n| format!("{n:.0}")).unwrap_or_default();
             cx.new(|cx| {
                 InputState::new(window, cx)
+                    .one_line()
                     .placeholder_key("panel-size-off", window, cx)
                     .default_value(seed)
             })

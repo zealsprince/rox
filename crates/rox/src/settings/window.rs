@@ -97,6 +97,7 @@ use library_page::seed_root_stats;
 use ml_models_page::ModelKind;
 use radio_page::read_stations;
 use rox_panel_kit::PlaceholderKey as _;
+use rox_panel_kit::{OneLine as _, one_line};
 use storage_page::StorageInfo;
 
 const TRACKS_COL_W: Pixels = px(56.);
@@ -235,6 +236,25 @@ enum Pending {
     /// Asked for for the same reason as a server: rows and synced
     /// collections only come back by syncing again.
     RemovePlugin(String),
+    /// The folder's tracks leave the library; its files stay.
+    RemoveFolder(PathBuf),
+    RemoveStation {
+        url: String,
+        name: String,
+    },
+    DeleteWorkspace(String),
+    /// A saved layout, by name.
+    DeletePreset(String),
+    DeletePanelPreset {
+        scope: rox_core::settings::panel_presets::SaveScope,
+        name: String,
+    },
+    RemoveAsset {
+        id: String,
+        file: String,
+    },
+    DeleteDictionary(&'static rox_romanize::dictionary::Dictionary),
+    DeleteModel(&'static rox_acoustic::models::Model),
 }
 
 impl Pending {
@@ -249,7 +269,15 @@ impl Pending {
             | Pending::ClearMeasuredBpm
             | Pending::ClearListens
             | Pending::RemoveSubsonic(_)
-            | Pending::RemovePlugin(_) => true,
+            | Pending::RemovePlugin(_)
+            | Pending::RemoveFolder(_)
+            | Pending::RemoveStation { .. }
+            | Pending::DeleteWorkspace(_)
+            | Pending::DeletePreset(_)
+            | Pending::DeletePanelPreset { .. }
+            | Pending::RemoveAsset { .. }
+            | Pending::DeleteDictionary(_)
+            | Pending::DeleteModel(_) => true,
 
             Pending::ApplyWorkspace { .. } | Pending::EnablePlugin(_) => false,
         }
@@ -710,37 +738,41 @@ impl SettingsWindow {
         let _librefm_changed = cx.observe(&state.librefm, |_, _, cx| cx.notify());
         let listenbrainz_api_url = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key(
                     "settings-integrations-listenbrainz-api-url-placeholder",
                     window,
                     cx,
                 )
-                .default_value(settings.accounts.listenbrainz.url.clone())
+                .default_value(one_line(&settings.accounts.listenbrainz.url).into_owned())
         });
         let listenbrainz_token = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key(
                     "settings-integrations-listenbrainz-token-placeholder",
                     window,
                     cx,
                 )
                 .masked(true)
-                .default_value(settings.accounts.listenbrainz.token.clone())
+                .default_value(one_line(&settings.accounts.listenbrainz.token).into_owned())
         });
         let lastfm_key = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-integrations-lastfm-key-placeholder", window, cx)
-                .default_value(settings.accounts.lastfm.api_key.clone())
+                .default_value(one_line(&settings.accounts.lastfm.api_key).into_owned())
         });
         let lastfm_secret = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key(
                     "settings-integrations-lastfm-secret-placeholder",
                     window,
                     cx,
                 )
                 .masked(true)
-                .default_value(settings.accounts.lastfm.api_secret.clone())
+                .default_value(one_line(&settings.accounts.lastfm.api_secret).into_owned())
         });
         let scrobbler = state.scrobbler.clone();
         let mut _lastfm_changes = Vec::with_capacity(2);
@@ -765,34 +797,40 @@ impl SettingsWindow {
         }
         let broadcast_host = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-audio-broadcast-host-placeholder", window, cx)
-                .default_value(settings.broadcast.host.clone())
+                .default_value(one_line(&settings.broadcast.host).into_owned())
         });
         let broadcast_port = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder("8000")
                 .default_value(settings.broadcast.port.to_string())
         });
         let broadcast_mount = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder("/rox")
-                .default_value(settings.broadcast.mount.clone())
+                .default_value(one_line(&settings.broadcast.mount).into_owned())
         });
         let broadcast_user = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-audio-broadcast-user-placeholder", window, cx)
-                .default_value(settings.broadcast.user.clone())
+                .default_value(one_line(&settings.broadcast.user).into_owned())
         });
         let broadcast_password = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-audio-broadcast-password-placeholder", window, cx)
                 .masked(true)
-                .default_value(settings.broadcast.password.clone())
+                .default_value(one_line(&settings.broadcast.password).into_owned())
         });
         let broadcast_name = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-audio-broadcast-name-placeholder", window, cx)
-                .default_value(settings.broadcast.name.clone())
+                .default_value(one_line(&settings.broadcast.name).into_owned())
         });
         let mut _broadcast_changes = Vec::with_capacity(6);
         for (input, write) in [
@@ -841,14 +879,14 @@ impl SettingsWindow {
         let plugins = subsonic::read_plugins(&settings.accounts.plugins, &library, cx);
 
         let station_url = cx.new(|cx| {
-            InputState::new(window, cx).placeholder_key(
+            InputState::new(window, cx).one_line().placeholder_key(
                 "settings-sources-stations-url-placeholder",
                 window,
                 cx,
             )
         });
         let station_name = cx.new(|cx| {
-            InputState::new(window, cx).placeholder_key(
+            InputState::new(window, cx).one_line().placeholder_key(
                 "settings-sources-stations-name-placeholder",
                 window,
                 cx,
@@ -871,7 +909,7 @@ impl SettingsWindow {
             .collect();
 
         let exclude_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder_key(
+            InputState::new(window, cx).one_line().placeholder_key(
                 "settings-library-exclude-placeholder",
                 window,
                 cx,
@@ -889,8 +927,9 @@ impl SettingsWindow {
 
         let ffmpeg_path = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder("ffmpeg")
-                .default_value(settings.convert.ffmpeg.clone())
+                .default_value(one_line(&settings.convert.ffmpeg).into_owned())
         });
         let _ffmpeg_changed = cx.subscribe(&ffmpeg_path, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
@@ -906,18 +945,21 @@ impl SettingsWindow {
         // typing.
         let discord_first_line = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder(DEFAULT_PRESENCE_FIRST_LINE)
-                .default_value(settings.accounts.discord.first_line.clone())
+                .default_value(one_line(&settings.accounts.discord.first_line).into_owned())
         });
         let discord_second_line = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder(DEFAULT_PRESENCE_SECOND_LINE)
-                .default_value(settings.accounts.discord.second_line.clone())
+                .default_value(one_line(&settings.accounts.discord.second_line).into_owned())
         });
         let discord_hover_line = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder(DEFAULT_PRESENCE_HOVER)
-                .default_value(settings.accounts.discord.hover_line.clone())
+                .default_value(one_line(&settings.accounts.discord.hover_line).into_owned())
         });
         let _discord_line_changes = vec![
             cx.subscribe(
@@ -958,8 +1000,9 @@ impl SettingsWindow {
         // finishes.
         let capture_pattern = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder(settings::DEFAULT_CAPTURE_PATTERN)
-                .default_value(settings.capture.pattern.clone())
+                .default_value(one_line(&settings.capture.pattern).into_owned())
         });
         let _capture_pattern_changed =
             cx.subscribe(&capture_pattern, |_, input, event: &InputEvent, cx| {
@@ -972,8 +1015,9 @@ impl SettingsWindow {
         // Blank means no album tag.
         let capture_album = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-playback-capture-album-placeholder", window, cx)
-                .default_value(settings.capture.album.clone())
+                .default_value(one_line(&settings.capture.album).into_owned())
         });
         let _capture_album_changed =
             cx.subscribe(&capture_album, |_, input, event: &InputEvent, cx| {
@@ -987,8 +1031,9 @@ impl SettingsWindow {
         // struct doesn't put the old key back.
         let acoustid_key = cx.new(|cx| {
             InputState::new(window, cx)
+                .one_line()
                 .placeholder_key("settings-providers-acoustid-key-placeholder", window, cx)
-                .default_value(settings.accounts.providers.acoustid_key.clone())
+                .default_value(one_line(&settings.accounts.providers.acoustid_key).into_owned())
         });
         let _acoustid_key_changed =
             cx.subscribe(&acoustid_key, |this, input, event: &InputEvent, cx| {
@@ -1156,14 +1201,14 @@ impl SettingsWindow {
             rg_coverage,
             rg_job,
             layout_name: cx.new(|cx| {
-                InputState::new(window, cx).placeholder_key(
+                InputState::new(window, cx).one_line().placeholder_key(
                     "settings-workspace-layout-name-placeholder",
                     window,
                     cx,
                 )
             }),
             workspace_name: cx.new(|cx| {
-                InputState::new(window, cx).placeholder_key(
+                InputState::new(window, cx).one_line().placeholder_key(
                     "settings-workspace-name-placeholder",
                     window,
                     cx,
@@ -1814,6 +1859,23 @@ mod tests {
             Pending::ClearListens,
             Pending::RemoveSubsonic(1),
             Pending::RemovePlugin("p".into()),
+            Pending::RemoveFolder("/music".into()),
+            Pending::RemoveStation {
+                url: "http://a".into(),
+                name: "a".into(),
+            },
+            Pending::DeleteWorkspace("a".into()),
+            Pending::DeletePreset("a".into()),
+            Pending::DeletePanelPreset {
+                scope: rox_core::settings::panel_presets::SaveScope::Global,
+                name: "a".into(),
+            },
+            Pending::RemoveAsset {
+                id: "a".into(),
+                file: "a.png".into(),
+            },
+            Pending::DeleteDictionary(&rox_romanize::dictionary::IPADIC),
+            Pending::DeleteModel(&rox_acoustic::models::CATALOG[0]),
         ] {
             assert!(pending.destructive());
         }

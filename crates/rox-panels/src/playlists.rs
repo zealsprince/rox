@@ -2991,6 +2991,7 @@ impl PlaylistsPanel {
                     )
                 });
                 // The favourites playlist is the one default: no rename, no delete.
+                let delete_name = name.clone();
                 let rename_state = self.state.clone();
                 let menu = menu.when(!favourite, |menu| {
                     menu.item(
@@ -3006,19 +3007,27 @@ impl PlaylistsPanel {
                             }),
                     )
                 });
-                let delete_panel = weak.clone();
+                let library = self.state.library.clone();
                 let menu = menu.when(!favourite, |menu| {
                     menu.item(
                         PopupMenuItem::new(rox_i18n::t!("playlists-delete"))
                             .icon(Icon::default().path(icons::TRASH))
                             .on_click(move |_, _, cx| {
-                                if let Some(this) = delete_panel.upgrade() {
-                                    this.update(cx, |this, cx| {
-                                        this.state.library.update(cx, |library, cx| {
+                                let library = library.clone();
+                                let ask = rox_panel_api::openers::Confirm {
+                                    title: rox_i18n::t!(
+                                        "workspace-dialog-delete-title",
+                                        name = delete_name.to_string()
+                                    ),
+                                    body: rox_i18n::t!("playlists-delete-body"),
+                                    yes: rox_i18n::t!("settings-common-delete"),
+                                    run: Box::new(move |cx| {
+                                        library.update(cx, |library, cx| {
                                             library.delete_playlist(id, cx);
                                         });
-                                    });
-                                }
+                                    }),
+                                };
+                                rox_panel_api::openers::confirm(ask, cx);
                             }),
                     )
                 });

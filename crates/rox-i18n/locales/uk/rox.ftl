@@ -293,6 +293,18 @@ bookmark-menu-color = Колір
 bookmark-menu-move = Перемістити до позиції відтворення
 bookmark-menu-remove = Вилучити
 bookmark-menu-remove-many = Вилучити закладки: { $count }
+bookmarks-remove-title = { $count ->
+    [one] Вилучити { $count } закладку?
+    [few] Вилучити { $count } закладки?
+    [many] Вилучити { $count } закладок?
+   *[other] Вилучити { $count } закладки?
+}
+bookmarks-remove-body = { $count ->
+    [one] Закладка зникає, а її трек лишається в медіатеці.
+    [few] Закладки зникають, а їхні треки лишаються в медіатеці.
+    [many] Закладки зникають, а їхні треки лишаються в медіатеці.
+   *[other] Закладки зникають, а їхні треки лишаються в медіатеці.
+}
 bookmarks-title = Закладки
 bookmarks-empty = Закладок ще немає. Натисніть M під час відтворення, щоб поставити закладку, або Shift+M, щоб дати їй назву.
 cue-menu-insert = Вставити позначку тут
@@ -804,6 +816,18 @@ stations-play = Відтворити
 stations-play-count = Відтворити станції: { $count }
 stations-remove = Вилучити
 stations-remove-count = Вилучити станції: { $count }
+stations-remove-title = { $count ->
+    [one] Вилучити { $count } станцію?
+    [few] Вилучити { $count } станції?
+    [many] Вилучити { $count } станцій?
+   *[other] Вилучити { $count } станції?
+}
+stations-remove-body = { $count ->
+    [one] Станція зникає з медіатеки, доки ви знову не додасте її адресу.
+    [few] Станції зникають з медіатеки, доки ви знову не додасте їхні адреси.
+    [many] Станції зникають з медіатеки, доки ви знову не додасте їхні адреси.
+   *[other] Станції зникають з медіатеки, доки ви знову не додасте їхні адреси.
+}
 stations-find = Знайти станції...
 stations-manage = Керування станціями...
 stations-import = Імпортувати станції...
@@ -1504,7 +1528,7 @@ settings-plugins-remove-package-body = Його треки, синхронізо
 settings-plugins-renderers = Рендерери
 settings-plugins-renderers-intro = Рендерер це програма, яка малює картинку в цілі рендеру на полотні. Він працює, лише доки ввімкнений і ціль рендеру його показує
 settings-plugins-card-renderer = Малює { $label } у цілях рендеру на полотні.
-settings-plugins-card-renderer-signals = Отримує сигнали музики.
+settings-plugins-card-renderer-signals = Отримує сигнали музики та позицію відтворення.
 settings-plugins-card-renderer-pointer = Отримує вказівник, доки той над ціллю рендеру.
 settings-plugins-card-unchanged-renderer = Маніфест той самий, що й минулого разу. Змінилися інші файли рендерера.
 settings-plugins-renderer-failed-title = Цей рендерер не може працювати
@@ -1719,6 +1743,13 @@ settings-confirm-overwrite-workspace-body = Це замінить збереже
 settings-confirm-overwrite-workspace-title = Перезаписати робочий простір «{ $name }»?
 settings-confirm-remove-subsonic-body = Вхід буде забуто, а треки сервера зникнуть із медіатеки. Щоб повернути їх, доведеться знову підключитися й синхронізувати; вимкнення натомість їх зберігає.
 settings-confirm-remove-subsonic-title = Вилучити «{ $name }»?
+settings-library-remove-folder-body = Тека та її треки зникають із медіатеки, а файли лишаються на диску.
+settings-confirm-delete-workspace-body = Це видалить збережений робочий простір, а поточний вигляд лишиться як є.
+settings-confirm-delete-layout-body = Це видалить збережену розкладку, а всі вікна лишаться як є.
+settings-confirm-delete-panel-preset-body = Це видалить збережений пресет, а всі панелі лишаться як є.
+settings-confirm-delete-asset-body = Файл зникає з робочого простору, і все, що його використовує, лишиться без нього.
+settings-dictionary-delete-body = Це видалить завантаження розміром { $size }, а вже романізоване лишиться.
+settings-mlmodels-delete-body = Це видалить завантаження розміром { $size }, а вже побудовані вектори лишаться.
 settings-sidebar-data-folder = Тека даних
 settings-sidebar-settings-file = Файл налаштувань
 
@@ -1843,6 +1874,8 @@ workspace-dialog-layout-name-placeholder = Назва розкладки
 workspace-dialog-not-now = Не зараз
 workspace-dialog-overwrite = Перезаписати
 workspace-dialog-overwrite-title = Перезаписати «{ $name }»?
+workspace-dialog-delete-title = Видалити «{ $name }»?
+workspace-dialog-remove-title = Вилучити «{ $name }»?
 workspace-dialog-save = Зберегти
 workspace-dialog-save-layout-title = Зберегти розкладку
 workspace-dialog-save-workspace-title = Зберегти робочий простір
@@ -2297,6 +2330,7 @@ eq-preset-export-default = Еквалайзер
 eq-preset-name = Назва пресету
 eq-preset-save = Зберегти пресет
 eq-presets = Пресети
+eq-preset-delete-body = Це видалить пресет, а поточна крива лишиться як є.
 eq-readout-curve = Крива
 eq-readout-icon = Значок
 eq-readout-section = Показник
@@ -3893,6 +3927,7 @@ playlists-name-line = Рядок назви
 playlists-name-line-description = Що показує перший рядок заголовка, зліва направо; проміжок або роздільник розводить сторони
 playlists-columns = Які стовпці треку показані поруч із назвою
 playlists-delete = Видалити список
+playlists-delete-body = Список зникає, а його треки лишаються в медіатеці.
 playlists-edit-query = Редагувати запит...
 playlists-empty = Ще немає списків, додайте треки або скористайтеся Новим списком
 playlists-export-tooltip = Експортувати список
@@ -4770,6 +4805,7 @@ canvas-object-exported = { $name } експортовано
 canvas-object-export-failed = Не вдалося експортувати { $name }
 canvas-object-place-title = Розмістити «{ $name }»?
 canvas-object-place-body = Він з'явиться в центрі полотна. Скасування прибере його назад.
+canvas-object-remove-body = Це видалить встановлений об'єкт, а полотна, куди його розміщено, лишаться як є.
 canvas-object-heavy = У розпакованому вигляді займає { $size } МБ, більше, ніж зазвичай має об'єкт
 canvas-object-shaders-body = Підтвердження дозволяє їм працювати на цьому комп'ютері. Без підтвердження кожен шейдер лишається вимкненим і просить підтвердження там, де стоїть.
 canvas-object-place = Розмістити

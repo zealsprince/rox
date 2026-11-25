@@ -4,6 +4,8 @@
 //! flat: its center rides the projection and its size follows the depth,
 //! but it takes no tilt.
 
+use std::borrow::Cow;
+
 use gpui::{
     AnyElement, App, ContentMask, Font, Hsla, Rgba, SharedString, TextRun, canvas, point,
     prelude::*, px,
@@ -206,8 +208,14 @@ pub(crate) fn element(paint: Paint, corners: &[[f32; 2]; 4]) -> AnyElement {
             let mut color: Hsla = paint.color.into();
             color.a *= paint.opacity.clamp(0., 1.);
 
+            // A pattern's tag value or a hand-edited line can carry a newline.
+            let text: SharedString = match rox_panel_kit::one_line(&paint.text) {
+                Cow::Borrowed(_) => paint.text.clone(),
+                Cow::Owned(text) => text.into(),
+            };
+
             let run = TextRun {
-                len: paint.text.len(),
+                len: text.len(),
                 font,
                 color,
                 background_color: None,
@@ -217,7 +225,7 @@ pub(crate) fn element(paint: Paint, corners: &[[f32; 2]; 4]) -> AnyElement {
             let font_size = px(paint.size);
             let line = window
                 .text_system()
-                .shape_line(paint.text.clone(), font_size, &[run], None);
+                .shape_line(text, font_size, &[run], None);
 
             let width = f32::from(bounds.size.width);
             let spare = width - f32::from(line.width);

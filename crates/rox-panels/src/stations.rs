@@ -417,7 +417,39 @@ impl StationsPanel {
         true
     }
 
-    /// The same delete the Radio page makes, which asks nothing first.
+    /// Asks first, the way the Radio page does. One station is named by its
+    /// name, or its URL when it has none.
+    fn ask_remove(&self, urls: Vec<String>, cx: &mut Context<Self>) {
+        let title = match urls.as_slice() {
+            [] => return,
+
+            [url] => {
+                let name = self
+                    .stations
+                    .iter()
+                    .find(|(station, _)| &station.url == url)
+                    .map(|(station, _)| station.name.trim())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(url);
+                rox_i18n::t!("workspace-dialog-remove-title", name = name)
+            }
+
+            _ => rox_i18n::t!("stations-remove-title", count = urls.len() as u64),
+        };
+
+        let count = urls.len() as u64;
+        let panel = cx.entity().downgrade();
+        let ask = rox_panel_api::openers::Confirm {
+            title,
+            body: rox_i18n::t!("stations-remove-body", count = count),
+            yes: rox_i18n::t!("settings-common-remove"),
+            run: Box::new(move |cx| {
+                panel.update(cx, |this, cx| this.remove(&urls, cx)).ok();
+            }),
+        };
+        rox_panel_api::openers::confirm(ask, cx);
+    }
+
     fn remove(&mut self, urls: &[String], cx: &mut Context<Self>) {
         if urls.is_empty() {
             return;
@@ -611,7 +643,7 @@ impl StationsPanel {
                 .icon(Icon::default().path(icons::TRASH))
                 .on_click(move |_, _, cx| {
                     remove_panel
-                        .update(cx, |this, cx| this.remove(&remove_urls, cx))
+                        .update(cx, |this, cx| this.ask_remove(remove_urls.clone(), cx))
                         .ok();
                 }),
         );

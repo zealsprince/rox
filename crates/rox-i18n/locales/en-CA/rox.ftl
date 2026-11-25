@@ -304,6 +304,14 @@ bookmark-menu-color = Color
 bookmark-menu-move = Move to Playhead
 bookmark-menu-remove = Remove
 bookmark-menu-remove-many = Remove { $count } Bookmarks
+bookmarks-remove-title = { $count ->
+    [one] Remove 1 bookmark?
+   *[other] Remove { $count } bookmarks?
+}
+bookmarks-remove-body = { $count ->
+    [one] The bookmark goes and its track stays in the library.
+   *[other] The bookmarks go and their tracks stay in the library.
+}
 bookmarks-title = Bookmarks
 bookmarks-empty = No bookmarks yet. Press M while a track plays to drop one, or Shift+M to name it.
 cue-menu-insert = Insert Marker Here
@@ -821,6 +829,14 @@ stations-play = Play
 stations-play-count = Play { $count } Stations
 stations-remove = Remove
 stations-remove-count = Remove { $count } Stations
+stations-remove-title = { $count ->
+    [one] Remove 1 station?
+   *[other] Remove { $count } stations?
+}
+stations-remove-body = { $count ->
+    [one] The station leaves the library until you add its URL again.
+   *[other] The stations leave the library until you add their URLs again.
+}
 stations-find = Find Stations...
 stations-manage = Manage Stations...
 stations-import = Import Stations...
@@ -1550,7 +1566,7 @@ settings-plugins-remove-package-body = Its tracks, synced collections and settin
 settings-plugins-renderers = Renderers
 settings-plugins-renderers-intro = A renderer is a program that draws the picture in a render target on a canvas. It runs only while it's switched on and a render target shows it
 settings-plugins-card-renderer = Draws { $label } in render targets on a canvas.
-settings-plugins-card-renderer-signals = Gets the music's signals.
+settings-plugins-card-renderer-signals = Gets the music's signals and the playing position.
 settings-plugins-card-renderer-pointer = Gets the pointer while it's over the render target.
 settings-plugins-card-unchanged-renderer = The manifest is the same as last time. Other files in the renderer changed.
 settings-plugins-renderer-failed-title = This renderer can't run
@@ -1772,6 +1788,13 @@ settings-confirm-overwrite-workspace-body = This replaces the saved workspace wi
 settings-confirm-overwrite-workspace-title = Overwrite workspace "{ $name }"?
 settings-confirm-remove-subsonic-body = Its login is forgotten and its tracks leave the library. Having them back means connecting and syncing again; switching it off keeps them instead.
 settings-confirm-remove-subsonic-title = Remove "{ $name }"?
+settings-library-remove-folder-body = The folder and its tracks leave the library, and the files stay on disk.
+settings-confirm-delete-workspace-body = This deletes the saved workspace and leaves the current look as it is.
+settings-confirm-delete-layout-body = This deletes the saved layout and leaves every window as it is.
+settings-confirm-delete-panel-preset-body = This deletes the saved preset and leaves every panel as it is.
+settings-confirm-delete-asset-body = The file leaves the workspace, and anything that uses it loses it.
+settings-dictionary-delete-body = This deletes the { $size } download and keeps what it already romanized.
+settings-mlmodels-delete-body = This deletes the { $size } download and keeps the vectors it already built.
 settings-sidebar-data-folder = Data Folder
 settings-sidebar-settings-file = Settings File
 
@@ -1892,6 +1915,8 @@ workspace-dialog-layout-name-placeholder = Layout name
 workspace-dialog-not-now = Not Now
 workspace-dialog-overwrite = Overwrite
 workspace-dialog-overwrite-title = Overwrite "{ $name }"?
+workspace-dialog-delete-title = Delete "{ $name }"?
+workspace-dialog-remove-title = Remove "{ $name }"?
 workspace-dialog-save = Save
 workspace-dialog-save-layout-title = Save Layout
 workspace-dialog-save-workspace-title = Save Workspace
@@ -2353,6 +2378,7 @@ eq-preset-export-default = Equalizer
 eq-preset-name = Preset name
 eq-preset-save = Save Preset
 eq-presets = Presets
+eq-preset-delete-body = This deletes the preset and leaves the curve you hear as it is.
 eq-readout-curve = Curve
 eq-readout-icon = Icon
 eq-readout-section = Readout
@@ -3936,6 +3962,7 @@ playlists-name-line = Name Line
 playlists-name-line-description = What the heading's first row shows, left to right; a spacer or divider splits the sides
 playlists-columns = Which track columns show beside the title
 playlists-delete = Delete Playlist
+playlists-delete-body = The playlist goes and its tracks stay in the library.
 playlists-edit-query = Edit Query...
 playlists-empty = No playlists yet, add tracks or use New Playlist
 playlists-export-tooltip = Export Playlist
@@ -4806,6 +4833,7 @@ canvas-object-exported = Exported { $name }
 canvas-object-export-failed = Couldn't export { $name }
 canvas-object-place-title = Place "{ $name }"?
 canvas-object-place-body = It goes in at the middle of the stage. Undo takes it back out.
+canvas-object-remove-body = This deletes the installed object and leaves every canvas it was placed on as it is.
 canvas-object-heavy = Unpacks to { $size } MB, more than most objects carry
 canvas-object-shaders-body = Approving lets them run on this machine. Placed without approval, each shader stays off and asks for approval where it sits.
 canvas-object-place = Place

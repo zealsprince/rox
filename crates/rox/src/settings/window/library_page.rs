@@ -208,8 +208,8 @@ impl SettingsWindow {
         let remove = icon_button(icons::CLOSE, scanning, {
             let root = root.to_path_buf();
             cx.listener(move |this, _, _, cx| {
-                this.library
-                    .update(cx, |library, cx| library.remove_root(&root, cx));
+                this.pending = Some(Pending::RemoveFolder(root.clone()));
+                cx.notify();
             })
         });
         div()
@@ -667,7 +667,10 @@ impl SettingsWindow {
                     // Deleting under a running pass would pull the dictionary
                     // out mid-title.
                     crate::romanize_job::progress(cx).is_some(),
-                    cx.listener(move |this, _, _, cx| this.delete_dictionary(dictionary, cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.pending = Some(Pending::DeleteDictionary(dictionary));
+                        cx.notify();
+                    }),
                 )
             } else {
                 small_button(
@@ -710,7 +713,7 @@ impl SettingsWindow {
     }
 
     /// What it already romanized stays: a delete shouldn't cost a re-run.
-    fn delete_dictionary(
+    pub(super) fn delete_dictionary(
         &mut self,
         dictionary: &'static rox_romanize::dictionary::Dictionary,
         cx: &mut Context<Self>,

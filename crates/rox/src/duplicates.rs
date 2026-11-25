@@ -10,9 +10,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    App, Bounds, Context, Div, Entity, Global, ObjectFit, SharedString, Stateful, Subscription,
-    UniformListScrollHandle, Window, WindowHandle, div, img, prelude::*, px, size, svg,
-    uniform_list,
+    App, Bounds, Context, Div, Entity, FocusHandle, Global, ObjectFit, SharedString, Stateful,
+    Subscription, UniformListScrollHandle, Window, WindowHandle, div, img, prelude::*, px, size,
+    svg, uniform_list,
 };
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -26,7 +26,9 @@ use rox_library::duplicates::match_duplicates;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_kit::PlaceholderKey as _;
-use rox_panel_kit::ui::{MIN_SIZE, block_header, checkbox, section, small_button};
+use rox_panel_kit::ui::{
+    ConfirmText, MIN_SIZE, block_header, checkbox, destructive_confirm, section, small_button,
+};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 use rox_services::thumbs::{Thumb, Thumbs};
@@ -123,6 +125,10 @@ pub struct Duplicates {
     /// Rebuilt whenever `groups` or the filter changes.
     rows: Vec<RowKind>,
     trashing: bool,
+    /// The trash confirm is up. It occludes the list, so the marks it
+    /// counted can't change under it.
+    confirming: bool,
+    dialog_focus: FocusHandle,
     trash_done: usize,
     trash_total: usize,
     result: Option<SharedString>,
@@ -169,6 +175,8 @@ impl Duplicates {
             query: String::new(),
             rows: Vec::new(),
             trashing: false,
+            confirming: false,
+            dialog_focus: cx.focus_handle(),
             trash_done: 0,
             trash_total: 0,
             result: None,
@@ -564,8 +572,45 @@ impl Duplicates {
                 rox_i18n::t!("duplicates-trash-button", count = count as u64),
                 icons::TRASH,
                 busy || count == 0,
-                cx.listener(|this, _, window, cx| this.trash(window, cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.confirming = this.visible_checked_count() > 0;
+                    cx.notify();
+                }),
             ))
+    }
+
+    fn trash_confirm(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.confirming {
+            return None;
+        }
+
+        let weak = cx.entity().downgrade();
+        let text = ConfirmText {
+            title: rox_i18n::t!(
+                "workspace-trash-title",
+                count = self.visible_checked_count() as u64
+            ),
+            body: rox_i18n::t!("workspace-trash-body"),
+            yes: rox_i18n::t!("workspace-dialog-trash"),
+        };
+
+        Some(destructive_confirm(
+            &self.dialog_focus,
+            text,
+            move |_, cx| {
+                weak.update(cx, |this, cx| {
+                    this.confirming = false;
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx.listener(|this, _, window, cx| {
+                this.confirming = false;
+                this.trash(window, cx);
+            }),
+            window,
+            cx,
+        ))
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
@@ -957,6 +1002,7 @@ impl Render for Duplicates {
                     .child(page)
                     .child(self.footer(cx)),
             )
+            .children(self.trash_confirm(window, cx))
     }
 }
 

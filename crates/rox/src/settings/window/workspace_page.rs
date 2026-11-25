@@ -11,6 +11,7 @@ use rox_core::settings::panel_presets::SaveScope;
 use rox_core::settings::{Asset, AssetKind};
 use rox_dock::DockArea;
 use rox_panel_kit::PlaceholderKey as _;
+use rox_panel_kit::{OneLine as _, one_line};
 
 /// Built when a row's details open and dropped when they close.
 pub(crate) struct CardEditor {
@@ -325,7 +326,6 @@ impl SettingsWindow {
             ))
             .when(!entry.builtin, |d| {
                 // A shipped workspace has no export, overwrite or delete.
-                // Overwrite confirms first; delete doesn't.
                 d.child(small_button(
                     rox_i18n::t!("workspace-dialog-export"),
                     icons::UPLOAD,
@@ -349,7 +349,10 @@ impl SettingsWindow {
                 ))
                 .child(icon_button(icons::TRASH, false, {
                     let name = name.clone();
-                    cx.listener(move |this, _, _, cx| this.delete_workspace(&name, cx))
+                    cx.listener(move |this, _, _, cx| {
+                        this.pending = Some(Pending::DeleteWorkspace(name.clone()));
+                        cx.notify();
+                    })
                 }))
             })
             .into_any_element()
@@ -461,8 +464,9 @@ impl SettingsWindow {
                     let value = field(&mut seed).clone();
                     cx.new(|cx| {
                         InputState::new(window, cx)
+                            .one_line()
                             .placeholder_key(placeholder, window, cx)
-                            .default_value(value)
+                            .default_value(one_line(&value).into_owned())
                     })
                 })
                 .collect()
@@ -762,8 +766,12 @@ impl SettingsWindow {
                     .child(rox_core::fmt::fmt_bytes(asset.bytes)),
             )
             .child(icon_button(icons::TRASH, false, {
-                cx.listener(move |_, _, _, cx| {
-                    assets::remove(&id);
+                let file = asset.file.clone();
+                cx.listener(move |this, _, _, cx| {
+                    this.pending = Some(Pending::RemoveAsset {
+                        id: id.clone(),
+                        file: file.clone(),
+                    });
                     cx.notify();
                 })
             }))
@@ -882,8 +890,11 @@ impl SettingsWindow {
                     .child(SharedString::from(kind)),
             )
             .child(icon_button(icons::TRASH, false, {
-                cx.listener(move |_, _, _, cx| {
-                    rox_core::settings::panel_presets::remove_from(scope, &name);
+                cx.listener(move |this, _, _, cx| {
+                    this.pending = Some(Pending::DeletePanelPreset {
+                        scope,
+                        name: name.clone(),
+                    });
                     cx.notify();
                 })
             }))
@@ -942,7 +953,6 @@ impl SettingsWindow {
                     cx.listener(move |this, _, _, cx| this.export_preset(&name, cx))
                 },
             ))
-            // Overwrite confirms first; apply and delete don't.
             .child(small_button(
                 rox_i18n::t!("workspace-dialog-overwrite"),
                 icons::REFRESH_CW,
@@ -957,7 +967,10 @@ impl SettingsWindow {
             ))
             .child(icon_button(icons::TRASH, false, {
                 let name = name.clone();
-                cx.listener(move |this, _, _, cx| this.delete_preset(&name, cx))
+                cx.listener(move |this, _, _, cx| {
+                    this.pending = Some(Pending::DeletePreset(name.clone()));
+                    cx.notify();
+                })
             }))
             .into_any_element()
     }
@@ -1275,6 +1288,63 @@ impl SettingsWindow {
                 rox_i18n::t!("settings-common-remove"),
                 None,
             ),
+            Pending::RemoveFolder(folder) => (
+                rox_i18n::t!(
+                    "workspace-dialog-remove-title",
+                    name = folder.to_string_lossy().into_owned()
+                ),
+                rox_i18n::t!("settings-library-remove-folder-body"),
+                rox_i18n::t!("settings-common-remove"),
+                None,
+            ),
+            Pending::RemoveStation { name, .. } => (
+                rox_i18n::t!("workspace-dialog-remove-title", name = name.as_str()),
+                rox_i18n::t!("stations-remove-body", count = 1),
+                rox_i18n::t!("settings-common-remove"),
+                None,
+            ),
+            Pending::DeleteWorkspace(name) => (
+                rox_i18n::t!("workspace-dialog-delete-title", name = name.as_str()),
+                rox_i18n::t!("settings-confirm-delete-workspace-body"),
+                rox_i18n::t!("settings-common-delete"),
+                None,
+            ),
+            Pending::DeletePreset(name) => (
+                rox_i18n::t!("workspace-dialog-delete-title", name = name.as_str()),
+                rox_i18n::t!("settings-confirm-delete-layout-body"),
+                rox_i18n::t!("settings-common-delete"),
+                None,
+            ),
+            Pending::DeletePanelPreset { name, .. } => (
+                rox_i18n::t!("workspace-dialog-delete-title", name = name.as_str()),
+                rox_i18n::t!("settings-confirm-delete-panel-preset-body"),
+                rox_i18n::t!("settings-common-delete"),
+                None,
+            ),
+            Pending::RemoveAsset { file, .. } => (
+                rox_i18n::t!("workspace-dialog-delete-title", name = file.as_str()),
+                rox_i18n::t!("settings-confirm-delete-asset-body"),
+                rox_i18n::t!("settings-common-delete"),
+                None,
+            ),
+            Pending::DeleteDictionary(dictionary) => (
+                rox_i18n::t!("workspace-dialog-delete-title", name = dictionary.label),
+                rox_i18n::t!(
+                    "settings-dictionary-delete-body",
+                    size = human_size(dictionary.bytes)
+                ),
+                rox_i18n::t!("settings-common-delete"),
+                None,
+            ),
+            Pending::DeleteModel(model) => (
+                rox_i18n::t!("workspace-dialog-delete-title", name = model.label),
+                rox_i18n::t!(
+                    "settings-mlmodels-delete-body",
+                    size = human_size(model.weights.as_ref().map_or(0, |w| w.bytes))
+                ),
+                rox_i18n::t!("settings-common-delete"),
+                None,
+            ),
             Pending::ClearListens => (
                 rox_i18n::t!("listens-clear-title"),
                 rox_i18n::t!(
@@ -1419,6 +1489,23 @@ impl SettingsWindow {
             Some(Pending::RemoveSubsonic(id)) => self.remove_subsonic(id, cx),
             Some(Pending::EnablePlugin(card)) => self.confirm_enable_plugin(card, cx),
             Some(Pending::RemovePlugin(id)) => self.remove_plugin(id, cx),
+            Some(Pending::RemoveFolder(folder)) => {
+                self.library
+                    .update(cx, |library, cx| library.remove_root(&folder, cx));
+            }
+            Some(Pending::RemoveStation { url, .. }) => self.remove_station(&url, cx),
+            Some(Pending::DeleteWorkspace(name)) => self.delete_workspace(&name, cx),
+            Some(Pending::DeletePreset(name)) => self.delete_preset(&name, cx),
+            Some(Pending::DeletePanelPreset { scope, name }) => {
+                rox_core::settings::panel_presets::remove_from(scope, &name);
+                cx.notify();
+            }
+            Some(Pending::RemoveAsset { id, .. }) => {
+                assets::remove(&id);
+                cx.notify();
+            }
+            Some(Pending::DeleteDictionary(dictionary)) => self.delete_dictionary(dictionary, cx),
+            Some(Pending::DeleteModel(model)) => self.delete_model(model, cx),
             Some(Pending::ClearListens) => {
                 // The first yes means imported only where the dialog offered
                 // both.

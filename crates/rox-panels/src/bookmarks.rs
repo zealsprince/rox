@@ -325,10 +325,7 @@ impl BookmarksPanel {
         } else if key == "escape" {
             self.deselect(cx);
         } else if key == "delete" || key == "backspace" {
-            let ids = self.selected_mark_ids();
-            if !ids.is_empty() {
-                remove_marks(&self.state, &ids, cx);
-            }
+            bookmark_ui::confirm_remove(&self.state, self.selected_mark_ids(), cx);
         }
     }
 
@@ -633,14 +630,6 @@ enum MenuTarget {
     },
 }
 
-fn remove_marks(state: &AppState, ids: &[i64], cx: &mut App) {
-    state.library.update(cx, |library, cx| {
-        for &id in ids {
-            library.remove_bookmark(id, cx);
-        }
-    });
-}
-
 fn row_menu(
     menu: PopupMenu,
     state: AppState,
@@ -685,7 +674,7 @@ fn row_menu(
             menu.separator().item(
                 PopupMenuItem::new(rox_i18n::t!("bookmark-menu-remove-many", count = count))
                     .icon(Icon::default().path(icons::TRASH))
-                    .on_click(move |_, _, cx| remove_marks(&state, &ids, cx)),
+                    .on_click(move |_, _, cx| bookmark_ui::confirm_remove(&state, ids.clone(), cx)),
             )
         }
     }

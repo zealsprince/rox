@@ -118,6 +118,31 @@ pub struct Openers {
 
 static OPENERS: OnceLock<Openers> = OnceLock::new();
 
+/// A delete a panel asks about first. The ask goes up in the front
+/// workspace, as Move to Trash does, and `run` deletes on the yes.
+pub struct Confirm {
+    pub title: SharedString,
+    /// What goes and what stays, in one sentence.
+    pub body: SharedString,
+    pub yes: SharedString,
+    pub run: Box<dyn FnOnce(&mut App)>,
+}
+
+/// Set by the workspace as its first window opens, beside the table.
+static CONFIRM: OnceLock<fn(Confirm, &mut App)> = OnceLock::new();
+
+pub fn install_confirm(ask: fn(Confirm, &mut App)) {
+    let _ = CONFIRM.set(ask);
+}
+
+/// Without a workspace to ask in, nothing is deleted.
+pub fn confirm(ask: Confirm, cx: &mut App) {
+    match CONFIRM.get() {
+        Some(raise) => raise(ask, cx),
+        None => log::warn!("a delete confirm was asked for before the app installed it"),
+    }
+}
+
 /// Called once from `main`, before any window opens.
 pub fn install(openers: Openers) {
     let _ = OPENERS.set(openers);

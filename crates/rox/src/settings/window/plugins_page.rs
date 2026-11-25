@@ -20,6 +20,7 @@ use gpui_component::tooltip::Tooltip;
 use rox_library::members::InLibrary;
 use rox_library::projection::{FilterField, FilterSet};
 use rox_panel_api::toast::Toast;
+use rox_panel_kit::{OneLine as _, one_line};
 use rox_plugins::host::STOPPED_AFTER_CRASHES;
 use rox_plugins::manifest::ProviderDomain;
 use rox_plugins::{Loaded, Origin, Status, package};
@@ -84,8 +85,16 @@ impl ProgramFolders {
         window: &mut Window,
         cx: &mut Context<SettingsWindow>,
     ) -> ProgramFolders {
-        let plugins = cx.new(|cx| InputState::new(window, cx).default_value(value.to_string()));
-        let convert = cx.new(|cx| InputState::new(window, cx).default_value(value.to_string()));
+        let plugins = cx.new(|cx| {
+            InputState::new(window, cx)
+                .one_line()
+                .default_value(one_line(value).into_owned())
+        });
+        let convert = cx.new(|cx| {
+            InputState::new(window, cx)
+                .one_line()
+                .default_value(one_line(value).into_owned())
+        });
 
         let _changes = [
             Self::follow(&plugins, convert.clone(), window, cx),
@@ -667,8 +676,9 @@ impl SettingsWindow {
             let secret = matches!(kind, Field::Text { secret: true });
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
+                    .one_line()
                     .masked(secret)
-                    .default_value(value)
+                    .default_value(one_line(&value).into_owned())
             });
 
             let (plugin, name) = (id.clone(), key.clone());

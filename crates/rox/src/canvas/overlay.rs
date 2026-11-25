@@ -2435,13 +2435,14 @@ pub(crate) fn objects_menu(
                             .size_3()
                             .text_color(palette::text_muted()),
                     )
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         cx.stop_propagation();
-                        match objects::remove(&removing) {
-                            Ok(()) => crate::catalog::forget(&file, cx),
-                            Err(e) => log::warn!("objects: removing {removing}: {e}"),
-                        }
-                        gone.update(cx, |this, cx| this.close_menu(cx)).ok();
+                        let (name, file) = (removing.clone(), file.clone());
+                        gone.update(cx, |this, cx| {
+                            this.close_menu(cx);
+                            objects::ask_remove(this, name, file, window, cx);
+                        })
+                        .ok();
                     });
 
                 div()
@@ -2484,6 +2485,7 @@ pub(crate) fn object_dialog(
     cx: &mut Context<CanvasPanel>,
 ) -> Option<AnyElement> {
     let dialog = panel.object_dialog.as_ref()?;
+    let destructive = dialog.destructive();
     let size = window.bounds().size;
 
     let line = |text: SharedString| {
@@ -2494,7 +2496,7 @@ pub(crate) fn object_dialog(
     };
     let cancel = settings_ui::dialog_button(
         rox_i18n::t!("workspace-dialog-cancel"),
-        false,
+        destructive,
         cx.listener(|this, _, window, cx| this.close_object_dialog(window, cx)),
     );
 
@@ -2584,6 +2586,26 @@ pub(crate) fn object_dialog(
 
             (body, buttons, 380.)
         }
+
+        Dialog::Remove { name, .. } => {
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_SM)
+                .child(div().child(rox_i18n::t!(
+                    "workspace-dialog-remove-title",
+                    name = name.as_str()
+                )))
+                .child(line(rox_i18n::t!("canvas-object-remove-body")));
+
+            let remove = settings_ui::dialog_button(
+                rox_i18n::t!("settings-common-remove"),
+                false,
+                cx.listener(|this, _, window, cx| objects::confirm_remove(this, window, cx)),
+            );
+
+            (body, vec![cancel, remove], 320.)
+        }
     };
 
     let footer = div()
@@ -2601,13 +2623,7 @@ pub(crate) fn object_dialog(
             anchored().position(gpui::point(px(0.), px(0.))).child(
                 div()
                     .id("canvas-object-dialog")
-                    .when_some(
-                        match dialog {
-                            Dialog::Place { focus, .. } => Some(focus),
-                            Dialog::Export { .. } => None,
-                        },
-                        |d, focus| d.track_focus(focus),
-                    )
+                    .when_some(dialog.focus(), |d, focus| d.track_focus(focus))
                     .w(size.width)
                     .h(size.height)
                     .occlude()
@@ -2622,7 +2638,15 @@ pub(crate) fn object_dialog(
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                        if event.keystroke.key == "escape" {
+                        // On a destructive confirm Enter backs out too, while
+                        // the dialog itself holds focus: a focused button
+                        // keeps its own Enter.
+                        let enter = event.keystroke.key == "enter"
+                            && this.object_dialog.as_ref().is_some_and(|dialog| {
+                                dialog.destructive()
+                                    && dialog.focus().is_some_and(|f| f.is_focused(window))
+                            });
+                        if event.keystroke.key == "escape" || enter {
                             this.close_object_dialog(window, cx);
                             cx.stop_propagation();
                         }

@@ -292,6 +292,14 @@ bookmark-menu-color = Colore
 bookmark-menu-move = Sposta alla posizione attuale
 bookmark-menu-remove = Rimuovi
 bookmark-menu-remove-many = Rimuovi { $count } segnalibri
+bookmarks-remove-title = { $count ->
+    [one] Rimuovere 1 segnalibro?
+   *[other] Rimuovere { $count } segnalibri?
+}
+bookmarks-remove-body = { $count ->
+    [one] Il segnalibro sparisce e il suo brano resta nella libreria.
+   *[other] I segnalibri spariscono e i loro brani restano nella libreria.
+}
 bookmarks-title = Segnalibri
 bookmarks-empty = Nessun segnalibro ancora. Premi M mentre suona una traccia per metterne uno, o Maiusc+M per dargli un nome.
 cue-menu-insert = Inserisci punto qui
@@ -797,6 +805,14 @@ stations-play = Riproduci
 stations-play-count = Riproduci { $count } stazioni
 stations-remove = Rimuovi
 stations-remove-count = Rimuovi { $count } stazioni
+stations-remove-title = { $count ->
+    [one] Rimuovere 1 stazione?
+   *[other] Rimuovere { $count } stazioni?
+}
+stations-remove-body = { $count ->
+    [one] La stazione esce dalla libreria finché non ne aggiungi di nuovo l'URL.
+   *[other] Le stazioni escono dalla libreria finché non ne aggiungi di nuovo gli URL.
+}
 stations-find = Trova stazioni...
 stations-manage = Gestisci stazioni...
 stations-import = Importa stazioni...
@@ -1505,7 +1521,7 @@ settings-plugins-remove-package-body = Se ne vanno i suoi brani, le raccolte sin
 settings-plugins-renderers = Renderer
 settings-plugins-renderers-intro = Un renderer è un programma che disegna l'immagine di un target di rendering su una tela. Gira solo mentre è attivo e un target di rendering lo mostra
 settings-plugins-card-renderer = Disegna { $label } nei target di rendering di una tela.
-settings-plugins-card-renderer-signals = Riceve i segnali della musica.
+settings-plugins-card-renderer-signals = Riceve i segnali della musica e la posizione di riproduzione.
 settings-plugins-card-renderer-pointer = Riceve il puntatore mentre è sopra il target di rendering.
 settings-plugins-card-unchanged-renderer = Il manifesto è lo stesso dell'ultima volta. Sono cambiati altri file del renderer.
 settings-plugins-renderer-failed-title = Questo renderer non può girare
@@ -1718,6 +1734,13 @@ settings-confirm-overwrite-workspace-body = Questo sostituisce lo spazio di lavo
 settings-confirm-overwrite-workspace-title = Sovrascrivere lo spazio di lavoro "{ $name }"?
 settings-confirm-remove-subsonic-body = L'accesso viene dimenticato e le sue tracce escono dalla libreria. Per riaverle bisogna collegarsi e sincronizzare di nuovo; disattivarlo invece le conserva.
 settings-confirm-remove-subsonic-title = Rimuovere "{ $name }"?
+settings-library-remove-folder-body = La cartella e le sue tracce escono dalla libreria, e i file restano sul disco.
+settings-confirm-delete-workspace-body = Questo elimina lo spazio di lavoro salvato e lascia il look attuale com'è.
+settings-confirm-delete-layout-body = Questo elimina il layout salvato e lascia ogni finestra com'è.
+settings-confirm-delete-panel-preset-body = Questo elimina la preimpostazione salvata e lascia ogni pannello com'è.
+settings-confirm-delete-asset-body = Il file esce dallo spazio di lavoro, e tutto ciò che lo usa lo perde.
+settings-dictionary-delete-body = Questo elimina il download di { $size } e conserva ciò che ha già romanizzato.
+settings-mlmodels-delete-body = Questo elimina il download di { $size } e conserva i vettori già calcolati.
 settings-sidebar-data-folder = Cartella dati
 settings-sidebar-settings-file = File delle impostazioni
 
@@ -1836,6 +1859,8 @@ workspace-dialog-layout-name-placeholder = Nome del layout
 workspace-dialog-not-now = Non ora
 workspace-dialog-overwrite = Sovrascrivi
 workspace-dialog-overwrite-title = Sovrascrivere "{ $name }"?
+workspace-dialog-delete-title = Eliminare "{ $name }"?
+workspace-dialog-remove-title = Rimuovere "{ $name }"?
 workspace-dialog-save = Salva
 workspace-dialog-save-layout-title = Salva layout
 workspace-dialog-save-workspace-title = Salva spazio di lavoro
@@ -2287,6 +2312,7 @@ eq-preset-export-default = Equalizzatore
 eq-preset-name = Nome del preset
 eq-preset-save = Salva preset
 eq-presets = Preset
+eq-preset-delete-body = Questo elimina il preset e lascia la curva attuale com'è.
 eq-readout-curve = Curva
 eq-readout-icon = Icona
 eq-readout-section = Lettura
@@ -3910,6 +3936,7 @@ playlists-name-line = Riga del nome
 playlists-name-line-description = Cosa mostra la prima riga dell'intestazione, da sinistra a destra; uno spaziatore o un divisore separa i lati
 playlists-columns = Quali colonne della traccia si vedono accanto al titolo
 playlists-delete = Elimina playlist
+playlists-delete-body = La playlist sparisce e i suoi brani restano nella libreria.
 playlists-edit-query = Modifica la query...
 playlists-empty = Ancora nessuna playlist, aggiungi tracce o usa Nuova playlist
 playlists-export-tooltip = Esporta playlist
@@ -4751,6 +4778,7 @@ canvas-object-exported = { $name } esportato
 canvas-object-export-failed = Impossibile esportare { $name }
 canvas-object-place-title = Posizionare "{ $name }"?
 canvas-object-place-body = Entra al centro della tela. Annulla lo toglie di nuovo.
+canvas-object-remove-body = Questo elimina l'oggetto installato e lascia com'è ogni tela su cui è stato posizionato.
 canvas-object-heavy = Occupa { $size } MB una volta estratto, più di quanto porti di solito un oggetto
 canvas-object-shaders-body = Approvarli li lascia girare su questo computer. Posizionato senza approvazione, ogni shader resta spento e chiede l'approvazione dove si trova.
 canvas-object-place = Posiziona

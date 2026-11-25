@@ -367,7 +367,10 @@ impl SettingsWindow {
                     rox_i18n::t!("settings-common-delete"),
                     icons::TRASH,
                     busy || running,
-                    cx.listener(move |this, _, _, cx| this.delete_model(model, cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.pending = Some(Pending::DeleteModel(model));
+                        cx.notify();
+                    }),
                 )
             } else {
                 small_button(
@@ -475,7 +478,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn delete_model(
+    pub(super) fn delete_model(
         &mut self,
         model: &'static rox_acoustic::models::Model,
         cx: &mut Context<Self>,

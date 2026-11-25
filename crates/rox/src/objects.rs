@@ -721,6 +721,61 @@ pub(crate) enum Dialog {
     /// The one confirm before an object goes in. It holds focus, so Escape
     /// reaches it.
     Place { card: PlaceCard, focus: FocusHandle },
+    /// Removing an installed object from the Objects menu.
+    Remove {
+        name: String,
+        file: PathBuf,
+        focus: FocusHandle,
+    },
+}
+
+impl Dialog {
+    /// Whether the yes deletes something. Such a confirm defaults to Cancel:
+    /// Enter backs out, Cancel wears the accent, and the yes takes a click.
+    pub(crate) fn destructive(&self) -> bool {
+        match self {
+            Dialog::Remove { .. } => true,
+            Dialog::Export { .. } | Dialog::Place { .. } => false,
+        }
+    }
+
+    pub(crate) fn focus(&self) -> Option<&FocusHandle> {
+        match self {
+            Dialog::Place { focus, .. } | Dialog::Remove { focus, .. } => Some(focus),
+            Dialog::Export { .. } => None,
+        }
+    }
+}
+
+/// Asks before the Objects menu's Remove deletes an installed object.
+pub(crate) fn ask_remove(
+    canvas: &mut CanvasPanel,
+    name: String,
+    file: PathBuf,
+    window: &mut Window,
+    cx: &mut Context<CanvasPanel>,
+) {
+    let focus = cx.focus_handle();
+    focus.focus(window);
+    canvas.object_dialog = Some(Dialog::Remove { name, file, focus });
+    cx.notify();
+}
+
+/// The remove confirm's yes.
+pub(crate) fn confirm_remove(
+    canvas: &mut CanvasPanel,
+    window: &mut Window,
+    cx: &mut Context<CanvasPanel>,
+) {
+    let Some(Dialog::Remove { name, file, .. }) = canvas.object_dialog.take() else {
+        return;
+    };
+    canvas.close_object_dialog(window, cx);
+
+    match remove(&name) {
+        Ok(()) => crate::catalog::forget(&file, cx),
+        Err(e) => log::warn!("objects: removing {name}: {e}"),
+    }
 }
 
 /// The export card's fields in order: the name, then the workspace card's

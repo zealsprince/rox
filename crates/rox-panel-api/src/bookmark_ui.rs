@@ -341,12 +341,46 @@ pub fn menu_for(
     menu.separator().item(
         PopupMenuItem::new(rox_i18n::t!("bookmark-menu-remove"))
             .icon(Icon::default().path(icons::TRASH))
-            .on_click(move |_, _, cx| {
-                remove_state
-                    .library
-                    .update(cx, |library, cx| library.remove_bookmark(id, cx));
-            }),
+            .on_click(move |_, _, cx| confirm_remove(&remove_state, vec![id], cx)),
     )
+}
+
+/// Asks before bookmarks go. One mark is named by its name, or its time when
+/// it has none.
+pub fn confirm_remove(state: &AppState, ids: Vec<i64>, cx: &mut App) {
+    if ids.is_empty() {
+        return;
+    }
+
+    let title = match ids.as_slice() {
+        [id] => {
+            let Some(mark) = state.library.read(cx).bookmark(*id) else {
+                return;
+            };
+            let name = match mark.name.trim() {
+                "" => fmt_time(mark.position_ms as f64 / 1000.0),
+                name => name.to_string(),
+            };
+            rox_i18n::t!("workspace-dialog-remove-title", name = name)
+        }
+        _ => rox_i18n::t!("bookmarks-remove-title", count = ids.len() as u64),
+    };
+
+    let library = state.library.clone();
+    let count = ids.len() as u64;
+    let ask = openers::Confirm {
+        title,
+        body: rox_i18n::t!("bookmarks-remove-body", count = count),
+        yes: rox_i18n::t!("settings-common-remove"),
+        run: Box::new(move |cx| {
+            library.update(cx, |library, cx| {
+                for &id in &ids {
+                    library.remove_bookmark(id, cx);
+                }
+            });
+        }),
+    };
+    openers::confirm(ask, cx);
 }
 
 /// A pick lands on every id at once. The custom picker only shows for a

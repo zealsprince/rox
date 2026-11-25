@@ -11,6 +11,7 @@ use super::*;
 use gpui::Focusable;
 use rox_core::settings::{PluginRecord, SubsonicAccount};
 use rox_panel_kit::PlaceholderKey as _;
+use rox_panel_kit::{OneLine as _, one_line};
 
 /// Slower than `RG_POLL`: the count moves once per album, a request to somebody
 /// else's server.
@@ -78,9 +79,10 @@ impl SubsonicForm {
             let value = value.to_string();
             cx.new(|cx| {
                 InputState::new(window, cx)
+                    .one_line()
                     .placeholder_key(placeholder, window, cx)
                     .masked(masked)
-                    .default_value(value)
+                    .default_value(one_line(&value).into_owned())
             })
         };
 

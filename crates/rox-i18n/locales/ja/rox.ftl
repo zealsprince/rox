@@ -291,6 +291,12 @@ bookmark-menu-color = 色
 bookmark-menu-move = 再生位置へ移動
 bookmark-menu-remove = 削除
 bookmark-menu-remove-many = { $count } 件のブックマークを削除
+bookmarks-remove-title = { $count ->
+   *[other] { $count } 件のブックマークを削除しますか?
+}
+bookmarks-remove-body = { $count ->
+   *[other] ブックマークは消え、曲はライブラリに残ります。
+}
 bookmarks-title = ブックマーク
 bookmarks-empty = ブックマークはまだありません。再生中に M を押すと追加、Shift+M で名前を付けて追加できます。
 cue-menu-insert = ここにマーカーを挿入
@@ -782,6 +788,12 @@ stations-play = 再生
 stations-play-count = { $count } 局を再生
 stations-remove = 削除
 stations-remove-count = { $count } 局を削除
+stations-remove-title = { $count ->
+   *[other] { $count } 局を削除しますか?
+}
+stations-remove-body = { $count ->
+   *[other] ラジオ局はライブラリから外れます。戻すには URL をもう一度追加してください。
+}
 stations-find = ラジオ局を探す...
 stations-manage = ラジオ局を管理...
 stations-import = ラジオ局をインポート...
@@ -1476,7 +1488,7 @@ settings-plugins-remove-package-body = 曲、同期中のコレクション、�
 settings-plugins-renderers = レンダラー
 settings-plugins-renderers-intro = レンダラーは、キャンバス上のレンダーターゲットの絵を描くプログラムです。オンになっていて、レンダーターゲットが表示している間だけ動きます
 settings-plugins-card-renderer = キャンバス上のレンダーターゲットに { $label } を描きます。
-settings-plugins-card-renderer-signals = 音楽のシグナルを受け取ります。
+settings-plugins-card-renderer-signals = 音楽のシグナルと再生位置を受け取ります。
 settings-plugins-card-renderer-pointer = ポインターがレンダーターゲットの上にある間、ポインターを受け取ります。
 settings-plugins-card-unchanged-renderer = マニフェストは前回と同じです。レンダラー内のほかのファイルが変わりました。
 settings-plugins-renderer-failed-title = このレンダラーは動かせません
@@ -1686,6 +1698,13 @@ settings-confirm-overwrite-workspace-body = 保存済みのワークスペース
 settings-confirm-overwrite-workspace-title = ワークスペース "{ $name }" を上書きしますか?
 settings-confirm-remove-subsonic-body = ログインは消え、このサーバーの曲はライブラリーから外れます。戻すには接続と同期をやり直すことになります。オフにすれば曲は残ります。
 settings-confirm-remove-subsonic-title = "{ $name }" を削除しますか?
+settings-library-remove-folder-body = フォルダーとその曲はライブラリから外れ、ファイルはディスクに残ります。
+settings-confirm-delete-workspace-body = 保存済みのワークスペースが削除され、今の見た目はそのまま残ります。
+settings-confirm-delete-layout-body = 保存済みのレイアウトが削除され、どのウィンドウもそのまま残ります。
+settings-confirm-delete-panel-preset-body = 保存済みのプリセットが削除され、どのパネルもそのまま残ります。
+settings-confirm-delete-asset-body = ファイルはワークスペースから外れ、それを使っているものはファイルを失います。
+settings-dictionary-delete-body = { $size } のダウンロードが削除されます。すでにローマ字化したものは残ります。
+settings-mlmodels-delete-body = { $size } のダウンロードが削除されます。すでに作ったベクトルは残ります。
 settings-sidebar-data-folder = データフォルダー
 settings-sidebar-settings-file = 設定ファイル
 
@@ -1801,6 +1820,8 @@ workspace-dialog-layout-name-placeholder = レイアウト名
 workspace-dialog-not-now = 今はしない
 workspace-dialog-overwrite = 上書き
 workspace-dialog-overwrite-title = "{ $name }" を上書きしますか?
+workspace-dialog-delete-title = "{ $name }" を削除しますか?
+workspace-dialog-remove-title = "{ $name }" を削除しますか?
 workspace-dialog-save = 保存
 workspace-dialog-save-layout-title = レイアウトを保存
 workspace-dialog-save-workspace-title = ワークスペースを保存
@@ -2228,6 +2249,7 @@ eq-preset-export-default = イコライザー
 eq-preset-name = プリセット名
 eq-preset-save = プリセットを保存
 eq-presets = プリセット
+eq-preset-delete-body = プリセットが削除され、今のカーブはそのまま残ります。
 eq-readout-curve = カーブ
 eq-readout-icon = アイコン
 eq-readout-section = 表示
@@ -3742,6 +3764,7 @@ playlists-name-line = 名前の行
 playlists-name-line-description = 見出しの 1 行目に左から右へ表示する内容。スペーサーか区切り線で左右に分かれます
 playlists-columns = タイトルの横にどのトラックの列を出すか
 playlists-delete = プレイリストを削除
+playlists-delete-body = プレイリストは消え、曲はライブラリに残ります。
 playlists-edit-query = クエリを編集...
 playlists-empty = プレイリストがまだありません。曲を追加するか「新しいプレイリスト」を使ってください
 playlists-export-tooltip = プレイリストをエクスポート
@@ -4551,6 +4574,7 @@ canvas-object-exported = { $name } をエクスポートしました
 canvas-object-export-failed = { $name } をエクスポートできませんでした
 canvas-object-place-title = "{ $name }" を配置しますか?
 canvas-object-place-body = ステージの中央に配置されます。元に戻すと取り除かれます。
+canvas-object-remove-body = インストール済みのオブジェクトが削除され、配置先のキャンバスはそのまま残ります。
 canvas-object-heavy = 展開すると { $size } MB になり、一般的なオブジェクトより大きめです
 canvas-object-shaders-body = 承認するとこのマシンで実行できます。承認せずに配置すると各シェーダーはオフのままで、置かれた場所で承認を求めます。
 canvas-object-place = 配置

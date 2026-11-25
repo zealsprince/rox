@@ -32,8 +32,8 @@ windows-sys 0.61 (0.61.2) on Windows.
    page opens it), or install a `.roxp` packed from it. It lists under Renderers,
    switched off.
 3. Switch it on. The card says it draws in render targets on a canvas, gets the music's
-   signals, and gets the pointer while it's over the render target. Switch On approves
-   exactly the files in the package, as it does for a plugin.
+   signals and the playing position, and gets the pointer while it's over the render
+   target. Switch On approves exactly the files in the package, as it does for a plugin.
 4. Add a Canvas panel: an empty window offers one, and the Panels menu lists it under
    Arrangement. With Panels > Design Mode on, right-click empty stage, or press the plus
    in the canvas inspector's header, and pick Add Render Target > Bars (`open_add_menu`,
@@ -113,7 +113,7 @@ launch, only when a target asks.
 The process starts in the package's folder (for a `.roxp`, rox's unpacked copy under
 `plugin-cache`) with rox's environment, PATH replaced by the plugin search path, and
 `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1` and `PYTHONUTF8=1`
-(`spawn_with`, `rox-plugins/src/process.rs:71`). On top of those:
+(`spawn_with`, `rox-plugins/src/process.rs:72`). On top of those:
 
 | Variable | Value |
 |---|---|
@@ -122,7 +122,7 @@ The process starts in the package's folder (for a `.roxp`, rox's unpacked copy u
 | `ROX_FRAMES_FD` | `3`, on Unix only |
 
 On Unix the renderer leads its own process group, gets the mapping as fd 3, and every
-fd past 3 is marked to close at exec (`lend` and `inherit_only`, `process.rs:181-209`).
+fd past 3 is marked to close at exec (`lend` and `close_from`, `process.rs:185-262`).
 rox writes `hello` as soon as the process runs. A renderer that can't be spawned, or
 whose `hello` can't be written, counts as an exit (`launch`, `renderers.rs:289`).
 
@@ -276,10 +276,11 @@ again whenever the pool changes. An empty pool is `{"pool":[]}`.
 `signals` holds each pool signal's value in pool order, from 0 to 1, to 4 decimals, the
 value routes read (`signals_line`, `target.rs:1268`). `time` is the playing position in
 seconds, to 3 decimals, and 0 with nothing playing. A line goes with each frame the
-canvas paints, while music plays and for as long after it stops as the signals take to
-settle. After that none come until music plays again. The canvas paints when a renderer
-publishes a frame, so a renderer that stops drawing stops getting signals. A reading
-rox hasn't sent yet is replaced by a newer one.
+canvas paints while music plays. When playback pauses or stops, lines keep coming for
+about a second while the signals settle, then none come until music plays again
+(`Targets::read`, `target.rs:1744`). The canvas paints when a renderer publishes a
+frame, so a renderer that stops drawing stops getting signals. A reading rox hasn't sent
+yet is replaced by a newer one.
 
 `pointer` is the pointer over the target's surface (`Pointer::line`, `target.rs:1304`):
 
@@ -314,7 +315,7 @@ log line, and still counts toward the flood rule below. Of the lines waiting whe
 reads, only the newest announce is acted on (`read`, `target.rs:1435`).
 
 stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 KiB
-(`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:288`).
+(`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:308`).
 
 ## Limits
 
@@ -338,8 +339,8 @@ announces once a frame is far inside it at any display rate.
 ## What a renderer is sent
 
 `hello`, `pause`, `pool`, `signals` with `time`, and `pointer`, and nothing else. The
-enable card names the two grants behind them: "Gets the music's signals" and "Gets the
-pointer while it's over the render target" (`plugins::grants`,
+enable card names the two grants behind them: "Gets the music's signals and the playing
+position" and "Gets the pointer while it's over the render target" (`plugins::grants`,
 `rox-services/src/plugins.rs`). A renderer isn't told the track, a path, a key press, or
 anything about another item, and its wire has no way to call into rox. It runs with the
 user's permissions, unsandboxed, as a plugin does, and the card says so.
@@ -359,7 +360,7 @@ keep a renderer from shrinking it (`open` and `seal`, `rox-frames/src/map/unix.r
 
 On Windows the design is an unnamed section backed by the page file, duplicated into
 the renderer with map read and map write rights only (`CHILD_ACCESS`,
-`rox-frames/src/map.rs:35`; `lend`, `rox-plugins/src/process.rs:471`). There's no
+`rox-frames/src/map.rs:35`; `lend`, `rox-plugins/src/process.rs:491`). There's no
 `ROX_FRAMES_FD`. The section's handle value in the renderer is `hello`'s `handle`, which
 a renderer maps with `MapViewOfFile` for the block's whole length. rox's pipe to a
 renderer's stdin is blocking there, so the lines go through a writer thread that holds

@@ -979,6 +979,89 @@ pub fn dialog_card(
         )
 }
 
+/// The words of a [`destructive_confirm`].
+pub struct ConfirmText {
+    pub title: SharedString,
+    /// What goes and what stays, in one sentence.
+    pub body: SharedString,
+    pub yes: SharedString,
+}
+
+/// A destructive confirm over a window that has no dialog layer of its own,
+/// drawn last inside its full-size root. Cancel wears the accent and Enter
+/// and Escape both cancel, so the yes takes a click. It takes focus unless
+/// the focus is already inside, which Tab walking the buttons puts it.
+pub fn destructive_confirm(
+    focus: &FocusHandle,
+    text: ConfirmText,
+    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
+    on_yes: impl Fn(&Press, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    if !focus.contains_focused(window, cx) {
+        window.focus(focus);
+    }
+
+    let cancel = Rc::new(on_cancel);
+    let on_key = {
+        let cancel = cancel.clone();
+        let focus = focus.clone();
+        move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+
+            // A focused button keeps its own Enter.
+            let enter = event.keystroke.key == "enter" && focus.is_focused(window);
+            if event.keystroke.key == "escape" || enter {
+                cancel(window, cx);
+                cx.stop_propagation();
+            }
+        }
+    };
+
+    let footer = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .justify_end()
+        .gap(tokens::SPACE_SM)
+        .child(dialog_button(
+            rox_i18n::t!("workspace-dialog-cancel"),
+            true,
+            move |_, window, cx| cancel(window, cx),
+        ))
+        .child(dialog_button(text.yes, false, on_yes));
+
+    let body = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_MD)
+        .child(div().child(text.title))
+        .child(
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(text.body),
+        );
+
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .track_focus(focus)
+        .on_key_down(on_key)
+        .p(tokens::SPACE_MD)
+        .bg(gpui::rgba(0x00000066))
+        .text_sm()
+        .text_color(palette::text())
+        .child(dialog_card("destructive-confirm-body", body, footer).w(px(320.)))
+}
+
 /// For the secondary action in a dialog's footer beside the confirm pair.
 pub fn dialog_icon_button(
     label: impl Into<SharedString>,

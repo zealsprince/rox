@@ -291,6 +291,14 @@ bookmark-menu-color = Farbe
 bookmark-menu-move = Zur Abspielposition verschieben
 bookmark-menu-remove = Entfernen
 bookmark-menu-remove-many = { $count } Lesezeichen entfernen
+bookmarks-remove-title = { $count ->
+    [one] 1 Lesezeichen entfernen?
+   *[other] { $count } Lesezeichen entfernen?
+}
+bookmarks-remove-body = { $count ->
+    [one] Das Lesezeichen verschwindet, sein Titel bleibt in der Bibliothek.
+   *[other] Die Lesezeichen verschwinden, ihre Titel bleiben in der Bibliothek.
+}
 bookmarks-title = Lesezeichen
 bookmarks-empty = Noch keine Lesezeichen. Drücke M, während ein Titel läuft, um eines zu setzen, oder Umschalt+M, um es zu benennen.
 cue-menu-insert = Marke hier einfügen
@@ -790,6 +798,14 @@ stations-play = Abspielen
 stations-play-count = { $count } Sender abspielen
 stations-remove = Entfernen
 stations-remove-count = { $count } Sender entfernen
+stations-remove-title = { $count ->
+    [one] 1 Sender entfernen?
+   *[other] { $count } Sender entfernen?
+}
+stations-remove-body = { $count ->
+    [one] Der Sender verlässt die Bibliothek, bis du seine URL wieder hinzufügst.
+   *[other] Die Sender verlassen die Bibliothek, bis du ihre URLs wieder hinzufügst.
+}
 stations-find = Sender finden...
 stations-manage = Sender verwalten...
 stations-import = Sender importieren...
@@ -1492,7 +1508,7 @@ settings-plugins-remove-package-body = Seine Titel, abgeglichenen Sammlungen und
 settings-plugins-renderers = Renderer
 settings-plugins-renderers-intro = Ein Renderer ist ein Programm, das das Bild in einem Render-Ziel auf einer Leinwand zeichnet. Er läuft nur, solange er eingeschaltet ist und ein Render-Ziel ihn zeigt
 settings-plugins-card-renderer = Zeichnet { $label } in Render-Zielen auf einer Leinwand.
-settings-plugins-card-renderer-signals = Bekommt die Signale der Musik.
+settings-plugins-card-renderer-signals = Bekommt die Signale der Musik und die Abspielposition.
 settings-plugins-card-renderer-pointer = Bekommt den Mauszeiger, solange er über dem Render-Ziel ist.
 settings-plugins-card-unchanged-renderer = Das Manifest ist dasselbe wie beim letzten Mal. Andere Dateien des Renderers haben sich geändert.
 settings-plugins-renderer-failed-title = Dieser Renderer kann nicht laufen
@@ -1702,6 +1718,13 @@ settings-confirm-overwrite-workspace-body = Das ersetzt die gespeicherte Arbeits
 settings-confirm-overwrite-workspace-title = Arbeitsfläche "{ $name }" überschreiben?
 settings-confirm-remove-subsonic-body = Die Anmeldung wird vergessen und seine Titel verlassen die Bibliothek. Sie wiederzuhaben heißt, neu zu verbinden und abzugleichen; ausschalten behält sie stattdessen.
 settings-confirm-remove-subsonic-title = "{ $name }" entfernen?
+settings-library-remove-folder-body = Der Ordner und seine Titel verlassen die Bibliothek, die Dateien bleiben auf der Festplatte.
+settings-confirm-delete-workspace-body = Das löscht die gespeicherte Arbeitsfläche und lässt das aktuelle Erscheinungsbild, wie es ist.
+settings-confirm-delete-layout-body = Das löscht das gespeicherte Layout und lässt jedes Fenster, wie es ist.
+settings-confirm-delete-panel-preset-body = Das löscht die gespeicherte Vorlage und lässt jedes Panel, wie es ist.
+settings-confirm-delete-asset-body = Die Datei verlässt die Arbeitsfläche, und alles, was sie verwendet, verliert sie.
+settings-dictionary-delete-body = Das löscht den Download von { $size } und behält, was damit schon romanisiert wurde.
+settings-mlmodels-delete-body = Das löscht den Download von { $size } und behält die Vektoren, die damit schon berechnet wurden.
 settings-sidebar-data-folder = Datenordner
 settings-sidebar-settings-file = Einstellungsdatei
 
@@ -1819,6 +1842,8 @@ workspace-dialog-layout-name-placeholder = Layoutname
 workspace-dialog-not-now = Jetzt nicht
 workspace-dialog-overwrite = Überschreiben
 workspace-dialog-overwrite-title = "{ $name }" überschreiben?
+workspace-dialog-delete-title = "{ $name }" löschen?
+workspace-dialog-remove-title = "{ $name }" entfernen?
 workspace-dialog-save = Speichern
 workspace-dialog-save-layout-title = Layout speichern
 workspace-dialog-save-workspace-title = Arbeitsfläche speichern
@@ -2267,6 +2292,7 @@ eq-preset-export-default = Equalizer
 eq-preset-name = Name der Voreinstellung
 eq-preset-save = Voreinstellung speichern
 eq-presets = Voreinstellungen
+eq-preset-delete-body = Das löscht die Voreinstellung und lässt die aktuelle Kurve, wie sie ist.
 eq-readout-curve = Kurve
 eq-readout-icon = Symbol
 eq-readout-section = Anzeige
@@ -3854,6 +3880,7 @@ playlists-name-line = Namenszeile
 playlists-name-line-description = Was die erste Zeile der Überschrift zeigt, von links nach rechts; ein Abstand oder Trenner teilt die Seiten
 playlists-columns = Welche Titelspalten neben dem Titel erscheinen
 playlists-delete = Playlist löschen
+playlists-delete-body = Die Playlist verschwindet, ihre Titel bleiben in der Bibliothek.
 playlists-edit-query = Suche bearbeiten...
 playlists-empty = Noch keine Playlists, füge Titel hinzu oder nutze Neue Playlist
 playlists-export-tooltip = Playlist exportieren
@@ -4689,6 +4716,7 @@ canvas-object-exported = { $name } exportiert
 canvas-object-export-failed = { $name } konnte nicht exportiert werden
 canvas-object-place-title = "{ $name }" platzieren?
 canvas-object-place-body = Es kommt in die Mitte der Bühne. Rückgängig nimmt es wieder heraus.
+canvas-object-remove-body = Das löscht das installierte Objekt und lässt jede Leinwand, auf die es gesetzt wurde, wie sie ist.
 canvas-object-heavy = Entpackt { $size } MB, mehr als die meisten Objekte mitbringen
 canvas-object-shaders-body = Freigeben lässt sie auf diesem Rechner laufen. Ohne Freigabe platziert bleibt jeder Shader aus und fragt dort, wo er sitzt, nach der Freigabe.
 canvas-object-place = Platzieren

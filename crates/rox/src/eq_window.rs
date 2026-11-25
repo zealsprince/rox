@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, Context, Div, Entity, Global, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Path, PathPromptOptions, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    SharedString, Subscription, WeakEntity, Window, WindowHandle, canvas, div, fill, point,
-    prelude::*, px, relative, size,
+    App, Bounds, Context, Div, Entity, FocusHandle, Global, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Path, PathPromptOptions, Pixels, Point, ScrollDelta,
+    ScrollWheelEvent, SharedString, Subscription, WeakEntity, Window, WindowHandle, canvas, div,
+    fill, point, prelude::*, px, relative, size,
 };
 use gpui_component::Root;
 use gpui_component::Sizable as _;
@@ -201,6 +201,9 @@ struct EqWindow {
     /// The preset's name and the curve it applied. The picker names it only while
     /// the live curve still matches.
     picked: Option<(String, Vec<BandSetting>)>,
+    /// The preset the delete confirm names, while it's up.
+    deleting: Option<String>,
+    dialog_focus: FocusHandle,
     _player_changed: Option<Subscription>,
     _eq_changed: Subscription,
     _name_changed: Subscription,
@@ -249,6 +252,8 @@ impl EqWindow {
             presets: eq_presets::list(),
             active: false,
             picked: None,
+            deleting: None,
+            dialog_focus: cx.focus_handle(),
             scrubs: std::array::from_fn(|_| ScrubState::default()),
             value_edit: panel::ValueEdit::default(),
             plot: Arc::new(Mutex::new(None)),
@@ -464,11 +469,8 @@ impl EqWindow {
         cx.notify();
     }
 
-    fn delete_preset(&mut self, cx: &mut Context<Self>) {
-        let Some(name) = self.picked_name() else {
-            return;
-        };
-        eq_presets::remove(&name, cx);
+    fn delete_preset(&mut self, name: &str, cx: &mut Context<Self>) {
+        eq_presets::remove(name, cx);
         self.presets = eq_presets::list();
         self.picked = None;
         cx.notify();
@@ -503,6 +505,36 @@ impl EqWindow {
             }
         })
         .detach();
+    }
+
+    fn delete_confirm(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        let name = self.deleting.as_deref()?;
+
+        let weak = cx.entity().downgrade();
+        let text = settings_ui::ConfirmText {
+            title: rox_i18n::t!("workspace-dialog-delete-title", name = name),
+            body: rox_i18n::t!("eq-preset-delete-body"),
+            yes: rox_i18n::t!("settings-common-delete"),
+        };
+
+        Some(settings_ui::destructive_confirm(
+            &self.dialog_focus,
+            text,
+            move |_, cx| {
+                weak.update(cx, |this, cx| {
+                    this.deleting = None;
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx.listener(|this, _, _, cx| {
+                if let Some(name) = this.deleting.take() {
+                    this.delete_preset(&name, cx);
+                }
+            }),
+            window,
+            cx,
+        ))
     }
 
     fn presets(&self, cx: &mut Context<Self>) -> Div {
@@ -540,7 +572,10 @@ impl EqWindow {
             .child(icon_button(
                 icons::TRASH,
                 !named,
-                cx.listener(|this, _, _, cx| this.delete_preset(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.deleting = this.picked_name().map(|name| name.to_string());
+                    cx.notify();
+                }),
             ))
             .child(div().flex_1())
             .child(Input::new(&self.preset_name).small().w(px(NAME_W)))
@@ -1445,6 +1480,7 @@ impl Render for EqWindow {
 
                 EqTab::Spatial => body.child(self.spatial(cx)),
             }
+            .children(self.delete_confirm(window, cx))
             .into_any_element()
         })
     }

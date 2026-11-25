@@ -28,6 +28,8 @@ use gpui_component::{Icon, IconName, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
+use rox_panel_api::actions::{PLAYLISTS_UNDO_CONTEXT, Redo, Undo};
+
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::continuation;
@@ -2796,6 +2798,17 @@ impl PlaylistsPanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            .key_context(PLAYLISTS_UNDO_CONTEXT)
+            .on_action(cx.listener(|this, _: &Undo, _, cx| {
+                this.state
+                    .library
+                    .update(cx, |library, cx| library.undo_playlists(cx));
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| {
+                this.state
+                    .library
+                    .update(cx, |library, cx| library.redo_playlists(cx));
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)))
             // Only restarts the idle clock; the rows underneath handle the event.
             .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {

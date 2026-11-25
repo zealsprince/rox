@@ -68,11 +68,13 @@ const LYRICS: Option<&str> = Some("LyricsEdit");
 /// Only present while a panel holds a phrase, so tab walks panels otherwise.
 const TYPE_AHEAD: Option<&str> = Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT);
 
-/// A canvas in design mode holding its own focus, so a panel inside one of
-/// its grids keeps its keys.
-const CANVAS: Option<&str> = Some("Canvas");
+/// Undo and Redo: a canvas in design mode holding its own focus (a panel
+/// inside one of its grids keeps its keys), or a panel holding an undo
+/// stack, the queue's or the playlists'. A text input binds the same chords
+/// deeper, so typing keeps its own undo.
+const UNDO: Option<&str> = Some("Canvas || QueueUndo || PlaylistsUndo");
 
-/// [`CANVAS`] with an item selected.
+/// A design-mode canvas with an item selected.
 const CANVAS_ITEM: Option<&str> = Some("Canvas && CanvasSelected");
 
 /// The Keymap page draws one section per group, in this order.
@@ -1310,7 +1312,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "canvas_undo",
             "canvas-key-undo",
             Group::Editing,
-            CANVAS,
+            UNDO,
             defaults::CANVAS_UNDO,
             Undo,
             "canvas-key-undo.description",
@@ -1320,7 +1322,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "canvas_redo",
             "canvas-key-redo",
             Group::Editing,
-            CANVAS,
+            UNDO,
             defaults::CANVAS_REDO,
             Redo,
             "canvas-key-redo.description",

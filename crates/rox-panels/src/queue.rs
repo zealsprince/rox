@@ -23,6 +23,8 @@ use rox_library::cue::{Origin, SourceId, TrackKey};
 use rox_library::projection::{FilterSet, Filterable, TrackFields, parse_query};
 use rox_library::store::TrackMeta;
 
+use rox_panel_api::actions::{QUEUE_UNDO_CONTEXT, Redo, Undo};
+
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
@@ -1046,15 +1048,11 @@ impl QueuePanel {
                 _ => None,
             })
             .find(|id| !dragged.contains(id));
-        let mut after = match above {
+        let after = match above {
             Some(id) => Some(id),
             None => self.state.player.read(cx).playing_entry(),
         };
-        let player = self.state.player.read(cx);
-        for &id in dragged {
-            player.move_in_queue(id, after);
-            after = Some(id);
-        }
+        self.state.player.read(cx).move_run_in_queue(dragged, after);
         // Keep the moved group lit across the rebuild.
         self.selected = dragged.iter().copied().collect();
         self.anchor = dragged.first().copied();
@@ -1627,6 +1625,17 @@ impl QueuePanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            .key_context(QUEUE_UNDO_CONTEXT)
+            .on_action(cx.listener(|this, _: &Undo, _, cx| {
+                this.state
+                    .player
+                    .update(cx, |player, cx| player.undo_queue(cx));
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| {
+                this.state
+                    .player
+                    .update(cx, |player, cx| player.redo_queue(cx));
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)));
         // The now-playing strip, drawn through the same columns as the rows.
         let root = if let Some(p) = self.playing.as_ref() {

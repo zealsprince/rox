@@ -31,6 +31,7 @@ pub mod mp4;
 pub mod open_files;
 pub mod peaks;
 pub mod playlist_file;
+pub mod playlist_undo;
 pub mod playlists;
 pub mod pls;
 pub mod projection;

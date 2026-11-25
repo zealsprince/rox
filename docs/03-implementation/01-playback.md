@@ -342,6 +342,53 @@ Failure shapes:
 `enqueue` is sent over the same command channel and appends to the decode thread's
 queue; it never touches the ring, so it can't disturb what's already playing.
 
+## Queue edits and undo
+
+Every edit of the play order goes through the player, whoever makes it: a panel, the
+queue widget, the socket's `queue.add`, `queue.remove` and `queue.move`, MCP, a plugin, a
+canvas click command. The player records each one on a single undo stack it owns
+(`Player::queue_undo`), shared by every window and every queue panel and widget.
+Continuation batches, a moved file's swap, a placeholder's landing and a left station's
+removal are the player's own housekeeping and stay off it.
+
+A step is the edit that takes the last one back, planned when it's applied rather than
+stored as a copy of the order. `queue_undo::Order` is the published snapshot read
+through the pool mirror, with the engine's own rules: an insert after an entry that's
+gone lands at the end, a move to None goes to the front, and the playing entry can't be
+removed. A plan runs against it and comes out as the same `Insert`, `RemoveMany` and
+`Move` commands any edit sends, so an undo touches `order` only and the pool keeps
+growing. The front of the order takes an insert at the end and a move, since the engine
+only inserts after an entry.
+
+| Edit | Its undo |
+|---|---|
+| Add to Queue, Play Next, Play Now, a bookmark's play | remove the added entries |
+| Remove, Clear Queue | put each entry back after the one that stood before it, with its key, explicit flag and album group |
+| Move, a drag of several rows | move each entry back after its old neighbour |
+| Play over the queue (an album, a folder, Random, Similar) | rebuild the old order around the track that plays now |
+
+Applying a step returns the step that redoes it, so a redo is the same plan. Entry ids
+are numbered per session and a re-added entry gets a new one, so a step names entries by
+`EntryRef`, the session and the id together. Re-adding hands the stack a remap from each
+old ref to the new one, and every held step is rewritten. A device rebuild numbers the
+same order from zero and remaps the same way. A ref the live order no longer holds is
+skipped, and a step left with nothing to do is dropped for the one under it. The player
+can name an inserted entry before the engine drains the insert because an entry's id is
+its pool index, which the mirror's length gives.
+
+The playing entry never moves for an undo and is never removed by one. A step that would
+take it out leaves it where it is, and its redo puts back only what went. Undoing a
+replace removes everything but the playing entry, puts the old order back before and
+after it, and keeps the old playing track as history right before it, so the new track
+plays on and the old queue resumes when it ends.
+
+Moves of the same entries closer together than 800 ms merge into one step, and the stack
+holds 200 steps: the canvas's window and bound. Removes never merge. The stack lives for
+the session: Stop and the launch restore clear it.
+
+The Queue panel, its window and the queue widget set the `QueueUndo` key context, and
+Undo and Redo there call `Player::undo_queue` and `redo_queue`.
+
 ## Device loss and rebuild
 
 When the device drops out or the backend faults, cpal calls the stream's error
@@ -373,7 +420,9 @@ it, `engine.rs` (decode thread, gapless, crossfade, seek, plus the offline decod
 `gain.rs` (the source-gain stage, the ReplayGain rule, and the fade curve),
 `latency.rs` (the refcounted hold that keeps the ring shallow while an editor is open),
 `analysis.rs` (the R128 loudness and true-peak measurement, per track and per album),
-`resample.rs`, `shared.rs` (atomics, segments). The tag side is in
+`resample.rs`, `shared.rs` (atomics, segments). The queue's undo is in
+`crates/rox-services/src/queue_undo.rs` (the plan) and `undo.rs` (the stack), recorded
+and applied in `player.rs`. The tag side is in
 `crates/rox-library/src/replaygain.rs`, and the app drives measurement from
 `crates/rox/src/replaygain_job.rs`.
 `crates/rox-prototype-playback` was the CLI harness over it (git history, commit

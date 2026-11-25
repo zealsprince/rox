@@ -46,7 +46,9 @@ use rox_playback::shared::{QueueEntry, QueueSnapshot, Shared};
 use rox_viz::AudioFeed;
 
 use crate::catalog::Library;
+use crate::queue_undo::{self, EntryRef, Item, Op, Order, QueueStep};
 use crate::sources_registry;
+use crate::undo::History;
 use crate::unknown_resolver::{self, Edit, Found, Job, Placeholders, Slot, Step, Waiting};
 
 pub use rox_core::fmt::{fmt_time, fmt_time_padded, fmt_time_precise};
@@ -1005,6 +1007,11 @@ pub struct Player {
     /// Notified on position ticks, so the player itself only notifies on
     /// state changes. See [`observe_clock`].
     clock: Entity<Clock>,
+    /// Every queue edit's undo, whoever made it. In a cell because the
+    /// removes and moves are `&self` calls. Session-only.
+    queue_undo: RefCell<History<QueueStep>>,
+    /// Numbers sessions, since each one numbers its entries from zero.
+    queue_session: u64,
 }
 
 impl Player {
@@ -1042,6 +1049,8 @@ impl Player {
             unknown_source: None,
             placeholders: Placeholders::default(),
             clock: cx.new(|_| Clock),
+            queue_undo: RefCell::default(),
+            queue_session: 0,
         }
     }
 
@@ -1185,7 +1194,14 @@ impl Player {
 
         let start = start.min(queue.len() - 1);
         let queued: Vec<TrackKey> = self.queued().iter().map(|e| self.key_for(e)).collect();
+        // The order being replaced, for an undo to bring back around the
+        // track that plays then.
+        let replaced = self.order_model().and_then(|order| order.rebuild_back());
         self.start_session(queue, start, None, Vec::new(), false, cx);
+
+        if let Some(op) = replaced.filter(|_| self.session.is_some()) {
+            self.record_queue(vec![op], None);
+        }
 
         // Spliced after the start rather than seeded, or the fresh context's
         // shuffle would scatter it. The shuffle is queued ahead of this insert,
@@ -1208,6 +1224,7 @@ impl Player {
             true,
             cx,
         );
+        self.queue_undo.borrow_mut().clear();
     }
 
     /// The launch restore: the whole play order, paused at `cursor`.
@@ -1228,6 +1245,7 @@ impl Player {
             true,
             cx,
         );
+        self.queue_undo.borrow_mut().clear();
     }
 
     /// Lets a panel skip re-reading the snapshot when nothing changed.
@@ -1451,7 +1469,8 @@ impl Player {
     /// loads them paused.
     pub fn play_next(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
         let after = self.playing_after();
-        self.insert(after, keys, false, cx);
+        let undo = self.insert(after, keys, false, cx);
+        self.record_queue(undo.into_iter().collect(), None);
     }
 
     /// Splice after the playing track and jump to the first, keeping the
@@ -1467,12 +1486,14 @@ impl Player {
         // just another entry.
         let leaving = self.playing_station();
 
-        if replaces_queue(&keys) {
-            self.clear_queue();
-        }
+        let cleared = match replaces_queue(&keys) {
+            true => self.edit_queue(Op::Remove(self.queued_refs())),
+            false => None,
+        };
 
         let after = self.playing_after();
-        self.insert(after, keys, true, cx);
+        let added = self.insert(after, keys, true, cx);
+        self.record_queue(added.into_iter().chain(cleared).collect(), None);
 
         if let Some(id) = leaving {
             self.drop_when_left(id, cx);
@@ -1483,7 +1504,8 @@ impl Player {
     /// With nothing loaded this loads them paused.
     pub fn enqueue(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
         let after = self.enqueue_after();
-        self.insert(after, keys, false, cx);
+        let undo = self.insert(after, keys, false, cx);
+        self.record_queue(undo.into_iter().collect(), None);
     }
 
     /// Matched by pool index off the position clock, so Play Next goes after
@@ -1550,15 +1572,16 @@ impl Player {
     }
 
     /// Splice keys in as explicit entries, or start playback with no session.
+    /// Returns the undo, for the caller to record.
     fn insert(
         &mut self,
         after: Option<u64>,
         keys: Vec<TrackKey>,
         and_play: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<Op> {
         if keys.is_empty() {
-            return;
+            return None;
         }
 
         // Queueing onto nothing loads the queue and waits for Play, the way
@@ -1568,13 +1591,22 @@ impl Player {
                 true => self.play(keys, cx),
                 false => {
                     let explicit = vec![true; keys.len()];
+                    let count = keys.len() as u64;
                     self.start_session(keys, 0, Some(0.0), explicit, true, cx);
+                    if self.session.is_some() {
+                        return Some(Op::Remove(
+                            (0..count).map(|id| self.entry_ref(id)).collect(),
+                        ));
+                    }
                 }
             }
-            return;
+            return None;
         }
 
-        self.splice(after, keys, None, true, and_play, None, cx);
+        let ids = self.splice(after, keys, None, true, and_play, None, cx);
+        Some(Op::Remove(
+            ids.into_iter().map(|id| self.entry_ref(id)).collect(),
+        ))
     }
 
     /// Play `key` now from `secs` in, for bookmarks. The offset rides the
@@ -1586,11 +1618,14 @@ impl Player {
             return;
         }
         let after = self.playing_after();
-        self.splice(after, vec![key], None, true, true, Some(secs.max(0.0)), cx);
+        let ids = self.splice(after, vec![key], None, true, true, Some(secs.max(0.0)), cx);
+        let undo = Op::Remove(ids.into_iter().map(|id| self.entry_ref(id)).collect());
+        self.record_queue(vec![undo], None);
     }
 
     /// The insert hand-queued keys and continuation batches share. `groups`
-    /// overrides the library's album grouping where it's Some.
+    /// overrides the library's album grouping where it's Some. Returns the
+    /// new entries' ids.
     #[allow(clippy::too_many_arguments)]
     fn splice(
         &mut self,
@@ -1601,11 +1636,11 @@ impl Player {
         and_play: bool,
         start_secs: Option<f64>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<u64> {
         // Bail before anything grows: `pool_ids` runs parallel to the pool,
         // and a half-applied splice would slide them apart for good.
         if self.session.is_none() {
-            return;
+            return Vec::new();
         }
         let meta = self.queue_meta_for(&keys);
         let groups = match groups {
@@ -1619,8 +1654,12 @@ impl Player {
         self.pool_ids.extend(meta.ids);
         let locators = self.locators_for(&keys);
         let Some(session) = self.session.as_mut() else {
-            return;
+            return Vec::new();
         };
+        // The engine numbers an entry by its pool index, and the mirror grows
+        // with the pool, so the new ids are known before the engine runs.
+        let first = session.queue.len() as u64;
+        let ids = (first..first + keys.len() as u64).collect();
         session.queue.extend(keys);
         session.gains.extend(meta.gains.iter().copied());
         session.live.extend(live_flags(&locators));
@@ -1641,6 +1680,7 @@ impl Player {
 
         let _ = session.tx.send(cmd);
         cx.notify();
+        ids
     }
 
     /// Files rox moved on disk, old path to new. The mirror's keys take the
@@ -1714,7 +1754,7 @@ impl Player {
             return;
         };
 
-        self.splice(
+        let ids = self.splice(
             Some(entry.id),
             vec![key],
             Some(vec![entry.group]),
@@ -1723,12 +1763,16 @@ impl Player {
             None,
             cx,
         );
-        self.remove_from_queue(entry.id);
+        self.send(Cmd::Remove { id: entry.id });
+
+        if let Some(&id) = ids.first() {
+            self.follow_queue_ref(entry.id, id);
+        }
     }
 
     /// The engine refuses the playing entry, so callers needn't guard it.
     pub fn remove_from_queue(&self, id: u64) {
-        self.send(Cmd::Remove { id });
+        self.remove_many_from_queue(vec![id]);
     }
 
     /// One command and one queue publish for the whole batch.
@@ -1736,13 +1780,16 @@ impl Player {
         if ids.is_empty() {
             return;
         }
-        self.send(Cmd::RemoveMany { ids });
+
+        let refs = ids.into_iter().map(|id| self.entry_ref(id)).collect();
+        let undo = self.edit_queue(Op::Remove(refs));
+        self.record_queue(undo.into_iter().collect(), None);
     }
 
     /// Drop every up-next explicit entry. The playing track and context stay.
     pub fn clear_queue(&self) {
-        let ids: Vec<u64> = self.queued().iter().map(|e| e.id).collect();
-        self.remove_many_from_queue(ids);
+        let undo = self.edit_queue(Op::Remove(self.queued_refs()));
+        self.record_queue(undo.into_iter().collect(), None);
     }
 
     /// Drop `id` once the engine has moved off it. It can't be a command
@@ -1762,7 +1809,8 @@ impl Player {
                     continue;
                 }
 
-                this.update(cx, |this, _| this.remove_from_queue(id)).ok();
+                this.update(cx, |this, _| this.send(Cmd::Remove { id }))
+                    .ok();
                 return;
             }
         })
@@ -1773,14 +1821,37 @@ impl Player {
     /// would strand everything above it behind the cursor as history.
     pub fn play_queued(&self, id: u64) {
         if let Some(after) = self.playing_entry().filter(|&playing| playing != id) {
-            self.move_in_queue(id, Some(after));
+            self.send(Cmd::Move {
+                id,
+                after: Some(after),
+            });
         }
         self.jump_to(id);
     }
 
     /// Move a queued entry to just after `after`, or to the front when None.
     pub fn move_in_queue(&self, id: u64, after: Option<u64>) {
-        self.send(Cmd::Move { id, after });
+        self.move_run_in_queue(&[id], after);
+    }
+
+    /// Move entries to just after `after` as one run in the order given,
+    /// one undo step for the lot. Moves of the same run close together merge.
+    pub fn move_run_in_queue(&self, ids: &[u64], after: Option<u64>) {
+        let mut undo = Vec::new();
+        let mut after = after;
+        for &id in ids {
+            let to = after.map(|after| self.entry_ref(after));
+            undo.extend(self.edit_queue(Op::Move {
+                entry: self.entry_ref(id),
+                after: to,
+            }));
+            after = Some(id);
+        }
+
+        undo.reverse();
+        let key = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let key = format!("move:{}:{}", self.queue_session, key.join(","));
+        self.record_queue(undo, Some(&key));
     }
 
     pub fn jump_to(&self, id: u64) {
@@ -1789,6 +1860,158 @@ impl Player {
 
     pub fn playing_entry(&self) -> Option<u64> {
         self.playing_after()
+    }
+
+    // ── Queue undo ──
+
+    /// Take the last queue edit back. False when there was none to take.
+    pub fn undo_queue(&mut self, cx: &mut Context<Self>) -> bool {
+        self.step_queue(true, cx)
+    }
+
+    pub fn redo_queue(&mut self, cx: &mut Context<Self>) -> bool {
+        self.step_queue(false, cx)
+    }
+
+    /// A step whose entries are all gone (taken by continuation, a moved
+    /// file's swap, or a station left behind) does nothing and is dropped,
+    /// and the one under it runs instead.
+    fn step_queue(&mut self, back: bool, cx: &mut Context<Self>) -> bool {
+        loop {
+            let step = {
+                let mut history = self.queue_undo.borrow_mut();
+                match back {
+                    true => history.take_undo(),
+                    false => history.take_redo(),
+                }
+            };
+            let Some(step) = step else {
+                return false;
+            };
+            let Some(mut order) = self.order_model() else {
+                self.queue_undo.borrow_mut().clear();
+                return false;
+            };
+
+            let applied = order.apply(step);
+            self.remap_queue_steps(&applied.remap);
+            if applied.edits.is_empty() {
+                continue;
+            }
+
+            self.send_queue_edits(applied.edits, cx);
+
+            let mut history = self.queue_undo.borrow_mut();
+            match back {
+                true => history.undone(applied.undo),
+                false => history.redone(applied.undo),
+            }
+            cx.notify();
+            return true;
+        }
+    }
+
+    fn entry_ref(&self, id: u64) -> EntryRef {
+        EntryRef::new(self.queue_session, id)
+    }
+
+    fn queued_refs(&self) -> Vec<EntryRef> {
+        self.queued()
+            .iter()
+            .map(|entry| self.entry_ref(entry.id))
+            .collect()
+    }
+
+    /// The engine's published order as an undo plans against it. The next id
+    /// comes off the mirror, which is ahead of the snapshot by any insert the
+    /// engine hasn't drained yet.
+    fn order_model(&self) -> Option<Order> {
+        let session = self.session.as_ref()?;
+        let entries = session
+            .shared
+            .queue_snapshot()
+            .entries
+            .iter()
+            .map(|entry| {
+                let item = Item {
+                    key: self.key_for(entry),
+                    explicit: entry.explicit,
+                    group: entry.group,
+                };
+                (entry.id, item)
+            })
+            .collect();
+
+        Some(Order::new(
+            self.queue_session,
+            entries,
+            self.playing_after(),
+            session.queue.len() as u64,
+        ))
+    }
+
+    /// A remove or a move, planned and sent at once. Returns its undo.
+    fn edit_queue(&self, op: Op) -> Option<Op> {
+        let mut order = self.order_model()?;
+        let applied = order.apply(QueueStep::new(vec![op]));
+
+        for edit in applied.edits {
+            match edit {
+                queue_undo::Edit::Remove(ids) => self.send(Cmd::RemoveMany { ids }),
+
+                queue_undo::Edit::Move { id, after } => self.send(Cmd::Move { id, after }),
+
+                // Removes and moves never plan an insert.
+                queue_undo::Edit::Insert { .. } => {
+                    log::warn!("queue edit planned an insert outside an undo");
+                }
+            }
+        }
+
+        applied.undo.into_ops().into_iter().next()
+    }
+
+    fn send_queue_edits(&mut self, edits: Vec<queue_undo::Edit>, cx: &mut Context<Self>) {
+        for edit in edits {
+            match edit {
+                queue_undo::Edit::Insert { after, items } => {
+                    let explicit = items.first().is_some_and(|item| item.explicit);
+                    let (keys, groups) =
+                        items.into_iter().map(|item| (item.key, item.group)).unzip();
+                    self.splice(after, keys, Some(groups), explicit, false, None, cx);
+                }
+
+                queue_undo::Edit::Remove(ids) => self.send(Cmd::RemoveMany { ids }),
+
+                queue_undo::Edit::Move { id, after } => self.send(Cmd::Move { id, after }),
+            }
+        }
+    }
+
+    fn record_queue(&self, undo: Vec<Op>, key: Option<&str>) {
+        if undo.is_empty() {
+            return;
+        }
+
+        self.queue_undo
+            .borrow_mut()
+            .record(QueueStep::new(undo), key, Instant::now());
+    }
+
+    /// An entry swapped for a fresh one in its place, for the steps naming it.
+    fn follow_queue_ref(&self, was: u64, now: u64) {
+        let remap = HashMap::from([(self.entry_ref(was), self.entry_ref(now))]);
+        self.remap_queue_steps(&remap);
+    }
+
+    fn remap_queue_steps(&self, remap: &HashMap<EntryRef, EntryRef>) {
+        if remap.is_empty() {
+            return;
+        }
+
+        for step in self.queue_undo.borrow_mut().steps_mut() {
+            step.remap(remap);
+        }
     }
 
     fn start_session(
@@ -1835,6 +2058,7 @@ impl Player {
         self.skip_reseed = SkipReseed::Idle;
         self.song_start = None;
         self.session = None;
+        self.queue_session += 1;
         let shuffle = match (preserve_order, self.settings.session.shuffle) {
             (true, _) => None,
             (false, false) => Some(Cmd::SetShuffle(false)),
@@ -1895,6 +2119,7 @@ impl Player {
     /// The transport's eject: drop the session so every view goes idle.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         self.session = None;
+        self.queue_undo.borrow_mut().clear();
         self.pump = None;
         self.error = None;
         self.ab_pending_a = None;
@@ -2410,6 +2635,13 @@ impl Player {
             return false;
         };
         let (keys, explicit): (Vec<TrackKey>, Vec<bool>) = entries.into_iter().unzip();
+        let renumbered: Vec<EntryRef> = session
+            .shared
+            .queue_snapshot()
+            .entries
+            .iter()
+            .map(|e| self.entry_ref(e.id))
+            .collect();
         // Same music on a new stream, so keep what the start clears. Entry ids
         // renumber, but a found track still hands its row over when it plays.
         let scope = self.scope.clone();
@@ -2419,6 +2651,14 @@ impl Player {
         self.scope = scope;
         self.unknown_source = unknown_source;
         self.placeholders.adopting = adopting;
+
+        // The fresh session numbers the same order from zero.
+        let remap = renumbered
+            .into_iter()
+            .enumerate()
+            .map(|(id, was)| (was, self.entry_ref(id as u64)))
+            .collect();
+        self.remap_queue_steps(&remap);
         // A restore comes up paused.
         if was_playing && self.session.is_some() {
             self.send(Cmd::TogglePause);
@@ -3023,7 +3263,7 @@ impl Player {
     }
 
     fn send_away(&mut self, id: u64) {
-        self.remove_from_queue(id);
+        self.send(Cmd::Remove { id });
         self.placeholders.gone.insert(id);
     }
 
@@ -3133,6 +3373,7 @@ impl Player {
 
         let hit = found.as_ref().map(|found| found.key.clone());
         let mut swapped = false;
+        let mut landed = None;
         for edit in unknown_resolver::landing(&order, cursor, id, hit) {
             match edit {
                 Edit::InsertAfter(after, key) => {
@@ -3141,11 +3382,17 @@ impl Player {
                             .adopting
                             .insert(key.clone(), found.unknown_id);
                     }
-                    self.splice(Some(after), vec![key], None, explicit, false, None, cx);
+                    let ids = self.splice(Some(after), vec![key], None, explicit, false, None, cx);
+                    landed = ids.first().copied();
                     swapped = true;
                 }
 
-                Edit::Remove(id) => self.send_away(id),
+                Edit::Remove(gone) => {
+                    self.send_away(gone);
+                    if let Some(hit) = landed.filter(|_| gone == id) {
+                        self.follow_queue_ref(gone, hit);
+                    }
+                }
             }
         }
 

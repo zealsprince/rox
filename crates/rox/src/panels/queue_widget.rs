@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_api::actions::{QUEUE_UNDO_CONTEXT, Redo, Undo};
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Query, Section};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::toggle;
@@ -351,7 +352,7 @@ impl Render for QueueWidgetPanel {
         let count = self.count;
         let open_on_click = self.config.open_on_click;
         let weak = cx.entity().downgrade();
-        panel::themed(&chrome, move || {
+        let body = panel::themed(&chrome, move || {
             div().size_full().bg(palette::bg_root()).child(
                 div()
                     .id("queue-widget")
@@ -418,6 +419,23 @@ impl Render for QueueWidgetPanel {
                         })
                     }),
             )
-        })
+        });
+
+        // Focusable, so the queue's undo chords reach the widget too.
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .key_context(QUEUE_UNDO_CONTEXT)
+            .on_action(cx.listener(|this, _: &Undo, _, cx| {
+                this.state
+                    .player
+                    .update(cx, |player, cx| player.undo_queue(cx));
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| {
+                this.state
+                    .player
+                    .update(cx, |player, cx| player.redo_queue(cx));
+            }))
+            .child(body)
     }
 }

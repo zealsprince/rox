@@ -15,6 +15,22 @@ actions!(
     ]
 );
 
+// Named under canvas, where they were first bound: `roxctl action` and
+// scripts call them by that name. The queue and playlists answer them too.
+actions!(
+    canvas,
+    [
+        /// Undo the focused panel's last edit.
+        Undo,
+        Redo
+    ]
+);
+
+/// The key contexts the undo chords reach besides a canvas. A panel with
+/// an undo stack sets one on its focused root.
+pub const QUEUE_UNDO_CONTEXT: &str = "QueueUndo";
+pub const PLAYLISTS_UNDO_CONTEXT: &str = "PlaylistsUndo";
+
 actions!(
     lyrics,
     [

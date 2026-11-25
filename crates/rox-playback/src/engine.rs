@@ -3901,6 +3901,34 @@ mod tests {
         assert_eq!(e.order[at.unwrap()].idx, 2);
     }
 
+    /// The player names an inserted entry before the engine drains the
+    /// insert, off the pool's length, for the queue's undo. That holds only
+    /// while an entry's id is its pool index.
+    #[test]
+    fn an_entry_id_is_its_pool_index() {
+        let mut e = test_engine(3);
+        e.insert(
+            Some(1),
+            vec![local("a"), local("b")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            true,
+        );
+        e.remove(3);
+        e.insert(
+            None,
+            vec![local("c")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(e.queue.len(), 6);
+        assert!(e.order.iter().all(|entry| entry.id == entry.idx as u64));
+    }
+
     #[test]
     fn insert_pads_missing_groups_with_none() {
         let mut e = test_engine(1);

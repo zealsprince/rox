@@ -79,11 +79,11 @@ use rox_services::player::EqChanged;
 /// The registry name.
 pub const PANEL_NAME: &str = "canvas";
 
+pub use rox_panel_api::actions::{Redo, Undo};
+
 actions!(
     canvas,
     [
-        Undo,
-        Redo,
         DeleteItem,
         GroupItem,
         UngroupItem,
@@ -2296,6 +2296,15 @@ impl CanvasPanel {
         };
         if let Some([w, h]) = size {
             item.place.size = [Length::Units(w), Length::Units(h)];
+        }
+
+        // Named like its Add Target entry. An empty name shows the id.
+        if let Content::Target { owner, .. } = &item.content {
+            item.name = target_choices(&rox_services::renderers::all())
+                .into_iter()
+                .find(|(choice, _)| choice == owner)
+                .map(|(_, label)| label)
+                .unwrap_or_default();
         }
 
         // Carried from the stage center to the press.

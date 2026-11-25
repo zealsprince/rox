@@ -16,6 +16,7 @@ use rox_library::embeddings;
 use rox_library::exclude::Exclusions;
 use rox_library::listens;
 use rox_library::locator::Locator;
+use rox_library::playlist_undo::{self, Change};
 use rox_library::playlists;
 use rox_library::projection::{self, Builder, Patch, Projection, RowView};
 use rox_library::rusqlite::{self, Connection};
@@ -27,6 +28,7 @@ use rox_library::watch::{LibraryWatcher, WatchBatch};
 use rox_library::writer;
 
 use crate::sources_registry;
+use crate::undo::{self, History};
 
 pub enum LibraryEvent {
     Updated,
@@ -274,6 +276,18 @@ pub struct Library {
     self_writes: HashMap<PathBuf, std::time::Instant>,
     /// The same for the app's own renames: the row already moved with the file.
     self_renames: HashMap<(PathBuf, PathBuf), std::time::Instant>,
+    /// Every playlist edit's undo, in the order they were made, whichever
+    /// playlist they touched. Session-only.
+    playlist_undo: History<PlaylistStep>,
+}
+
+/// A playlist undo step on the shared stack.
+struct PlaylistStep(playlist_undo::Step);
+
+impl undo::Step for PlaylistStep {
+    fn merge(self, older: Self) -> Self {
+        PlaylistStep(self.0.then(older.0))
+    }
 }
 
 /// The menubar's library line. A scan's summary is held as counts and worded
@@ -371,6 +385,7 @@ impl Library {
             pending_renames: Vec::new(),
             self_writes: HashMap::new(),
             self_renames: HashMap::new(),
+            playlist_undo: History::default(),
         };
         // The watch only sees changes while the app runs, so a stale last
         // scan opens on a catch-up scan instead of a plain load.
@@ -1634,16 +1649,26 @@ impl Library {
 
     pub fn rename_playlist(&mut self, id: i64, name: &str, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
+        let was = playlist_undo::name(conn, id).ok().flatten();
         if playlists::rename(conn, id, name, now_secs()).is_ok() {
+            // The smart dialog saves the name with its rules, changed or not.
+            if let Some(was) = was.filter(|was| was != name) {
+                self.record_playlists(vec![Change::Rename {
+                    playlist_id: id,
+                    name: was,
+                }]);
+            }
             cx.emit(LibraryEvent::PlaylistsChanged);
         }
     }
 
+    /// Not undoable: the delete asks first instead.
     pub fn delete_playlist(&mut self, id: i64, cx: &mut Context<Self>) {
         let Some(conn) = self.conn.as_mut() else {
             return;
         };
         if playlists::delete(conn, id).is_ok() {
+            self.playlist_undo.retain(|step| !step.0.touches(id));
             cx.emit(LibraryEvent::PlaylistsChanged);
         }
     }
@@ -1652,7 +1677,8 @@ impl Library {
         let Some(conn) = self.conn.as_mut() else {
             return;
         };
-        if playlists::add(conn, id, track_ids, now_secs()).is_ok() {
+        if let Ok(added) = playlists::add(conn, id, track_ids, now_secs()) {
+            self.record_playlists(vec![Change::Delete(added)]);
             cx.emit(LibraryEvent::PlaylistsChanged);
         }
     }
@@ -1669,6 +1695,7 @@ impl Library {
             return;
         };
 
+        let placed = playlist_undo::placements(conn, id).unwrap_or_default();
         let Ok(members) = playlists::add(conn, id, track_ids, now_secs()) else {
             return;
         };
@@ -1680,6 +1707,7 @@ impl Library {
             let _ = playlists::place_members(conn, id, &members, before, now_secs());
         }
 
+        self.record_playlists(vec![Change::Delete(members), Change::Place(placed)]);
         cx.emit(LibraryEvent::PlaylistsChanged);
     }
 
@@ -1695,7 +1723,43 @@ impl Library {
         let Some(conn) = self.conn.as_mut() else {
             return;
         };
+
+        // The target's members and every one moved in, whole: a drop into
+        // favourites can delete a duplicate on either side.
+        let mut ids: Vec<i64> = playlist_undo::placements(conn, playlist_id)
+            .unwrap_or_default()
+            .iter()
+            .map(|place| place.member)
+            .collect();
+        let moving: Vec<i64> = members
+            .iter()
+            .copied()
+            .filter(|member| !ids.contains(member))
+            .collect();
+        ids.extend(moving);
+        let held = playlist_undo::rows(conn, &ids).unwrap_or_default();
+
         if playlists::place_members(conn, playlist_id, members, before, now_secs()).is_ok() {
+            let kept: HashSet<i64> = playlist_undo::rows(conn, &ids)
+                .unwrap_or_default()
+                .iter()
+                .map(|row| row.id)
+                .collect();
+            let placed = held
+                .iter()
+                .map(|row| playlist_undo::Placement {
+                    member: row.id,
+                    playlist_id: row.playlist_id,
+                    position: row.position,
+                })
+                .collect();
+            let deduped: Vec<_> = held
+                .into_iter()
+                .filter(|row| !kept.contains(&row.id))
+                .collect();
+
+            // Back in first, so the placement finds every row.
+            self.record_playlists(vec![Change::Insert(deduped), Change::Place(placed)]);
             cx.emit(LibraryEvent::PlaylistsChanged);
         }
     }
@@ -1704,9 +1768,73 @@ impl Library {
         let Some(conn) = self.conn.as_mut() else {
             return;
         };
+
+        let gone = playlist_undo::rows(conn, member_ids).unwrap_or_default();
         if playlists::remove_members(conn, member_ids, now_secs()).is_ok() {
+            self.record_playlists(vec![Change::Insert(gone)]);
             cx.emit(LibraryEvent::PlaylistsChanged);
         }
+    }
+
+    /// Take the last playlist edit back, whichever playlist it touched.
+    /// False when there was none.
+    pub fn undo_playlists(&mut self, cx: &mut Context<Self>) -> bool {
+        self.step_playlists(true, cx)
+    }
+
+    pub fn redo_playlists(&mut self, cx: &mut Context<Self>) -> bool {
+        self.step_playlists(false, cx)
+    }
+
+    /// A step made stale by an edit outside the stack is dropped and the
+    /// one under it runs instead.
+    fn step_playlists(&mut self, back: bool, cx: &mut Context<Self>) -> bool {
+        let Some(conn) = self.conn.as_mut() else {
+            return false;
+        };
+
+        loop {
+            let step = match back {
+                true => self.playlist_undo.take_undo(),
+                false => self.playlist_undo.take_redo(),
+            };
+            let Some(PlaylistStep(step)) = step else {
+                return false;
+            };
+
+            let Ok(Some(reverse)) = playlist_undo::apply(conn, &step, now_secs()) else {
+                continue;
+            };
+
+            match back {
+                true => self.playlist_undo.undone(PlaylistStep(reverse)),
+                false => self.playlist_undo.redone(PlaylistStep(reverse)),
+            }
+            cx.emit(LibraryEvent::PlaylistsChanged);
+            return true;
+        }
+    }
+
+    fn record_playlists(&mut self, changes: Vec<Change>) {
+        // An edit that touched nothing has nothing to undo.
+        let changes: Vec<Change> = changes
+            .into_iter()
+            .filter(|change| match change {
+                Change::Insert(rows) => !rows.is_empty(),
+                Change::Delete(ids) => !ids.is_empty(),
+                Change::Place(places) => !places.is_empty(),
+                Change::Rename { .. } => true,
+            })
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+
+        self.playlist_undo.record(
+            PlaylistStep(playlist_undo::Step::new(changes)),
+            None,
+            std::time::Instant::now(),
+        );
     }
 
     /// Relative paths resolve against `base_dir`; entries the library never

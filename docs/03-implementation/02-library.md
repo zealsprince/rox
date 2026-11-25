@@ -89,6 +89,22 @@ inside the transaction of the first flagged step, so the reset commits with the 
 that owes it even if a later step fails. The thumbnail cache's ladder has no hook, and
 `migrate::run` panics on a flagged step there rather than let one go unhonoured.
 
+### Playlist undo
+
+Adding, removing, reordering and renaming in a playlist are undoable. `Library` keeps one
+stack for every playlist, in the order the edits were made, so Undo in the Playlists
+panel takes back the last playlist edit wherever it landed. A step holds only the rows
+an edit touched (`playlist_undo::Change`): whole member rows to put back, member ids to
+delete, a playlist and position per member, or a name. Rows come back with their member
+ids, so a later step never names an id a re-add renumbered. Applying a step is one
+transaction that first checks the rows are the ones it was made against: an edit made
+outside the stack (a heart toggle on favourites, a deleted playlist, a server sync)
+leaves it stale, and it's refused whole and dropped for the step under it. Deleting a
+playlist asks first, isn't undoable, and drops that playlist's steps. A smart playlist's
+rules aren't on the stack; its rename is, since the dialog saves through the same rename.
+The heart is its own toggle and stays off the stack. The stack is session-only and
+holds 200 steps.
+
 ## The projection
 
 The read model per ADR 5, columnar rather than a vector of row structs. Every column
@@ -314,7 +330,9 @@ The service is in `crates/rox-library`: `store.rs` (schema, upsert, range reads)
 interning, search, sort, sharded load), `scanner.rs` (walk, change key, lofty),
 `genre.rs` and `genre_meta.rs` (the multi-value convention and the alias table behind
 it), `replaygain.rs` (the tag values and where they came from), `art.rs` (cover art off
-a track's tags, with a folder image as the fallback). The app wires it in
+a track's tags, with a folder image as the fallback), `playlist_undo.rs` (playlist
+undo steps; the stack is `Library::playlist_undo` in `crates/rox-services/src/catalog.rs`).
+The app wires it in
 `crates/rox-panels/src/library.rs`. The scale harness was `crates/rox-prototype-library`
 (git history, commit bd22dc1), which reuses these modules against a generated catalog:
 `cargo run -p rox-prototype-library --release -- --tracks 10_000_000` reproduces the

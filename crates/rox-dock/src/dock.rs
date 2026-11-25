@@ -173,7 +173,7 @@ impl Dock {
         Self {
             placement,
             dock_area,
-            panel,
+            panel: panel.shed(),
             open,
             // The size comes straight from persisted JSON; floor it like
             // set_size does so corrupt settings can't restore a 0-size dock.
@@ -230,7 +230,7 @@ impl Dock {
     }
 
     pub fn set_panel(&mut self, panel: DockItem, _: &mut Window, cx: &mut Context<Self>) {
-        self.panel = panel;
+        self.panel = panel.shed();
         cx.notify();
     }
 

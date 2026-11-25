@@ -409,7 +409,6 @@ pub struct CanvasPanel {
     _player_view: Subscription,
     _library: Subscription,
     _states: [Subscription; 5],
-    _window_closed: Subscription,
 }
 
 impl CanvasPanel {
@@ -494,11 +493,6 @@ impl CanvasPanel {
             }),
         ];
 
-        let me = cx.entity().downgrade();
-        let window_closed = cx.on_window_closed(move |cx| {
-            me.update(cx, |this, cx| this.window_closed(cx)).ok();
-        });
-
         let seen_routes = config.routes.clone();
         let mut this = CanvasPanel {
             state,
@@ -540,27 +534,9 @@ impl CanvasPanel {
             _player_view: player_view,
             _library: library,
             _states: followed,
-            _window_closed: window_closed,
         };
         this.build(HashMap::new(), window, cx);
         this
-    }
-
-    /// A pop-out closed by the compositor never calls `on_removed`, and the
-    /// dock can keep a restored canvas alive past it, so the renderers stop
-    /// here once the window the canvas last drew in is gone.
-    fn window_closed(&mut self, cx: &mut Context<Self>) {
-        let Some(handle) = self.window else {
-            return;
-        };
-
-        // Docked back, the canvas is in a tab group and draws again there.
-        if self.tab_panel.is_some() || cx.windows().contains(&handle) {
-            return;
-        }
-
-        self.menu = None;
-        self.targets.stop_all();
     }
 
     /// Every grid item's dock, groups included, in item order.

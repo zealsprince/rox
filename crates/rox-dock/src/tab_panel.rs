@@ -2134,7 +2134,7 @@ impl Render for TabPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DockEvent, DockItem};
+    use crate::{DockEvent, DockItem, register_panel};
     use gpui::{Axis, point, size};
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
@@ -2575,6 +2575,94 @@ mod tests {
         assert!(
             seen.contains(&"b"),
             "the target area never reported: {seen:?}"
+        );
+    }
+
+    // A panel the tree was built with goes when it closes, a panel moved to
+    // another group lives on there, and the group the move emptied goes too.
+    #[gpui::test]
+    fn a_panel_the_tree_was_built_with_is_dropped_when_it_closes(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|_, _| Host);
+        let (area, groups) = window
+            .update(cx, |_, window, cx| area_with(&[2, 1], window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let mut groups = groups.into_iter();
+        let (from, to) = (groups.next().unwrap(), groups.next().unwrap());
+
+        let (closed, moved) = window
+            .update(cx, |_, window, cx| {
+                let closed = from.read(cx).panels[0].clone();
+                let weak = closed.view().downgrade();
+                from.update(cx, |from, cx| from.remove_panel(closed, window, cx));
+                (weak, from.read(cx).panels[0].view().downgrade())
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(closed.upgrade().is_none(), "a closed panel is still alive");
+
+        window
+            .update(cx, |_, window, cx| {
+                let panel = from.read(cx).panels[0].clone();
+                let drag = DragPanel::new(panel, from.clone());
+                to.update(cx, |to, cx| to.on_drop(&drag, None, true, window, cx));
+            })
+            .unwrap();
+        let emptied = from.downgrade();
+        drop(from);
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, _, cx| {
+                assert!(moved.upgrade().is_some());
+                assert_eq!(to.read(cx).panels.len(), 2);
+                assert_eq!(root_children(&area, cx).len(), 1);
+            })
+            .unwrap();
+        assert!(
+            emptied.upgrade().is_none(),
+            "an emptied group is still alive"
+        );
+    }
+
+    // The same through a saved layout, the path every launch restores by.
+    #[gpui::test]
+    fn a_restored_panel_is_dropped_when_it_closes(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|_, _| Host);
+        let (_areas, group) = window
+            .update(cx, |_, window, cx| {
+                register_panel(cx, "Leaf", |_, _, _, _, cx| {
+                    Box::new(cx.new(|cx| Leaf(cx.focus_handle())))
+                });
+                let (saved, _) = area_with(&[2, 1], window, cx);
+                let dump = saved.read(cx).dump(cx);
+
+                let restored = cx.new(|cx| DockArea::new("restored", None, window, cx));
+                restored
+                    .update(cx, |area, cx| area.load(dump, window, cx))
+                    .unwrap();
+                let group = root_children(&restored, cx)[0]
+                    .view()
+                    .downcast::<TabPanel>()
+                    .expect("the root holds tab groups");
+                ((saved, restored), group)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let closed = window
+            .update(cx, |_, window, cx| {
+                assert_eq!(group.read(cx).panels.len(), 2);
+                let closed = group.read(cx).panels[0].clone();
+                let weak = closed.view().downgrade();
+                group.update(cx, |group, cx| group.remove_panel(closed, window, cx));
+                weak
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            closed.upgrade().is_none(),
+            "a closed restored panel is still alive"
         );
     }
 }

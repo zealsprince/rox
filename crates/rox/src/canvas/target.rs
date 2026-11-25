@@ -1881,12 +1881,6 @@ impl Targets {
         });
     }
 
-    /// Every target stops without its window, which took the textures with
-    /// it.
-    pub(crate) fn stop_all(&mut self) {
-        self.shown.clear();
-    }
-
     /// Every target stops: the canvas left its window.
     pub(crate) fn clear(&mut self, window: &mut Window, cx: &mut App) {
         for shown in self.shown.values() {

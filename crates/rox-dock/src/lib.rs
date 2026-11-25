@@ -250,6 +250,13 @@ pub struct DockArea {
 }
 
 /// DockItem is a tree structure that represents the layout of the dock.
+///
+/// rox change: the `items` lists are the tree as it was built, read by the
+/// builders and the code that assembles a layout. A [`DockArea`] or
+/// [`Dock`] that takes an item drops them (see [`DockItem::shed`]), and every
+/// walk below goes through the live split and tab entities instead. Kept,
+/// they would hold every panel and group the item was built with past its
+/// Close and its pop-out window.
 #[derive(Clone)]
 pub enum DockItem {
     /// Split layout
@@ -558,15 +565,99 @@ impl DockItem {
         }
     }
 
-    /// Find existing panel in the dock item.
-    pub fn find_panel(&self, panel: Arc<dyn PanelView>) -> Option<Arc<dyn PanelView>> {
+    /// rox addition: this item without its `items` lists. The split, tab and
+    /// tile entities hold the real children; the lists would only pin what
+    /// was there when the item was built.
+    pub(crate) fn shed(self) -> Self {
         match self {
-            Self::Split { items, .. } => {
-                items.iter().find_map(|item| item.find_panel(panel.clone()))
-            }
-            Self::Tabs { items, .. } => items.iter().find(|item| *item == &panel).cloned(),
+            Self::Split {
+                axis,
+                size,
+                sizes,
+                view,
+                ..
+            } => Self::Split {
+                axis,
+                size,
+                items: Vec::new(),
+                sizes,
+                view,
+            },
+            Self::Tabs {
+                size,
+                active_ix,
+                view,
+                ..
+            } => Self::Tabs {
+                size,
+                items: Vec::new(),
+                active_ix,
+                view,
+            },
+            Self::Tiles { size, view, .. } => Self::Tiles {
+                size,
+                items: Vec::new(),
+                view,
+            },
+            Self::Panel { .. } => self,
+        }
+    }
+
+    /// rox addition: a childless item over a live view, so a walk can step
+    /// into whatever a split holds now, groups made by a drag included.
+    fn live(view: Arc<dyn PanelView>, cx: &App) -> Self {
+        let any = view.view();
+        if let Ok(stack) = any.clone().downcast::<StackPanel>() {
+            return Self::Split {
+                axis: stack.read(cx).axis,
+                size: None,
+                items: Vec::new(),
+                sizes: Vec::new(),
+                view: stack,
+            };
+        }
+        if let Ok(tabs) = any.clone().downcast::<TabPanel>() {
+            return Self::Tabs {
+                size: None,
+                items: Vec::new(),
+                active_ix: tabs.read(cx).active_ix,
+                view: tabs,
+            };
+        }
+        if let Ok(tiles) = any.downcast::<Tiles>() {
+            return Self::Tiles {
+                size: None,
+                items: Vec::new(),
+                view: tiles,
+            };
+        }
+        Self::Panel { size: None, view }
+    }
+
+    /// rox addition: the children a split holds right now.
+    fn live_children(stack: &Entity<StackPanel>, cx: &App) -> Vec<DockItem> {
+        stack
+            .read(cx)
+            .panels
+            .iter()
+            .map(|child| Self::live(child.clone(), cx))
+            .collect()
+    }
+
+    /// Find existing panel in the dock item.
+    pub fn find_panel(&self, panel: Arc<dyn PanelView>, cx: &App) -> Option<Arc<dyn PanelView>> {
+        match self {
+            Self::Split { view, .. } => Self::live_children(view, cx)
+                .iter()
+                .find_map(|item| item.find_panel(panel.clone(), cx)),
+            Self::Tabs { view, .. } => view
+                .read(cx)
+                .panels
+                .iter()
+                .find(|item| *item == &panel)
+                .cloned(),
             Self::Panel { view, .. } => Some(view.clone()),
-            Self::Tiles { items, .. } => items.iter().find_map(|item| {
+            Self::Tiles { view, .. } => view.read(cx).panels.iter().find_map(|item| {
                 if &item.panel == &panel {
                     Some(item.panel.clone())
                 } else {
@@ -586,15 +677,14 @@ impl DockItem {
         cx: &mut App,
     ) {
         match self {
-            Self::Tabs { view, items, .. } => {
-                items.push(panel.clone());
+            Self::Tabs { view, .. } => {
                 view.update(cx, |tab_panel, cx| {
                     tab_panel.add_panel(panel, window, cx);
                 });
             }
-            Self::Split { view, items, .. } => {
+            Self::Split { view, .. } => {
                 // Iter items to add panel to the first tabs
-                for item in items.into_iter() {
+                for item in Self::live_children(view, cx) {
                     if let DockItem::Tabs { view, .. } = item {
                         view.update(cx, |tab_panel, cx| {
                             tab_panel.add_panel(panel.clone(), window, cx);
@@ -605,12 +695,11 @@ impl DockItem {
 
                 // Unable to find tabs, create new tabs
                 let new_item = Self::tabs(vec![panel.clone()], dock_area, window, cx);
-                items.push(new_item.clone());
                 view.update(cx, |stack_panel, cx| {
                     stack_panel.add_panel(new_item.view(), None, dock_area.clone(), window, cx);
                 });
             }
-            Self::Tiles { view, items, .. } => {
+            Self::Tiles { view, .. } => {
                 let tile_item = TileItem::new(
                     Arc::new(cx.new(|cx| {
                         let mut tab_panel = TabPanel::new(None, dock_area.clone(), window, cx);
@@ -620,7 +709,6 @@ impl DockItem {
                     bounds.unwrap_or_else(|| TileMeta::default().bounds),
                 );
 
-                items.push(tile_item.clone());
                 view.update(cx, |tiles, cx| {
                     tiles.add_item(tile_item, dock_area, window, cx);
                 });
@@ -633,13 +721,20 @@ impl DockItem {
     pub fn remove_panel(&self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut App) {
         match self {
             DockItem::Tabs { view, .. } => {
+                // rox: only the group holding it. Removing runs the panel's
+                // on_removed and collapses an empty group, so a walk over
+                // every group must not touch the others.
+                let holds = view.read(cx).panels.iter().any(|p| p == &panel);
+                if !holds {
+                    return;
+                }
+
                 view.update(cx, |tab_panel, cx| {
                     tab_panel.remove_panel(panel, window, cx);
                 });
             }
-            DockItem::Split { items, view, .. } => {
-                // For each child item, set collapsed state
-                for item in items {
+            DockItem::Split { view, .. } => {
+                for item in Self::live_children(view, cx) {
                     item.remove_panel(panel.clone(), window, cx);
                 }
                 view.update(cx, |split, cx| {
@@ -662,9 +757,9 @@ impl DockItem {
                     tab_panel.set_collapsed(collapsed, window, cx);
                 });
             }
-            DockItem::Split { items, .. } => {
+            DockItem::Split { view, .. } => {
                 // For each child item, set collapsed state
-                for item in items {
+                for item in Self::live_children(view, cx) {
                     item.set_collapsed(collapsed, window, cx);
                 }
             }
@@ -679,9 +774,9 @@ impl DockItem {
     /// panel directly answer nothing.
     fn panel_at(&self, position: Point<Pixels>, cx: &App) -> Option<Arc<dyn PanelView>> {
         match self {
-            DockItem::Split { items, .. } => {
-                items.iter().find_map(|item| item.panel_at(position, cx))
-            }
+            DockItem::Split { view, .. } => Self::live_children(view, cx)
+                .iter()
+                .find_map(|item| item.panel_at(position, cx)),
 
             DockItem::Tabs { view, .. } => tab_panel_at(view, position, cx),
 
@@ -1104,7 +1199,7 @@ impl DockArea {
         // first or the discarded view stays painted over the new layout.
         self.zoom_out(window, cx);
         self.subscribe_item(&item, window, cx);
-        self.items = item;
+        self.items = item.shed();
         self.update_toggle_button_tab_panels(window, cx);
         cx.notify();
     }
@@ -1506,7 +1601,7 @@ impl DockArea {
             self.bottom_dock = Some(bottom_dock_state.to_dock(weak_self.clone(), window, cx));
         }
 
-        self.items = state.center.to_item(weak_self, window, cx);
+        self.items = state.center.to_item(weak_self, window, cx).shed();
         self.update_toggle_button_tab_panels(window, cx);
         Ok(())
     }

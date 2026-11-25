@@ -24,7 +24,7 @@ use rox_plugins::host::STOPPED_AFTER_CRASHES;
 use rox_plugins::manifest::ProviderDomain;
 use rox_plugins::{Loaded, Origin, Status, package};
 use rox_services::plugin_library;
-use rox_services::plugins::{self as host, Change, Grant};
+use rox_services::plugins::{self as host, Change, Grant, Since};
 use serde_json::Value;
 
 use super::*;
@@ -429,21 +429,28 @@ impl EnableCard {
         }
 
         // Only a re-approval has something to diff against.
-        let approved = record
-            .map(|record| &record.approved_manifest)
-            .filter(|approved| !approved.is_null());
-        if let Some(approved) = approved {
-            let changes = host::changes(approved, &folder.document);
-            let unchanged = match manifest.is_renderer() {
+        if let Some(record) = record.filter(|record| !record.approved_manifest.is_null()) {
+            let files = match manifest.is_renderer() {
                 true => "settings-plugins-card-unchanged-renderer",
                 false => "settings-plugins-card-unchanged",
             };
-            match changes.is_empty() {
-                true => lines.push(rox_i18n::t!(unchanged)),
-                false => {
+
+            let since = host::since(
+                &record.approved_manifest,
+                &record.hash,
+                &folder.document,
+                &folder.hash,
+            );
+            match since {
+                Since::Declared(changes) => {
                     lines.push(rox_i18n::t!("settings-plugins-card-changed"));
                     lines.extend(changes.iter().map(change_line));
                 }
+                Since::Manifest => {
+                    lines.push(rox_i18n::t!("settings-plugins-card-manifest-changed"))
+                }
+                Since::Files => lines.push(rox_i18n::t!(files)),
+                Since::Nothing => {}
             }
         }
 
@@ -1861,10 +1868,20 @@ mod tests {
             Some(&rox_i18n::t!("settings-plugins-card-unchanged-renderer"))
         );
 
+        // One whose description moved and nothing it declares.
+        let mut described = renderer.clone();
+        described.document = json!({ "id": "bars", "meta": { "description": "Louder." } });
+        let redescribed = EnableCard::of(described, Some(&approved)).unwrap();
+        assert_eq!(
+            redescribed.lines.last(),
+            Some(&rox_i18n::t!("settings-plugins-card-manifest-changed"))
+        );
+
         let everything: Vec<String> = card
             .lines
             .iter()
             .chain(&again.lines)
+            .chain(&redescribed.lines)
             .chain(&card.lead)
             .map(|line| line.to_lowercase())
             .collect();

@@ -973,7 +973,12 @@ matches its approval is switched off (`apply`, `plugins.rs:209-232`). Its row re
 the one approved last time (`changes`, `plugins.rs:553-601`): capabilities added or
 dropped, programs added, the scrobble declaration turned on or off, a changed entry, and
 a provider domain declared since, even inside a `providers` block already approved
-(`Change::ProviderAdded`). When the manifest is the same, the card says other files changed.
+(`Change::ProviderAdded`). With none of those, the card says the manifest changed when
+anything else in it did, like the description or the version, and says the files changed
+when the manifest says the same and the hash differs from the one last approved (`since`,
+`plugins.rs`). The hash is one digest over the whole folder, so the card can't name the
+file. With the hash the same as last time, as after a settings file copied from another
+machine, it says neither.
 
 Developer mode is a per-plugin toggle for its author, an icon button beside a
 switched-on plugin's switch (`plugin_row`, `rox/src/settings/window/plugins_page.rs`). It's
@@ -1007,7 +1012,7 @@ The Plugins page's copy, in English, for finding each string in the other locale
 | Card, lyrics | Offers lyrics for its tracks. rox only asks once you switch them on. |
 | Card, providers | Offers { $domains } for any track in your library. rox only asks once you switch each on. (`$domains` from lyrics, tag lookup, artist info) |
 | Card, programs | Uses { $program }, found on this computer. / Uses { $program }, which isn't on this computer's PATH. |
-| Card, re-approval | Changed since you last switched it on: / The manifest is the same as last time. Other files in the plugin changed. |
+| Card, re-approval | Changed since you last switched it on: / The manifest changed since you last switched it on. / The manifest says the same as last time. Files in the plugin changed. |
 | Card, changes | New capability: { $name } / Dropped capability: { $name } / New program: { $program } / Now asks to scrobble / No longer asks to scrobble / Starts a different way / Now offers { $domain } for your library |
 | Card button | Switch On |
 | Page switch | Enable Plugins: Let the plugins in the plugins folder run. Each one still has its own switch below, and runs as a program on this computer with your permissions |

@@ -275,7 +275,7 @@ These are every line rox writes (`target.rs:1227-1370`):
 `hello` is always first. Its width and height are the target's, and `handle` is the
 mapping's handle value on Windows and 0 elsewhere.
 
-`pool` describes the canvas's signals by id, in pool order. A name is the user's, trimmed
+`pool` describes the signal pool by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
 30-120 Hz`, `onset 30-120 Hz`, `trigger 30-120 Hz`, `level`, or `total of <id>`
 (`wire_name`, `target.rs:1284`). Read what a signal is from `kind`, since a renamed one
@@ -320,6 +320,57 @@ no `down` before it, from a press that started elsewhere.
 
 Closing stdin tells the renderer to exit.
 
+### The pool
+
+The pool is the user's, and there's one for the whole app. It's edited under
+Application > Signals and saved with the live look in `workspace.json` in rox's data
+folder, as `bundle.signals` (`LookState` and `WorkspaceBundle`,
+`rox-core/src/settings.rs`). Every canvas and every render target reads that one pool,
+and applying a workspace replaces it with the one the workspace carries. A renderer
+can't add a signal or ask for one, since nothing on its wire goes that way. It gets the
+pool the user made.
+
+A renderer meets pools it wasn't written for, then. With an empty pool it gets
+`{"pool":[]}` and `signals` lines with no values, and it should still draw something:
+the bars example draws one empty bar, and plasma turns at its resting speed. Choose what
+to follow by `kind` and band. A name is the user's to change, and an id means nothing
+outside the pool it came in. Leave a `kind` the renderer doesn't know out of whatever it
+works out from the rest, and expect the pool line again whenever the user edits it.
+
+### The signal values
+
+Each value is the signal's output once rox has shaped it, the number a route reads
+(`SignalHub::value` and `Signals::step`, `rox-viz/src/signal.rs`). The signal's Response
+has already smoothed it, so a renderer that smooths again lags behind everything else
+following that signal. Its Threshold has already gated it too: under the threshold it
+reads 0, and above it the output climbs from 0 again. On a trigger the threshold is the
+fire level instead.
+
+- `band` is the loudest bin of a 2048-point FFT of the mono mix between `low` and `high`,
+  a peak and not a mean. It's in decibels against a full-scale sine, mapped from -66 dB
+  at 0 to -12 dB at 1 and held between them (`FLOOR_DB` and `MAX_DB`). A loud master
+  peaks above -12 dB in its bass much of the time, so a band there sits at or near 1.
+  Response sets how fast it follows: it rises at 50 a second at Response 0 down to 3 at
+  100, and falls at 12 down to 1.
+- `level` is the same measure across the whole spectrum, 20 Hz to 20 kHz.
+- `onset` is a pulse. When the band jumps more than 0.12 above its own slow average, and
+  is above 0.15, the value goes to 1. It then decays each frame, at 16 a second at
+  Response 0 down to 1.5 at 100. At 60 frames a second that's about an eighth of a
+  second to fall to a tenth at Response 0, and about a second and a half at 100. A hit
+  reads as a jump and a tail over many frames, never a single 1 between zeroes. It fires
+  again only once the band has fallen back close to its average.
+- `trigger` has the same shape, a jump to 1 and the same decay. It fires when the band
+  reaches the Threshold and can't fire again until the band falls under three quarters
+  of it. At Threshold 0 it never fires and reads 0.
+- `aggregate`, Total in the Signals window, adds up another signal: each frame it grows
+  by that signal's value times its Rate, at most 8 laps a second, and wraps from 1 to 0.
+  A renderer using it as a phase has to unwrap it. When a value is more than half below
+  the one before, it wrapped, so add 1. A smaller fall is a drain to 0, from Reset on
+  Track at a new song or from Flush, which takes a moment and doesn't snap.
+
+Once the audio has been silent for 0.15 s (`SILENT_AFTER`), a band and the level fall
+to 0 at their falling rate, and a pulse finishes its decay.
+
 ### The renderer to rox
 
 A renderer writes announce lines to stdout and nothing else: `f`, a space, the frame number in
@@ -361,7 +412,10 @@ anything about another item, and its wire has no way to call into rox. It runs w
 user's permissions, unsandboxed, as a plugin does, and the card says so.
 
 A workspace or an object with a render target lists the renderer in `requires`, the way
-it lists a plugin, and never includes it (`named_renderers`, `target.rs:1699`).
+it lists a plugin, and never includes it (`named_renderers`, `target.rs:1699`). An
+exported object carries the pool signals its routes read, and the ones those totals
+follow, but not the pool a render target's renderer reads (`lift`, `rox/src/objects.rs`).
+Placed in another rox, the renderer reads that rox's pool.
 
 ## Platforms
 
@@ -425,6 +479,19 @@ of 256 bytes (`COPY_BYTES_PER_ROW_ALIGNMENT`), as Direct3D 12 does
 out packed and one copy fills the slot. At any other width copy row by row, `width * 4`
 bytes from the start of each padded row. The Resolution presets are all multiples of 64,
 and the Width in Pixels row takes any width from 16 to 3840.
+
+### How often to announce
+
+Announce at most once per display frame. rox copies only the newest announce waiting,
+and only once the canvas has taken the frame before it, so a frame past that rate is
+drawn for nothing. rox doesn't tell a renderer the display's rate, so pace the loop on
+the renderer's own clock, as the plasma example does at 60 frames a second (`RATE`).
+
+A GPU loop left to run as fast as it can draws hundreds or thousands of frames a second.
+Announcing each one breaks the flood rule: more than 500 stdout lines in a one-second
+span, then more than 500 in the next, stops the renderer as soon as the second span
+passes 500 (`Rate::note`, `target.rs`). That counts as an exit, so the renderer starts
+again and is stopped again, and the fifth time it stays stopped.
 
 ### The pixels
 

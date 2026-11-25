@@ -1208,6 +1208,36 @@ pub fn changes(approved: &Value, now: &Value) -> Vec<Change> {
     found
 }
 
+/// What a re-approval's card can truthfully say moved since the last one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Since {
+    /// What it declares moved, as [`changes`] lists it.
+    Declared(Vec<Change>),
+    /// The manifest says something else, in a part [`changes`] doesn't
+    /// compare, like its description or version.
+    Manifest,
+    /// The manifest says the same and the folder hashes differently. The
+    /// hash is one digest over every file, so it can't tell another file
+    /// from a change to the manifest's spacing.
+    Files,
+    /// The folder is the one last approved, as with a settings file copied
+    /// from a machine that approved it.
+    Nothing,
+}
+
+pub fn since(approved: &Value, approved_hash: &str, now: &Value, hash: &str) -> Since {
+    let declared = changes(approved, now);
+    if !declared.is_empty() {
+        return Since::Declared(declared);
+    }
+
+    match (approved == now, approved_hash == hash) {
+        (false, _) => Since::Manifest,
+        (true, false) => Since::Files,
+        (true, true) => Since::Nothing,
+    }
+}
+
 /// What the engine reads a plugin track through. Reading a track to its end
 /// can change what its row is, like a copy the plugin kept as it played, so
 /// rox asks for the row's flags then, and once more after it closes.
@@ -3422,6 +3452,34 @@ mod tests {
             changes(&before, &after),
             vec![Change::CapabilityAdded("favourites".into())]
         );
+    }
+
+    #[test]
+    fn a_reapproval_claims_only_what_it_compared() {
+        let mut approved = manifest(json!({ "source": { "label": "T" } }), json!([]), "t.py");
+        approved["version"] = json!("1.0.0");
+        approved["meta"] = json!({ "description": "Tones." });
+
+        // Only the description, with the code as it was.
+        let mut meta = approved.clone();
+        meta["meta"]["description"] = json!("Tones, louder.");
+        assert_eq!(since(&approved, "old", &meta, "new"), Since::Manifest);
+
+        // Only the code.
+        assert_eq!(since(&approved, "old", &approved, "new"), Since::Files);
+
+        // A capability, with or without the description beside it.
+        let mut caps = approved.clone();
+        caps["capabilities"]["panels"] = json!([]);
+        let declared = Since::Declared(vec![Change::CapabilityAdded("panels".into())]);
+        assert_eq!(since(&approved, "old", &caps, "new"), declared);
+
+        let mut both = caps.clone();
+        both["meta"]["description"] = json!("Tones, louder.");
+        assert_eq!(since(&approved, "old", &both, "new"), declared);
+
+        // The files last approved, with no approval for them on this machine.
+        assert_eq!(since(&approved, "old", &approved, "old"), Since::Nothing);
     }
 
     #[test]

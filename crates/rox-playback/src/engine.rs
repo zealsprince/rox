@@ -102,6 +102,9 @@ pub enum Cmd {
         /// With `and_play`, open the first track this far in. A separate Seek would
         /// either cancel the jump (one flush per drain) or play the head first.
         start_secs: Option<f64>,
+        /// An undo or redo putting entries back. It never wakes a played-out
+        /// queue, which a plain insert does, so the transport stays ended.
+        restore: bool,
     },
     /// Removing the playing entry is ignored.
     Remove {
@@ -446,8 +449,9 @@ impl Engine {
 
             // Commands first so pause and seek respond even with the ring full.
             let mut flush_to: Option<FlushAction> = None;
-            // Running target, so two Nexts in one drain advance twice.
-            let mut nav_pos: Option<usize> = None;
+            // Running target, so two Nexts in one drain advance twice. Held as an
+            // entry id: a queue edit later in the same drain shifts positions.
+            let mut nav: Option<u64> = None;
             // For the transport's fade sweep direction.
             let mut nav_back = false;
             // Only an Insert that plays now sets this.
@@ -464,7 +468,7 @@ impl Engine {
                         self.cancel_audition();
                         if source.is_none() && self.shared.ended.load(Ordering::Relaxed) {
                             self.shared.playing.store(true, Ordering::Relaxed);
-                            nav_pos = Some(self.audible_pos());
+                            nav = self.id_at(self.audible_pos());
                             flush_to = None;
                         } else if source.is_none() && self.hung_up.is_some() {
                             // The rejoin sets playing itself.
@@ -500,24 +504,24 @@ impl Engine {
                         // hung-up state.
                         flush_to = (!self.live_at(self.audible_pos()))
                             .then_some(FlushAction::Seek(secs.max(0.0)));
-                        nav_pos = None;
+                        nav = None;
                         nav_at = None;
                     }
                     Cmd::SeekLive(behind) => {
                         self.cancel_audition();
                         flush_to = Some(FlushAction::SeekLive(behind.max(0.0)));
-                        nav_pos = None;
+                        nav = None;
                         nav_at = None;
                     }
                     Cmd::Next => {
                         self.cancel_audition();
                         // Off the audible track, not the decode cursor, which may already be a track
                         // ahead: Next would skip two.
-                        let from = nav_pos.unwrap_or_else(|| self.audible_pos());
+                        let from = self.nav_from(nav);
                         if from + 1 < self.order.len() {
-                            nav_pos = Some(from + 1);
+                            nav = self.id_at(from + 1);
                         } else if self.loop_mode == LoopMode::All && !self.order.is_empty() {
-                            nav_pos = Some(0);
+                            nav = self.id_at(0);
                         }
                         nav_back = false;
                         nav_at = None;
@@ -525,13 +529,13 @@ impl Engine {
                     }
                     Cmd::Prev => {
                         self.cancel_audition();
-                        let from = nav_pos.unwrap_or_else(|| self.audible_pos());
+                        let from = self.nav_from(nav);
                         let target = if from == 0 && self.loop_mode == LoopMode::All {
                             self.order.len().saturating_sub(1)
                         } else {
                             from.saturating_sub(1)
                         };
-                        nav_pos = Some(target);
+                        nav = self.id_at(target);
                         nav_back = true;
                         nav_at = None;
                         flush_to = None;
@@ -540,9 +544,9 @@ impl Engine {
                         self.loop_mode = mode;
                         // From the ended state a wrapping mode reopens through the nav path.
                         if source.is_none() {
-                            nav_pos = match mode {
-                                LoopMode::One => Some(self.pos),
-                                LoopMode::All if !self.order.is_empty() => Some(0),
+                            nav = match mode {
+                                LoopMode::One => self.id_at(self.pos),
+                                LoopMode::All => self.id_at(0),
                                 _ => None,
                             };
                         }
@@ -588,12 +592,16 @@ impl Engine {
                         explicit,
                         and_play,
                         start_secs,
+                        restore,
                     } => {
                         let at = self.insert(after, locators, groups, gains, spans, explicit);
                         // From the ended state, the first new entry opens through the nav path.
-                        // Play now jumps the same way; Play Next and Add to Queue don't.
-                        if and_play || source.is_none() {
-                            nav_pos = at;
+                        // Play now jumps the same way; Play Next and Add to Queue don't. A
+                        // restore leaves a played-out queue ended, but a tail still draining
+                        // hasn't played out, so it runs on into what came back.
+                        let played_out = source.is_none() && self.ring_drained();
+                        if and_play || (source.is_none() && !(restore && played_out)) {
+                            nav = at.and_then(|p| self.id_at(p));
                             nav_at = start_secs.filter(|_| and_play);
                         }
                         // Play now means play, even from a pause. Owed, and paid below.
@@ -605,8 +613,8 @@ impl Engine {
                     // Through the nav path, like a Next.
                     Cmd::Jump { id } => {
                         self.cancel_audition();
-                        if let Some(p) = self.find(id) {
-                            nav_pos = Some(p);
+                        if self.find(id).is_some() {
+                            nav = Some(id);
                         }
                         nav_at = None;
                         flush_to = None;
@@ -640,7 +648,7 @@ impl Engine {
                     Cmd::Quit => return,
                 }
             }
-            if let Some(p) = nav_pos {
+            if let Some(p) = nav.and_then(|id| self.find(id)) {
                 flush_to = Some(FlushAction::Track {
                     pos: p,
                     back: nav_back,
@@ -1488,6 +1496,17 @@ impl Engine {
 
     fn find(&self, id: u64) -> Option<usize> {
         self.order.iter().position(|e| e.id == id)
+    }
+
+    fn id_at(&self, p: usize) -> Option<u64> {
+        self.order.get(p).map(|e| e.id)
+    }
+
+    /// Where a drain's navigation stands: its target so far, or the audible
+    /// track when it has none or the target was removed since.
+    fn nav_from(&self, nav: Option<u64>) -> usize {
+        nav.and_then(|id| self.find(id))
+            .unwrap_or_else(|| self.audible_pos())
     }
 
     /// Order position of the track the speakers are playing, off the output
@@ -5179,6 +5198,7 @@ mod tests {
             explicit: true,
             and_play: true,
             start_secs: None,
+            restore: false,
         })
         .expect("the engine is listening");
 
@@ -5640,6 +5660,239 @@ mod tests {
 
         tx.send(Cmd::Quit).expect("the engine is listening");
         decode.join().expect("the decode thread ends cleanly");
+    }
+
+    /// The real run loop over local files, with the test standing in for the
+    /// output callback.
+    struct Running {
+        shared: Arc<Shared>,
+        tx: mpsc::Sender<Cmd>,
+        consumer: rtrb::Consumer<f32>,
+        samples: u64,
+        decode: std::thread::JoinHandle<()>,
+    }
+
+    impl Running {
+        fn start(locators: Vec<Locator>) -> Running {
+            let shared = Arc::new(Shared::new(locators.len()));
+            shared.flush_ack.store(u64::MAX, Ordering::Release);
+            let (producer, consumer) = rtrb::RingBuffer::<f32>::new(8192);
+            let (tx, rx) = mpsc::channel::<Cmd>();
+            let engine = Engine::new(
+                StartQueue {
+                    locators,
+                    ..StartQueue::default()
+                },
+                Arc::clone(&shared),
+                producer,
+                48_000,
+                rx,
+            );
+            let decode = std::thread::spawn(move || engine.run());
+
+            Running {
+                shared,
+                tx,
+                consumer,
+                samples: 0,
+                decode,
+            }
+        }
+
+        /// Play what the ring holds and move the clock by it, in samples, so a
+        /// drain catching half a frame loses nothing.
+        fn pump(&mut self) {
+            let n = self.consumer.slots();
+            if let Ok(chunk) = self.consumer.read_chunk(n) {
+                chunk.commit_all();
+            }
+            self.samples += n as u64;
+            self.shared
+                .frames_consumed
+                .store(self.samples / 2, Ordering::Relaxed);
+        }
+
+        fn play_out(&mut self) {
+            let shared = Arc::clone(&self.shared);
+            wait_for("the queue to play out", || {
+                self.pump();
+                shared.ended.load(Ordering::Relaxed)
+            });
+        }
+
+        /// The pool entry the clock says the speakers are on.
+        fn audible(&self) -> Option<usize> {
+            self.shared.position(48_000).map(|(track, _)| track)
+        }
+
+        /// Every skip cuts the ring, a wake from the ended state included.
+        fn cuts(&self) -> u64 {
+            self.shared.flush_seq.load(Ordering::Relaxed)
+        }
+
+        fn ids(&self) -> Vec<u64> {
+            let snap = self.shared.queue_snapshot();
+            snap.entries.iter().map(|e| e.id).collect()
+        }
+
+        /// Sent while the insert that leads them is held inside the engine's
+        /// drain, so they all land in that one drain.
+        fn send_in_one_drain(&self, cmds: Vec<Cmd>) {
+            let held = self.shared.tracks.lock().unwrap();
+            for cmd in cmds {
+                self.tx.send(cmd).expect("the engine is listening");
+            }
+            drop(held);
+        }
+
+        fn quit(self) {
+            self.tx.send(Cmd::Quit).expect("the engine is listening");
+            self.decode.join().expect("the decode thread ends cleanly");
+        }
+    }
+
+    fn insert(after: Option<u64>, locators: Vec<Locator>, restore: bool) -> Cmd {
+        Cmd::Insert {
+            after,
+            locators,
+            groups: Vec::new(),
+            gains: Vec::new(),
+            spans: Vec::new(),
+            explicit: true,
+            and_play: false,
+            start_secs: None,
+            restore,
+        }
+    }
+
+    /// An undo onto a played-out queue puts the entries back and nothing
+    /// starts: no open, no cut, no sample, and the queue still reads ended.
+    #[test]
+    fn a_restore_into_a_played_out_queue_opens_nothing() {
+        let fx = Fixtures::new("restore-ended");
+        let tracks: Vec<Locator> = ["a.wav", "b.wav", "c.wav"]
+            .iter()
+            .map(|name| local(fx.wav(name, 0.05)))
+            .collect();
+        let mut run = Running::start(tracks.clone());
+        run.play_out();
+
+        let cuts = run.cuts();
+        let heard = run.samples;
+
+        // A Remove of the middle entry and of the head, then their undos: the
+        // middle goes back after `a`, the head as an insert at the end and a
+        // move to the front.
+        run.tx
+            .send(Cmd::RemoveMany { ids: vec![0, 1] })
+            .expect("the engine is listening");
+        wait_for("the removal", || run.ids() == [2]);
+        run.send_in_one_drain(vec![
+            insert(None, vec![tracks[0].clone()], true),
+            Cmd::Move { id: 3, after: None },
+            insert(Some(3), vec![tracks[1].clone()], true),
+        ]);
+        wait_for("the restore", || run.ids() == [3, 4, 2]);
+
+        // Longer than the idle nap, so a wake would have shown.
+        let shared = Arc::clone(&run.shared);
+        let until = Instant::now() + IDLE_NAP * 2;
+        wait_for("the idle passes", || {
+            run.pump();
+            Instant::now() >= until
+        });
+
+        assert!(shared.ended.load(Ordering::Relaxed), "still played out");
+        assert_eq!(run.samples, heard, "not a sample more reached the ring");
+        assert_eq!(run.cuts(), cuts, "no skip");
+        assert_eq!(
+            run.audible(),
+            Some(2),
+            "the clock still names the last track"
+        );
+
+        run.quit();
+    }
+
+    /// Adding to a played-out queue still starts what was added, #36's rule.
+    #[test]
+    fn an_insert_into_a_played_out_queue_plays_it() {
+        let fx = Fixtures::new("insert-ended");
+        let mut run = Running::start(vec![
+            local(fx.wav("a.wav", 0.05)),
+            local(fx.wav("b.wav", 0.05)),
+        ]);
+        run.play_out();
+        let heard = run.samples;
+
+        run.tx
+            .send(insert(None, vec![local(fx.wav("c.wav", 0.05))], false))
+            .expect("the engine is listening");
+        wait_for("the added track to play", || {
+            run.pump();
+            run.audible() == Some(2)
+        });
+        run.play_out();
+
+        assert_eq!(
+            run.samples - heard,
+            2 * 2_400,
+            "the added track played, every frame of it"
+        );
+
+        run.quit();
+    }
+
+    /// A drain's navigation names an entry, not a position: an insert lands at
+    /// the end and a move in the same drain takes it to the front, and the
+    /// wake opens the inserted entry rather than whatever slid into its slot.
+    #[test]
+    fn a_wake_follows_its_entry_through_a_move_in_the_same_drain() {
+        let fx = Fixtures::new("wake-move");
+        let mut run = Running::start(vec![
+            local(fx.wav("a.wav", 0.05)),
+            local(fx.wav("b.wav", 0.05)),
+        ]);
+        run.play_out();
+        let cuts = run.cuts();
+
+        run.send_in_one_drain(vec![
+            insert(None, vec![local(fx.wav("c.wav", 0.05))], false),
+            Cmd::Move { id: 2, after: None },
+        ]);
+        wait_for("the wake", || run.cuts() > cuts);
+
+        assert_eq!(run.ids(), [2, 0, 1]);
+        assert_eq!(run.audible(), Some(2), "the inserted entry opened");
+
+        run.quit();
+    }
+
+    /// The same on a queue that's playing: a Jump, then a Move of its target in
+    /// the same drain, still opens the entry the Jump named.
+    #[test]
+    fn a_jump_follows_its_entry_through_a_move_in_the_same_drain() {
+        let fx = Fixtures::new("jump-move");
+        let run = Running::start(vec![
+            local(fx.wav("a.wav", 1.0)),
+            local(fx.wav("b.wav", 1.0)),
+            local(fx.wav("c.wav", 1.0)),
+        ]);
+        wait_for("the first track to open", || run.audible() == Some(0));
+        let cuts = run.cuts();
+
+        // The insert after `c` only holds the drain open.
+        run.send_in_one_drain(vec![
+            insert(Some(2), vec![local(fx.wav("d.wav", 1.0))], false),
+            Cmd::Jump { id: 2 },
+            Cmd::Move { id: 2, after: None },
+        ]);
+        wait_for("the jump", || run.cuts() > cuts);
+
+        assert_eq!(run.ids(), [2, 0, 1, 3]);
+        assert_eq!(run.audible(), Some(2), "the jumped-to entry opened");
+
+        run.quit();
     }
 
     #[test]

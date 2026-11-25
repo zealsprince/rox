@@ -1208,7 +1208,16 @@ impl Player {
         // and a fresh session numbers entries by position, so the start is
         // entry `start`.
         if !queued.is_empty() && self.session.is_some() {
-            self.splice(Some(start as u64), queued, None, true, false, None, cx);
+            self.splice(
+                Some(start as u64),
+                queued,
+                None,
+                true,
+                false,
+                None,
+                false,
+                cx,
+            );
         }
     }
 
@@ -1603,7 +1612,7 @@ impl Player {
             return None;
         }
 
-        let ids = self.splice(after, keys, None, true, and_play, None, cx);
+        let ids = self.splice(after, keys, None, true, and_play, None, false, cx);
         Some(Op::Remove(
             ids.into_iter().map(|id| self.entry_ref(id)).collect(),
         ))
@@ -1618,13 +1627,23 @@ impl Player {
             return;
         }
         let after = self.playing_after();
-        let ids = self.splice(after, vec![key], None, true, true, Some(secs.max(0.0)), cx);
+        let ids = self.splice(
+            after,
+            vec![key],
+            None,
+            true,
+            true,
+            Some(secs.max(0.0)),
+            false,
+            cx,
+        );
         let undo = Op::Remove(ids.into_iter().map(|id| self.entry_ref(id)).collect());
         self.record_queue(vec![undo], None);
     }
 
     /// The insert hand-queued keys and continuation batches share. `groups`
-    /// overrides the library's album grouping where it's Some. Returns the
+    /// overrides the library's album grouping where it's Some. `restore` is
+    /// an undo or redo, which leaves a played-out queue ended. Returns the
     /// new entries' ids.
     #[allow(clippy::too_many_arguments)]
     fn splice(
@@ -1635,6 +1654,7 @@ impl Player {
         explicit: bool,
         and_play: bool,
         start_secs: Option<f64>,
+        restore: bool,
         cx: &mut Context<Self>,
     ) -> Vec<u64> {
         // Bail before anything grows: `pool_ids` runs parallel to the pool,
@@ -1673,6 +1693,7 @@ impl Player {
             explicit,
             and_play,
             start_secs,
+            restore,
         };
         if answers_now(&cmd) {
             session.shared.interrupt();
@@ -1761,6 +1782,7 @@ impl Player {
             entry.explicit,
             false,
             None,
+            false,
             cx,
         );
         self.send(Cmd::Remove { id: entry.id });
@@ -1978,7 +2000,7 @@ impl Player {
                     let explicit = items.first().is_some_and(|item| item.explicit);
                     let (keys, groups) =
                         items.into_iter().map(|item| (item.key, item.group)).unzip();
-                    self.splice(after, keys, Some(groups), explicit, false, None, cx);
+                    self.splice(after, keys, Some(groups), explicit, false, None, true, cx);
                 }
 
                 queue_undo::Edit::Remove(ids) => self.send(Cmd::RemoveMany { ids }),
@@ -2384,7 +2406,7 @@ impl Player {
         let (keys, groups): (Vec<TrackKey>, Vec<Option<u64>>) = resolved.into_iter().unzip();
         // Context, not queue: the queue widgets stay quiet about it, but it's
         // in the timeline and removable.
-        self.splice(None, keys, Some(groups), false, false, None, cx);
+        self.splice(None, keys, Some(groups), false, false, None, false, cx);
         if self.similar_order() {
             self.order_tail_by_similarity(1, None, false, cx);
         }
@@ -3382,7 +3404,16 @@ impl Player {
                             .adopting
                             .insert(key.clone(), found.unknown_id);
                     }
-                    let ids = self.splice(Some(after), vec![key], None, explicit, false, None, cx);
+                    let ids = self.splice(
+                        Some(after),
+                        vec![key],
+                        None,
+                        explicit,
+                        false,
+                        None,
+                        false,
+                        cx,
+                    );
                     landed = ids.first().copied();
                     swapped = true;
                 }

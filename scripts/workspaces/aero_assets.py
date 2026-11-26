@@ -679,6 +679,111 @@ def glass(w, h, radius, pad, night, well=False):
     return img
 
 
+# Nine-sliced panes: radius, shadow pad, gloss band height and whether it's a
+# shadowless well, all in pixels. Each also ships a `_night` copy.
+PANES = {
+    "glass_pane": (26, 24, 110, False),
+    "glass_well": (18, 6, 64, True),
+    "glass_screen": (18, 16, 80, False),
+}
+
+# The stretchable middle of a pane, both ways. Wide enough that the gloss's
+# bow and the tint's ramp resample smoothly when it spans a whole pane.
+PANE_MIDDLE = 32
+
+
+def pane_insets(radius, pad, gloss):
+    """Left, top, right, bottom, in pixels: the corners hold the rounding,
+    the shadow and the inner glow, the top inset the gloss band."""
+    side = pad + radius + 14
+    return [side, pad + gloss + 10, side, pad + radius + 18]
+
+
+def pane(radius, pad, gloss, night, well=False):
+    """A sheet of glass cut for nine-slicing at `pane_insets`. The gloss is a
+    band of `gloss` pixels down from the top edge, so it keeps its height on
+    any pane. Its lower edge bows only across the middle columns, which the
+    cut stretches, so the bow spans whatever width the pane takes."""
+    side, top, _, bottom = pane_insets(radius, pad, gloss)
+    mid = PANE_MIDDLE
+    w, h = side * 2 + mid, top + mid + bottom
+    img = Image(w, h)
+    hw, hh = w / 2 - pad, h / 2 - pad
+    cx = w / 2
+
+    if night:
+        body, body_a = hexc("#0d2444"), 0.62 if not well else 0.42
+        rim_c, rim_a = hexc("#7fe3ff"), 0.55
+        hair_c = hexc("#020a18")
+        gloss_a = 0.16
+    else:
+        body, body_a = hexc("#f4fbff"), 0.50 if not well else 0.30
+        rim_c, rim_a = (1.0, 1.0, 1.0), 0.95
+        hair_c = hexc("#2a6d9e")
+        gloss_a = 0.55
+
+    def shadow(x, y):
+        px, py = x * w - w / 2, y * h - h / 2 - pad * 0.25
+        d = rounded_box(px, py, hw, hh, radius)
+        if d <= 0 or well:
+            return None
+        s = math.exp(-((d / (pad * 0.45)) ** 2)) * (0.30 if not night else 0.5)
+        return (0.02, 0.12, 0.25, s)
+
+    img.paint(shadow)
+
+    def sheet(x, y):
+        px, py = x * w - w / 2, y * h - h / 2
+        d = rounded_box(px, py, hw, hh, radius)
+        if d > 1.0:
+            return None
+        cover = 1.0 - smooth(-0.5, 1.0, d)
+        # The cool tint deepens toward the bottom across the whole source, so
+        # the stretched middle carries it as one even ramp.
+        t = (py + hh) / (2 * hh)
+        c = mix(body, hexc("#cfe9fb") if not night else hexc("#081a33"), t * 0.6)
+        inner = math.exp(-((-d) / 22.0) ** 2) * (0.18 if not night else 0.22)
+        c = mix(c, (1.0, 1.0, 1.0) if not night else hexc("#2c74a8"), inner)
+        return (c[0], c[1], c[2], (body_a + inner * 0.5) * cover)
+
+    img.paint(sheet)
+
+    def shine(x, y):
+        px, py = x * w - w / 2, y * h - h / 2
+        d = rounded_box(px, py, hw - 3, hh - 3, max(radius - 3, 1))
+        if d > 0:
+            return None
+        # Flat through the corners, bowed across the stretched middle.
+        u = min(max((x * w - cx) / (mid / 2), -1.0), 1.0)
+        line = pad + gloss * (0.86 + 0.14 * (1 - u * u)) if not well else pad + gloss
+        y_px = y * h
+        if y_px > line + 2:
+            return None
+        t = (y_px - pad) / max(line - pad, 1)
+        s = (1.0 - smooth(0.0, 1.0, t)) * gloss_a + gloss_a * 0.25
+        s *= 1.0 - smooth(line - 2, line + 2, y_px)
+        s *= smooth(0.0, 6.0, -d)
+        return (1.0, 1.0, 1.0, s * 0.55)
+
+    img.paint(shine)
+
+    def rims(x, y):
+        px, py = x * w - w / 2, y * h - h / 2
+        d = rounded_box(px, py, hw, hh, radius)
+        hair = math.exp(-((d - 0.2) / 0.8) ** 2) * (0.30 if not night else 0.7)
+        # Brightest along the top, fading over the top inset and the middle.
+        fade = 1.0 - smooth(pad, top + mid, y * h) * 0.7
+        rim = math.exp(-((d + 1.6) / 0.9) ** 2) * rim_a * fade
+        if hair + rim < 0.004:
+            return None
+        if rim >= hair:
+            return (rim_c[0], rim_c[1], rim_c[2], rim)
+        return (hair_c[0], hair_c[1], hair_c[2], hair)
+
+    img.paint(rims)
+    return img
+
+
 def cover_gloss(size, radius):
     """Laid over the cover art: the gel's top-half shine and a bright rim,
     clear everywhere else so the art reads through untouched."""
@@ -747,9 +852,10 @@ def gel(w, h, hue, pill):
         else:
             d = math.hypot(px, py) - r
         if d > 1.0:
+            # Lighter above than below, blended so the halves don't meet in a
+            # hard line across the sprite.
             sh = math.exp(-((d / (pad * 0.55)) ** 2)) * 0.35
-            if py < 0:
-                sh *= 0.5
+            sh *= 0.5 + 0.5 * smooth(-hh * 0.5, hh * 0.5, py)
             return (0.0, 0.12, 0.25, sh) if sh > 0.003 else None
         cover = 1.0 - smooth(-0.6, 0.8, d)
         t = (py + hh) / (2 * hh)
@@ -781,6 +887,62 @@ def gel(w, h, hue, pill):
         return (1.0, 1.0, 1.0, s * 0.8)
 
     img.paint(shine)
+    return img
+
+
+def gel_look(w, h, lit):
+    """Laid over a round gel of the same size and its glyph, while the pointer
+    is over it (`lit`) or pressing it. A look can swap only the image of the
+    item the pointer hits, and that has to sit in front of the glyph, so these
+    work over every hue the case gives: lit adds a brighter gloss, a bloom at
+    the bottom and a glow ringing the outline; pressed shades the body, sinks
+    a shadow under the top rim and lights the lower one. Both keep the gel's
+    outline, so nothing moves."""
+    img = Image(w, h)
+    pad = h * 0.12
+    r = min(w / 2 - pad, h / 2 - pad)
+
+    def shade(x, y):
+        px, py = x * w - w / 2, y * h - h / 2
+        d = math.hypot(px, py) - r
+        if lit:
+            if d > 0.0:
+                glow = math.exp(-((d / (pad * 0.45)) ** 2)) * 0.75
+                return (0.78, 0.97, 1.0, glow) if glow > 0.003 else None
+            cover = 1.0 - smooth(-1.2, 0.0, d)
+            ring = math.exp(-((d + 2.6) / 1.4) ** 2) * 0.55
+            gloss = 0.0
+            if py < -r * 0.06:
+                t = (py + r) / (r * 0.94)
+                gloss = (0.32 - 0.24 * t) * smooth(0.0, 4.0, -d - 2.0)
+            bloom = math.exp(-(((py - r * 0.62) / (r * 0.42)) ** 2) - (px / (r * 0.7)) ** 2) * 0.5
+            s = min(ring + gloss + bloom, 1.0)
+            # Tinted toward the bloom's cyan so lit reads as more light, not milk.
+            c = mix((1.0, 1.0, 1.0), (0.72, 0.98, 1.0), bloom / max(s, 1e-6))
+            return (c[0], c[1], c[2], s * cover)
+
+        if d > 0.6:
+            return None
+        cover = 1.0 - smooth(-0.6, 0.6, d)
+        # An inset: dark pooling under the top rim, the whole body dimmed.
+        depth = (py + r) / (2 * r)
+        sink = math.exp(-((-d) / (r * 0.22)) ** 2) * (1.0 - smooth(0.0, 0.7, depth)) * 0.5
+        s = 0.22 + sink
+        return (0.0, 0.07, 0.16, min(s, 0.85) * cover)
+
+    img.paint(shade)
+
+    if not lit:
+        def under(x, y):
+            px, py = x * w - w / 2, y * h - h / 2
+            d = math.hypot(px, py) - r
+            if d > 0.0:
+                return None
+            lip = math.exp(-((d + 3.0) / 1.6) ** 2) * smooth(0.1, 0.8, py / r) * 0.5
+            return (0.75, 0.95, 1.0, lip) if lip > 0.003 else None
+
+        img.paint(under)
+
     return img
 
 
@@ -862,9 +1024,12 @@ def main():
     out = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_OUT
     os.makedirs(out, exist_ok=True)
 
+    written = set()
+
     def save(name, img, opaque=False):
         path = os.path.join(out, name)
         img.save(path, opaque)
+        written.add(name)
         print(f"{name:24} {img.w}x{img.h:<5} {os.path.getsize(path) / 1024:7.1f} KiB")
 
     save("sky_day.png", sky(1280, 720, False), opaque=True)
@@ -888,24 +1053,34 @@ def main():
     save("flare.png", flare(512))
     save("ghost.png", ghost(96, hexc("#bff7ff")))
 
-    # Frames are drawn at the size they show at 1920x1080 plus their shadow
-    # margin, since the image item stretches and has no nine-slice.
-    save("glass_deck.png", glass(624, 1020, 26, 24, False))
-    save("glass_deck_night.png", glass(624, 1020, 26, 24, True))
-    save("glass_sheet.png", glass(1240, 1020, 26, 24, False))
-    save("glass_sheet_night.png", glass(1240, 1020, 26, 24, True))
-    save("glass_well.png", glass(720, 330, 18, 6, False, well=True))
-    save("glass_well_night.png", glass(720, 330, 18, 6, True, well=True))
-    save("glass_screen.png", glass(460, 300, 18, 16, False))
-    save("glass_screen_night.png", glass(460, 300, 18, 16, True))
+    # The panes are nine-sliced, so each is drawn once at its corner size and
+    # serves every frame and window size.
+    for name, (radius, pad, gloss, well) in PANES.items():
+        save(f"{name}.png", pane(radius, pad, gloss, False, well))
+        save(f"{name}_night.png", pane(radius, pad, gloss, True, well))
+
+    # The shard only ever shows tilted at one size, so it stays a picture.
     save("glass_shard.png", glass(520, 380, 30, 20, False, well=True))
     save("cover_gloss.png", cover_gloss(512, 14))
     save("shadow.png", shadow(160, 160, 40, 28))
 
     for hue in ("aqua", "green", "clear"):
         save(f"gel_round_{hue}.png", gel(208, 208, hue, False))
+
+    # The click layer over each button: clear at rest, so its hover and
+    # pressed looks can swap in the lit and pressed overlays.
+    save("gel_cap.png", Image(4, 4))
+    save("gel_lit.png", gel_look(208, 208, True))
+    save("gel_down.png", gel_look(208, 208, False))
     for kind in ("play", "pause", "next", "prev", "shuffle", "repeat", "repeat1"):
         save(f"glyph_{kind}.png", glyph(128, kind))
+
+    # The workspace script lists every file in the folder, so a picture this
+    # run no longer draws has to go.
+    for name in sorted(os.listdir(out)):
+        if name.endswith(".png") and name not in written:
+            os.remove(os.path.join(out, name))
+            print(f"{name:24} removed")
 
 
 if __name__ == "__main__":

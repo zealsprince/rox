@@ -1744,12 +1744,43 @@ mod tests {
             serde_json::from_value(canvas["routes"].clone()).unwrap();
         assert!(!routes.is_empty());
         for route in &routes {
+            // A time route reads the canvas's clock, not the pool.
             assert!(
-                pooled.contains(&route.signal),
+                route.time.is_some() || pooled.contains(&route.signal),
                 "{} reads nothing",
                 route.target
             );
         }
+    }
+
+    /// A route aimed at an id the canvas doesn't hold, and a button with no
+    /// look, both fail silently in the app.
+    #[test]
+    fn aero_routes_reach_its_items_and_every_button_lights_up() {
+        let (_, canvas) = aero();
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas.clone()).unwrap();
+        let routes: Vec<rox_viz::signal::Route> =
+            serde_json::from_value(canvas["routes"].clone()).unwrap();
+
+        for route in &routes {
+            let (id, _) = route.target.rsplit_once('.').expect("item.property");
+            assert!(state.find(id).is_some(), "{} names no item", route.target);
+        }
+        assert!(routes.iter().any(|route| route.time.is_some()));
+
+        let mut buttons = 0;
+        state.walk(&mut |item, _| {
+            if item.action.is_empty() {
+                return;
+            }
+            buttons += 1;
+            assert!(
+                item.hover.is_some() && item.pressed.is_some(),
+                "{} has no hover or pressed look",
+                item.id
+            );
+        });
+        assert!(buttons > 0);
     }
 
     #[test]

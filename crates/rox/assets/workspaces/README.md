@@ -20,11 +20,16 @@ A look can also be written by a script. `Aero.json` comes from
 `scripts/workspaces/aero_workspace.py`, which lays its one canvas out from a
 compact description and fills the asset table from the files on disk, and
 every image in `Aero/assets/` is drawn by `scripts/workspaces/aero_assets.py`
-with nothing but the Python standard library. Edit the scripts rather than the
-JSON or the PNGs, then run the asset script before the workspace one:
+with nothing but the Python standard library. The asset script also deletes
+any picture in that folder it no longer draws, and the workspace script
+imports it for the glass panes' nine-slice insets. Edit the scripts rather
+than the JSON or the PNGs, then run the asset script before the workspace one:
 
     python3 scripts/workspaces/aero_assets.py
     python3 scripts/workspaces/aero_workspace.py
+
+Aero's previews are screenshots of the look applied in a 1440x900 window with
+a track playing, one in each theme.
 
 A `.png` named like the bundle's file with a theme suffix (`Foobar.json` ->
 `Foobar_Dark.png` and `Foobar_Light.png`) becomes the preview picture on the

@@ -15,6 +15,7 @@ mod catalog;
 mod catalog_window;
 mod cjk_fonts;
 mod composite;
+mod composition_window;
 mod console_window;
 mod convert;
 mod convert_dialog;

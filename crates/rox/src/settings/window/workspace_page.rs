@@ -1,5 +1,6 @@
 //! The Workspace settings page: workspaces, layout presets and panel presets,
-//! the composition tree of the opening window's dock, and the confirm dialog
+//! the composition of the opening window's dock (the view the Composition
+//! window shows, in [`crate::composition_window`]), and the confirm dialog
 //! every destructive action in the window goes through.
 
 use super::*;
@@ -9,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rox_core::settings::assets;
 use rox_core::settings::panel_presets::SaveScope;
 use rox_core::settings::{Asset, AssetKind};
-use rox_dock::DockArea;
 use rox_panel_kit::PlaceholderKey as _;
 
 /// Built when a row's details open and dropped when they close.
@@ -136,7 +136,8 @@ impl SettingsWindow {
             .section(self.panel_presets_section(q, cx))
             .section(self.global_presets_section(q, cx))
             .section(self.assets_section(q, cx))
-            // Built only once the query keeps it, since it walks the live dock.
+            // The same view the Composition window shows, built once per
+            // settings window.
             .section(Section::new(
                 q,
                 icons::LAYOUT_DASHBOARD,
@@ -144,38 +145,11 @@ impl SettingsWindow {
                 None,
                 |rows| {
                     rows.custom(
-                        &["dock", "panels", "tree", "splits", "tabs", "layout"],
-                        || {
-                            let mut body = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette::text_muted())
-                                    .child(rox_i18n::t!("settings-workspace-composition-hint")),
-                            );
-                            match self.workspace.upgrade() {
-                                Some(workspace) => {
-                                    let dock = workspace.read(cx).dock().clone();
-                                    let root = dock.read(cx).items().view();
-                                    let mut rows = Vec::new();
-                                    self.tree_rows(
-                                        root,
-                                        0,
-                                        TreeSlot::Root,
-                                        &dock.downgrade(),
-                                        &mut rows,
-                                        cx,
-                                    );
-                                    body = body.child(div().flex().flex_col().children(rows));
-                                }
-                                None => {
-                                    body =
-                                        body.child(div().text_color(palette::text_muted()).child(
-                                            rox_i18n::t!("settings-workspace-composition-closed"),
-                                        ));
-                                }
-                            }
-                            body.into_any_element()
-                        },
+                        &[
+                            "dock", "panels", "tree", "splits", "tabs", "layout", "canvas",
+                            "convert",
+                        ],
+                        || self.composition.clone().into_any_element(),
                     )
                 },
             ))
@@ -1520,315 +1494,6 @@ impl SettingsWindow {
         }
     }
 
-    /// Walks the live stack and tab entities, not the dock's `DockItem` tree,
-    /// which goes stale once tabs move. `dock` is the area the tree belongs
-    /// to: the window's, or a canvas grid's.
-    fn tree_rows(
-        &self,
-        node: Arc<dyn PanelView>,
-        depth: usize,
-        slot: TreeSlot,
-        dock: &WeakEntity<DockArea>,
-        rows: &mut Vec<AnyElement>,
-        cx: &mut Context<Self>,
-    ) {
-        let view = node.view();
-        if let Ok(stack) = view.clone().downcast::<StackPanel>() {
-            let (axis, children, seams_override) = {
-                let stack = stack.read(cx);
-                (stack.axis(), stack.panels().to_vec(), stack.seams())
-            };
-            // The split's own seams over the app-wide toggle. A flip back to
-            // the app's value clears the override. An overriding split shows
-            // its button at rest.
-            let effective = seams_override.unwrap_or_else(settings::seams);
-            let seams_stack = stack.clone();
-            let seams_button = icon_button(
-                if effective {
-                    icons::COLUMNS_2
-                } else {
-                    icons::SQUARE_DASHED
-                },
-                false,
-                cx.listener(move |_, _, _, cx| {
-                    let next = !effective;
-                    let value = (next != settings::seams()).then_some(next);
-                    seams_stack.update(cx, |stack, cx| stack.set_seams(value, cx));
-                    cx.notify();
-                }),
-            );
-            let controls = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(if seams_override.is_some() {
-                    seams_button
-                } else {
-                    reveal(seams_button)
-                })
-                .children(self.move_controls(&slot, cx))
-                .into_any_element();
-            rows.push(chrome_row(
-                rows.len(),
-                depth,
-                match axis {
-                    Axis::Horizontal => rox_i18n::t_static("settings-workspace-tree-split-row"),
-                    Axis::Vertical => rox_i18n::t_static("settings-workspace-tree-split-column"),
-                },
-                Some(controls),
-            ));
-            let len = children.len();
-            for (ix, child) in children.into_iter().enumerate() {
-                let child_slot = TreeSlot::Stack {
-                    stack: stack.clone(),
-                    dock: dock.clone(),
-                    ix,
-                    len,
-                };
-                self.tree_rows(child, depth + 1, child_slot, dock, rows, cx);
-            }
-            return;
-        }
-        if let Ok(tabs) = view.downcast::<TabPanel>() {
-            let children = tabs.read(cx).panels().to_vec();
-            // A group of one reads as its panel, and inherits the group's slot
-            // so its arrows move the group.
-            if let [only] = children.as_slice() {
-                self.panel_rows(only.clone(), depth, slot, rows, cx);
-                return;
-            }
-            rows.push(chrome_row(
-                rows.len(),
-                depth,
-                rox_i18n::t_static("settings-workspace-tree-tabs"),
-                self.move_controls(&slot, cx),
-            ));
-            let len = children.len();
-            for (ix, child) in children.into_iter().enumerate() {
-                let child_slot = TreeSlot::Tabs {
-                    tabs: tabs.clone(),
-                    ix,
-                    len,
-                };
-                self.panel_rows(child, depth + 1, child_slot, rows, cx);
-            }
-            return;
-        }
-        self.panel_rows(node, depth, slot, rows, cx);
-    }
-
-    fn panel_rows(
-        &self,
-        panel: Arc<dyn PanelView>,
-        depth: usize,
-        slot: TreeSlot,
-        rows: &mut Vec<AnyElement>,
-        cx: &mut Context<Self>,
-    ) {
-        let children = crate::composite::hosted_children(&panel, cx);
-        let grids = crate::composite::hosted_docks(&panel, cx);
-        rows.push(self.panel_row(rows.len(), panel, depth, slot, cx));
-        // A canvas's grids are docks of their own, and their rows keep the
-        // move and lock controls, since they are real tab groups.
-        for (name, grid) in grids.into_iter().flatten() {
-            rows.push(chrome_row(
-                rows.len(),
-                depth + 1,
-                rox_i18n::t!("canvas-tree-grid", name = name),
-                None,
-            ));
-            let root = grid.read(cx).items().view();
-            self.tree_rows(root, depth + 2, TreeSlot::Root, &grid.downgrade(), rows, cx);
-        }
-        if let Some(children) = children {
-            for child in children {
-                match child {
-                    // A host can hold another host.
-                    Some(child) => self.panel_rows(child, depth + 1, TreeSlot::Hosted, rows, cx),
-                    None => rows.push(chrome_row(
-                        rows.len(),
-                        depth + 1,
-                        rox_i18n::t_static("settings-workspace-tree-empty-slot"),
-                        None,
-                    )),
-                }
-            }
-        }
-    }
-
-    fn panel_row(
-        &self,
-        ix: usize,
-        panel: Arc<dyn PanelView>,
-        depth: usize,
-        slot: TreeSlot,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let type_name = panel::display_name(panel.panel_name(cx));
-        let name: SharedString = match panel.tab_name(cx) {
-            Some(custom) => format!("{custom} ({type_name})").into(),
-            None => type_name.into(),
-        };
-        let hosted = matches!(slot, TreeSlot::Hosted);
-        let locked = panel.locked(cx);
-        let lock_panel = panel.clone();
-        div()
-            // Named after its place in the tree: same-kind panels carry the
-            // same controls.
-            .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap(tokens::SPACE_MD)
-            .pl(indent(depth))
-            .group(TREE_ROW_GROUP)
-            .child(div().min_w_0().truncate().child(name))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .children(self.move_controls(&slot, cx))
-                    .when(!hosted, |d| {
-                        let button = icon_button(
-                            if locked {
-                                icons::LOCK
-                            } else {
-                                icons::LOCK_OPEN
-                            },
-                            false,
-                            cx.listener(move |_, _, _, cx| {
-                                panel_settings::toggle_locked_for_view(&lock_panel, cx);
-                                cx.notify();
-                            }),
-                        );
-                        // A closed lock shows at rest.
-                        d.child(if locked { button } else { reveal(button) })
-                    })
-                    .child(reveal(icon_button(
-                        icons::SETTINGS,
-                        false,
-                        move |_, _, cx| {
-                            panel_settings::open_for_view(&panel, cx);
-                        },
-                    ))),
-            )
-            .into_any_element()
-    }
-
-    fn move_controls(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (ix, len) = match slot {
-            TreeSlot::Stack { ix, len, .. } | TreeSlot::Tabs { ix, len, .. } => (*ix, *len),
-            TreeSlot::Root | TreeSlot::Hosted => return None,
-        };
-        let lift = self.lift_button(slot, cx);
-        let up = self.move_button(slot, icons::ARROW_UP, ix == 0, ix.wrapping_sub(1), cx);
-        let down = self.move_button(slot, icons::ARROW_DOWN, ix + 1 >= len, ix + 1, cx);
-        Some(
-            reveal(div())
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(lift)
-                .child(up)
-                .child(down)
-                .into_any_element(),
-        )
-    }
-
-    /// A tab leaves its group for a group of its own; a split's child moves
-    /// into the enclosing split. The root split's children stay put.
-    fn lift_button(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> AnyElement {
-        match slot {
-            TreeSlot::Stack {
-                stack, dock, ix, ..
-            } => {
-                let dock = dock.upgrade().map(|dock| dock.downgrade());
-                let inert = dock.is_none() || stack.read(cx).parent().is_none();
-                let stack = stack.clone();
-                let from = *ix;
-                icon_button(
-                    icons::ARROW_LEFT,
-                    inert,
-                    cx.listener(move |this, _, _, cx| {
-                        let Some(dock) = dock.clone() else {
-                            return;
-                        };
-                        this.workspace_window
-                            .update(cx, |_, window, cx| {
-                                stack.update(cx, |stack, cx| {
-                                    stack.lift_panel(from, dock, window, cx)
-                                });
-                            })
-                            .ok();
-                        cx.notify();
-                    }),
-                )
-                .into_any_element()
-            }
-            TreeSlot::Tabs { tabs, ix, .. } => {
-                let tabs = tabs.clone();
-                let from = *ix;
-                icon_button(
-                    icons::ARROW_LEFT,
-                    false,
-                    cx.listener(move |this, _, _, cx| {
-                        this.workspace_window
-                            .update(cx, |_, window, cx| {
-                                tabs.update(cx, |tabs, cx| tabs.lift_panel(from, window, cx));
-                            })
-                            .ok();
-                        cx.notify();
-                    }),
-                )
-                .into_any_element()
-            }
-            TreeSlot::Root | TreeSlot::Hosted => div().into_any_element(),
-        }
-    }
-
-    /// The ends render inert even though the move APIs ignore out-of-range
-    /// indices, so the tree shows where a row can go.
-    fn move_button(
-        &self,
-        slot: &TreeSlot,
-        icon: &'static str,
-        inert: bool,
-        to_ix: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match slot {
-            TreeSlot::Stack { stack, ix, .. } => {
-                let stack = stack.clone();
-                let from = *ix;
-                icon_button(
-                    icon,
-                    inert,
-                    cx.listener(move |_, _, _, cx| {
-                        stack.update(cx, |stack, cx| stack.move_panel(from, to_ix, cx));
-                        cx.notify();
-                    }),
-                )
-                .into_any_element()
-            }
-            TreeSlot::Tabs { tabs, ix, .. } => {
-                let tabs = tabs.clone();
-                let from = *ix;
-                icon_button(
-                    icon,
-                    inert,
-                    cx.listener(move |_, _, _, cx| {
-                        tabs.update(cx, |tabs, cx| tabs.move_panel(from, to_ix, cx));
-                        cx.notify();
-                    }),
-                )
-                .into_any_element()
-            }
-            TreeSlot::Root | TreeSlot::Hosted => div().into_any_element(),
-        }
-    }
-
     fn export_preset(&mut self, name: &str, cx: &mut Context<Self>) {
         let Some(preset) = rox_core::settings::layouts::resolve(&Settings::load(), name) else {
             return;
@@ -2160,55 +1825,6 @@ fn card_readout_line(label: impl Into<SharedString>, value: String) -> Div {
                 .child(label.into()),
         )
         .child(div().flex_1().min_w_0().child(SharedString::from(value)))
-}
-
-fn indent(depth: usize) -> Pixels {
-    px(14. * depth as f32)
-}
-
-/// The dock root and hosted children aren't movable here; the composite orders
-/// its own.
-#[derive(Clone)]
-enum TreeSlot {
-    Root,
-    Stack {
-        stack: Entity<StackPanel>,
-        /// The area the stack is in, which a lift hands the moved panel.
-        dock: WeakEntity<DockArea>,
-        ix: usize,
-        len: usize,
-    },
-    Tabs {
-        tabs: Entity<TabPanel>,
-        ix: usize,
-        len: usize,
-    },
-    Hosted,
-}
-
-fn chrome_row(
-    ix: usize,
-    depth: usize,
-    label: impl Into<SharedString>,
-    controls: Option<AnyElement>,
-) -> AnyElement {
-    div()
-        // Named after its place in the tree, since every row carries the same
-        // arrows.
-        .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(tokens::SPACE_MD)
-        .py(tokens::SPACE_XS)
-        .pl(indent(depth))
-        .group(TREE_ROW_GROUP)
-        .text_xs()
-        .text_color(palette::text_muted())
-        .child(label.into())
-        .when_some(controls, |d, controls| d.child(controls))
-        .into_any_element()
 }
 
 fn shipped_tag() -> Div {

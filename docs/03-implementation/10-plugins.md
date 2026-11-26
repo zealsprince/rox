@@ -927,7 +927,7 @@ A plugin with nothing declared is one entry; one with declared panels branches.
 | Picker | Shape | Code |
 | --- | --- | --- |
 | Add Panel, a composite's slot picker | Plugins > plugin, or Plugins > plugin > entry | `panel_presets::plugins_submenu` |
-| Panels menu, in the menubar and the menu panel | Plugins > plugin, a branching plugin's entries each trailing its name | `MenuEntry::PluginsSubmenu` |
+| Panels menu, in the menubar and the menu panel, in design mode | Plugins > plugin, a branching plugin's entries each trailing its name | `MenuEntry::PluginsSubmenu` |
 | New Window from Panel, same two | a Plugins group after the catalog's, same rows | `plugins_group`, `workspace/menubar.rs` |
 | The macOS menu bar | Plugins > plugin, or Plugins > plugin > entry | `plugin_items`, `workspace/native_menu.rs` |
 | An empty window's panel list | a Plugins section of single-entry plugins, and a section per branching one | `workspace.rs` |

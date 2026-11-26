@@ -300,6 +300,9 @@ pub(crate) fn state_of(config: &CanvasConfig) -> PanelState {
     }
 }
 
+/// The id [`wrap_layout`] gives the grid it puts the layout in.
+pub(crate) const WRAPPED_GRID: &str = "grid";
+
 /// A layout as a canvas: one grid holding `dump` across the whole stage, the
 /// one panel in the one tab group of a fresh root. The window looks the same
 /// once it's applied. Every panel's lock comes off, since a locked panel
@@ -309,7 +312,7 @@ pub(crate) fn wrap_layout(mut dump: Value, version: usize) -> DockAreaState {
     unlock(&mut dump);
 
     let grid = CanvasItem {
-        id: "grid".to_string(),
+        id: WRAPPED_GRID.to_string(),
         place: Place {
             anchor: Anchor::Center,
             size: [Length::Stage(1.), Length::Stage(1.)],

@@ -669,6 +669,8 @@ pub struct WindowsState {
     pub milkdrop_picker: Option<MilkdropPickerWindowState>,
     #[serde(deserialize_with = "lenient::option")]
     pub signals: Option<SignalsWindowState>,
+    #[serde(deserialize_with = "lenient::option")]
+    pub composition: Option<LayoutSize>,
     #[serde(alias = "panel_settings_window", deserialize_with = "lenient::option")]
     pub panel_settings: Option<LayoutSize>,
     /// The modal and popped-out queue's view. Raw JSON so the file stays

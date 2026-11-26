@@ -40,9 +40,10 @@ windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
    signals and the playing position, gets the pointer while it's over the render target,
    and gets the colours of the current theme, since its manifest asks for the palette.
    Switch On approves exactly the files in the package, as it does for a plugin.
-4. Add a Canvas panel: an empty window offers one, and the Panels menu lists it under
-   Arrangement. With Panels > Design Mode on, right-click empty stage, or press the plus
-   in the canvas inspector's header, and pick Add Render Target > Bars (`open_add_menu`,
+4. Add a Canvas panel: an empty window offers one, and in design mode (the toggle at the
+   left end of the menubar) the Panels menu lists it under Arrangement. With design mode
+   on, right-click empty stage, or press the plus in the canvas inspector's header, and
+   pick Add Render Target > Bars (`open_add_menu`,
    `rox/src/panels/canvas.rs:2135`). The new target draws at 1280 by 720 pixels on a
    640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`, `canvas.rs:3081-3082`).
    The inspector's Resolution row changes the pixel size, and Status says whether the

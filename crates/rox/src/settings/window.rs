@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div, ElementId, Entity, EntityId,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Div, ElementId, Entity, EntityId,
     FocusHandle, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels,
     ScrollHandle, SharedString, Stateful, Subscription, Task, WeakEntity, Window, WindowHandle,
     div, prelude::*, px, size, svg,
@@ -27,7 +27,6 @@ use crate::convert;
 use crate::embeddings;
 use crate::integrations::{placement, tray};
 use crate::lastfm::{import, plays_import};
-use crate::panel_settings;
 use crate::pass_prompt;
 use crate::replaygain_job;
 use crate::startup::{updater, updates};
@@ -44,7 +43,7 @@ use rox_core::settings::{
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, ROLES, Role, Side, Sides};
 use rox_design::tokens;
-use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
+use rox_dock::{DockAreaState, DockEvent};
 use rox_library::stations::{self, Refusal, Station};
 use rox_library::store::{BpmCoverage, GainCoverage, Stats, Storage};
 use rox_net::lastfm::{AuthPhase, has_builtin_keys};
@@ -359,6 +358,9 @@ struct SettingsWindow {
     workspace: WeakEntity<Workspace>,
     /// For the `Window` an imported layout rebuilds the dock in.
     workspace_window: AnyWindowHandle,
+    /// The Workspace page's Composition section, the Composition window's
+    /// own view.
+    composition: Entity<crate::composition_window::CompositionView>,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
     /// Just the id: the workspace owns the player.
@@ -732,6 +734,14 @@ impl SettingsWindow {
             }),
             cx.observe(&dock, |_, _, cx| cx.notify()),
         ];
+        let composition = cx.new(|cx| {
+            crate::composition_window::CompositionView::new(
+                workspace.clone(),
+                workspace_window,
+                &dock,
+                cx,
+            )
+        });
         let _scrobbler_changed = cx.observe(&state.scrobbler, |_, _, cx| cx.notify());
         let _listenbrainz_changed = cx.observe(&state.listenbrainz, |_, _, cx| cx.notify());
         let _librefm_changed = cx.observe(&state.librefm, |_, _, cx| cx.notify());
@@ -1120,6 +1130,7 @@ impl SettingsWindow {
             signals: state.signals,
             workspace,
             workspace_window,
+            composition,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
             player,
@@ -1495,16 +1506,6 @@ impl SettingsWindow {
             )
             .child(label)
     }
-}
-
-const TREE_ROW_GROUP: &str = "tree-row";
-
-/// The closed lock skips this in `panel_row`: it shows state worth seeing at
-/// rest.
-fn reveal<E: Styled + InteractiveElement>(control: E) -> E {
-    control
-        .opacity(0.)
-        .group_hover(TREE_ROW_GROUP, |style| style.opacity(1.))
 }
 
 fn action_cell(actions: impl IntoElement) -> Div {

@@ -119,6 +119,13 @@ impl Workspace {
             MenuAction::FindDuplicates => self.open_duplicates(cx),
             MenuAction::TagGenres => self.open_genre_tagger(cx),
             MenuAction::OpenSignals => crate::signals_window::open(cx),
+            MenuAction::OpenComposition => crate::composition_window::open(
+                self.state.clone(),
+                cx.entity().downgrade(),
+                window.window_handle(),
+                self.dock.clone(),
+                cx,
+            ),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
             MenuAction::ReportIssue => {
@@ -133,7 +140,12 @@ impl Workspace {
                 settings::set_hide_menubar(on, cx);
                 Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
             }
-            MenuAction::ToggleDesignMode => toggle_design_mode(cx),
+            // An open Panels menu goes with it, or its rows would stay live
+            // under keys with no menu drawn.
+            MenuAction::ToggleDesignMode => {
+                self.close_menus(cx);
+                toggle_design_mode(cx);
+            }
             MenuAction::ToggleDecorations => {
                 let on = !settings::os_decorations();
                 settings::set_os_decorations(on);
@@ -416,8 +428,7 @@ impl Workspace {
     }
 
     fn step_top(&self, delta: isize) -> usize {
-        let len = MENUS.len() as isize;
-        (self.menu_top as isize + delta).rem_euclid(len) as usize
+        step_menu(Some(self.menu_top), delta).unwrap_or(self.menu_top)
     }
 
     /// Leaving the letters up would keep eating the next window's keys.
@@ -742,12 +753,10 @@ impl Workspace {
 
     fn root_menu(&self, cx: &mut Context<Self>) -> Div {
         let letters = self.menubar_keys.then(mnemonics).unwrap_or_default();
-        let list = self
-            .menu_list(0)
-            .children(MENUS.iter().enumerate().map(|(i, menu)| {
-                let letter = letters.get(i).cloned().flatten().map(|(range, _)| range);
-                self.root_row(i, menu, letter, cx)
-            }));
+        let list = self.menu_list(0).children(bar_menus().into_iter().map(|i| {
+            let letter = letters.get(i).cloned().flatten().map(|(range, _)| range);
+            self.root_row(i, &MENUS[i], letter, cx)
+        }));
         self.menu_frame(0, px(160.), list)
             .child(self.menu_surface_capture(0, cx))
     }
@@ -816,19 +825,60 @@ impl Workspace {
             .when(!native_menus, |d| d.child(self.menubar_capture(cx)))
             .children(self.traffic_lights(window, cx))
             .children(self.mini_button(cx).map(bar_control))
+            // Ahead of the menus, and outside the fold, so a collapsed bar
+            // still shows it. On macOS it's first after the traffic lights.
+            .child(bar_control(self.design_toggle(cx)))
             .when(!native_menus && self.menubar_collapsed, |d| {
                 d.child(bar_control(self.collapsed_button(cx)))
             })
             .when(!native_menus && !self.menubar_collapsed, |d| {
                 // Only worked out while shown, so the common frame skips the lookups.
                 let letters = self.menubar_keys.then(mnemonics).unwrap_or_default();
-                d.children(MENUS.iter().enumerate().map(|(i, menu)| {
+                d.children(bar_menus().into_iter().map(|i| {
                     let letter = letters.get(i).cloned().flatten().map(|(range, _)| range);
-                    bar_control(self.menu_button(i, menu, letter, cx))
+                    bar_control(self.menu_button(i, &MENUS[i], letter, cx))
                 }))
             })
             .child(div().flex_1().h_full())
             .child(self.library_status(window, cx))
+    }
+
+    /// Design mode's switch at the bar's start. Lit while on, which is also
+    /// when the Panels menu stands beside it.
+    fn design_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let on = settings::design_mode();
+
+        panel::Tip::keyed(
+            "design-mode-toggle",
+            rox_i18n::t!("menubar-design-mode-tip"),
+        )
+        .action(&ToggleDesignMode, Some("Workspace"))
+        .apply(
+            div()
+                .h_full()
+                .px(tokens::SPACE_MD)
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .when(on, |d| d.bg(palette::bg_control_active()))
+                .hover(|d| d.bg(palette::bg_menu_hover()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.run(MenuAction::ToggleDesignMode, window, cx)
+                    }),
+                )
+                .child(
+                    svg()
+                        .path(icons::LAYOUT_DASHBOARD)
+                        .size(px(14.))
+                        .text_color(if on {
+                            palette::accent()
+                        } else {
+                            palette::text_muted()
+                        }),
+                ),
+        )
     }
 
     /// Painted first so [`Self::menubar_fit_capture`] finds the bounds set.
@@ -2362,6 +2412,15 @@ impl AltTap {
     }
 }
 
+/// Steps a top menu, by [`MENUS`] index, through the bar's order and past
+/// the hidden ones. A menu that isn't showing starts from the near end.
+pub(crate) fn step_menu(at: Option<usize>, delta: isize) -> Option<usize> {
+    let order = bar_menus();
+    let place = at.and_then(|at| order.iter().position(|&i| i == at));
+
+    step_index(place, delta, order.len()).map(|place| order[place])
+}
+
 /// Lands on the first row, or the last stepping backwards, when the cursor
 /// isn't on one yet.
 pub(crate) fn step_index(at: Option<usize>, delta: isize, len: usize) -> Option<usize> {
@@ -2396,13 +2455,14 @@ fn mnemonics() -> Vec<Option<(std::ops::Range<usize>, char)>> {
 }
 
 /// gpui hands letters over as one-character keys, so anything longer
-/// matches nothing.
+/// matches nothing. A hidden menu keeps its letter and answers to none.
 fn mnemonic_menu(key: &str) -> Option<usize> {
     let mut chars = key.chars();
     let pressed = chars.next().filter(|_| chars.next().is_none())?;
     mnemonics()
         .iter()
         .position(|hit| hit.as_ref().is_some_and(|(_, c)| *c == pressed))
+        .filter(|&menu| menu_shows(menu))
 }
 
 fn menu_label(label: &'static str, letter: Option<std::ops::Range<usize>>) -> AnyElement {
@@ -2476,7 +2536,34 @@ mod nav_tests {
     fn a_letter_opens_the_menu_it_underlines() {
         for (i, hit) in mnemonics().iter().enumerate() {
             let (_, key) = hit.as_ref().expect("every menu has a letter");
-            assert_eq!(mnemonic_menu(&key.to_string()), Some(i));
+            let opens = menu_shows(i).then_some(i);
+            assert_eq!(mnemonic_menu(&key.to_string()), opens);
+        }
+    }
+
+    #[test]
+    fn the_panels_menu_leads_the_bar_only_in_design_mode() {
+        assert_eq!(MENUS[PANELS_MENU].label, "menu-panels");
+
+        let order = bar_menus();
+        if settings::design_mode() {
+            assert_eq!(order.first(), Some(&PANELS_MENU));
+            assert_eq!(order.len(), MENUS.len());
+        } else {
+            assert!(!order.contains(&PANELS_MENU));
+            assert_eq!(order.len(), MENUS.len() - 1);
+        }
+    }
+
+    #[test]
+    fn stepping_the_bar_skips_what_it_hides() {
+        let order = bar_menus();
+        let last = *order.last().expect("the bar has menus");
+
+        assert_eq!(step_menu(Some(last), 1), order.first().copied());
+        assert_eq!(step_menu(None, -1), Some(last));
+        for (place, &menu) in order.iter().enumerate().skip(1) {
+            assert_eq!(step_menu(Some(menu), -1), Some(order[place - 1]));
         }
     }
 

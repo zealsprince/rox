@@ -30,16 +30,43 @@ pub(crate) fn rebuild(cx: &mut App) {
     let playing = MENU_PLAYING.load(std::sync::atomic::Ordering::Relaxed);
     let menus = MENUS
         .iter()
-        .map(|menu| gpui::Menu {
+        .enumerate()
+        .map(|(i, menu)| gpui::Menu {
             name: rox_i18n::t!(menu.label),
-            items: menu
-                .entries
-                .iter()
-                .flat_map(|entry| entry_items(entry, playing))
-                .collect(),
+            items: if menu_shows(i) {
+                menu.entries
+                    .iter()
+                    .flat_map(|entry| entry_items(entry, playing))
+                    .collect()
+            } else {
+                gated_items(menu, playing)
+            },
         })
         .collect();
     cx.set_menus(menus);
+}
+
+/// The Panels menu out of design mode. It stays on the system bar, which
+/// can't come and go by state, and AppKit can't grey a [`MenuCommand`] row,
+/// so the rows that add panels are left out and the switch that brings them
+/// back takes their place.
+#[cfg(target_os = "macos")]
+fn gated_items(menu: &'static Menu, playing: bool) -> Vec<gpui::MenuItem> {
+    let switch = MenuItem {
+        label: "menu-design-mode",
+        icon: icons::LAYOUT_DASHBOARD,
+        action: MenuAction::ToggleDesignMode,
+    };
+
+    menu.entries
+        .iter()
+        .filter_map(|entry| match entry {
+            MenuEntry::Item(item) => action_item(*item, playing),
+            _ => None,
+        })
+        .chain([gpui::MenuItem::separator()])
+        .chain(action_item(switch, playing))
+        .collect()
 }
 
 #[cfg(not(target_os = "macos"))]

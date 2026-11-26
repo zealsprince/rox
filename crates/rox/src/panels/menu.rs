@@ -14,13 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::panel_catalog::PanelDef;
 use crate::workspace::menubar::{
-    NavRow, NavSlot, menu_entry_rows, nav_lit, nav_row_at, plugins_group, step_index,
+    NavRow, NavSlot, menu_entry_rows, nav_lit, nav_row_at, plugins_group, step_index, step_menu,
     subgroup_rows, submenu_rows,
 };
 use crate::workspace::{
     LayoutTarget, MENUS, Menu, MenuAction, MenuEntry, MenuItem, PanelTarget, PluginPanel,
-    Workspace, WorkspaceTarget, flyout_leftward, flyout_side, menu_item_display, menu_section,
-    panel_menu_item, plugin_panels, plugins_show, section_shows, shortcut_for, signal_marked,
+    Workspace, WorkspaceTarget, bar_menus, flyout_leftward, flyout_side, menu_item_display,
+    menu_section, panel_menu_item, plugin_panels, plugins_show, section_shows, shortcut_for,
+    signal_marked,
 };
 use rox_core::settings::{self, Settings};
 use rox_design::assets::icons;
@@ -134,7 +135,7 @@ impl MenuPanel {
             .map(|bounds| point(bounds.origin.x, bounds.bottom()))
             .unwrap_or_default();
         self.open_menu(at, window, cx);
-        self.nav_top = Some(0);
+        self.nav_top = step_menu(None, 1);
     }
 
     fn button_capture(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -238,7 +239,7 @@ impl MenuPanel {
                 .nav_slot
                 .and_then(|slot| rows.iter().position(|(row, _)| *row == slot));
             self.nav_slot = step_index(at, delta, rows.len()).map(|i| rows[i].0);
-        } else if let Some(top) = step_index(self.nav_top, delta, MENUS.len()) {
+        } else if let Some(top) = step_menu(self.nav_top, delta) {
             match self.open_top {
                 Some(_) => self.open_top_at(top),
                 None => self.nav_top = Some(top),
@@ -282,7 +283,10 @@ impl MenuPanel {
             }
             return;
         }
-        self.open_top_at(self.nav_top.unwrap_or(0));
+        let Some(top) = self.nav_top.or_else(|| step_menu(None, 1)) else {
+            return;
+        };
+        self.open_top_at(top);
         self.nav_slot = self.menu_rows().first().map(|(slot, _)| *slot);
         cx.notify();
     }
@@ -357,10 +361,9 @@ impl MenuPanel {
         dropdown(px(160.))
             .child(self.menu_surface_capture(0, cx))
             .children(
-                MENUS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, menu)| self.top_row(i, menu, cx)),
+                bar_menus()
+                    .into_iter()
+                    .map(|i| self.top_row(i, &MENUS[i], cx)),
             )
     }
 

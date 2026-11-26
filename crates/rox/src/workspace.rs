@@ -1522,6 +1522,7 @@ actions!(
         VolumeUp,
         VolumeDown,
         OpenSignals,
+        OpenComposition,
         NewEmptyWindow,
         ImportWorkspace,
         ConvertLayoutToCanvas,
@@ -2068,6 +2069,7 @@ pub fn init(cx: &mut App) {
     // The menu rows that had no chord: each runs exactly what its row runs,
     // through the same dispatcher, so the menu and the keymap can't drift.
     cx.on_action(|_: &OpenSignals, cx| run_menu_action(MenuAction::OpenSignals, cx));
+    cx.on_action(|_: &OpenComposition, cx| run_menu_action(MenuAction::OpenComposition, cx));
     cx.on_action(|_: &NewEmptyWindow, cx| run_menu_action(MenuAction::EmptyWindow, cx));
     cx.on_action(|_: &ImportWorkspace, cx| run_menu_action(MenuAction::ImportWorkspace, cx));
     cx.on_action(|_: &ConvertLayoutToCanvas, cx| {
@@ -2567,6 +2569,9 @@ pub(crate) enum MenuAction {
     TagGenres,
     /// Open the shared signal pool, the window behind every panel's routes.
     OpenSignals,
+    /// Open the composition window: this window's panels as arranged, and
+    /// the way to turn the layout into a canvas.
+    OpenComposition,
     OpenWelcome,
     OpenAbout,
     /// The three links out to the project, each opening in the browser:
@@ -2585,7 +2590,8 @@ pub(crate) enum MenuAction {
     TogglePostShader,
     /// Pick a workspace file and add it to the collection.
     ImportWorkspace,
-    /// Wrap the window's layout in a canvas panel that fills it.
+    /// Wrap the window's layout in a canvas panel that fills it, after a
+    /// confirm, since there's no undo.
     ConvertLayoutToCanvas,
     /// Open a catalog panel with its default config, opening where its
     /// placement says. One action for every panel in the catalog.
@@ -2659,6 +2665,7 @@ impl MenuAction {
             MenuAction::FindDuplicates => "find-duplicates".into(),
             MenuAction::TagGenres => "tag-genres".into(),
             MenuAction::OpenSignals => "signals".into(),
+            MenuAction::OpenComposition => "composition".into(),
             MenuAction::OpenWelcome => "welcome".into(),
             MenuAction::OpenAbout => "about".into(),
             MenuAction::ReportIssue => "report-issue".into(),
@@ -2718,6 +2725,7 @@ impl MenuAction {
             "find-duplicates" => MenuAction::FindDuplicates,
             "tag-genres" => MenuAction::TagGenres,
             "signals" => MenuAction::OpenSignals,
+            "composition" => MenuAction::OpenComposition,
             "welcome" => MenuAction::OpenWelcome,
             "about" => MenuAction::OpenAbout,
             "report-issue" => MenuAction::ReportIssue,
@@ -2725,6 +2733,7 @@ impl MenuAction {
             "chat" => MenuAction::OpenChat,
             "toggle-menubar" => MenuAction::ToggleMenubar,
             "toggle-decorations" => MenuAction::ToggleDecorations,
+            "toggle-design-mode" => MenuAction::ToggleDesignMode,
             "toggle-art-theming" => MenuAction::ToggleArtTheming,
             "toggle-post-shader" => MenuAction::TogglePostShader,
             "import-workspace" => MenuAction::ImportWorkspace,
@@ -3264,6 +3273,13 @@ pub(crate) const MENUS: &[Menu] = &[
                 icon: icons::EXTERNAL_LINK,
             },
             MenuEntry::Section("menu-section-interface"),
+            // Here as well as on the bar's own button, so the menus reach it
+            // while the Panels menu it brings out is hidden.
+            MenuEntry::Item(MenuItem {
+                label: "menu-design-mode",
+                icon: icons::LAYOUT_DASHBOARD,
+                action: MenuAction::ToggleDesignMode,
+            }),
             MenuEntry::Item(MenuItem {
                 label: "menu-hide-menubar",
                 icon: icons::EYE,
@@ -3337,26 +3353,18 @@ pub(crate) const MENUS: &[Menu] = &[
                 target: LayoutTarget::Apply,
                 with_new: false,
             },
-            MenuEntry::Item(MenuItem {
-                label: "menu-layout-to-canvas",
-                icon: icons::SPARKLES,
-                action: MenuAction::ConvertLayoutToCanvas,
-            }),
         ],
     },
+    // Only on the bar in design mode, beside its toggle: every row past the
+    // first puts a panel into the layout. See [`menu_shows`].
     Menu {
         label: "menu-panels",
         entries: &[
-            // The switch over the things it governs: every row under this one
-            // puts a panel into the layout, which is what design mode is about,
-            // and the menus that arrange panels are the place someone looks for
-            // it rather than the Window menu's interface knobs.
             MenuEntry::Item(MenuItem {
-                label: "menu-design-mode",
-                icon: icons::LAYOUT_DASHBOARD,
-                action: MenuAction::ToggleDesignMode,
+                label: "menu-composition",
+                icon: icons::LAYERS,
+                action: MenuAction::OpenComposition,
             }),
-            MenuEntry::Section("menu-section-add"),
             // The panels you already configured lead the ones you haven't.
             MenuEntry::PresetsSubmenu {
                 label: "menu-panels-presets",
@@ -3397,6 +3405,26 @@ pub(crate) fn section_shows(section: &'static PanelSection) -> bool {
 /// panel this rox has.
 pub(crate) fn plugins_show() -> bool {
     !catalog::plugin_sections().is_empty()
+}
+
+/// The Panels menu's place in [`MENUS`]. The table keeps it last, the order
+/// the macOS bar shows, and the in-window bar draws it first.
+pub(crate) const PANELS_MENU: usize = 5;
+
+/// Whether a top menu is on the in-window bar: the Panels menu only while
+/// design mode is on, since everything in it edits the layout.
+pub(crate) fn menu_shows(menu: usize) -> bool {
+    menu != PANELS_MENU || settings::design_mode()
+}
+
+/// The top menus as the in-window bar and the menu panel draw them, by
+/// [`MENUS`] index: the Panels menu leads, right after the design mode
+/// toggle that brings it out, then the rest in table order.
+pub(crate) fn bar_menus() -> Vec<usize> {
+    std::iter::once(PANELS_MENU)
+        .chain((0..MENUS.len()).filter(|&i| i != PANELS_MENU))
+        .filter(|&i| menu_shows(i))
+        .collect()
 }
 
 /// One plugin entry as the hand-built flyouts list it. They go two levels
@@ -3520,6 +3548,7 @@ fn keymap_command(action: MenuAction) -> Option<&'static str> {
         MenuAction::NewWindow => "new_window",
         MenuAction::EmptyWindow => "new_empty_window",
         MenuAction::OpenSignals => "open_signals",
+        MenuAction::OpenComposition => "open_composition",
         MenuAction::ImportWorkspace => "import_workspace",
         MenuAction::ToggleQuitToTray => "toggle_quit_to_tray",
         MenuAction::ToggleMenubar => "toggle_menubar",
@@ -3592,6 +3621,8 @@ enum LayoutDialog {
     },
     /// A delete a panel asked about, such as a playlist or a bookmark.
     ConfirmDelete(rox_panel_api::openers::Confirm),
+    /// Turning the window's layout into a canvas, which has no undo.
+    ConfirmConvert,
 }
 
 impl LayoutDialog {
@@ -3603,7 +3634,8 @@ impl LayoutDialog {
             LayoutDialog::ConfirmOverwrite(_)
             | LayoutDialog::ConfirmOverwriteWorkspace(_)
             | LayoutDialog::ConfirmTrash { .. }
-            | LayoutDialog::ConfirmDelete(_) => true,
+            | LayoutDialog::ConfirmDelete(_)
+            | LayoutDialog::ConfirmConvert => true,
 
             LayoutDialog::Save(_)
             | LayoutDialog::ConfirmApply(_)
@@ -4757,7 +4789,7 @@ impl Workspace {
 
     /// Whether the dock holds one panel and it's a canvas: what converting
     /// the layout leaves, so converting again would only nest it.
-    fn dock_is_one_canvas(&self, cx: &App) -> bool {
+    pub(crate) fn dock_is_one_canvas(&self, cx: &App) -> bool {
         fn leaves(node: &Arc<dyn PanelView>, cx: &App, out: &mut Vec<Arc<dyn PanelView>>) {
             let view = node.view();
             if let Ok(stack) = view.clone().downcast::<StackPanel>() {
@@ -4811,22 +4843,57 @@ impl Workspace {
         direct.or_else(|| first(&root, cx))
     }
 
-    /// Convert Layout to Canvas: the dock's whole layout becomes one grid in
-    /// a canvas that fills the window, so nothing moves until the canvas is
-    /// edited.
-    fn convert_layout_to_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.dock_is_one_canvas(cx) {
-            log::info!("workspace: the layout is already one canvas, nothing to convert");
-            return;
+    /// Convert Layout to Canvas: asks first, since nothing takes it back. A
+    /// window with nothing to convert says so instead of building a canvas
+    /// around an empty grid.
+    pub(crate) fn convert_layout_to_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let refusal = if self.dock_is_one_canvas(cx) {
+            Some("workspace-convert-already")
+        } else if self.dock_is_empty(cx) {
+            Some("workspace-convert-empty")
+        } else {
+            None
+        };
+
+        match refusal {
+            Some(key) => {
+                window.activate_window();
+                Toast::new(Tone::Info, rox_i18n::t!(key)).show(window, cx);
+            }
+            None => self.raise_confirm(LayoutDialog::ConfirmConvert, window, cx),
         }
+    }
+
+    /// The dock's whole layout becomes one grid in a canvas that fills the
+    /// window. The panels look the same afterwards, so the grid comes up
+    /// selected with the inspector open, in design mode, or the convert
+    /// reads as nothing having happened.
+    fn convert_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_layout_dialog(window, cx);
+
         let Ok(dump) = self.dock_dump(cx) else {
             return;
         };
-
         let wrapped = crate::panels::canvas::wrap_layout(dump, LAYOUT_VERSION);
         if !self.apply_layout(wrapped, window, cx) {
             log::warn!("workspace: the converted layout didn't apply");
+            return;
         }
+
+        if !settings::design_mode() {
+            menubar::toggle_design_mode(cx);
+        }
+
+        let Some(canvas) = crate::objects::canvases(self, cx).into_iter().next() else {
+            return;
+        };
+        canvas.update(cx, |canvas, cx| {
+            canvas.select(
+                Some(crate::panels::canvas::WRAPPED_GRID.to_string()),
+                window,
+                cx,
+            )
+        });
     }
 
     /// Swap in an imported layout dump: the launch restore's checks and
@@ -6578,7 +6645,7 @@ impl Workspace {
     /// Whether the dock shows no panels at all: every stack walked down
     /// to tab groups and all of them empty. The face an Empty Window
     /// opens with, or closing the last panel leaves behind.
-    fn dock_is_empty(&self, cx: &App) -> bool {
+    pub(crate) fn dock_is_empty(&self, cx: &App) -> bool {
         fn node_empty(node: &Arc<dyn PanelView>, cx: &App) -> bool {
             let view = node.view();
             if let Ok(stack) = view.clone().downcast::<StackPanel>() {
@@ -7227,6 +7294,31 @@ impl Workspace {
                             ask.yes.clone(),
                             !destructive,
                             cx.listener(|this, _, window, cx| this.delete_confirmed(window, cx)),
+                        )),
+                ),
+            LayoutDialog::ConfirmConvert => card
+                .child(div().child(rox_i18n::t!("workspace-dialog-convert-title")))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(rox_i18n::t!("workspace-dialog-convert-body")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(tokens::SPACE_SM)
+                        .child(dialog_button(
+                            rox_i18n::t!("workspace-dialog-cancel"),
+                            destructive,
+                            cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
+                        ))
+                        .child(dialog_button(
+                            rox_i18n::t!("workspace-dialog-convert"),
+                            !destructive,
+                            cx.listener(|this, _, window, cx| this.convert_confirmed(window, cx)),
                         )),
                 ),
         };
@@ -8061,6 +8153,30 @@ mod tests {
         }
     }
 
+    /// The same round trip for every plain row on every menu. The design
+    /// mode row once encoded to an id nothing decoded, so the macOS pick did
+    /// nothing.
+    #[test]
+    fn every_menu_row_round_trips_through_its_command_id() {
+        for menu in super::MENUS {
+            for entry in menu.entries {
+                let super::MenuEntry::Item(item) = entry else {
+                    continue;
+                };
+                let Some(id) = item.action.command_id() else {
+                    continue;
+                };
+                let back = super::MenuAction::from_command_id(&id)
+                    .unwrap_or_else(|| panic!("{id} decodes to nothing"));
+                assert_eq!(
+                    back.command_id(),
+                    Some(id.clone()),
+                    "{id} decodes elsewhere"
+                );
+            }
+        }
+    }
+
     /// The five sleep rows are the only Playback rows that encode a
     /// payload into their command id, so the native bar's round trip is
     /// where a mistyped prefix would show up: a pick that decoded to the
@@ -8141,6 +8257,7 @@ mod tests {
         assert!(LayoutDialog::ConfirmOverwrite("a".into()).destructive());
         assert!(LayoutDialog::ConfirmOverwriteWorkspace("a".into()).destructive());
         assert!(!LayoutDialog::ConfirmApply("a".into()).destructive());
+        assert!(LayoutDialog::ConfirmConvert.destructive());
         assert!(
             LayoutDialog::ConfirmDelete(rox_panel_api::openers::Confirm {
                 title: "a".into(),

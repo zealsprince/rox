@@ -25,6 +25,33 @@ resizable split, `TabPanel` a tab group, and the leaves are the panels themselve
 Split ratios are dragged at the split level, tabs are dragged between groups, and a
 middle-drag out of the window pops a panel into its own OS window (see below).
 
+## Design mode
+
+Design mode is one app-wide flag, `rox_dock::design_mode`, set through
+`rox_core::settings::set_design_mode`. Every way of flipping it goes there: the toggle
+at the left end of the menubar, the Window menu's Design Mode row, the keymap's
+`toggle_design_mode` (Ctrl+Shift+D, Cmd+Shift+D on macOS), the socket's
+`rox::ToggleDesignMode`, and the Appearance page's switch. Off, the layout is
+furniture. `TabPanel::is_locked` reports every group locked, so tabs don't drag and
+nothing drops in, and `can_close_panel` refuses every close. A panel's own menu drops
+its Add Panel flyout, Save As Preset, Rename, Duplicate, Pop Out and Close, and a
+container hides the controls it floats over its slots.
+
+The menubar's Panels menu only shows while it's on, since every row in it but the first
+puts a panel into the layout. It sits right after the toggle and ahead of Application on
+the in-window bar and in the menu panel (`bar_menus` and `menu_shows` in
+`workspace.rs`), while `MENUS` keeps it last, the order the macOS bar uses. The macOS
+bar can't add and drop a menu by state or grey a row, so there the Panels menu stays and,
+with design mode off, holds only Composition and a row that turns design mode on
+(`gated_items`, `workspace/native_menu.rs`). An empty window keeps its own panel list in
+either state, since an empty window has nothing else to do.
+
+The Panels menu's first row opens the Composition window (`composition_window.rs`): the
+window's dock as a tree of splits, tab groups and panels, with arrows to reorder a row,
+a lock and a gear on each panel, and Convert to Canvas (see Canvases below). The
+Workspace settings page's Composition section embeds the same `CompositionView`, so the
+two always show the same thing.
+
 ## Layout serialization
 
 A layout dumps to `DockAreaState` (`rox-dock/src/state.rs`), serialized as JSON. rox uses
@@ -342,10 +369,17 @@ A canvas is a composite panel, registry name `canvas`, listed under Arrangement 
 catalog ([ADR 33](../02-architecture/decisions/33-adr-canvas-panel.md)). It places items
 in 3D space under its own camera. It docks, tabs and pops out like any panel, and the
 window's root stays the dock: a full-window canvas is a dock holding one canvas panel in
-one tab group, which draws no tab chrome. The Workspace menu's Convert Layout to Canvas
-builds exactly that from the current layout. The whole dump becomes one grid that fills
-the stage, so the window looks the same afterwards. Its panels lose their locks on the
-way in, since a locked panel can't be dragged inside the grid.
+one tab group, which draws no tab chrome. Convert to Canvas, in the Composition window
+and the Workspace page's Composition section, builds exactly that from the current
+layout (`Workspace::convert_layout_to_canvas`; the keymap's `convert_layout_to_canvas`
+and the socket's `rox::ConvertLayoutToCanvas` reach the same call). The whole dump
+becomes one grid that fills the stage, so the window looks the same afterwards. Its
+panels lose their locks on the way in, since a locked panel can't be dragged inside the
+grid. There's no undo, so it asks first, with Cancel as the default, and the only way
+back is a layout saved beforehand. A window with no panels, or one that's a canvas
+already, gets a toast saying so instead. Once converted, design mode is on and the grid
+comes up selected with the inspector open: a full-window grid has no strip to click,
+and without that the convert reads as nothing having happened.
 
 The saved shape is `CanvasConfig` (`crates/rox/src/panels/canvas.rs`): the panel chrome,
 a `rox_canvas::CanvasState` flattened beside it, and the canvas's signal routes. A canvas
@@ -416,13 +450,15 @@ groups count together against `rox_canvas::MAX_DEPTH`, and a group or a canvas-h
 past it is kept as saved and not built, so a hand-edited layout can't recurse.
 `Workspace::docks` is the window's dock followed by every dock a canvas in it hosts,
 nested ones included. Focus Search and the control socket's Milkdrop lookup walk it,
-and the Workspace page's layout tree lists each grid under its canvas.
+and the Composition view lists each grid under its canvas.
 
 ## Reference
 
 The dock is the vendored `crates/rox-dock`: `panel.rs` (the `Panel` / `PanelView`
 traits, the registry), `state.rs` (`DockAreaState`, `PanelState`, `PanelInfo`). The app
-wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore),
+wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore, the
+menus and the convert), `crates/rox/src/workspace/menubar.rs` (the bar and its design
+mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and window),
 `crates/rox-panel-api/src/panel.rs` (`PanelChrome`, `AppState`, `pop_out`,
 `PopoutHost`), `crates/rox/src/panel_settings.rs` (the customize windows),
 `crates/rox-core/src/settings.rs` (`NamedLayout`, `WorkspaceBundle`, `Asset`,

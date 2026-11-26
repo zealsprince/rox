@@ -31,22 +31,22 @@ use crate::panels::canvas::{
 
 use crate::workspace::{
     AbClear, AbRepeat, AbortScan, AddBookmark, AddNamedBookmark, AnalyzeTempo, BuildAcoustic,
-    ClearQueue, ClosePanelAction, CloseWindow, Cue, CueClear, CueNext, CuePrev, CycleLoop,
-    CycleReplayGainMode, CycleShuffleMode, DecreaseFontSize, FillSortNames, FindDuplicates,
-    FlattenEq, FocusSearch, ImportWorkspace, IncreaseFontSize, MeasureReplayGain, NewEmptyWindow,
-    NewWindow, NextBookmark, NextTrack, OpenAbout, OpenCatalog, OpenChat, OpenConsole,
-    OpenDiscussions, OpenEqualizer, OpenGoTo, OpenHealth, OpenPowerSearch, OpenPresetPicker,
-    OpenQuickPlay, OpenSettings, OpenSignals, OpenStats, OpenTasks, OpenWelcome, PlayRandom,
-    PlaySimilar, PrevBookmark, PreviousTrack, Quit, RandomMilkdropPreset, RenameTrack, ReportIssue,
-    RescanLibrary, ResetFontSize, RomanizeLibrary, SaveLayout, SaveWorkspace, SleepOff,
-    StepBackward, StepForward, StopPlayback, TagGenres, ToggleArtTheming, ToggleBackdropAllWindows,
-    ToggleBackdropShader, ToggleBroadcast, ToggleCapture, ToggleContinuation, ToggleCrossfade,
-    ToggleCrossfadeAlbums, ToggleDecorations, ToggleDesignMode, ToggleDiscord, ToggleEq,
-    ToggleExclusiveOutput, ToggleFavourite, ToggleMenubar, ToggleMilkdropBackdrop,
-    ToggleMilkdropHardCuts, ToggleMilkdropLock, ToggleMini, ToggleMute, TogglePostShader,
-    ToggleQuitToTray, ToggleReadings, ToggleResizeLock, ToggleScrobbling, ToggleSeams,
-    ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders, TrashSelection, VolumeDown,
-    VolumeUp,
+    ClearQueue, ClosePanelAction, CloseWindow, ConvertLayoutToCanvas, Cue, CueClear, CueNext,
+    CuePrev, CycleLoop, CycleReplayGainMode, CycleShuffleMode, DecreaseFontSize, FillSortNames,
+    FindDuplicates, FlattenEq, FocusSearch, ImportWorkspace, IncreaseFontSize, MeasureReplayGain,
+    NewEmptyWindow, NewWindow, NextBookmark, NextTrack, OpenAbout, OpenCatalog, OpenChat,
+    OpenComposition, OpenConsole, OpenDiscussions, OpenEqualizer, OpenGoTo, OpenHealth,
+    OpenPowerSearch, OpenPresetPicker, OpenQuickPlay, OpenSettings, OpenSignals, OpenStats,
+    OpenTasks, OpenWelcome, PlayRandom, PlaySimilar, PrevBookmark, PreviousTrack, Quit,
+    RandomMilkdropPreset, RenameTrack, ReportIssue, RescanLibrary, ResetFontSize, RomanizeLibrary,
+    SaveLayout, SaveWorkspace, SleepOff, StepBackward, StepForward, StopPlayback, TagGenres,
+    ToggleArtTheming, ToggleBackdropAllWindows, ToggleBackdropShader, ToggleBroadcast,
+    ToggleCapture, ToggleContinuation, ToggleCrossfade, ToggleCrossfadeAlbums, ToggleDecorations,
+    ToggleDesignMode, ToggleDiscord, ToggleEq, ToggleExclusiveOutput, ToggleFavourite,
+    ToggleMenubar, ToggleMilkdropBackdrop, ToggleMilkdropHardCuts, ToggleMilkdropLock, ToggleMini,
+    ToggleMute, TogglePostShader, ToggleQuitToTray, ToggleReadings, ToggleResizeLock,
+    ToggleScrobbling, ToggleSeams, ToggleShuffle, ToggleStopAfter, ToggleTheme, ToggleWatchFolders,
+    TrashSelection, VolumeDown, VolumeUp,
 };
 
 /// Workspace-wide except while the search box, a type-ahead phrase, the
@@ -1054,6 +1054,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "keymap-open-signals.description"
         ),
         command!(
+            "open_composition",
+            "keymap-open-composition",
+            Group::Windows,
+            WORKSPACE,
+            &[],
+            OpenComposition,
+            "keymap-open-composition.description"
+        ),
+        command!(
             "import_workspace",
             "keymap-import-workspace",
             Group::Windows,
@@ -1197,6 +1206,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             defaults::DESIGN_MODE,
             ToggleDesignMode,
             "keymap-toggle-design-mode.description"
+        ),
+        command!(
+            "convert_layout_to_canvas",
+            "keymap-convert-layout-to-canvas",
+            Group::View,
+            WORKSPACE,
+            &[],
+            ConvertLayoutToCanvas,
+            "keymap-convert-layout-to-canvas.description"
         ),
         command!(
             "toggle_resize_lock",

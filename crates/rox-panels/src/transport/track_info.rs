@@ -1572,7 +1572,7 @@ impl TrackInfoPanel {
         let label = if exclusive {
             rox_i18n::t!("track-info-output-exclusive", rate = rate, format = format).to_string()
         } else {
-            format!("{rate} kHz {format}")
+            format!("{rate} {} {format}", rox_i18n::t!("unit-khz"))
         };
         Some(
             div()

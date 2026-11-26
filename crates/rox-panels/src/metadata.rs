@@ -2764,8 +2764,13 @@ impl MetadataPanel {
                                 rox_i18n::format::format_int(i64::from(d.bitrate_kbps))
                             )
                         }),
-                        "sample_rate" => (d.sample_rate_hz > 0)
-                            .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
+                        "sample_rate" => (d.sample_rate_hz > 0).then(|| {
+                            format!(
+                                "{} {}",
+                                crate::group_head::khz(d.sample_rate_hz),
+                                rox_i18n::t!("unit-khz")
+                            )
+                        }),
                         "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
                         // Whole beats like the library column, and an estimate says so.
                         "bpm" => d.bpm.map(|bpm| {

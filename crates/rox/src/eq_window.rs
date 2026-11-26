@@ -1000,7 +1000,7 @@ impl EqWindow {
                 &self.scrubs[0],
                 &self.value_edit,
                 freq_frac(hz),
-                rox_i18n::format::format_unit(hz as f64, 0, "Hz"),
+                rox_i18n::format::format_hz(hz as f64, 0),
                 format!("{hz:.0}"),
                 1.0,
                 panel::SliderWidth::Fill,

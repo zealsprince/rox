@@ -534,7 +534,7 @@ impl SettingsWindow {
         options.extend(RATES.iter().map(|hz| {
             (
                 Some(*hz),
-                rox_i18n::format::format_unit(f64::from(*hz) / 1000.0, 1, "kHz").into(),
+                rox_i18n::format::format_khz(f64::from(*hz) / 1000.0, 1).into(),
             )
         }));
         panel::setting_row(

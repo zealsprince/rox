@@ -12,7 +12,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::search;
+use crate::env;
 
 /// Without it every plugin start pops a console window.
 #[cfg(windows)]
@@ -74,10 +74,9 @@ impl<'a> Extra<'a> {
     }
 }
 
-/// Starts `command` in the plugin folder with its pipes attached. The
-/// plugin inherits rox's environment (HOME for its programs' caches) with
-/// PATH replaced by the plugin's search path, so what it runs resolves the
-/// way the Plugins page reported it, plus three variables for Python.
+/// Starts `command` in the plugin folder with its pipes attached, in the
+/// environment [`env::prepare`] makes: PATH is the plugin's search path, so
+/// what it runs resolves the way the Plugins page reported it.
 pub fn spawn(id: &str, command: Command, dir: &Path) -> Result<(Process, Pipes), String> {
     spawn_with("plugin", id, command, dir, Extra::None)
 }
@@ -91,19 +90,23 @@ pub fn spawn_with(
     dir: &Path,
     extra: Extra,
 ) -> Result<(Process, Pipes), String> {
+    env::prepare(&mut command, Some(dir));
+    start(kind, id, command, dir, extra)
+}
+
+/// [`spawn_with`] once the environment is set.
+fn start(
+    kind: &'static str,
+    id: &str,
+    mut command: Command,
+    dir: &Path,
+    extra: Extra,
+) -> Result<(Process, Pipes), String> {
     command
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("PATH", search::search_path(Some(dir)))
-        // A Python plugin's first import would write `__pycache__` into its
-        // own folder and change its own hash.
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        // A piped stdout is block-buffered, so answers would sit unsent.
-        .env("PYTHONUNBUFFERED", "1")
-        // Windows reads piped text in the ANSI code page, not UTF-8.
-        .env("PYTHONUTF8", "1");
+        .stderr(Stdio::piped());
 
     #[cfg(unix)]
     {
@@ -621,6 +624,94 @@ mod tests {
 
         let first = std::env::split_paths(lines[2]).next();
         assert_eq!(first, Some(dir.join("bin")), "{out}");
+        assert_eq!(
+            std::ffi::OsStr::new(lines[2]),
+            crate::search::search_path(Some(&dir)),
+            "the search path, whole"
+        );
+    }
+
+    /// The names and values `env` prints in a child started from `parent`
+    /// with `escape`, ROX_RENDER_API set on the command as a renderer's is.
+    #[cfg(unix)]
+    fn child_env(tag: &str, parent: &[(&str, &str)], escape: &[&str]) -> Vec<(String, String)> {
+        let dir = std::env::temp_dir().join(format!("rox-plugins-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut command = Command::new("env");
+        command.env("ROX_RENDER_API", "1");
+        let parent = parent.iter().map(|(k, v)| (k.into(), v.into()));
+        let escape: Vec<String> = escape.iter().map(|name| name.to_string()).collect();
+        env::prepare_from(&mut command, Some(&dir), parent, &escape);
+
+        let (mut process, pipes) = start("plugin", tag, command, &dir, Extra::None).unwrap();
+        let mut out = String::new();
+        let mut stdout = pipes.stdout;
+        stdout.read_to_string(&mut out).unwrap();
+        process.wait_for(Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut vars: Vec<(String, String)> = out
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        vars.sort();
+
+        vars
+    }
+
+    /// What rox's own environment might hold beside the allowed names.
+    #[cfg(unix)]
+    const PARENT: &[(&str, &str)] = &[
+        ("HOME", "/home/someone"),
+        ("LANG", "de_DE.UTF-8"),
+        ("LC_TIME", "en_DK.UTF-8"),
+        ("SECRET_TOKEN", "hunter2"),
+        ("AWS_SECRET_ACCESS_KEY", "key"),
+        ("PYTHONPATH", "/somewhere/else"),
+        ("ROX_PSEUDOLOCALE", "1"),
+        ("RUST_BACKTRACE", "1"),
+    ];
+
+    #[cfg(unix)]
+    #[test]
+    fn a_package_sees_the_allowed_names_and_rox_additions_only() {
+        let vars = child_env("env-exact", PARENT, &[]);
+        let names: Vec<&str> = vars.iter().map(|(k, _)| k.as_str()).collect();
+
+        assert_eq!(
+            names,
+            [
+                "HOME",
+                "LANG",
+                "LC_TIME",
+                "PATH",
+                "PYTHONDONTWRITEBYTECODE",
+                "PYTHONUNBUFFERED",
+                "PYTHONUTF8",
+                "ROX_RENDER_API",
+            ],
+            "{vars:?}"
+        );
+        assert!(vars.iter().all(|(_, v)| v != "hunter2"), "{vars:?}");
+        assert!(vars.contains(&("HOME".into(), "/home/someone".into())));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_escape_passes_a_named_variable() {
+        let vars = child_env("env-escape", PARENT, &["RUST_BACKTRACE", "NOT_SET"]);
+
+        assert!(
+            vars.contains(&("RUST_BACKTRACE".into(), "1".into())),
+            "{vars:?}"
+        );
+        assert!(
+            !vars
+                .iter()
+                .any(|(k, _)| k == "NOT_SET" || k == "SECRET_TOKEN")
+        );
     }
 
     /// Runs `script` under `sh` with `file` lent, and answers its stdout.

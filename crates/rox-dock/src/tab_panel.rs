@@ -495,6 +495,18 @@ impl TabPanel {
         cx.notify();
     }
 
+    /// rox: takes a panel out to show it in another window. Its `on_removed`
+    /// runs with [`panel_moving`] true, so it can keep what a move carries
+    /// over instead of tearing it down.
+    pub fn move_panel_out(
+        &mut self,
+        panel: Arc<dyn PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        while_moving(|| self.remove_panel(panel, window, cx));
+    }
+
     /// Remove a panel from the tab panel
     pub fn remove_panel(
         &mut self,
@@ -2165,11 +2177,37 @@ impl Render for TabPanel {
     }
 }
 
+thread_local! {
+    /// rox: set while [`TabPanel::move_panel_out`] runs.
+    static MOVING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// rox: whether the panel being removed is moving to another window, as a
+/// Pop Out moves it, rather than closing. Read from `on_removed`.
+pub fn panel_moving() -> bool {
+    MOVING.with(Cell::get)
+}
+
+fn while_moving<R>(f: impl FnOnce() -> R) -> R {
+    let was = MOVING.with(|moving| moving.replace(true));
+    let out = f();
+    MOVING.with(|moving| moving.set(was));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{DockEvent, DockItem, register_panel};
     use gpui::{Axis, point, size};
+
+    #[test]
+    fn a_move_is_flagged_only_while_it_runs() {
+        assert!(!panel_moving());
+        let inside = while_moving(|| while_moving(panel_moving) && panel_moving());
+        assert!(inside, "set inside, nested or not");
+        assert!(!panel_moving(), "cleared after");
+    }
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds {

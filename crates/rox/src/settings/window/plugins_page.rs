@@ -1953,7 +1953,9 @@ mod tests {
                 rox_i18n::t!("settings-plugins-card-renderer-signals"),
                 rox_i18n::t!("settings-plugins-card-renderer-pointer"),
                 SharedString::from(wanted),
-                SharedString::from("Gets the colours of the current theme."),
+                SharedString::from(
+                    "Gets the colours of the current theme, which follow the cover when song theming is on.",
+                ),
                 SharedString::from("Gets the cover of the playing track, as a picture."),
             ]
         );
@@ -1974,7 +1976,9 @@ mod tests {
             tail,
             [
                 rox_i18n::t!("settings-plugins-card-changed"),
-                SharedString::from("Gets the colours of the current theme."),
+                SharedString::from(
+                    "Gets the colours of the current theme, which follow the cover when song theming is on.",
+                ),
                 SharedString::from("Gets the cover of the playing track, as a picture."),
             ]
         );

@@ -1110,7 +1110,7 @@ impl DockArea {
             return;
         };
         source.update(cx, |tabs, cx| {
-            tabs.remove_panel(drag.panel.clone(), window, cx);
+            tabs.move_panel_out(drag.panel.clone(), window, cx);
         });
         handler(drag.panel, event.position, window, cx);
     }

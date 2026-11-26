@@ -675,9 +675,62 @@ syncs its kept collections, and that's the first call. The host has one thread w
 stdin, one reading stdout and a table of pending requests by id, so any number of calls
 can be in flight.
 
-The process starts in the plugin's folder with rox's environment (PATH, HOME and the
-rest) plus `PYTHONDONTWRITEBYTECODE=1` (`spawn`, `rox-plugins/src/process.rs:66-167`). A
-plugin can read its own switches from the environment.
+The process starts in the plugin's folder (`spawn`, `rox-plugins/src/process.rs`) in an
+environment rox builds from an empty one (`prepare`, `rox-plugins/src/env.rs`): the
+variables in the table below that rox itself has set, with rox's values, then `PATH`
+and three for Python. Nothing else rox was started with reaches the plugin, so a token
+or key in rox's environment stays with rox. The interpreter probe runs in the same
+environment (`speaks_python3`, `manifest.rs`), so a Python that won't start without
+something left out is reported as not found instead of failing at start.
+
+This is no sandbox. The plugin still runs as the user, reads their files and reaches
+their session bus, which is what the enable card says it can do. The list only keeps rox
+from handing on what it was handed.
+
+| Variable | What breaks without it |
+|---|---|
+| `HOME`, `USER`, `LOGNAME` | Programs that keep a cache or config under `HOME` fail or write into the working folder. Shell scripts read the user name from `USER` and `LOGNAME`. |
+| `LANG`, `LANGUAGE`, every `LC_*` | A C program runs in the C locale: messages, sorting and how file names decode. |
+| `LOCALE_ARCHIVE` | A Nix-built program reads locales from `/run/current-system`, which only NixOS has. Under Nix on another distro this is how it finds them. |
+| `TZ` | Times show in the system's zone instead of the one the user set for rox. |
+| `TMPDIR`, `TEMP`, `TMP` | Temporary files land in the shared `/tmp`. On macOS `TMPDIR` is the user's private folder. |
+| `XDG_RUNTIME_DIR` | No Wayland or session bus socket can be found. |
+| `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_DIRS`, `XDG_CONFIG_DIRS` | Files go to the default folders when the user moved theirs. On NixOS, icons, MIME data and schemas are found through `XDG_DATA_DIRS`. |
+| `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`, `DBUS_SESSION_BUS_ADDRESS` | A plugin can't open a browser to sign in, show a notification or keep a token in the keyring. |
+| `LD_LIBRARY_PATH` | A GPU renderer can't open `libvulkan.so.1` on NixOS, where no default library path holds it. |
+| `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, `VK_ADD_DRIVER_FILES`, `VK_LAYER_PATH`, `VK_ADD_LAYER_PATH`, `__EGL_VENDOR_LIBRARY_FILENAMES`, `__EGL_VENDOR_LIBRARY_DIRS`, `LIBGL_DRIVERS_PATH`, `DRI_PRIME`, `MESA_VK_DEVICE_SELECT`, `__NV_PRIME_RENDER_OFFLOAD`, `__VK_LAYER_NV_optimus` | These pick the driver and the GPU, set by a wrapper such as nixGL or by a user choosing a GPU. Without them a renderer loads another driver or none, and a texture rox made on one GPU can't be imported on another. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, and each in lower case | A network plugin behind a proxy reaches nothing. Tools read either case. |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NIX_SSL_CERT_FILE` | TLS fails where the certificates aren't at the system default. A Nix-built program on macOS or another distro reads `NIX_SSL_CERT_FILE`. |
+| `SystemRoot`, `SystemDrive`, `windir`, `ComSpec`, `PATHEXT`, `USERPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `ProgramData`, `ProgramFiles`, `ProgramFiles(x86)`, `ProgramW6432`, `CommonProgramFiles`, `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`, `OS` | Windows. Without `SystemRoot` a process can't load Winsock or the crypto provider. `ComSpec` runs `cmd`, `PATHEXT` finds a bare program name, and the profile and program folders are where Python and installers look. Python's `platform` reads the processor and OS names. |
+| `__CF_USER_TEXT_ENCODING` | macOS. CoreFoundation reads the user's text encoding from it for every string it converts. |
+
+Then rox sets its own, which win over anything above:
+
+- `PATH` is the plugin search path: the plugin's `bin` folder, Program Folders, then
+  rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`).
+- `PYTHONDONTWRITEBYTECODE=1`, since a Python plugin's first import would write
+  `__pycache__` into its folder and change its hash.
+- `PYTHONUNBUFFERED=1`, since a piped stdout is block-buffered and answers would sit
+  unsent.
+- `PYTHONUTF8=1`, since Windows reads piped text in the ANSI code page.
+
+A renderer gets its `ROX_*` variables on top ([the renderers doc](11-renderers.md#what-a-native-renderer-starts-with)).
+
+Left out on purpose: `SHELL` and `TERM`, which nothing a plugin does without a terminal
+needs. `PYTHONPATH` and `PYTHONHOME`, so a plugin runs the same on a developer's machine as
+on a user's. `DYLD_*`, which macOS strips from its own binaries anyway, `REQUESTS_CA_BUNDLE`
+and `CURL_CA_BUNDLE`, Mesa's debugging switches, the rest of `NIX_*` and `NIXPKGS_*`
+(a NixOS python3 and `vulkaninfo` start without them), and every `ROX_*` rox was started
+with.
+
+### Passing more while testing
+
+`ROX_PLUGIN_ENV` names more variables to pass, comma-separated, read from rox's own
+environment: `ROX_PLUGIN_ENV=RUST_BACKTRACE,MY_API_KEY rox`. It works in debug and
+release builds alike, applies to every plugin and renderer, and rox logs it once at
+startup (`ROX_PLUGIN_ENV is set: packages also get RUST_BACKTRACE, MY_API_KEY`). It's
+for an author's own machine. A plugin that needs a key in normal use takes it through
+its `config_schema`.
 
 When a plugin exits unexpectedly, every call it had fails with "the plugin exited", and
 the next call starts it again after a wait of 0, 1, 2 or 4 s for the first through fourth
@@ -1105,7 +1158,8 @@ only decoded samples can serve them in a container the engine reads.
 The host is `crates/rox-plugins`: `manifest.rs` (the manifest, `SUPPORTED_API`, the
 entry and the interpreter table), `hash.rs` (the folder hash), `loader.rs` (the scan and
 the folder watch), `wire.rs` (framing, the typed results and the caps), `process.rs`
-(spawn, stderr, the process group and the job object), `host.rs` (one plugin's process,
+(spawn, stderr, the process group and the job object), `env.rs` (the environment a
+package starts with and `ROX_PLUGIN_ENV`), `host.rs` (one plugin's process,
 calls, timeouts, crashes and shutdown) and `stream.rs` (reads by offset with read-ahead).
 Its tests are `tests/echo.rs` against the fixture in `tests/fixtures/echo/`,
 `tests/tones.rs` against the tones example and `tests/lyrics_folder.rs` against the

@@ -1121,7 +1121,7 @@ pub fn pop_out<P: Panel>(
 ) {
     if let Some(tabs) = tab_panel.and_then(|tabs| tabs.upgrade()) {
         tabs.update(cx, |tabs, cx| {
-            tabs.remove_panel(Arc::new(panel.clone()), window, cx);
+            tabs.move_panel_out(Arc::new(panel.clone()), window, cx);
         });
     }
     pop_out_view(Arc::new(panel), state, cx);

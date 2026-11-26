@@ -2527,6 +2527,14 @@ impl Targets {
         });
     }
 
+    /// The canvas moves to another window with its targets, and each keeps
+    /// its session. Their textures belong to this window and go here.
+    pub(crate) fn carry(&mut self, window: &mut Window, cx: &mut App) {
+        for view in self.shown.values().filter_map(|shown| shown.view.as_ref()) {
+            view.update(cx, |view, cx| view.leave(window, cx));
+        }
+    }
+
     /// Every target stops: the canvas left its window.
     pub(crate) fn clear(&mut self, window: &mut Window, cx: &mut App) {
         let ran = self
@@ -2545,10 +2553,11 @@ impl Targets {
         self.shown.clear();
     }
 
-    /// The canvas draws in `window`. One that left another window for it is
-    /// a Pop Out or a move, and its targets start again here: the log says
-    /// so in the words a Dock Back's supervisor uses. A tab moved within its
-    /// window restarts them too, and says nothing.
+    /// The canvas draws in `window`. One cleared out of another window and
+    /// drawn here starts its targets again, and the log says so in the words
+    /// a moved supervisor uses. A Pop Out doesn't clear them, so it never
+    /// lands here. A tab moved within its window restarts them, and says
+    /// nothing.
     pub(crate) fn arrive(&mut self, window: &Window) {
         let Some((from, ran)) = self.left.take() else {
             return;
@@ -3868,6 +3877,33 @@ mod tests {
             "the old session stopped"
         );
         assert_eq!(rig.exits(), 0, "rox's doing, not the renderer's");
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_move_on_shared_memory_keeps_the_session() {
+        let rig = Rig::new(slow());
+        let mut fake = rig.session();
+        assert!(!fake.textured);
+        fake.writer.frame(0, pattern(3));
+        fake.announce("f 0 0\n");
+        until("the slot frame", || rig.peek().is_some());
+
+        // A window move tells the supervisor; with no texture lent there's
+        // nothing that belongs to the old window.
+        rig.source.shared.lost();
+        assert!(rig.source.take().is_some(), "the frame from before");
+        fake.writer.frame(1, pattern(4));
+        fake.announce("f 1 1\n");
+        until("the next frame", || rig.copies() == 2);
+
+        assert!(
+            rig.sessions.try_recv().is_err(),
+            "no second session started"
+        );
+        assert!(fake.stdout.lock().unwrap().is_some(), "still running");
+        assert_eq!(rig.exits(), 0);
 
         rig.finish();
     }

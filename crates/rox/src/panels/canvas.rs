@@ -3328,7 +3328,14 @@ impl Panel for CanvasPanel {
         self.menu = None;
 
         self.images.clear(window);
-        self.targets.clear(window, cx);
+
+        // A Pop Out takes the targets along: a session on shared memory
+        // carries on, and one lent a GPU texture starts again with one made
+        // over there, since its texture belongs to this window.
+        match rox_dock::panel_moving() {
+            true => self.targets.carry(window, cx),
+            false => self.targets.clear(window, cx),
+        }
 
         for view in self.textures.values() {
             view.update(cx, |view, cx| view.release(window, cx));

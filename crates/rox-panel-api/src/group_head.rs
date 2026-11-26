@@ -253,9 +253,9 @@ pub fn khz(hz: u32) -> String {
 pub fn stream_format(bit_depth: u8, sample_rate_hz: u32) -> String {
     match (bit_depth, khz(sample_rate_hz)) {
         (0, rate) if rate.is_empty() => String::new(),
-        (0, rate) => format!("{rate} kHz"),
+        (0, rate) => format!("{rate} {}", rox_i18n::t!("unit-khz")),
         (bits, rate) if rate.is_empty() => format!("{bits} bit"),
-        (bits, rate) => format!("{bits}/{rate} kHz"),
+        (bits, rate) => format!("{bits}/{rate} {}", rox_i18n::t!("unit-khz")),
     }
 }
 

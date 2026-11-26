@@ -99,7 +99,7 @@ it.
 | Key | Type | What it gets | The card says |
 |---|---|---|---|
 | `signals` | a list | rox offers to add these to the user's pool | Follows these signals: Kick (Band 30-120 Hz), Level. When you place a render target for it, rox offers to add the ones you don't have yet. |
-| `palette` | `true` or `false` | the theme's colours, on [`palette` lines](#rox-to-the-renderer) | Gets the colours of the current theme. |
+| `palette` | `true` or `false` | the theme's colours, on [`palette` lines](#rox-to-the-renderer) | Gets the colours of the current theme, which follow the cover when song theming is on. |
 | `cover` | `true` or `false` | the playing track's cover as pixels, through [the cover mapping](#the-cover-mapping) | Gets the cover of the playing track, as a picture. |
 
 A fourth key, `gpu`, says the renderer can draw into a GPU texture rox lends it (see
@@ -190,10 +190,10 @@ exits (`start`, `rox-services/src/renderers.rs:264`). rox never starts a rendere
 launch, only when a target asks.
 
 The process starts in the package's folder (for a `.roxp`, rox's unpacked copy under
-`plugin-cache`) with rox's environment, PATH set to the plugin search path, and
-`PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1` and `PYTHONUTF8=1`
-(`spawn_with`, `rox-plugins/src/process.rs:87`). [What a native renderer starts
-with](#what-a-native-renderer-starts-with) has the whole of it. On top of those:
+`plugin-cache`) in the environment a plugin gets: a fixed list of rox's variables, PATH
+set to the plugin search path, and `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1` and
+`PYTHONUTF8=1` (`spawn_with`, `rox-plugins/src/process.rs`). [What a native renderer
+starts with](#what-a-native-renderer-starts-with) has the whole of it. On top of those:
 
 | Variable | Value |
 |---|---|
@@ -232,6 +232,12 @@ box and the renderer's name in design mode, until the user presses Start Again u
 its Status, or switches the renderer off and on. A failed start, a flood of stdout
 lines and a run of refused frames each count as an exit. A restarted renderer gets
 `hello` and the pool again, and its frame numbers can start again from 0.
+
+A Pop Out or a Dock Back moves the canvas with its targets. A session on the slots
+carries on, process and all, so a renderer keeps whatever it has built up. One lent a
+texture starts again, since the texture belongs to the window that made it
+([When the texture goes](#when-the-texture-goes)). rox frees what the old window held as
+the canvas leaves it (`Targets::carry`, `rox/src/canvas/target.rs`).
 
 rox stops a session in two ways:
 
@@ -682,9 +688,8 @@ palette says something about the track too: with song theming on, the theme's co
 follow the playing track's cover. A renderer granted the palette gets a new `palette`
 line whenever a cover brings other colours, which tells it the album changed, and gets
 that cover's own two colours as `art_primary` and `art_secondary`. It isn't told which
-album. Its card line says only that it gets the colours of
-the current theme. It runs
-with the user's permissions, unsandboxed, as a plugin does, and the card says so.
+album. Its card line says so: the theme's colours follow the cover when song theming is
+on. It runs with the user's permissions, unsandboxed, as a plugin does, and the card says so.
 
 A manifest that gains a grant is a changed manifest. The renderer switches off, and its
 card lists the new grant under "Changed since you last switched it on" (`Change::Grant`).
@@ -816,21 +821,31 @@ publishing stops getting signals, and they start again with its next frame.
 
 ### What a native renderer starts with
 
-The process starts in the package's folder with rox's own environment and these changes,
-and no others (`spawn_with`, `rox-plugins/src/process.rs`; `launch`,
-`rox-services/src/renderers.rs`):
+The process starts in the package's folder in an environment built from an empty one,
+and nothing else of rox's reaches it (`prepare`, `rox-plugins/src/env.rs`; `spawn_with`,
+`rox-plugins/src/process.rs`; `launch`, `rox-services/src/renderers.rs`). It isn't a
+sandbox: the renderer runs as the user, as a plugin does. It only keeps a token or key
+rox was started with from being handed on.
 
-- `PATH` is the plugin search path: the package's `bin` folder, the Program Folders from
-  the Plugins page, then rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`).
-- `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED` and `PYTHONUTF8`, each `1`.
-- `ROX_RENDER_API`, `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`.
-- On Unix, `ROX_FRAMES_FD`, then `ROX_COVER_FD` for a renderer granted the cover and
-  `ROX_TEXTURE_FD` for one lent the GPU texture, each only when that handle is lent. The
-  [Lifecycle](#lifecycle) table has their values.
+| Variable | Where it comes from |
+|---|---|
+| The names in [the plugin environment table](10-plugins.md#process-lifecycle) | rox's own value, for each one rox has set |
+| Names listed in `ROX_PLUGIN_ENV` | rox's own value, while a developer [passes more](10-plugins.md#passing-more-while-testing) |
+| `PATH` | The plugin search path: the package's `bin` folder, the Program Folders from the Plugins page, then rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`) |
+| `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED`, `PYTHONUTF8` | `1` each |
+| `ROX_RENDER_API`, `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | rox, always |
+| `ROX_FRAMES_FD`, `ROX_COVER_FD`, `ROX_TEXTURE_FD` | rox, on Unix, each only when that handle is lent. The [Lifecycle](#lifecycle) table has their values |
 
-rox adds nothing to `LD_LIBRARY_PATH` or `DYLD_LIBRARY_PATH` and sets no GPU variable. A
-renderer finds its own GPU libraries, the Vulkan loader among them: from the system's
-library path, from an rpath of its own, or through a launcher script of its own.
+The GPU variables pass through as rox has them and rox adds none of its own:
+`LD_LIBRARY_PATH`, the Vulkan loader's `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`,
+`VK_ADD_DRIVER_FILES`, `VK_LAYER_PATH` and `VK_ADD_LAYER_PATH`, glvnd's
+`__EGL_VENDOR_LIBRARY_FILENAMES` and `__EGL_VENDOR_LIBRARY_DIRS`, Mesa's
+`LIBGL_DRIVERS_PATH`, `DRI_PRIME` and `MESA_VK_DEVICE_SELECT`, and NVIDIA's
+`__NV_PRIME_RENDER_OFFLOAD` and `__VK_LAYER_NV_optimus`. They decide which driver and
+GPU a renderer gets, and a texture rox lends can only be imported on the GPU rox made it
+on. `DYLD_LIBRARY_PATH` doesn't pass. A renderer finds its own GPU libraries, the Vulkan
+loader among them: from the system's library path, from an rpath of its own, or through
+a launcher script of its own.
 
 What it inherits depends on how rox was started. The Nix package in `flake.nix` finds
 its own libraries through an rpath patched onto the `rox` binary (`patchelf --add-rpath`
@@ -1076,7 +1091,7 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | `renderer <id>: started at <w>x<h>, lent a texture` | The same, with the GPU texture lent |
 | `render target <id>: no texture from the canvas, this session uses shared memory` | The canvas didn't make the texture within 2 s |
 | `canvas: no GPU texture at <w>x<h>, shared memory it is: <why>` | The window couldn't make one, for the target's life |
-| `render target <id>: moved window, starting again` | The target moved to another window and starts again there: on Pop Out or a move of its canvas to another window, whatever it draws through, and on Dock Back when it was lent a texture. A session on the slots carries on through a Dock Back |
+| `render target <id>: moved window, starting again` | The target was lent a texture and its canvas moved to another window, by Pop Out or Dock Back, so it starts again with a texture made there. A session on the slots carries on through either, with the same process |
 | `render target <id>: didn't start: <why>` | The spawn or `hello` failed, as an exit |
 | `render target <id>: not started: <why>` | The gate refused it |
 | `render target <id>: the renderer exited` | stdout closed |

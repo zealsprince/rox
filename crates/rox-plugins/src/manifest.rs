@@ -890,6 +890,9 @@ fn speaks_python3(program: &Path, args: &[&str], within: Duration) -> bool {
     let deadline = Instant::now() + within;
 
     let mut command = Command::new(program);
+    // The environment a plugin gets, so a Python that only starts with
+    // something rox has set fails here as it would at the start.
+    crate::env::prepare(&mut command, None);
     command
         .args(args)
         .arg("--version")

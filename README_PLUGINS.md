@@ -189,6 +189,16 @@ Any other name is looked up as written, with Windows' executable extensions trie
 after the bare name. The path has to be a plain relative path to a file in the
 folder.
 
+The plugin starts with a short list of rox's environment variables and nothing else:
+the user's home, locale, time zone, temp and XDG folders, the desktop session, the GPU
+driver selectors, proxy and certificate settings, and on Windows the system ones a
+process needs. rox adds `PATH` as above and `PYTHONDONTWRITEBYTECODE`,
+`PYTHONUNBUFFERED` and `PYTHONUTF8`. A token or key in rox's own environment doesn't
+reach the plugin. The full list, with what each one is for, is under Process lifecycle
+in [the plugins doc](docs/03-implementation/10-plugins.md#process-lifecycle). While
+testing, `ROX_PLUGIN_ENV=RUST_BACKTRACE,MY_API_KEY` passes those names too, and rox
+logs them at startup.
+
 A native entry names a binary per platform, keyed `<os>-<arch>` with Rust's names
 (`linux`, `windows`, `macos`; `x86_64`, `aarch64`):
 

@@ -3,9 +3,9 @@
 
 pub fn fmt_hz(hz: f32) -> String {
     if hz >= 1000.0 {
-        format!("{:.1} kHz", hz / 1000.0)
+        rox_i18n::format::format_khz(f64::from(hz) / 1000.0, 1)
     } else {
-        format!("{:.0} Hz", hz.round())
+        rox_i18n::format::format_hz(f64::from(hz.round()), 0)
     }
 }
 

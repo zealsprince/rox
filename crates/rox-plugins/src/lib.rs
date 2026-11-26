@@ -9,6 +9,7 @@
 //! narrower: it only runs what the user switched on, it never trusts a byte
 //! the plugin sends, and nothing it starts outlives it.
 
+pub mod env;
 pub mod hash;
 pub mod host;
 pub mod loader;

@@ -497,6 +497,7 @@ fn main() {
         set_plugin_favourites(settings.plugin_favourites, cx);
         set_unknown_plugin(settings.unknown_plugin.clone());
         rox_plugins::search::set_extra_dirs(split_folders(&settings.program_folders));
+        rox_plugins::env::announce();
         set_acoustic_analysis(settings.acoustic_analysis, cx);
         set_tempo_analysis(settings.tempo_analysis, cx);
         set_gain_mode(settings.replay_gain.mode, cx);

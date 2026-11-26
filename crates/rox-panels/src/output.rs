@@ -469,7 +469,7 @@ fn badge_label(negotiated: &Negotiated) -> SharedString {
     };
     format!(
         "{mode} {} {}",
-        rox_i18n::format::format_unit(f64::from(negotiated.sample_rate) / 1000.0, 1, "kHz"),
+        rox_i18n::format::format_khz(f64::from(negotiated.sample_rate) / 1000.0, 1),
         negotiated.format
     )
     .into()

@@ -93,11 +93,24 @@ pub fn format_datetime(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> S
     with(|f| f.datetime.format(&DateTime { date, time }).to_string())
 }
 
-/// Only the number is localized: SI symbols (Hz, kHz, dB, kbps) read the
-/// same everywhere. The separator is a plain space, though French and German
-/// typography want a non-breaking one; this is the one place to change it.
+/// Only the number is localized: SI symbols (dB, kbps) read the same
+/// everywhere. Hertz is the exception, see [`format_hz`]. The separator is a
+/// plain space, though French and German typography want a non-breaking one;
+/// this is the one place to change it.
 pub fn format_unit(value: f64, max_frac: u8, symbol: &str) -> String {
     format!("{} {symbol}", format_float(value, max_frac))
+}
+
+/// A frequency in Hz, with the locale's own symbol: Russian and Ukrainian
+/// write Гц.
+pub fn format_hz(value: f64, max_frac: u8) -> String {
+    format_unit(value, max_frac, &crate::t!("unit-hz"))
+}
+
+/// A frequency in kHz, with the locale's own symbol: кГц in Russian and
+/// Ukrainian.
+pub fn format_khz(value: f64, max_frac: u8) -> String {
+    format_unit(value, max_frac, &crate::t!("unit-khz"))
 }
 
 /// Sign placement is a locale question (French and German set it off with a
@@ -160,6 +173,15 @@ mod tests {
         assert_eq!(format_unit(44.1, 1, "kHz"), "44,1 kHz");
         crate::pin_thread_locale("en-CA");
         assert_eq!(format_unit(44.1, 1, "kHz"), "44.1 kHz");
+    }
+
+    #[test]
+    fn hertz_takes_the_locales_symbol() {
+        crate::pin_thread_locale("ru");
+        assert_eq!(format_hz(120.0, 0), "120 Гц");
+        assert_eq!(format_khz(1.5, 1), "1,5 кГц");
+        crate::pin_thread_locale("en-CA");
+        assert_eq!(format_khz(1.5, 1), "1.5 kHz");
     }
 
     #[test]

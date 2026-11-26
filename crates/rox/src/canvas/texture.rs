@@ -102,7 +102,11 @@ impl Texture {
             .as_ref()
             .is_some_and(|held| held.window == here && held.size == want);
         if !fits {
-            self.release(window, cx);
+            // Only the uploaded one: an external texture lent to a renderer
+            // that draws its slots stays its own until the item goes.
+            if let Some(held) = self.held.take() {
+                free(held.window, held.id, window, cx);
+            }
 
             match window.register_dynamic_texture(want.0, want.1) {
                 Ok(id) => {
@@ -297,6 +301,20 @@ impl TextureView {
     /// For the canvas's own cleanup, which has the window in hand.
     pub(crate) fn release(&mut self, window: &mut Window, cx: &mut App) {
         self.texture.borrow_mut().release(window, cx);
+    }
+
+    /// The item moves to another window and keeps its session. What this
+    /// window holds is freed here, where it's in hand: the new window may
+    /// paint while this one is mid update, and couldn't free it from there.
+    /// A lender whose texture it was hears it's lost, as on a dock back.
+    pub(crate) fn leave(&mut self, window: &mut Window, cx: &mut App) {
+        let mut texture = self.texture.borrow_mut();
+        let lent = texture.external.is_some();
+        texture.release(window, cx);
+
+        if lent && let Some(lender) = &self.lender {
+            lender.lost();
+        }
     }
 }
 

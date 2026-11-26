@@ -1,0 +1,36 @@
+A tooltip that overflows the window's right or bottom edge, and can't flip
+to the other side of the pointer, lands at the left or top edge instead of
+against the edge it overflowed.
+
+The fallback shifts the tooltip back by its overflow, but subtracts the
+window's right edge as well as the tooltip's: `x - right - window_right`
+where it means `x - (right - window_right)`. That's always negative, so the
+clamp to zero wins. In an 800 px window a 600 px tooltip at pointer x 500
+can't flip (500 - 600 is past the left edge) and went to x 0, 500 px from
+the pointer; it belongs at x 200, flush with the right edge. One wider than
+the window still pins to zero, so its start stays readable. The same holds
+for the bottom edge. The published 0.2.2 source has these lines; droppable
+when a release fixes them.
+
+Diffed against the tree with every earlier patch applied.
+
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -2171,7 +2171,7 @@
+                 } else {
+                     tooltip_bounds.origin.x = cmp::max(
+                         Pixels::ZERO,
+-                        tooltip_bounds.origin.x - tooltip_bounds.right() - window_bounds.right(),
++                        tooltip_bounds.origin.x - (tooltip_bounds.right() - window_bounds.right()),
+                     );
+                 }
+             }
+@@ -2183,7 +2183,7 @@
+                 } else {
+                     tooltip_bounds.origin.y = cmp::max(
+                         Pixels::ZERO,
+-                        tooltip_bounds.origin.y - tooltip_bounds.bottom() - window_bounds.bottom(),
++                        tooltip_bounds.origin.y - (tooltip_bounds.bottom() - window_bounds.bottom()),
+                     );
+                 }
+             }

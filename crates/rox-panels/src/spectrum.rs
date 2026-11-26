@@ -10,7 +10,7 @@ use std::time::Instant;
 use gpui::{
     App, BorderStyle, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Path,
     Rgba, SharedString, Subscription, WeakEntity, Window, canvas, div, fill, linear_color_stop,
-    linear_gradient, point, prelude::*, px, relative, size,
+    linear_gradient, point, prelude::*, px, relative, rems, size,
 };
 use gpui_component::Sizable as _;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -1096,6 +1096,7 @@ pub fn band_overlay(
 fn band_mark(orientation: Orientation, frac: f32, text: &str, color: Rgba, far: bool) -> Div {
     let label = div()
         .text_xs()
+        .line_height(rems(1.))
         .text_color(color)
         .whitespace_nowrap()
         .child(text.to_string());
@@ -1110,8 +1111,10 @@ fn band_mark(orientation: Orientation, frac: f32, text: &str, color: Rgba, far: 
             rule.top_0().bottom_0().left(relative(frac)).border_l_1()
         };
         // Along the top edge, since the scale's numbers run along the base.
+        // The far bound hangs a line lower: the low one carries the name,
+        // which in a narrow window or a long language runs past it.
         rule.flex().flex_col().justify_start().child(if far {
-            label.pr(px(3.)).pt(px(2.))
+            label.pr(px(3.)).pt(px(2.)).mt(rems(1.))
         } else {
             label.pl(px(3.)).pt(px(2.))
         })

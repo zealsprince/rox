@@ -18,6 +18,10 @@ pub enum Read {
         seq: u64,
         /// The renderer's stamp, for latency stats only.
         stamp_ns: u64,
+        /// The size the frame was drawn at, as the slot said and the caller
+        /// accepted. The copy holds `width * height * 4` bytes, rows packed.
+        width: u32,
+        height: u32,
     },
     /// The renderer wrote the slot during the copy.
     Torn,
@@ -34,7 +38,8 @@ pub enum Refusal {
     Empty,
     /// The counter is odd: the renderer is writing.
     Writing,
-    /// The slot says its frame is another size than the one rox asked for.
+    /// The slot says its frame is a size rox didn't ask for, or one that
+    /// doesn't fit the mapping.
     Size { width: u32, height: u32 },
 }
 
@@ -43,14 +48,30 @@ impl Mapping {
     /// `spec().pixel_bytes()` long. Its contents mean something only when
     /// this returns [`Read::Whole`].
     pub fn copy_slot(&self, slot: u32, into: &mut Vec<u8>) -> Read {
-        self.copy_slot_between(slot, into, || {})
+        let (width, height) = (self.spec().width(), self.spec().height());
+        self.copy_slot_sized(slot, |w, h| (w, h) == (width, height), into)
     }
 
-    /// `copy_slot` with a hook between the copy and the second counter
-    /// read, so a test can move the counter there.
+    /// Copies a frame drawn at a size `accept` takes, which can be smaller
+    /// than the mapping: a renderer told a new size draws into the slot's
+    /// first `width * height * 4` bytes, rows packed. `into` ends up that
+    /// long. A size that doesn't fit the mapping is refused whatever
+    /// `accept` says, so every length still comes from rox's own spec.
+    pub fn copy_slot_sized(
+        &self,
+        slot: u32,
+        accept: impl Fn(u32, u32) -> bool,
+        into: &mut Vec<u8>,
+    ) -> Read {
+        self.copy_slot_between(slot, accept, into, || {})
+    }
+
+    /// `copy_slot_sized` with a hook between the copy and the second
+    /// counter read, so a test can move the counter there.
     pub(crate) fn copy_slot_between(
         &self,
         slot: u32,
+        accept: impl Fn(u32, u32) -> bool,
         into: &mut Vec<u8>,
         between: impl FnOnce(),
     ) -> Read {
@@ -87,16 +108,19 @@ impl Mapping {
                 load_u32(base, at + slot::HEIGHT),
             )
         };
-        if width != spec.width() || height != spec.height() {
+        let fits = (1..=spec.width()).contains(&width) && (1..=spec.height()).contains(&height);
+        if !fits || !accept(width, height) {
             return Read::Refused(Refusal::Size { width, height });
         }
 
-        let len = spec.pixel_bytes();
+        // Both sides are at most the spec's, so this is at most its
+        // `pixel_bytes`, which the spec computed with checked arithmetic.
+        let len = width as usize * height as usize * crate::layout::PIXEL as usize;
         into.resize(len, 0);
 
         // SAFETY: the source runs from the slot's pixels for `len` bytes,
-        // which the spec's checked arithmetic puts inside this slot of the
-        // view, and `into` was just sized to `len`. Both lengths are rox's;
+        // at most the spec's frame, which its checked arithmetic puts inside
+        // this slot of the view, and `into` was just sized to `len`. Both lengths are rox's;
         // the slot's own size words only decide whether to copy at all.
         // The renderer may write the source as this reads it. That's a
         // data race in Rust's model, but it's confined to bytes copied
@@ -123,6 +147,8 @@ impl Mapping {
         Read::Whole {
             seq: before,
             stamp_ns,
+            width,
+            height,
         }
     }
 }
@@ -160,7 +186,7 @@ mod tests {
             assert_eq!(slot, (n % 2) as u32);
 
             let read = mapping.copy_slot(slot, &mut frame);
-            let Read::Whole { seq, stamp_ns } = read else {
+            let Read::Whole { seq, stamp_ns, .. } = read else {
                 panic!("frame {n}: {read:?}");
             };
             assert_eq!(seq % 2, 0);
@@ -194,9 +220,14 @@ mod tests {
         let mut frame = Vec::new();
 
         writer.frame(0, pattern(0));
-        let read = mapping.copy_slot_between(0, &mut frame, || {
-            writer.frame(2, pattern(2));
-        });
+        let read = mapping.copy_slot_between(
+            0,
+            |_, _| true,
+            &mut frame,
+            || {
+                writer.frame(2, pattern(2));
+            },
+        );
 
         assert_eq!(read, Read::Torn);
         assert!(matches!(
@@ -219,6 +250,54 @@ mod tests {
                 height: 16
             })
         );
+    }
+
+    #[test]
+    fn a_frame_drawn_smaller_is_read_at_its_own_size() {
+        let (mapping, mut writer) = session(64, 32);
+        let mut frame = Vec::new();
+
+        let slot = writer.frame_at(0, 24, 16, pattern(0));
+        let read = mapping.copy_slot_sized(slot, |w, h| (w, h) == (24, 16), &mut frame);
+        assert!(
+            matches!(
+                read,
+                Read::Whole {
+                    width: 24,
+                    height: 16,
+                    ..
+                }
+            ),
+            "{read:?}"
+        );
+
+        // Packed at its own width, and nothing past it.
+        let mut want = vec![0; 24 * 16 * 4];
+        pattern(0)(&mut want);
+        assert_eq!(frame, want);
+
+        // A size the caller didn't tell it is refused, and so is one past
+        // the mapping, whatever the caller would take.
+        assert_eq!(
+            mapping.copy_slot(slot, &mut frame),
+            Read::Refused(Refusal::Size {
+                width: 24,
+                height: 16
+            })
+        );
+        let slot = writer.frame_claiming(1, 65, 16, |_| {});
+        assert_eq!(
+            mapping.copy_slot_sized(slot, |_, _| true, &mut frame),
+            Read::Refused(Refusal::Size {
+                width: 65,
+                height: 16
+            })
+        );
+        let slot = writer.frame_claiming(2, 0, 16, |_| {});
+        assert!(matches!(
+            mapping.copy_slot_sized(slot, |_, _| true, &mut frame),
+            Read::Refused(Refusal::Size { .. })
+        ));
     }
 
     #[test]

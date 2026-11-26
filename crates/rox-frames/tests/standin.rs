@@ -332,3 +332,97 @@ fn the_bars_example_runs_against_the_stand_in() {
     assert_eq!(said("exited within grace"), "True", "{stdout}");
     assert!(out.status.success(), "{stdout}");
 }
+
+/// The stand-in's report, one `name: value` line each.
+#[cfg(unix)]
+fn report(out: &std::process::Output) -> HashMap<String, String> {
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(": "))
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+/// A renderer written before sizes: it draws at the mapping's size from the
+/// environment and reads nothing rox sends. It must go on working whatever
+/// a target does.
+#[cfg(unix)]
+const FIXED: &str = r#"
+import mmap, os, select, struct, sys, time
+
+w, h = int(os.environ["ROX_FRAMES_WIDTH"]), int(os.environ["ROX_FRAMES_HEIGHT"])
+mem = mmap.mmap(int(os.environ["ROX_FRAMES_FD"]), 0)
+(slot_bytes,) = struct.unpack_from("<Q", mem, 24)
+n = 0
+while True:
+    if select.select([0], [], [], 1 / 30)[0] and not os.read(0, 65536):
+        break
+    base = 4096 + (n % 2) * slot_bytes
+    struct.pack_into("<Q", mem, base, 2 * n + 1)
+    mem[base + 64 : base + 64 + w * h * 4] = bytes((n % 256, 0, 0, 255)) * (w * h)
+    struct.pack_into("<QII", mem, base + 8, time.clock_gettime_ns(time.CLOCK_MONOTONIC), w, h)
+    struct.pack_into("<Q", mem, base, 2 * n + 2)
+    sys.stdout.write(f"f {n} {n % 2}\n")
+    sys.stdout.flush()
+    n += 1
+"#;
+
+/// Bars reads sizes: told three across the run, it draws at each, and
+/// nothing it draws is refused. A renderer that doesn't is sent no size
+/// line and draws at its one size throughout.
+#[cfg(unix)]
+#[test]
+fn a_renderer_that_resizes_follows_and_one_that_doesnt_is_left_alone() {
+    let Some(python) = python3() else {
+        eprintln!("skipped: no python3 on PATH to run the stand-in");
+        return;
+    };
+
+    let out = Command::new(python)
+        .arg(examples().join("standin.py"))
+        .args([
+            "--seconds",
+            "2",
+            "--size",
+            "96x54",
+            "--frames",
+            "320x180",
+            "--resize",
+            "160x90,320x180,64x200",
+        ])
+        .arg(examples().join("bars"))
+        .output()
+        .expect("the stand-in starts");
+    let said = report(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(said["size lines"], "3", "{said:?} {stderr}");
+    assert_eq!(said["refused"], "0", "{said:?} {stderr}");
+    assert_eq!(said["torn"], "0", "{said:?}");
+    assert_eq!(
+        said["sizes"], "['160x90', '320x180', '57x180', '96x54']",
+        "each size it was told, the last held to the mapping with its shape"
+    );
+    assert!(out.status.success(), "{said:?} {stderr}");
+
+    let out = Command::new(python)
+        .arg(examples().join("standin.py"))
+        .args([
+            "--seconds",
+            "1",
+            "--size",
+            "48x32",
+            "--resize",
+            "96x64",
+            "--",
+        ])
+        .args([python, "-c", FIXED])
+        .output()
+        .expect("the stand-in starts");
+    let said = report(&out);
+
+    assert_eq!(said["size lines"], "0", "{said:?}");
+    assert_eq!(said["refused"], "0", "{said:?}");
+    assert_eq!(said["sizes"], "['48x32']", "{said:?}");
+    assert!(out.status.success(), "{said:?}");
+}

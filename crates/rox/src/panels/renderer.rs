@@ -6,70 +6,92 @@
 //!
 //! The renderer is named the way a plugin's panel names its plugin, as
 //! `plugin:<id>` in the chrome's `owner`, so a saved layout lists it in
-//! `requires`. A size is fixed while a session runs: a fixed resolution is
-//! drawn fitted or filled into the panel, and Match the Panel starts the
-//! renderer again at the panel's own size once a resize has held still. The
-//! pointer goes to the renderer except the right button, which opens the
-//! panel's menu. Nothing here approves or switches anything on: a renderer
-//! that isn't ready raises its enable card, and only the card's Switch On
-//! approves.
+//! `requires`. Following the panel, the session draws at the panel's device
+//! pixels times its render scale, and a renderer that resizes hears a new
+//! size once a resize has held still, without starting again. One that
+//! doesn't keeps the size it started at, fitted into the panel. A fixed
+//! resolution is drawn the same way. The renderer's own settings are stored
+//! here, with the panel. The pointer goes to the renderer except the right
+//! button, which opens the panel's menu. Nothing here approves or switches
+//! anything on: a renderer that isn't ready raises its enable card, and only
+//! the card's Switch On approves.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, AnyWindowHandle, App, Bounds, Context, DismissEvent, Entity, EventEmitter,
     FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    NavigationDirection, Pixels, Point, ScrollWheelEvent, SharedString, Subscription, Task,
-    WeakEntity, Window, anchored, canvas, deferred, div, prelude::*, px,
+    NavigationDirection, Pixels, Point, ScrollWheelEvent, SharedString, Subscription, WeakEntity,
+    Window, anchored, canvas, deferred, div, prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable as _};
-use rox_canvas::Projected;
+use rox_canvas::{ImageFit, Projected};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_dock::{Panel, PanelEvent, PanelState, TabPanel};
-use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings, Query};
+use rox_panel_api::panel::{
+    self, AppState, PanelChrome, PanelSettings, Query, ScrubState, ValueEdit,
+};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::ui::{self as settings_ui, PageBody, Section};
 use rox_panel_kit::{choices_shared, picker, toggle};
 use serde::{Deserialize, Serialize};
 
-use crate::canvas::target::{self, CoverAsk, Fix, Key, Pointer, Readiness, Reading, Shown};
-use crate::canvas::texture::WHOLE;
+use crate::canvas::target::{self, CoverAsk, Fix, Key, Place, Pointer, Readiness, Reading, Shown};
+use crate::canvas::target_settings::{self, fit_choices, scale_choices};
 use crate::enable_card::EnableCard;
 use crate::panels::canvas::{RENDERERS_PAGE, button_name, scroll_lines, suggests_rest};
 
 /// The registry name.
 pub const PANEL_NAME: &str = "renderer";
 
-/// How long a panel's size has to hold before Match the Panel starts the
-/// renderer again at it: past a drag's pauses, short of feeling slow.
-const SETTLE: Duration = Duration::from_millis(500);
-
-/// A new panel's resolution.
+/// A fixed resolution's starting value.
 const DEFAULT_SIZE: [u32; 2] = [1280, 720];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sizing {
-    /// A resolution of the panel's own, drawn fitted or filled.
-    #[default]
+    /// A resolution of the panel's own.
     Fixed,
-    /// The panel's size in pixels.
+    /// The panel's size in device pixels, times the render scale.
+    #[default]
     Panel,
 }
 
+/// How the picture fits the panel when their shapes differ. Saved under the
+/// names the panel first had for the first two.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scaling {
     /// All of the picture, with the panel's background in the bands.
-    #[default]
     Fit,
     /// The whole panel covered, the picture's overflow cropped.
+    #[default]
     Fill,
+    /// The whole panel covered, the picture squeezed to it.
+    Stretch,
+}
+
+impl Scaling {
+    fn fit(self) -> ImageFit {
+        match self {
+            Scaling::Fit => ImageFit::Contain,
+            Scaling::Fill => ImageFit::Cover,
+            Scaling::Stretch => ImageFit::Stretch,
+        }
+    }
+
+    fn of(fit: ImageFit) -> Scaling {
+        match fit {
+            ImageFit::Contain => Scaling::Fit,
+            ImageFit::Cover => Scaling::Fill,
+            ImageFit::Stretch => Scaling::Stretch,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -85,114 +107,27 @@ pub struct RendererConfig {
     pub width: u32,
     pub height: u32,
     pub scaling: Scaling,
+    /// Following the panel, its pixels as a percent of the panel's.
+    pub scale: u32,
     /// Pauses the renderer while the music is paused or stopped.
     pub rests: bool,
+    /// The renderer's settings by key, as its manifest declares them.
+    pub settings: serde_json::Value,
 }
 
 impl Default for RendererConfig {
     fn default() -> Self {
         RendererConfig {
             chrome: PanelChrome::default(),
-            sizing: Sizing::Fixed,
+            sizing: Sizing::Panel,
             width: DEFAULT_SIZE[0],
             height: DEFAULT_SIZE[1],
-            scaling: Scaling::Fit,
+            scaling: Scaling::Fill,
+            scale: 100,
             rests: false,
+            settings: serde_json::Value::Null,
         }
     }
-}
-
-/// Where the picture goes in the panel this frame: its box, panel-relative,
-/// and the part of the picture that shows.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Layout {
-    /// Left, top, width, height.
-    rect: [f32; 4],
-    /// 0 to 1 across and down. The whole picture unless filled.
-    crop: Bounds<f32>,
-}
-
-/// The picture's box for a session of `size` in a panel of `panel`.
-/// Matching the panel stretches the last frame while a new size settles.
-fn layout(sizing: Sizing, scaling: Scaling, size: [u32; 2], panel: [f32; 2]) -> Layout {
-    let full = Layout {
-        rect: [0., 0., panel[0], panel[1]],
-        crop: WHOLE,
-    };
-    if sizing == Sizing::Panel || size[0] == 0 || size[1] == 0 || panel[1] <= 0. {
-        return full;
-    }
-
-    let picture = size[0] as f32 / size[1] as f32;
-    let room = panel[0] / panel[1];
-
-    match scaling {
-        Scaling::Fit if room > picture => {
-            let width = panel[1] * picture;
-            Layout {
-                rect: [(panel[0] - width) / 2., 0., width, panel[1]],
-                crop: WHOLE,
-            }
-        }
-
-        Scaling::Fit => {
-            let height = panel[0] / picture;
-            Layout {
-                rect: [0., (panel[1] - height) / 2., panel[0], height],
-                crop: WHOLE,
-            }
-        }
-
-        Scaling::Fill if room > picture => {
-            let shown = picture / room;
-            Layout {
-                crop: Bounds::new(gpui::point(0., (1. - shown) / 2.), gpui::size(1., shown)),
-                ..full
-            }
-        }
-
-        Scaling::Fill => {
-            let shown = room / picture;
-            Layout {
-                crop: Bounds::new(gpui::point((1. - shown) / 2., 0.), gpui::size(shown, 1.)),
-                ..full
-            }
-        }
-    }
-}
-
-/// Where a panel-relative point falls on the picture, 0 to 1 from its
-/// top-left, or None over the bands around a fitted one.
-fn surface_point(layout: &Layout, at: [f32; 2]) -> Option<[f32; 2]> {
-    let [left, top, width, height] = layout.rect;
-    if width <= 0. || height <= 0. {
-        return None;
-    }
-
-    let across = [(at[0] - left) / width, (at[1] - top) / height];
-    if !(0. ..=1.).contains(&across[0]) || !(0. ..=1.).contains(&across[1]) {
-        return None;
-    }
-
-    let crop = layout.crop;
-    Some([
-        crop.origin.x + across[0] * crop.size.width,
-        crop.origin.y + across[1] * crop.size.height,
-    ])
-}
-
-/// The session size Match the Panel asks for: the panel in device pixels,
-/// held to what a renderer can draw and rounded down to even.
-fn matched_size(panel: [f32; 2], scale: f32) -> [u32; 2] {
-    let side = |logical: f32, range: std::ops::RangeInclusive<u32>| {
-        let pixels = (logical * scale).round().max(0.) as u32;
-        (pixels - pixels % 2).clamp(*range.start(), *range.end())
-    };
-
-    [
-        side(panel[0], rox_services::renderers::WIDTHS),
-        side(panel[1], rox_services::renderers::HEIGHTS),
-    ]
 }
 
 /// The width and height fields, each with its subscription, and the
@@ -234,22 +169,17 @@ pub struct RendererPanel {
     reading: Reading,
     /// The panel's box from the last paint, in window coordinates.
     bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// The picture's place from the last render, for the pointer.
-    layout: Layout,
-    /// Match the Panel's session size, once there is one.
-    matched: Option<[u32; 2]>,
-    /// A new panel size and when it was first seen, until it holds.
-    settling: Option<([u32; 2], Instant)>,
-    /// A button held down over the window: a drag, which never restarts it.
+    /// A button held down over the window: a drag, which a following size
+    /// waits out.
     pressed: Rc<Cell<bool>>,
-    _settle: Option<Task<()>>,
-    /// The pointer is over the picture.
-    over: bool,
     menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
     prompt: Option<Prompt>,
     /// The fixed resolution's typed fields and the settings window they
     /// were made in: another settings window makes its own.
     size_inputs: Option<SizeInputs>,
+    /// The settings' number strips, by setting key, and their typing.
+    scrubs: HashMap<String, ScrubState>,
+    value_edit: ValueEdit,
     _player: Subscription,
 }
 
@@ -284,15 +214,12 @@ impl RendererPanel {
             shown: None,
             reading: Reading::default(),
             bounds: Rc::default(),
-            layout: layout(Sizing::Panel, Scaling::Fit, [0, 0], [0., 0.]),
-            matched: None,
-            settling: None,
             pressed: Rc::default(),
-            _settle: None,
-            over: false,
             menu: None,
             prompt: None,
             size_inputs: None,
+            scrubs: HashMap::new(),
+            value_edit: ValueEdit::default(),
             _player: player,
         }
     }
@@ -321,10 +248,27 @@ impl RendererPanel {
             self.config.rests = suggests_rest(&owner);
             self.config.chrome.owner = owner;
             panel::refresh_tab_panel(&self.tab_panel, cx);
+            self.save_config(cx);
         }
 
         cx.notify();
         off
+    }
+
+    /// A setting moved: the layout is saved soon, as a dock change is. The
+    /// panel's own events never reach the dock, so it goes through the tab
+    /// panel, and a pick lands even if rox is killed a moment later.
+    fn save_config(&self, cx: &mut Context<Self>) {
+        if let Some(tabs) = self.tab_panel.as_ref().and_then(WeakEntity::upgrade) {
+            tabs.update(cx, |_, cx| cx.emit(PanelEvent::LayoutChanged));
+        }
+    }
+
+    /// One edit of the config from the settings page, saved and shown.
+    fn edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut RendererConfig)) {
+        f(&mut self.config);
+        self.save_config(cx);
+        cx.notify();
     }
 
     /// A pick from the panel's own menus: one that isn't switched on raises
@@ -480,53 +424,6 @@ impl RendererPanel {
         cx.notify();
     }
 
-    /// The session's size this frame: the fixed one, or the panel's once it
-    /// has held still for [`SETTLE`] with no button down.
-    fn session_size(&mut self, window: &Window, cx: &mut Context<Self>) -> [u32; 2] {
-        if self.config.sizing == Sizing::Fixed {
-            self.settling = None;
-            self.matched = None;
-            return [self.config.width, self.config.height];
-        }
-
-        let bounds = self.bounds.get();
-        let panel = [f32::from(bounds.size.width), f32::from(bounds.size.height)];
-        let want = matched_size(panel, window.scale_factor());
-
-        let Some(current) = self.matched else {
-            self.matched = Some(want);
-            return want;
-        };
-        if want == current {
-            self.settling = None;
-            return current;
-        }
-
-        let now = Instant::now();
-        let since = match self.settling {
-            Some((size, since)) if size == want => since,
-            _ => {
-                self.settling = Some((want, now));
-                now
-            }
-        };
-
-        let held = now.duration_since(since);
-        if held >= SETTLE && !self.pressed.get() {
-            self.settling = None;
-            self.matched = Some(want);
-            return want;
-        }
-
-        // Look again once it may have held, or the drag has ended.
-        let wait = SETTLE.saturating_sub(held) + Duration::from_millis(20);
-        self._settle = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(wait).await;
-            this.update(cx, |_, cx| cx.notify()).ok();
-        }));
-        current
-    }
-
     /// This frame's reading for the renderer, as a canvas reads it for its
     /// targets: the pool, the signals while music plays and a moment after,
     /// the colours and the cover.
@@ -565,12 +462,11 @@ impl RendererPanel {
             return None;
         }
 
-        let [width, height] = self.session_size(window, cx);
-        let key = Key {
-            owner,
-            width,
-            height,
+        let size = match self.config.sizing {
+            Sizing::Fixed => target::Sizing::Fixed([self.config.width, self.config.height]),
+            Sizing::Panel => target::Sizing::Follow(self.config.scale),
         };
+        let key = Key { owner, size };
         if self.shown.as_ref().is_some_and(|shown| *shown.key() != key)
             && let Some(old) = self.shown.take()
         {
@@ -583,29 +479,33 @@ impl RendererPanel {
             return None;
         }
 
-        self.layout = layout(
-            self.config.sizing,
-            self.config.scaling,
-            [key.width, key.height],
-            panel,
-        );
-        let [left, top, w, h] = self.layout.rect;
-        let face = Projected {
-            corners: [
-                [left, top],
-                [left + w, top],
-                [left + w, top + h],
-                [left, top + h],
-            ],
-            depth: 0.,
-            scale: 1.,
-            opacity: 1.,
+        let device = window.scale_factor();
+        let ceiling = match size {
+            target::Sizing::Follow(percent) => target::ceiling(cx, device, percent),
+            target::Sizing::Fixed(size) => size,
         };
-        let crop = (self.layout.crop != WHOLE).then_some(self.layout.crop);
+        let place = Place {
+            face: Projected {
+                corners: [
+                    [0., 0.],
+                    [panel[0], 0.],
+                    [panel[0], panel[1]],
+                    [0., panel[1]],
+                ],
+                depth: 0.,
+                scale: 1.,
+                opacity: 1.,
+            },
+            room: panel.map(|side| side * device),
+            fit: self.config.scaling.fit(),
+            pressed: self.pressed.get(),
+            ceiling,
+            settings: &self.config.settings,
+        };
         let rest = self.config.rests && !self.reading.playing();
 
         let shown = self.shown.get_or_insert_with(|| Shown::new(key));
-        let (view, _) = shown.paint(face, crop, rest, self.reading.feed(), cx);
+        let (view, _) = shown.paint(place, rest, self.reading.feed(), cx);
         view
     }
 
@@ -623,28 +523,29 @@ impl RendererPanel {
     /// Sends the renderer a pointer event at a panel-relative point, and a
     /// leave once the pointer leaves the picture.
     fn point(&mut self, at: [f32; 2], pointer: impl FnOnce([f32; 2]) -> Pointer) {
-        let Some(target) = self.shown.as_ref().and_then(Shown::target) else {
+        let size = self.bounds.get().size;
+        let room = [f32::from(size.width), f32::from(size.height)];
+        if room[0] <= 0. || room[1] <= 0. {
             return;
-        };
-
-        match surface_point(&self.layout, at) {
-            Some(spot) => {
-                self.over = true;
-                target.point(pointer(spot));
-            }
-            None if self.over => {
-                self.over = false;
-                target.point(Pointer::Leave);
-            }
-            None => {}
         }
+
+        let across = [at[0] / room[0], at[1] / room[1]];
+        self.aim(pointer(across));
     }
 
     fn leave(&mut self) {
-        if std::mem::take(&mut self.over)
-            && let Some(target) = self.shown.as_ref().and_then(Shown::target)
+        self.aim(Pointer::Leave);
+    }
+
+    fn aim(&mut self, pointer: Pointer) {
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+
+        if let Some(pointer) = shown.aim(pointer)
+            && let Some(target) = shown.target()
         {
-            target.point(Pointer::Leave);
+            target.point(pointer);
         }
     }
 
@@ -845,11 +746,10 @@ impl RendererPanel {
                         _ => rox_services::renderers::HEIGHTS,
                     };
                     let pixels = typed.clamp(*range.start(), *range.end());
-                    match axis {
-                        0 => this.config.width = pixels,
-                        _ => this.config.height = pixels,
-                    }
-                    cx.notify();
+                    this.edit(cx, |config| match axis {
+                        0 => config.width = pixels,
+                        _ => config.height = pixels,
+                    });
                 },
             );
             (input, events)
@@ -939,30 +839,27 @@ impl PanelSettings for RendererPanel {
         );
 
         let sizings = [
-            (rox_i18n::t!("canvas-target-panel-fixed"), Sizing::Fixed),
             (rox_i18n::t!("canvas-target-panel-match"), Sizing::Panel),
+            (rox_i18n::t!("canvas-target-panel-fixed"), Sizing::Fixed),
         ];
         let sizing = choices_shared(
             &sizings,
             self.config.sizing,
-            |this: &mut Self, sizing, cx| {
-                this.config.sizing = sizing;
-                cx.notify();
-            },
+            |this: &mut Self, sizing, cx| this.edit(cx, |config| config.sizing = sizing),
             cx,
         );
 
-        let scalings = [
-            (rox_i18n::t!("canvas-target-panel-fit"), Scaling::Fit),
-            (rox_i18n::t!("canvas-target-panel-fill"), Scaling::Fill),
-        ];
-        let scaling = choices_shared(
-            &scalings,
-            self.config.scaling,
-            |this: &mut Self, scaling, cx| {
-                this.config.scaling = scaling;
-                cx.notify();
-            },
+        let scale = choices_shared(
+            &scale_choices(),
+            self.config.scale,
+            |this: &mut Self, scale, cx| this.edit(cx, |config| config.scale = scale),
+            cx,
+        );
+
+        let fit = choices_shared(
+            &fit_choices(),
+            self.config.scaling.fit(),
+            |this: &mut Self, fit, cx| this.edit(cx, |config| config.scaling = Scaling::of(fit)),
             cx,
         );
 
@@ -974,10 +871,11 @@ impl PanelSettings for RendererPanel {
             &presets,
             [self.config.width, self.config.height],
             |this: &mut Self, [width, height]: [u32; 2], cx| {
-                this.config.width = width;
-                this.config.height = height;
                 this.size_inputs = None;
-                cx.notify();
+                this.edit(cx, |config| {
+                    config.width = width;
+                    config.height = height;
+                });
             },
             cx,
         );
@@ -993,14 +891,13 @@ impl PanelSettings for RendererPanel {
         let fixed = self.config.sizing == Sizing::Fixed;
         let rests = toggle(
             self.config.rests,
-            |this: &mut Self, on, cx| {
-                this.config.rests = on;
-                cx.notify();
-            },
+            |this: &mut Self, on, cx| this.edit(cx, |config| config.rests = on),
             cx,
         );
 
-        PageBody::new().section(Section::new(
+        let settings = self.setting_rows(cx);
+
+        let page = PageBody::new().section(Section::new(
             q,
             icons::MONITOR_PLAY,
             rox_i18n::t!("panel-catalog-renderer"),
@@ -1013,7 +910,7 @@ impl PanelSettings for RendererPanel {
                 )
                 .keyed(
                     "canvas-target-panel-sizing",
-                    &["resolution", "size", "pixels", "match"],
+                    &["resolution", "size", "pixels", "follow", "match"],
                     sizing,
                 )
                 .when(fixed, |rows| {
@@ -1027,19 +924,75 @@ impl PanelSettings for RendererPanel {
                         &["width", "height", "pixels"],
                         size_fields,
                     )
-                    .keyed(
-                        "canvas-target-panel-scaling",
-                        &["fit", "fill", "crop", "letterbox"],
-                        scaling,
+                })
+                .when(!fixed, |rows| {
+                    rows.keyed(
+                        "canvas-target-scale",
+                        &["scale", "resolution", "sharp", "percent"],
+                        scale,
                     )
                 })
+                .keyed(
+                    "canvas-target-fit",
+                    &["fit", "fill", "crop", "letterbox", "stretch"],
+                    fit,
+                )
                 .keyed(
                     "canvas-target-rests",
                     &["pause", "music", "stop", "idle"],
                     rests,
                 )
             },
+        ));
+
+        if settings.is_empty() {
+            return page;
+        }
+        page.section(Section::new(
+            q,
+            icons::SETTINGS,
+            rox_i18n::t!("canvas-target-settings"),
+            None,
+            |rows| {
+                settings.into_iter().fold(rows, |rows, row| {
+                    let title = row.title.clone();
+                    rows.row_dyn(&[title.as_ref()], row.title, None, row.control)
+                })
+            },
         ))
+    }
+}
+
+impl RendererPanel {
+    /// A row for each setting the picked renderer declares, the values
+    /// stored with this panel.
+    fn setting_rows(&mut self, cx: &mut Context<Self>) -> Vec<target_settings::SettingRow> {
+        let Some(id) = self.renderer() else {
+            return Vec::new();
+        };
+        let Some(renderer) = rox_services::renderers::all()
+            .into_iter()
+            .find(|renderer| renderer.id == id)
+        else {
+            return Vec::new();
+        };
+
+        let set = |this: &mut Self, key: &str, value: serde_json::Value, cx: &mut Context<Self>| {
+            this.edit(cx, |config| {
+                config.settings = target_settings::with(&config.settings, key, value);
+            });
+        };
+
+        let scrubs = &mut self.scrubs;
+        let mut scrub = |key: &str| scrubs.entry(key.to_string()).or_default().clone();
+        target_settings::setting_rows(
+            &renderer.settings,
+            &self.config.settings,
+            &mut scrub,
+            &self.value_edit,
+            set,
+            cx,
+        )
     }
 }
 
@@ -1274,82 +1227,34 @@ impl Render for RendererPanel {
 mod tests {
     use super::*;
 
-    fn close(a: [f32; 4], b: [f32; 4]) -> bool {
-        a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-3)
-    }
-
     #[test]
-    fn fit_letterboxes_and_keeps_the_whole_picture() {
-        // A 16:9 picture in a square panel: bands above and below.
-        let fit = layout(Sizing::Fixed, Scaling::Fit, [1280, 720], [400., 400.]);
-        assert!(close(fit.rect, [0., 87.5, 400., 225.]), "{:?}", fit.rect);
-        assert_eq!(fit.crop, WHOLE);
-
-        // In a wide panel: bands at the sides.
-        let wide = layout(Sizing::Fixed, Scaling::Fit, [1280, 720], [1000., 200.]);
-        let width = 200. * 1280. / 720.;
-        assert!(close(wide.rect, [(1000. - width) / 2., 0., width, 200.]));
-    }
-
-    #[test]
-    fn fill_covers_the_panel_and_crops_the_middle() {
-        let fill = layout(Sizing::Fixed, Scaling::Fill, [1280, 720], [400., 400.]);
-        assert!(close(fill.rect, [0., 0., 400., 400.]));
-
-        // A square panel on 16:9 keeps the middle 9/16 across.
-        let shown = 720. / 1280.;
-        assert!((fill.crop.size.width - shown).abs() < 1e-4);
-        assert!((fill.crop.origin.x - (1. - shown) / 2.).abs() < 1e-4);
-        assert_eq!(fill.crop.size.height, 1.);
-    }
-
-    #[test]
-    fn matching_the_panel_stretches_while_it_settles() {
-        let matched = layout(Sizing::Panel, Scaling::Fit, [1280, 720], [300., 300.]);
-        assert!(close(matched.rect, [0., 0., 300., 300.]));
-        assert_eq!(matched.crop, WHOLE);
-    }
-
-    #[test]
-    fn the_pointer_lands_on_the_picture_not_the_bands() {
-        let fit = layout(Sizing::Fixed, Scaling::Fit, [1280, 720], [400., 400.]);
-        assert_eq!(surface_point(&fit, [200., 200.]), Some([0.5, 0.5]));
-        assert_eq!(surface_point(&fit, [0., 87.5]), Some([0., 0.]));
-        assert_eq!(surface_point(&fit, [200., 40.]), None, "over the top band");
-
-        let fill = layout(Sizing::Fixed, Scaling::Fill, [1280, 720], [400., 400.]);
-        let [x, y] = surface_point(&fill, [0., 400.]).unwrap();
-        assert!(
-            (x - fill.crop.origin.x).abs() < 1e-4,
-            "the crop's left edge"
-        );
-        assert_eq!(y, 1.);
-    }
-
-    #[test]
-    fn a_matched_size_is_device_pixels_held_to_the_limits_and_even() {
-        assert_eq!(matched_size([641., 361.], 1.), [640, 360]);
-        assert_eq!(matched_size([640.5, 360.], 2.), [1280, 720]);
-        assert_eq!(
-            matched_size([4., 3.], 1.),
-            [16, 16],
-            "the smallest a renderer draws"
-        );
-        assert_eq!(
-            matched_size([3000., 2000.], 2.),
-            [3840, 2160],
-            "and the largest"
-        );
-    }
-
-    #[test]
-    fn a_new_panel_is_fixed_720p_fitted_and_runs_through_pauses() {
+    fn a_new_panel_follows_the_panel_covered_and_runs_through_pauses() {
         let config = RendererConfig::default();
-        assert_eq!(config.sizing, Sizing::Fixed);
-        assert_eq!([config.width, config.height], [1280, 720]);
-        assert_eq!(config.scaling, Scaling::Fit);
+        assert_eq!(config.sizing, Sizing::Panel);
+        assert_eq!(config.scale, 100);
+        assert_eq!(config.scaling, Scaling::Fill);
+        assert_eq!(config.scaling.fit(), ImageFit::Cover);
         assert!(!config.rests);
         assert!(config.chrome.owner.is_empty());
+        assert!(config.settings.is_null());
+    }
+
+    #[test]
+    fn a_panel_saved_before_the_render_scale_reads_as_it_was() {
+        let saved = serde_json::json!({
+            "owner": "plugin:bars",
+            "sizing": "fixed",
+            "width": 1920,
+            "height": 1080,
+            "scaling": "fit",
+            "rests": false,
+        });
+        let config: RendererConfig = serde_json::from_value(saved).unwrap();
+
+        assert_eq!(config.sizing, Sizing::Fixed);
+        assert_eq!([config.width, config.height], [1920, 1080]);
+        assert_eq!(config.scaling.fit(), ImageFit::Contain);
+        assert_eq!(config.scale, 100);
     }
 
     #[test]
@@ -1360,15 +1265,19 @@ mod tests {
                 ..PanelChrome::default()
             },
             sizing: Sizing::Panel,
-            scaling: Scaling::Fill,
+            scaling: Scaling::Stretch,
+            scale: 150,
             rests: true,
+            settings: serde_json::json!({ "look": "ice" }),
             ..RendererConfig::default()
         };
 
         let saved = serde_json::to_value(&config).unwrap();
         assert_eq!(saved["owner"], "plugin:bars");
         assert_eq!(saved["sizing"], "panel");
-        assert_eq!(saved["scaling"], "fill");
+        assert_eq!(saved["scaling"], "stretch");
+        assert_eq!(saved["scale"], 150);
+        assert_eq!(saved["settings"]["look"], "ice");
 
         let back: RendererConfig = serde_json::from_value(saved.clone()).unwrap();
         assert_eq!(back.chrome.owner, "plugin:bars");

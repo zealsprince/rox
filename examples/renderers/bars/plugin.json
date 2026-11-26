@@ -13,6 +13,6 @@
     "license": "AGPL-3.0-only"
   },
   "capabilities": {
-    "renderer": { "label": "Bars", "palette": true, "spectrum": true }
+    "renderer": { "label": "Bars", "palette": true, "spectrum": true, "resizes": true }
   }
 }

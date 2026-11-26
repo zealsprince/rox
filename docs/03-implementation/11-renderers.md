@@ -6,7 +6,8 @@ into instead on Linux, the lines it reads and writes, and the rules that stop it
 makes [ADR 37](../02-architecture/decisions/37-adr-render-targets.md) concrete, with its
 amendments of 2026-11-16 (renderers are listed apart from plugins), 2026-11-23 (shared
 memory is rox's own channel), 2026-11-25 (a GPU texture, Linux first) and 2026-11-26 (a
-page and a switch of their own, and the Renderer panel). A renderer runs in the sandbox of
+page and a switch of their own, the Renderer panel, and a size that follows the box with
+settings of the renderer's own). A renderer runs in the sandbox of
 [ADR 38](../02-architecture/decisions/38-adr-renderer-sandbox.md) on Linux. Underneath, a renderer is the package of
 [ADR 30](../02-architecture/decisions/30-adr-plugins.md) under its renderer amendment:
 the same folder or `.roxp`, the same hash and the same approval, so
@@ -52,10 +53,11 @@ written for x86_64 and aarch64. What [A GPU renderer](#a-gpu-renderer) and
 3. Or on a canvas: with design mode on, right-click empty stage, or press the
    plus in the canvas inspector's header, and pick Add Render Target > Bars
    (`open_add_menu`, `rox/src/panels/canvas.rs`). The same card comes up for a renderer
-   that isn't switched on, and the signals offer after it. The new target draws at 1280
-   by 720 pixels on a 640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`). The
-   inspector's Resolution row changes the pixel size, and Status says whether the
-   renderer runs, with a button that fixes what it can.
+   that isn't switched on, and the signals offer after it. The new target is a 640 by 360
+   unit item that follows its own size on screen (`TARGET_UNITS`): its Size row says
+   Follow the Item, its Render Scale 100%, its Fit Cover ([The size](#the-size)). Fixed
+   gives it a resolution of its own instead, 1280 by 720 to start (`TARGET_PIXELS`).
+   Status says whether the renderer runs, with a button that fixes what it can.
 4. Play something. Bars draws a bar for each signal in the pool (Application > Signals
    edits it) in the theme's accent, so a pool with nothing in it draws one empty bar. Along the top it draws 64 thin bars
    from the spectrum.
@@ -124,6 +126,14 @@ music is paused or stopped. It's `true` or `false`, off when left out, and refus
 the others when it's anything else. It isn't a grant either: it only sets the starting
 value of the target's Pause With the Music setting, in a canvas or a Renderer panel, and
 the user's setting wins from then on ([Lifecycle](#lifecycle)).
+
+Two more aren't grants, and the card says nothing of either. `resizes`, `true` or
+`false` and off when left out, says the renderer reads a size on the wire and draws at
+it, so a target that follows its box tells it the new size instead of starting it again
+([The size](#the-size)). `settings` lists what a target lets the user set for the
+renderer ([Settings](#settings)). A value tells the renderer only what the user picked
+for it, nothing about the music, the user or the theme. A manifest that gains either is
+still a changed manifest, so the renderer switches off until it's approved again.
 
 A manifest asking for everything:
 
@@ -241,7 +251,62 @@ bits go (`extract`, `rox-package/src/lib.rs`). A file the archive holds no Unix 
 as a zip made on Windows can, unpacks as `0644` and won't run. Pack on Linux or macOS
 from a folder whose launcher has its bit set.
 
-A renderer gets no settings from rox: nothing in `hello` comes from `config_schema`.
+### Settings
+
+`capabilities.renderer.settings` is a list of what a render target lets the user set
+for the renderer. Each target keeps its own values: a canvas target in its item's
+`config`, a Renderer panel in its own `settings`, so two targets of one renderer can
+differ, and a workspace or an object that travels carries them. Plasma's:
+
+```json
+"settings": [
+  {
+    "key": "look", "type": "enum", "title": "Look",
+    "choices": [
+      { "value": "rainbow", "label": "Rainbow" },
+      { "value": "ember", "label": "Ember" },
+      { "value": "ice", "label": "Ice" }
+    ],
+    "default": "rainbow", "apply": "line"
+  },
+  {
+    "key": "rate", "type": "number", "title": "Frames a Second",
+    "min": 10, "max": 60, "step": 10, "default": 60, "apply": "restart"
+  }
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `key` | The name its value goes under on the wire: a lowercase letter, then lowercase letters, digits and underscores, 32 bytes at most, and no two alike. Required. |
+| `type` | `enum`, `bool` or `number`. A type this rox doesn't know is skipped, never shown and never sent, so a renderer written for a later rox still loads. Required. |
+| `title` | The row's name in the inspector and the panel's settings. Required. |
+| `choices` | An `enum`'s choices in the order they're offered, 1 to 32 of `{ "value", "label" }`: `value` is what the renderer is sent, a string of at most 64 bytes, and `label` what the user is shown. Refused on the other types. |
+| `min`, `max` | A `number`'s range, both required for it, `min` below `max`. |
+| `step` | A `number`'s step from `min`, above 0. Left out, any number in the range. A value off its step lands on the nearest one. |
+| `default` | The value a target holds until the user picks one. Left out: an enum's first choice, `false`, or a number's `min`. One the setting doesn't take refuses the manifest. |
+| `apply` | `line`, the default, sends a change as a [`settings` line](#rox-to-the-renderer). `restart` starts the target's session again with the new value in `hello`, for a setting the renderer reads only at its start. |
+
+A title and a label are shown as the package gives them, untranslated, as a plugin's
+`config_schema` titles are on the Plugins page: rox can't translate a stranger's words.
+They're held to plain text a row can show: at most 48 characters, not blank, with no
+control character and no bidi mark, embedding, override or isolate. The manifest is
+refused with one reason, on the Renderers page, for more than 32 settings or any field
+outside the rules above (`check`, `rox-plugins/src/renderer_settings.rs`).
+
+rox holds every value to the declaration before the renderer hears it (`values`,
+`renderer_settings.rs`): an enum's value is one of its choices, a bool is `true` or
+`false`, a number is inside its range and on its step. A stored value the declaration
+doesn't take reads as the setting's default, and a stored key the manifest no longer
+declares is left out of what's sent, with a log line at the session's start
+(`renderer <id>: set aside settings its manifest doesn't take: ...`). The target keeps
+it stored, so a renderer that declares it again finds it. A renderer is only ever sent
+the keys it declares, each with a value it takes.
+
+A changed value reaches a running renderer the way its `apply` says: a `settings` line
+with the whole set again, or for a `restart` setting a new session, which doesn't count
+as an exit. A paused renderer hears a change when it resumes. On a canvas each change is
+one undo step.
 
 ## Lifecycle
 
@@ -265,7 +330,7 @@ starts with](#what-a-native-renderer-starts-with) has the whole of it. On top of
 |---|---|
 | `ROX_RENDER_API` | `1` |
 | `ROX_CACHE_DIR` | Its [cache folder](#the-cache-folder), on every platform and in every tier |
-| `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | The target's size in pixels |
+| `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | The frame mapping's size in pixels. For a renderer that doesn't resize, the size it draws at; for one that does, the most it can draw at ([The size](#the-size)) |
 | `ROX_FRAMES_FD` | `3`, on Unix only |
 | `ROX_COVER_FD` | `4`, on Unix only, and only for a renderer granted the cover |
 | `ROX_TEXTURE_FD` | The texture's fd, on Linux only, and only for a renderer lent one: `4`, or `5` when the cover is lent too |
@@ -323,16 +388,76 @@ the canvas leaves it (`Targets::carry`, `rox/src/canvas/target.rs`).
 
 rox stops a session in two ways:
 
-- Deleting the item, changing its resolution and closing the canvas close the
-  renderer's stdin, wait up to 200 ms for it to exit, then kill its process group
-  (`Session::stop` and `GRACE`, `renderers.rs`). A new resolution is a new
-  session with a new mapping.
+- Deleting the item, changing how its size is chosen (Follow or Fixed, the render
+  scale, a fixed resolution), a change to a `restart` setting and closing the canvas
+  close the renderer's stdin, wait up to 200 ms for it to exit, then kill its process
+  group (`Session::stop` and `GRACE`, `renderers.rs`). Each of those but the last is a
+  new session with a new mapping. Resizing a box that's followed never is.
 - Switching the renderer off, removing it and a change to its files kill it at once
   (`enforce`, `renderers.rs`). So does quitting rox (`stop_all`). Turning Enable Plugins
   off doesn't: it stops the plugins and leaves renderers running.
 
 Kill is `SIGKILL` to the process group on Unix. A renderer has no shutdown to answer
 and nothing to save. Exiting when stdin closes is all rox asks.
+
+## The size
+
+A target's size is chosen one of two ways, in the canvas inspector and in a Renderer
+panel's settings:
+
+| Size | Draws at |
+|---|---|
+| Follow, the default for a new target | The box's size on screen at rest, in device pixels, times the Render Scale: 50, 75, 100, 150 or 200% |
+| Fixed | Its own width and height, from 16 by 16 to 3840 by 2160, whatever the box |
+
+The box is a Renderer panel's whole body, or a canvas item's size at rest: its box and
+its own scale through the canvas's pixels per unit (`rest_size`,
+`rox-canvas/src/project.rs`). Tilt, the camera's perspective and what routes and sway do
+to an item don't count, so a target pulsing to the bass keeps its size. A group's own
+scale doesn't count either. A following size is rounded to a multiple of 16 pixels and
+held to 16 by 16 at the least (`follow_size` and `SIZE_STEP`,
+`rox/src/canvas/target.rs`). While the box is being resized, rox waits until its size has
+held for 250 ms, with no mouse button down over a Renderer panel's window, then tells the
+renderer once (`SETTLE`).
+
+What the renderer gets depends on its manifest:
+
+- One whose manifest says `"resizes": true` gets a frame mapping at the target's ceiling
+  for the session's life, and the size to draw at in `hello`. When the box settles at
+  another size, rox writes a [`size` line](#rox-to-the-renderer) and the session goes
+  on, process and all. The renderer draws each frame at the newest size it holds into
+  the start of its slot, and the slot's size words say which ([Writing a
+  frame](#writing-a-frame)). With the GPU texture, the texture is made at the ceiling
+  too, and the renderer draws into its top-left corner ([A GPU
+  texture](#a-gpu-texture)).
+- One that doesn't say it gets one size for the session: the box's when the session
+  starts, so its shape is right at the start, in a mapping exactly that size. A resize
+  after that is shown by the target's Fit and tells the renderer nothing. Its next
+  session, after an exit or a setting that restarts it, starts at the box's size then.
+
+The ceiling is the largest connected display's pixels on each side, times the Render
+Scale, held to 3840 by 2160 (`ceiling`, `target.rs`). It's worked out when the target's
+session is made, from gpui's displays and the window's scale factor, and holds for the
+target's life. A box that outgrows it, as a window spanning two displays can, draws at
+the largest size of its own shape that fits inside the ceiling and is scaled up
+(`held_to`). A Fixed target's ceiling is its own size.
+
+The picture fits the box by the target's Fit when their shapes differ: a renderer that
+doesn't resize after a resize, a size rounded to 16, a frame drawn at the size before
+while the renderer catches up, or a fixed resolution of another shape.
+
+| Fit | The picture |
+|---|---|
+| Contain | All of it, with bands of what's behind the target around it |
+| Cover, the default for a new target | Fills the box, the middle kept and the overflow cropped |
+| Stretch | Fills the box, squeezed to it |
+
+Cover is the default because a following target's picture is the box's own shape but for
+the rounding and the moment after a resize, and Cover shows those with nothing squeezed
+and no bands. A target saved before Size existed keeps its width and height as Fixed and
+reads as Stretch, which is how it drew, so no workspace changes on load. The pointer is
+mapped through the fit: over a contained picture's bands it's off the surface, and the
+renderer gets `leave`.
 
 ## The Renderer panel
 
@@ -352,17 +477,19 @@ offers Open Renderers Settings. A stopped session shows its status with the same
 the canvas inspector has: Switch On... for one switched off or not approved, Open
 Renderers Settings for one missing or broken, Start Again for one stopped after its exits.
 
-The session's size is fixed while it runs, as a target's is. Size in the panel's settings
-picks how:
+The panel's settings choose its size the way the canvas inspector does ([The
+size](#the-size)): Follow the Panel, the default for a new panel, with its Render Scale,
+or Fixed, with the canvas's presets and a width and height. Fit is Contain, Cover or
+Stretch, saved under the names the panel first had, `fit` and `fill`, for the first two.
+A panel saved with a Fixed resolution keeps it and its fit. One saved on Match the Panel
+now follows the panel without starting again. Its settings rows follow, when its
+renderer declares any ([Settings](#settings)), stored with the panel. Every change to
+the panel's settings, the renderer it picks included, saves the layout half a second
+later, as a dock change does.
 
-| Size | What the panel shows |
-|---|---|
-| Fixed, the default, 1280 by 720 | That resolution, chosen from the same presets and fields as the canvas inspector, scaled to Fit (the whole picture, with the panel's background in the bands) or Fill (the panel covered, the overflow cropped through the texture's own crop) |
-| Match the Panel | The panel's size in device pixels, held to 16 to 3840 by 16 to 2160 and rounded down to even. After a resize the renderer starts again at the new size once the size has held for half a second with no mouse button down, and the last frame shows stretched meanwhile (`SETTLE` and `matched_size`) |
-
-The pointer over the picture goes to the renderer, mapped through the fit or the crop, as
-over a canvas target outside design mode. The right button is the panel's: its press opens
-the panel menu and never reaches the renderer. A pointer over the bands around a fitted
+The pointer over the picture goes to the renderer, mapped through the fit, as over a
+canvas target outside design mode. The right button is the panel's: its press opens the
+panel menu and never reaches the renderer. A pointer over the bands around a contained
 picture is off the surface, and the renderer gets `leave`.
 
 A panel behind another tab, or in a minimised window, isn't drawn, so its session pauses
@@ -380,8 +507,8 @@ slots. Offsets are bytes from the start of the block or the slot.
 |---|---|---|---|
 | 0 | magic | 4 bytes | `RXF1` |
 | 4 | version | u32 | 1 |
-| 8 | width | u32 | pixels across |
-| 12 | height | u32 | pixels down |
+| 8 | width | u32 | pixels across: the most a frame can be |
+| 12 | height | u32 | pixels down: the most a frame can be |
 | 16 | stride | u32 | `width * 4` |
 | 20 | slots | u32 | 2 |
 | 24 | slot_bytes | u64 | `64 + stride * height`, rounded up to a multiple of 4096 |
@@ -390,10 +517,10 @@ slots. Offsets are bytes from the start of the block or the slot.
 |---|---|---|---|
 | 0 | seq | u64 | The frame counter: 0 never written, odd while written, even when whole |
 | 8 | stamp_ns | u64 | The renderer's clock when the frame was finished, in nanoseconds: `CLOCK_MONOTONIC` on Unix, the system clock since the Unix epoch on Windows |
-| 16 | width | u32 | The frame's width, which has to equal the header's |
-| 20 | height | u32 | The frame's height, which has to equal the header's |
+| 16 | width | u32 | The frame's width: a size the session was told, at most the header's |
+| 20 | height | u32 | The frame's height, the same way |
 | 24 to 63 | | | Unused |
-| 64 | pixels | `stride * height` bytes | RGBA8, straight alpha, sRGB, top row first, rows packed with no padding |
+| 64 | pixels | `width * 4 * height` bytes, of the frame's own width and height | RGBA8, straight alpha, sRGB, top row first, rows packed with no padding at the frame's own width |
 
 Slot `n` starts at `4096 + n * slot_bytes`, and the block is `4096 + 2 * slot_bytes`
 long (`Spec`, `rox-frames/src/layout.rs`). The 4096 is the layout's page on every
@@ -421,7 +548,11 @@ shows the canvas behind the target.
 Frame `n` counts from 0 and goes to slot `n % 2`:
 
 1. Store `2n + 1` in the slot's `seq`. An odd counter marks the slot as mid-write.
-2. Store the frame's width and height at 16 and 20, and its pixels from 64.
+2. Store the frame's width and height at 16 and 20, and its pixels from 64. The size is
+   the one the renderer draws at now: `hello`'s, or the newest `size` line's. A renderer
+   that doesn't resize draws at the mapping's size, which is `hello`'s too. The rows are
+   packed at the frame's width, so a frame smaller than the mapping fills the start of
+   the slot and leaves the rest alone.
 3. Store the clock in `stamp_ns`: `CLOCK_MONOTONIC` in nanoseconds on Unix and the
    system clock since the Unix epoch on Windows (`clock_ns`, `rox-frames/src/lib.rs`).
    It's for latency figures. rox reads it with the frame and does nothing with it: no
@@ -441,9 +572,14 @@ order a renderer writes in can fault rox.
 
 When an announce arrives, rox reads the slot's counter. It throws the frame away as torn
 when the counter is odd, or when it moved by the time the copy finished. It refuses the
-frame when the counter is 0 or the slot's width and height aren't the target's. A whole
-frame is shown only if its counter is higher than the last one shown in this session,
-so the counter only ever goes up (`copy`, `rox/src/canvas/target.rs`). The frame
+frame when the counter is 0, or when the slot's width and height aren't a size the
+session was told: the one it was told last, or the one before that, since a frame drawn
+just before the renderer read a `size` line is still whole. A size past the mapping's is
+refused whatever it was told (`copy_slot_sized`, `rox-frames/src/read.rs`). rox copies
+`width * 4 * height` bytes from the slot's pixels, every length worked out from its own
+mapping, and shows the frame at its own size, fitted to the box. A whole frame is shown
+only if its counter is higher than the last one shown in this session, so the counter
+only ever goes up (`copy` and `Told::takes`, `rox/src/canvas/target.rs`). The frame
 number in the announce line isn't checked: rox goes by the counter.
 
 rox copies a slot only once the canvas has taken the frame before it, and only the
@@ -456,7 +592,9 @@ feature, which rox's own build never turns on. `Writer::open(handle, spec)` maps
 block and checks its size and header against `Spec::new(width, height)` before it
 writes. It's `unsafe`, since one writer per block is the caller's promise.
 `writer.frame(n, |pixels| ...)` does the five steps above around the closure and returns
-the slot, and `rox_frames::announce(n, slot)` makes the line.
+the slot, and `rox_frames::announce(n, slot)` makes the line. `writer.frame_at(n, width,
+height, |pixels| ...)` does the same for a frame drawn at another size, handing the
+closure `width * 4 * height` bytes, and holds the size to the mapping's.
 
 ## The cover mapping
 
@@ -760,11 +898,13 @@ starts the next. Read each line as JSON. Key order and number spelling aren't pa
 the contract, and a line or key a renderer doesn't know should be skipped.
 
 These are every line rox writes (`launch` in `rox-services/src/renderers.rs` for
-`hello`; `pause_line`, `pool_line`, `signals_line`, `Pointer::line`, `palette_line` and
-`cover_line` in `target.rs`):
+`hello`; `pause_line`, `pool_line`, `signals_line`, `Pointer::line`, `palette_line`,
+`cover_line`, `size_line` and `settings_line` in `target.rs`):
 
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
+{"hello":1,"width":1008,"height":560,"handle":0,"frames":{"width":1920,"height":1080}}
+{"hello":1,"width":1008,"height":560,"handle":0,"frames":{"width":1920,"height":1080},"settings":{"look":"rainbow","rate":60.0}}
 {"hello":1,"width":1280,"height":720,"handle":0,"cover":{"fd":4,"width":256,"height":256}}
 {"hello":1,"width":1280,"height":720,"handle":0,"spectrum":{"fd":4,"bytes":4096,"log_bins":128,"linear_bins":512,"rate":62.5}}
 {"hello":1,"width":1920,"height":1080,"handle":0,"texture":{"fd":4,"width":1920,"height":1080,"allocation_size":8847360,"memory_type":0,"handle_type":"opaque-fd","format":37,"view_formats":[43,37],"flags":8,"usage":31,"tiling":0,"layout":1,"device_uuid":"00000000100000000000000000000000","driver_uuid":"414d442d4d4553412d44525600000000"}}
@@ -774,11 +914,19 @@ These are every line rox writes (`launch` in `rox-services/src/renderers.rs` for
 {"palette":{"background":"#121212","surface":"#181818","text":"#c0c0c0","muted":"#808080","accent":"#ffb300","highlight":"#facc15","dark":true,"stage":"#121212"}}
 {"cover":2}
 {"cover":null}
+{"size":{"width":1600,"height":896}}
+{"settings":{"look":"ember","rate":60.0}}
 {"pause":true}
 ```
 
-`hello` is always first. Its width and height are the target's, and `handle` is the
-mapping's handle value on Windows and 0 elsewhere. A renderer granted the cover finds it
+`hello` is always first. Its `width` and `height` are the size to draw at, and `handle`
+is the mapping's handle value on Windows and 0 elsewhere. A renderer whose manifest says
+`resizes` finds the mapping's own size under `frames`, the same as
+`ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`: the most it can draw at. One that doesn't
+gets no `frames` key, and its `width` and `height` are the mapping's. A renderer whose
+manifest declares settings finds every one it declares under `settings`, each with the
+value the target holds or its default ([Settings](#settings)). One that declares none
+gets no `settings` key. A renderer granted the cover finds it
 under `cover`: `fd` 4 on Unix, `handle` on Windows, the section's handle value in the
 renderer, and the square's `width` and `height`, both 256. Without the grant `hello` has no
 `cover` key. A renderer lent the GPU texture finds what it needs to import it under
@@ -879,13 +1027,26 @@ starts, then each time the playing track changes, between frames, without a redr
 gap between two tracks of one queue doesn't count: the last cover holds, as the
 backdrop's does.
 
+`size` goes only to a renderer whose manifest says `resizes`, when the box it follows
+settles at another size ([The size](#the-size)): draw at this width and height from the
+next frame on. It's never more than `frames`. A frame already drawn at the size before
+it still shows, and one drawn at any older size is refused. Paused, it waits for the
+resume. A renderer that doesn't resize is never sent one.
+
+`settings` goes only to a renderer that declares settings, when the user changes one
+whose `apply` is `line`. It carries the whole set every time, every declared key with
+its value, and nothing else. A change to a `restart` setting starts the session again
+instead, with the new value in `hello`. Paused, it waits for the resume.
+
 `pause` is `true` when nothing shows the target, or while it rests with the music, and
 `false` once it's shown and not resting again.
 While paused, the palette and the cover wait too: rox writes nothing into the cover
 mapping.
 
-The resume sends `{"pause":false}` and nothing else of its own. What follows comes with
-the canvas's next paint of the target, as it would have without the pause: the `pool`
+The resume sends `{"pause":false}`, then a `size` line if the box settled at another
+size and a `settings` line if a setting changed meanwhile, and nothing else of its own.
+What follows comes with the canvas's next paint of the target, as it would have without
+the pause: the `pool`
 line if the pool changed while it was paused, ahead of anything else, then the
 `palette` line if a colour changed, the cover written again with its `cover` line if the
 track changed, and `signals` lines again once music plays (`Outbox` and `Source::feed`,
@@ -1056,8 +1217,12 @@ kick's peak and over its tail does too.
 A renderer writes announce lines to stdout and nothing else: `f`, a space, the frame number in
 decimal digits, a space, the slot `0` or `1`, and `\n`. A renderer lent the GPU texture
 can also write `t`, a space, the frame number and `\n`, for a frame it drew in the
-texture. A line is at most 64 bytes, newline included, and `\r\n` is refused
-(`ANNOUNCE_MAX`, `parse_announce` and `parse_texture_announce`, `rox-frames/src/lib.rs`).
+whole texture, or `t <n> <width> <height>\n` for one it drew in the texture's top-left
+`width` by `height`. A renderer that resizes has to name the size: rox can't read one off
+GPU memory, and the rest of the texture holds whatever was drawn there before. A line is
+at most 64 bytes, newline included, and `\r\n` is refused (`ANNOUNCE_MAX`,
+`parse_announce`, `parse_texture_announce` and `parse_sized_texture_announce`,
+`rox-frames/src/lib.rs`).
 Any other line, or a longer one, is dropped without a log line, and still counts toward
 the flood rule below, as `t` lines do. Of the lines waiting when rox reads, only the
 newest announce is acted on, `f` or `t` (`read`, `target.rs`).
@@ -1069,7 +1234,11 @@ stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 K
 
 | | Limit | Where |
 |---|---|---|
-| Resolution | 16 to 3840 by 16 to 2160 pixels, 1280 by 720 for a new target | `WIDTHS`, `HEIGHTS`, `renderers.rs`; `WIDTH`, `HEIGHT`, `layout.rs` |
+| Resolution | 16 to 3840 by 16 to 2160 pixels | `WIDTHS`, `HEIGHTS`, `renderers.rs`; `WIDTH`, `HEIGHT`, `layout.rs` |
+| A following size | The box's device pixels times 50, 75, 100, 150 or 200%, in steps of 16, inside the ceiling | `SCALES`, `SIZE_STEP`, `follow_size`, `target.rs` |
+| The ceiling | The largest display's pixels times the scale, at most 3840 by 2160 | `ceiling`, `target.rs` |
+| A resize | Told once the box's size has held 250 ms | `SETTLE`, `target.rs` |
+| Settings | 32, each enum with 1 to 32 choices; a key of 32 bytes, a title or label of 48 characters, a choice value of 64 bytes | `MAX_SETTINGS`, `MAX_CHOICES`, `KEY_MAX`, `TEXT_MAX`, `VALUE_MAX`, `renderer_settings.rs` |
 | An announce line | 64 bytes, newline included | `ANNOUNCE_MAX`, `lib.rs` |
 | stdout lines | More than 500 in a second, two seconds in a row, stops the renderer | `LIMITS` and `Rate`, `target.rs` |
 | Refused frames | 60 in a row stop the renderer | `LIMITS.refused_run` |
@@ -1083,7 +1252,7 @@ stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 K
 | A wanted signal's name | 32 characters | `WANTED_NAME_MAX` |
 | The cover | 256 by 256 pixels | `SIZE`, `rox-frames/src/cover.rs` |
 | The spectrum | 128 log bins and 512 linear bins, at most 62.5 writes a second | `LOG_BINS`, `LINEAR_BINS`, `RATE`, `rox-frames/src/spectrum.rs` |
-| The GPU texture | One per target, at its resolution; Linux only; the canvas's wait to make it is 2 s, then the session runs on slots | `LIMITS.texture_wait`, `target.rs` |
+| The GPU texture | One per target, at its mapping's size; Linux only; the canvas's wait to make it is 2 s, then the session runs on slots | `LIMITS.texture_wait`, `target.rs` |
 | `t` from a session lent no texture | Counts as a refused frame: 60 in a row stop the renderer | `show_texture`, `target.rs` |
 
 The flood rule counts lines in one-second spans from the first line, and stops a
@@ -1105,6 +1274,11 @@ in `hello`. Each has its own card line. The grants are read from the manifest th
 starts (`Session::asks`, `rox-services/src/renderers.rs`), so a renderer whose files
 change can't widen them without the card. A renderer that asks for nothing gets exactly
 what it got before these grants existed.
+
+A renderer that says `resizes` also gets `frames` in `hello` and `size` lines, and one
+that declares settings gets `settings` in `hello` and `settings` lines. Neither is a
+grant and neither has a card line: a size is its own target's, which it already draws,
+and a setting's value is one the user picked for it from the choices it declared.
 
 A renderer isn't told the track, a path, a key press, or anything about another item,
 and its wire has no way to call into rox. The cover is pixels with a counter.
@@ -1208,8 +1382,9 @@ sandboxed renderer rox also points what programs write on their own there:
 
 So the GPU driver's shader cache is the renderer's own, and starts cold the first time
 it runs. Nothing in the folder runs: a renderer can't write a program there and start
-it, though an interpreter can still read a script from it. The folder stays when the
-renderer is removed.
+it, though an interpreter can still read a script from it. Removing the renderer on
+the Renderers page deletes the folder, after its sessions are stopped (`remove` and
+`remove_cache`, `rox-services/src/plugins.rs`).
 
 ### The asks
 
@@ -1272,8 +1447,11 @@ The approval records the tier as the card read it, every ask and every gap in it
 (`PluginRecord::sandbox`). The gate refuses a renderer whose recorded tier isn't the one
 its manifest and this system give it now, and it switches off and asks again. That
 covers a manifest that adds an ask or `unconfined`, which changes its hash anyway; a
-kernel that gains or loses a Landlock ABI; and a sandbox that couldn't be applied. A
-renderer approved as sandboxed is never started unconfined in its place. When the
+kernel that gains or loses a Landlock ABI; and a sandbox that couldn't be applied. Its
+Status reads "Stopped: this system now sandboxes it differently than when it was
+switched on, and it needs switching on again" (`Refused::Tier`), and Switch On raises its
+card with the tier it gets now. A renderer approved as sandboxed is never started
+unconfined in its place. When the
 apply fails, the renderer doesn't start, every sandboxed renderer stays off for the rest
 of the session, and its card says why. A renderer approved before the sandbox existed
 recorded no tier: it was approved to run with the user's permissions, and runs as its
@@ -1495,9 +1673,14 @@ A session is lent the texture when all of these hold:
   make it, since a texture belongs to a window, so a window that isn't drawn starts the
   session on slots. A texture made later goes to the next session.
 
-One texture is made per target and lent to every session of it, so a restart imports the
-same memory. A new resolution, a move to another window and a switch-off each let it go,
-and the next session is lent a new one.
+One texture is made per target at its mapping's size and lent to every session of it,
+so a restart imports the same memory. For a renderer that resizes that's the ceiling
+([The size](#the-size)): it draws into the top-left corner at the size it was told and
+announces `t <n> <width> <height>`, and rox shows that corner alone, sampled no closer
+than half a texel to its edge so nothing past it filters in (the texture quad's clamp,
+`patches/gpui/e3-texture-quads.patch`). A new session at another size, which a renderer
+that doesn't resize gets after a resize, a new size mode, a move to another window and a
+switch-off each let it go, and the next session is lent a new one.
 
 ### hello's texture
 
@@ -1507,7 +1690,7 @@ exactly (`texture_hello`, `rox-services/src/renderers.rs`):
 | Key | Vulkan | Value |
 |---|---|---|
 | `fd` | The memory, `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` | the same number as `ROX_TEXTURE_FD` |
-| `width`, `height` | `VkImageCreateInfo::extent` | the target's resolution |
+| `width`, `height` | `VkImageCreateInfo::extent` | the mapping's size: `frames` for a renderer that resizes, `hello`'s own otherwise |
 | `allocation_size` | `VkMemoryAllocateInfo::allocationSize` | rox's dedicated allocation, in bytes |
 | `memory_type` | `VkMemoryAllocateInfo::memoryTypeIndex` | the type rox allocated from |
 | `handle_type` | `VkExternalMemoryHandleTypeFlagBits` | `"opaque-fd"` |
@@ -1629,7 +1812,8 @@ against rox's texture by a renderer outside rox. The render pass path with
    the release barrier's old layout.
 4. Submit, with the acquire ahead of the draw and the release after it in submission
    order, and wait on your own fence for that submission.
-5. Write `t <n>\n` and flush.
+5. Write `t <n>\n` and flush, or `t <n> <width> <height>\n` for a frame drawn in the
+   top-left corner at a size rox told it, which a renderer that resizes always writes.
 
 rox never waits on your fence and never looks at your queue: whenever it paints, it
 samples whatever the memory holds. Announcing only after the wait is what keeps a
@@ -1687,7 +1871,9 @@ renderer.
 | Case | What happens |
 |---|---|
 | A restart after an exit | The same texture, lent again |
-| A new resolution | The target is new: the old texture is released and a new one made |
+| A new size mode, scale or fixed resolution | The target is new: the old texture is released and a new one made |
+| A resize, for a renderer that resizes | Kept: it's at the ceiling, and the renderer draws the new size into its corner |
+| A resize, for one that doesn't | Kept until its next session, which is lent a new one at the box's size then |
 | Pop Out, Dock Back, or a move to another window | The texture belongs to the window that made it, so rox lets it go, makes one in the new window and starts the renderer again with its fd. That doesn't count as an exit, and the log says `moved window, starting again` for each move |
 | Switching the renderer off, a changed package, the fifth exit | The session ends and the target gives its texture back. The next session gets a new one |
 | Deleting the item, closing the canvas, applying a workspace, quitting | Released with the item |
@@ -1709,6 +1895,9 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | Line | Meaning |
 |---|---|
 | `renderer <id>: started at <w>x<h>, <tier>` | The process runs and `hello` went, in that tier: `sandboxed` and its asks and gaps, `unconfined`, or `permissions` |
+| `renderer <id>: started at <w>x<h>, resizes up to <W>x<H>, ...` | The same, for a renderer that resizes, with the mapping's size |
+| `renderer <id>: set aside settings its manifest doesn't take: <keys>` | Stored values `hello` left out, undeclared or out of range |
+| `render target <id>: a setting it reads at its start changed, starting again` | A `restart` setting moved |
 | `renderer <id>: started at <w>x<h>, lent a texture, <tier>` | The same, with the GPU texture lent |
 | `renderer <id>: sandboxed at Landlock ABI <n>: <rules>` | Every rule the sandbox added |
 | `sandbox: couldn't be applied, renderers stay off until approved again: <why>` | The apply failed, and the renderer didn't start |
@@ -1723,16 +1912,18 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | `render target <id>: stopped after repeated exits` | The fifth exit |
 | `render target <id>: stopped by rox` | A switch-off or a quit |
 | `renderer <id>: stopped, no longer switched on` | The gate closed on a running session |
-| `render target <id>: session ended, <n> frames copied, <n> texture frames, <n> torn, <n> refused (<n> unwritten, <n> wrong size, <n> texture frames with no texture), <n> lines read` | A session ended, for any reason, and what its frames came to |
+| `render target <id>: told to draw at <w>x<h>` | A `size` line went to a renderer that resizes |
+| `render target <id>: session ended, <n> frames copied, <n> texture frames, <n> torn, <n> refused (<n> unwritten, <n> wrong size, <n> texture frames with no texture), <n> lines read, <n> sizes told` | A session ended, for any reason, and what its frames and its size lines came to |
 
 The inspector's Status row words the same states for the user, with the gate's reason
 when it refused. rox writes no line for a frame it drops, only a count in the line each
 session ends with (`log_tally`, `target.rs`). Frames copied are whole frames read
 out of a slot. Torn ones had an odd counter, or one that moved during the copy.
 Unwritten ones were announced while the slot's counter was still 0, and wrong size ones
-had size words other than `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`. Texture frames are
-`t` lines rox showed, and texture frames with no texture are `t` lines from a session that
-wasn't lent one. Lines read counts
+had size words that weren't a size the session was told, the newest or the one before
+it, or for a texture frame a size it wasn't told or none from a renderer that resizes.
+Texture frames are `t` lines rox showed, and texture frames with no texture are `t` lines
+from a session that wasn't lent one. Lines read counts
 every line rox read from the renderer's stdout while the session ran, announce or not.
 The line is written as the session ends and before the renderer's stop, so a new
 resolution's `started at` comes after it. Only 60 refusals in a
@@ -1765,6 +1956,8 @@ on Linux and macOS:
 ```sh
 python3 examples/renderers/standin.py --spectrum --palette --cover path/to/renderer
 python3 examples/renderers/standin.py --size 640x360 -- ./my-renderer --verbose
+python3 examples/renderers/standin.py --size 320x180 --frames 1280x720 --resize 640x360,1280x720 path/to/renderer
+python3 examples/renderers/standin.py --settings '{"look":"ember"}' --set '{"look":"ice"}' path/to/renderer
 ```
 
 Given a folder, it starts the renderer from its `plugin.json` as rox would, the
@@ -1789,9 +1982,19 @@ renderer for half a second and reads nothing meanwhile, dropping the pointer eve
 release, a scroll and a leave. At the end it closes stdin and kills the renderer's
 process group 200 ms later.
 
+For a renderer whose manifest says `resizes`, or a command after `--` with `--resizes`,
+it makes the mapping at `--frames`, says `--size` in `hello` with `frames` beside it, and
+sends each size in `--resize` on a `size` line, spread evenly across the run and held to
+the mapping with its shape kept. It accepts a frame at the size it told last and the one
+before, as rox does. A renderer that doesn't resize gets one mapping at `--size` and no
+`size` line, whatever `--resize` says. `--settings` is the target's stored settings,
+held to what the folder's manifest declares, sent in `hello` with a line on stderr for
+what it set aside, and `--set` changes some of them halfway through on a `settings` line.
+
 It copies the newest announce once a display frame, as rox does, and reports frames
 copied, distinct pictures among them, torn and refused frames, lines read, announces and
-frames a second, the longest run of refused frames, whether the flood rule would have
+frames a second, the longest run of refused frames, the size lines it sent and every size
+frames were drawn at, whether the flood rule would have
 stopped it, frames whose counter or slot isn't the one this doc gives (rox goes by the
 counter alone, and the stand-in says so), the bytes left waiting in the renderer's stdout
 when the pause ended (anything above 0 means it announced while paused), and whether it
@@ -1804,8 +2007,10 @@ Tests hold each copy to the code it came from (`crates/rox-frames/tests/standin.
 `the_stand_in_starts_a_renderer_as_rox_does` in `rox-services/src/renderers.rs`,
 `the_stand_in_holds_a_renderer_to_these_limits` in `rox/src/canvas/target.rs` and
 `the_stand_in_passes_the_same_names` in `rox-plugins/src/env.rs`). One runs it against
-the bars example and wants frames with nothing refused, and another watches its spectrum
-and cover mappings through a run and wants them written as rox writes them.
+the bars example and wants frames with nothing refused, another watches its spectrum
+and cover mappings through a run and wants them written as rox writes them, and a third
+resizes the bars example three times and runs a renderer written before sizes beside it,
+which has to come back with no size line and nothing refused.
 
 ## Costs
 
@@ -1893,20 +2098,41 @@ for `sh -c true` and 0.2 to 1.1 ms more for `python3 -c pass`, as medians of 30 
 (`what_starting_confined_costs`, `rox-plugins/tests/sandbox.rs`). A renderer's first
 start compiles its shaders into its own cache folder.
 
+A size that follows the box was measured 2026-11-26 on the same machine, in a release
+build in a headless compositor at 1920x1080, with a Renderer panel in a floating window
+resized about 30 times a second for 10 s. Plasma, which resizes, was sent one `size` line
+for the whole drag, once it held still, and kept its process; its session ended with 0
+torn and 0 refused frames. Ember, which doesn't, was sent none and kept its process and
+its one size. rox's frame time over the drag was a mean of 0.64 ms and a worst of 1.43
+ms with Plasma, 0.58 ms and 5.81 ms with Ember, against 0.76 ms and 0.59 ms standing
+still. rox's memory didn't move across either drag.
+
+The mapping at the ceiling costs the pages a session has written, not its whole length.
+At a 200% Render Scale the ceiling is 3840 by 2160 and the mapping 63.3 MB. A session
+started at 1280x720 held 7.0 MB of it resident, its two slots' frames; after the box grew
+to draw at 3840x2096 it held 61.4 MB, and back at 1280x720 it still did, since a page
+written once stays until the session ends. Proportional set size splits that between rox
+and the renderer, 30.7 MB each at the largest. A session drawing on the GPU texture
+writes no slot, and its 7.1 MB mapping held nothing resident. The texture is made at the
+ceiling for a renderer that resizes, a dedicated allocation of `width * height * 4`
+bytes, about 8.3 MB at 1920x1080 and 33.2 MB at 3840x2160.
+
 ## Reference
 
 The shared memory is `crates/rox-frames`: `layout.rs` (the offsets, `Spec`, the ranges),
 `map.rs` with `map/unix.rs` and `map/windows.rs` (making, sealing and lending the block),
-`read.rs` (`copy_slot`, `Read`, `Refusal`), `write.rs` (`Writer`, behind the `writer`
-feature), `cover.rs` (the cover mapping: its layout, `fit`, `letterbox`, `Cover`, and
+`read.rs` (`copy_slot`, `copy_slot_sized`, `Read`, `Refusal`), `write.rs` (`Writer`,
+`frame_at`, behind the `writer` feature), `cover.rs` (the cover mapping: its layout, `fit`, `letterbox`, `Cover`, and
 `CoverReader` behind the `cover-reader` feature), `spectrum.rs` (the spectrum mapping:
 its layout, `Spectrum`, and `SpectrumReader` behind the same feature) and `lib.rs` (`ANNOUNCE_MAX`,
-`parse_announce`, `announce`, `clock_ns`).
+`parse_announce`, `parse_texture_announce`, `parse_sized_texture_announce`, `announce`,
+`clock_ns`).
 
 The package side is `crates/rox-services/src/renderers.rs` (the listing, the gate,
 `asks`, `start`, `Session`, the exit count, `enforce`, and the wanted signals' matching)
 on top of `crates/rox-plugins`: `manifest.rs` (`capabilities.renderer`, `check_renderer`,
-`check_wanted`, the entry and the interpreter table), `process.rs` (the spawn, fd 3 and up,
+`check_wanted`, the entry and the interpreter table), `renderer_settings.rs` (a setting's
+declaration, `check`, `values`, `restarts`), `process.rs` (the spawn, fd 3 and up,
 the Windows handles, stderr, `never_block`, `spawn_confined`), `sandbox.rs` (`Access`,
 `Tier`, `Support`, `Profile`, the ruleset and the filter) and `host.rs` (`BACKOFF`,
 `CRASH_WINDOW`). The tier's gate and the read asks' folders are `sandbox_holds` and
@@ -1920,14 +2146,17 @@ The spectrum's rows are `crates/rox-viz/src/spectrum.rs` (`Rows`, `log_edge`,
 
 The item is `crates/rox/src/canvas/target.rs` (the supervisor, the limits, the reader,
 the copy, the texture's handoff in `Lend` and `Supervisor::texture`, every line sent, the
-cover's decode, the status), drawn through `crates/rox/src/canvas/texture.rs` (`Picture`,
+cover's decode, the status, and the size: `Sizing`, `ceiling`, `follow_size`, `fit_box`,
+`Shown::want`, `Told`), drawn through `crates/rox/src/canvas/texture.rs` (`Picture`,
 `Lender`, and the external texture's registration and paint). The texture itself is
 `Window::register_external_texture` in the vendored gpui (`patches/gpui/e5-external-user-textures.patch`)
 over blade's `export_texture` (`patches/blade-graphics/a0-shared-textures.patch`). `crates/rox/src/panels/canvas.rs` places it, reads
 the signals, the palette and the stage for it each frame, follows the playing track for its cover,
 sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), adds it from the
 Add menu, and offers its wanted signals (`offer_signals`). The prompt and the inspector's
-Signals row are in `crates/rox/src/canvas/overlay.rs`. A pool entry's kind and band come from `Source` in
+Signals row are in `crates/rox/src/canvas/overlay.rs`, the Size, Render Scale, Fit and
+settings rows in `crates/rox/src/canvas/overlay/target_rows.rs`, and the settings'
+controls both hosts draw in `crates/rox/src/canvas/target_settings.rs`. A pool entry's kind and band come from `Source` in
 `crates/rox-viz/src/signal.rs`. The Renderer panel is `crates/rox/src/panels/renderer.rs`,
 over the same `Shown` session the canvas uses. The Renderers settings page is
 `crates/rox/src/settings/window/renderers_page.rs`, drawing its rows with the row code in

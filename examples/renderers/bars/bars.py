@@ -10,6 +10,11 @@ draws RGBA pixels into one of the block's two slots and prints `f <frame>
 <slot>` on stdout when a frame is whole. The full contract is in
 docs/03-implementation/11-renderers.md.
 
+Its manifest says `resizes`, so rox makes the block at the target's largest
+size and says what size to draw at: in `hello`, then in a `size` line each
+time the box it fills settles at another. Each frame is drawn at the newest
+size, packed into the start of its slot, and the slot's size words say it.
+
 The fd handoff is Unix only. On Windows rox hands over a section handle
 instead, which Python's mmap can't map, so this example exits there.
 """
@@ -40,15 +45,17 @@ def fail(why):
 if "ROX_FRAMES_FD" not in os.environ:
     fail("no ROX_FRAMES_FD: this example maps fd 3 and runs on Linux and macOS only")
 
-width = int(os.environ["ROX_FRAMES_WIDTH"])
-height = int(os.environ["ROX_FRAMES_HEIGHT"])
+# The block's size. The size to draw at comes in hello, and can be smaller.
+frames_width = int(os.environ["ROX_FRAMES_WIDTH"])
+frames_height = int(os.environ["ROX_FRAMES_HEIGHT"])
+width, height = frames_width, frames_height
 
 # rox made the block and sized it. Length 0 maps all of it, read and write.
 mem = mmap.mmap(int(os.environ["ROX_FRAMES_FD"]), 0)
 
 # The header says what rox made. Trust nothing that doesn't match.
 magic, version, w, h, stride, slots, slot_bytes = struct.unpack_from("<4sIIIIIQ", mem, 0)
-if (magic, version, w, h, stride, slots) != (b"RXF1", 1, width, height, width * 4, 2):
+if (magic, version, w, h, stride, slots) != (b"RXF1", 1, frames_width, frames_height, frames_width * 4, 2):
     fail("the mapping's header isn't the one this example knows")
 if len(mem) != HEADER + 2 * slot_bytes:
     fail("the mapping isn't the size its header says")
@@ -172,7 +179,12 @@ while True:
         *lines, pending = pending.split(b"\n")
         for line in lines:
             message = json.loads(line)
-            if "pause" in message:
+            if "hello" in message or "size" in message:
+                # The size to draw at, never past the block.
+                size = message if "hello" in message else message["size"]
+                width = min(size["width"], frames_width)
+                height = min(size["height"], frames_height)
+            elif "pause" in message:
                 paused = message["pause"]
             elif "pool" in message:  # the signals by name, before any value arrives
                 levels = [0.0] * len(message["pool"])
@@ -190,7 +202,7 @@ while True:
                 else:
                     pointer = (event["x"], event["y"])
                     pressed = {"down": True, "up": False}.get(event["kind"], pressed)
-            # hello needs nothing here, and a line this doesn't know is skipped
+            # a line this doesn't know is skipped
 
     now = time.monotonic()
     if paused or now < due:

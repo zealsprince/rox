@@ -1069,6 +1069,7 @@ impl CanvasPanel {
         // Every render target drawn this frame is sent the same reading.
         // It rides on frames the canvas draws anyway and asks for none.
         if target::holds_targets(&self.config.canvas) {
+            self.targets.window(window);
             if let Some(ask) = self.playing_cover(cx) {
                 self.targets.follow_cover(ask);
             }
@@ -1584,9 +1585,10 @@ fn place(
                     continue;
                 };
                 let seen = canvas::on_stage(&projected.corners, at.viewport);
-                let element = draw
-                    .targets
-                    .element(item, seen.then_some(projected), at.design, cx);
+                let rest = rox_canvas::rest_size(item, parent);
+                let element =
+                    draw.targets
+                        .element(item, seen.then_some(projected), rest, at.design, cx);
 
                 layers.push(Layer {
                     depth: projected.depth,
@@ -2568,6 +2570,9 @@ impl CanvasPanel {
                     width: TARGET_PIXELS[0],
                     height: TARGET_PIXELS[1],
                     config: Value::Null,
+                    sizing: rox_canvas::TargetSize::Follow,
+                    scale: 100,
+                    fit: rox_canvas::ImageFit::Cover,
                 },
                 Some(TARGET_UNITS),
             ),
@@ -3919,6 +3924,8 @@ mod tests {
             enabled: false,
             signals: Vec::new(),
             rests: false,
+            resizes: false,
+            settings: Vec::new(),
         };
         let unlabelled = rox_services::renderers::Renderer {
             id: "waves".into(),

@@ -51,17 +51,18 @@ use gpui::{
     AnyElement, App, BackgroundExecutor, Context, Entity, Rgba, SharedString, Task, Window, div,
     prelude::*, px,
 };
-use rox_canvas::{CanvasItem, CanvasState, Content, Projected};
+use rox_canvas::{CanvasItem, CanvasState, Content, ImageFit, Projected, TargetSize};
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, Seed};
 use rox_frames::cover::{self, Cover};
 use rox_frames::{ANNOUNCE_MAX, Mapping, Refusal, Spec};
 use rox_plugins::process::{self, Line};
-use rox_services::renderers::{self, Refused, Session};
+use rox_plugins::renderer_settings::{self, RendererSetting};
+use rox_services::renderers::{self, Refused, Session, Sizes};
 use rox_viz::signal::{Signal, SignalHub, Source as SignalSource};
 
 use crate::canvas::bbox;
-use crate::canvas::texture::{Frame, Lender, Picture, TextureView};
+use crate::canvas::texture::{Frame, Lender, Picture, TextureView, WHOLE};
 
 /// What a target's `owner` starts with: renderers are packages, named the
 /// way a plugin's panel names its plugin.
@@ -161,6 +162,17 @@ struct Started {
     wants: Wants,
     /// The cover mapping lent to it, only when `wants.cover`.
     cover: Option<Cover>,
+    /// The size `hello` told it to draw at.
+    draw: [u32; 2],
+    /// Its settings, for a renderer that declares any.
+    settings: Option<Settled>,
+}
+
+/// A session's settings: what its approved manifest declares, and the
+/// values it was last sent.
+struct Settled {
+    declared: Vec<RendererSetting>,
+    sent: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The grants a session holds beyond what every renderer gets, from the
@@ -171,21 +183,33 @@ struct Wants {
     cover: bool,
     /// It was lent the GPU texture, so a `t` line is one to show.
     texture: bool,
+    /// It reads sizes on the wire, and its mapping is the target's ceiling.
+    resizes: bool,
 }
 
 /// Where sessions come from: the renderer host, or a test's pipes.
 trait Host: Send + 'static {
     /// `texture` is the target's GPU texture, for a session to be lent
-    /// beside the mapping when the renderer asks for it.
+    /// beside the mapping when the renderer asks for it. `draw` is the size
+    /// it starts drawing at, and `stored` the target's settings for it.
     fn start(
         &mut self,
         mapping: &Mapping,
         texture: Option<&gpui::ExternalTexture>,
+        draw: [u32; 2],
+        stored: &serde_json::Value,
     ) -> Result<Started, Refused>;
 
     /// Whether a session should be offered the GPU texture: the renderer
     /// asks, and this platform can make one.
     fn wants_texture(&self) -> bool {
+        false
+    }
+
+    /// Whether the renderer reads sizes on the wire, so its session gets a
+    /// mapping at the target's ceiling and follows its box without a
+    /// restart. The start reads the manifest again through the gate.
+    fn resizes(&self) -> bool {
         false
     }
 
@@ -210,8 +234,6 @@ trait Host: Send + 'static {
 /// A renderer package started through the gate.
 struct Renderer {
     id: String,
-    width: u32,
-    height: u32,
 }
 
 impl Host for Renderer {
@@ -223,10 +245,16 @@ impl Host for Renderer {
             && renderers::asks(&self.id).is_some_and(|asks| asks.gpu)
     }
 
+    fn resizes(&self) -> bool {
+        renderers::asks(&self.id).is_some_and(|asks| asks.resizes)
+    }
+
     fn start(
         &mut self,
         mapping: &Mapping,
         texture: Option<&gpui::ExternalTexture>,
+        draw: [u32; 2],
+        stored: &serde_json::Value,
     ) -> Result<Started, Refused> {
         // Made only for a manifest that asks. The start reads the manifest
         // again through the gate and lends it only if that one asks too.
@@ -244,14 +272,18 @@ impl Host for Renderer {
         let asks_spectrum = renderers::asks(&self.id).is_some_and(|asks| asks.spectrum);
         let spectrum = asks_spectrum.then(crate::canvas::spectrum::lease).flatten();
 
+        let sizes = Sizes {
+            draw,
+            frames: [mapping.spec().width(), mapping.spec().height()],
+        };
         let mut session = renderers::start(
             &self.id,
             lent(mapping),
             cover.as_ref().map(lent_cover),
             spectrum.as_ref().map(|lease| lease.lent()),
             texture,
-            self.width,
-            self.height,
+            sizes,
+            stored,
         )?;
         let spectrum = spectrum.filter(|_| session.asks().spectrum);
 
@@ -259,7 +291,13 @@ impl Host for Renderer {
             palette: session.asks().palette,
             cover: session.asks().cover,
             texture: session.asks().gpu,
+            resizes: session.asks().resizes,
         };
+        let draw = session.sizes().draw;
+        let settings = (!session.asks().settings.is_empty()).then(|| Settled {
+            declared: session.asks().settings.clone(),
+            sent: session.settings().clone(),
+        });
         let cover = cover.filter(|_| wants.cover);
 
         let Some(stdout) = session.stdout.take() else {
@@ -287,6 +325,8 @@ impl Host for Renderer {
             stdout: Box::new(stdout),
             wants,
             cover,
+            draw,
+            settings,
         })
     }
 
@@ -579,6 +619,13 @@ struct State {
     moved: bool,
     /// The target stopped and let its texture go: the canvas frees its own.
     released: bool,
+    /// The size the target would like drawn now, held to its ceiling. A
+    /// renderer that resizes is told it; one that doesn't starts at it.
+    want: [u32; 2],
+    /// The target's settings for the renderer, as it stores them, and a
+    /// count that moves with each change.
+    stored: serde_json::Value,
+    stored_seq: u64,
 }
 
 /// What an announce line named.
@@ -586,8 +633,9 @@ struct State {
 enum Announced {
     /// `f`: a frame in this slot of the mapping, to copy and check.
     Slot(u32),
-    /// `t`: a frame in the GPU texture, to show as the memory holds it.
-    Texture,
+    /// `t`: a frame in the GPU texture, to show as the memory holds it, with
+    /// the size it says it was drawn at when it names one.
+    Texture(Option<[u32; 2]>),
 }
 
 /// The GPU texture's handoff. The canvas can make one only inside its
@@ -657,6 +705,8 @@ enum Exit {
     /// Its texture stayed with a window the item left: start again with one
     /// made where it is now.
     Moved,
+    /// A setting the renderer reads only at its start changed.
+    Restart,
 }
 
 impl Shared {
@@ -693,13 +743,18 @@ struct Source {
 }
 
 impl Source {
-    fn spawn(
+    /// `ceiling` is the mapping a renderer that resizes gets, `want` the
+    /// size its first session draws at.
+    fn spawn_with(
         tag: &str,
         host: Box<dyn Host>,
-        spec: Spec,
+        ceiling: Spec,
+        want: [u32; 2],
+        stored: serde_json::Value,
         limits: Limits,
         notify: Box<dyn Fn() + Send>,
     ) -> Source {
+        let want = held_to(want, [ceiling.width(), ceiling.height()]);
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 frame: None,
@@ -723,6 +778,9 @@ impl Source {
                 lend: Lend::Idle,
                 moved: false,
                 released: false,
+                want,
+                stored,
+                stored_seq: 0,
             }),
             wake: Condvar::new(),
             copies: AtomicU64::new(0),
@@ -739,7 +797,7 @@ impl Source {
         let supervisor = Supervisor {
             shared: shared.clone(),
             host,
-            spec,
+            ceiling,
             limits,
             notify,
             tag: tag.to_string(),
@@ -851,6 +909,33 @@ impl Source {
         self.shared.lock().name.clone()
     }
 
+    /// The size the target would like drawn now. A renderer that resizes
+    /// hears it on the wire; one that doesn't starts at it next time.
+    fn resize(&self, want: [u32; 2]) {
+        let want = within_limits(want);
+        let mut state = self.shared.lock();
+        if state.want == want {
+            return;
+        }
+
+        state.want = want;
+        drop(state);
+        self.shared.wake.notify_all();
+    }
+
+    /// The target's settings for the renderer, as it stores them.
+    fn configure(&self, stored: &serde_json::Value) {
+        let mut state = self.shared.lock();
+        if state.stored == *stored {
+            return;
+        }
+
+        state.stored = stored.clone();
+        state.stored_seq += 1;
+        drop(state);
+        self.shared.wake.notify_all();
+    }
+
     fn status(&self) -> Status {
         let state = self.shared.lock();
 
@@ -932,7 +1017,7 @@ impl Lender for Shared {
             state.moved = true;
 
             // The new window's texture holds nothing until the next `t`.
-            if let Some(Picture::External) = state.frame {
+            if let Some(Picture::External { .. }) = state.frame {
                 state.frame = None;
             }
         }
@@ -976,7 +1061,9 @@ impl Pool {
 struct Supervisor {
     shared: Arc<Shared>,
     host: Box<dyn Host>,
-    spec: Spec,
+    /// The largest the target draws at: the mapping a renderer that resizes
+    /// gets. One that doesn't gets a mapping at its one size.
+    ceiling: Spec,
     limits: Limits,
     notify: Box<dyn Fn() + Send>,
     tag: String,
@@ -1000,12 +1087,18 @@ struct Tally {
     size: u64,
     /// `t` lines from a session lent no texture.
     unlent: u64,
+    /// `size` lines sent.
+    sizes: u64,
     /// The stdout line count when the session began.
     lines_from: u64,
 }
 
 enum Job {
     Pause(bool),
+    /// Tell a renderer that resizes to draw at this size from now on.
+    Size([u32; 2]),
+    /// The target's settings moved, to this count.
+    Settings(serde_json::Value, u64),
     /// A line from the outbox.
     Send(String),
     /// Write the cover the canvas asked for into the mapping, then say so.
@@ -1034,7 +1127,20 @@ impl Supervisor {
                 self.host.forgive();
             }
 
-            let mapping = match Mapping::create(self.spec) {
+            // A renderer that resizes gets the ceiling, so a new size is a
+            // line and never a new mapping. One that doesn't gets its one
+            // size, the target's as the session starts.
+            let resizes = self.host.resizes();
+            let (want, stored, seen) = {
+                let state = self.shared.lock();
+                (state.want, state.stored.clone(), state.stored_seq)
+            };
+            let spec = match resizes {
+                true => Ok(self.ceiling),
+                false => Spec::new(want[0], want[1]),
+            };
+
+            let mapping = match spec.and_then(Mapping::create) {
                 Ok(mapping) => mapping,
                 Err(e) => {
                     log::warn!("render target {}: no frame mapping: {e}", self.tag);
@@ -1050,11 +1156,12 @@ impl Supervisor {
             };
 
             // The frames are made and lent either way: they're the fallback.
-            let texture = self.texture();
+            let extent = [mapping.spec().width(), mapping.spec().height()];
+            let texture = self.texture(extent);
             if self.shared.lock().stop {
                 return;
             }
-            let started = self.host.start(&mapping, texture.as_deref());
+            let started = self.host.start(&mapping, texture.as_deref(), want, &stored);
             drop(texture);
 
             let Started {
@@ -1062,6 +1169,8 @@ impl Supervisor {
                 stdout,
                 wants,
                 mut cover,
+                draw,
+                settings,
             } = match started {
                 Ok(started) => started,
 
@@ -1109,8 +1218,22 @@ impl Supervisor {
                     .name(format!("target-{}-read", self.tag))
                     .spawn(move || read(shared, session, stdout, limits))
             };
+            let mut told = Told {
+                now: draw,
+                before: None,
+                resizes: wants.resizes,
+                extent,
+                settings,
+                seen,
+            };
             let exit = match &reader {
-                Ok(_) => self.drive(run.as_mut(), &mapping, cover.as_mut(), wants.texture),
+                Ok(_) => self.drive(
+                    run.as_mut(),
+                    &mapping,
+                    cover.as_mut(),
+                    wants.texture,
+                    &mut told,
+                ),
                 Err(e) => {
                     log::warn!("render target {}: nothing reads it: {e}", self.tag);
                     Exit::Stop
@@ -1135,6 +1258,12 @@ impl Supervisor {
                 // rox's doing, so no exit is counted and nothing waits.
                 Exit::Moved => {
                     log::info!("render target {}: moved window, starting again", self.tag);
+                }
+                Exit::Restart => {
+                    log::info!(
+                        "render target {}: a setting it reads at its start changed, starting again",
+                        self.tag
+                    );
                 }
 
                 // A switch-off or a quit. Only a poke after it starts it
@@ -1179,18 +1308,24 @@ impl Supervisor {
     /// bounded, and never on the renderer. A session that outlasts it starts
     /// on shared memory alone, and a texture the canvas makes later goes to
     /// the next session.
-    fn texture(&self) -> Option<Arc<gpui::ExternalTexture>> {
+    fn texture(&self, [width, height]: [u32; 2]) -> Option<Arc<gpui::ExternalTexture>> {
         if !self.host.wants_texture() {
             return None;
         }
 
         let until = Instant::now() + self.limits.texture_wait;
         let mut state = self.shared.lock();
+
+        // One made at another size, for a session of a renderer that
+        // doesn't resize before the box moved, goes back for a new one.
+        if let Lend::Ready(held) = &state.lend
+            && (held.width, held.height) != (width, height)
+        {
+            state.lend = Lend::Idle;
+            state.released = true;
+        }
         if let Lend::Idle = state.lend {
-            state.lend = Lend::Asked {
-                width: self.spec.width(),
-                height: self.spec.height(),
-            };
+            state.lend = Lend::Asked { width, height };
             drop(state);
             (self.notify)();
             state = self.shared.lock();
@@ -1315,9 +1450,10 @@ impl Supervisor {
         mapping: &Mapping,
         mut cover: Option<&mut Cover>,
         textured: bool,
+        told: &mut Told,
     ) -> Exit {
         let limits = self.limits;
-        let mut told = false;
+        let mut told_paused = false;
         let mut pipe = Pipe::default();
         let mut resend_at: Option<Instant> = None;
         let mut refused = 0u32;
@@ -1359,11 +1495,21 @@ impl Supervisor {
                         if pipe.busy() {
                             break Job::Flush;
                         }
-                        if paused != told {
+                        if paused != told_paused {
                             if paused && let Some(line) = state.out.take_last_words() {
                                 break Job::Send(line);
                             }
                             break Job::Pause(paused);
+                        }
+
+                        // A new size and new settings go ahead of anything
+                        // drawn for them.
+                        let want = held_to(state.want, told.extent);
+                        if !paused && told.resizes && want != told.now {
+                            break Job::Size(want);
+                        }
+                        if !paused && state.stored_seq != told.seen {
+                            break Job::Settings(state.stored.clone(), state.stored_seq);
                         }
                         if !paused
                             && cover.is_some()
@@ -1429,8 +1575,28 @@ impl Supervisor {
 
             let line = match job {
                 Job::Pause(on) => {
-                    told = on;
+                    told_paused = on;
                     Some(pause_line(on))
+                }
+                Job::Size(size) => {
+                    told.before = Some(told.now);
+                    told.now = size;
+                    self.tally.sizes += 1;
+                    log::info!(
+                        "render target {}: told to draw at {}x{}",
+                        self.tag,
+                        size[0],
+                        size[1]
+                    );
+                    Some(size_line(size))
+                }
+                Job::Settings(stored, seq) => {
+                    told.seen = seq;
+                    match told.settle(&stored) {
+                        Settle::Restart => return Exit::Restart,
+                        Settle::Line(line) => Some(line),
+                        Settle::Same => None,
+                    }
                 }
                 Job::Send(line) => Some(line),
                 Job::Flush => None,
@@ -1445,8 +1611,8 @@ impl Supervisor {
 
                 Job::Copy(announced) => {
                     let copied = match announced {
-                        Announced::Slot(slot) => self.copy(mapping, slot, &mut last_seq),
-                        Announced::Texture => self.show_texture(textured),
+                        Announced::Slot(slot) => self.copy(mapping, slot, told, &mut last_seq),
+                        Announced::Texture(size) => self.show_texture(textured, told, size),
                     };
                     match copied {
                         Copied::Shown | Copied::Old => refused = 0,
@@ -1471,7 +1637,7 @@ impl Supervisor {
         }
     }
 
-    fn copy(&mut self, mapping: &Mapping, slot: u32, last_seq: &mut u64) -> Copied {
+    fn copy(&mut self, mapping: &Mapping, slot: u32, told: &Told, last_seq: &mut u64) -> Copied {
         let Some(ix) = self.pool.free() else {
             return Copied::Old;
         };
@@ -1480,12 +1646,14 @@ impl Supervisor {
         };
 
         self.shared.copies.fetch_add(1, Ordering::Relaxed);
-        let read = mapping.copy_slot(slot, buffer);
+        let read = mapping.copy_slot_sized(slot, |w, h| told.takes([w, h]), buffer);
 
-        let seq = match read {
-            rox_frames::Read::Whole { seq, .. } => {
+        let (seq, width, height) = match read {
+            rox_frames::Read::Whole {
+                seq, width, height, ..
+            } => {
                 self.tally.copied += 1;
-                seq
+                (seq, width, height)
             }
 
             // Mid-write when the copy began, or rewritten under it.
@@ -1515,8 +1683,8 @@ impl Supervisor {
         self.published += 1;
 
         self.publish(Picture::Frame(Frame {
-            width: self.spec.width(),
-            height: self.spec.height(),
+            width,
+            height,
             rgba8: self.pool.buffers[ix].clone(),
             seq: self.published,
         }));
@@ -1525,18 +1693,36 @@ impl Supervisor {
 
     /// A `t` line. The frame is in a texture rox allocated and owns, so
     /// there's nothing to copy and nothing the renderer says to believe: all
-    /// the line can do is have the canvas paint that texture again. One from
-    /// a session lent no texture is refused like a slot that lies.
-    fn show_texture(&mut self, textured: bool) -> Copied {
+    /// the line can do is have the canvas paint that texture again, or the
+    /// part of it the line names. One from a session lent no texture is
+    /// refused like a slot that lies, and so is one naming a size this
+    /// session wasn't told: the rest of the texture holds nothing rox can
+    /// vouch for.
+    fn show_texture(&mut self, textured: bool, told: &Told, size: Option<[u32; 2]>) -> Copied {
         if !textured {
             self.tally.unlent += 1;
             return Copied::Refused;
         }
 
+        // A renderer that doesn't resize fills the texture, and can say so
+        // either way. One that does has to name what it drew.
+        let drawn = match (size, told.resizes) {
+            (Some(size), _) if told.takes(size) => size,
+            (None, false) => told.extent,
+            _ => {
+                self.tally.size += 1;
+                return Copied::Refused;
+            }
+        };
+
         self.tally.texture += 1;
         self.published += 1;
         self.shared.textures.fetch_add(1, Ordering::Relaxed);
-        self.publish(Picture::External);
+        self.publish(Picture::External {
+            width: drawn[0],
+            height: drawn[1],
+            extent: told.extent,
+        });
         Copied::Shown
     }
 
@@ -1558,7 +1744,7 @@ impl Supervisor {
         log::info!(
             "render target {}: session ended, {} frames copied, {} texture frames, {} torn, \
              {refused} refused ({} unwritten, {} wrong size, {} texture frames with no texture), \
-             {lines} lines read",
+             {lines} lines read, {} sizes told",
             self.tag,
             tally.copied,
             tally.texture,
@@ -1566,6 +1752,7 @@ impl Supervisor {
             tally.empty,
             tally.size,
             tally.unlent,
+            tally.sizes,
         );
     }
 
@@ -1595,6 +1782,85 @@ impl Supervisor {
             );
         }
     }
+}
+
+/// What a session was told and can be held to: the size it draws at, the
+/// one before that while a frame drawn at it may still arrive, and the
+/// settings it was sent.
+struct Told {
+    now: [u32; 2],
+    before: Option<[u32; 2]>,
+    resizes: bool,
+    /// The mapping's size, and the texture's: the most it can draw at.
+    extent: [u32; 2],
+    settings: Option<Settled>,
+    /// The count of the stored settings last looked at.
+    seen: u64,
+}
+
+/// What a change to the stored settings comes to for a running session.
+enum Settle {
+    /// This line tells it.
+    Line(String),
+    /// A setting it reads only at its start moved.
+    Restart,
+    /// Nothing it's sent moved.
+    Same,
+}
+
+impl Told {
+    /// A frame drawn at `size` is one this session was told to draw: the
+    /// size now, or the one just before it, while the renderer catches up.
+    fn takes(&self, size: [u32; 2]) -> bool {
+        size == self.now || Some(size) == self.before
+    }
+
+    /// The stored settings, held to the declaration again, against what it
+    /// was last sent.
+    fn settle(&mut self, stored: &serde_json::Value) -> Settle {
+        let Some(settled) = self.settings.as_mut() else {
+            return Settle::Same;
+        };
+
+        let (values, _) = renderer_settings::values(&settled.declared, stored);
+        if renderer_settings::restarts(&settled.declared, &settled.sent, &values) {
+            return Settle::Restart;
+        }
+        if values == settled.sent {
+            return Settle::Same;
+        }
+
+        let line = settings_line(&values);
+        settled.sent = values;
+        Settle::Line(line)
+    }
+}
+
+/// `want` inside `extent`, shape kept: a box that outgrows the ceiling
+/// draws at the largest size of its shape that fits, and is scaled up.
+fn held_to(want: [u32; 2], extent: [u32; 2]) -> [u32; 2] {
+    if want[0] <= extent[0] && want[1] <= extent[1] {
+        return want;
+    }
+
+    let k =
+        (extent[0] as f32 / want[0].max(1) as f32).min(extent[1] as f32 / want[1].max(1) as f32);
+    let side = |v: u32, most: u32| ((v as f32 * k).floor() as u32).clamp(1, most);
+    [side(want[0], extent[0]), side(want[1], extent[1])]
+}
+
+/// `{"size": {"width": w, "height": h}}`: draw at this size from the next
+/// frame on.
+fn size_line([width, height]: [u32; 2]) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({ "size": { "width": width, "height": height } })
+    )
+}
+
+/// `{"settings": {...}}`: every declared setting's value, the whole set.
+fn settings_line(values: &serde_json::Map<String, serde_json::Value>) -> String {
+    format!("{}\n", serde_json::json!({ "settings": values }))
 }
 
 enum Copied {
@@ -2141,7 +2407,10 @@ fn read(shared: Arc<Shared>, session: u64, stdout: Box<dyn Read + Send>, limits:
                     if let Some((_, slot)) = rox_frames::parse_announce(&line) {
                         newest = Some(Announced::Slot(slot));
                     } else if rox_frames::parse_texture_announce(&line).is_some() {
-                        newest = Some(Announced::Texture);
+                        newest = Some(Announced::Texture(None));
+                    } else if let Some((_, w, h)) = rox_frames::parse_sized_texture_announce(&line)
+                    {
+                        newest = Some(Announced::Texture(Some([w, h])));
                     }
                 }
             }
@@ -2232,16 +2501,17 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    /// Starts supervising renderer `id` at `width` by `height`. Nothing
-    /// blocks here: the gate and the spawn run on the supervisor.
+    /// Starts supervising renderer `id`, drawing at `want` inside `ceiling`
+    /// with the target's `stored` settings. Nothing blocks here: the gate
+    /// and the spawn run on the supervisor.
     pub(crate) fn new<V: 'static>(
         id: &str,
-        width: u32,
-        height: u32,
+        ceiling: [u32; 2],
+        want: [u32; 2],
+        stored: &serde_json::Value,
         cx: &mut Context<V>,
     ) -> Target {
-        let width = width.clamp(*renderers::WIDTHS.start(), *renderers::WIDTHS.end());
-        let height = height.clamp(*renderers::HEIGHTS.start(), *renderers::HEIGHTS.end());
+        let [width, height] = within_limits(ceiling);
 
         // `Spec::new` clamps to the same range, so this only fails on a
         // platform that can't address the largest frame.
@@ -2262,17 +2532,21 @@ impl Target {
             }
         });
 
-        let host = Renderer {
-            id: id.to_string(),
-            width,
-            height,
-        };
+        let host = Renderer { id: id.to_string() };
         let notify = Box::new(move || {
             let _ = tx.try_send(());
         });
 
         Target {
-            source: Source::spawn(id, Box::new(host), spec, LIMITS, notify),
+            source: Source::spawn_with(
+                id,
+                Box::new(host),
+                spec,
+                within_limits(want),
+                stored.clone(),
+                LIMITS,
+                notify,
+            ),
             executor: cx.background_executor().clone(),
             _wake: wake,
         }
@@ -2311,6 +2585,16 @@ impl Target {
 
     pub(crate) fn feed(&self, feed: &Feed) {
         self.source.feed(feed);
+    }
+
+    /// The size the target would like drawn now, in device pixels.
+    pub(crate) fn resize(&self, want: [u32; 2]) {
+        self.source.resize(want);
+    }
+
+    /// The target's settings for the renderer, as it stores them.
+    pub(crate) fn configure(&self, stored: &serde_json::Value) {
+        self.source.configure(stored);
     }
 
     pub(crate) fn point(&self, pointer: Pointer) {
@@ -2379,7 +2663,7 @@ impl Readiness {
     /// exits, or that failed to start, is switched on: Start Again is its fix.
     pub(crate) fn of(id: &str) -> Readiness {
         match renderers::refusal(id) {
-            Some(Refused::Off | Refused::NotApproved) => Readiness::Off,
+            Some(Refused::Off | Refused::NotApproved | Refused::Tier) => Readiness::Off,
             Some(Refused::Missing | Refused::Broken(_) | Refused::NotRenderer) => Readiness::Broken,
             Some(Refused::Stopped | Refused::Size | Refused::Start(_)) | None => Readiness::Ready,
         }
@@ -2446,6 +2730,7 @@ pub(crate) fn status_words(status: &Status) -> SharedString {
             Refused::Broken(_) => rox_i18n::t!("canvas-target-refused-broken"),
             Refused::NotRenderer => rox_i18n::t!("canvas-target-refused-not-renderer"),
             Refused::NotApproved => rox_i18n::t!("canvas-target-refused-not-approved"),
+            Refused::Tier => rox_i18n::t!("canvas-target-refused-tier"),
             Refused::Off => rox_i18n::t!("canvas-target-refused-off"),
             Refused::Stopped => rox_i18n::t!("canvas-target-refused-stopped"),
             Refused::Size => rox_i18n::t!(
@@ -2475,7 +2760,9 @@ pub(crate) enum Fix {
 
 pub(crate) fn status_fix(status: &Status) -> Option<Fix> {
     match status {
-        Status::Stopped(Some(Refused::Off | Refused::NotApproved)) => Some(Fix::SwitchOn),
+        Status::Stopped(Some(Refused::Off | Refused::NotApproved | Refused::Tier)) => {
+            Some(Fix::SwitchOn)
+        }
         Status::Stopped(Some(Refused::Missing | Refused::Broken(_) | Refused::NotRenderer)) => {
             Some(Fix::Settings)
         }
@@ -2569,13 +2856,38 @@ pub(crate) fn named_renderers(value: &serde_json::Value, out: &mut BTreeSet<Stri
     }
 }
 
-/// What a session is for: a renderer at a size. A new key is a new session.
+/// What a session is for: a renderer, sized one way. A new key is a new
+/// session. A following target's box can move under one key: a renderer
+/// that resizes hears the new size, and one that doesn't keeps its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Key {
     pub(crate) owner: String,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+    pub(crate) size: Sizing,
 }
+
+/// How a target's pixels are chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sizing {
+    /// Exactly these, whatever the box.
+    Fixed([u32; 2]),
+    /// The box's device pixels at rest, times this percent.
+    Follow(u32),
+}
+
+/// The render scales a following target offers, in percent.
+pub(crate) const SCALES: [u32; 5] = [50, 75, 100, 150, 200];
+
+/// The step a following size is rounded to, so a box dragged a pixel at a
+/// time tells the renderer one size every 16.
+const SIZE_STEP: u32 = 16;
+
+/// How long a following box's size has to hold before the renderer hears
+/// it: past a drag's pauses, short of feeling slow.
+const SETTLE: Duration = Duration::from_millis(250);
+
+/// The largest any display shows, in device pixels: the ceiling where
+/// there's none to ask.
+const NO_DISPLAY: [f32; 2] = [1920., 1080.];
 
 fn key_of(content: &Content) -> Option<Key> {
     match content {
@@ -2583,14 +2895,192 @@ fn key_of(content: &Content) -> Option<Key> {
             owner,
             width,
             height,
+            sizing,
+            scale,
             ..
         } => Some(Key {
             owner: owner.clone(),
-            width: *width,
-            height: *height,
+            size: match sizing {
+                TargetSize::Fixed => Sizing::Fixed([*width, *height]),
+                TargetSize::Follow => Sizing::Follow(*scale),
+            },
         }),
         _ => None,
     }
+}
+
+/// A size held to what a renderer can draw.
+fn within_limits([width, height]: [u32; 2]) -> [u32; 2] {
+    [
+        width.clamp(*renderers::WIDTHS.start(), *renderers::WIDTHS.end()),
+        height.clamp(*renderers::HEIGHTS.start(), *renderers::HEIGHTS.end()),
+    ]
+}
+
+/// The most a following target can draw at with this scale: the largest
+/// display's pixels on each side, times the scale, held to what a renderer
+/// can draw. A renderer that resizes gets its mapping and its texture at
+/// this size for the session's life, and a box that outgrows it is scaled
+/// up rather than restarted.
+pub(crate) fn ceiling(cx: &App, device: f32, percent: u32) -> [u32; 2] {
+    let largest = cx
+        .displays()
+        .iter()
+        .map(|display| display.bounds().size)
+        .fold(None, |most: Option<[f32; 2]>, size| {
+            let size = [f32::from(size.width), f32::from(size.height)];
+            Some(most.map_or(size, |most| [most[0].max(size[0]), most[1].max(size[1])]))
+        })
+        .map(|logical| logical.map(|side| side * device))
+        .unwrap_or(NO_DISPLAY);
+
+    let scale = percent as f32 / 100.;
+    within_limits(largest.map(|side| (side * scale).ceil().max(0.) as u32))
+}
+
+/// The size a following target draws at for a box of `room` device pixels:
+/// the room times the scale, held to the ceiling with its shape kept, and
+/// rounded to [`SIZE_STEP`].
+fn follow_size(room: [f32; 2], percent: u32, ceiling: [u32; 2]) -> [u32; 2] {
+    let scale = percent as f32 / 100.;
+    let wanted = room.map(|side| (side * scale).max(1.));
+
+    let k = (ceiling[0] as f32 / wanted[0])
+        .min(ceiling[1] as f32 / wanted[1])
+        .min(1.);
+    let step = |side: f32, most: u32| {
+        let steps = (side * k / SIZE_STEP as f32).round().max(1.) as u32;
+        (steps * SIZE_STEP).min(most)
+    };
+
+    within_limits([step(wanted[0], ceiling[0]), step(wanted[1], ceiling[1])])
+}
+
+/// Where a picture of one shape goes in a box of another: the part of the
+/// box it covers, as fractions of it, and the part of the picture that
+/// shows, 0 to 1 across and down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Fitted {
+    /// Left, top, width, height, as fractions of the box.
+    pub(crate) rect: [f32; 4],
+    pub(crate) crop: gpui::Bounds<f32>,
+}
+
+const WHOLE_BOX: [f32; 4] = [0., 0., 1., 1.];
+
+/// `picture` in a box of `room`, by `fit`: contain keeps the whole picture
+/// with bands, cover fills the box and crops the middle, stretch fills it
+/// and squeezes.
+pub(crate) fn fit_box(fit: ImageFit, picture: [u32; 2], room: [f32; 2]) -> Fitted {
+    let whole = Fitted {
+        rect: WHOLE_BOX,
+        crop: WHOLE,
+    };
+    if picture[0] == 0 || picture[1] == 0 || room[0] <= 0. || room[1] <= 0. {
+        return whole;
+    }
+
+    let shape = picture[0] as f32 / picture[1] as f32;
+    let space = room[0] / room[1];
+
+    match fit {
+        ImageFit::Stretch => whole,
+
+        ImageFit::Contain if space > shape => {
+            let width = shape / space;
+            Fitted {
+                rect: [(1. - width) / 2., 0., width, 1.],
+                crop: WHOLE,
+            }
+        }
+
+        ImageFit::Contain => {
+            let height = space / shape;
+            Fitted {
+                rect: [0., (1. - height) / 2., 1., height],
+                crop: WHOLE,
+            }
+        }
+
+        ImageFit::Cover if space > shape => {
+            let shown = shape / space;
+            Fitted {
+                rect: WHOLE_BOX,
+                crop: gpui::Bounds::new(gpui::point(0., (1. - shown) / 2.), gpui::size(1., shown)),
+            }
+        }
+
+        ImageFit::Cover => {
+            let shown = space / shape;
+            Fitted {
+                rect: WHOLE_BOX,
+                crop: gpui::Bounds::new(gpui::point((1. - shown) / 2., 0.), gpui::size(shown, 1.)),
+            }
+        }
+    }
+}
+
+impl Fitted {
+    /// Where a point 0 to 1 across the box falls on the picture, or None
+    /// over the bands around a contained one.
+    pub(crate) fn surface(&self, at: [f32; 2]) -> Option<[f32; 2]> {
+        let [left, top, width, height] = self.rect;
+        if width <= 0. || height <= 0. {
+            return None;
+        }
+
+        let across = [(at[0] - left) / width, (at[1] - top) / height];
+        if !(0. ..=1.).contains(&across[0]) || !(0. ..=1.).contains(&across[1]) {
+            return None;
+        }
+
+        let crop = self.crop;
+        Some([
+            crop.origin.x + across[0] * crop.size.width,
+            crop.origin.y + across[1] * crop.size.height,
+        ])
+    }
+
+    /// The part of `face` the picture covers, through the face's own
+    /// perspective, so a contained picture on a tilted item tilts with it.
+    fn on(&self, face: Projected) -> Projected {
+        if self.rect == WHOLE_BOX {
+            return face;
+        }
+
+        let [left, top, width, height] = self.rect;
+        let units = [
+            [left, top],
+            [left + width, top],
+            [left + width, top + height],
+            [left, top + height],
+        ];
+
+        let mut corners = face.corners;
+        for (out, unit) in corners.iter_mut().zip(units) {
+            match rox_canvas::quad_point(&face.corners, unit) {
+                Some(point) => *out = point,
+                None => return face,
+            }
+        }
+        Projected { corners, ..face }
+    }
+}
+
+/// Where a target draws this frame, and what decides its size.
+pub(crate) struct Place<'a> {
+    /// The box on screen, panel-relative.
+    pub(crate) face: Projected,
+    /// The box's size at rest in device pixels: what a following target
+    /// draws at before its scale, and the shape the picture is fitted to.
+    pub(crate) room: [f32; 2],
+    pub(crate) fit: ImageFit,
+    /// A button is held, so a drag may still be moving the box.
+    pub(crate) pressed: bool,
+    /// The most a following session starting now can draw at.
+    pub(crate) ceiling: [u32; 2],
+    /// The target's settings for its renderer, as it stores them.
+    pub(crate) settings: &'a serde_json::Value,
 }
 
 /// One render target's session and the view that paints it: a canvas item's,
@@ -2601,6 +3091,17 @@ pub(crate) struct Shown {
     /// None for an owner that names no renderer.
     target: Option<Target>,
     view: Option<Entity<TextureView>>,
+    /// The size the session was last told, and a new one with when it was
+    /// first seen, until it holds.
+    told: Option<[u32; 2]>,
+    settling: Option<([u32; 2], Instant)>,
+    _settle: Option<Task<()>>,
+    /// The ceiling the session was made with.
+    ceiling: Option<[u32; 2]>,
+    /// Where the last picture went in the box, for the pointer.
+    fitted: Fitted,
+    /// The pointer was over the picture.
+    over: bool,
 }
 
 impl Shown {
@@ -2609,6 +3110,15 @@ impl Shown {
             key,
             target: None,
             view: None,
+            told: None,
+            settling: None,
+            _settle: None,
+            ceiling: None,
+            fitted: Fitted {
+                rect: WHOLE_BOX,
+                crop: WHOLE,
+            },
+            over: false,
         }
     }
 
@@ -2620,23 +3130,79 @@ impl Shown {
         self.target.as_ref()
     }
 
-    /// This frame's picture on `face`, `crop` of it when only part shows,
-    /// and whether there was one. The session starts the first time it's
-    /// drawn. `rest` pauses it for the music, with its last frame still on
-    /// show. The view paints while a texture is to be made or freed, since
-    /// only its paint has the window in hand.
+    /// The size to draw at now. A fixed one is its own. A following one
+    /// starts at the box's, and moves to a new box size only once that has
+    /// held for [`SETTLE`] with no button down, so a drag tells the
+    /// renderer once.
+    fn want<V: 'static>(&mut self, place: &Place, cx: &mut Context<V>) -> [u32; 2] {
+        let percent = match self.key.size {
+            Sizing::Fixed(size) => return within_limits(size),
+            Sizing::Follow(percent) => percent,
+        };
+
+        let ceiling = self.ceiling.unwrap_or(place.ceiling);
+        let want = follow_size(place.room, percent, ceiling);
+        let Some(told) = self.told else {
+            self.told = Some(want);
+            return want;
+        };
+        if want == told {
+            self.settling = None;
+            return told;
+        }
+
+        let now = Instant::now();
+        let since = match self.settling {
+            Some((size, since)) if size == want => since,
+            _ => {
+                self.settling = Some((want, now));
+                now
+            }
+        };
+
+        let held = now.duration_since(since);
+        if held >= SETTLE && !place.pressed {
+            self.settling = None;
+            self.told = Some(want);
+            return want;
+        }
+
+        // Look again once it may have held, or the drag has ended.
+        let wait = SETTLE.saturating_sub(held) + Duration::from_millis(20);
+        self._settle = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+        told
+    }
+
+    /// This frame's picture in `place`, and whether there was one. The
+    /// session starts the first time it's drawn. `rest` pauses it for the
+    /// music, with its last frame still on show. The view paints while a
+    /// texture is to be made or freed, since only its paint has the window
+    /// in hand.
     pub(crate) fn paint<V: 'static>(
         &mut self,
-        face: Projected,
-        crop: Option<gpui::Bounds<f32>>,
+        place: Place,
         rest: bool,
         feed: Option<&Feed>,
         cx: &mut Context<V>,
     ) -> (Option<AnyElement>, bool) {
+        let want = self.want(&place, cx);
+
         if self.target.is_none()
             && let Some(id) = renderer_id(&self.key.owner)
         {
-            self.target = Some(Target::new(id, self.key.width, self.key.height, cx));
+            let ceiling = match self.key.size {
+                Sizing::Fixed(size) => size,
+                Sizing::Follow(_) => place.ceiling,
+            };
+            self.ceiling = Some(ceiling);
+            self.target = Some(Target::new(id, ceiling, want, place.settings, cx));
+        }
+        if let Some(target) = &self.target {
+            target.resize(want);
+            target.configure(place.settings);
         }
 
         // Before the take, so a target resting for the music keeps its last
@@ -2661,6 +3227,29 @@ impl Shown {
             return (None, false);
         };
 
+        // Fitted to the picture's own shape, which for a renderer catching
+        // up with a new size is still the old one.
+        let shape = picture.as_ref().map_or(want, Picture::size);
+        self.fitted = fit_box(place.fit, shape, place.room);
+
+        // A texture drawn smaller than it is shows only its drawn corner.
+        let mut crop = self.fitted.crop;
+        if let Some(Picture::External {
+            width,
+            height,
+            extent,
+        }) = &picture
+        {
+            let part = [
+                *width as f32 / extent[0].max(1) as f32,
+                *height as f32 / extent[1].max(1) as f32,
+            ];
+            crop = gpui::Bounds::new(
+                gpui::point(crop.origin.x * part[0], crop.origin.y * part[1]),
+                gpui::size(crop.size.width * part[0], crop.size.height * part[1]),
+            );
+        }
+
         let view = match &self.view {
             Some(view) => view.clone(),
             None => {
@@ -2671,13 +3260,42 @@ impl Shown {
             }
         };
         let showing = picture.is_some();
+        let face = self.fitted.on(place.face);
         view.update(cx, |view, _| {
             view.show(picture);
             view.place(Some(face));
-            view.crop(crop);
+            view.crop((crop != WHOLE).then_some(crop));
         });
 
         (Some(view.into_any_element()), showing)
+    }
+
+    /// A pointer event at a point 0 to 1 across the box, mapped onto the
+    /// picture through its fit. One over the bands around a contained
+    /// picture is off the surface: the renderer hears one leave, then
+    /// nothing until the pointer is back on it.
+    pub(crate) fn aim(&mut self, pointer: Pointer) -> Option<Pointer> {
+        let on = |at: [f32; 2]| self.fitted.surface(at);
+
+        let mapped = match pointer {
+            Pointer::Move(at) => on(at).map(Pointer::Move),
+            Pointer::Down(at, button) => on(at).map(|at| Pointer::Down(at, button)),
+            Pointer::Up(at, button) => on(at).map(|at| Pointer::Up(at, button)),
+            Pointer::Scroll(at, lines) => on(at).map(|at| Pointer::Scroll(at, lines)),
+            Pointer::Leave => None,
+        };
+
+        match mapped {
+            Some(pointer) => {
+                self.over = true;
+                Some(pointer)
+            }
+            None if self.over => {
+                self.over = false;
+                Some(Pointer::Leave)
+            }
+            None => None,
+        }
     }
 
     /// Not drawn this frame: its renderer can pause.
@@ -2779,6 +3397,8 @@ pub(crate) struct Targets {
     /// The window the canvas left and the renderers its targets ran, until
     /// it's drawn again.
     left: Option<(gpui::WindowId, Vec<String>)>,
+    /// The window's device pixels per layout pixel, as of this frame.
+    device: f32,
 }
 
 /// Whether any item in the canvas, a group's child included, is a render
@@ -2799,6 +3419,11 @@ pub(crate) fn holds_resting(canvas: &CanvasState) -> bool {
 }
 
 impl Targets {
+    /// The window this frame draws in, for the targets' device pixels.
+    pub(crate) fn window(&mut self, window: &Window) {
+        self.device = window.scale_factor();
+    }
+
     /// Reads the hub for this frame's targets: see [`Reading::read`].
     pub(crate) fn read(
         &mut self,
@@ -2826,10 +3451,17 @@ impl Targets {
         }
     }
 
-    /// A pointer event for target `id`. The canvas sends one only off
-    /// design mode, over the front item, inside its quad.
-    pub(crate) fn point(&self, id: &str, pointer: Pointer) {
-        if let Some(target) = self.shown.get(id).and_then(|shown| shown.target.as_ref()) {
+    /// A pointer event for target `id`, at a point 0 to 1 across its box.
+    /// The canvas sends one only off design mode, over the front item,
+    /// inside its quad.
+    pub(crate) fn point(&mut self, id: &str, pointer: Pointer) {
+        let Some(shown) = self.shown.get_mut(id) else {
+            return;
+        };
+
+        if let Some(pointer) = shown.aim(pointer)
+            && let Some(target) = &shown.target
+        {
             target.point(pointer);
         }
     }
@@ -2839,17 +3471,31 @@ impl Targets {
     /// for a face off the stage, which counts as not drawn. While its
     /// supervisor waits for a GPU texture the view paints too, since only
     /// its paint can make one.
+    ///
+    /// `rest` is the item's size at rest in layout pixels, which a following
+    /// target draws at in device pixels.
     pub(crate) fn element<V: 'static>(
         &mut self,
         item: &CanvasItem,
         face: Option<Projected>,
+        rest: [f32; 2],
         design: bool,
         cx: &mut Context<V>,
     ) -> Vec<AnyElement> {
         let Some(key) = key_of(&item.content) else {
             return Vec::new();
         };
-        let rests = matches!(item.content, Content::Target { rests: true, .. });
+        let Content::Target {
+            rests, fit, config, ..
+        } = &item.content
+        else {
+            return Vec::new();
+        };
+        let device = if self.device > 0. { self.device } else { 1. };
+        let ceiling = match key.size {
+            Sizing::Follow(percent) => ceiling(cx, device, percent),
+            Sizing::Fixed(size) => size,
+        };
 
         let shown = self
             .shown
@@ -2864,8 +3510,16 @@ impl Targets {
             return Vec::new();
         };
 
-        let rest = rests && !self.reading.playing();
-        let (view, showing) = shown.paint(face, None, rest, self.reading.feed(), cx);
+        let place = Place {
+            face,
+            room: rest.map(|side| side * device),
+            fit: *fit,
+            pressed: false,
+            ceiling,
+            settings: config,
+        };
+        let resting = *rests && !self.reading.playing();
+        let (view, showing) = shown.paint(place, resting, self.reading.feed(), cx);
         let mut elements: Vec<AnyElement> = view.into_iter().collect();
         if showing {
             return elements;
@@ -3066,6 +3720,9 @@ mod tests {
         }
     }
 
+    /// Each start's size to draw at and stored settings.
+    type Starts = Arc<Mutex<Vec<([u32; 2], serde_json::Value)>>>;
+
     #[derive(Clone)]
     struct FakeHost {
         /// What each session is granted past the pool and the pointer.
@@ -3081,6 +3738,13 @@ mod tests {
         stuck: Arc<AtomicBool>,
         /// Its manifest says `gpu`.
         gpu: bool,
+        /// Its manifest says `resizes`.
+        resizes: bool,
+        /// Its manifest declares these settings.
+        settings: Vec<RendererSetting>,
+        /// What each start was handed: the size to draw at and the stored
+        /// settings.
+        starts: Starts,
     }
 
     impl Host for FakeHost {
@@ -3088,14 +3752,21 @@ mod tests {
             self.gpu
         }
 
+        fn resizes(&self) -> bool {
+            self.resizes
+        }
+
         fn start(
             &mut self,
             mapping: &Mapping,
             texture: Option<&gpui::ExternalTexture>,
+            draw: [u32; 2],
+            stored: &serde_json::Value,
         ) -> Result<Started, Refused> {
             if let Some(refused) = self.refuse.lock().unwrap().clone() {
                 return Err(refused);
             }
+            self.starts.lock().unwrap().push((draw, stored.clone()));
 
             // Lent only where the manifest asks, as `renderers::start` does.
             let textured = texture.is_some() && self.gpu;
@@ -3120,14 +3791,24 @@ mod tests {
                 stdout,
                 stuck: self.stuck.clone(),
             };
+            // As `renderers::start` does: one that doesn't resize draws at
+            // the mapping's size, and its settings are held to the manifest.
+            let frames = [mapping.spec().width(), mapping.spec().height()];
+            let settings = (!self.settings.is_empty()).then(|| Settled {
+                declared: self.settings.clone(),
+                sent: renderer_settings::values(&self.settings, stored).0,
+            });
             Ok(Started {
                 run: Box::new(run),
                 stdout: Box::new(stdout_r),
                 wants: Wants {
                     texture: textured,
+                    resizes: self.resizes,
                     ..self.wants
                 },
                 cover: self.cover.lock().unwrap().take(),
+                draw: if self.resizes { draw } else { frames },
+                settings,
             })
         }
 
@@ -3191,6 +3872,63 @@ mod tests {
         }
 
         fn made(limits: Limits, refused: Option<Refused>, wants: Wants, gpu: bool) -> Rig {
+            let spec = Spec::new(SIZE.0, SIZE.1).unwrap();
+            Rig::built(Build {
+                limits,
+                refused,
+                wants,
+                gpu,
+                resizes: false,
+                settings: Vec::new(),
+                ceiling: spec,
+                want: [SIZE.0, SIZE.1],
+                stored: serde_json::Value::Null,
+            })
+        }
+
+        /// A renderer that reads sizes, with a mapping at `ceiling` and a
+        /// first session drawing at `want`.
+        fn resizing(ceiling: (u32, u32), want: [u32; 2], gpu: bool) -> Rig {
+            Rig::built(Build {
+                limits: slow(),
+                refused: None,
+                wants: Wants::default(),
+                gpu,
+                resizes: true,
+                settings: Vec::new(),
+                ceiling: Spec::new(ceiling.0, ceiling.1).unwrap(),
+                want,
+                stored: serde_json::Value::Null,
+            })
+        }
+
+        /// A renderer declaring `settings`, with the target's `stored`.
+        fn configured(settings: serde_json::Value, stored: serde_json::Value) -> Rig {
+            Rig::built(Build {
+                limits: slow(),
+                refused: None,
+                wants: Wants::default(),
+                gpu: false,
+                resizes: false,
+                settings: serde_json::from_value(settings).unwrap(),
+                ceiling: Spec::new(SIZE.0, SIZE.1).unwrap(),
+                want: [SIZE.0, SIZE.1],
+                stored,
+            })
+        }
+
+        fn built(build: Build) -> Rig {
+            let Build {
+                limits,
+                refused,
+                wants,
+                gpu,
+                resizes,
+                settings,
+                ceiling,
+                want,
+                stored,
+            } = build;
             let (tx, sessions) = mpsc::channel();
             let cover = wants.cover.then(|| Cover::create().unwrap());
             let reader = cover
@@ -3206,14 +3944,18 @@ mod tests {
                 forgiven: Arc::default(),
                 stuck: Arc::default(),
                 gpu,
+                resizes,
+                settings,
+                starts: Arc::default(),
             };
-            let spec = Spec::new(SIZE.0, SIZE.1).unwrap();
             let wakes = Arc::new(AtomicUsize::new(0));
             let counted = wakes.clone();
-            let source = Source::spawn(
+            let source = Source::spawn_with(
                 "test",
                 Box::new(host.clone()),
-                spec,
+                ceiling,
+                want,
+                stored,
                 limits,
                 Box::new(move || {
                     counted.fetch_add(1, Ordering::SeqCst);
@@ -3271,7 +4013,7 @@ mod tests {
         fn peek(&self) -> Option<Frame> {
             match self.source.shared.lock().frame.clone()? {
                 Picture::Frame(frame) => Some(frame),
-                Picture::External => None,
+                Picture::External { .. } => None,
             }
         }
 
@@ -3279,7 +4021,9 @@ mod tests {
         /// frame.
         fn peek_texture(&self) -> Option<u64> {
             match self.source.shared.lock().frame.clone()? {
-                Picture::External => Some(self.source.shared.textures.load(Ordering::SeqCst)),
+                Picture::External { .. } => {
+                    Some(self.source.shared.textures.load(Ordering::SeqCst))
+                }
                 Picture::Frame(_) => None,
             }
         }
@@ -3289,6 +4033,18 @@ mod tests {
                 thread.join().unwrap();
             }
         }
+    }
+
+    struct Build {
+        limits: Limits,
+        refused: Option<Refused>,
+        wants: Wants,
+        gpu: bool,
+        resizes: bool,
+        settings: Vec<RendererSetting>,
+        ceiling: Spec,
+        want: [u32; 2],
+        stored: serde_json::Value,
     }
 
     /// A texture as gpui hands one over. Its memory is never touched here,
@@ -3334,6 +4090,265 @@ mod tests {
             idle: Duration::from_secs(60),
             ..LIMITS
         }
+    }
+
+    /// The next line rox wrote that isn't a pause, as JSON.
+    fn next_said(fake: &Fake) -> serde_json::Value {
+        loop {
+            let line = fake.told().expect("a line");
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if value.get("pause").is_none() {
+                return value;
+            }
+        }
+    }
+
+    #[test]
+    fn a_renderer_that_resizes_is_told_a_size_and_shown_frames_at_it() {
+        let rig = Rig::resizing((64, 32), [32, 16], false);
+        let mut fake = rig.session();
+        assert_eq!(
+            rig.host.starts.lock().unwrap()[0].0,
+            [32, 16],
+            "it starts at the size the target wants"
+        );
+        until("running", || rig.source.status() == Status::Running);
+
+        // Its first frames at the size it started at, in a mapping at the
+        // ceiling.
+        fake.writer.frame_at(0, 32, 16, pattern(1));
+        fake.announce(
+            "f 0 0
+",
+        );
+        until("the first frame", || rig.peek().is_some());
+        let frame = rig.peek().unwrap();
+        assert_eq!((frame.width, frame.height), (32, 16));
+        assert_eq!(frame.rgba8.len(), 32 * 16 * 4);
+        rig.source.take();
+
+        // A new size is one line, and the session goes on.
+        rig.source.resize([48, 24]);
+        assert_eq!(
+            next_said(&fake),
+            serde_json::json!({ "size": { "width": 48, "height": 24 } })
+        );
+
+        // A frame it drew before it read the line still shows, at its size.
+        fake.writer.frame_at(1, 32, 16, pattern(2));
+        fake.announce(
+            "f 1 1
+",
+        );
+        until("the old size's frame", || {
+            rig.peek().is_some_and(|f| f.seq == 2)
+        });
+        assert_eq!(rig.peek().map(|f| f.width), Some(32));
+        rig.source.take();
+
+        fake.writer.frame_at(2, 48, 24, pattern(3));
+        fake.announce(
+            "f 2 0
+",
+        );
+        until("the new size's frame", || {
+            rig.peek().is_some_and(|f| f.seq == 3)
+        });
+        assert_eq!(rig.peek().map(|f| (f.width, f.height)), Some((48, 24)));
+        rig.source.take();
+
+        // One more size, and the one two back is refused.
+        rig.source.resize([64, 32]);
+        assert_eq!(
+            next_said(&fake)["size"],
+            serde_json::json!({ "width": 64, "height": 32 })
+        );
+        fake.writer.frame_at(3, 32, 16, pattern(4));
+        fake.announce(
+            "f 3 1
+",
+        );
+        settle();
+        assert_eq!(
+            rig.peek().map(|f| f.seq),
+            Some(3),
+            "a stale size isn't shown"
+        );
+
+        assert_eq!(
+            rig.host.starts.lock().unwrap().len(),
+            1,
+            "never started again"
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_box_past_the_ceiling_is_drawn_at_its_shape_inside_it() {
+        assert_eq!(held_to([128, 32], [64, 32]), [64, 16]);
+        assert_eq!(held_to([40, 20], [64, 32]), [40, 20]);
+        assert_eq!(held_to([64, 128], [64, 32]), [16, 32]);
+
+        let rig = Rig::resizing((64, 32), [32, 16], false);
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        rig.source.resize([256, 64]);
+        assert_eq!(
+            next_said(&fake)["size"],
+            serde_json::json!({ "width": 64, "height": 16 })
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_renderer_that_doesnt_resize_keeps_its_size_and_hears_nothing() {
+        let rig = Rig::new(slow());
+        let mut fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        rig.source.resize([8, 8]);
+        settle();
+        assert!(
+            fake.stdin.try_recv().is_err(),
+            "no size line for a renderer that doesn't read one"
+        );
+
+        // It draws at its one size, which shows.
+        fake.writer.frame(0, pattern(1));
+        fake.announce(
+            "f 0 0
+",
+        );
+        until("a frame", || rig.peek().is_some());
+        assert_eq!(rig.peek().map(|f| (f.width, f.height)), Some(SIZE));
+
+        // Its next session starts at the size the target wants by then.
+        fake.exit();
+        let _next = rig.session();
+        let starts = rig.host.starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(
+            starts[1].0,
+            [16, 16],
+            "the want, held to what a renderer draws"
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_texture_frame_names_the_corner_it_drew() {
+        let rig = Rig::resizing((64, 32), [32, 16], true);
+        assert_eq!(rig.asked(), (64, 32), "the texture is made at the ceiling");
+        rig.lend(Ok(()));
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        fake.announce(&rox_frames::sized_texture_announce(0, 32, 16));
+        until("the texture frame", || rig.peek_texture().is_some());
+        let Some(Picture::External {
+            width,
+            height,
+            extent,
+        }) = rig.source.take()
+        else {
+            panic!("a texture frame");
+        };
+        assert_eq!((width, height, extent), (32, 16, [64, 32]));
+
+        // Bare, or at a size it wasn't told, it's refused: the rest of the
+        // texture holds nothing rox can vouch for.
+        fake.announce(
+            "t 1
+",
+        );
+        fake.announce(&rox_frames::sized_texture_announce(2, 16, 16));
+        settle();
+        assert_eq!(rig.source.shared.textures.load(Ordering::SeqCst), 1);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_setting_goes_on_a_line_and_a_restart_one_starts_it_again() {
+        let declared = serde_json::json!([
+            {
+                "key": "look", "type": "enum", "title": "Look",
+                "choices": [{ "value": "ember", "label": "Ember" }, { "value": "ice", "label": "Ice" }]
+            },
+            { "key": "rate", "type": "number", "title": "Rate", "min": 10, "max": 60, "step": 10, "default": 60, "apply": "restart" }
+        ]);
+        let rig = Rig::configured(declared, serde_json::json!({ "look": "ice", "old": 1 }));
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        rig.source
+            .configure(&serde_json::json!({ "look": "ember", "old": 1 }));
+        assert_eq!(
+            next_said(&fake),
+            serde_json::json!({ "settings": { "look": "ember", "rate": 60.0 } }),
+            "the whole set, the undeclared key left out"
+        );
+
+        // A value the declaration doesn't take reads as its default, which
+        // is what it was sent already, so nothing goes.
+        rig.source
+            .configure(&serde_json::json!({ "look": "lava", "old": 1 }));
+        rig.source.configure(&serde_json::json!({ "look": "ice" }));
+        assert_eq!(next_said(&fake)["settings"]["look"], "ice");
+
+        rig.source
+            .configure(&serde_json::json!({ "look": "ember", "rate": 30 }));
+        let _again = rig.session();
+        let starts = rig.host.starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 2, "a restart setting starts it again");
+        assert_eq!(starts[1].1["rate"], 30);
+        assert_eq!(rig.exits(), 0, "and that isn't counted as an exit");
+        rig.finish();
+    }
+
+    #[test]
+    fn a_follow_size_is_the_room_times_the_scale_in_steps() {
+        let ceiling = [3840, 2160];
+        assert_eq!(follow_size([1000., 563.], 100, ceiling), [1008, 560]);
+        assert_eq!(follow_size([1000., 563.], 50, ceiling), [496, 288]);
+        assert_eq!(follow_size([1000., 563.], 200, ceiling), [2000, 1120]);
+        assert_eq!(
+            follow_size([4., 3.], 100, ceiling),
+            [16, 16],
+            "the smallest"
+        );
+
+        // Past the ceiling, held to it with its shape.
+        assert_eq!(follow_size([3000., 1000.], 200, ceiling), [3840, 1280]);
+        assert_eq!(follow_size([1920., 1080.], 100, [960, 540]), [960, 540]);
+    }
+
+    #[test]
+    fn fit_contains_covers_or_stretches() {
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-4);
+
+        // A 16:9 picture in a square box.
+        let contain = fit_box(ImageFit::Contain, [1280, 720], [400., 400.]);
+        assert!(
+            close(contain.rect, [0., 0.21875, 1., 0.5625]),
+            "{:?}",
+            contain.rect
+        );
+        assert_eq!(contain.crop, WHOLE);
+
+        let cover = fit_box(ImageFit::Cover, [1280, 720], [400., 400.]);
+        assert_eq!(cover.rect, WHOLE_BOX);
+        assert!((cover.crop.size.width - 0.5625).abs() < 1e-4);
+        assert!((cover.crop.origin.x - 0.21875).abs() < 1e-4);
+
+        let stretch = fit_box(ImageFit::Stretch, [1280, 720], [400., 400.]);
+        assert_eq!((stretch.rect, stretch.crop), (WHOLE_BOX, WHOLE));
+
+        // The pointer lands on the picture, not the bands.
+        assert_eq!(contain.surface([0.5, 0.5]), Some([0.5, 0.5]));
+        assert_eq!(contain.surface([0.5, 0.1]), None, "over the top band");
+        let [x, y] = cover.surface([0., 1.]).unwrap();
+        assert!((x - 0.21875).abs() < 1e-4 && y == 1.);
     }
 
     #[test]

@@ -47,6 +47,24 @@ impl Writer {
         self.frame_claiming(n, width, height, draw)
     }
 
+    /// Writes frame `n` drawn at `width` by `height`, which a renderer told
+    /// a new size does: `draw` gets `width * height * 4` bytes from the
+    /// slot's start, rows packed, and the slot says that size. A size past
+    /// the mapping is held to it.
+    pub fn frame_at(
+        &mut self,
+        n: u64,
+        width: u32,
+        height: u32,
+        draw: impl FnOnce(&mut [u8]),
+    ) -> u32 {
+        let width = width.clamp(1, self.spec.width());
+        let height = height.clamp(1, self.spec.height());
+        let len = width as usize * height as usize * layout::PIXEL as usize;
+
+        self.frame_claiming(n, width, height, |pixels| draw(&mut pixels[..len]))
+    }
+
     /// `frame`, with whatever size the slot should claim.
     pub(crate) fn frame_claiming(
         &mut self,

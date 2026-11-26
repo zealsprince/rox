@@ -6,6 +6,14 @@ colours, and a ring follows the pointer and widens while a button is held. The f
 mapping goes through `rox_frames::Writer`, rox's own crate, so the counter protocol is
 the crate's and not this program's.
 
+Its manifest says `"resizes": true`, so a target that follows its box tells it each new
+size on a `size` line and it draws the next frame at that size with
+`Writer::frame_at`, without starting again. It declares two settings, which show as rows
+in the canvas inspector and in a Renderer panel's settings: Look, a palette it switches
+to as soon as the `settings` line comes, and Frames a Second, which it reads once at its
+start, so its `apply` is `restart`. Copy those two entries in `plugin.json` to give a
+renderer of your own settings.
+
 The contract it follows is in [the renderers doc](../../../docs/03-implementation/11-renderers.md).
 
 It's a Cargo project of its own with its own lockfile, outside rox's workspace, so

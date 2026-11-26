@@ -90,9 +90,9 @@ pub struct Capabilities {
     pub renderer: Option<RendererCap>,
 }
 
-/// Each field past the label but `gpu` and `rests` is a grant: the enable
-/// card names it, and rox sends or offers it only to a renderer whose
-/// approved manifest asks.
+/// Each field past the label but `gpu`, `rests`, `resizes` and `settings`
+/// is a grant: the enable card names it, and rox sends or offers it only to
+/// a renderer whose approved manifest asks.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct RendererCap {
     /// What rox lists the renderer as.
@@ -129,6 +129,14 @@ pub struct RendererCap {
     /// says so in stronger words.
     #[serde(default)]
     pub unconfined: bool,
+    /// Reads a size on the wire and draws at it, so rox follows its pane
+    /// without a restart. Not a grant: it's the target's own pixels.
+    #[serde(default)]
+    pub resizes: bool,
+    /// What a render target lets the user set for it. Not a grant either:
+    /// a value tells the renderer only what the user picked.
+    #[serde(default)]
+    pub settings: Vec<crate::renderer_settings::RendererSetting>,
 }
 
 /// One signal a renderer asks for. Matched against the pool by kind and
@@ -477,7 +485,8 @@ fn check_renderer(manifest: &Manifest) -> Result<(), String> {
         ));
     }
 
-    check_wanted(&renderer.signals)
+    check_wanted(&renderer.signals)?;
+    crate::renderer_settings::check(&renderer.settings)
 }
 
 /// The signals a renderer asks for. Each one lands in the user's pool if
@@ -561,7 +570,7 @@ fn check_wanted(signals: &[WantedSignal]) -> Result<(), String> {
     Ok(())
 }
 
-fn misleads(c: char) -> bool {
+pub(crate) fn misleads(c: char) -> bool {
     // The bidi marks, embeddings, overrides and isolates, by code point.
     c.is_control()
         || matches!(

@@ -242,6 +242,52 @@ pub fn unit_point(corners: &[[f32; 2]; 4], point: [f32; 2]) -> Option<[f32; 2]> 
     Some([u as f32, v as f32])
 }
 
+/// The point at `unit` across a quad, 0, 0 at its first corner and 1, 1 at
+/// its third: [`unit_point`] the other way, so a part of a tilted face lands
+/// where the face's own perspective puts it. None for a degenerate quad, or
+/// a point past its horizon.
+pub fn quad_point(corners: &[[f32; 2]; 4], unit: [f32; 2]) -> Option<[f32; 2]> {
+    let origin = corners[0].map(f64::from);
+    let reach = corners
+        .iter()
+        .flat_map(|c| [f64::from(c[0]) - origin[0], f64::from(c[1]) - origin[1]])
+        .fold(0., |reach: f64, d| reach.max(d.abs()));
+    if !reach.is_finite() || reach <= 0. {
+        return None;
+    }
+    let local = |p: [f32; 2]| {
+        [
+            (f64::from(p[0]) - origin[0]) / reach,
+            (f64::from(p[1]) - origin[1]) / reach,
+        ]
+    };
+
+    let m = square_to_quad(corners.map(local))?;
+    let [u, v] = unit.map(f64::from);
+    let w = m[2][0] * u + m[2][1] * v + m[2][2];
+    if w <= DEGENERATE {
+        return None;
+    }
+
+    let x = (m[0][0] * u + m[0][1] * v + m[0][2]) / w;
+    let y = (m[1][0] * u + m[1][1] * v + m[1][2]) / w;
+    Some([
+        (x * reach + origin[0]) as f32,
+        (y * reach + origin[1]) as f32,
+    ])
+}
+
+/// An item's size on screen at rest, in the pixels the canvas lays out in:
+/// its box and its own scale through the parent's pixels per unit. Tilt,
+/// the camera's perspective and what routes and sway do to it don't count,
+/// so a render target sized from it holds still while its item moves.
+pub fn rest_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
+    let [width, height] = item_size(item, parent);
+    let k = parent.k * item.place.scale;
+
+    [width * k, height * k]
+}
+
 /// Below this a quad scaled to unit reach has no area.
 const DEGENERATE: f64 = 1e-9;
 
@@ -1041,6 +1087,32 @@ mod tests {
                 "{point:?} -> {u}, {v}"
             );
         }
+    }
+
+    #[test]
+    fn a_unit_point_goes_back_where_it_came_from() {
+        let quad = tilted_quad();
+
+        for unit in [[0., 0.], [1., 1.], [0.25, 0.75], [0.5, 0.5]] {
+            let on = quad_point(&quad, unit).expect("a real quad");
+            let back = unit_point(&quad, on).expect("on the quad");
+            assert!(near_point(back, unit), "{unit:?} -> {on:?} -> {back:?}");
+        }
+        let corner = quad_point(&quad, [1., 0.]).unwrap();
+        assert!(near_point(corner, quad[1]), "{corner:?}");
+    }
+
+    #[test]
+    fn the_rest_size_ignores_tilt_and_routes() {
+        let mut it = item(Anchor::Center, [0., 0., 0.], [200., 100.]);
+        it.place.rotation = [0.4, 0.3, 0.];
+        it.place.scale = 1.5;
+        let parent = Frame {
+            k: 2.,
+            ..stage_frame()
+        };
+
+        assert_eq!(rest_size(&it, &parent), [600., 300.]);
     }
 
     #[test]

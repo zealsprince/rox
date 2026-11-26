@@ -35,6 +35,7 @@ use rox_core::settings::{self, PluginRecord, Settings};
 use rox_plugins::host::{BACKOFF, CRASH_WINDOW};
 use rox_plugins::manifest::{RendererCap, SignalKind, WantedSignal};
 use rox_plugins::process::{self, Extra, Lent, Process};
+use rox_plugins::renderer_settings::{self, RendererSetting};
 use rox_plugins::sandbox::{self, Support, Tier};
 use rox_plugins::{Loaded, manifest};
 use rox_viz::signal::{Signal, Source};
@@ -67,6 +68,11 @@ pub struct Renderer {
     /// Its manifest suggests pausing while the music is paused or stopped.
     /// Only a new render target's starting value; the user's setting wins.
     pub rests: bool,
+    /// It reads sizes on the wire, so a target following its pane needn't
+    /// restart it.
+    pub resizes: bool,
+    /// The settings a target shows rows for.
+    pub settings: Vec<RendererSetting>,
 }
 
 /// Why [`start`] won't run a renderer. The page and the toast word it; the
@@ -79,9 +85,12 @@ pub enum Refused {
     Broken(String),
     /// The package doesn't declare `renderer`.
     NotRenderer,
-    /// Never approved, changed on disk since, or approved to run as another
-    /// tier than its manifest and this system give it now.
+    /// Never approved, or changed on disk since.
     NotApproved,
+    /// Approved to run as another tier than its manifest and this system
+    /// give it now: the sandbox couldn't be applied, or the kernel's
+    /// Landlock moved, since the user's yes.
+    Tier,
     /// Approved and switched off.
     Off,
     /// Five exits inside ten minutes; switching it off and on clears it.
@@ -99,6 +108,10 @@ impl std::fmt::Display for Refused {
             Refused::Broken(why) => write!(f, "the package doesn't load: {why}"),
             Refused::NotRenderer => write!(f, "the package isn't a renderer"),
             Refused::NotApproved => write!(f, "the renderer isn't approved"),
+            Refused::Tier => write!(
+                f,
+                "the renderer was approved for another sandbox than this system gives it now"
+            ),
             Refused::Off => write!(f, "the renderer is switched off"),
             Refused::Stopped => write!(f, "stopped after repeated exits"),
             Refused::Size => write!(
@@ -144,6 +157,8 @@ fn listed(
                 enabled: records.iter().any(|r| r.id == folder.id && r.enabled),
                 signals: cap.signals.clone(),
                 rests: cap.rests,
+                resizes: cap.resizes,
+                settings: cap.settings.clone(),
             })
         })
         .collect()
@@ -218,7 +233,7 @@ fn check<'a>(
     // Approved as sandboxed and the sandbox can't be applied here now, or
     // the other way round: the user's yes was for another tier.
     if !sandbox_holds(record, cap, support) {
-        return Err(Refused::NotApproved);
+        return Err(Refused::Tier);
     }
 
     Ok(folder)
@@ -273,6 +288,10 @@ pub struct Session {
     /// What the approved manifest asks for, as this session got it: the
     /// cover only when it was lent one.
     asks: RendererCap,
+    /// The sizes `hello` named.
+    sizes: Sizes,
+    /// The settings `hello` carried, held to the manifest.
+    settings: serde_json::Map<String, serde_json::Value>,
     /// rox's lines to the renderer, `hello` already sent. Closing it is the
     /// signal to exit.
     pub stdin: Option<ChildStdin>,
@@ -308,22 +327,51 @@ static LIVE: Mutex<Vec<Weak<Run>>> = Mutex::new(Vec::new());
 static EXITS: LazyLock<Mutex<HashMap<String, VecDeque<Instant>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Starts renderer `id` drawing at `width` by `height` into the mapping
-/// behind `handle`, after the gate and the exit count agree. `cover` is
-/// lent only to a renderer whose approved manifest asks for the cover,
-/// `spectrum` only to one that asks for the spectrum, and `texture` only to
-/// one whose approved manifest says `gpu`. Blocking: it may probe an
-/// interpreter, so never on the UI thread.
+/// A session's sizes: the one it draws at first, and the frame mapping's,
+/// which a renderer that resizes can draw anything up to. For one that
+/// doesn't, the two are the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sizes {
+    pub draw: [u32; 2],
+    pub frames: [u32; 2],
+}
+
+impl Sizes {
+    /// One size for the whole session.
+    pub fn fixed(width: u32, height: u32) -> Sizes {
+        Sizes {
+            draw: [width, height],
+            frames: [width, height],
+        }
+    }
+
+    fn fits(&self) -> bool {
+        let inside = |[w, h]: [u32; 2]| WIDTHS.contains(&w) && HEIGHTS.contains(&h);
+        inside(self.draw)
+            && inside(self.frames)
+            && self.draw[0] <= self.frames[0]
+            && self.draw[1] <= self.frames[1]
+    }
+}
+
+/// Starts renderer `id` drawing at `sizes.draw` into the mapping behind
+/// `handle`, after the gate and the exit count agree. `cover` is lent only
+/// to a renderer whose approved manifest asks for the cover, `spectrum`
+/// only to one that asks for the spectrum, and `texture` only to one whose
+/// approved manifest says `gpu`. `stored` is the target's own settings for
+/// it, held to what the approved manifest declares before `hello` carries
+/// them. Blocking: it may probe an interpreter, so never on the UI thread.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     id: &str,
     handle: Lent<'_>,
     cover: Option<Lent<'_>>,
     spectrum: Option<Lent<'_>>,
     texture: Option<&gpui::ExternalTexture>,
-    width: u32,
-    height: u32,
+    sizes: Sizes,
+    stored: &serde_json::Value,
 ) -> Result<Session, Refused> {
-    if !WIDTHS.contains(&width) || !HEIGHTS.contains(&height) {
+    if !sizes.fits() {
         return Err(Refused::Size);
     }
 
@@ -350,12 +398,30 @@ pub fn start(
     let texture = texture.filter(|_| asks.gpu);
     asks.gpu = texture.is_some();
 
+    // One that doesn't read sizes draws at the mapping's for the whole
+    // session, whatever the target would like.
+    let sizes = match asks.resizes {
+        true => sizes,
+        false => Sizes::fixed(sizes.frames[0], sizes.frames[1]),
+    };
+
+    let (settings, dropped) = renderer_settings::values(&asks.settings, stored);
+    if !dropped.is_empty() {
+        log::info!(
+            "renderer {id}: set aside settings its manifest doesn't take: {}",
+            dropped.join(", ")
+        );
+    }
+
     // A renderer that can't start counts as one that exits, as a plugin's
     // failed start does, so a broken one stops rather than looping.
     let tier = tier_in(&asks, &support);
-    let started = launch(
-        folder, &tier, handle, cover, spectrum, texture, width, height,
-    );
+    let hello = Hello {
+        sizes,
+        resizes: asks.resizes,
+        settings: (!asks.settings.is_empty()).then_some(&settings),
+    };
+    let started = launch(folder, &tier, handle, cover, spectrum, texture, &hello);
     if started.is_err() {
         note_exit(id);
     }
@@ -376,25 +442,40 @@ pub fn start(
         true => ", lent a texture",
         false => "",
     };
+    let [width, height] = sizes.draw;
+    let room = match asks.resizes {
+        true => format!(", resizes up to {}x{}", sizes.frames[0], sizes.frames[1]),
+        false => String::new(),
+    };
     log::info!(
-        "renderer {id}: started at {width}x{height}{lent}, {}",
+        "renderer {id}: started at {width}x{height}{room}{lent}, {}",
         tier.key()
     );
 
     Ok(Session {
         id: id.to_string(),
         asks,
+        sizes,
+        settings,
         stdin: Some(stdin),
         stdout: Some(stdout),
         run,
     })
 }
 
+/// What `hello` says past the handles.
+struct Hello<'a> {
+    sizes: Sizes,
+    /// The renderer reads sizes, so `hello` names the mapping's too.
+    resizes: bool,
+    /// The settings' values, for a renderer that declares any.
+    settings: Option<&'a serde_json::Map<String, serde_json::Value>>,
+}
+
 type Launched = (Process, ChildStdin, ChildStdout);
 
 /// Spawn and `hello`. The command is the plugin entry's own: the same
 /// interpreter lookup, the same folder checks.
-#[allow(clippy::too_many_arguments)]
 fn launch(
     folder: &Loaded,
     tier: &Tier,
@@ -402,8 +483,7 @@ fn launch(
     cover: Option<Lent>,
     spectrum: Option<Lent>,
     texture: Option<&gpui::ExternalTexture>,
-    width: u32,
-    height: u32,
+    said: &Hello,
 ) -> Result<Launched, String> {
     let Some(manifest) = folder.manifest.as_ref() else {
         return Err("no manifest".into());
@@ -415,11 +495,14 @@ fn launch(
     // the sandbox runs the same outside it.
     let cache = settings::renderer_cache_dir(&folder.id);
     std::fs::create_dir_all(&cache).map_err(|e| format!("cache folder: {e}"))?;
+
+    // The mapping's size. A renderer that doesn't read sizes draws at it.
+    let [frames_w, frames_h] = said.sizes.frames;
     command
         .env("ROX_CACHE_DIR", &cache)
         .env("ROX_RENDER_API", API.to_string())
-        .env("ROX_FRAMES_WIDTH", width.to_string())
-        .env("ROX_FRAMES_HEIGHT", height.to_string());
+        .env("ROX_FRAMES_WIDTH", frames_w.to_string())
+        .env("ROX_FRAMES_HEIGHT", frames_h.to_string());
 
     // The frames first, always: they're the fallback a renderer that can't
     // import the texture draws into.
@@ -447,12 +530,19 @@ fn launch(
     let (mut process, pipes) = spawn(folder, tier, &cache, command, Extra::Handles(lent))?;
     let mut stdin = pipes.stdin;
 
+    let [width, height] = said.sizes.draw;
     let mut hello = json!({
         "hello": API,
         "width": width,
         "height": height,
         "handle": process.handle().unwrap_or(0),
     });
+    if said.resizes {
+        hello["frames"] = json!({ "width": frames_w, "height": frames_h });
+    }
+    if let Some(settings) = said.settings {
+        hello["settings"] = serde_json::Value::Object(settings.clone());
+    }
     if let Some(fd) = fds.cover {
         hello["cover"] = cover_hello(&process, fd);
     }
@@ -722,6 +812,17 @@ impl Session {
     /// What this session was granted.
     pub fn asks(&self) -> &RendererCap {
         &self.asks
+    }
+
+    /// The sizes `hello` named: the mapping's, and the one it draws at
+    /// first.
+    pub fn sizes(&self) -> Sizes {
+        self.sizes
+    }
+
+    /// The settings `hello` carried.
+    pub fn settings(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.settings
     }
 
     /// The pid while it runs, for a test or a person killing it by hand.
@@ -1101,23 +1202,14 @@ mod tests {
 
         // Approved as sandboxed, and the sandbox is gone or failed: it
         // stays off rather than run with the user's permissions.
-        assert_eq!(
-            gate(approved_as("sandboxed"), &lost),
-            Err(Refused::NotApproved)
-        );
-        assert_eq!(
-            gate(approved_as("sandboxed"), &failed),
-            Err(Refused::NotApproved)
-        );
+        assert_eq!(gate(approved_as("sandboxed"), &lost), Err(Refused::Tier));
+        assert_eq!(gate(approved_as("sandboxed"), &failed), Err(Refused::Tier));
 
         // What the kernel can stop moved, either way: a fresh yes.
-        assert_eq!(
-            gate(approved_as("sandboxed"), &older),
-            Err(Refused::NotApproved)
-        );
+        assert_eq!(gate(approved_as("sandboxed"), &older), Err(Refused::Tier));
         assert_eq!(
             gate(approved_as("permissions"), &full()),
-            Err(Refused::NotApproved)
+            Err(Refused::Tier)
         );
         assert_eq!(gate(approved_as("permissions"), &lost), Ok(()));
 
@@ -1152,7 +1244,7 @@ mod tests {
                     &full()
                 )
                 .map(|_| ()),
-                Err(Refused::NotApproved)
+                Err(Refused::Tier)
             );
         }
     }
@@ -1204,6 +1296,8 @@ mod tests {
                 enabled: true,
                 signals: Vec::new(),
                 rests: false,
+                resizes: false,
+                settings: Vec::new(),
             }]
         );
 
@@ -1562,6 +1656,23 @@ mod tests {
         texture: bool,
         spectrum: bool,
     ) -> (serde_json::Value, String, String) {
+        let fixed = Hello {
+            sizes: Sizes::fixed(64, 32),
+            resizes: false,
+            settings: None,
+        };
+        spawned_with(tag, cover, texture, spectrum, &fixed)
+    }
+
+    /// [`spawned`], saying `said` past the handles.
+    #[cfg(unix)]
+    fn spawned_with(
+        tag: &str,
+        cover: bool,
+        texture: bool,
+        spectrum: bool,
+        said: &Hello,
+    ) -> (serde_json::Value, String, String) {
         use std::io::Read as _;
         use std::os::fd::AsFd;
 
@@ -1571,7 +1682,7 @@ mod tests {
             dir.join("draw.sh"),
             r#"read hello
 printf '%s\n' "$hello"
-printf '%s|%s|%s|%s\n' "$ROX_FRAMES_FD" "${ROX_COVER_FD-}" "${ROX_TEXTURE_FD-}" "${ROX_SPECTRUM_FD-unset}"
+printf '%s|%s|%s|%s|%sx%s\n' "$ROX_FRAMES_FD" "${ROX_COVER_FD-}" "${ROX_TEXTURE_FD-}" "${ROX_SPECTRUM_FD-unset}" "$ROX_FRAMES_WIDTH" "$ROX_FRAMES_HEIGHT"
 n=3; while [ $n -le 24 ]; do
   if [ -e /dev/fd/$n ]; then printf '%s=' $n; eval "cat <&$n"; fi
   n=$((n+1))
@@ -1600,8 +1711,7 @@ done
             cover.then(|| cover_file.as_fd()),
             spectrum.then(|| spectrum_file.as_fd()),
             memory.as_ref(),
-            64,
-            32,
+            said,
         )
         .unwrap();
 
@@ -1613,7 +1723,12 @@ done
 
         let mut lines = out.splitn(3, '\n');
         let hello = serde_json::from_str(lines.next().unwrap()).unwrap();
-        let vars = lines.next().unwrap().to_string();
+        let vars = lines.next().unwrap();
+        let vars = vars
+            .rsplit_once('|')
+            .filter(|(_, size)| *size == "64x32")
+            .map_or(vars, |(fds, _)| fds)
+            .to_string();
         let held = lines.next().unwrap_or_default().to_string();
         (hello, vars, held)
     }
@@ -1703,6 +1818,57 @@ done
             hello["spectrum"],
             json!({ "fd": 4, "bytes": 4096, "log_bins": 128, "linear_bins": 512, "rate": 62.5 })
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_renderer_that_resizes_hears_both_sizes_and_its_settings() {
+        let settings = serde_json::Map::from_iter([("look".to_string(), json!("ice"))]);
+        let said = Hello {
+            sizes: Sizes {
+                draw: [640, 360],
+                frames: [1920, 1080],
+            },
+            resizes: true,
+            settings: Some(&settings),
+        };
+        let (hello, vars, _) = spawned_with("resizes", false, false, false, &said);
+
+        assert_eq!(
+            hello,
+            json!({
+                "hello": API,
+                "width": 640,
+                "height": 360,
+                "handle": 0,
+                "frames": { "width": 1920, "height": 1080 },
+                "settings": { "look": "ice" },
+            })
+        );
+        assert!(
+            vars.ends_with("|1920x1080"),
+            "the environment names the mapping's size: {vars}"
+        );
+    }
+
+    #[test]
+    fn a_size_has_to_fit_inside_the_mapping() {
+        assert!(Sizes::fixed(1280, 720).fits());
+        assert!(
+            Sizes {
+                draw: [640, 360],
+                frames: [3840, 2160]
+            }
+            .fits()
+        );
+        assert!(
+            !Sizes {
+                draw: [1920, 1080],
+                frames: [1280, 720]
+            }
+            .fits()
+        );
+        assert!(!Sizes::fixed(8, 720).fits());
     }
 
     #[test]

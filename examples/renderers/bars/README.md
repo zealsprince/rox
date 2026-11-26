@@ -19,6 +19,10 @@ each the louder of two neighbouring bins, falling back slowly when the music dro
 that line out and the row isn't drawn: rox lends no spectrum to a renderer that doesn't
 ask.
 
+It says `"resizes": true` too, so it reads the size to draw at from `hello` and from each
+`size` line, and draws its next frame at that size into the start of its slot. Take that
+line out and rox gives it one size for each session and fits the picture to the box.
+
 The contract it follows is in [the renderers doc](../../../docs/03-implementation/11-renderers.md).
 
 ## Trying it

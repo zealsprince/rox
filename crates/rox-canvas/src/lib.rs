@@ -16,9 +16,9 @@ pub use mat::Mat4;
 pub use place::Position;
 pub use project::{
     Frame, Live, Projected, Viewport, child_frame, inside, paint_order, project, project_points,
-    unit_point, unproject_delta,
+    quad_point, rest_size, unit_point, unproject_delta,
 };
 pub use state::{
     Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Idle,
-    ImageFit, Length, Look, MAX_DEPTH, Place, Stage, Sway,
+    ImageFit, Length, Look, MAX_DEPTH, Place, Stage, Sway, TargetSize,
 };

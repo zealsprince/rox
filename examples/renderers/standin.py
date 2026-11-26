@@ -7,7 +7,11 @@ approval, and it runs whatever command it's given as you. Run it only on a
 renderer you trust.
 
 It plays rox's part as docs/03-implementation/11-renderers.md specifies it:
-it makes the frame mapping with its header, and with --cover and --spectrum
+it makes the frame mapping with its header, at --frames for a renderer whose
+manifest says `resizes` (or with --resizes after `--`), and sends that one
+the sizes --resize names on `size` lines. It holds --settings to what the
+manifest declares, sends them in `hello`, and sends --set on a `settings`
+line partway through. With --cover and --spectrum
 the cover mapping (a generated test picture) and the spectrum mapping (a
 synthetic spectrum). It starts the renderer with those at fd 3 and up and the
 environment rox gives one, writes `hello`, a pool line, signals lines about 60
@@ -261,6 +265,9 @@ class Frames:
 
     def __init__(self, width, height):
         self.width, self.height = width, height
+        # The sizes a frame may be drawn at: the one told now, and the one
+        # before while the renderer catches up (`Told::takes` in target.rs).
+        self.now, self.before = (width, height), None
         self.stride = width * PIXEL
         self.pixel_bytes = self.stride * height
         self.slot_bytes = page_up(S_PIXELS + self.pixel_bytes)
@@ -287,14 +294,21 @@ class Frames:
             return ("torn",)
 
         size = (self.block.u32(at + S_WIDTH), self.block.u32(at + S_HEIGHT))
-        if size != (self.width, self.height):
+        fits = 1 <= size[0] <= self.width and 1 <= size[1] <= self.height
+        if not fits or size not in (self.now, self.before):
             return ("wrong size", size)
 
+        # Packed at the frame's own width, from the slot's start.
         start = at + S_PIXELS
-        pixels = bytes(self.block.view[start:start + self.pixel_bytes])
+        pixels = bytes(self.block.view[start:start + size[0] * size[1] * PIXEL])
         if self.block.u64(at + S_SEQ) != before:
             return ("torn",)
-        return ("whole", before, pixels)
+        return ("whole", before, pixels, size)
+
+    def tell(self, size):
+        """A size line went: frames at it count from now, and frames at the
+        one before still do until the next."""
+        self.before, self.now = self.now, size
 
 
 class CoverBlock:
@@ -530,6 +544,52 @@ def speaks_python3(program):
     return done.returncode == 0 and (says(done.stdout) or says(done.stderr))
 
 
+def settings_for(declared, stored):
+    """The settings a session is sent (`values` in
+    rox-plugins/src/renderer_settings.rs): every declared key of a type this
+    knows, the stored value where the declaration takes it, the default
+    where it doesn't. Answers them and the stored keys set aside."""
+    def accept(setting, value):
+        kind = setting.get("type")
+        if kind == "enum":
+            ok = isinstance(value, str) and any(c["value"] == value for c in setting.get("choices", []))
+            return value if ok else None
+        if kind == "bool":
+            return value if isinstance(value, bool) else None
+        if kind == "number":
+            low, high, step = setting.get("min"), setting.get("max"), setting.get("step")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+                return None
+            if step:
+                value = min(max(low + round((value - low) / step) * step, low), high)
+            return float(value)
+        return None
+
+    def default(setting):
+        given = setting.get("default")
+        if given is not None and accept(setting, given) is not None:
+            return accept(setting, given)
+        kind = setting.get("type")
+        if kind == "enum":
+            return setting["choices"][0]["value"]
+        if kind == "bool":
+            return False
+        return float(setting["min"])
+
+    known = [s for s in declared if s.get("type") in ("enum", "bool", "number")]
+    out, dropped = {}, []
+    for setting in known:
+        key = setting["key"]
+        if key in stored and accept(setting, stored[key]) is not None:
+            out[key] = accept(setting, stored[key])
+        else:
+            if key in stored:
+                dropped.append(key)
+            out[key] = default(setting)
+    dropped += [key for key in stored if key not in {s["key"] for s in known}]
+    return out, dropped
+
+
 def entry(folder, path):
     """The command rox would start for the renderer in `folder`
     (`entry_for` in rox-plugins/src/manifest.rs)."""
@@ -610,6 +670,8 @@ class Report:
         self.flooded = False
         self.exit = None
         self.exited_in_grace = None
+        self.size_lines = 0
+        self.sizes = set()
 
     def refused(self):
         return self.unwritten + self.wrong_size + self.texture
@@ -631,6 +693,8 @@ class Report:
             "announces_per_second": round(self.announces / seconds, 1) if seconds else 0,
             "fps": round(self.copied / seconds_running, 1) if seconds_running else 0,
             "longest_refused_run": self.longest_refused_run,
+            "size_lines": self.size_lines,
+            "sizes": sorted(f"{w}x{h}" for w, h in self.sizes),
             "flooded": self.flooded,
             "protocol": self.protocol[:20],
             "bytes_waiting_at_resume": self.waiting_at_resume,
@@ -640,9 +704,10 @@ class Report:
 
 
 def parse_announce(line):
-    """`f <n> <slot>` or `t <n>` as rox reads them (`parse_announce` and
-    `parse_texture_announce` in lib.rs): at most ANNOUNCE_MAX bytes with the
-    newline, digits and nothing else."""
+    """`f <n> <slot>`, `t <n>` or `t <n> <w> <h>` as rox reads them
+    (`parse_announce`, `parse_texture_announce` and
+    `parse_sized_texture_announce` in lib.rs): at most ANNOUNCE_MAX bytes with
+    the newline, digits and nothing else."""
     if len(line) > ANNOUNCE_MAX:
         return None
     body = line[:-1] if line.endswith(b"\n") else line
@@ -651,6 +716,8 @@ def parse_announce(line):
     if len(parts) == 3 and parts[0] == b"f" and digits(parts[1]) and parts[2] in (b"0", b"1"):
         return ("f", int(parts[1]), int(parts[2]))
     if len(parts) == 2 and parts[0] == b"t" and digits(parts[1]):
+        return ("t", int(parts[1]), None)
+    if len(parts) == 4 and parts[0] == b"t" and all(digits(part) for part in parts[1:]):
         return ("t", int(parts[1]), None)
     return None
 
@@ -663,7 +730,20 @@ def cache_dir():
 
 def run(args):
     width, height = args.size
-    frames = Frames(width, height)
+    manifest = {}
+    if not args.command:
+        with open(os.path.join(args.target[0], "plugin.json"), encoding="utf-8") as f:
+            manifest = json.load(f).get("capabilities", {}).get("renderer", {})
+    resizes = manifest.get("resizes") is True or args.resizes
+    declared = manifest.get("settings", [])
+
+    # A renderer that resizes gets the mapping at --frames and draws at
+    # --size first. One that doesn't gets one size for the whole session.
+    mapped = args.frames or args.size if resizes else args.size
+    if resizes and (width > mapped[0] or height > mapped[1]):
+        sys.exit("standin: --size has to fit inside --frames")
+    frames = Frames(*mapped)
+    frames.now = (width, height)
     cover = CoverBlock() if args.cover else None
     spectrum = SpectrumBlock() if args.spectrum else None
 
@@ -671,14 +751,23 @@ def run(args):
     lent = [frames.block.lent]
     extra = {
         "ROX_RENDER_API": str(API),
-        "ROX_FRAMES_WIDTH": str(width),
-        "ROX_FRAMES_HEIGHT": str(height),
+        "ROX_FRAMES_WIDTH": str(frames.width),
+        "ROX_FRAMES_HEIGHT": str(frames.height),
         "ROX_FRAMES_FD": str(FIRST_FD),
         # rox makes one per renderer under its data folder. This one is kept
         # between runs, as rox's is, and nothing confines the renderer to it.
         "ROX_CACHE_DIR": cache_dir(),
     }
     hello = {"hello": API, "width": width, "height": height, "handle": 0}
+    if resizes:
+        hello["frames"] = {"width": frames.width, "height": frames.height}
+    settings = None
+    if declared or args.settings is not None:
+        stored = args.settings or {}
+        settings, dropped = settings_for(declared, stored) if declared else (stored, [])
+        if dropped:
+            print(f"standin: set aside settings the manifest doesn't take: {', '.join(dropped)}", file=sys.stderr)
+        hello["settings"] = settings
     if cover:
         fd = FIRST_FD + len(lent)
         lent.append(cover.block.lent)
@@ -786,6 +875,12 @@ def run(args):
 
     drive = Drive(args.seconds)
     pointer = pointer_events(args.seconds)
+
+    # The sizes to tell, spread across the run, and the settings line.
+    sizes = [] if not resizes else [
+        ((i + 1) * args.seconds / (len(args.resize) + 1), size) for i, size in enumerate(args.resize)
+    ]
+    set_at = 0.5 * args.seconds if args.set is not None else None
     pause_at, resume_at = 0.6 * args.seconds, 0.6 * args.seconds + 0.5
     paused = False
     settle_until = drive.stop + min(1.0, 0.1 * args.seconds)
@@ -864,6 +959,20 @@ def run(args):
         while not paused and pointer and pointer[0][0] <= t:
             send({"pointer": pointer.pop(0)[1]})
 
+        # A size and a setting wait out a pause, as rox's do.
+        while not paused and sizes and sizes[0][0] <= t:
+            size = held_to(sizes.pop(0)[1], (frames.width, frames.height))
+            frames.tell(size)
+            report.size_lines += 1
+            send({"size": {"width": size[0], "height": size[1]}})
+        if not paused and set_at is not None and t >= set_at:
+            set_at = None
+            stored = dict(args.settings or {}, **args.set)
+            changed, _ = settings_for(declared, stored) if declared else (stored, [])
+            if changed != settings:
+                settings = changed
+                send({"settings": settings})
+
         # The display: the newest announce waiting, copied once a frame.
         if not paused and now >= next_frame:
             next_frame = now + 1 / DISPLAY_RATE
@@ -899,6 +1008,14 @@ def run(args):
     return report, time.monotonic() - started, running_time
 
 
+def held_to(size, extent):
+    """A size inside the mapping with its shape kept (`held_to` in target.rs)."""
+    if size[0] <= extent[0] and size[1] <= extent[1]:
+        return size
+    k = min(extent[0] / size[0], extent[1] / size[1])
+    return (max(1, min(int(size[0] * k), extent[0])), max(1, min(int(size[1] * k), extent[1])))
+
+
 def take(announce, frames, report, args, dumped):
     """One announce as rox's supervisor handles it (`copy` and
     `show_texture` in target.rs)."""
@@ -918,11 +1035,12 @@ def take(announce, frames, report, args, dumped):
             report.unwritten += 1
         else:
             report.wrong_size += 1
-            report.protocol.append(f"frame {n}: size words {read[1]}, the target is {frames.width}x{frames.height}")
+            told = f"{frames.now[0]}x{frames.now[1]}"
+            report.protocol.append(f"frame {n}: size words {read[1]}, it was told {told}")
         note_refused(report, True)
         return
 
-    _, seq, pixels = read
+    _, seq, pixels, size = read
     note_refused(report, False)
     if seq <= report.last_seq:
         report.old += 1
@@ -936,6 +1054,7 @@ def take(announce, frames, report, args, dumped):
 
     report.copied += 1
     report.hashes.add(hashlib.blake2b(pixels, digest_size=16).digest())
+    report.sizes.add(size)
 
     if n in args.dump and n not in dumped:
         dumped.add(n)
@@ -944,7 +1063,7 @@ def take(announce, frames, report, args, dumped):
         for i in range(0, len(pixels), 4):
             rgb += pixels[i:i + 3]
         with open(path, "wb") as f:
-            f.write(f"P6\n{frames.width} {frames.height}\n255\n".encode() + bytes(rgb))
+            f.write(f"P6\n{size[0]} {size[1]}\n255\n".encode() + bytes(rgb))
 
 
 def note_refused(report, refused):
@@ -971,7 +1090,12 @@ def main():
         description="Run a rox renderer against a stand-in for rox. A development tool: it grants everything the flags ask for, with no approval.",
     )
     parser.add_argument("target", nargs="?" if command else 1, help="a renderer folder holding plugin.json")
-    parser.add_argument("--size", type=size, default=(1280, 720), help="the target's pixels, WxH (1280x720)")
+    parser.add_argument("--size", type=size, default=(1280, 720), help="the size to draw at first, WxH (1280x720)")
+    parser.add_argument("--frames", type=size, help="the mapping's size for a renderer that resizes, WxH (--size)")
+    parser.add_argument("--resize", type=lambda s: [size(part) for part in s.split(",")], default=[], help="sizes to send on size lines across the run, WxH,WxH")
+    parser.add_argument("--resizes", action="store_true", help="after --, treat the command as a renderer that resizes")
+    parser.add_argument("--settings", type=json.loads, help="the target's stored settings as a JSON object, held to the manifest")
+    parser.add_argument("--set", type=json.loads, help="settings to change halfway through, as a JSON object")
     parser.add_argument("--seconds", type=float, default=8.0, help="how long the session runs (8)")
     parser.add_argument("--cover", action="store_true", help="lend the cover mapping with a test picture")
     parser.add_argument("--spectrum", action="store_true", help="lend the spectrum mapping")

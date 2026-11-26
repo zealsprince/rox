@@ -39,8 +39,23 @@ pub(crate) struct Frame {
 pub(crate) enum Picture {
     /// Pixels to upload.
     Frame(Frame),
-    /// The newest frame is in the external texture already.
-    External,
+    /// The newest frame is in the external texture already, drawn in its
+    /// top-left `width` by `height` of `extent`.
+    External {
+        width: u32,
+        height: u32,
+        extent: [u32; 2],
+    },
+}
+
+impl Picture {
+    /// The size the picture was drawn at.
+    pub(crate) fn size(&self) -> [u32; 2] {
+        match self {
+            Picture::Frame(frame) => [frame.width, frame.height],
+            Picture::External { width, height, .. } => [*width, *height],
+        }
+    }
 }
 
 /// Where a view's external texture goes once it's registered: a render
@@ -378,7 +393,7 @@ impl Render for TextureView {
                 Some(Picture::Frame(frame)) => {
                     texture.paint(frame, corners, source, face.opacity, window, cx)
                 }
-                Some(Picture::External) => {
+                Some(Picture::External { .. }) => {
                     texture.paint_external(corners, source, face.opacity, window)
                 }
                 None => {}

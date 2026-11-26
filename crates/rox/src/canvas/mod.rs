@@ -22,6 +22,7 @@ pub(crate) mod slice;
 pub(crate) mod spectrum;
 pub(crate) mod states;
 pub(crate) mod target;
+pub(crate) mod target_settings;
 pub(crate) mod text;
 pub(crate) mod texture;
 

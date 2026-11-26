@@ -124,6 +124,29 @@ pub fn parse_texture_announce(line: &[u8]) -> Option<u64> {
     frame_number(line.strip_prefix(b"t ")?)
 }
 
+/// Reads a renderer's `t <frame> <width> <height>` line, which says frame
+/// `n` is in the top-left `width` by `height` of the GPU texture rox lent
+/// it, with or without its newline. A renderer told sizes on the wire names
+/// the size each texture frame was drawn at, since rox can't read one off
+/// GPU memory. None for anything longer than [`ANNOUNCE_MAX`] or any other
+/// shape, a bare `t <frame>` included.
+pub fn parse_sized_texture_announce(line: &[u8]) -> Option<(u64, u32, u32)> {
+    if line.len() > ANNOUNCE_MAX {
+        return None;
+    }
+
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    let mut words = line.strip_prefix(b"t ")?.split(|&b| b == b' ');
+    let frame = frame_number(words.next()?)?;
+    let width = u32::try_from(frame_number(words.next()?)?).ok()?;
+    let height = u32::try_from(frame_number(words.next()?)?).ok()?;
+    if words.next().is_some() {
+        return None;
+    }
+
+    Some((frame, width, height))
+}
+
 /// Decimal digits and nothing else, as a u64.
 fn frame_number(digits: &[u8]) -> Option<u64> {
     // `u64::from_str` takes a leading `+`, which isn't part of the line.
@@ -144,6 +167,12 @@ pub fn announce(n: u64, slot: u32) -> String {
 /// it, newline included.
 pub fn texture_announce(n: u64) -> String {
     format!("t {n}\n")
+}
+
+/// The line a renderer writes to announce frame `n` drawn at `width` by
+/// `height` in the texture rox lent it, newline included.
+pub fn sized_texture_announce(n: u64, width: u32, height: u32) -> String {
+    format!("t {n} {width} {height}\n")
 }
 
 /// The clock a slot's `stamp_ns` is read against: `CLOCK_MONOTONIC` on
@@ -254,5 +283,41 @@ mod tests {
             assert_eq!(parse_announce(line), None);
         }
         assert_eq!(parse_texture_announce(b"f 12 0\n"), None);
+    }
+
+    #[test]
+    fn a_sized_texture_announce_names_its_size_and_nothing_else() {
+        assert_eq!(
+            parse_sized_texture_announce(b"t 12 1600 896\n"),
+            Some((12, 1600, 896))
+        );
+        assert_eq!(
+            parse_sized_texture_announce(sized_texture_announce(u64::MAX, 3840, 2160).as_bytes()),
+            Some((u64::MAX, 3840, 2160))
+        );
+
+        for bad in [
+            &b"t 12\n"[..],
+            b"t 12 1600\n",
+            b"t 12 1600 896 1\n",
+            b"t 12 1600  896",
+            b"t 12 +1600 896",
+            b"t 12 4294967296 896",
+            b"t 12 1600 896\r\n",
+            b"f 12 1600 896",
+            b"t 12 1600 896 ",
+        ] {
+            assert_eq!(
+                parse_sized_texture_announce(bad),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+
+        // None of the three words reads as another.
+        let sized = b"t 12 1600 896\n";
+        assert_eq!(parse_texture_announce(sized), None);
+        assert_eq!(parse_announce(sized), None);
     }
 }

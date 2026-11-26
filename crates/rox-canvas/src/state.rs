@@ -459,23 +459,67 @@ pub enum Content {
         /// dump walkers that already read that key list it in `requires`
         /// with no change.
         owner: String,
-        /// Pixels the renderer draws at. Clamped to 16..=3840 by 16..=2160
-        /// where a session starts; saved as written.
+        /// Pixels the renderer draws at while `sizing` is fixed. Clamped to
+        /// 16..=3840 by 16..=2160 where a session starts; saved as written.
         width: u32,
         height: u32,
         /// Pauses the renderer while the music is paused or stopped, holding
         /// its last frame. Left out reads as running on.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         rests: bool,
-        /// The renderer's own settings, opaque to rox. Reserved: nothing
-        /// reads or writes it yet.
+        /// The renderer's settings by key, as its manifest declares them.
+        /// rox holds each to the declaration before the renderer sees it.
         #[serde(default)]
         config: Value,
+        /// How the pixel size is chosen. Left out reads as fixed, so a
+        /// target saved before the choice keeps its pixels.
+        #[serde(default, skip_serializing_if = "TargetSize::is_fixed")]
+        sizing: TargetSize,
+        /// A following target's pixels as a percent of its box's.
+        #[serde(default = "full_scale", skip_serializing_if = "is_full_scale")]
+        scale: u32,
+        /// How the picture fits the box when their shapes differ. Left out
+        /// reads as stretch, the way a target drew before the choice.
+        #[serde(default = "stretch", skip_serializing_if = "is_stretch")]
+        fit: ImageFit,
     },
     /// A kind this build doesn't know, or a known kind whose body didn't
     /// parse. Serializes back to the value it was read from.
     #[serde(skip)]
     Unknown(Value),
+}
+
+/// How a render target's pixel size is chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetSize {
+    /// Its own `width` by `height`, whatever its box.
+    #[default]
+    Fixed,
+    /// Its box's size on screen at rest, in device pixels, times its scale.
+    Follow,
+}
+
+impl TargetSize {
+    fn is_fixed(&self) -> bool {
+        *self == TargetSize::Fixed
+    }
+}
+
+fn full_scale() -> u32 {
+    100
+}
+
+fn is_full_scale(scale: &u32) -> bool {
+    *scale == 100
+}
+
+fn stretch() -> ImageFit {
+    ImageFit::Stretch
+}
+
+fn is_stretch(fit: &ImageFit) -> bool {
+    *fit == ImageFit::Stretch
 }
 
 const KINDS: [&str; 6] = ["grid", "group", "image", "text", "shader", "target"];
@@ -1038,6 +1082,9 @@ mod tests {
                 height,
                 rests: false,
                 config: Value::Null,
+                sizing: TargetSize::Fixed,
+                scale: 100,
+                fit: ImageFit::Stretch,
             },
             ..CanvasItem::default()
         }
@@ -1078,6 +1125,49 @@ mod tests {
         let written = serde_json::to_value(&calm).unwrap();
         assert_eq!(written["content"]["rests"], json!(true));
         assert_eq!(serde_json::from_value::<CanvasItem>(written).unwrap(), calm);
+    }
+
+    #[test]
+    fn a_target_saved_before_sizing_keeps_its_pixels_and_its_stretch() {
+        let old: CanvasItem = serde_json::from_value(json!({
+            "id": "t",
+            "content": { "kind": "target", "owner": "plugin:bars", "width": 1920, "height": 1080 },
+        }))
+        .unwrap();
+        let Content::Target {
+            sizing, scale, fit, ..
+        } = &old.content
+        else {
+            panic!("a target");
+        };
+        assert_eq!(
+            (*sizing, *scale, *fit),
+            (TargetSize::Fixed, 100, ImageFit::Stretch)
+        );
+
+        // Written back the way it was read.
+        let written = serde_json::to_value(&old).unwrap();
+        assert_eq!(
+            written["content"],
+            json!({ "kind": "target", "owner": "plugin:bars", "width": 1920, "height": 1080, "config": null })
+        );
+
+        // A following one says so, and keeps what it set.
+        let mut follows = old.clone();
+        if let Content::Target {
+            sizing, scale, fit, ..
+        } = &mut follows.content
+        {
+            (*sizing, *scale, *fit) = (TargetSize::Follow, 150, ImageFit::Cover);
+        }
+        let written = serde_json::to_value(&follows).unwrap();
+        assert_eq!(written["content"]["sizing"], json!("follow"));
+        assert_eq!(written["content"]["scale"], json!(150));
+        assert_eq!(written["content"]["fit"], json!("cover"));
+        assert_eq!(
+            serde_json::from_value::<CanvasItem>(written).unwrap(),
+            follows
+        );
     }
 
     #[test]

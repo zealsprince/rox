@@ -19,6 +19,33 @@
     "license": "AGPL-3.0-only"
   },
   "capabilities": {
-    "renderer": { "label": "Plasma" }
+    "renderer": {
+      "label": "Plasma",
+      "resizes": true,
+      "settings": [
+        {
+          "key": "look",
+          "type": "enum",
+          "title": "Look",
+          "choices": [
+            { "value": "rainbow", "label": "Rainbow" },
+            { "value": "ember", "label": "Ember" },
+            { "value": "ice", "label": "Ice" }
+          ],
+          "default": "rainbow",
+          "apply": "line"
+        },
+        {
+          "key": "rate",
+          "type": "number",
+          "title": "Frames a Second",
+          "min": 10,
+          "max": 60,
+          "step": 10,
+          "default": 60,
+          "apply": "restart"
+        }
+      ]
+    }
   }
 }

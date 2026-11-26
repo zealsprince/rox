@@ -1063,6 +1063,10 @@ pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
         .map(|archive| (archive, settings::plugin_cache_dir().join(id)));
     let rescans = package.is_some();
 
+    // A renderer's own folder of caches, which nothing else reads. The same
+    // plain-name check keeps the delete inside `renderer-cache`.
+    let cache = rox_plugins::manifest::valid_id(id).then(|| settings::renderer_cache_dir(id));
+
     let source = source_of(id);
     let stopping = HOSTS
         .write()
@@ -1089,6 +1093,9 @@ pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
         if let Some((archive, copies)) = &package {
             remove_package(archive, copies);
         }
+        if let Some(cache) = &cache {
+            remove_cache(cache);
+        }
 
         let mut conn = store::open(&db_path).map_err(|e| e.to_string())?;
         members::remove_source(&mut conn, &source).map_err(|e| e.to_string())
@@ -1104,6 +1111,16 @@ pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
         cx.update(rescan).ok();
         result
     })
+}
+
+/// A removed renderer's cache folder. One a renderer still holds open on
+/// Windows stays, with a log line, until it's removed by hand.
+fn remove_cache(cache: &Path) {
+    match std::fs::remove_dir_all(cache) {
+        Ok(()) => log::info!("plugins: removed {}", cache.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("plugins: couldn't remove {}: {e}", cache.display()),
+    }
 }
 
 /// A copy that won't delete now goes at the next scan's sweep.

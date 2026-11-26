@@ -45,6 +45,7 @@ use crate::panels::controls;
 mod place_rows;
 mod set_rows;
 mod slice_rows;
+mod target_rows;
 
 const WIDTH: f32 = 340.;
 
@@ -1885,12 +1886,17 @@ fn target_rows(
             None,
             renderer,
         ))
-        .child(setting_block(
-            rox_i18n::t!("canvas-target-resolution"),
-            None,
-            Some(chips.into_any_element()),
-            resolution,
+        .child(target_rows::sizing(
+            item,
+            setting_block(
+                rox_i18n::t!("canvas-target-resolution"),
+                None,
+                Some(chips.into_any_element()),
+                resolution,
+            ),
+            cx,
         ))
+        .children(target_rows::settings(panel, item, owner, cx))
         .child(setting_row(
             rox_i18n::t!("canvas-target-rests"),
             rox_i18n::try_translate("canvas-target-rests.description"),
